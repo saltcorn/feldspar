@@ -84,6 +84,7 @@ import { RoleSelect } from "../roleSelect";
 import { useRoles } from "../roles";
 import { SettingsFields, buildConfig, initialValues } from "../settings";
 import { T, useT } from "../i18n";
+import { HelpLink } from "../HelpLink";
 
 /** A one-line description of a field's kind for the fields table. */
 function kindLabel(kind: unknown): string {
@@ -1420,7 +1421,8 @@ function Settings({
                   read: <code>_read</code>,
                   write: <code>_write</code>,
                 }}
-              />
+              />{" "}
+              <HelpLink topic="ownership-formula" table={table} />
             </Form.Text>
             {settings?.ownership_error && (
               <Alert variant="warning" className="py-2 mt-2 mb-0">

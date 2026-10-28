@@ -1,5 +1,5 @@
-//! `feldspar api` — an application's **custom SQL queries** from the command
-//! line (§13.4).
+//! `feldspar api` — an application's **custom queries** (SQL, or a JavaScript
+//! or Python body) from the command line (§13.4).
 //!
 //! The admin UI can add one; so can this, and for the reasons `build-app`
 //! exists: it is scriptable, it is what a deploy step or a coding agent calls,
@@ -16,7 +16,7 @@
 //! agent. Connecting, saving and re-emitting the client are the binary's, so this
 //! half is testable without a database.
 
-use sc_api::{CustomParam, CustomQuery, Method, ValueType};
+use sc_api::{CustomParam, CustomQuery, Method, QueryLanguage, ValueType};
 use sc_error::{Error, Result};
 
 /// `feldspar api add-query`'s arguments, parsed.
@@ -47,8 +47,14 @@ pub struct QueryRefArgs {
 ///
 /// ```text
 /// --app SUBDOMAIN [--api MOUNT] --name NAME [--method GET] --path /sub/path
-/// [--min-role N] [--description TEXT] [--param name:type[,name:type…]]… --sql TEXT|@FILE
+/// [--min-role N] [--description TEXT] [--param name:type[,name:type…]]…
+/// [--language sql|javascript|python] (--sql|--code) TEXT|@FILE
 /// ```
+///
+/// `--code` and `--sql` are the same flag: the source, in whichever language
+/// `--language` names (SQL unless it says otherwise). Both spellings, because
+/// `--sql` holding a JavaScript body reads as a mistake, and a script that
+/// already says `--sql` should not have to change.
 ///
 /// The defaults are the model's own: `GET`, and the **admin** role floor. An
 /// unstated floor is admin because that is what an unstated one means everywhere
@@ -62,7 +68,8 @@ pub fn parse_add_query(args: &[String]) -> Result<AddQueryArgs> {
     let mut path = None;
     let mut min_role = None;
     let mut description = None;
-    let mut sql = None;
+    let mut language = None;
+    let mut source = None;
     let mut params: Vec<CustomParam> = Vec::new();
 
     let mut it = args.iter();
@@ -75,7 +82,15 @@ pub fn parse_add_query(args: &[String]) -> Result<AddQueryArgs> {
             "--path" => path = Some(value(&mut it, arg)?),
             "--min-role" => min_role = Some(value(&mut it, arg)?),
             "--description" => description = Some(value(&mut it, arg)?),
-            "--sql" => sql = Some(value(&mut it, arg)?),
+            "--language" => language = Some(value(&mut it, arg)?),
+            "--sql" | "--code" => {
+                if source.is_some() {
+                    return Err(Error::config(
+                        "give the query's source once, with --code or --sql",
+                    ));
+                }
+                source = Some(value(&mut it, arg)?);
+            }
             "--param" => {
                 for spec in value(&mut it, arg)?.split(',') {
                     params.push(parse_param(spec.trim())?);
@@ -92,7 +107,13 @@ pub fn parse_add_query(args: &[String]) -> Result<AddQueryArgs> {
     let app = required(app, "--app")?;
     let name = required(name, "--name")?;
     let path = required(path, "--path")?;
-    let sql = read_sql(&required(sql, "--sql")?)?;
+    let source = read_source(&source.ok_or_else(|| {
+        Error::config("--code (or --sql) is required: the query's source, or @FILE")
+    })?)?;
+    let language = match language {
+        Some(l) => parse_language(&l)?,
+        None => QueryLanguage::Sql,
+    };
     let method = match method {
         Some(m) => parse_method(&m)?,
         None => Method::Get,
@@ -104,7 +125,8 @@ pub fn parse_add_query(args: &[String]) -> Result<AddQueryArgs> {
         None => sc_auth::ROLE_ADMIN,
     };
 
-    let mut query = CustomQuery::new(name, method, path, sql)
+    let mut query = CustomQuery::new(name, method, path, source)
+        .language(language)
         .params(params)
         .min_role(min_role);
     if let Some(description) = description {
@@ -170,17 +192,31 @@ fn parse_param(spec: &str) -> Result<CustomParam> {
     Ok(if required { param } else { param.optional() })
 }
 
-/// `--sql`'s value: the SQL itself, or `@path` naming a file holding it.
+/// `--code`/`--sql`'s value: the source itself, or `@path` naming a file
+/// holding it.
 ///
-/// A file, because SQL is many lines and a shell is a poor place to keep them —
-/// the query an admin actually wants is usually already in a `.sql` file beside
-/// the project, and `--sql @report.sql` is how it gets in without a heredoc.
-fn read_sql(value: &str) -> Result<String> {
+/// A file, because a query is many lines and a shell is a poor place to keep
+/// them — the query an admin actually wants is usually already in a `.sql` or
+/// `.js` file beside the project, and `--code @report.js` is how it gets in
+/// without a heredoc.
+fn read_source(value: &str) -> Result<String> {
     let Some(path) = value.strip_prefix('@') else {
         return Ok(value.to_owned());
     };
     std::fs::read_to_string(path)
-        .map_err(|e| Error::config(format!("cannot read the SQL file `{path}`: {e}")))
+        .map_err(|e| Error::config(format!("cannot read the query file `{path}`: {e}")))
+}
+
+/// `--language`'s value, as the model's enum.
+fn parse_language(raw: &str) -> Result<QueryLanguage> {
+    match raw.to_ascii_lowercase().as_str() {
+        "sql" => Ok(QueryLanguage::Sql),
+        "javascript" | "js" => Ok(QueryLanguage::Javascript),
+        "python" | "py" => Ok(QueryLanguage::Python),
+        other => Err(Error::config(format!(
+            "`{other}` is not a query language; use sql, javascript or python"
+        ))),
+    }
 }
 
 /// `--method`'s value, as the model's enum.
@@ -295,6 +331,51 @@ mod tests {
         missing.extend(args(&["--sql", "@/nonexistent/nope.sql"]));
         let msg = parse_add_query(&missing).unwrap_err().to_string();
         assert!(msg.contains("nope.sql"), "{msg}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_code_query_takes_its_language_and_its_body_from_a_file() {
+        let dir = std::env::temp_dir().join(format!("sc-cli-api-code-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("stats.js");
+        std::fs::write(&path, "return { n: 1 };").unwrap();
+
+        let mut js = args(&["--app", "blog", "--name", "stats", "--path", "/stats"]);
+        js.extend(args(&["--language", "javascript"]));
+        js.extend(args(&["--code", &format!("@{}", path.display())]));
+        let query = parse_add_query(&js).unwrap().query;
+        assert_eq!(query.language, QueryLanguage::Javascript);
+        assert_eq!(query.code, "return { n: 1 };");
+        assert!(query.is_code());
+
+        // `--code` with no `--language` is SQL, as `--sql` always was.
+        let plain = args(&[
+            "--app", "blog", "--name", "r", "--path", "/r", "--code", "select 1",
+        ]);
+        assert_eq!(
+            parse_add_query(&plain).unwrap().query.language,
+            QueryLanguage::Sql
+        );
+
+        // The short spellings, and a language there is no such thing as.
+        let mut py = args(&["--app", "blog", "--name", "p", "--path", "/p"]);
+        py.extend(args(&["--language", "py", "--code", "return 1"]));
+        assert_eq!(
+            parse_add_query(&py).unwrap().query.language,
+            QueryLanguage::Python
+        );
+        let mut bad = args(&["--app", "blog", "--name", "p", "--path", "/p"]);
+        bad.extend(args(&["--language", "cobol", "--code", "x"]));
+        let msg = parse_add_query(&bad).unwrap_err().to_string();
+        assert!(msg.contains("cobol"), "{msg}");
+
+        // The source is given once: `--sql` and `--code` together is refused,
+        // not one of them silently dropped.
+        let mut both = args(&["--app", "blog", "--name", "p", "--path", "/p"]);
+        both.extend(args(&["--sql", "select 1", "--code", "return 1"]));
+        assert!(parse_add_query(&both).is_err());
 
         std::fs::remove_dir_all(&dir).ok();
     }

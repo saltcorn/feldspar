@@ -2634,6 +2634,27 @@ pub fn admin_handlers_with(
         }
     });
 
+    reg.register("getHelp", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let topic = ctx.path_param("topic")?.to_owned();
+                let context = help_context(
+                    &catalog,
+                    ctx.user.as_ref(),
+                    ctx.query_get("table"),
+                    ctx.query_get("event"),
+                )
+                .await?;
+                let page = sc_help::render(&topic, &context)?;
+                Ok(HandlerResponse::ok(
+                    json!({ "title": say(&page.title, &ctx.locale), "html": page.html }),
+                ))
+            }
+        }
+    });
+
     reg.register("searchFiles", {
         let catalog = catalog.clone();
         move |ctx| {
@@ -5547,6 +5568,16 @@ pub fn admin_handlers_with(
                 framable_by_the_admin(&mut updated, &ctx.body, &apps);
                 sc_app::check_exposed_agents(&catalog, &updated).await?;
                 let app = save_application(&catalog, &updated).await?;
+                // A new subdomain is a new address for the builder too: left
+                // alone, it would `check` and look at an application that is
+                // no longer served there, and the admin would no longer find
+                // it as this application's. Reported beside the saved
+                // application rather than instead of it, as on create.
+                let agent = if stored.subdomain.trim() != app.subdomain.trim() {
+                    retarget_builder_agent(&catalog, &apps, &stored, &app).await
+                } else {
+                    Ok(None)
+                };
                 // A save is an API-definition change: a table added to the
                 // subset, an endpoint's role, a custom query. The generated
                 // client has to describe what the app now serves (decision 10),
@@ -5555,6 +5586,17 @@ pub fn admin_handlers_with(
                 // reason to report that it was not.
                 reemit_app_client(&catalog, &app, apps.triggers()).await;
                 let mut body = application_api_json(&app);
+                if let Some(obj) = body.as_object_mut() {
+                    match &agent {
+                        Ok(Some(name)) => {
+                            obj.insert("agent".to_owned(), json!(name));
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            obj.insert("agent_error".to_owned(), json!(e.causes()));
+                        }
+                    }
+                }
                 refresh_mounted_app(&apps, &app, &mut body).await;
                 Ok(HandlerResponse::ok(body))
             }
@@ -7529,6 +7571,107 @@ pub(crate) fn field_json(field: &DataField, description: &str) -> Json {
     })
 }
 
+/// What a help topic is filled in with (`sc-help`'s module docs list the keys):
+/// the screen's table with its key fields' targets and the keys pointing back
+/// at it, the trigger's event, the admin's own user object, the users table's
+/// fields, and the tables and triggers a code body can reach.
+///
+/// A `table` that does not exist is left out rather than refused: the form the
+/// help was opened from may be about a table that is still being named.
+async fn help_context(
+    catalog: &Catalog,
+    user: Option<&User>,
+    table: Option<&str>,
+    event: Option<&str>,
+) -> Result<Json> {
+    let field_summary = |f: &DataField| json!({ "name": f.base.name, "label": f.base.label, "type": f.base.type_.name() });
+    let tables = catalog.tables()?;
+    let mut context = serde_json::Map::new();
+    if let Some(table) = table
+        .filter(|t| !t.is_empty())
+        .and_then(|t| tables.iter().find(|candidate| candidate.name == t))
+    {
+        let fields: Vec<Json> = table
+            .fields
+            .iter()
+            .filter(|f| !sc_auth::is_api_hidden_column(&table.name, &f.base.name))
+            .map(|f| {
+                let key_to = match &f.kind {
+                    DataFieldKind::Key { target_table, .. } => {
+                        let target = tables.iter().find(|t| t.name == target_table.0);
+                        json!({
+                            "table": target_table.0,
+                            "fields": target.map_or_else(Vec::new, |t| {
+                                t.fields
+                                    .iter()
+                                    .filter(|f| !sc_auth::is_api_hidden_column(&t.name, &f.base.name))
+                                    .map(field_summary)
+                                    .collect()
+                            }),
+                        })
+                    }
+                    _ => Json::Null,
+                };
+                json!({
+                    "name": f.base.name,
+                    "label": f.base.label,
+                    "type": f.base.type_.name(),
+                    "required": f.required,
+                    "key_to": key_to,
+                })
+            })
+            .collect();
+        let inbound: Vec<Json> = SchemaProjection::new(tables.clone())
+            .referencing_fields(&table.name)
+            .into_iter()
+            .map(|(t, f)| json!({ "table": t, "field": f }))
+            .collect();
+        context.insert(
+            "table".into(),
+            json!({ "name": table.name, "label": table.label, "fields": fields, "inbound": inbound }),
+        );
+    }
+    if let Some(event) = event.filter(|e| !e.is_empty()) {
+        context.insert("event".into(), json!(event));
+    }
+    if let Some(user) = user {
+        let mut object: serde_json::Map<String, Json> = user
+            .extra
+            .iter()
+            .map(|(k, v)| (k.clone(), sc_types::value_to_json(v)))
+            .collect();
+        object.insert("id".into(), json!(user.id));
+        object.insert("role".into(), json!(user.role));
+        context.insert("user".into(), Json::Object(object));
+    }
+    if let Some(users) = tables.iter().find(|t| t.name == USERS_TABLE) {
+        let fields: Vec<Json> = users
+            .fields
+            .iter()
+            .filter(|f| !sc_auth::is_api_hidden_column(USERS_TABLE, &f.base.name))
+            .filter(|f| f.base.name != "id" && f.base.name != "role")
+            .map(field_summary)
+            .collect();
+        context.insert("user_fields".into(), Json::Array(fields));
+    }
+    let reachable: Vec<Json> = tables
+        .iter()
+        .filter(|t| !t.is_hidden())
+        .map(|t| json!({ "name": t.name, "label": t.label }))
+        .collect();
+    context.insert("tables".into(), Json::Array(reachable));
+    // Only once a trigger has been saved: the table is created by the first.
+    if catalog.get(sc_action::TRIGGERS_TABLE)?.is_some() {
+        let triggers: Vec<Json> = list_triggers(catalog)
+            .await?
+            .into_iter()
+            .map(|t| json!(t.name))
+            .collect();
+        context.insert("triggers".into(), Json::Array(triggers));
+    }
+    Ok(Json::Object(context))
+}
+
 /// One constraint on the wire. Every kind uses one shape, with the fields that
 /// do not apply left null — which is what lets the screen render a list of four
 /// different things without four branches for the data and four for the display.
@@ -8269,6 +8412,110 @@ async fn delete_builder_agent(catalog: &Catalog, app: &Application) -> Result<Op
     }
     sc_agent::delete_agent(catalog, agent.id).await?;
     Ok(Some(name))
+}
+
+/// Point the agent that builds `before` at `after`'s subdomain, returning its
+/// (possibly new) name.
+///
+/// Found the way the admin finds it (`builderAgentFor`): by a `coding` trait
+/// naming the old subdomain, preferring the one under the derived name. What
+/// moves with the subdomain:
+///
+/// - **the `coding` trait's application**, which is what `check` builds and
+///   `view_app` looks at — the part that stops the agent working otherwise;
+/// - **the preview pane and the system prompt**, but only where they are still
+///   what the framework declared for the old subdomain: an admin's own URL or
+///   prompt is theirs;
+/// - **the name**, but only while it is still the derived one, the new derived
+///   name is free, and no application exposes it by name (a rename would leave
+///   that application exposing nothing, which `updateAgent` refuses too).
+async fn retarget_builder_agent(
+    catalog: &Catalog,
+    apps: &AppMounts,
+    before: &Application,
+    after: &Application,
+) -> Result<Option<String>> {
+    if catalog.get(sc_agent::AGENTS_TABLE)?.is_none() {
+        return Ok(None);
+    }
+    let Some(services) = apps.agents() else {
+        return Ok(None);
+    };
+    let old = before.subdomain.trim();
+    let builds = |agent: &sc_agent::Agent| {
+        agent.traits.iter().any(|t| {
+            t.trait_ == sc_app::TRAIT_CODING
+                && t.config
+                    .get(sc_app::TRAIT_CFG_APPLICATION)
+                    .and_then(Json::as_str)
+                    .map(str::trim)
+                    == Some(old)
+        })
+    };
+    let old_name = builder_agent_name(before);
+    let candidates: Vec<sc_agent::Agent> = sc_agent::list_agents(catalog)
+        .await?
+        .into_iter()
+        .filter(|a| builds(a))
+        .collect();
+    let Some(mut agent) = candidates
+        .iter()
+        .find(|a| a.name == old_name)
+        .or_else(|| candidates.first())
+        .cloned()
+    else {
+        return Ok(None);
+    };
+
+    let old_pane = sc_app::preview_pane_url(before);
+    for enabled in &mut agent.traits {
+        if enabled.trait_ == sc_app::TRAIT_CODING
+            && enabled
+                .config
+                .get(sc_app::TRAIT_CFG_APPLICATION)
+                .and_then(Json::as_str)
+                .map(str::trim)
+                == Some(old)
+        {
+            enabled.config.insert(
+                sc_app::TRAIT_CFG_APPLICATION.to_owned(),
+                json!(after.subdomain.trim()),
+            );
+        }
+        if enabled.trait_ == sc_app::TRAIT_PREVIEW_PANE
+            && enabled
+                .config
+                .get(sc_app::TRAIT_CFG_PREVIEW_URL)
+                .and_then(Json::as_str)
+                .map(str::trim)
+                == Some(old_pane.as_str())
+        {
+            enabled.config.insert(
+                sc_app::TRAIT_CFG_PREVIEW_URL.to_owned(),
+                json!(sc_app::preview_pane_url(after)),
+            );
+        }
+    }
+    if let (Some(was), Some(now)) = (
+        framework_builder_agent(&before.framework, before),
+        framework_builder_agent(&after.framework, after),
+    ) && agent.system_prompt == was.system_prompt
+    {
+        agent.system_prompt = now.system_prompt;
+    }
+    let new_name = builder_agent_name(after);
+    if agent.name == old_name
+        && sc_agent::load_agent_by_name(catalog, &new_name)
+            .await?
+            .is_none()
+        && sc_app::applications_exposing_agent(catalog, &old_name)
+            .await?
+            .is_empty()
+    {
+        agent.name = new_name;
+    }
+    sc_agent::save_agent(catalog, services.registry(), &agent).await?;
+    Ok(Some(agent.name))
 }
 
 /// Parse an [`Application`] from a create/update body (matching
@@ -12095,6 +12342,7 @@ fn form_field_json(field: &FormField) -> Json {
         "code_language": field.code_language,
         "section": field.section,
         "sublabel": field.sublabel,
+        "help_topic": field.help_topic,
         "pattern": field.pattern,
         "pattern_error": field.pattern_error,
         "env_fallback": env_fallback_json(field),

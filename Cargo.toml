@@ -18,6 +18,10 @@ members = [
     # Name resolution for the whole process, glibc's NSS taken out of the path
     # (§13.5): layer 0 because it is linked in front of libc rather than called.
     "crates/sc-dns",
+    # The admin UI's help topics (v1's `help/*.tmd`): markdown templates filled
+    # in with what the screen is about and rendered to HTML. Layer 0 because it
+    # is handed plain JSON and knows nothing of the catalog.
+    "crates/sc-help",
     # Layer 1 — query language, expression language
     "crates/sc-query",
     "crates/sc-expr",
@@ -141,6 +145,7 @@ sc-error = { path = "crates/sc-error" }
 sc-log = { path = "crates/sc-log" }
 sc-ratelimit = { path = "crates/sc-ratelimit" }
 sc-i18n = { path = "crates/sc-i18n" }
+sc-help = { path = "crates/sc-help" }
 # `feldspar.toml` — the deployment file naming this machine's databases. Layer 0
 # because both ends of the workspace read it: the binary, to know where the
 # primary database is, and the integration-test harness, to know which database
@@ -221,6 +226,8 @@ futures = "0.3"
 getrandom = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+minijinja = { version = "2", default-features = false, features = ["builtins", "serde", "json"] }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 # The `feldspar.toml` configuration file (`sc-cli`): per-environment database
 # connection parameters, read when the environment does not supply them. TOML
 # rather than YAML or JSON because it is the format a Rust operator already has

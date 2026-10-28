@@ -118,15 +118,22 @@ pub const TRAIT_CFG_PREVIEW_URL: &str = "url";
 pub const TRAIT_CFG_PREVIEW_RELOAD: &str = "reload_on_turn";
 
 /// The `preview_pane` URL an application's builder is created with: the
-/// application's own subdomain on whatever host the admin is being read from.
+/// application's own subdomain on the base domain the admin reports.
 ///
-/// `{host}` rather than a base domain, because the base domain is a *server*
-/// setting this crate cannot see and the admin already derives an application's
-/// URL from its own location (`Applications.tsx`). The pane resolves it in the
-/// browser, so one stored agent follows the deployment from `localhost:3000` to
-/// the production domain without being rewritten.
+/// `{base}` rather than a literal base domain, because the base domain is a
+/// *server* setting this crate cannot see; the admin resolves it in the browser
+/// the way it derives an application's link (`appHost`), so one stored agent
+/// follows the deployment from `localhost:3000` to the production domain without
+/// being rewritten. Not `{host}`: once the admin UI has moved to a subdomain of
+/// its own — which `@` requires — the admin's host is not what applications are
+/// served under. The application on `@` *is* the base domain, so it has no
+/// subdomain to put in front of it.
 pub fn preview_pane_url(app: &Application) -> String {
-    format!("//{}.{{host}}", app.subdomain.trim())
+    match app.subdomain.trim() {
+        // `sc_config::ROOT_SUBDOMAIN`, a layer this crate does not depend on.
+        "@" => "//{base}".to_owned(),
+        subdomain => format!("//{subdomain}.{{base}}"),
+    }
 }
 
 /// One trait an application's builder agent is created with: which trait, and how
@@ -272,10 +279,10 @@ fn declared_prompt(
         .flatten()
         .unwrap_or_else(|| {
             format!(
-                "You build the `{}` application, served at the `{}` subdomain, from the \
-                 `{store}` file store under `{root}`.",
+                "You build the `{}` application, served {}, from the `{store}` file \
+                 store under `{root}`.",
                 app.name,
-                app.subdomain.trim()
+                served_at(app)
             )
         })
 }
@@ -345,8 +352,8 @@ const SIGNUP_SWITCH: &str = "When sign-up is off, do not build a sign-up form \
 /// convention a model would otherwise break on its first edit.
 fn react_prompt(app: &Application, store: &str, root: &str) -> String {
     format!(
-        "You build the `{name}` application, a React + Vite project served at the \
-         `{subdomain}` subdomain, from the `{store}` file store under `{root}`.\n\n\
+        "You build the `{name}` application, a React + Vite project served \
+         {served}, from the `{store}` file store under `{root}`.\n\n\
          `src/feldspar/` is the client generated from the application's API, rewritten \
          on every build: read it to learn what data there is, never edit it, and reach \
          data only through it.\n\n\
@@ -361,7 +368,7 @@ fn react_prompt(app: &Application, store: &str, root: &str) -> String {
          powerful than the caller and emails them a link. The README has the details.\n\n\
          {BUILDING}",
         name = app.name,
-        subdomain = app.subdomain.trim(),
+        served = served_at(app),
     )
 }
 
@@ -375,11 +382,20 @@ exactly which table or field is missing in your report. Replace the scaffold's p
 pages with the real ones, implement every page the brief describes, and run `check` until it \
 passes before you report.";
 
+/// Where `app` is served, as a prompt says it: on its subdomain, or — for `@`
+/// — on the base domain, which has no subdomain to name.
+fn served_at(app: &Application) -> String {
+    match app.subdomain.trim() {
+        "@" => "on the base domain (subdomain `@`)".to_owned(),
+        subdomain => format!("at the `{subdomain}` subdomain"),
+    }
+}
+
 /// The prompt for a `code` application: the same role, without conventions this
 /// framework has not got.
 fn code_prompt(app: &Application, store: &str, root: &str) -> String {
     format!(
-        "You build the `{name}` application, served at the `{subdomain}` subdomain, \
+        "You build the `{name}` application, served {served}, \
          from the `{store}` file store under `{root}`. The project is the admin's \
          own: read it before changing it rather than assuming a layout.\n\n\
          The application's REST API signs people in with `POST /api/login` (and \
@@ -392,7 +408,7 @@ fn code_prompt(app: &Application, store: &str, root: &str) -> String {
          `/set-password#token=…` in the application, whose page posts \
          `{{ token, password }}` to `/api/set-password`. Keep a page at that path.",
         name = app.name,
-        subdomain = app.subdomain.trim(),
+        served = served_at(app),
     )
 }
 
@@ -458,13 +474,13 @@ fn none_prompt(app: &Application, store: &str, root: &str) -> String {
         )
     };
     format!(
-        "You work on the `{name}` application, served at the `{subdomain}` subdomain, \
+        "You work on the `{name}` application, served {served}, \
          in the `{store}` file store under {root}. It has no UI framework and no build \
          step: what you write is served as it is, so write plain HTML, CSS and \
          JavaScript that a browser runs without a bundler.\n\n\
          {dirs}\n\n{apis}{streams}",
         name = app.name,
-        subdomain = app.subdomain.trim(),
+        served = served_at(app),
     )
 }
 
@@ -511,7 +527,7 @@ mod tests {
         assert_eq!(names, [TRAIT_CODING, TRAIT_HTTP, TRAIT_PREVIEW_PANE]);
         assert_eq!(
             spec.traits[2].config[TRAIT_CFG_PREVIEW_URL],
-            Json::from("//todo.{host}")
+            Json::from("//todo.{base}")
         );
         // Reading public pages only: it may not send, nor reach this network.
         let http = &spec.traits[1];
@@ -609,6 +625,17 @@ mod tests {
         let mut renamed = react_app();
         renamed.name = "To-do list".to_owned();
         assert_eq!(builder_agent_name(&renamed), "build-todo");
+    }
+
+    #[test]
+    fn the_app_on_the_base_domain_previews_the_base_domain() {
+        // `@` is the base domain itself: there is no `@.` label to put in front
+        // of it, and the admin's own host is a subdomain by then, so the pane
+        // URL is the base domain alone.
+        let mut home = react_app();
+        home.subdomain = "@".to_owned();
+        assert_eq!(preview_pane_url(&home), "//{base}");
+        assert_eq!(preview_pane_url(&react_app()), "//todo.{base}");
     }
 
     #[test]

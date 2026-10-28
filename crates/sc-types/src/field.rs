@@ -223,6 +223,14 @@ pub struct FormField {
     ///
     /// Presentation only, like [`section`](FormField::section).
     pub sublabel: Option<String>,
+    /// The **help topic** that explains this setting at length (v1's `help`):
+    /// the admin UI shows a question-mark next to the sublabel (or the label)
+    /// that opens the topic in a popup. A topic is a template the server fills
+    /// in with what the screen is about — the table's fields, the trigger's
+    /// event — so `sc-help` names the topics and this names one of them.
+    ///
+    /// Presentation only, like [`sublabel`](FormField::sublabel).
+    pub help_topic: Option<String>,
     /// A regular expression a non-empty text value must match in full — v1's
     /// `attributes.regexp`. Checked by [`validate_patterns`] on save, and by the
     /// admin UI as the admin types.
@@ -260,6 +268,7 @@ impl FormField {
             show_if: Vec::new(),
             section: None,
             sublabel: None,
+            help_topic: None,
             pattern: None,
             pattern_error: None,
             env_fallback: None,
@@ -278,6 +287,13 @@ impl FormField {
     /// [`sublabel`](FormField::sublabel)).
     pub fn sublabel(mut self, text: impl Into<String>) -> FormField {
         self.sublabel = Some(text.into());
+        self
+    }
+
+    /// Offer help topic `topic` beside this field (see
+    /// [`help_topic`](FormField::help_topic)).
+    pub fn help_topic(mut self, topic: impl Into<String>) -> FormField {
+        self.help_topic = Some(topic.into());
         self
     }
 

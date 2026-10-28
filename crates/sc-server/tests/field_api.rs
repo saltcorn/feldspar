@@ -680,6 +680,88 @@ async fn inbound_keys_name_the_tables_that_point_here() -> sc_error::Result<()> 
     Ok(())
 }
 
+/// A help topic is filled in with the table it is opened on: the ownership
+/// formula's lists this table's `Ⱶ`-paths and the keys pointing back at it, and
+/// the JavaScript code topic follows the trigger's event.
+#[tokio::test]
+async fn help_topics_are_filled_in_with_the_table() -> sc_error::Result<()> {
+    let (mut client, _catalog, _db) = setup().await?;
+    for table in ["author", "book"] {
+        client
+            .send("POST", "/api/tables", Some(json!({ "name": table })))
+            .await;
+        let (status, body) = client
+            .send(
+                "POST",
+                &format!("/api/tables/{table}/fields"),
+                Some(json!({ "name": "id", "type": "int", "primary_key": true })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/tables/author/fields",
+            Some(json!({ "name": "name", "type": "text" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/tables/book/fields",
+            Some(json!({
+                "name": "written_by",
+                "kind": { "type": "key", "target_table": "author", "target_field": "id" }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (status, body) = client
+        .send("GET", "/api/help/ownership-formula?table=book", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["title"], "Ownership formula");
+    let html = body["html"].as_str().unwrap();
+    assert!(html.contains("<code>written_byⱵname</code>"), "{html}");
+    // The admin's own user object, as v1's topic showed it.
+    assert!(html.contains("\"role\": 1"), "{html}");
+
+    let (status, body) = client
+        .send("GET", "/api/help/ownership-formula?table=author", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body["html"].as_str().unwrap().contains("bookↃwritten_by"),
+        "{body}"
+    );
+
+    let (status, body) = client
+        .send(
+            "GET",
+            "/api/help/javascript-code?table=book&event=insert",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let html = body["html"].as_str().unwrap();
+    assert!(html.contains("<code>row.written_by</code>"), "{html}");
+    assert!(html.contains("<code>db.book</code>"), "{html}");
+
+    // A table that does not exist (yet) is left out, not refused; an unknown
+    // topic is a 404.
+    let (status, body) = client
+        .send("GET", "/api/help/ownership-formula?table=nosuch", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = client.send("GET", "/api/help/nosuch", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    Ok(())
+}
+
 /// Whether a field accepts nulls is editable after the fact, both ways: made
 /// required once its rows all have a value, and optional again. The one refusal
 /// that depends on the data names the rows in the way rather than the database's

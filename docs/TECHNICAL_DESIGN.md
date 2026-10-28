@@ -74,6 +74,8 @@ feldspar/
 │  │                              #    `core` catalogues. Layer 0 because sc-auth and sc-types
 │  │                              #    must be able to translate a sentence (§16.1); the
 │  │                              #    tree-sitter extractor is behind an `extract` feature
+│  ├─ sc-help/                    # 0. admin UI help topics: markdown templates filled in with
+│  │                              #    the screen's context, rendered to HTML
 │  ├─ sc-query/                   # 1. universal query language (enum AST) + SQL rendering trait
 │  ├─ sc-repomap/                 # 1. the coding agent's repo map: tree-sitter tags, personalised
 │  │                              #    PageRank, rendering to a token budget. No store, no deps
@@ -202,6 +204,8 @@ graph TD
   server --> coreact["sc-core-actions"]
   server --> coretraits["sc-core-traits"]
   server --> pg["sc-db-postgres"]
+  server --> help["sc-help"]
+  help --> error
   coretraits --> agent["sc-agent"]
   coretraits --> app["sc-app"]
   coretraits --> repomap["sc-repomap"]
@@ -286,6 +290,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-query` | `sc-error` |
 | `sc-repomap` | — (nothing in the workspace) |
 | `sc-i18n` | `sc-error` |
+| `sc-help` | `sc-error` |
 | `sc-types` | `sc-error` `sc-i18n` `sc-query` |
 | `sc-db` | `sc-error` `sc-query` |
 | `sc-db-postgres` | `sc-db` `sc-error` `sc-log` `sc-query` |
@@ -314,7 +319,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-module` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
 | `sc-python` | `sc-action` `sc-catalog` `sc-core-actions` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
 | `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-repomap` `sc-types` |
-| `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-help` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:

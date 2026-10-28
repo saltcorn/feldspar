@@ -2,6 +2,98 @@
 
 Changes in reverse chronological order.
 
+## Fix: add `sc-help` to the design's crate graph
+
+The new `sc-help` crate was not in §2 of `docs/TECHNICAL_DESIGN.md`, so
+`repo_hygiene::the_design_crate_diagram_matches_the_workspace_manifests` failed. Added it to the
+crate tree (layer 0), the mermaid diagram (`sc-server --> sc-help --> sc-error`) and the
+direct-dependency table (its own row, and in `sc-server`'s list).
+
+## Fix: regenerate the IDE, builder and analytics copies of the admin client
+
+The help-topic endpoints were added to `sc_api::admin_endpoints()` and `ui/admin/src/client.ts`
+was regenerated, but the other three copies (`ui/ide`, `ui/builder`, `ui/analytics`) were not,
+so `admin_client_sync::committed_admin_clients_match_generator` failed. Regenerated them with
+`emit_admin_client`; all four are now identical and type-check.
+
+## Help topics: a question-mark beside a setting opens a popup with more help (v1's help system)
+
+v1 put a question-mark next to a field's sublabel (or its label, without one) that opened a
+markdown help page in a modal. The page was a template, so it could list the current table's
+fields. This brings that back, starting with the ownership formula and `run_js_code`'s code.
+
+- **New crate `sc-help`**: the topics, compiled into the binary from `crates/sc-help/topics/*.md`.
+  A topic is a markdown template in **MiniJinja** syntax (`{{ table.name }}`,
+  `{% for f in table.fields %}`, `{% if event == "update" %}`) instead of v1's underscore
+  templates, so a topic can print, loop and branch over its context but cannot run code. It is
+  rendered to HTML with pulldown-cmark. Raw HTML in the markdown is printed as text, and links
+  may only go to `http(s):`, `mailto:`, a path on this server or another topic (`help:<id>`),
+  because the context holds values people typed (field labels, the admin's user object).
+- **Topics**: `ownership-formula` (the access rule, this table's fields, its `Ⱶ`-paths per
+  key field, the `Ↄ` relations pointing at it, the users table's fields, your own user object
+  as JSON (as v1 showed it), the operation flags, examples that use the table's own key to
+  users when it has one, and RLS). `javascript-code` (the scope by event, with the current
+  event named and `row.<field>` listed for this table, `db` and its chain, the tables on this
+  server, the other handles, the triggers `trigger()` can run, and the limits).
+- **Admin API**: `getHelp` (`GET /api/help/{topic}?table=&event=`, admin only) gives
+  `{ title, html }`. The server builds the context from the catalog. An unknown topic is a 404.
+  An unknown table is left out rather than refused.
+- **Declarations**: `FormField.help_topic` (builder `.help_topic(id)`), sent to the UI as
+  `help_topic` in every config spec. (It is not called `help` because settings keys already
+  send a `help` sentence.) `run_js_code`'s `code` setting names `javascript-code`.
+- **Admin UI**: `HelpLink.tsx` shows a Tabler help-circle icon that opens the topic in a modal.
+  A `help:` link inside the page opens that topic in the same modal, and other links open in a
+  new tab. `SettingField` puts it beside the sublabel, or beside the label when there is no
+  sublabel, for any setting with a `help_topic`, and fills the topic in with the code scope's
+  table and event. The table page's ownership formula has one beside its sublabel.
+- Tests: `sc-help` unit tests (every topic renders with an empty and a full context, the
+  ownership topic lists fields/joins/children/user fields, the JS topic follows the event,
+  unknown topic, raw HTML and `javascript:` links neutralised).
+  `field_api::help_topics_are_filled_in_with_the_table` (real Postgres, through the router).
+  `run_js_code`'s spec test checks the topic. `HelpLink.test.tsx` checks placement beside the
+  sublabel or the label, `help:` links and the query.
+
+## `feldspar api add-query` adds code queries, from a file
+
+`add-query` only added SQL queries, so a JavaScript or Python query could only be saved through
+MCP `save_api_query`, with the whole body in the call each time.
+
+- **CLI**: `add-query` takes `--language sql|javascript|python` (also `js`, `py`; default `sql`)
+  and `--code TEXT|@FILE`. `--code` is the same flag as `--sql`; giving both is refused. A code
+  query is saved through the same `save_application` path (endpoint rules apply, SQL rules and
+  preparing do not), and the command prints `NAME: a javascript query` instead of the
+  columns. The usage text says so.
+- **Generated README**: the custom-query section says how to add a code query with the
+  command.
+- Tests: `api::tests::a_code_query_takes_its_language_and_its_body_from_a_file` (parsing,
+  defaults, short names, unknown language, `--sql` and `--code` together), and
+  `api_queries::a_javascript_query_is_added_from_a_file` (real binary and Postgres: stored as
+  JavaScript with the file's body, client method generated).
+
+## The coding agent keeps working when an application moves to `@` (or any other subdomain)
+
+Changing an existing application's subdomain left its builder agent behind: its `coding` trait
+still named the old subdomain, so `check` and `view_app` failed with "no application is served
+at `…`", and the admin sidebar (which finds the builder by that setting) no longer offered it.
+For `@` the preview pane was broken too: its URL became `//@.{host}`.
+
+- **Server** (`updateApplication`): when the subdomain changes, `retarget_builder_agent` finds
+  the builder by its `coding` trait's `application` and points it at the new subdomain. The
+  preview pane URL and the system prompt move with it only while they are still what the
+  framework declared (an admin's own stays). The agent is renamed (`build-todo` → `build-@`)
+  only while it has the derived name, the new name is free, and no application exposes it. The
+  response says which agent moved in `agent`, or why it could not in `agent_error`, as on create.
+- **Preview pane URL**: builders are now created with `//<subdomain>.{base}`, and `//{base}` for
+  the application on `@`. The admin resolves `{base}` to the base domain the server reports
+  (with the admin's port), falling back to its own host, the way it builds app links. `{host}`
+  is still accepted. It is no longer used for builders because once the admin UI is on a
+  subdomain of its own, which `@` needs, the admin's host is not where applications are served.
+- **Prompts**: the application on `@` is described as "served on the base domain (subdomain
+  `@`)" instead of "at the `@` subdomain".
+- Tests: `app_builder_agent::moving_an_application_to_another_subdomain_takes_its_builder_along`
+  (todo → `@` → shop, with an admin-edited pane URL kept), a unit test for the `@` pane URL, and
+  an `agentChat` test for `{base}`.
+
 ## Test fixes after "All tables / applications / files"
 
 - `sc-cli` tests: `inspect_backup` takes a password now; the backup test passes `None`.

@@ -376,9 +376,10 @@ export function AgentChat({
   }, [currentRun, running]);
   const runBar = runRecord && runRecord.id === currentRun && <RunBar run={runRecord} />;
 
-  // The URL the pane opens on, resolved against this admin's own location: a
-  // stored `//todo.{host}` is the application's subdomain on whatever host this
-  // browser reached the admin by. `null` for a pane nobody may frame.
+  // The URL the pane opens on, resolved against this admin's own location and
+  // the base domain the server reported: a stored `//todo.{base}` is the
+  // application's subdomain on this deployment. `null` for a pane nobody may
+  // frame.
   const paneUrl = useMemo(
     () => (pane ? resolvePaneUrl(pane.url, window.location) : null),
     [pane],

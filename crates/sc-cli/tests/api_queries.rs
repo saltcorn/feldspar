@@ -311,3 +311,56 @@ async fn a_query_that_will_not_prepare_is_refused_and_changes_nothing() -> sc_er
     assert!(stderr.contains("nosuchapp"), "{stderr}");
     Ok(())
 }
+
+#[tokio::test]
+async fn a_javascript_query_is_added_from_a_file() -> sc_error::Result<()> {
+    let db = TestDb::new().await?;
+    let tmp = TempDir::new("code")?;
+    let catalog = books_app(&db, &tmp).await?;
+    let url = db.url();
+    let store = format!("apps={}", tmp.path().display());
+
+    // The body lives in a file beside the project, as it would in a repo.
+    let body = "const n = await db.sql(\"select count(*)::int as n from books\");\n\
+                return { n: n[0].n };\n";
+    let file = tmp.path().join("book-count.js");
+    std::fs::write(&file, body)?;
+
+    let (ok, stdout, stderr) = api(&[
+        "add-query",
+        "--app",
+        "books",
+        "--name",
+        "bookCount",
+        "--path",
+        "/reports/book-count",
+        "--min-role",
+        "1",
+        "--language",
+        "javascript",
+        "--code",
+        &format!("@{}", file.display()),
+        "--database-url",
+        &url,
+        "--file-store",
+        &store,
+    ]);
+    assert!(ok, "add-query failed:\n{stderr}\n{stdout}");
+    assert!(stdout.contains("bookCount: a javascript query"), "{stdout}");
+
+    // Stored as JavaScript, with the file's text as its body — not prepared as
+    // SQL, which it is not.
+    let app = load_application_by_subdomain(&catalog, "books")
+        .await?
+        .expect("the app");
+    let stored = sc_api::custom_queries(&app.apis[0].config)?;
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].language, sc_api::QueryLanguage::Javascript);
+    assert_eq!(stored[0].code, body);
+    assert!(stored[0].columns.is_empty());
+
+    // …and the generated client has its method.
+    let client = client_ts(&tmp);
+    assert!(client.contains("bookCount("), "{client}");
+    Ok(())
+}

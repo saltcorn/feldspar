@@ -610,6 +610,17 @@ describe("the preview pane an agent declares", () => {
     expect(resolvePaneUrl("/ide/", local)).toBe("/ide/");
   });
 
+  it("resolves {base} to the base domain, so the application on @ previews the base domain", () => {
+    // Serving an application on `@` means the admin UI is on a subdomain of
+    // its own, so `{host}` would be the admin's host, not the application's.
+    const admin = { protocol: "https:", host: "admin.example.com" };
+    expect(resolvePaneUrl("//{base}", admin, "example.com")).toBe("https://example.com");
+    expect(resolvePaneUrl("//todo.{base}", admin, "example.com")).toBe("https://todo.example.com");
+    // Without a reported base domain the admin's host stands in, as for app links.
+    const local = { protocol: "http:", host: "localhost:3000" };
+    expect(resolvePaneUrl("//todo.{base}", local, null)).toBe("http://todo.localhost:3000");
+  });
+
   it("refuses a URL that would run script in the admin's own origin", () => {
     // The trait refuses these on save; this is the side that writes `src`, and
     // a stored agent is not a trusted input.

@@ -864,7 +864,8 @@ async fn reemit_client(catalog: &sc_catalog::Catalog, app: &sc_app::Application)
     }
 }
 
-/// `feldspar api add-query --app SUBDOMAIN [--api MOUNT] --name … --path … --sql …`.
+/// `feldspar api add-query --app SUBDOMAIN [--api MOUNT] --name … --path …
+/// [--language …] --code …`.
 ///
 /// Validates by **preparing** — the same call the admin UI's check button and
 /// every save make — so a query that will not prepare exits non-zero carrying
@@ -917,7 +918,11 @@ fn print_query_columns(app: &sc_app::Application, mount: &str, name: &str) -> Re
     else {
         return Ok(());
     };
-    if query.columns.is_empty() {
+    if query.is_code() {
+        // A code body has no columns to describe: what it returns is whatever
+        // the body returns, so say what was saved instead of "no columns".
+        println!("{name}: a {} query", query.language.as_str());
+    } else if query.columns.is_empty() {
         println!("{name}: returns no columns");
     } else {
         println!(
@@ -2413,7 +2418,11 @@ fn print_usage() {
         "                        [--method GET] --path /sub/path [--min-role N] \
          [--description TEXT]"
     );
-    eprintln!("                        [--param name:type[,name:type…]]… --sql TEXT|@FILE");
+    eprintln!("                        [--param name:type[,name:type…]]…");
+    eprintln!(
+        "                        [--language sql|javascript|python] --code TEXT|@FILE \
+         (or --sql)"
+    );
     eprintln!("  feldspar api list-queries --app SUBDOMAIN [--api MOUNT]");
     eprintln!("  feldspar api remove-query --app SUBDOMAIN [--api MOUNT] --name NAME");
     eprintln!("  feldspar get-cfg [KEY] [database flags]");

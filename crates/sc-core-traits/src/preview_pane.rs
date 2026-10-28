@@ -16,16 +16,20 @@
 //! nothing in it is about building applications — an agent that edits a
 //! documentation site, or drives a dashboard, wants the same screen.
 //!
-//! ## Why the URL may carry `{host}`
+//! ## Why the URL may carry `{base}` and `{host}`
 //!
 //! An agent is stored once and read from wherever the admin happens to be open:
 //! `localhost:3000` in development, the deployment's own domain in production.
-//! An application's URL is its subdomain on *that* host, and the base domain is a
-//! server setting the agent record does not carry. So the stored value may be a
-//! template with one name in it — `{host}` — and the browser resolves it against
-//! its own location, which is exactly how the applications list already derives
-//! an app's link. `//todo.{host}` therefore follows the deployment instead of
-//! pinning it.
+//! The base domain is a server setting the agent record does not carry, so the
+//! stored value may be a template, resolved in the browser:
+//!
+//! - `{base}` is the base domain applications are served under (with the
+//!   admin's port), exactly as the applications list derives an app's link —
+//!   so `//todo.{base}` is the `todo` application and `//{base}` the one on
+//!   `@`, wherever the admin UI itself is served;
+//! - `{host}` is the host the admin is open on, for a page beside the admin.
+//!
+//! Either follows the deployment instead of pinning it.
 //!
 //! ## What is refused
 //!
@@ -43,8 +47,8 @@ use serde_json::Value as Json;
 
 use crate::table::config_str;
 
-/// The URL the pane opens on. May contain `{host}`, which the admin's browser
-/// replaces with its own host.
+/// The URL the pane opens on. May contain `{base}` (the base domain) and
+/// `{host}` (the admin's own host), which the admin's browser resolves.
 pub const CFG_URL: &str = "url";
 
 /// Whether the pane reloads when the agent finishes a turn.
@@ -71,8 +75,8 @@ impl AgentTrait for PreviewPane {
         vec![
             FormField::new(CFG_URL, BasicType::Text)
                 .label(
-                    "URL shown beside the chat (`{host}` becomes the host the admin is open \
-                     on, so `//shop.{host}` follows the deployment)",
+                    "URL shown beside the chat (`{base}` becomes the base domain, so \
+                     `//shop.{base}` follows the deployment; `{host}` is the admin's own host)",
                 )
                 .required(),
             FormField::new(CFG_RELOAD_ON_TURN, BasicType::Bool)
@@ -114,9 +118,9 @@ impl AgentTrait for PreviewPane {
 
 /// The configured URL, checked.
 ///
-/// The `{host}` placeholder is left in: resolving it is the browser's, because
-/// the host is the one the admin is being read from and not one the server
-/// knows.
+/// The `{base}` and `{host}` placeholders are left in: resolving them is the
+/// browser's, because the host is the one the admin is being read from and not
+/// one the server knows.
 pub fn configured_url(config: &Attrs) -> Result<String> {
     let url = config_str(config, CFG_URL);
     let url = url.trim();
@@ -174,6 +178,8 @@ mod tests {
             "https://shop.example.com",
             "http://localhost:5173/",
             "//todo.{host}",
+            "//todo.{base}",
+            "//{base}",
             "/apps/todo/",
         ] {
             assert_eq!(configured_url(&config(url)).unwrap(), url, "{url}");

@@ -15,6 +15,7 @@
 import Form from "react-bootstrap/Form";
 
 import { CodeEditor } from "./CodeEditor";
+import { HelpLink } from "./HelpLink";
 import type { CodeScope } from "./codeTypes";
 import { T } from "./i18n";
 import type { ExtraOption } from "./newFileStore";
@@ -67,6 +68,10 @@ export type FieldSpec = {
   /** A sentence or two under the control (v1's `sublabel`): what to enter and
    * where to find it. */
   sublabel?: string | null;
+  /** The help topic that explains the setting at length (v1's `help`): a
+   * question-mark beside the sublabel, or the label when there is none, opens it
+   * in a popup (`HelpLink.tsx`). */
+  help_topic?: string | null;
   /** A regular expression a non-empty text value must match in full (v1's
    * `regexp`), checked as the admin types and again on save. */
   pattern?: string | null;
@@ -251,10 +256,22 @@ export function SettingField({
         />
       </Form.Text>
     ) : null;
+  // The help topic's question-mark: beside the sublabel, or beside the label
+  // when there is no sublabel to put it next to (v1's placement). A code
+  // setting's scope is the context it is filled in with.
+  const help = field.help_topic ? (
+    <HelpLink topic={field.help_topic} table={codeScope?.table} event={codeScope?.event} />
+  ) : null;
+  const labelHelp = field.sublabel ? null : help && <> {help}</>;
   const description =
     field.sublabel || fromEnvironment ? (
       <>
-        {field.sublabel && <Form.Text muted className="d-block">{field.sublabel}</Form.Text>}
+        {field.sublabel && (
+          <Form.Text muted className="d-block">
+            {field.sublabel}
+            {help && <> {help}</>}
+          </Form.Text>
+        )}
         {fromEnvironment}
       </>
     ) : null;
@@ -265,6 +282,7 @@ export function SettingField({
         <Form.Label>
           {field.label}
           {field.required && <span className="text-danger"> *</span>}
+          {labelHelp}
         </Form.Label>
         <Form.Select
           value={value}
@@ -297,7 +315,7 @@ export function SettingField({
       <Form.Group className="mb-3" controlId={controlId}>
         <Form.Check
           type="checkbox"
-          label={field.label}
+          label={<>{field.label}{labelHelp}</>}
           checked={value === "true"}
           disabled={fixed}
           onChange={(e) => onChange(e.target.checked ? "true" : "false")}
@@ -317,6 +335,7 @@ export function SettingField({
         <Form.Label htmlFor={controlId}>
           {field.label}
           {field.required && <span className="text-danger"> *</span>}
+          {labelHelp}
         </Form.Label>
         <CodeEditor
           id={controlId}
@@ -339,6 +358,7 @@ export function SettingField({
         <Form.Label>
           {field.label}
           {field.required && <span className="text-danger"> *</span>}
+          {labelHelp}
         </Form.Label>
         <Form.Control
           as="textarea"
@@ -360,6 +380,7 @@ export function SettingField({
       <Form.Label>
         {field.label}
         {field.required && <span className="text-danger"> *</span>}
+        {labelHelp}
       </Form.Label>
       {field.multiline ? (
         // Monospace and selectable-on-focus, because a multi-line setting is

@@ -901,6 +901,9 @@ fn runtime_readme(ctx: &ProjectContext<'_>) -> String {
          `--param` may be repeated, and takes `name:type` (or `name:type?` when \
          the caller may omit it); `--sql @file` reads the statement from a file, \
          which is how it lives in this repository beside the code that calls it. \
+         A code query is added the same way, with `--language javascript` (or \
+         `python`) and `--code @file.js` in place of `--sql`; it is not prepared, \
+         and its method returns what the body returns. \
          The server **prepares** the statement before storing anything, so a query \
          that will not prepare is refused carrying Postgres's own message, and the \
          columns Postgres reports become the method's return type in \
@@ -5541,6 +5544,7 @@ export function Board({ id }: { id: number }) {
         // and mount are its own, so it is pasteable rather than a template.
         let readme = file(&files, "src/feldspar/README.md");
         assert!(readme.contains("feldspar api add-query"), "{readme}");
+        assert!(readme.contains("--language javascript"), "{readme}");
         assert!(readme.contains("--app todo"), "{readme}");
         assert!(readme.contains("--api /api"), "{readme}");
         assert!(readme.contains("--param since:date"), "{readme}");

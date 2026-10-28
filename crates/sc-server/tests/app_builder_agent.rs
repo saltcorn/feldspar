@@ -134,14 +134,17 @@ impl Client {
 /// provider is connected — the difference between an application that gets a
 /// builder agent and one that is told why it did not.
 async fn setup(tmp: &TempDir, provider: bool) -> sc_error::Result<(Client, Arc<Catalog>, TestDb)> {
-    setup_on(tmp, provider, sc_agent::HostCapabilities::default()).await
+    setup_on(tmp, provider, sc_agent::HostCapabilities::default(), None).await
 }
 
-/// [`setup`] on a host with `host`'s capabilities.
+/// [`setup`] on a host with `host`'s capabilities, with the admin UI on the
+/// `admin` subdomain when one is given (which is what frees `@` for an
+/// application).
 async fn setup_on(
     tmp: &TempDir,
     provider: bool,
     host: sc_agent::HostCapabilities,
+    admin: Option<&str>,
 ) -> sc_error::Result<(Client, Arc<Catalog>, TestDb)> {
     let db = TestDb::new().await?;
     // Neutralise any `users` table inherited from the template database before
@@ -186,6 +189,9 @@ async fn setup_on(
     }
 
     let apps = Arc::new(AppMounts::new(catalog.clone()).with_agents(agents));
+    if let Some(admin) = admin {
+        apps.set_admin_subdomain(Some(admin.to_owned()));
+    }
     let router = build_router(
         &sc_api::admin_endpoints(),
         admin_handlers(catalog.clone(), apps),
@@ -330,7 +336,7 @@ async fn creating_an_application_creates_the_agent_that_builds_it() -> sc_error:
 
     let pane = &traits[2];
     assert_eq!(pane["trait"], json!("preview_pane"));
-    assert_eq!(pane["config"]["url"], json!("//todo.{host}"));
+    assert_eq!(pane["config"]["url"], json!("//todo.{base}"));
     assert_eq!(pane["config"]["reload_on_turn"], json!(true));
 
     // A second application gets its own agent, scoped to its own directory: two
@@ -367,7 +373,7 @@ async fn on_a_host_with_a_browser_the_builder_may_look_at_the_application() -> s
     let tmp = TempDir::new("browser");
     // Never launched: saving the agent only asks whether the host has one.
     let host = sc_agent::HostCapabilities::with_browser("/usr/bin/chromium");
-    let (mut admin, _catalog, _db) = setup_on(&tmp, true, host).await?;
+    let (mut admin, _catalog, _db) = setup_on(&tmp, true, host, None).await?;
 
     let (status, created) = admin
         .send(
@@ -548,6 +554,84 @@ async fn a_builder_re_pointed_at_another_application_survives() -> sc_error::Res
     assert_eq!(deleted.get("agent"), None, "{deleted}");
     let survived = agent(&mut admin, "build-todo").await;
     assert_eq!(survived["id"], json!(agent_id));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn moving_an_application_to_another_subdomain_takes_its_builder_along() -> sc_error::Result<()>
+{
+    // Left behind, the builder `check`s and looks at a subdomain nothing is
+    // served on any more, and the sidebar (which finds it by that setting) no
+    // longer offers it. `@` is the case that was reported: the base domain has
+    // no `@.` label, so its preview is the base domain itself.
+    let tmp = TempDir::new("moved");
+    let (mut admin, _catalog, _db) = setup_on(
+        &tmp,
+        true,
+        sc_agent::HostCapabilities::default(),
+        Some("admin"),
+    )
+    .await?;
+
+    let (status, created) = admin
+        .send(
+            "POST",
+            "/api/applications",
+            Some(react_body("Todo", "todo", "todo")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap().to_owned();
+    let agent_id = agent(&mut admin, "build-todo").await["id"].clone();
+
+    let (status, updated) = admin
+        .send(
+            "PUT",
+            &format!("/api/applications/{id}"),
+            Some(react_body("Todo", "@", "todo")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["agent"], json!("build-@"), "{updated}");
+
+    // The same agent, renamed with the subdomain and pointed at it.
+    let moved = agent(&mut admin, "build-@").await;
+    assert_eq!(moved["id"], agent_id);
+    assert_eq!(moved["error"], Value::Null, "{moved}");
+    assert_eq!(moved["traits"][0]["config"]["application"], json!("@"));
+    assert_eq!(moved["traits"][2]["config"]["url"], json!("//{base}"));
+    let prompt = moved["system_prompt"].as_str().unwrap();
+    assert!(prompt.contains("served on the base domain"), "{prompt}");
+    assert!(!prompt.contains("`todo` subdomain"), "{prompt}");
+
+    // An admin's own pane URL is theirs, and survives the next move.
+    let mut edited = moved.clone();
+    edited["traits"][2]["config"]["url"] = json!("http://localhost:5173/");
+    edited.as_object_mut().unwrap().remove("error");
+    edited.as_object_mut().unwrap().remove("id");
+    let (status, saved) = admin
+        .send(
+            "PUT",
+            &format!("/api/agents/{}", agent_id.as_str().unwrap()),
+            Some(edited),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let (status, updated) = admin
+        .send(
+            "PUT",
+            &format!("/api/applications/{id}"),
+            Some(react_body("Todo", "shop", "todo")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    let moved = agent(&mut admin, "build-shop").await;
+    assert_eq!(moved["traits"][0]["config"]["application"], json!("shop"));
+    assert_eq!(
+        moved["traits"][2]["config"]["url"],
+        json!("http://localhost:5173/")
+    );
 
     Ok(())
 }

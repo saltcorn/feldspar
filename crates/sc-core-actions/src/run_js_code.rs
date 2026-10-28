@@ -292,8 +292,12 @@ impl Action for RunJsCode {
     fn config_spec(&self) -> Vec<FormField> {
         // Declared as JavaScript so the admin UI gives it an editor with
         // highlighting and completions over the scope below, rather than a text
-        // area.
-        code_body::config_spec("javascript")
+        // area — and with the help topic that lists what is in scope (`sc-help`).
+        let mut spec = code_body::config_spec("javascript");
+        if let Some(code) = spec.iter_mut().find(|f| f.base.name == CFG_CODE) {
+            code.help_topic = Some("javascript-code".to_owned());
+        }
+        spec
     }
 
     async fn validate_config(&self, check: &ConfigCheck<'_>) -> Result<()> {
@@ -343,6 +347,8 @@ mod tests {
     fn the_code_is_required_and_the_editor_is_told_it_is_javascript() {
         let spec = RunJsCode::new().expect("client builds").config_spec();
         assert_eq!(spec[0].code_language.as_deref(), Some("javascript"));
+        // The admin UI's question-mark opens the topic listing what is in scope.
+        assert_eq!(spec[0].help_topic.as_deref(), Some("javascript-code"));
         // A configuration with nothing in it is a named error rather than an
         // empty body that silently returns null.
         let msg = config_str(&Attrs::new(), CFG_CODE).unwrap_err().to_string();

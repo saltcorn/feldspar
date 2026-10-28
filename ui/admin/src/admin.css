@@ -2007,3 +2007,39 @@ div.navbar-brand>a:hover {
   opacity: 0;
   pointer-events: none;
 }
+
+/* The question-mark beside a setting (`HelpLink.tsx`): muted until hovered, so
+ * a form full of them still reads as a form. */
+.help-link {
+  color: var(--tblr-secondary);
+  line-height: 1;
+}
+.help-link:hover,
+.help-link:focus {
+  color: var(--tblr-primary);
+}
+
+/* A rendered help topic: markdown tables and code blocks, which Tabler leaves
+ * unstyled outside `.table` and `.card`. */
+.help-page table {
+  width: 100%;
+  margin-bottom: 1rem;
+  border-collapse: collapse;
+}
+.help-page th,
+.help-page td {
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid var(--tblr-border-color);
+  vertical-align: top;
+}
+.help-page pre {
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--tblr-border-radius);
+  white-space: pre-wrap;
+}
+.help-page h2 {
+  margin-top: 1.5rem;
+}
+.help-page h4 {
+  margin-top: 1rem;
+}

@@ -151,11 +151,16 @@ export async function answers(origin: string, fetcher: typeof fetch = fetch): Pr
 /** The base domain applications are served under, once the server has said
  * (`getAdminAddress`, read by the shell). `null` until then, and on a server
  * without one. */
-let servedBaseDomain: string | null = null;
+let servedBase: string | null = null;
 
 /** Record the base domain the server reported. */
 export function setServedBaseDomain(base: string | null): void {
-  servedBaseDomain = base;
+  servedBase = base;
+}
+
+/** The base domain the server reported, if it has. */
+export function servedBaseDomain(): string | null {
+  return servedBase;
 }
 
 /** The host an app is served on: `<subdomain>.<base domain>`, or the base domain
@@ -168,7 +173,7 @@ export function setServedBaseDomain(base: string | null): void {
 export function appHost(
   subdomain: string,
   admin: Here = window.location,
-  base: string | null = servedBaseDomain,
+  base: string | null = servedBase,
 ): string {
   const domain = base ? `${base}${portOf(admin)}` : admin.host;
   return subdomain.trim() === "@" ? domain : `${subdomain}.${domain}`;
@@ -178,7 +183,7 @@ export function appHost(
 export function appUrl(
   subdomain: string,
   admin: Here = window.location,
-  base: string | null = servedBaseDomain,
+  base: string | null = servedBase,
 ): string {
   return `${admin.protocol}//${appHost(subdomain, admin, base)}`;
 }

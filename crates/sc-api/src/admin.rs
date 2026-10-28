@@ -2055,6 +2055,31 @@ pub fn admin_endpoints() -> EndpointSet {
         .auth(AuthRequirement::admin()),
     );
 
+    // --- help -----------------------------------------------------------------
+    // A help topic (`sc-help`), filled in with what the screen is about and
+    // rendered to HTML — v1's question-mark popups. `table` and `event` say what
+    // the screen is about: the table a formula or a trigger is on, the event a
+    // code body runs in. Both are optional; a topic with neither still renders,
+    // only less specifically. An unknown topic is a 404, an unknown table is
+    // ignored rather than refused, since a half-filled form can name one that
+    // does not exist yet.
+    set.register(
+        Endpoint::new(
+            "getHelp",
+            Method::Get,
+            api().lit("help").param("topic", ValueType::Text),
+        )
+        .query([
+            QueryParam::new("table", ValueType::Text),
+            QueryParam::new("event", ValueType::Text),
+        ])
+        .output(TypeSchema::struct_of([
+            StructField::new("title", TypeSchema::text()),
+            StructField::new("html", TypeSchema::text()),
+        ]))
+        .auth(AuthRequirement::admin()),
+    );
+
     // Search a store's text files, server-side. This is the endpoint the IDE's
     // find-in-files runs on (§12.1): walking the tree through the filesystem
     // provider is one request per directory, and the same walk done where the
@@ -7872,6 +7897,9 @@ fn form_field_schema() -> TypeSchema {
         StructField::new("section", TypeSchema::optional(TypeSchema::text())),
         // A sentence or two shown under the control (v1's `sublabel`), or null.
         StructField::new("sublabel", TypeSchema::optional(TypeSchema::text())),
+        // The help topic that explains the setting at length (`getHelp`), or
+        // null: the form shows a question-mark that opens it.
+        StructField::new("help_topic", TypeSchema::optional(TypeSchema::text())),
         // A regular expression a non-empty text value must match in full
         // (v1's `regexp`), and what to say when it does not, or null.
         StructField::new("pattern", TypeSchema::optional(TypeSchema::text())),

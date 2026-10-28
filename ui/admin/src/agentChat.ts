@@ -11,6 +11,8 @@
 // on; a Rust test asserts the two spellings agree, because a page connecting to
 // the wrong path looks exactly like an agent that never answers.
 
+import { appHost, servedBaseDomain } from "./adminAddress";
+
 /** The route the server serves the chat socket on (matches `AGENT_CHAT_ROUTE`). */
 export const AGENT_CHAT_ROUTE = "/admin/agent-chat";
 
@@ -34,7 +36,7 @@ export function agentChatUrl(location: { protocol: string; host: string }): stri
  * conversation in a column, the page beside it.
  *
  * The resolution lives here rather than in the component because it is the part
- * that can be wrong: a stored URL is a template (`//todo.{host}`) so one agent
+ * that can be wrong: a stored URL is a template (`//todo.{base}`) so one agent
  * follows the deployment from `localhost:3000` to the production domain, and it
  * ends up in an `iframe src`, so a scheme that would execute in the admin's own
  * origin must not reach the DOM. The trait refuses those on save; this refuses
@@ -46,7 +48,7 @@ export const PREVIEW_PANE_TRAIT = "preview_pane";
 
 /** What that trait was configured with. */
 export type PreviewPane = {
-  /** The URL as stored, `{host}` and all. */
+  /** The URL as stored, `{base}`, `{host}` and all. */
   url: string;
   /** Reload the pane when the agent finishes a turn. */
   reloadOnTurn: boolean;
@@ -73,16 +75,25 @@ export function previewPaneOf(traits: EnabledTrait[] | undefined): PreviewPane |
 /** The stored URL as a browser at `location` should load it, or `null` when it
  * is not one this pane will open.
  *
- * `{host}` becomes the host the admin is being read from, which is what makes
- * `//todo.{host}` the application's own subdomain on this deployment. What is
+ * `{base}` becomes the base domain applications are served under, as
+ * {@link appHost} has it for the application on `@` — so `//todo.{base}` is the
+ * application's own subdomain on this deployment, and `//{base}` the one on the
+ * base domain, wherever the admin UI itself is served. `{host}` becomes the
+ * host the admin is being read from. What is
  * accepted is an absolute `http(s)` URL, a protocol-relative `//host/path`, or
  * a path on the admin's own origin — the same allow-list the trait validates
  * against, kept here too because this is the side that writes `src`. */
 export function resolvePaneUrl(
   url: string,
   location: { protocol: string; host: string },
+  base: string | null = servedBaseDomain(),
 ): string | null {
-  const resolved = url.trim().split("{host}").join(location.host);
+  const resolved = url
+    .trim()
+    .split("{base}")
+    .join(appHost("@", location, base))
+    .split("{host}")
+    .join(location.host);
   if (resolved.startsWith("//")) {
     return resolved.length > 2 ? `${location.protocol}${resolved}` : null;
   }

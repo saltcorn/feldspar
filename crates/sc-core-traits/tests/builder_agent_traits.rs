@@ -160,13 +160,13 @@ fn the_preview_pane_a_builder_carries_opens_on_the_application_it_builds() {
         .expect("a builder agent carries a preview pane");
     // The app's own subdomain, on whatever host the admin is open on: the
     // stored agent must not pin the deployment's domain.
-    assert_eq!(pane.config[TRAIT_CFG_PREVIEW_URL], json!("//blog.{host}"));
+    assert_eq!(pane.config[TRAIT_CFG_PREVIEW_URL], json!("//blog.{base}"));
     assert_eq!(pane.config[TRAIT_CFG_PREVIEW_RELOAD], json!(true));
     // And it is a URL the trait itself accepts, which is what `save_agent`
     // will run over it.
     assert_eq!(
         sc_core_traits::configured_url(&pane.config).expect("the pane's URL validates"),
-        "//blog.{host}"
+        "//blog.{base}"
     );
 }
 
