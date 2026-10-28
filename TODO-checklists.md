@@ -69,25 +69,25 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## C2 — Browser steps and preview runs
 
-- [ ] C2.1 Move the `BrowserDriver` trait out of `sc-agent/src/view.rs` to where both the agent
+- [x] C2.1 Move the `BrowserDriver` trait out of `sc-agent/src/view.rs` to where both the agent
       and the checklist runner can depend on it.
-- [ ] C2.2 Stable locators in the Chromium driver: by role and accessible name, by label, by
+- [x] C2.2 Stable locators in the Chromium driver: by role and accessible name, by label, by
       visible text, by `data-testid`, and by CSS. Resolved against the accessibility tree like
       `view_app`'s snapshot, waiting up to the step's timeout.
-- [ ] C2.3 Step types `browser.open`, `browser.click`, `browser.fill`, `browser.select`,
+- [x] C2.3 Step types `browser.open`, `browser.click`, `browser.fill`, `browser.select`,
       `browser.check`, `browser.press`, `browser.upload`, `browser.expect_text`,
       `browser.expect_no_text`, `browser.expect_element`, `browser.expect_url`,
       `browser.expect_clean` and `browser.screenshot`. Only for an application whose framework
       `serves_ui()`.
-- [ ] C2.4 `browser.expect_clean` runs implicitly after every `browser.open` (off per checklist
+- [x] C2.4 `browser.expect_clean` runs implicitly after every `browser.open` (off per checklist
       with `attributes.implicit_clean = false`). Console errors and failed requests are recorded
       on each step's result.
-- [ ] C2.5 A screenshot is taken on a failed browser step and stored in an internal file store,
+- [x] C2.5 A screenshot is taken on a failed browser step and stored in an internal file store,
       referenced from the run; shown in the admin UI run detail.
-- [ ] C2.6 Preview target: the runner can run against a run's preview mount instead of the live
+- [x] C2.6 Preview target: the runner can run against a run's preview mount instead of the live
       one. The coding agent's verification step runs the application's checklists against its
       preview after a build, and its final report lists any that fail.
-- [ ] C2.7 Tests: a browser checklist against a fixture app passes; renaming the button it clicks
+- [x] C2.7 Tests: a browser checklist against a fixture app passes; renaming the button it clicks
       makes it fail with a screenshot; a page throwing a JS error fails the implicit clean
       check; on a host without Chromium the run is `incomplete`.
 

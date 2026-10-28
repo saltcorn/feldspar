@@ -1,0 +1,19 @@
+[package]
+name = "sc-browser"
+description = "The headless-browser seam: the BrowserDriver trait, its actions and stable locators (layer 5)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sc-error.workspace = true
+# `User`: whom a browser context's session is for.
+sc-auth.workspace = true
+async-trait.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

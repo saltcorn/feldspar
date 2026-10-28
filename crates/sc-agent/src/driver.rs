@@ -1830,7 +1830,7 @@ impl Drop for RunEnded<'_, '_> {
             previews.unmount_previews(self.run);
         }
         if let Some(browser) = self.runner.browser() {
-            browser.close(self.run);
+            browser.close(self.run.0);
         }
     }
 }

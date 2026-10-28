@@ -17,6 +17,9 @@ pub const ATTR_TIMEOUT: &str = "timeout";
 pub const ATTR_ALLOW_ON_PRODUCTION: &str = "allow_on_production";
 /// `attributes.tags`: the instance's tags, as on every other entity.
 pub const ATTR_TAGS: &str = "tags";
+/// `false` turns off the clean-page check after every `browser.open` (TODO
+/// C2.4). On by default.
+pub const ATTR_IMPLICIT_CLEAN: &str = "implicit_clean";
 
 /// How long a step may take when the checklist does not say.
 pub const DEFAULT_STEP_TIMEOUT_SECS: u64 = 60;
@@ -85,7 +88,7 @@ pub struct Checklist {
     /// whenever the steps change, never typed by anyone.
     pub mutates: bool,
     /// Sparse settings: [`ATTR_STOP_ON_FAILURE`], [`ATTR_TIMEOUT`],
-    /// [`ATTR_ALLOW_ON_PRODUCTION`], [`ATTR_TAGS`].
+    /// [`ATTR_ALLOW_ON_PRODUCTION`], [`ATTR_TAGS`], [`ATTR_IMPLICIT_CLEAN`].
     pub attributes: Attrs,
 }
 
@@ -118,6 +121,15 @@ impl Checklist {
             .get(ATTR_ALLOW_ON_PRODUCTION)
             .and_then(Json::as_bool)
             .unwrap_or(false)
+    }
+
+    /// Whether every `browser.open` also checks the page is clean: no console
+    /// errors, no uncaught exceptions, no failed requests.
+    pub fn implicit_clean(&self) -> bool {
+        self.attributes
+            .get(ATTR_IMPLICIT_CLEAN)
+            .and_then(Json::as_bool)
+            .unwrap_or(true)
     }
 
     /// How long one step may take.
@@ -526,6 +538,10 @@ pub struct StepResult {
     pub console_errors: Vec<String>,
     /// Failed requests seen during the step (browser steps, C2).
     pub failed_requests: Vec<String>,
+    /// The screenshot kept for the step — taken when a browser step failed, or
+    /// by `browser.screenshot` — as a path in the screenshot store
+    /// ([`crate::screenshots`]).
+    pub screenshot: Option<String>,
 }
 
 impl StepResult {
@@ -542,6 +558,7 @@ impl StepResult {
             "captured": self.captured,
             "console_errors": self.console_errors,
             "failed_requests": self.failed_requests,
+            "screenshot": self.screenshot,
         })
     }
 
@@ -568,6 +585,10 @@ impl StepResult {
             captured: value.get("captured").filter(|v| !v.is_null()).cloned(),
             console_errors: list("console_errors"),
             failed_requests: list("failed_requests"),
+            screenshot: value
+                .get("screenshot")
+                .and_then(Json::as_str)
+                .map(str::to_owned),
         })
     }
 }
@@ -697,6 +718,7 @@ mod tests {
             captured: None,
             console_errors: vec![],
             failed_requests: vec![],
+            screenshot: None,
         }
     }
 

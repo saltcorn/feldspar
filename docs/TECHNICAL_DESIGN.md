@@ -90,6 +90,11 @@ feldspar/
 │  ├─ sc-catalog/                 # 4. Catalog, Table, Field, TableProvider trait, cache
 │  ├─ sc-config/                  # 5. `_fd_config`: declared settings, validation, ACME cache
 │  ├─ sc-auth/                    # 5. User, Role, authz (ACL/RLS), sessions, OAuth2 provider
+│  ├─ sc-browser/                 # 5. the headless-browser seam: the `BrowserDriver` trait,
+│  │                              #    its actions and stable locators (`button "Save"`,
+│  │                              #    `label=Email`, `testid=…`), driven by the agents'
+│  │                              #    `view_app` and the checklists' `browser.*` steps alike;
+│  │                              #    `sc-server` implements it over Chromium
 │  ├─ sc-files/                   # 5. FileStore trait, drivers (local, S3, git), xattr metadata
 │  ├─ sc-dataset/                 # 5. Datasets (§14.4): a base and an ordered list of
 │  │                              #    operations, compiled into one sc-query statement; the
@@ -166,8 +171,10 @@ feldspar/
 │  │                              #    traits) + the `run_agent` action — same layer, same
 │  │                              #    reason: their writes go through the row layer (§11.3)
 │  ├─ sc-check/                   # 9. checklists (docs/CHECKLISTS.md): `_fd_checklist*`, the
-│  │                              #    step-type registry, the core step types, the runner, the
-│  │                              #    agent policy and the agent tools the copilot and the MCP
+│  │                              #    step-type registry, the core step types (`browser.*`
+│  │                              #    among them), the runner (live or against an agent's
+│  │                              #    preview), the failed-step screenshot store, the agent
+│  │                              #    policy and the agent tools the copilot and the MCP
 │  │                              #    server share
 │  ├─ sc-copilot/                 # 9. copilot agent + AppConstructor stages
 │  ├─ sc-server/                  # 9. HTTP server: admin routes, user routes, auth, CSP, sockets
@@ -217,6 +224,9 @@ graph TD
   coretraits --> check["sc-check"]
   check --> agent
   check --> app
+  check --> browser["sc-browser"]
+  agent --> browser
+  browser --> auth
   mcp --> email
   coreact --> api["sc-api"]
   server --> module["sc-module"]
@@ -316,7 +326,8 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-analytics` | `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-db-sqlite` `sc-error` `sc-model` `sc-query` `sc-types` |
 | `sc-stream` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
 | `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-types` |
-| `sc-agent` | `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
+| `sc-browser` | `sc-auth` `sc-error` |
+| `sc-agent` | `sc-action` `sc-auth` `sc-browser` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
 | `sc-api` | `sc-action` `sc-auth` `sc-catalog` `sc-dataset` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
 | `sc-app` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-stream` `sc-types` |
@@ -325,7 +336,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-viewpattern` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-types` |
 | `sc-module` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
 | `sc-python` | `sc-action` `sc-catalog` `sc-core-actions` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
-| `sc-check` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
+| `sc-check` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-browser` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-repomap` `sc-types` |
 | `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-help` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |

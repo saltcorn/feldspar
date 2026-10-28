@@ -128,6 +128,6 @@ pub use store::{
 pub use validate::{AgentIssue, Agents, validate_agent, validate_trait};
 pub use view::{
     AppHttpRequest, AppHttpResponse, AppPreviewer, AppRequester, BrowserAction, BrowserDriver,
-    BrowserReport, BrowserRequest, HostCapabilities, ModuleInstall, ModuleManager, PreviewInfo,
-    ViewServices,
+    BrowserReport, BrowserRequest, BrowserTarget, Element, ElementInfo, HostCapabilities, Locator,
+    ModuleInstall, ModuleManager, PreviewInfo, PreviewTarget, TextMatch, ViewServices,
 };

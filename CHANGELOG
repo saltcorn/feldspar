@@ -2,6 +2,107 @@
 
 Changes in reverse chronological order.
 
+## Checklists C2: browser steps and preview runs
+
+Checklists can now drive the application in the server's headless Chromium, and the coding
+agent runs an application's checklists against its own preview before anything is deployed
+(docs/CHECKLISTS.md §2–§3, TODO-checklists C2).
+
+- **New crate `sc-browser`** (layer 5): the `BrowserDriver` trait, `BrowserAction`,
+  `BrowserRequest` and `BrowserReport`, moved out of `sc-agent/src/view.rs` so the agents and
+  `sc-check` both depend on it. `sc-agent` re-exports it, so `view_app` is unchanged.
+  - A browser context is now keyed by a plain `Uuid` (an agent run's or a checklist run's id),
+    and a request names a `BrowserTarget`: an application's **live** mount (new) or an agent
+    run's **preview** (`PreviewTarget`: label, host and owning run). `PreviewInfo::target` and
+    `PreviewInfo::preview_target` build them.
+  - Stable locators (`Locator`, parsed from one string): `button "Save"` / `link Sign in` (role and
+    accessible name; quoted means the whole name, unquoted a part, case and whitespace ignored),
+    `role=checkbox`, `label=Email`, `text="Order saved"`, `testid=submit` and `css=…`. The role
+    form is the line `view_app`'s snapshot prints, so an agent can copy what it saw.
+  - New actions: `Select`, `Check`, `Upload`, `Press` with an optional element, and `Inspect`
+    (the elements a locator finds and the page's visible text, without a snapshot). `Click` and
+    `Fill` take an `Element`: a snapshot ref (`view_app`) or a locator (checklists).
+- **Chromium driver** (`sc-server/src/browser`):
+  - New `locate` module: finds role/label/text locators in the same accessibility tree
+    `view_app`'s snapshot renders, so hidden text is never "visible". `testid` and `css` are DOM
+    queries (`DOM.querySelectorAll`), described from the tree. It is pure and unit-tested.
+  - An action on a locator waits for its element until the call's deadline. Visible matches are
+    preferred (a hidden file input is used only when nothing visible matches). A locator that
+    matches several elements is refused with their names, so a step never clicks the wrong
+    button.
+  - `select` sets a `<select>` by value or text through the native setter and fires
+    `input`/`change`. `check` clicks only when the state differs, then verifies it changed.
+    `upload` uses `DOM.setFileInputFiles`.
+  - A live target is `<subdomain>.<base-domain>` (or the base domain for the root application)
+    on the loopback listener. A preview pass is allowed only for a preview target.
+- **The in-process requester** (`AppRequests`) can send to a preview: `AppHttpRequest.preview`.
+  It mints a pass the preview's run allows, for that one request, and revokes it afterwards
+  (`AppMounts::revoke_preview_token`).
+- **`browser.*` step types** (`sc-check/src/steps/browser.rs`): `browser.open`, `click`, `fill`,
+  `select`, `check`, `press`, `upload` (a named file with given text content, written to the
+  run's scratch directory and removed with the run), `expect_text`, `expect_no_text`,
+  `expect_element` (`state` visible/hidden/enabled/disabled/checked/unchecked, exact `count`,
+  `value`), `expect_url` (path and query; `equals`/`contains`/`matches`), `expect_clean` and
+  `screenshot`.
+  - Assertions poll the page until they hold or the step's time is nearly up, so no step needs a
+    `core.wait` in front of it. A failure quotes what the page does show.
+  - A locator is checked when the step is saved, unless it is a template (new optional
+    `StepType::check` hook, called from `validate_draft`).
+  - Browser steps are offered (`StepRegistry::offered`, now given the application) and run only
+    for an application whose framework `serves_ui()`. Otherwise the step is an error, not a skip.
+  - None of them counts as mutating (§3: a checklist that only reads and clicks runs anywhere).
+  - Only `browser.open` gets a 30 s floor, for the first launch of the browser. Every other step
+    keeps the checklist's timeout, so a missing element fails as soon as it should.
+- **Implicit clean check** (C2.4): after every `browser.open` the page must have logged no
+  console error, thrown no uncaught exception and had no request fail or answer 4xx/5xx. It
+  waits a moment after load, for errors thrown once data arrives. Off with
+  `attributes.implicit_clean = false`, a switch in the checklist's settings form. Each step's
+  result carries the console errors and failed requests its browser calls saw, whether or not it
+  failed.
+- **Screenshots** (C2.5): a failed or errored browser step is photographed, and so is a
+  `browser.screenshot`. The JPEG goes to an internal file store,
+  `<data dir>/checklist-screenshots/<run id>/<step>.jpg` (`sc_check::screenshots`, a
+  `LocalFileStore`; `CheckEnv::with_screenshots` overrides the directory). The step result's
+  new `screenshot` field holds that path. The new admin endpoint `getChecklistScreenshot`
+  serves it (only paths of that shape), and the run detail shows it under the step, enlarging
+  on a click. A screenshot that cannot be kept is listed with the run's clean-up errors.
+- **The runner**: `CheckEnv` gained `with_browser`, `with_preview` and `with_screenshots`. A run
+  shares one browser context, signed in as `run_as`, closed when the run ends. A run against a
+  preview records the preview's label as its `target`, and its `http.*` steps go to the
+  preview too. The admin API, the MCP checklist tools and the copilot pass the server's browser.
+  The CLI has none, so its browser steps are skipped and the run is `incomplete`.
+- **The coding agent's verification** (C2.6, `sc-core-traits/src/coding/checklists.rs`): after a
+  green build is mounted as the run's preview, `check` runs every enabled checklist of the
+  application against that preview (trigger `agent:<run id>`), each reported as a check
+  `checklist:<name>`.
+  - A checklist gets the same baseline as the other checks. A failing step is a diagnostic keyed
+    by its position, label and type, never by its message, which names this run's values. So a
+    checklist the run breaks turns `check` red, and one that was already red does not.
+  - The report lists each failing step with its message, marked new or pre-existing.
+  - A mutating checklist is skipped on production unless it is allowed there. An incomplete run
+    (no browser) is reported as not green.
+  - The prompt tells the agent to fix what it broke, never weaken a checklist, and name every
+    checklist still failing in its final summary.
+- **Admin UI**: the run detail shows each step's screenshot. The checklist settings have an
+  "every opened page is clean" switch (`implicit_clean`). The generated clients are regenerated.
+- **Tests**:
+  - `sc-browser`: the locator syntax.
+  - `sc-server` `browser::locate`: role, label and text matching; hidden text; element state.
+  - `sc-check`: `browser.*` expectations and save-time checks, and the screenshot store's path
+    confinement. Its integration test `browser_steps_on_a_host_without_chromium_make_the_run_incomplete`
+    also covers a framework without a UI.
+  - `sc-core-traits`: a checklist's failing steps as new or pre-existing diagnostics.
+  - `sc-server` `checklist_browser` (real Chromium, skipped without one):
+    - an order form filled, selected, checked, saved and asserted live, as a member, passes, and
+      its screenshot is kept;
+    - the same checklist against a preview whose button is renamed fails at the click with a
+      screenshot, while the live mount still passes and an `http.*` step reaches the preview;
+    - a page whose script throws fails the implicit clean check, and with `implicit_clean` off
+      it passes with the error still recorded on the step.
+  - `view_app::check_runs_the_applications_checklists_against_its_preview`: `check` reports a
+    passing and a pre-existing failing checklist against the preview, and records both runs with
+    the preview's label and the agent's trigger.
+
 ## Checklists C1: entities, runner, data and HTTP steps, agent policy
 
 What "working" means for an application, written down so every change — a person's or an

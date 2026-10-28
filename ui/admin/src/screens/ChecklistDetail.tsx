@@ -694,6 +694,13 @@ function SettingsCard({
                 checked={form.stopOnFailure}
                 onChange={(e) => setForm({ ...form, stopOnFailure: e.target.checked })}
               />
+              <Form.Check
+                id="checklistImplicitClean"
+                type="switch"
+                label={t("Check every opened page is clean (no console errors or failed requests)")}
+                checked={form.implicitClean}
+                onChange={(e) => setForm({ ...form, implicitClean: e.target.checked })}
+              />
             </Col>
             <Col md={12}>
               <Form.Check

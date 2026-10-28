@@ -96,6 +96,13 @@ fn act(cx: &ToolsContext<'_>, config: &Attrs, scope: &FileScope) -> String {
         steps.push(format!(
             "Run `{check}` and fix until it has no new failures."
         ));
+        if check::configured_application(config).is_some() {
+            steps.push(format!(
+                "`{check}` also runs the application's checklists against your preview: fix \
+                 what you broke, never weaken a checklist, and name every checklist still \
+                 failing in your summary."
+            ));
+        }
     }
     if may(config, CFG_MAY_VIEW_APP) {
         steps.push(format!(

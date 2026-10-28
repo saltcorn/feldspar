@@ -716,6 +716,9 @@ pub fn validate_draft(
     let at = |e: Error| Error::invalid(format!("step `{}`: {e}", draft.type_));
     sc_types::validate_attrs(&step_type.config_spec(), &draft.params).map_err(at)?;
     vars::check(&Json::Object(draft.params.clone())).map_err(at)?;
+    step_type
+        .check(&Json::Object(draft.params.clone()))
+        .map_err(at)?;
     if let Some(name) = &draft.capture {
         vars::check_capture(name).map_err(at)?;
     }

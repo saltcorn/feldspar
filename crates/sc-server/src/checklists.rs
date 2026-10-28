@@ -5,7 +5,8 @@
 //! as [`Editor::Human`], which is where the agent policy of §4 lives too, so
 //! the screen and the agent tools cannot disagree about what a change is. A
 //! run started here is triggered `manual`, against the live mounts, with this
-//! server's application router for the `http.*` steps.
+//! server's application router for the `http.*` steps and its headless
+//! browser, where it has one, for the `browser.*` steps.
 
 use std::sync::Arc;
 
@@ -236,13 +237,31 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         detail(&catalog, proposal.checklist).await?
     });
 
+    handler!("getChecklistScreenshot", |ctx, catalog, registry, apps| {
+        use base64::Engine as _;
+        let path = ctx
+            .query_get("path")
+            .ok_or_else(|| Error::invalid("`path` is required"))?;
+        let jpeg =
+            sc_check::screenshots::read(&sc_check::screenshots::default_dir()?, path).await?;
+        json!({
+            "content_type": "image/jpeg",
+            "data": base64::engine::general_purpose::STANDARD.encode(jpeg),
+        })
+    });
+
     handler!("listChecklistStepTypes", |ctx, catalog, registry, apps| {
-        let with_app = ctx
-            .query_get("application")
-            .is_some_and(|a| !a.is_empty() && a != "none");
+        let application = match ctx.query_get("application").map(str::trim) {
+            None | Some("" | "none") => None,
+            Some(raw) => Some(
+                sc_app::load_application(&catalog, sc_app::AppId(parse_uuid(raw, "application")?))
+                    .await?
+                    .ok_or_else(|| Error::not_found(format!("no application with id {raw}")))?,
+            ),
+        };
         Json::Array(
             registry
-                .offered(with_app)
+                .offered(application.as_ref())
                 .iter()
                 .map(|t| StepRegistry::describe(t.as_ref()))
                 .collect(),
@@ -284,7 +303,8 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
 }
 
 /// Run `f` with this server's capabilities: its trigger dispatcher and
-/// evaluator, and the application router where it has one.
+/// evaluator, and the application router and the headless browser where it
+/// has them.
 async fn with_env<'a, T, F, Fut>(
     catalog: &'a Catalog,
     registry: &'a StepRegistry,
@@ -295,13 +315,17 @@ where
     F: FnOnce(CheckEnv<'a>) -> Fut,
     Fut: std::future::Future<Output = Result<T>> + 'a,
 {
-    let requests = apps
-        .agents()
-        .and_then(|a| a.registry().view_services().requests())
+    let services = apps.agents().map(|a| a.registry().view_services());
+    let requests = services
+        .and_then(|s| s.requests())
         .map(|r| r.as_ref() as &dyn sc_agent::AppRequester);
+    let browser = services
+        .and_then(|s| s.browser())
+        .map(|b| b.as_ref() as &dyn sc_agent::BrowserDriver);
     let env = CheckEnv::new(catalog, registry)
         .with_triggers(apps.triggers())
-        .with_requests(requests);
+        .with_requests(requests)
+        .with_browser(browser);
     f(env).await
 }
 

@@ -45,6 +45,10 @@ members = [
     "crates/sc-catalog",
     # Layer 5 — users/auth, files, configuration values
     "crates/sc-auth",
+    # The headless-browser seam (TODO-checklists C2.1): the `BrowserDriver`
+    # trait, its actions and the stable locators. Below the agents and the
+    # checklists, which both drive the browser; the server implements it.
+    "crates/sc-browser",
     "crates/sc-files",
     "crates/sc-config",
     # Datasets (analytics TODO A1): a base and an ordered list of operations,
@@ -175,6 +179,7 @@ sc-db-sqlite = { path = "crates/sc-db-sqlite" }
 sc-types = { path = "crates/sc-types" }
 sc-catalog = { path = "crates/sc-catalog" }
 sc-auth = { path = "crates/sc-auth" }
+sc-browser = { path = "crates/sc-browser" }
 sc-files = { path = "crates/sc-files" }
 sc-repomap = { path = "crates/sc-repomap" }
 sc-config = { path = "crates/sc-config" }

@@ -229,10 +229,21 @@ describe("the step form", () => {
 describe("checklist settings", () => {
   it("defaults stop_on_failure on and keeps other attributes", () => {
     const settings = settingsFrom({ tags: ["x"] });
-    expect(settings).toEqual({ stopOnFailure: true, timeout: "", allowOnProduction: false });
+    expect(settings).toEqual({
+      stopOnFailure: true,
+      implicitClean: true,
+      timeout: "",
+      allowOnProduction: false,
+    });
     expect(
       attributesWith({ tags: ["x"], timeout: 5 }, { ...settings, allowOnProduction: true }),
-    ).toEqual({ tags: ["x"], stop_on_failure: true, allow_on_production: true });
+    ).toEqual({
+      tags: ["x"],
+      stop_on_failure: true,
+      implicit_clean: true,
+      allow_on_production: true,
+    });
+    expect(settingsFrom({ implicit_clean: false }).implicitClean).toBe(false);
     expect(attributesWith({}, { ...settings, timeout: "30" })).toMatchObject({ timeout: 30 });
     expect(attributesWith({}, { ...settings, timeout: "-1" })).toBeNull();
     expect(settingsFrom({ stop_on_failure: false, timeout: 9 })).toMatchObject({

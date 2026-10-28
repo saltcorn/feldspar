@@ -1657,6 +1657,21 @@ pub fn admin_endpoints() -> EndpointSet {
         .output(checklist_run_schema())
         .auth(AuthRequirement::admin()),
     );
+    // A screenshot a run kept (C2.5), by the path its step result names, as
+    // base64 for the run detail to show inline.
+    set.register(
+        Endpoint::new(
+            "getChecklistScreenshot",
+            Method::Get,
+            api().lit("checklist-screenshots"),
+        )
+        .query([QueryParam::new("path", ValueType::Text)])
+        .output(TypeSchema::struct_of([
+            StructField::new("content_type", TypeSchema::text()),
+            StructField::new("data", TypeSchema::text()),
+        ]))
+        .auth(AuthRequirement::admin()),
+    );
     set.register(
         Endpoint::new("updateChecklistStep", Method::Put, step_id())
             .input(TypeSchema::struct_of(checklist_step_input_fields()))
@@ -6207,6 +6222,9 @@ fn checklist_run_schema() -> TypeSchema {
         StructField::new("captured", TypeSchema::optional(TypeSchema::json())),
         StructField::new("console_errors", TypeSchema::array(TypeSchema::text())),
         StructField::new("failed_requests", TypeSchema::array(TypeSchema::text())),
+        // A path for `getChecklistScreenshot`: the page when a browser step
+        // failed, or what `browser.screenshot` kept.
+        StructField::new("screenshot", TypeSchema::optional(TypeSchema::text())),
     ]);
     TypeSchema::struct_of([
         StructField::new("id", TypeSchema::uuid()),

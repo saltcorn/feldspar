@@ -448,7 +448,8 @@ async fn checklist_tool(
     let env = sc_check::CheckEnv::new(ctx.catalog, &registry)
         .with_triggers(ctx.triggers)
         .with_evaluator(ctx.evaluator)
-        .with_requests(ctx.requests);
+        .with_requests(ctx.requests)
+        .with_browser(ctx.browser);
     let call = sc_check::tools::ToolCall {
         env,
         editor: sc_check::Editor::Agent {

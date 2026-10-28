@@ -12,16 +12,25 @@
 //!   what the clean-up may rely on). Best effort: a row that will not go is
 //!   reported on the run, and a row a later step already deleted is not an
 //!   error.
+//! - **Browser steps share one browser context per run**, signed in as
+//!   `run_as`, on the live mount or — for a run against an agent's preview
+//!   (C2.6) — on the preview. What each step's browser calls saw (console
+//!   errors, failed requests) is on its result, and **a failed browser step is
+//!   photographed** (C2.5): the screenshot goes to the internal
+//!   [screenshot store](crate::screenshots) and the result refers to it. The
+//!   context is closed, and the run's scratch files removed, when it ends.
 //! - **A mutating checklist is refused on a production environment** unless
 //!   its `allow_on_production` is set (TODO C1.6). The refusal is recorded as a
 //!   run with status `error`, so the admin UI shows why it did not run.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use sc_action::TriggerDispatcher;
 use sc_agent::AppRequester;
+use sc_browser::{BrowserAction, BrowserDriver, BrowserRequest, BrowserTarget, PreviewTarget};
 use sc_app::{AppId, Application};
 use sc_auth::User;
 use sc_catalog::Catalog;
@@ -31,7 +40,9 @@ use serde_json::Value as Json;
 use uuid::Uuid;
 
 use crate::model::{Checklist, ChecklistRun, Outcome, RunStatus, SkipReason, Step, StepResult};
-use crate::registry::{Capabilities, InsertedRow, StepContext, StepOutcome, StepRegistry};
+use crate::registry::{
+    Capabilities, InsertedRow, Observed, StepContext, StepOutcome, StepRegistry, serves_ui,
+};
 use crate::store::{self, ChecklistScope};
 use crate::vars;
 
@@ -52,6 +63,14 @@ pub struct CheckEnv<'a> {
     pub evaluator: Option<&'a Arc<dyn JsEvaluator>>,
     /// The application router, for `http.*`.
     pub requests: Option<&'a dyn AppRequester>,
+    /// The headless browser, for `browser.*`.
+    pub browser: Option<&'a dyn BrowserDriver>,
+    /// An agent run's preview to check instead of the live mount (C2.6). Only
+    /// a checklist of the previewed application should be run with one.
+    pub preview: Option<&'a PreviewTarget>,
+    /// Where failed browser steps' screenshots are kept; the data directory's
+    /// [`SCREENSHOTS_DIR`](crate::screenshots::SCREENSHOTS_DIR) when not given.
+    pub screenshots: Option<&'a Path>,
 }
 
 impl<'a> CheckEnv<'a> {
@@ -63,7 +82,35 @@ impl<'a> CheckEnv<'a> {
             triggers: None,
             evaluator: None,
             requests: None,
+            browser: None,
+            preview: None,
+            screenshots: None,
         }
+    }
+
+    /// With the headless browser.
+    pub fn with_browser(mut self, browser: Option<&'a dyn BrowserDriver>) -> Self {
+        self.browser = browser;
+        self
+    }
+
+    /// Against an agent run's preview instead of the live mount.
+    pub fn with_preview(mut self, preview: Option<&'a PreviewTarget>) -> Self {
+        self.preview = preview;
+        self
+    }
+
+    /// With the screenshots kept in `dir`.
+    pub fn with_screenshots(mut self, dir: &'a Path) -> Self {
+        self.screenshots = Some(dir);
+        self
+    }
+
+    /// The run's target, as the run row records it: `live`, or the preview's
+    /// label.
+    pub fn target(&self) -> String {
+        self.preview
+            .map_or_else(|| TARGET_LIVE.to_owned(), |p| p.label.clone())
     }
 
     /// With the trigger dispatcher.
@@ -91,6 +138,8 @@ impl<'a> CheckEnv<'a> {
                 .evaluator
                 .or_else(|| self.triggers.and_then(|t| t.services().evaluator.as_ref())),
             requests: self.requests,
+            browser: self.browser,
+            preview: self.preview,
         }
     }
 }
@@ -126,7 +175,7 @@ pub async fn run_checklist(
         checklist: checklist.id,
         checklist_name: checklist.name.clone(),
         trigger: trigger.to_owned(),
-        target: TARGET_LIVE.to_owned(),
+        target: env.target(),
         status: RunStatus::Error,
         run_as: checklist.run_as,
         started_at: Utc::now(),
@@ -211,17 +260,20 @@ async fn execute(
     let mut last_response: Option<Json> = None;
     let mut stopped = false;
 
-    for step in &prepared.steps {
+    let mut used_browser = false;
+
+    for (index, step) in prepared.steps.iter().enumerate() {
         if stopped {
             run.steps.push(result(
                 step,
                 StepOutcome::skipped(SkipReason::NotReached, "not run: an earlier step failed"),
                 Duration::ZERO,
+                Observed::default(),
             ));
             continue;
         }
         let started = Instant::now();
-        let outcome = run_step(
+        let (outcome, mut observed) = run_step(
             env,
             checklist,
             prepared,
@@ -238,15 +290,77 @@ async fn execute(
         {
             vars::capture(&mut vars, name, value.clone());
         }
-        if matches!(outcome.outcome, Outcome::Fail | Outcome::Error) && checklist.stop_on_failure()
-        {
+        let failed = matches!(outcome.outcome, Outcome::Fail | Outcome::Error);
+        if failed && checklist.stop_on_failure() {
             stopped = true;
         }
-        run.steps.push(result(step, outcome, started.elapsed()));
+        used_browser |= observed.used_browser;
+        // A failed browser step is photographed: what the page showed is
+        // usually the quickest explanation of why.
+        if failed && observed.used_browser && observed.screenshot.is_none() {
+            observed.screenshot = failure_screenshot(env, prepared, run.id).await;
+        }
+        let elapsed = started.elapsed();
+        let shot = observed.screenshot.take();
+        let mut step_result = result(step, outcome, elapsed, observed);
+        if let Some(jpeg) = shot {
+            match keep_screenshot(env, run.id, index, jpeg).await {
+                Ok(path) => step_result.screenshot = Some(path),
+                Err(e) => run.cleanup_errors.push(format!(
+                    "the screenshot of step {} could not be kept: {}",
+                    index + 1,
+                    sc_error::format_chain(&e)
+                )),
+            }
+        }
+        run.steps.push(step_result);
     }
 
-    run.cleanup_errors = clean_up(env.catalog, &inserted).await;
+    if used_browser && let Some(browser) = env.browser {
+        browser.close(run.id);
+    }
+    let scratch = crate::registry::scratch_dir(run.id);
+    if scratch.exists() {
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+    run.cleanup_errors
+        .extend(clean_up(env.catalog, &inserted).await);
     run.status = RunStatus::of(&run.steps);
+}
+
+/// A JPEG of the run's page as it is now, for a failed browser step; `None`
+/// when one cannot be taken (the browser is what failed).
+async fn failure_screenshot(env: &CheckEnv<'_>, prepared: &Prepared, run: Uuid) -> Option<Vec<u8>> {
+    let browser = env.browser?;
+    let app = prepared.application.as_ref()?;
+    let target = BrowserTarget {
+        subdomain: app.subdomain.clone(),
+        preview: env.preview.cloned(),
+    };
+    browser
+        .act(BrowserRequest {
+            context: run,
+            target: &target,
+            user: prepared.user.as_ref(),
+            action: BrowserAction::Screenshot { full_page: false },
+            timeout: Duration::from_secs(15),
+        })
+        .await
+        .ok()
+        .and_then(|report| report.screenshot)
+}
+
+async fn keep_screenshot(
+    env: &CheckEnv<'_>,
+    run: Uuid,
+    index: usize,
+    jpeg: Vec<u8>,
+) -> Result<String> {
+    let dir = match env.screenshots {
+        Some(dir) => dir.to_path_buf(),
+        None => crate::screenshots::default_dir()?,
+    };
+    crate::screenshots::save(&dir, run, index, jpeg).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -260,27 +374,44 @@ async fn run_step(
     vars: &Json,
     inserted: &mut Vec<InsertedRow>,
     last_response: &mut Option<Json>,
-) -> StepOutcome {
+) -> (StepOutcome, Observed) {
+    let unobserved = |outcome: StepOutcome| (outcome, Observed::default());
     let Some(step_type) = env.registry.get(&step.draft.type_) else {
-        return StepOutcome::error(format!(
+        return unobserved(StepOutcome::error(format!(
             "there is no step type `{}` on this server (a module that supplied it may have \
              been removed)",
             step.draft.type_
-        ));
+        )));
     };
     let needs = step_type.needs();
-    if let Some(reason) = caps.missing(needs) {
-        return StepOutcome::skipped(SkipReason::Unavailable, format!("skipped: {reason}"));
-    }
     if needs.application() && prepared.application.is_none() {
-        return StepOutcome::error(format!(
+        return unobserved(StepOutcome::error(format!(
             "`{}` checks an application, and this checklist has none",
             step.draft.type_
+        )));
+    }
+    if needs.browser
+        && let Some(app) = &prepared.application
+        && !serves_ui(app)
+    {
+        return unobserved(StepOutcome::error(format!(
+            "`{}` opens the application in a browser, and `{}`'s framework `{}` serves no UI",
+            step.draft.type_, app.subdomain, app.framework.name
+        )));
+    }
+    if let Some(reason) = caps.missing(needs) {
+        return unobserved(StepOutcome::skipped(
+            SkipReason::Unavailable,
+            format!("skipped: {reason}"),
         ));
     }
     let params = match vars::render(&Json::Object(step.draft.params.clone()), vars) {
         Ok(params) => params,
-        Err(e) => return StepOutcome::error(format!("a parameter does not render: {e}")),
+        Err(e) => {
+            return unobserved(StepOutcome::error(format!(
+                "a parameter does not render: {e}"
+            )));
+        }
     };
     let timeout = checklist.step_timeout().max(step_type.min_timeout());
     let mut cx = StepContext {
@@ -295,17 +426,21 @@ async fn run_step(
         inserted,
         last_response,
         step_type: step_type.name(),
+        started: Instant::now(),
+        observed: Observed::default(),
+        implicit_clean: checklist.implicit_clean(),
     };
-    match tokio::time::timeout(timeout, step_type.run(&mut cx, &params)).await {
+    let outcome = match tokio::time::timeout(timeout, step_type.run(&mut cx, &params)).await {
         Ok(outcome) => outcome,
         Err(_) => StepOutcome::fail(format!(
             "took longer than {} seconds",
             timeout.as_secs()
         )),
-    }
+    };
+    (outcome, cx.observed)
 }
 
-fn result(step: &Step, outcome: StepOutcome, elapsed: Duration) -> StepResult {
+fn result(step: &Step, outcome: StepOutcome, elapsed: Duration, observed: Observed) -> StepResult {
     StepResult {
         step: step.id,
         type_: step.draft.type_.clone(),
@@ -315,8 +450,9 @@ fn result(step: &Step, outcome: StepOutcome, elapsed: Duration) -> StepResult {
         message: outcome.message,
         duration_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
         captured: step.draft.capture.as_ref().and(outcome.value),
-        console_errors: Vec::new(),
-        failed_requests: Vec::new(),
+        console_errors: observed.console_errors,
+        failed_requests: observed.failed_requests,
+        screenshot: None,
     }
 }
 

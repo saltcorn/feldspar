@@ -257,13 +257,16 @@ fn drafts(value: Option<&Json>) -> Result<Vec<StepDraft>> {
 
 async fn describe_step_types(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
     let obj = args_of(args, &["application"])?;
-    let with_app = application_id(cx, sc_api::mcp::optional_string(&obj, "application")?)
+    let application = match application_id(cx, sc_api::mcp::optional_string(&obj, "application")?)
         .await?
-        .is_some();
-    let types: Vec<Json> = if with_app {
+    {
+        None => None,
+        Some(id) => sc_app::load_application(cx.env.catalog, sc_app::AppId(id)).await?,
+    };
+    let types: Vec<Json> = if application.is_some() {
         cx.env
             .registry
-            .offered(true)
+            .offered(application.as_ref())
             .into_iter()
             .map(|t| StepRegistry::describe(t.as_ref()))
             .collect()

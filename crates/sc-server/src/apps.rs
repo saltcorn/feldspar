@@ -554,6 +554,13 @@ impl AppMounts {
             .insert(token.to_owned());
     }
 
+    /// Stop `token` reaching `run`'s previews.
+    pub fn revoke_preview_token(&self, run: RunId, token: &str) {
+        if let Some(tokens) = self.previews_mut().tokens.get_mut(&run) {
+            tokens.remove(token);
+        }
+    }
+
     /// Remove every preview unused for longer than the idle time, as of `now`,
     /// returning their labels. What a crashed run leaves behind goes this way.
     pub fn sweep_previews(&self, now: Instant) -> Vec<String> {

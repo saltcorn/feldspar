@@ -99,6 +99,8 @@ mod build_agent;
 mod builder_route;
 #[path = "call_api.rs"]
 mod call_api;
+#[path = "checklist_browser.rs"]
+mod checklist_browser;
 #[path = "clear_all_api.rs"]
 mod clear_all_api;
 #[path = "code_body_tables.rs"]

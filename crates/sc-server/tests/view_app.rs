@@ -312,7 +312,7 @@ impl<'e> Run<'e> {
     /// The run ends: what the driver's drop guard does.
     fn end(&self) {
         AppPreviewer::unmount_previews(self.env.apps.as_ref(), self.id);
-        BrowserDriver::close(self.env.driver.as_ref(), self.id);
+        BrowserDriver::close(self.env.driver.as_ref(), self.id.0);
     }
 }
 
@@ -415,7 +415,7 @@ async fn a_user_run_builds_looks_clicks_fills_and_hears_about_errors() -> Result
     assert!(err.contains("starting with `/`"), "{err}");
     let away = reference(&page, "link \"Away\"");
     let page = run.view(json!({"action": "click", "ref": away})).await;
-    assert!(page.contains("tried to leave the preview"), "{page}");
+    assert!(page.contains("tried to leave"), "{page}");
     assert!(
         page.contains("--notes.example.com/ ("),
         "taken back: {page}"
@@ -744,6 +744,102 @@ async fn signed_out_looks_as_a_visitor_and_signs_back_in() -> Result<()> {
     assert!(page.contains("heading \"Notes\""), "{page}");
     run.end();
 
+    env.driver.shutdown();
+    Ok(())
+}
+
+/// The coding agent's verification (TODO-checklists C2.6): a green `check`
+/// mounts the preview and runs the application's checklists against it, and
+/// the report names each, a failing step marked new or pre-existing.
+#[tokio::test(flavor = "multi_thread")]
+async fn check_runs_the_applications_checklists_against_its_preview() -> Result<()> {
+    let Some(executable) = browser("check_runs_the_applications_checklists_against_its_preview")
+    else {
+        return Ok(());
+    };
+    let env = setup("checklists", executable).await?;
+    sc_check::bootstrap_checklists(&env.catalog).await?;
+    let app = sc_app::load_application_by_subdomain(&env.catalog, "notes")
+        .await?
+        .expect("the notes application");
+    let admin = sc_auth::load_user_by_email(&env.catalog, "admin@example.com")
+        .await?
+        .expect("the admin");
+    let registry = sc_check::StepRegistry::builtin();
+    let editor = sc_check::Editor::Human(admin.id);
+    let checklist = |name: &str, steps: Vec<sc_check::StepDraft>| {
+        let mut input = sc_check::ChecklistInput::new(name);
+        input.application = Some(app.id.0);
+        input.run_as = Some(env.alice.id);
+        // The page asks for /api/missing on purpose: not a clean page.
+        input.attributes = json!({"implicit_clean": false, "timeout": 5})
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        sc_check::edit::create_checklist(
+            &env.catalog,
+            &registry,
+            &editor,
+            input,
+            steps,
+        )
+    };
+    let notes = checklist(
+        "Alice sees her notes",
+        vec![
+            sc_check::StepDraft::new("browser.open").param("path", "/"),
+            sc_check::StepDraft::new("browser.expect_text").param("text", "alice note"),
+            sc_check::StepDraft::new("browser.expect_no_text").param("text", "bob note"),
+        ],
+    )
+    .await?;
+    let stale = checklist(
+        "An old promise",
+        vec![
+            sc_check::StepDraft::new("browser.open").param("path", "/"),
+            // Not a browser step, so its failure takes no screenshot into the
+            // data directory, which this test does not own.
+            sc_check::StepDraft::new("data.expect_rows")
+                .param("table", "notes")
+                .param("count", 5)
+                .label("Five notes"),
+        ],
+    )
+    .await?;
+
+    let mut run = Run::new(&env, RunCaller::user(env.alice.clone()), config(&[]));
+    let report = run.check_as_admin().await?;
+    assert!(
+        report.contains("checklists of `notes` against this run's preview"),
+        "{report}"
+    );
+    assert!(
+        report.contains("checklist:Alice sees her notes: passed against the preview"),
+        "{report}"
+    );
+    // Failing before the run changed anything: pre-existing, so `check` is
+    // still green, and the report says which step and why.
+    assert!(
+        report.contains("checklist:An old promise: failed against the preview"),
+        "{report}"
+    );
+    assert!(
+        report.contains("- step 2: Five notes (data.expect_rows) fail: "),
+        "{report}"
+    );
+    assert!(report.contains("(pre-existing)"), "{report}");
+    assert!(report.starts_with("check: green"), "{report}");
+
+    // Both runs are recorded, against the preview, triggered by the agent.
+    let preview = AppPreviewer::preview(env.apps.as_ref(), run.id, "notes").expect("a preview");
+    for id in [notes.id, stale.id] {
+        let last = sc_check::store::last_run(&env.catalog, id)
+            .await?
+            .expect("a run");
+        assert_eq!(last.target, preview.label);
+        assert_eq!(last.trigger, format!("agent:{}", run.id));
+    }
+    run.end();
     env.driver.shutdown();
     Ok(())
 }

@@ -292,6 +292,7 @@ pub async fn call(config: &Attrs, args: &Json, ctx: &mut TraitContext<'_>) -> Re
         .require_requests()?
         .request(AppHttpRequest {
             subdomain: &application,
+            preview: None,
             method: method.clone(),
             path: path.clone(),
             headers,

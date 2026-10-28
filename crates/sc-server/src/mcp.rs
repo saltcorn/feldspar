@@ -559,11 +559,15 @@ async fn checklist_tool(
     let requests = services
         .and_then(|s| s.requests())
         .map(|r| r.as_ref() as &dyn sc_agent::AppRequester);
+    let browser = services
+        .and_then(|s| s.browser())
+        .map(|b| b.as_ref() as &dyn sc_agent::BrowserDriver);
     let evaluator = state.apps.evaluator();
     let env = sc_check::CheckEnv::new(catalog, &registry)
         .with_triggers(state.apps.triggers())
         .with_evaluator(evaluator.as_ref())
-        .with_requests(requests);
+        .with_requests(requests)
+        .with_browser(browser);
     let call = sc_check::tools::ToolCall {
         env,
         editor: sc_check::Editor::Agent {

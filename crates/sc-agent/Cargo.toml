@@ -35,6 +35,8 @@ sc-llm.workspace = true
 # `User`: the caller a run carries, and the identity every tool executes as
 # (decision 5). Layer 5, below this one.
 sc-auth.workspace = true
+# The headless-browser seam `view_app` drives, re-exported from `view`.
+sc-browser.workspace = true
 # `TriggerDispatcher`: what a trait that runs a trigger needs (§11.3's
 # `run_trigger`), carried on the context beside the evaluator for the same
 # reason — it is a capability the deployment has or has not got, and a tool that

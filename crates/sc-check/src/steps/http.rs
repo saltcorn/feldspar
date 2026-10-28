@@ -77,6 +77,7 @@ async fn send(cx: &mut StepContext<'_>, params: &Json) -> Result<Json> {
     let response = requests
         .request(AppHttpRequest {
             subdomain: &app.subdomain,
+            preview: cx.preview(),
             method: method.clone(),
             path: path.to_owned(),
             headers,

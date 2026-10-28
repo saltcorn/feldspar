@@ -552,3 +552,100 @@ async fn a_step_the_host_cannot_run_makes_the_run_incomplete() -> Result<()> {
     assert!(err.contains("unknown setting `msec`"), "{err}");
     Ok(())
 }
+
+#[tokio::test]
+async fn browser_steps_on_a_host_without_chromium_make_the_run_incomplete() -> Result<()> {
+    let env = setup("no-browser").await?;
+    let web = Application::new(
+        "Web",
+        "web",
+        FrameworkRef::new("code")
+            .with("store", "files")
+            .with("source", "site")
+            .with("output", "site/dist")
+            .with("command", "true"),
+    )
+    .with_file_store(FileStoreId("files".to_owned()));
+    save_application(&env.catalog, &web).await?;
+    let mut input = ChecklistInput::new("Home page");
+    input.application = Some(web.id.0);
+    let checklist = edit::create_checklist(
+        &env.catalog,
+        &env.registry,
+        &env.human(),
+        input,
+        vec![
+            StepDraft::new("browser.open").param("path", "/"),
+            StepDraft::new("browser.click").param("locator", "button \"Save\""),
+            StepDraft::new("browser.expect_text").param("text", "Saved"),
+        ],
+    )
+    .await?;
+    // Browser steps never make a checklist "mutating": one that only opens
+    // pages and clicks runs anywhere (§3).
+    assert!(!checklist.mutates);
+
+    // No browser on this host: every browser step is skipped, saying why, and
+    // the run is not green.
+    let run = run_checklist(&env.env(), &checklist, "cli").await?;
+    assert_eq!(run.status, RunStatus::Incomplete, "{:#?}", run.steps);
+    for step in &run.steps {
+        assert_eq!(step.outcome, Outcome::Skipped, "{step:?}");
+        assert_eq!(step.skip, Some(SkipReason::Unavailable));
+        assert!(step.message.contains("no headless browser"), "{}", step.message);
+        assert_eq!(step.screenshot, None);
+    }
+
+    // A locator that is not one is refused when the step is saved.
+    let err = edit::append_steps(
+        &env.catalog,
+        &env.registry,
+        &env.human(),
+        checklist.id,
+        vec![StepDraft::new("browser.click").param("locator", "#save")],
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("is not a locator"), "{err}");
+
+    // An application whose framework serves no UI is offered no browser steps,
+    // and one that has them anyway errors rather than being skipped.
+    let api = Application::new(
+        "Api",
+        "api",
+        FrameworkRef::new("none")
+            .with("store", "files")
+            .with("source", "site"),
+    )
+    .with_file_store(FileStoreId("files".to_owned()));
+    save_application(&env.catalog, &api).await?;
+    let offered: Vec<&str> = env
+        .registry
+        .offered(Some(&api))
+        .iter()
+        .map(|t| t.name())
+        .collect();
+    assert!(offered.contains(&"http.request"), "{offered:?}");
+    assert!(!offered.iter().any(|n| n.starts_with("browser.")), "{offered:?}");
+    assert!(
+        env.registry
+            .offered(Some(&web))
+            .iter()
+            .any(|t| t.name() == "browser.open")
+    );
+    let mut input = ChecklistInput::new("Api page");
+    input.application = Some(api.id.0);
+    let checklist = edit::create_checklist(
+        &env.catalog,
+        &env.registry,
+        &env.human(),
+        input,
+        vec![StepDraft::new("browser.open").param("path", "/")],
+    )
+    .await?;
+    let run = run_checklist(&env.env(), &checklist, "cli").await?;
+    assert_eq!(run.status, RunStatus::Error, "{:#?}", run.steps);
+    assert!(run.steps[0].message.contains("serves no UI"), "{}", run.steps[0].message);
+    Ok(())
+}

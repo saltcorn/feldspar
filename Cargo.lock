@@ -8977,6 +8977,7 @@ dependencies = [
  "sc-action",
  "sc-agent",
  "sc-auth",
+ "sc-browser",
  "sc-catalog",
  "sc-db",
  "sc-db-postgres",
@@ -9114,6 +9115,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-browser"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "sc-auth",
+ "sc-error",
+ "uuid",
+]
+
+[[package]]
 name = "sc-catalog"
 version = "0.1.0"
 dependencies = [
@@ -9148,6 +9159,7 @@ dependencies = [
  "sc-api",
  "sc-app",
  "sc-auth",
+ "sc-browser",
  "sc-catalog",
  "sc-db",
  "sc-db-postgres",

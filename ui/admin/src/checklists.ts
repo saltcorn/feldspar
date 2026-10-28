@@ -291,6 +291,8 @@ export function buildParams(specs: ParamSpec[], values: FormValues): BuiltParams
 /** The settings an admin edits on a checklist, out of its sparse `attributes`. */
 export type ChecklistSettings = {
   stopOnFailure: boolean;
+  /** Whether every `browser.open` also checks the page is clean (C2.4). */
+  implicitClean: boolean;
   /** Seconds one step may take, as typed; empty is the server's default. */
   timeout: string;
   allowOnProduction: boolean;
@@ -303,6 +305,7 @@ export function settingsFrom(attributes: unknown): ChecklistSettings {
   >;
   return {
     stopOnFailure: a.stop_on_failure !== false,
+    implicitClean: a.implicit_clean !== false,
     timeout: typeof a.timeout === "number" ? String(a.timeout) : "",
     allowOnProduction: a.allow_on_production === true,
   };
@@ -322,6 +325,7 @@ export function attributesWith(
     >),
   };
   a.stop_on_failure = settings.stopOnFailure;
+  a.implicit_clean = settings.implicitClean;
   a.allow_on_production = settings.allowOnProduction;
   const timeout = settings.timeout.trim();
   if (timeout === "") {

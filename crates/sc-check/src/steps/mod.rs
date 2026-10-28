@@ -1,11 +1,12 @@
-//! The core's step types: `core.*`, `data.*`, `http.*` and `app.*`
-//! (docs/CHECKLISTS.md §2).
+//! The core's step types: `core.*`, `data.*`, `http.*`, `browser.*` and
+//! `app.*` (docs/CHECKLISTS.md §2).
 
 use std::sync::Arc;
 
 use crate::registry::StepType;
 
 pub mod app;
+pub mod browser;
 pub mod core;
 pub mod data;
 pub mod http;
@@ -25,6 +26,19 @@ pub fn builtin() -> Vec<Arc<dyn StepType>> {
         Arc::new(http::Request),
         Arc::new(http::ExpectStatus),
         Arc::new(http::ExpectJson),
+        Arc::new(browser::Open),
+        Arc::new(browser::Click),
+        Arc::new(browser::Fill),
+        Arc::new(browser::Select),
+        Arc::new(browser::Check),
+        Arc::new(browser::Press),
+        Arc::new(browser::Upload),
+        Arc::new(browser::ExpectText),
+        Arc::new(browser::ExpectNoText),
+        Arc::new(browser::ExpectElement),
+        Arc::new(browser::ExpectUrl),
+        Arc::new(browser::ExpectClean),
+        Arc::new(browser::Screenshot),
         Arc::new(app::Builds),
     ]
 }

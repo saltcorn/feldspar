@@ -1,6 +1,7 @@
 // One checklist run (TODO-checklists C1.16, CHECKLISTS.md §5): what each step
 // did, how long it took, and what it left behind — the values it captured, the
-// browser console's errors and the requests that failed while it ran.
+// browser console's errors and the requests that failed while it ran, and the
+// screenshot of a failed browser step (C2.5) or of a `browser.screenshot`.
 //
 // A skipped step says why: `incomplete` means the host could not run some of
 // the steps, and a run is never green by not running (§1).
@@ -189,6 +190,7 @@ export function ChecklistRun({ runId, appId }: { runId: string; appId: string | 
                               <pre className="mb-0">{step.failed_requests.join("\n")}</pre>
                             </div>
                           )}
+                          {step.screenshot && <Screenshot path={step.screenshot} />}
                         </td>
                         <td className="text-end small text-nowrap">
                           {t("{ms} ms", { ms: step.duration_ms })}
@@ -203,5 +205,38 @@ export function ChecklistRun({ runId, appId }: { runId: string; appId: string | 
         )}
       </PageBody>
     </>
+  );
+}
+
+// A screenshot the run kept, fetched when the step is shown; a click shows it
+// full size. (Browsers will not open a `data:` URL in a tab of its own.)
+function Screenshot({ path }: { path: string }) {
+  const { t } = useT();
+  const [src, setSrc] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [large, setLarge] = useState(false);
+
+  useEffect(() => {
+    setSrc(null);
+    setError(null);
+    api
+      .getChecklistScreenshot({ path })
+      .then((shot) => setSrc(`data:${shot.content_type};base64,${shot.data}`))
+      .catch((err) => setError(errorMessage(err, t("Could not load the screenshot."))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path]);
+
+  if (error) return <div className="small text-danger mt-1">{error}</div>;
+  if (!src) return <div className="small text-secondary mt-1"><T text="Loading screenshot…" /></div>;
+  return (
+    <img
+      src={src}
+      alt={t("Screenshot of the page")}
+      title={t("Click to enlarge")}
+      className="img-thumbnail d-block mt-2"
+      role="button"
+      onClick={() => setLarge((v) => !v)}
+      style={large ? { maxWidth: "100%" } : { maxWidth: 480, maxHeight: 300, objectFit: "contain" }}
+    />
   );
 }

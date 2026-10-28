@@ -12,11 +12,13 @@
 //! first run rather than a quiet extra privilege.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sc_action::TriggerDispatcher;
 use sc_agent::AppRequester;
+use sc_browser::{BrowserAction, BrowserDriver, BrowserReport, BrowserRequest, BrowserTarget, PreviewTarget};
 use sc_app::Application;
 use sc_auth::User;
 use sc_catalog::Catalog;
@@ -36,7 +38,8 @@ pub struct Needs {
     /// The application router (`AppRequester`), to send requests to the
     /// checklist's application.
     pub http: bool,
-    /// A headless browser signed in as `run_as` (C2).
+    /// A headless browser signed in as `run_as`, on an application that
+    /// serves a UI (C2).
     pub browser: bool,
     /// The application's build.
     pub build: bool,
@@ -176,13 +179,21 @@ pub struct Capabilities<'a> {
     pub evaluator: Option<&'a Arc<dyn JsEvaluator>>,
     /// The application router, for `http.*`.
     pub requests: Option<&'a dyn AppRequester>,
+    /// The headless browser, for `browser.*`.
+    pub browser: Option<&'a dyn BrowserDriver>,
+    /// The agent run's preview the run checks instead of the live mount.
+    pub preview: Option<&'a PreviewTarget>,
 }
 
 impl Capabilities<'_> {
     /// Why the host cannot give a step `needs`, if it cannot.
     pub fn missing(&self, needs: Needs) -> Option<String> {
-        if needs.browser {
-            return Some("this host has no headless browser for checklists yet".to_owned());
+        if needs.browser && self.browser.is_none() {
+            return Some(
+                "this host has no headless browser (install Chromium, or give the server \
+                 --browser)"
+                    .to_owned(),
+            );
         }
         if needs.http && self.requests.is_none() {
             return Some(
@@ -193,6 +204,19 @@ impl Capabilities<'_> {
         }
         None
     }
+}
+
+/// What a step's browser calls saw: what the runner records on its result.
+#[derive(Debug, Default)]
+pub(crate) struct Observed {
+    /// Console errors and uncaught exceptions.
+    pub console_errors: Vec<String>,
+    /// Requests that failed or answered 4xx/5xx.
+    pub failed_requests: Vec<String>,
+    /// A screenshot the step keeps (`browser.screenshot`).
+    pub screenshot: Option<Vec<u8>>,
+    /// Whether the step reached the browser at all.
+    pub used_browser: bool,
 }
 
 /// What a step runs with (TODO C1.2): who it runs as, the run's variables, and
@@ -215,6 +239,9 @@ pub struct StepContext<'a> {
     pub(crate) inserted: &'a mut Vec<InsertedRow>,
     pub(crate) last_response: &'a mut Option<Json>,
     pub(crate) step_type: &'a str,
+    pub(crate) started: Instant,
+    pub(crate) observed: Observed,
+    pub(crate) implicit_clean: bool,
 }
 
 impl<'a> StepContext<'a> {
@@ -243,6 +270,77 @@ impl<'a> StepContext<'a> {
         self.caps
             .requests
             .ok_or_else(|| Error::config("this host cannot send requests to applications"))
+    }
+
+    /// The agent run's preview this run checks instead of the live mount, if it
+    /// checks one (C2.6).
+    pub fn preview(&self) -> Option<&'a PreviewTarget> {
+        self.caps.preview
+    }
+
+    /// Whether every `browser.open` also checks that the page is clean (the
+    /// checklist's `implicit_clean`, on by default; C2.4).
+    pub fn implicit_clean(&self) -> bool {
+        self.implicit_clean
+    }
+
+    /// How much of the step's time is left.
+    pub fn remaining(&self) -> Duration {
+        self.timeout.saturating_sub(self.started.elapsed())
+    }
+
+    /// Perform one action in the run's browser context — on the application's
+    /// live mount or the run's preview, signed in as `run_as` — with what is
+    /// left of the step's time. What the page reported besides (console
+    /// errors, failed requests) is kept for the step's result.
+    pub async fn browser(&mut self, action: BrowserAction) -> Result<BrowserReport> {
+        self.require(self.needs.browser, "browser")?;
+        let driver = self
+            .caps
+            .browser
+            .ok_or_else(|| Error::config("this host has no headless browser"))?;
+        let app = self.require_application()?;
+        let target = BrowserTarget {
+            subdomain: app.subdomain.clone(),
+            preview: self.caps.preview.cloned(),
+        };
+        self.observed.used_browser = true;
+        let report = driver
+            .act(BrowserRequest {
+                context: self.run_id,
+                target: &target,
+                user: self.run_as,
+                action,
+                timeout: self.remaining().max(Duration::from_secs(1)),
+            })
+            .await?;
+        self.observed
+            .console_errors
+            .extend(report.console_errors.iter().cloned());
+        self.observed
+            .failed_requests
+            .extend(report.failed_requests.iter().cloned());
+        Ok(report)
+    }
+
+    /// The console errors and failed requests this step's browser calls have
+    /// seen so far.
+    pub fn seen(&self) -> (&[String], &[String]) {
+        (&self.observed.console_errors, &self.observed.failed_requests)
+    }
+
+    /// Keep `jpeg` with the step's result.
+    pub fn keep_screenshot(&mut self, jpeg: Vec<u8>) {
+        self.observed.screenshot = Some(jpeg);
+    }
+
+    /// A directory of this run's own for files a step hands the browser (an
+    /// upload); removed when the run ends.
+    pub fn scratch_dir(&self) -> Result<PathBuf> {
+        let dir = scratch_dir(self.run_id);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| Error::file(format!("creating {}: {e}", dir.display())))?;
+        Ok(dir)
     }
 
     /// The application, which every step that needs HTTP, a browser or a
@@ -308,9 +406,21 @@ pub trait StepType: Send + Sync {
         Duration::ZERO
     }
 
+    /// Check parameters beyond what `config_spec` can say (a locator that
+    /// does not parse), as the step is saved. Parameters that are templates
+    /// are only checked once rendered, when the step runs.
+    fn check(&self, _params: &Json) -> Result<()> {
+        Ok(())
+    }
+
     /// Run it, with its string parameters already rendered over the run's
     /// variables.
     async fn run(&self, cx: &mut StepContext<'_>, params: &Json) -> StepOutcome;
+}
+
+/// The directory of a run's own for files its steps hand the browser.
+pub(crate) fn scratch_dir(run: Uuid) -> PathBuf {
+    std::env::temp_dir().join(format!("feldspar-check-{run}"))
 }
 
 /// The step types this process knows, by name.
@@ -331,7 +441,8 @@ impl StepRegistry {
         StepRegistry::default()
     }
 
-    /// The core's step types: `core.*`, `data.*`, `http.*` and `app.*`.
+    /// The core's step types: `core.*`, `data.*`, `http.*`, `browser.*` and
+    /// `app.*`.
     pub fn builtin() -> StepRegistry {
         let mut registry = StepRegistry::new();
         for step in crate::steps::builtin() {
@@ -398,11 +509,16 @@ impl StepRegistry {
         self.types.values()
     }
 
-    /// Every type a checklist may use: with an application, all of them;
-    /// without one, only those that need none.
-    pub fn offered(&self, with_application: bool) -> Vec<&Arc<dyn StepType>> {
+    /// Every type a checklist may use: with an application, all of them —
+    /// but the browser's only when the application serves a UI; without one,
+    /// only those that need none.
+    pub fn offered(&self, application: Option<&Application>) -> Vec<&Arc<dyn StepType>> {
+        let ui = application.is_some_and(serves_ui);
         self.all()
-            .filter(|t| with_application || !t.needs().application())
+            .filter(|t| match application {
+                None => !t.needs().application(),
+                Some(_) => ui || !t.needs().browser,
+            })
             .collect()
     }
 
@@ -416,6 +532,11 @@ impl StepRegistry {
             "params": step.config_spec().iter().map(spec_json).collect::<Vec<_>>(),
         })
     }
+}
+
+/// Whether an application's framework serves a UI, so a browser can check it.
+pub fn serves_ui(application: &Application) -> bool {
+    sc_app::framework_serves_ui(&application.framework.name)
 }
 
 /// One parameter of a step type, as a client renders it.
@@ -491,14 +612,28 @@ mod tests {
             "http.expect_status",
             "http.expect_json",
             "app.builds",
+            "browser.open",
+            "browser.click",
+            "browser.fill",
+            "browser.select",
+            "browser.check",
+            "browser.press",
+            "browser.upload",
+            "browser.expect_text",
+            "browser.expect_no_text",
+            "browser.expect_element",
+            "browser.expect_url",
+            "browser.expect_clean",
+            "browser.screenshot",
         ] {
             assert!(registry.get(name).is_some(), "{name}");
         }
-        assert_eq!(registry.all().count(), 13);
+        assert_eq!(registry.all().count(), 26);
         // Without an application, only the steps that need none are offered.
-        let names: Vec<&str> = registry.offered(false).iter().map(|t| t.name()).collect();
+        let names: Vec<&str> = registry.offered(None).iter().map(|t| t.name()).collect();
         assert!(names.contains(&"data.insert"));
         assert!(!names.contains(&"http.request"));
         assert!(!names.contains(&"app.builds"));
+        assert!(!names.contains(&"browser.open"));
     }
 }

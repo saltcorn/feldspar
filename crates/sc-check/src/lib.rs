@@ -12,11 +12,13 @@
 //!   place: every edit is a new version, every deletion a tombstone.
 //! - [`registry`] — the step-type extension point: [`StepType`], what it
 //!   [`Needs`], the [`StepContext`] it runs with and the [`StepOutcome`] it
-//!   reports. The core's types are in [`steps`]; frameworks and modules add
-//!   theirs in later milestones.
+//!   reports. The core's types are in [`steps`] — `browser.*` among them,
+//!   driving the server's headless browser by stable locators; frameworks and
+//!   modules add theirs in later milestones.
 //! - [`vars`] — `as` captures, and string parameters as templates over them.
 //! - [`runner`] — running a checklist as its user, with the production guard,
-//!   and recording the run.
+//!   against the live mount or an agent's preview, and recording the run.
+//! - [`screenshots`] — the internal store of failed browser steps' screenshots.
 //! - [`edit`] — every change to a checklist, and the agent policy of §4.
 //! - [`tools`] — the agent tools, shared by the copilot and the MCP server.
 
@@ -24,6 +26,7 @@ pub mod edit;
 pub mod model;
 pub mod registry;
 pub mod runner;
+pub mod screenshots;
 pub mod steps;
 pub mod store;
 pub mod tools;
