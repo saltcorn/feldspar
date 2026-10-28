@@ -651,7 +651,7 @@ function IncludeFields({
             placeholder={t("No applications")}
           />
           <Form.Text muted>
-            <T text="An application's definition — its framework, its API and the tables it exposes. The built bundle is not in the backup: a restored application is rebuilt from the source its file store carries, which is what makes it serve again without anybody pressing Build." />
+            <T text="An application's definition." />
           </Form.Text>
         </Form.Group>
       )}
