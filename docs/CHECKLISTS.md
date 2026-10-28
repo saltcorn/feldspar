@@ -172,6 +172,17 @@ smoke test for a builder app and is what v1 most lacked.
 
 **Astro / server-rendered**: `page_renders` per route, and the core steps.
 
+*As built (C3):* the React markers are `data-feldspar-pending` (a suspense fallback,
+which `react.open_route` waits out along with in-flight requests) and
+`data-feldspar-error-boundary`, both on the scaffold's root in `src/main.tsx`. The
+server-rendered step is `server_render.page_renders`, offered for any framework whose
+build declares a server entry rather than for a framework by name. `views_render`
+also fails a view that names a field its table no longer has: v1's patterns render
+such a field as an empty cell and answer 200. A module's step's `run` reaches the
+run only by asking the host to run a core step (`ctx.runStep`, `ctx.browser.*`,
+`ctx.http.request`, `ctx.data.insert`…), to inspect the page, or to read rows. Each
+is held to what the module declared in `needs` and `mutates`.
+
 ### Suggested starter checklists
 
 A framework may optionally offer a starter checklist for a new application

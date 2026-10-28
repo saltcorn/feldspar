@@ -1722,6 +1722,31 @@ pub fn admin_endpoints() -> EndpointSet {
         .output(TypeSchema::array(checklist_step_type_schema()))
         .auth(AuthRequirement::admin()),
     );
+    // The starter checklists an application's framework offers it (C3.6) and
+    // it does not have yet; creating one is a click, never automatic.
+    set.register(
+        Endpoint::new(
+            "listChecklistStarters",
+            Method::Get,
+            api().lit("checklist-starters"),
+        )
+        .query([QueryParam::new("application", ValueType::Uuid)])
+        .output(TypeSchema::array(checklist_starter_schema()))
+        .auth(AuthRequirement::admin()),
+    );
+    set.register(
+        Endpoint::new(
+            "createChecklistStarter",
+            Method::Post,
+            api().lit("checklist-starters"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("application", TypeSchema::uuid()),
+            StructField::new("name", TypeSchema::text()),
+        ]))
+        .output(checklist_detail_schema())
+        .auth(AuthRequirement::admin()),
+    );
     // Make a user a check user — one a checklist may run as, signed in by the
     // runner without a password (C1.5) — or stop it being one. An admin's
     // alone; no agent tool reaches it.
@@ -6250,6 +6275,9 @@ fn checklist_step_type_schema() -> TypeSchema {
         StructField::new("description", TypeSchema::text()),
         StructField::new("needs", TypeSchema::array(TypeSchema::text())),
         StructField::new("mutates", TypeSchema::bool()),
+        // The framework whose applications alone it checks (`react`,
+        // `server-rendered`), or none for a core type.
+        StructField::new("framework", TypeSchema::optional(TypeSchema::text())),
         StructField::new(
             "params",
             TypeSchema::array(TypeSchema::struct_of([
@@ -6261,6 +6289,23 @@ fn checklist_step_type_schema() -> TypeSchema {
                 StructField::new("options", TypeSchema::array(TypeSchema::json())),
                 StructField::new("multiline", TypeSchema::bool()),
                 StructField::new("sublabel", TypeSchema::optional(TypeSchema::text())),
+            ])),
+        ),
+    ])
+}
+
+/// A starter checklist a framework offers (C3.6), as the admin UI lists it.
+fn checklist_starter_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("name", TypeSchema::text()),
+        StructField::new("description", TypeSchema::text()),
+        StructField::new("run_as", TypeSchema::optional(TypeSchema::uuid())),
+        StructField::new(
+            "steps",
+            TypeSchema::array(TypeSchema::struct_of([
+                StructField::new("type", TypeSchema::text()),
+                StructField::new("label", TypeSchema::text()),
+                StructField::new("params", TypeSchema::json()),
             ])),
         ),
     ])

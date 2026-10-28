@@ -2,6 +2,113 @@
 
 Changes in reverse chronological order.
 
+## Checklists C3: framework and module step types, starter checklists
+
+Frameworks and modules now add their own checklist step types, and a framework can offer a new
+application a starter checklist (docs/CHECKLISTS.md §2, TODO-checklists C3).
+
+- **Framework step types** (C3.1, `sc-check/src/registry.rs`). New `StepType::framework()`,
+  returning a `FrameworkScope`: `Named("react")`, or `ServerRendered` for any framework whose
+  build declares a server entry (an Astro site is a module's framework, named whatever the
+  module calls it). A framework's types are:
+  - offered only for that framework's applications (`StepRegistry::offered`);
+  - refused when saved on any other checklist. `validate_draft` now takes the checklist's
+    loaded application. Changing a checklist's application re-validates its steps;
+  - an error at run time if the application has since changed framework.
+
+  `describe_step_types` and `listChecklistStepTypes` report the `framework`.
+  `StepRegistry::builtin()` now includes the built-in frameworks' types.
+- **`react.*`** (C3.2, `steps/react.rs`):
+  - `react.typecheck` calls the new `sc_app::typecheck_application`. That function regenerates
+    the client and runtime as a build would, installs the dependencies if they are missing, and
+    runs the project's `typecheck` script (`tsc --noEmit`), or `tsc --noEmit` when the project
+    has no such script. Nothing is bundled. A failure lists `file:line: message` for each error.
+  - `react.open_route` opens a route and waits until it has rendered. Rendered means no request
+    in flight and no `[data-feldspar-pending]` element, for half a second. The implicit clean
+    check follows.
+  - `react.no_error_boundary` fails if a `[data-feldspar-error-boundary]` element is showing,
+    and quotes it.
+  - The scaffold's `src/main.tsx` now wraps the app in a `RootBoundary` error boundary and a
+    root `<Suspense>`, whose fallbacks carry those two attributes.
+  - The browser seam reports in-flight requests: `BrowserReport::pending_requests`. The Chromium
+    driver tracks it from `requestWillBeSent` / `loadingFinished` / `loadingFailed`. Event
+    sources and sockets are not counted, since they never finish.
+- **`saltcorn_ui.*`** (C3.3, `steps/saltcorn_ui.rs`; `sc-check` now depends on
+  `sc-viewpattern`):
+  - `open_view` opens a view by name, with state as its query, through `browser.open`. A view
+    the application does not have fails by name.
+  - `fill_field` fills the form control named after a table field (`form [name="…"]`), so the
+    step survives a relabelling.
+  - `views_render` fetches every view `run_as` may see over HTTP. Views above their role are
+    left out, and `skip` lists views to leave out by name. It fails naming each view that
+    answers 4xx/5xx, quoting the error page, **or that names a field its table no longer
+    has**. v1's patterns render a deleted field as an empty cell and answer 200; this was
+    found while writing the test. The new pure function
+    `sc_viewpattern::referenced_fields(configuration)` collects `field_name`, `order_field` and
+    the first hop of `join_field`.
+- **`server_render.page_renders`** (C3.4, `steps/server_render.rs`): for server-rendered
+  sites. A GET of a path must answer 2xx with a non-empty body, optionally containing a given
+  text. A redirect fails, naming its target.
+- **Module step types** (C3.5):
+  - A module exports `checklist_steps: { "ns.name": { description, config_fields, needs,
+    mutates, framework, timeout, run(params, ctx) } }`. The keys are namespaced names, and the
+    export may be a function of the configuration.
+  - The declaration crosses once, when the module loads (`ModuleManifest::check_steps`,
+    `CheckStepManifest`). The server translates it into `sc_check::StepDecl` and installs it
+    whole after every module change (`sc-server/src/check_steps.rs` →
+    `sc_check::install_step_types`). Names that are not namespaced, belong to a built-in or are
+    declared twice are reported and left out. `StepRegistry::installed()` is the built-ins
+    plus the installed types; the admin API (built per request), the MCP server, the copilot,
+    the coding agent and the CLI use it.
+  - `run` is one `check_step_run` call to the module's worker
+    (`ModuleHost::run_check_step`). The call carries **only** the new `check` ask surface
+    (`CallHosts::with_check`, `CheckAsks`): no `db`, no triggers.
+  - `ctx` asks the host for three things, answered in the step's own context (run browser,
+    user, variables, clean-up list) by `sc_check::declared::answer`:
+    - run a core step (`ctx.runStep(type, params)`, and the `ctx.browser.*`, `ctx.http.request`
+      and `ctx.data.insert/update/delete` shorthands), answered `{outcome, message, value}`;
+    - inspect the page (`ctx.browser.inspect(locator)`);
+    - read rows as `run_as` (`ctx.data.rows(table, where, limit)`).
+  - What the declaration did not claim is refused by the same check a core type gets: a
+    browser it does not `need`, or a writing step when it did not declare `mutates`. So
+    `Checklist::mutates` and the production guard stay truthful.
+  - `run` answers `{outcome: "pass"|"fail"|"error", message, value}` or a bare boolean, and a
+    throw is an error. `value` is what the step's `as` captures.
+- **Starter checklists** (C3.6, `sc-check/src/starter.rs`):
+  - `starters(catalog, app)` lists what the application's framework offers and does not
+    already have (by name):
+    - React: `app.builds`, `react.typecheck`, `react.open_route /`, `react.no_error_boundary`;
+    - Saltcorn UI: `views_render`, once for visitors and once per role that has a check user;
+    - server-rendered: `page_renders /` and `browser.open /`;
+    - any other framework with a UI: `app.builds` (when it builds) and `browser.open /`;
+    - `none`: nothing.
+  - `create_starter` creates one through `create_checklist`. Nothing is created automatically.
+  - Admin API `listChecklistStarters` (`GET /api/checklist-starters?application=`) and
+    `createChecklistStarter` (`POST`). The application's Checklists tab shows a **Suggested
+    checklists** card with each offer's steps and a Create button. The admin clients were
+    regenerated.
+- **Tests** (C3.7):
+  - `sc-check` `framework_steps`:
+    - a React step is refused on a `code` app's checklist and on a data-only one, and moving its
+      checklist to a `code` app is refused;
+    - **renaming `tasks.title` breaks `react.typecheck` on a scaffolded React app**, naming
+      `src/pages/Tasks.tsx`. This runs the real `npm install` and `tsc`, and skips without npm;
+    - a starter is offered, created on request, and not offered again.
+  - `sc-server` `checklist_frameworks`:
+    - **`views_render` over the restored BooksDB passes (9 views), and fails after
+      `Books.pages` is dropped**, naming List, Show, Edit and Filter Books. Needs the Saltcorn
+      UI bundle;
+    - **a module step type runs**: the `check-step-module` fixture reads rows, composes
+      `data.expect_rows`, captures its value, and is refused an undeclared write and an
+      undeclared browser. Needs npm.
+  - `sc-server` `checklist_browser::react_steps_wait_for_the_render_and_see_an_error_boundary`
+    runs in Chromium: `react.open_route` waits out a one-second suspense fallback, and
+    `react.no_error_boundary` catches a boundary's fallback.
+  - Unit tests cover offering by framework, installing module types, starters per framework,
+    answer-to-outcome translation, `referenced_fields`, view paths and error-page text.
+  - `module_routes`' setup can be reused by a test that holds the module-registry lock for
+    writing (`setup_unlocked`).
+
 ## Checklists C2: browser steps and preview runs
 
 Checklists can now drive the application in the server's headless Chromium, and the coding

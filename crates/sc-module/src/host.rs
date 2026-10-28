@@ -87,6 +87,10 @@ pub struct CallHosts<'a> {
     /// runs on — the `system` surface ([`SystemAsks`]), which only a route's
     /// call carries.
     pub system: Option<&'a dyn SystemAsks>,
+    /// What a module's **checklist step** asks of the run it is a step of —
+    /// the `check` surface ([`CheckAsks`]), which only a step's call carries
+    /// (TODO-checklists C3.5).
+    pub check: Option<&'a dyn CheckAsks>,
 }
 
 /// The `roles` ask surface: `{ op: "grant" | "revoke" | "get", … }`, answered
@@ -138,6 +142,15 @@ pub trait SystemAsks: Send + Sync {
     async fn ask(&self, plan: Json) -> Result<Json>;
 }
 
+/// The `check` ask surface: `{ op: "step" | "inspect" | "rows", … }`, what a
+/// checklist step a module declares asks of the run it is a step of. The
+/// server answers it in the step's own context (`sc_check::declared`).
+#[async_trait::async_trait]
+pub trait CheckAsks: Send + Sync {
+    /// Answer one ask.
+    async fn ask(&self, plan: Json) -> Result<Json>;
+}
+
 impl<'a> CallHosts<'a> {
     /// The surfaces and the schema of one run, as
     /// `sc_core_actions::code_body::Hosts` supplies them.
@@ -153,6 +166,7 @@ impl<'a> CallHosts<'a> {
             credits: None,
             oauth: None,
             system: None,
+            check: None,
         }
     }
 
@@ -181,6 +195,13 @@ impl<'a> CallHosts<'a> {
     #[must_use]
     pub fn with_oauth(mut self, oauth: &'a dyn OAuthAsks) -> CallHosts<'a> {
         self.oauth = Some(oauth);
+        self
+    }
+
+    /// The same, with the `check` surface of a checklist step's call.
+    #[must_use]
+    pub fn with_check(mut self, check: &'a dyn CheckAsks) -> CallHosts<'a> {
+        self.check = Some(check);
         self
     }
 
@@ -518,6 +539,46 @@ pub struct FrameworkManifest {
     pub targets: Json,
 }
 
+/// One **checklist step type** a module declares (TODO-checklists C3.5).
+///
+/// ```js
+/// checklist_steps: {
+///   "shop.has_title": {
+///     description: "The page has a <title>",
+///     config_fields: [{ name: "path", type: "String", required: true }],
+///     needs: ["http"],
+///     run: async (params, ctx) => ({ outcome: "pass", message: "…" }),
+///   },
+/// }
+/// ```
+///
+/// What crosses is the declaration; `run` stays in the worker and is reached
+/// through [`ModuleHost::run_check_step`], asking the server for everything it
+/// does over the `check` surface.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct CheckStepManifest {
+    /// The namespaced name a step stores: `shop.has_title`.
+    pub name: String,
+    /// What it checks.
+    #[serde(default)]
+    pub description: String,
+    /// Its parameters, as v1 `configFields` — translated by [`crate::spec`].
+    #[serde(default)]
+    pub config_fields: Vec<Json>,
+    /// What it needs from the host: any of `data`, `http`, `browser`, `build`.
+    #[serde(default)]
+    pub needs: Vec<String>,
+    /// Whether it writes data.
+    #[serde(default)]
+    pub mutates: bool,
+    /// The framework whose applications alone it checks, if any.
+    #[serde(default)]
+    pub framework: Option<String>,
+    /// The least time, in seconds, a step of it is given.
+    #[serde(default)]
+    pub timeout: Option<f64>,
+}
+
 /// One **service** a module runs in the background (TODO-imap M5).
 ///
 /// A module exports `services` beside its `actions` and `tables`:
@@ -677,6 +738,9 @@ pub struct ModuleManifest {
     /// `/_feldspar/routes/<module>` ([`crate::routes`]).
     #[serde(default)]
     pub routes: Vec<RouteManifest>,
+    /// The checklist step types it declares (TODO-checklists C3.5).
+    #[serde(default)]
+    pub check_steps: Vec<CheckStepManifest>,
     /// The application tables it asks to read (TODO-payments P4.1) — admitted
     /// only where its stored configuration names them ([`crate::reads`]).
     #[serde(default)]
@@ -993,6 +1057,28 @@ impl ModuleHost {
         #[cfg(not(feature = "deno-host"))]
         {
             let _ = (module, request, call);
+            Err(no_runtime())
+        }
+    }
+
+    /// Run one **checklist step** of one module (TODO-checklists C3.5): call
+    /// its `run(params, ctx)` with `request` — `{ params, context }` — and
+    /// answer what it returned. Every `ctx` call is an ask on the `check`
+    /// surface, served from `call`. Bounded like an action.
+    pub async fn run_check_step(
+        &self,
+        module: &str,
+        step: &str,
+        request: Json,
+        call: CallHosts<'_>,
+    ) -> Result<Json> {
+        #[cfg(feature = "deno-host")]
+        {
+            self.pool.run_check_step(module, step, request, call).await
+        }
+        #[cfg(not(feature = "deno-host"))]
+        {
+            let _ = (module, step, request, call);
             Err(no_runtime())
         }
     }

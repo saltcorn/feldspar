@@ -48,7 +48,7 @@
 //! page and handed back with the next report, so a white screen caused by a
 //! thrown error is a line of text.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -64,8 +64,8 @@ use chromiumoxide::cdp::browser_protocol::input::{
     DispatchKeyEventParams, DispatchKeyEventType, InsertTextParams,
 };
 use chromiumoxide::cdp::browser_protocol::network::{
-    CookieParam, CookieSameSite, DeleteCookiesParams, EventLoadingFailed, EventRequestWillBeSent,
-    EventResponseReceived, ResourceType,
+    CookieParam, CookieSameSite, DeleteCookiesParams, EventLoadingFailed, EventLoadingFinished,
+    EventRequestWillBeSent, EventResponseReceived, ResourceType,
 };
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
 use chromiumoxide::cdp::browser_protocol::storage::ClearDataForOriginParams;
@@ -148,6 +148,9 @@ struct Seen {
     document: Option<(String, u16)>,
     /// Request URLs by id, for a failure that names only the id.
     requests: HashMap<String, String>,
+    /// The requests sent and not yet finished or failed, by id — not those
+    /// that stay open by design (an event source, a socket).
+    in_flight: HashSet<String>,
 }
 
 impl Seen {
@@ -551,6 +554,7 @@ impl ChromiumDriver {
         report.console_errors = std::mem::take(&mut seen.console_errors);
         report.failed_requests = std::mem::take(&mut seen.failed_requests);
         report.status = seen.document.as_ref().map(|(_, status)| *status);
+        report.pending_requests = Some(seen.in_flight.len());
         Ok(report)
     }
 }
@@ -1147,11 +1151,34 @@ async fn listen(page: &Page, seen: &Arc<Mutex<Seen>>) -> Result<Vec<tokio::task:
     tasks.push(tokio::spawn(async move {
         while let Some(event) = sent.next().await {
             let (id, url) = (event.request_id.inner().clone(), event.request.url.clone());
+            // A stream that stays open by design never finishes, so counting
+            // it would keep the network from ever being idle.
+            let endless = matches!(
+                event.r#type,
+                Some(ResourceType::EventSource | ResourceType::WebSocket | ResourceType::Ping)
+            );
             with(&mut |s| {
                 if s.requests.len() > 1000 {
                     s.requests.clear();
                 }
                 s.requests.insert(id.clone(), url.clone());
+                if !endless {
+                    s.in_flight.insert(id.clone());
+                }
+            });
+        }
+    }));
+
+    let mut finished = page
+        .event_listener::<EventLoadingFinished>()
+        .await
+        .map_err(cdp)?;
+    let with = lock(seen);
+    tasks.push(tokio::spawn(async move {
+        while let Some(event) = finished.next().await {
+            let id = event.request_id.inner().clone();
+            with(&mut |s| {
+                s.in_flight.remove(&id);
             });
         }
     }));
@@ -1187,11 +1214,15 @@ async fn listen(page: &Page, seen: &Arc<Mutex<Seen>>) -> Result<Vec<tokio::task:
     let with = lock(seen);
     tasks.push(tokio::spawn(async move {
         while let Some(event) = failures.next().await {
+            let (id, error) = (event.request_id.inner().clone(), event.error_text.clone());
             if event.canceled == Some(true) {
+                with(&mut |s| {
+                    s.in_flight.remove(&id);
+                });
                 continue;
             }
-            let (id, error) = (event.request_id.inner().clone(), event.error_text.clone());
             with(&mut |s| {
+                s.in_flight.remove(&id);
                 let url = s.requests.get(&id).cloned().unwrap_or_default();
                 Seen::push(
                     &mut s.failed_requests,

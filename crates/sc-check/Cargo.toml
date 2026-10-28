@@ -35,6 +35,8 @@ sc-action.workspace = true
 sc-api.workspace = true
 # The application a checklist checks, and its build for `app.builds`.
 sc-app.workspace = true
+# Saltcorn UI's views, which the `saltcorn_ui.*` step types name (C3.3).
+sc-viewpattern.workspace = true
 # `AppRequester`: an `http.*` step goes through the server's own router, as
 # `call_api` does. The trait lives with the agents; the server implements it.
 sc-agent.workspace = true

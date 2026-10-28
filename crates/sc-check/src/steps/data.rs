@@ -46,7 +46,7 @@ fn where_field() -> FormField {
 }
 
 /// The table a step names.
-fn table(cx: &StepContext<'_>, params: &Json) -> Result<Table> {
+pub(crate) fn table(cx: &StepContext<'_>, params: &Json) -> Result<Table> {
     let name = text(params, "table")?;
     cx.catalog
         .get(&name)?
@@ -93,7 +93,7 @@ fn is_denial(e: &Error) -> bool {
 }
 
 /// The rows `run_as` can read that `filter` selects.
-async fn read(
+pub(crate) async fn read(
     cx: &StepContext<'_>,
     table: &Table,
     filter: Option<sc_query::Expr>,

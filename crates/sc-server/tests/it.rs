@@ -101,6 +101,8 @@ mod builder_route;
 mod call_api;
 #[path = "checklist_browser.rs"]
 mod checklist_browser;
+#[path = "checklist_frameworks.rs"]
+mod checklist_frameworks;
 #[path = "clear_all_api.rs"]
 mod clear_all_api;
 #[path = "code_body_tables.rs"]

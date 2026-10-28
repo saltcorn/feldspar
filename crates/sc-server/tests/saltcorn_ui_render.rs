@@ -235,6 +235,13 @@ impl Drop for TempDir {
     }
 }
 
+impl Server {
+    /// The server's catalog, for a test in another module of this binary.
+    pub(crate) fn catalog(&self) -> &Arc<Catalog> {
+        &self._catalog
+    }
+}
+
 pub(crate) async fn setup(tag: &str, bundle: PathBuf) -> sc_error::Result<Server> {
     setup_with(tag, bundle, true).await
 }

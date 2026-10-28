@@ -104,7 +104,7 @@ pub use build::{
     build_application_target, build_code_framework, emit_app_client, emit_client,
     framework_build_targets, load_app_bundle, prepare_remote_target, remove_app_dependencies,
     remove_dependencies, require_target_ready, requirements_readiness, run_build, run_target,
-    target_log_path,
+    target_log_path, TypecheckReport, typecheck_application,
 };
 pub use build_hosts::{
     AgentReport, AnsweredTarget, BUILD_AGENT_PROTOCOL, BUILD_HOST_TOKEN_PREFIX, BUILD_HOSTS_TABLE,

@@ -444,7 +444,7 @@ async fn checklist_tool(
     args: &Json,
     ctx: &TraitContext<'_>,
 ) -> Result<Json> {
-    let registry = sc_check::StepRegistry::builtin();
+    let registry = sc_check::StepRegistry::installed();
     let env = sc_check::CheckEnv::new(ctx.catalog, &registry)
         .with_triggers(ctx.triggers)
         .with_evaluator(ctx.evaluator)

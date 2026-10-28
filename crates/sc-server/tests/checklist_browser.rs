@@ -462,3 +462,135 @@ async fn a_page_that_throws_fails_the_implicit_clean_check() -> Result<()> {
     env.driver.shutdown();
     Ok(())
 }
+
+/// A single-page app whose home route shows a suspense fallback for a second
+/// before it renders, and whose `/boom` route shows its root error boundary's
+/// fallback — marked as the React scaffold marks them (TODO-checklists C3.2).
+const SPA_JS: &str = r#"
+const root = document.getElementById('root');
+if (location.pathname === '/boom') {
+  root.innerHTML = '<div role="alert" data-feldspar-error-boundary=""><h1>Something went wrong</h1><pre>kaboom</pre></div>';
+} else {
+  root.innerHTML = '<div data-feldspar-pending=""></div>';
+  setTimeout(() => { root.innerHTML = '<h1>Ready</h1>'; }, 1000);
+}
+"#;
+
+/// A `react` application built by a copy: an npm `build` script the build
+/// runs without npm, and a `node_modules` that says the install is done.
+async fn spa_app(env: &Env) -> Result<Application> {
+    let project = env.tmp.0.join("site").join("spa");
+    std::fs::create_dir_all(project.join("node_modules")).unwrap();
+    std::fs::write(
+        project.join("package.json"),
+        r#"{ "name": "spa", "version": "0.1.0", "scripts": { "build": "sh build.sh" } }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("build.sh"),
+        "#!/bin/sh\nset -e\nmkdir -p dist\ncp index.html app.js dist/\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("index.html"),
+        "<!doctype html><html><head><title>SPA</title><link rel=\"icon\" href=\"data:,\">\
+         </head><body><div id=\"root\"></div><script src=\"/app.js\"></script></body></html>",
+    )
+    .unwrap();
+    std::fs::write(project.join("app.js"), SPA_JS).unwrap();
+    let app = Application::new(
+        "Spa",
+        "spa",
+        FrameworkRef::new("react")
+            .with("store", "apps")
+            .with("project", "spa"),
+    )
+    .with_file_store(FileStoreId("apps".to_owned()))
+    .with_api(sc_app::ApiConfig::new("rest", "/api"));
+    let app = save_application(&env.catalog, &app).await?;
+    build_and_mount(&env.apps, app.clone()).await?;
+    Ok(app)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn react_steps_wait_for_the_render_and_see_an_error_boundary() -> Result<()> {
+    let Some(executable) = browser("react_steps_wait_for_the_render_and_see_an_error_boundary")
+    else {
+        return Ok(());
+    };
+    let env = setup("react", executable).await?;
+    let spa = spa_app(&env).await?;
+    let shots = env.shots();
+    let live = CheckEnv::new(&env.catalog, &env.registry)
+        .with_browser(Some(env.driver.as_ref()))
+        .with_screenshots(&shots);
+    let admin = Editor::Human(env.admin.id);
+    let checklist = |name: &str, steps: Vec<StepDraft>| {
+        let mut input = ChecklistInput::new(name);
+        input.application = Some(spa.id.0);
+        input.run_as = Some(env.member.id);
+        input.attributes = json!({ "timeout": 8 }).as_object().cloned().unwrap();
+        edit::create_checklist(&env.catalog, &env.registry, &admin, input, steps)
+    };
+
+    // `react.open_route` returns once the fallback has gone, not at `load`.
+    let renders = checklist(
+        "The SPA renders",
+        vec![
+            StepDraft::new("react.open_route").param("path", "/"),
+            StepDraft::new("react.no_error_boundary"),
+            StepDraft::new("browser.expect_text").param("text", "Ready"),
+        ],
+    )
+    .await?;
+    let run = run_checklist(&live, &renders, "manual").await?;
+    assert_eq!(run.status, RunStatus::Passed, "{:#?}", run.steps);
+    assert!(
+        run.steps[0].message.contains("and it rendered"),
+        "{}",
+        run.steps[0].message
+    );
+    assert!(
+        run.steps[0].duration_ms >= 1000,
+        "it waited for the suspense fallback: {} ms",
+        run.steps[0].duration_ms
+    );
+
+    // The error boundary's fallback is seen, and quoted.
+    let boom = checklist(
+        "The SPA does not blow up",
+        vec![
+            StepDraft::new("react.open_route").param("path", "/boom"),
+            StepDraft::new("react.no_error_boundary"),
+        ],
+    )
+    .await?;
+    let run = run_checklist(&live, &boom, "manual").await?;
+    assert_eq!(run.status, RunStatus::Failed, "{:#?}", run.steps);
+    let step = &run.steps[1];
+    assert_eq!(step.outcome, Outcome::Fail);
+    assert!(
+        step.message
+            .contains("an error boundary is showing its fallback on /boom"),
+        "{}",
+        step.message
+    );
+    assert!(
+        step.screenshot.is_some(),
+        "a failed browser step is photographed"
+    );
+
+    // And the shop, a `code` application, is not offered them.
+    let offered: Vec<String> = env
+        .registry
+        .offered(Some(&env.app))
+        .iter()
+        .map(|t| t.name().to_owned())
+        .collect();
+    assert!(
+        !offered.iter().any(|n| n.starts_with("react.")),
+        "{offered:?}"
+    );
+    env.driver.shutdown();
+    Ok(())
+}

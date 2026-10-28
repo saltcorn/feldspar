@@ -605,6 +605,7 @@ mod tests {
             services: Vec::new(),
             webhooks: Vec::new(),
             routes: Vec::new(),
+            check_steps: Vec::new(),
             reads: Vec::new(),
             csp: Vec::new(),
             frameworks: Vec::new(),

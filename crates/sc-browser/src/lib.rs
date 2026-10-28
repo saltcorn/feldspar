@@ -163,6 +163,10 @@ pub struct BrowserReport {
     pub console_errors: Vec<String>,
     /// Requests that failed or answered 4xx/5xx since the previous call.
     pub failed_requests: Vec<String>,
+    /// How many of the page's requests are still in flight — streams that
+    /// never end (an event source, a socket) not counted — when the driver
+    /// keeps count. What "the network is idle" is judged on.
+    pub pending_requests: Option<usize>,
     /// Something about the action the caller should know: a `wait_for` that
     /// timed out, a navigation that was refused.
     pub note: Option<String>,

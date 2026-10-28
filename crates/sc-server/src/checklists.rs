@@ -30,17 +30,16 @@ const DETAIL_RUNS: u64 = 10;
 const DEFAULT_RUNS: u64 = 50;
 
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: Arc<AppMounts>) {
-    let registry = Arc::new(StepRegistry::builtin());
-
     macro_rules! handler {
         ($name:literal, |$ctx:ident, $catalog:ident, $registry:ident, $apps:ident| $body:expr) => {
             reg.register($name, {
                 let catalog = catalog.clone();
-                let registry = registry.clone();
                 let apps = apps.clone();
                 move |$ctx: HandlerCtx| {
                     let $catalog = catalog.clone();
-                    let $registry = registry.clone();
+                    // Per request: a module change installs a new set of
+                    // step types (C3.5).
+                    let $registry = Arc::new(StepRegistry::installed());
                     let $apps = apps.clone();
                     async move {
                         let _ = (&$catalog, &$registry, &$apps, &$ctx);
@@ -268,6 +267,29 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         )
     });
 
+    handler!("listChecklistStarters", |ctx, catalog, registry, apps| {
+        let app = application(&catalog, ctx.query_get("application")).await?;
+        Json::Array(
+            sc_check::starters(&catalog, &app)
+                .await?
+                .iter()
+                .map(sc_check::Starter::to_json)
+                .collect(),
+        )
+    });
+
+    handler!("createChecklistStarter", |ctx, catalog, registry, apps| {
+        let app = application(&catalog, ctx.body.get("application").and_then(Json::as_str)).await?;
+        let name = ctx
+            .body
+            .get("name")
+            .and_then(Json::as_str)
+            .ok_or_else(|| Error::invalid("`name` is the starter checklist to create"))?;
+        let checklist =
+            sc_check::create_starter(&catalog, &registry, &editor(&ctx)?, &app, name).await?;
+        detail(&catalog, checklist.id).await?
+    });
+
     handler!("setCheckUser", |ctx, catalog, registry, apps| {
         let on = ctx
             .body
@@ -300,6 +322,17 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         }
         Json::Array(out)
     });
+}
+
+/// The application an id names.
+async fn application(catalog: &Catalog, raw: Option<&str>) -> Result<sc_app::Application> {
+    let raw = raw
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .ok_or_else(|| Error::invalid("`application` is required"))?;
+    sc_app::load_application(catalog, sc_app::AppId(parse_uuid(raw, "application")?))
+        .await?
+        .ok_or_else(|| Error::not_found(format!("no application with id {raw}")))
 }
 
 /// Run `f` with this server's capabilities: its trigger dispatcher and

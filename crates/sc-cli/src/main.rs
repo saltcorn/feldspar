@@ -1466,7 +1466,7 @@ async fn check_run_command(args: &[String]) -> Result<()> {
         None
     };
 
-    let registry = sc_check::StepRegistry::builtin();
+    let registry = sc_check::StepRegistry::installed();
     let env = sc_check::CheckEnv::new(&catalog, &registry)
         .with_triggers(Some(&triggers))
         .with_requests(

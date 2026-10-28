@@ -7,6 +7,9 @@
 // proposed. Run and Run all are here because "is it still green after what I
 // just did" is the question this screen is opened to answer; everything else
 // about a checklist is on its own screen.
+//
+// An application's tab also shows the starter checklists its framework offers
+// and it does not have yet (C3.6). Nothing is created until the admin clicks.
 
 import { useEffect, useState, type FormEvent } from "react";
 import Alert from "react-bootstrap/Alert";
@@ -19,13 +22,14 @@ import Table from "react-bootstrap/Table";
 import { api, errorMessage } from "../api";
 import { navigate } from "../App";
 import { checklistPath, checklistRunPath, runTone } from "../checklists";
-import type { ListChecklistsResponse } from "../client";
+import type { ListChecklistStartersResponse, ListChecklistsResponse } from "../client";
 import { IconPlus } from "../icons";
 import { PageBody, PageHeader, StatusBadge } from "../layout";
 import { when } from "./WorkflowRuns";
 import { T, useT } from "../i18n";
 
 type ChecklistItem = ListChecklistsResponse[number];
+type Starter = ListChecklistStartersResponse[number];
 
 /** A run's status in the admin's words. Shared with the detail and run screens. */
 export function RunStatus({ status, title }: { status: string; title?: string }) {
@@ -55,6 +59,7 @@ export function Checklists({ appId }: { appId: string | null }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [starters, setStarters] = useState<Starter[]>([]);
 
   const load = async () => {
     try {
@@ -62,6 +67,26 @@ export function Checklists({ appId }: { appId: string | null }) {
       setError(null);
     } catch (err) {
       setError(errorMessage(err, t("Could not load the checklists.")));
+    }
+    // The offer is a suggestion: failing to read it is not worth an error.
+    if (appId) {
+      setStarters(await api.listChecklistStarters({ application: appId }).catch(() => []));
+    } else {
+      setStarters([]);
+    }
+  };
+
+  /** Create one starter checklist and open it, as "New checklist" does. */
+  const createStarter = async (starter: Starter) => {
+    if (!appId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await api.createChecklistStarter({ application: appId, name: starter.name });
+      navigate(checklistPath(created.id, appId));
+    } catch (err) {
+      setError(errorMessage(err, t("Could not create the checklist.")));
+      setBusy(false);
     }
   };
 
@@ -235,6 +260,45 @@ export function Checklists({ appId }: { appId: string | null }) {
             </tbody>
           </Table>
         </Card>
+
+        {starters.length > 0 && (
+          <Card className="mt-3">
+            <Card.Header>
+              <Card.Title><T text="Suggested checklists" /></Card.Title>
+            </Card.Header>
+            <Card.Body>
+              <p className="text-secondary">
+                <T text="This application's framework offers these as a start. Nothing is created until you choose one." />
+              </p>
+              {starters.map((starter) => (
+                <div
+                  key={starter.name}
+                  className="d-flex justify-content-between align-items-start gap-3 py-2 border-top"
+                >
+                  <div>
+                    <div className="fw-medium">{starter.name}</div>
+                    <div className="small text-secondary">{starter.description}</div>
+                    <ol className="small mb-0 mt-1">
+                      {starter.steps.map((step, i) => (
+                        <li key={i}>
+                          {step.label || step.type} <code className="ms-1">{step.type}</code>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline-primary"
+                    disabled={busy}
+                    onClick={() => void createStarter(starter)}
+                  >
+                    <T text="Create" />
+                  </Button>
+                </div>
+              ))}
+            </Card.Body>
+          </Card>
+        )}
 
         <NewChecklistDialog
           show={creating}

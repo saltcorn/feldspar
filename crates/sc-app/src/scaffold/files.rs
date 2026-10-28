@@ -1720,8 +1720,8 @@ fn main_tsx(auth: bool) -> String {
     let (import, open, close) = if auth {
         (
             "import { AuthProvider } from \"./auth\";\n",
-            "      <AuthProvider>\n",
-            "      </AuthProvider>\n",
+            "          <AuthProvider>\n",
+            "          </AuthProvider>\n",
         )
     } else {
         ("", "", "")
@@ -1729,7 +1729,7 @@ fn main_tsx(auth: bool) -> String {
     // The router's indentation follows the wrapper it is (or is not) inside.
     let pad = if auth { "  " } else { "" };
     format!(
-        r#"import {{ StrictMode }} from "react";
+        r#"import {{ Component, StrictMode, Suspense, type ReactNode }} from "react";
 import {{ createRoot }} from "react-dom/client";
 import {{ BrowserRouter }} from "react-router-dom";
 import {{ I18nProvider }} from "./feldspar/i18n";
@@ -1739,17 +1739,46 @@ import "./app.css";
 const root = document.getElementById("root");
 if (!root) throw new Error("no #root element in index.html");
 
-// `I18nProvider` outermost, with no props: it negotiates the locale itself —
-// `?lang=`, the `lang` cookie, the browser's preferences, this application's
-// default — and fetches that locale's catalogue. An application with no locales
-// pays nothing for it.
+// The root error boundary and the root suspense fallback are marked with
+// `data-feldspar-*` attributes, which the application's checklists read:
+// `react.no_error_boundary` fails when the boundary's fallback is showing, and
+// `react.open_route` waits until no `data-feldspar-pending` element is. Mark
+// your own fallbacks the same way, and a route is not "rendered" while they show.
+class RootBoundary extends Component<{{ children: ReactNode }}, {{ error: Error | null }}> {{
+  state = {{ error: null as Error | null }};
+
+  static getDerivedStateFromError(error: Error) {{
+    return {{ error }};
+  }}
+
+  render() {{
+    if (this.state.error) {{
+      return (
+        <div role="alert" data-feldspar-error-boundary="">
+          <h1>Something went wrong</h1>
+          <pre>{{this.state.error.message}}</pre>
+        </div>
+      );
+    }}
+    return this.props.children;
+  }}
+}}
+
+// `I18nProvider` outside the router, with no props: it negotiates the locale
+// itself — `?lang=`, the `lang` cookie, the browser's preferences, this
+// application's default — and fetches that locale's catalogue. An application
+// with no locales pays nothing for it.
 createRoot(root).render(
   <StrictMode>
-    <I18nProvider>
-{open}{pad}      <BrowserRouter>
-{pad}        <App />
-{pad}      </BrowserRouter>
-{close}    </I18nProvider>
+    <RootBoundary>
+      <Suspense fallback={{<div data-feldspar-pending="" />}}>
+        <I18nProvider>
+{open}{pad}          <BrowserRouter>
+{pad}            <App />
+{pad}          </BrowserRouter>
+{close}        </I18nProvider>
+      </Suspense>
+    </RootBoundary>
   </StrictMode>,
 );
 "#
@@ -6003,6 +6032,10 @@ export function Board({ id }: { id: number }) {
             main.find("<I18nProvider>").unwrap() < main.find("<BrowserRouter>").unwrap(),
             "{main}"
         );
+        // The root boundary and suspense fallback carry the markers the
+        // `react.*` checklist steps read (TODO-checklists C3.2).
+        assert!(main.contains(r#"data-feldspar-error-boundary="""#), "{main}");
+        assert!(main.contains(r#"<Suspense fallback={<div data-feldspar-pending="" />}>"#));
 
         // And the pages it writes use it. Every user-visible string in a
         // generated page is a `t()` call site the extractor can find.

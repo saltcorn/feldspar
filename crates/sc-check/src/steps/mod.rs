@@ -1,5 +1,7 @@
-//! The core's step types: `core.*`, `data.*`, `http.*`, `browser.*` and
-//! `app.*` (docs/CHECKLISTS.md §2).
+//! The step types compiled into this server (docs/CHECKLISTS.md §2): the
+//! core's — `core.*`, `data.*`, `http.*`, `browser.*` and `app.*` — and the
+//! built-in frameworks' — `react.*`, `saltcorn_ui.*` and `server_render.*`
+//! (TODO C3.2–C3.4), each offered only for its framework's applications.
 
 use std::sync::Arc;
 
@@ -10,6 +12,9 @@ pub mod browser;
 pub mod core;
 pub mod data;
 pub mod http;
+pub mod react;
+pub mod saltcorn_ui;
+pub mod server_render;
 
 /// Every built-in step type.
 pub fn builtin() -> Vec<Arc<dyn StepType>> {
@@ -40,5 +45,18 @@ pub fn builtin() -> Vec<Arc<dyn StepType>> {
         Arc::new(browser::ExpectClean),
         Arc::new(browser::Screenshot),
         Arc::new(app::Builds),
+    ]
+}
+
+/// The built-in frameworks' step types.
+pub fn framework_steps() -> Vec<Arc<dyn StepType>> {
+    vec![
+        Arc::new(react::Typecheck),
+        Arc::new(react::OpenRoute),
+        Arc::new(react::NoErrorBoundary),
+        Arc::new(saltcorn_ui::OpenView),
+        Arc::new(saltcorn_ui::FillField),
+        Arc::new(saltcorn_ui::ViewsRender),
+        Arc::new(server_render::PageRenders),
     ]
 }

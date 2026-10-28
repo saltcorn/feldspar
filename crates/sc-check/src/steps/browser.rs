@@ -35,21 +35,21 @@ use serde_json::{Value as Json, json};
 use crate::registry::{Needs, StepContext, StepOutcome, StepType};
 
 /// How often an assertion looks at the page again.
-const POLL: Duration = Duration::from_millis(250);
+pub(crate) const POLL: Duration = Duration::from_millis(250);
 
 /// How long `browser.open` waits after the page loaded before it checks the
 /// page is clean, for errors thrown once the first data has arrived.
-const SETTLE: Duration = Duration::from_millis(400);
+pub(crate) const SETTLE: Duration = Duration::from_millis(400);
 
 /// The least time `browser.open` is given: the first one of a run may have to
 /// start the browser. Other steps keep the checklist's timeout, so a locator
 /// that finds nothing fails as soon as the checklist says it should.
-const MIN_OPEN_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const MIN_OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How much of the page's text a failure message quotes.
 const MAX_QUOTED: usize = 300;
 
-fn locator_field(required: bool) -> FormField {
+pub(crate) fn locator_field(required: bool) -> FormField {
     let field = FormField::new("locator", BasicType::Text)
         .label("Element")
         .sublabel(
@@ -60,7 +60,7 @@ fn locator_field(required: bool) -> FormField {
 }
 
 /// A string parameter, required.
-fn text<'p>(params: &'p Json, key: &str) -> Result<&'p str> {
+pub(crate) fn text<'p>(params: &'p Json, key: &str) -> Result<&'p str> {
     params
         .get(key)
         .and_then(Json::as_str)
@@ -93,7 +93,7 @@ fn check_locator(params: &Json) -> Result<()> {
 
 /// Poll the page — the elements `locator` finds, and its visible text — until
 /// `done` holds or the step's time is nearly up. The last report either way.
-async fn poll(
+pub(crate) async fn poll(
     cx: &mut StepContext<'_>,
     locator: Option<&Locator>,
     mut done: impl FnMut(&BrowserReport) -> bool,
@@ -115,7 +115,7 @@ async fn poll(
 }
 
 /// The page's visible text, shortened for a message.
-fn quoted(report: &BrowserReport) -> String {
+pub(crate) fn quoted(report: &BrowserReport) -> String {
     let text = report.text.as_deref().unwrap_or("").replace('\n', " · ");
     if text.chars().count() <= MAX_QUOTED {
         return text;
@@ -125,7 +125,7 @@ fn quoted(report: &BrowserReport) -> String {
 }
 
 /// The path and query of a URL, without its scheme and host.
-fn path_of(url: &str) -> &str {
+pub(crate) fn path_of(url: &str) -> &str {
     match url.split_once("://") {
         Some((_, rest)) => rest.find('/').map_or("/", |i| &rest[i..]),
         None => url,
@@ -133,7 +133,7 @@ fn path_of(url: &str) -> &str {
 }
 
 /// Fail when the step's browser calls saw console errors or failed requests.
-fn clean(cx: &StepContext<'_>, passed: String) -> StepOutcome {
+pub(crate) fn clean(cx: &StepContext<'_>, passed: String) -> StepOutcome {
     let (errors, failed) = cx.seen();
     if errors.is_empty() && failed.is_empty() {
         return StepOutcome::pass(passed);

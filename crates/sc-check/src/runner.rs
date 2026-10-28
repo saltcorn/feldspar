@@ -399,6 +399,12 @@ async fn run_step(
             step.draft.type_, app.subdomain, app.framework.name
         )));
     }
+    if let Some(scope) = step_type.framework()
+        && let Some(app) = &prepared.application
+        && let Some(refusal) = scope.refusal(&step.draft.type_, app)
+    {
+        return unobserved(StepOutcome::error(refusal));
+    }
     if let Some(reason) = caps.missing(needs) {
         return unobserved(StepOutcome::skipped(
             SkipReason::Unavailable,

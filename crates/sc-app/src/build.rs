@@ -687,6 +687,96 @@ pub async fn emit_app_client(
     emit_client(cat, app, &source, &endpoints).await
 }
 
+/// What the type checker said of an application's source
+/// ([`typecheck_application`]).
+#[derive(Debug, Clone)]
+pub struct TypecheckReport {
+    /// Whether it found nothing to complain about.
+    pub passed: bool,
+    /// The command it ran, as a person would type it.
+    pub command: String,
+    /// What it printed, stdout then stderr.
+    pub output: String,
+    /// The errors it named, with their files and lines.
+    pub diagnostics: Vec<crate::Diagnostic>,
+}
+
+/// Type-check an application's source against its **current generated
+/// client** (TODO-checklists C3.2): regenerate the client and runtime as a
+/// build would, install the dependencies if they are not, and run the
+/// project's `typecheck` script — `tsc --noEmit` in every scaffolded project —
+/// or `tsc --noEmit` itself where the project declares no such script.
+///
+/// Nothing is bundled and nothing served changes. This is the check a renamed
+/// field fails: the client is regenerated with the new name, and the compiler
+/// names every component that still uses the old one, without a browser and in
+/// the time `tsc` takes.
+///
+/// An `Err` is a check that could not run (no source, no TypeScript project,
+/// an install that failed); type errors are a [`TypecheckReport`] that did not
+/// pass.
+pub async fn typecheck_application(
+    cat: &Catalog,
+    app: &Application,
+    dispatcher: Option<&Arc<TriggerDispatcher>>,
+) -> Result<TypecheckReport> {
+    let source = app_source_from_config(&app.framework)?;
+    emit_generated(cat, app, &source, dispatcher).await?;
+    let store = cat.require_file_store(&source.store.0)?;
+    let root = store_root(&store, &source)?;
+    let source_dir = resolve_under(&root, &source.build.source_dir)?;
+    if !source_dir.join("tsconfig.json").is_file() {
+        return Err(Error::config(format!(
+            "`{}` has no tsconfig.json in {}, so there is no TypeScript project to check",
+            app.subdomain,
+            source_dir.display()
+        )));
+    }
+
+    // With the builds, for the reason they are serialised: an install and a
+    // `tsc` both hold a few hundred megabytes on a small server.
+    let _serialised = BUILD_LOCK.lock().await;
+    run_install(source.build.install.as_ref(), &source_dir, &BTreeMap::new()).await?;
+
+    let script = BuildSpec {
+        command: "npm".to_owned(),
+        args: vec!["run".to_owned(), "typecheck".to_owned()],
+        ..source.build.clone()
+    };
+    let (command, output) = match NpmScript::resolve(&script, &source_dir) {
+        Some(npm) => (command_line(&script), npm.run(&source_dir).await),
+        None => {
+            let local = source_dir.join("node_modules").join(".bin").join("tsc");
+            let tsc = if local.is_file() {
+                local.into_os_string()
+            } else {
+                OsString::from("tsc")
+            };
+            (
+                "tsc --noEmit".to_owned(),
+                Command::new(tsc)
+                    .arg("--noEmit")
+                    .current_dir(&source_dir)
+                    .output()
+                    .await,
+            )
+        }
+    };
+    let output = output
+        .with_context(|| format!("launching `{command}` in {}", source_dir.display()))?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(TypecheckReport {
+        passed: output.status.success(),
+        command,
+        diagnostics: crate::parse_diagnostics(&text),
+        output: text,
+    })
+}
+
 /// Build an application and return a [`CodeFramework`] serving the result, with
 /// the [`BuildSpec`] attached.
 ///

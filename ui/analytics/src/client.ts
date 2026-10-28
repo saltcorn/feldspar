@@ -153,7 +153,11 @@ export type AcceptChecklistStepResponse = { id: string; checklist: string; posit
 export type AcceptChecklistProposalResponse = { id: string; name: string; description: string; application?: string | null; run_as?: string | null; enabled: boolean; mutates: boolean; attributes: unknown; steps: Array<{ id: string; checklist: string; position: number; type: string; params: unknown; label: string; as?: string | null; author: string; accepted: boolean; superseded_by?: string | null; deleted: boolean; created_at: string }>; proposals: Array<{ id: string; checklist: string; kind: string; step?: string | null; change: unknown; reason: string; author: string; created_at: string }>; runs: Array<{ id: string; checklist: string; checklist_name: string; trigger: string; target: string; status: string; run_as?: string | null; started_at: string; finished_at: string; steps: Array<{ step: string; type: string; label: string; outcome: string; skip?: string | null; message: string; duration_ms: number; captured?: unknown | null; console_errors: Array<string>; failed_requests: Array<string>; screenshot?: string | null }>; step_versions: Array<string>; cleanup_errors: Array<string>; message?: string | null }> };
 export type RejectChecklistProposalResponse = { id: string; name: string; description: string; application?: string | null; run_as?: string | null; enabled: boolean; mutates: boolean; attributes: unknown; steps: Array<{ id: string; checklist: string; position: number; type: string; params: unknown; label: string; as?: string | null; author: string; accepted: boolean; superseded_by?: string | null; deleted: boolean; created_at: string }>; proposals: Array<{ id: string; checklist: string; kind: string; step?: string | null; change: unknown; reason: string; author: string; created_at: string }>; runs: Array<{ id: string; checklist: string; checklist_name: string; trigger: string; target: string; status: string; run_as?: string | null; started_at: string; finished_at: string; steps: Array<{ step: string; type: string; label: string; outcome: string; skip?: string | null; message: string; duration_ms: number; captured?: unknown | null; console_errors: Array<string>; failed_requests: Array<string>; screenshot?: string | null }>; step_versions: Array<string>; cleanup_errors: Array<string>; message?: string | null }> };
 export type ListChecklistStepTypesQuery = { application?: string };
-export type ListChecklistStepTypesResponse = Array<{ name: string; description: string; needs: Array<string>; mutates: boolean; params: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; sublabel?: string | null }> }>;
+export type ListChecklistStepTypesResponse = Array<{ name: string; description: string; needs: Array<string>; mutates: boolean; framework?: string | null; params: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; multiline: boolean; sublabel?: string | null }> }>;
+export type ListChecklistStartersQuery = { application?: string };
+export type ListChecklistStartersResponse = Array<{ name: string; description: string; run_as?: string | null; steps: Array<{ type: string; label: string; params: unknown }> }>;
+export type CreateChecklistStarterRequest = { application: string; name: string };
+export type CreateChecklistStarterResponse = { id: string; name: string; description: string; application?: string | null; run_as?: string | null; enabled: boolean; mutates: boolean; attributes: unknown; steps: Array<{ id: string; checklist: string; position: number; type: string; params: unknown; label: string; as?: string | null; author: string; accepted: boolean; superseded_by?: string | null; deleted: boolean; created_at: string }>; proposals: Array<{ id: string; checklist: string; kind: string; step?: string | null; change: unknown; reason: string; author: string; created_at: string }>; runs: Array<{ id: string; checklist: string; checklist_name: string; trigger: string; target: string; status: string; run_as?: string | null; started_at: string; finished_at: string; steps: Array<{ step: string; type: string; label: string; outcome: string; skip?: string | null; message: string; duration_ms: number; captured?: unknown | null; console_errors: Array<string>; failed_requests: Array<string>; screenshot?: string | null }>; step_versions: Array<string>; cleanup_errors: Array<string>; message?: string | null }> };
 export type SetCheckUserRequest = { check_user: boolean };
 export type SetCheckUserResponse = { id: string; check_user: boolean };
 export type ListChecklistUsersResponse = Array<{ id: string; email: string; role: number; check_user: boolean }>;
@@ -587,6 +591,8 @@ export interface ApiClient {
   acceptChecklistProposal(id: string): Promise<AcceptChecklistProposalResponse>;
   rejectChecklistProposal(id: string): Promise<RejectChecklistProposalResponse>;
   listChecklistStepTypes(query?: ListChecklistStepTypesQuery): Promise<ListChecklistStepTypesResponse>;
+  listChecklistStarters(query?: ListChecklistStartersQuery): Promise<ListChecklistStartersResponse>;
+  createChecklistStarter(body: CreateChecklistStarterRequest): Promise<CreateChecklistStarterResponse>;
   setCheckUser(id: string, body: SetCheckUserRequest): Promise<SetCheckUserResponse>;
   listChecklistUsers(): Promise<ListChecklistUsersResponse>;
   listModules(): Promise<ListModulesResponse>;
@@ -1692,6 +1698,26 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("listChecklistStepTypes", res);
       return (await res.json()) as ListChecklistStepTypesResponse;
+    },
+    async listChecklistStarters(query) {
+      const search = new URLSearchParams();
+      if (query?.application !== undefined && query?.application !== null) search.append("application", String(query?.application));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/checklist-starters${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listChecklistStarters", res);
+      return (await res.json()) as ListChecklistStartersResponse;
+    },
+    async createChecklistStarter(body) {
+      const res = await doFetch(`${baseUrl}/api/checklist-starters`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("createChecklistStarter", res);
+      return (await res.json()) as CreateChecklistStarterResponse;
     },
     async setCheckUser(id, body) {
       const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/check-user`, {

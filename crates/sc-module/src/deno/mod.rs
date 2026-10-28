@@ -708,6 +708,27 @@ impl DenoModuleHost {
             .map_err(|e| denial(module, e))
     }
 
+    /// One run of one of a module's checklist steps; `request` carries its
+    /// parameters and context, and goes to the worker as it is.
+    pub async fn run_check_step(
+        &self,
+        module: &str,
+        step: &str,
+        request: Json,
+        call: CallHosts<'_>,
+    ) -> Result<Json> {
+        let index = self.worker_for(module).await;
+        let mut message = request;
+        if let Json::Object(map) = &mut message {
+            map.insert("op".to_owned(), json!("check_step_run"));
+            map.insert("module".to_owned(), json!(module));
+            map.insert("step".to_owned(), json!(step));
+        }
+        self.send_with(index, message, None, call)
+            .await
+            .map_err(|e| denial(module, e))
+    }
+
     pub async fn run_webhook(
         &self,
         module: &str,
@@ -1435,7 +1456,8 @@ impl DenoModuleHost {
             || call.roles.is_some()
             || call.credits.is_some()
             || call.oauth.is_some()
-            || call.system.is_some();
+            || call.system.is_some()
+            || call.check.is_some();
         if let Json::Object(map) = &mut request {
             map.insert("asks".to_owned(), Json::Bool(can_ask));
             // The functions this call's modules supply, by name, for v1's
@@ -1480,6 +1502,7 @@ impl DenoModuleHost {
         let credits = call.credits;
         let oauth = call.oauth;
         let system = call.system;
+        let check = call.check;
         // The run's budget, and the same one a code body's run gets: a module's
         // N+1 costs what a body's N+1 costs, because it is the same bound on the
         // same server doing the same work. A service has none (`None`).
@@ -1551,6 +1574,7 @@ impl DenoModuleHost {
                             credits,
                             oauth,
                             system,
+                            check,
                         };
                         let (ok, text) = match serve(surfaces, ask.request).await {
                             Ok(value) => (
@@ -1657,6 +1681,7 @@ struct Surfaces<'a> {
     credits: Option<&'a dyn crate::host::CreditAsks>,
     oauth: Option<&'a dyn crate::host::OAuthAsks>,
     system: Option<&'a dyn crate::host::SystemAsks>,
+    check: Option<&'a dyn crate::host::CheckAsks>,
 }
 
 /// One ask, on the surface it names.
@@ -1735,6 +1760,13 @@ async fn serve(surfaces: Surfaces<'_>, request: Json) -> Result<Json> {
                  resources (`systeminformation`, `EventLog`, `MetaData`)",
             )),
         },
+        "check" => match surfaces.check {
+            Some(check) => check.ask(plan).await,
+            None => Err(Error::config(
+                "only a module's checklist step can ask for this (`ctx.browser`, `ctx.http`, \
+                 `ctx.data`, `ctx.runStep`)",
+            )),
+        },
         other => Err(Error::config(format!(
             "`{other}` is not something a module can ask this server for; what a module may \
              reach is the database (`db`), this server's triggers (`trigger`), its modules' \
@@ -1742,7 +1774,8 @@ async fn serve(surfaces: Surfaces<'_>, request: Json) -> Result<Json> {
              file areas (`module_files`), role grants (`roles`), LLM credits \
              (`credits`), from a service its \
              supervisor (`service`), from an action a consent flow (`oauth`) and, \
-             from a route, the installation's state (`system`)"
+             from a route, the installation's state (`system`) and, from a checklist step, \
+             the run it is a step of (`check`)"
         ))),
     }
 }

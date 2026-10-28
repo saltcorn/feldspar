@@ -60,7 +60,7 @@ pub async fn run_on_preview(
     if checklists.is_empty() {
         return Ok(Vec::new());
     }
-    let registry = StepRegistry::builtin();
+    let registry = StepRegistry::installed();
     let target = preview.preview_target(ctx.run);
     let env = sc_check::CheckEnv::new(ctx.catalog, &registry)
         .with_triggers(ctx.triggers)

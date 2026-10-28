@@ -30,6 +30,7 @@
 //!   change.
 
 use chrono::Utc;
+use sc_app::Application;
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_types::Attrs;
@@ -234,8 +235,9 @@ pub async fn create_checklist(
         mutates: false,
         attributes: input.attributes,
     };
+    let application = application_of(catalog, &checklist).await?;
     for draft in &steps {
-        validate_draft(registry, &checklist, draft)?;
+        validate_draft(registry, &checklist, application.as_ref(), draft)?;
     }
     store::write_checklist(catalog, &checklist).await?;
     let mut position = 0.0;
@@ -283,10 +285,12 @@ pub async fn update_checklist(
         ..existing
     };
     // A step that reaches the application cannot stay on a checklist that no
-    // longer has one.
-    if checklist.application.is_none() {
+    // longer has one, and a framework's step cannot stay on a checklist whose
+    // application is now of another framework.
+    if checklist.application != existing.application {
+        let application = application_of(catalog, &checklist).await?;
         for step in store::current_steps(catalog, id).await? {
-            validate_draft(registry, &checklist, &step.draft)?;
+            validate_draft(registry, &checklist, application.as_ref(), &step.draft)?;
         }
     }
     store::write_checklist(catalog, &checklist).await?;
@@ -314,8 +318,9 @@ pub async fn append_steps(
 ) -> Result<Vec<Step>> {
     editor.require_append("add steps to a checklist")?;
     let checklist = store::require_checklist(catalog, checklist).await?;
+    let application = application_of(catalog, &checklist).await?;
     for draft in &drafts {
-        validate_draft(registry, &checklist, draft)?;
+        validate_draft(registry, &checklist, application.as_ref(), draft)?;
     }
     let mut position = store::step_history(catalog, checklist.id)
         .await?
@@ -350,7 +355,8 @@ pub async fn edit_step(
         ));
     }
     let checklist = store::require_checklist(catalog, old.checklist).await?;
-    validate_draft(registry, &checklist, &draft)?;
+    let application = application_of(catalog, &checklist).await?;
+    validate_draft(registry, &checklist, application.as_ref(), &draft)?;
     let new = new_step(&checklist, old.position, draft, editor);
     store::insert_step(catalog, &new).await?;
     store::supersede(catalog, old.id, new.id).await?;
@@ -406,7 +412,8 @@ pub async fn insert_step_before(
         ));
     }
     let checklist = store::require_checklist(catalog, anchor.checklist).await?;
-    validate_draft(registry, &checklist, &draft)?;
+    let application = application_of(catalog, &checklist).await?;
+    validate_draft(registry, &checklist, application.as_ref(), &draft)?;
     let position = position_before(catalog, &anchor).await?;
     let step = new_step(&checklist, position, draft, editor);
     store::insert_step(catalog, &step).await?;
@@ -492,7 +499,8 @@ pub async fn request_change(
                     "step {step} belongs to another checklist"
                 )));
             }
-            validate_draft(registry, &list, draft)?;
+            let application = application_of(catalog, &list).await?;
+            validate_draft(registry, &list, application.as_ref(), draft)?;
         }
         ProposalChange::Reorder { order } => {
             let mut have: Vec<Uuid> = store::current_steps(catalog, list.id)
@@ -628,7 +636,8 @@ async fn apply_accepted(
     match change {
         ProposalChange::Edit { step, draft } => {
             let old = current(catalog, step).await?;
-            validate_draft(registry, checklist, &draft)?;
+            let application = application_of(catalog, checklist).await?;
+            validate_draft(registry, checklist, application.as_ref(), &draft)?;
             let new = Step {
                 author: accepted_as.author.clone(),
                 accepted: true,
@@ -639,7 +648,8 @@ async fn apply_accepted(
         }
         ProposalChange::InsertBefore { before, draft } => {
             let anchor = current(catalog, before).await?;
-            validate_draft(registry, checklist, &draft)?;
+            let application = application_of(catalog, checklist).await?;
+            validate_draft(registry, checklist, application.as_ref(), &draft)?;
             let position = position_before(catalog, &anchor).await?;
             let new = Step {
                 author: accepted_as.author.clone(),
@@ -705,11 +715,13 @@ fn new_step(checklist: &Checklist, position: f64, draft: StepDraft, editor: &Edi
 }
 
 /// Check a step as it is saved: a known type, parameters its spec accepts,
-/// templates that parse, an `as` a template can use, and an application if
-/// the step reaches one.
+/// templates that parse, an `as` a template can use, an application if the
+/// step reaches one, and an application of the step's framework if the type
+/// is a framework's. `application` is the checklist's, loaded.
 pub fn validate_draft(
     registry: &StepRegistry,
     checklist: &Checklist,
+    application: Option<&Application>,
     draft: &StepDraft,
 ) -> Result<()> {
     let step_type = registry.require(&draft.type_)?;
@@ -729,7 +741,31 @@ pub fn validate_draft(
             draft.type_, checklist.name
         )));
     }
+    if let Some(scope) = step_type.framework() {
+        let refusal = match application {
+            Some(app) => scope.refusal(&draft.type_, app),
+            None => Some(format!(
+                "`{}` is a step of the `{}` framework, and checklist `{}` checks no application",
+                draft.type_,
+                scope.label(),
+                checklist.name
+            )),
+        };
+        if let Some(refusal) = refusal {
+            return Err(Error::invalid(format!(
+                "{refusal}; describe_step_types lists the types this checklist may use"
+            )));
+        }
+    }
     Ok(())
+}
+
+/// The application a checklist checks, loaded, if it checks one.
+async fn application_of(catalog: &Catalog, checklist: &Checklist) -> Result<Option<Application>> {
+    match checklist.application {
+        None => Ok(None),
+        Some(id) => sc_app::load_application(catalog, sc_app::AppId(id)).await,
+    }
 }
 
 /// Refuse a `run_as` an agent may not set: anybody who is not a check user.

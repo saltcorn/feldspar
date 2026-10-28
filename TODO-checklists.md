@@ -93,21 +93,22 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## C3 — Framework and module step types, starter checklists
 
-- [ ] C3.1 Frameworks contribute step types alongside their `config_spec`; a framework's step
+- [x] C3.1 Frameworks contribute step types alongside their `config_spec`; a framework's step
       types are offered only for its applications.
-- [ ] C3.2 `react.typecheck` (`tsc --noEmit` against the current generated client),
+- [x] C3.2 `react.typecheck` (`tsc --noEmit` against the current generated client),
       `react.open_route` (wait for rendered: network idle and no pending suspense) and
       `react.no_error_boundary` (the scaffold marks its root error boundary with a `data-`
       attribute).
-- [ ] C3.3 `saltcorn_ui.open_view`, `saltcorn_ui.fill_field` and `saltcorn_ui.views_render`
+- [x] C3.3 `saltcorn_ui.open_view`, `saltcorn_ui.fill_field` and `saltcorn_ui.views_render`
       (every view renders without error for `run_as`).
-- [ ] C3.4 Server-rendered / Astro: `page_renders`.
-- [ ] C3.5 Module step types declared as data in the module manifest (as declared frameworks
+- [x] C3.4 Server-rendered / Astro: `page_renders` (as `server_render.page_renders`, offered for
+      any framework whose build declares a server entry).
+- [x] C3.5 Module step types declared as data in the module manifest (as declared frameworks
       are, `sc-app/src/declared.rs`); `run` is a call to the module's worker, which reaches the
       browser, HTTP and data capabilities through host calls only.
-- [ ] C3.6 Starter checklists: a framework may offer one for a new application; the admin UI
+- [x] C3.6 Starter checklists: a framework may offer one for a new application; the admin UI
       creates it on one click. Nothing is created automatically.
-- [ ] C3.7 Tests: renaming a field breaks `react.typecheck` on a scaffolded React app;
+- [x] C3.7 Tests: renaming a field breaks `react.typecheck` on a scaffolded React app;
       `views_render` fails on a view referencing a deleted field; a module step type runs.
 
 ## C4 — Outbox, after-build runs, schedules

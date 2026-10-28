@@ -1,9 +1,18 @@
-//! The step-type registry (docs/CHECKLISTS.md §2, TODO C1.2).
+//! The step-type registry (docs/CHECKLISTS.md §2, TODO C1.2, C3.1).
 //!
 //! A step type is a name, a parameter spec, the capabilities it needs and what
-//! it does. The core supplies `core.*`, `data.*`, `http.*` and `app.*`;
-//! frameworks and modules add theirs in later milestones, which is why the
-//! registry is a value and not a `match`.
+//! it does. Three layers supply them:
+//!
+//! - **the core** — `core.*`, `data.*`, `http.*`, `browser.*` and `app.*`,
+//!   offered to every checklist that can use them;
+//! - **frameworks** — `react.*`, `saltcorn_ui.*`, `server_render.*`: steps
+//!   that only mean something given the framework's own concepts. Such a type
+//!   names its framework ([`StepType::framework`]) and is offered only for
+//!   that framework's applications;
+//! - **modules** — step types a module declares as data, whose `run` is a call
+//!   to the module's worker ([`crate::declared`]). The server installs them
+//!   whole after every module change ([`install_step_types`]), and
+//!   [`StepRegistry::installed`] is the core's and the frameworks' plus those.
 //!
 //! **A step sees only what it declared.** [`StepContext`] hands a step the
 //! application router only if its type [`needs`](StepType::needs) HTTP, and so
@@ -13,7 +22,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use sc_action::TriggerDispatcher;
@@ -92,6 +101,63 @@ impl Needs {
         .into_iter()
         .filter_map(|(name, on)| on.then_some(name))
         .collect()
+    }
+}
+
+/// Which applications a framework's step type is for (TODO C3.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrameworkScope {
+    /// The applications of the framework registered under this name.
+    Named(String),
+    /// The applications whose framework renders pages on the server per
+    /// request — whose build declares a server entry (an Astro site,
+    /// `sc_app::server_render`). A kind rather than a name, because such a
+    /// framework is a module's, named whatever its module calls it.
+    ServerRendered,
+}
+
+impl FrameworkScope {
+    /// The framework called `name`.
+    pub fn named(name: impl Into<String>) -> FrameworkScope {
+        FrameworkScope::Named(name.into())
+    }
+
+    /// Whether a step of this scope may check `application`.
+    pub fn matches(&self, application: &Application) -> bool {
+        match self {
+            FrameworkScope::Named(name) => application.framework.name == *name,
+            FrameworkScope::ServerRendered => {
+                sc_app::app_source_from_config(&application.framework)
+                    .is_ok_and(|source| source.build.server_entry.is_some())
+            }
+        }
+    }
+
+    /// How it reads in a sentence and in `describe_step_types`: `react`, or
+    /// `server-rendered`.
+    pub fn label(&self) -> &str {
+        match self {
+            FrameworkScope::Named(name) => name,
+            FrameworkScope::ServerRendered => "server-rendered",
+        }
+    }
+
+    /// Why a step of this scope cannot check `application`, if it cannot.
+    pub fn refusal(&self, step: &str, application: &Application) -> Option<String> {
+        if self.matches(application) {
+            return None;
+        }
+        Some(match self {
+            FrameworkScope::Named(name) => format!(
+                "`{step}` is a step of the `{name}` framework, and `{}` is a `{}` application",
+                application.subdomain, application.framework.name
+            ),
+            FrameworkScope::ServerRendered => format!(
+                "`{step}` checks a server-rendered site, and `{}`'s framework `{}` renders \
+                 nothing on the server",
+                application.subdomain, application.framework.name
+            ),
+        })
     }
 }
 
@@ -400,6 +466,14 @@ pub trait StepType: Send + Sync {
     /// Whether it writes data. Feeds `Checklist::mutates`.
     fn mutates(&self) -> bool;
 
+    /// The framework whose applications alone it checks (TODO C3.1), or
+    /// `None` for a core type every application may use. A framework's type
+    /// is offered only for its applications, refused on save for any other,
+    /// and reported as an error if the application changes framework later.
+    fn framework(&self) -> Option<FrameworkScope> {
+        None
+    }
+
     /// The least time a step of this type is given, whatever the checklist's
     /// `timeout` says — a build that installs dependencies takes minutes.
     fn min_timeout(&self) -> Duration {
@@ -441,16 +515,39 @@ impl StepRegistry {
         StepRegistry::default()
     }
 
-    /// The core's step types: `core.*`, `data.*`, `http.*`, `browser.*` and
-    /// `app.*`.
+    /// The step types compiled into this server: the core's (`core.*`,
+    /// `data.*`, `http.*`, `browser.*`, `app.*`) and the built-in frameworks'
+    /// (`react.*`, `saltcorn_ui.*`, `server_render.*`).
     pub fn builtin() -> StepRegistry {
         let mut registry = StepRegistry::new();
-        for step in crate::steps::builtin() {
+        for step in crate::steps::builtin()
+            .into_iter()
+            .chain(crate::steps::framework_steps())
+        {
             // The built-in names are distinct and namespaced by construction;
             // a clash here is a bug in this crate, caught by its own tests.
             if let Err(e) = registry.register(step) {
                 sc_log::log_warn!("checklists: {e}");
             }
+        }
+        registry
+    }
+
+    /// [`builtin`](StepRegistry::builtin) and the step types the loaded
+    /// modules declare ([`install_step_types`]) — what a run, a save and the
+    /// agent tools should use. Built on each call, because a module change
+    /// installs a new set: a type whose module was uninstalled stops being
+    /// offered at once, and a step of it errors naming why.
+    pub fn installed() -> StepRegistry {
+        let mut registry = StepRegistry::builtin();
+        let installed = match INSTALLED.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        for step in installed {
+            // Refused when the set was installed, and reported there; a type
+            // that clashes now (a built-in added since) is left out quietly.
+            let _ = registry.register(step);
         }
         registry
     }
@@ -510,14 +607,18 @@ impl StepRegistry {
     }
 
     /// Every type a checklist may use: with an application, all of them —
-    /// but the browser's only when the application serves a UI; without one,
-    /// only those that need none.
+    /// but the browser's only when the application serves a UI, and a
+    /// framework's only for that framework's applications; without one, only
+    /// the core's that need none.
     pub fn offered(&self, application: Option<&Application>) -> Vec<&Arc<dyn StepType>> {
         let ui = application.is_some_and(serves_ui);
         self.all()
             .filter(|t| match application {
-                None => !t.needs().application(),
-                Some(_) => ui || !t.needs().browser,
+                None => !t.needs().application() && t.framework().is_none(),
+                Some(app) => {
+                    (ui || !t.needs().browser)
+                        && t.framework().is_none_or(|scope| scope.matches(app))
+                }
             })
             .collect()
     }
@@ -529,9 +630,38 @@ impl StepRegistry {
             "description": step.description(),
             "needs": step.needs().names(),
             "mutates": step.mutates(),
+            "framework": step.framework().map(|scope| scope.label().to_owned()),
             "params": step.config_spec().iter().map(spec_json).collect::<Vec<_>>(),
         })
     }
+}
+
+/// The step types the modules declare, installed whole by the server after
+/// every module change.
+static INSTALLED: RwLock<Vec<Arc<dyn StepType>>> = RwLock::new(Vec::new());
+
+/// Install `types` in place of the last set the modules declared (TODO C3.5),
+/// so [`StepRegistry::installed`] offers them. A type whose name is not
+/// namespaced, is a built-in's or is declared twice is left out; what was left
+/// out is returned, one sentence each, for the module's card.
+pub fn install_step_types(types: Vec<Arc<dyn StepType>>) -> Vec<String> {
+    let mut check = StepRegistry::builtin();
+    let mut kept = Vec::new();
+    let mut issues = Vec::new();
+    for step in types {
+        match check.register(step.clone()) {
+            Ok(()) => kept.push(step),
+            Err(e) => issues.push(format!(
+                "the checklist step type `{}` is not available: {e}",
+                step.name()
+            )),
+        }
+    }
+    match INSTALLED.write() {
+        Ok(mut guard) => *guard = kept,
+        Err(poisoned) => *poisoned.into_inner() = kept,
+    }
+    issues
 }
 
 /// Whether an application's framework serves a UI, so a browser can check it.
@@ -628,12 +758,84 @@ mod tests {
         ] {
             assert!(registry.get(name).is_some(), "{name}");
         }
-        assert_eq!(registry.all().count(), 26);
+        assert_eq!(registry.all().count(), 26 + 7);
         // Without an application, only the steps that need none are offered.
         let names: Vec<&str> = registry.offered(None).iter().map(|t| t.name()).collect();
         assert!(names.contains(&"data.insert"));
         assert!(!names.contains(&"http.request"));
         assert!(!names.contains(&"app.builds"));
         assert!(!names.contains(&"browser.open"));
+        assert!(!names.contains(&"react.typecheck"));
+    }
+
+    fn app(framework: sc_app::FrameworkRef) -> Application {
+        Application::new("Shop", "shop", framework)
+    }
+
+    #[test]
+    fn a_frameworks_step_types_are_offered_only_for_its_applications() {
+        let registry = StepRegistry::builtin();
+        let offered = |app: &Application| -> Vec<String> {
+            registry
+                .offered(Some(app))
+                .iter()
+                .map(|t| t.name().to_owned())
+                .collect()
+        };
+        let react = app(sc_app::FrameworkRef::new("react")
+            .with("store", "apps")
+            .with("project", "shop"));
+        let names = offered(&react);
+        for name in [
+            "react.typecheck",
+            "react.open_route",
+            "react.no_error_boundary",
+        ] {
+            assert!(names.iter().any(|n| n == name), "{name} for react");
+        }
+        assert!(!names.iter().any(|n| n.starts_with("saltcorn_ui.")));
+        assert!(!names.iter().any(|n| n.starts_with("server_render.")));
+        assert!(names.iter().any(|n| n == "browser.open"));
+
+        let ui = app(sc_app::FrameworkRef::new("saltcorn-ui"));
+        let names = offered(&ui);
+        assert!(names.iter().any(|n| n == "saltcorn_ui.views_render"));
+        assert!(!names.iter().any(|n| n.starts_with("react.")));
+
+        let code = app(sc_app::FrameworkRef::new("code")
+            .with("store", "apps")
+            .with("output", "dist")
+            .with("command", "sh build.sh"));
+        let names = offered(&code);
+        assert!(!names.iter().any(|n| n.starts_with("react.")));
+        assert!(!names.iter().any(|n| n.starts_with("server_render.")));
+
+        let msg = FrameworkScope::named("react")
+            .refusal("react.typecheck", &code)
+            .unwrap();
+        assert!(
+            msg.contains("`react` framework") && msg.contains("`code`"),
+            "{msg}"
+        );
+        assert!(
+            FrameworkScope::named("react")
+                .refusal("react.typecheck", &react)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn module_step_types_are_installed_whole_and_may_not_shadow_a_builtin() {
+        let issues = install_step_types(vec![
+            Arc::new(Named("shop.ok")),
+            Arc::new(Named("data.insert")),
+            Arc::new(Named("shop.ok")),
+        ]);
+        assert_eq!(issues.len(), 2, "{issues:?}");
+        assert!(issues[0].contains("data.insert"), "{issues:?}");
+        assert!(StepRegistry::installed().get("shop.ok").is_some());
+        assert!(StepRegistry::builtin().get("shop.ok").is_none());
+        install_step_types(Vec::new());
+        assert!(StepRegistry::installed().get("shop.ok").is_none());
     }
 }

@@ -9171,6 +9171,7 @@ dependencies = [
  "sc-query",
  "sc-test-harness",
  "sc-types",
+ "sc-viewpattern",
  "serde",
  "serde_json",
  "tokio",
