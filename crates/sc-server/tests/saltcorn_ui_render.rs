@@ -235,6 +235,13 @@ impl Drop for TempDir {
     }
 }
 
+impl Server {
+    /// The server's catalog, for a test in another module of this binary.
+    pub(crate) fn catalog(&self) -> &Arc<Catalog> {
+        &self._catalog
+    }
+}
+
 pub(crate) async fn setup(tag: &str, bundle: PathBuf) -> sc_error::Result<Server> {
     setup_with(tag, bundle, true).await
 }
@@ -272,6 +279,7 @@ async fn setup_from(
 
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;

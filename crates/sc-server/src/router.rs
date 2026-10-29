@@ -473,6 +473,9 @@ pub fn build_router_with_apps(
         // Every request is one changeset (§14.12): what it writes, and what the
         // triggers its writes fire write, is one action to read back or undo.
         .layer(axum::middleware::from_fn(request_changeset))
+        // A checklist run's browser names its run: what the request sends is
+        // kept on the run's outbox instead (TODO-checklists C4.1).
+        .layer(axum::middleware::from_fn(request_outbox))
         // CSRF runs outside dispatch so it guards every route and can mint the
         // double-submit cookie on the way out. It asks the live app registry
         // whether a failing request is for an endpoint open to the public role,
@@ -573,6 +576,19 @@ async fn request_changeset(
     let changeset =
         sc_catalog::Changeset::new(sc_catalog::ChangesetSource::Request).session(session);
     sc_catalog::changeset::scope(Arc::new(changeset), next.run(request)).await
+}
+
+/// Run a request whose [`CHECK_RUN_COOKIE`](sc_catalog::outbox::CHECK_RUN_COOKIE)
+/// names an **open** checklist run on behalf of that run, so the mail, the
+/// webhooks and the payment calls it causes go to the run's outbox. A cookie
+/// naming anything else is ignored: it only ever withholds, and only while the
+/// run it names is running.
+async fn request_outbox(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let outbox = CookieJar::from_headers(request.headers())
+        .get(sc_catalog::outbox::CHECK_RUN_COOKIE)
+        .and_then(|cookie| cookie.value().parse::<uuid::Uuid>().ok())
+        .and_then(sc_catalog::outbox::open_run);
+    sc_catalog::outbox::scope_if(outbox, next.run(request)).await
 }
 
 /// The `413` every body over a limit gets, as `{error}` JSON.

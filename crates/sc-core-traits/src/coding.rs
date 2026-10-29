@@ -78,6 +78,7 @@ mod assets;
 mod call_api;
 mod change;
 mod check;
+mod checklists;
 mod commit;
 mod edit;
 mod explore;

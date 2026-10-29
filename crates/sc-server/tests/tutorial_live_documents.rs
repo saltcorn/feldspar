@@ -38,6 +38,7 @@ use sc_error::Result;
 use sc_files::LocalFileStore;
 use sc_live::{CollabDoc, DocShape, LiveLimits, RootKind};
 use sc_stream::StreamConfig;
+use sc_test_harness::Teardown;
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -129,7 +130,7 @@ impl Client {
 }
 
 /// A scratch directory, removed when the test ends.
-struct TempDir(PathBuf);
+struct TempDir(PathBuf, Teardown);
 
 impl Drop for TempDir {
     fn drop(&mut self) {
@@ -181,11 +182,14 @@ impl Tutorial {
 /// The world part 5 assumes: the todo app's store, the Member role, the
 /// member and the colleague, and this part's reader and outsider.
 async fn assumed() -> Result<Tutorial> {
-    let dir =
-        TempDir(std::env::temp_dir().join(format!("sc-tutorial-docs-{}", uuid::Uuid::new_v4())));
+    let dir = TempDir(
+        std::env::temp_dir().join(format!("sc-tutorial-docs-{}", uuid::Uuid::new_v4())),
+        Teardown::new(),
+    );
     std::fs::create_dir_all(dir.0.join("apps")).unwrap();
     let driver = Arc::new(SqliteDriver::open(dir.0.join("tutorial.db"))?);
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    dir.1.add(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;

@@ -1,4 +1,4 @@
-// The Development tab's last panel: **Clear all**, back to an empty installation.
+// The Backup tab's last panel: **Clear all**, back to an empty installation.
 //
 // The button only opens a dialog; nothing is cleared until its OK. The dialog
 // lists every file store with the directory it occupies, each ticked, because a

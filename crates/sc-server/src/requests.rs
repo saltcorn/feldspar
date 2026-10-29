@@ -15,9 +15,12 @@
 //! as nobody carries no session cookie. Both carry a fresh CSRF token in the
 //! cookie and the header, which is what the application's own page sends.
 //!
-//! **Only the live mount.** The host is `<subdomain>.<base-domain>`, and a
-//! subdomain nothing is mounted at is refused here rather than falling through
-//! to the admin routes that host would otherwise reach.
+//! **The live mount, or a run's preview.** The host is
+//! `<subdomain>.<base-domain>`, and a subdomain nothing is mounted at is refused
+//! here rather than falling through to the admin routes that host would
+//! otherwise reach. A request naming a preview (a checklist run against an
+//! agent's build, TODO-checklists C2.6) goes to the preview's host instead,
+//! with a pass its run allows for this one request and revokes after it.
 
 use std::sync::Arc;
 
@@ -35,7 +38,7 @@ use crate::apps::AppMounts;
 use crate::config::ServerConfig;
 use crate::handler::HandlerRegistry;
 use crate::router::build_router_with_apps;
-use crate::security::{CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, new_csrf_token};
+use crate::security::{CSRF_COOKIE, CSRF_HEADER, PREVIEW_COOKIE, SESSION_COOKIE, new_csrf_token};
 
 /// The most of a response body kept.
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -70,13 +73,20 @@ impl AppRequests {
         &self,
         request: &AppHttpRequest<'_>,
         session: Option<&str>,
+        pass: Option<&str>,
     ) -> Result<AppHttpResponse> {
-        let host = format!("{}.{}", request.subdomain, self.base_domain);
+        let host = match request.preview {
+            Some(preview) => preview.host.clone(),
+            None => format!("{}.{}", request.subdomain, self.base_domain),
+        };
         let csrf = new_csrf_token();
-        let cookie = match session {
+        let mut cookie = match session {
             Some(token) => format!("{SESSION_COOKIE}={token}; {CSRF_COOKIE}={csrf}"),
             None => format!("{CSRF_COOKIE}={csrf}"),
         };
+        if let Some(pass) = pass {
+            cookie.push_str(&format!("; {PREVIEW_COOKIE}={pass}"));
+        }
         let mut builder = Request::builder()
             .method(request.method.as_str())
             .uri(&request.path);
@@ -163,7 +173,7 @@ impl AppRequests {
 #[async_trait::async_trait]
 impl AppRequester for AppRequests {
     async fn request(&self, request: AppHttpRequest<'_>) -> Result<AppHttpResponse> {
-        if self.apps.get(request.subdomain).is_none() {
+        if request.preview.is_none() && self.apps.get(request.subdomain).is_none() {
             return Err(Error::invalid(format!(
                 "no application is being served at `{}`: it has no live mount (build it, or \
                  check the server's log for why it did not mount)",
@@ -174,7 +184,19 @@ impl AppRequester for AppRequests {
             Some(user) => Some(self.sessions.login(user.clone()).await?),
             None => None,
         };
-        let result = self.send(&request, session.as_deref()).await;
+        let pass = request.preview.map(|preview| {
+            let pass = new_csrf_token();
+            self.apps
+                .allow_preview_token(sc_agent::RunId(preview.owner), &pass);
+            (preview.owner, pass)
+        });
+        let result = self
+            .send(&request, session.as_deref(), pass.as_ref().map(|(_, p)| p.as_str()))
+            .await;
+        if let Some((owner, pass)) = &pass {
+            self.apps
+                .revoke_preview_token(sc_agent::RunId(*owner), pass);
+        }
         if let Some(token) = &session {
             if let Err(e) = self.sessions.logout(token).await {
                 sc_log::log_warn!("call_api's session could not be deleted: {e}");

@@ -1082,7 +1082,7 @@
   "These are translated but the source no longer says them. They are kept, never deleted: the source may be mid-edit, and throwing away a translation to tidy a list is not a trade worth making.": "这些内容已有翻译，但源文本已不再包含它们。它们会被保留，绝不会删除：源文本可能正在编辑中，为了整理列表而丢弃翻译并不值得。",
   "These are written and maintained here and travel inside Saltcorn itself, so there is no package name to look up and nothing to trust beyond what you already run. They are still modules: nothing below does anything until you install it.": "这些内容在此编写和维护，并随 Saltcorn 一起运行，因此无需查找包名，也无需信任当前运行环境之外的任何内容。它们仍然是模块：安装之前，下面的内容都不会执行任何操作。",
   "These columns are the table provider’s. Change what it presents in its settings above, or in the module itself.": "这些列由表提供商提供。请在上方设置中或模块本身中更改其呈现的内容。",
-  "These modules are maintained and bundled within the core Saltcorn instancem but still need to be activated before they can be used.": "这些模块由 Saltcorn 核心维护并随实例提供，但仍需激活后才能使用。",
+  "These modules are maintained and bundled within the core Saltcorn instance, but still need to be activated before they can be used.": "这些模块由 Saltcorn 核心维护并随实例提供，但仍需激活后才能使用。",
   "These rows come from the table provider": "这些行来自表提供商",
   "These stored settings name tables that are not in the database. They are kept in case the table comes back — recreating it restores its access rules — but nothing is using them right now.": "这些已保存的设置指向数据库中不存在的表。它们会被保留，以便表恢复时使用——重新创建表会恢复其访问规则——但目前没有任何内容使用它们。",
   "This agent does not remember anything yet.": "此智能体尚无任何记忆。",

@@ -58,6 +58,7 @@ async fn start() -> sc_error::Result<Running> {
 
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_auth::create_user(&catalog, ADMIN, PASSWORD, sc_auth::ROLE_ADMIN).await?;
@@ -330,6 +331,7 @@ async fn a_session_is_minted_with_no_server_running() -> sc_error::Result<()> {
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_auth::create_user(&catalog, ADMIN, PASSWORD, sc_auth::ROLE_ADMIN).await?;
 

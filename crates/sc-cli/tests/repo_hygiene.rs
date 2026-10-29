@@ -2186,3 +2186,33 @@ fn every_integration_test_file_reaches_a_target() {
         "these tests/it.rs entries name a file that is not there: {dangling:#?}"
     );
 }
+
+/// The admin UI keeps its own copy of [`sc_auth::SYSTEM_USER_COLUMNS`] to decide
+/// which users-table columns are *not* fields on the user form. A column the
+/// server owns but the UI does not know about is offered as a field, sent back
+/// in `extra`, and refused — so every user edit fails (this happened with
+/// `email_verified`). The two lists must name the same columns in the same order.
+#[test]
+fn the_admin_ui_knows_every_system_user_column() {
+    let root = workspace_root();
+    let source = read(&root, "ui/admin/src/userForm.ts");
+    let decl = "export const SYSTEM_USER_COLUMNS = [";
+    let start = source
+        .find(decl)
+        .expect("ui/admin/src/userForm.ts no longer declares SYSTEM_USER_COLUMNS")
+        + decl.len();
+    let end = start
+        + source[start..]
+            .find("];")
+            .expect("SYSTEM_USER_COLUMNS in userForm.ts is not closed with `];`");
+    let ui: Vec<&str> = source[start..end]
+        .split(',')
+        .map(|item| item.trim().trim_matches('"'))
+        .filter(|item| !item.is_empty())
+        .collect();
+    assert_eq!(
+        ui,
+        sc_auth::SYSTEM_USER_COLUMNS,
+        "SYSTEM_USER_COLUMNS in ui/admin/src/userForm.ts must match sc_auth::SYSTEM_USER_COLUMNS"
+    );
+}

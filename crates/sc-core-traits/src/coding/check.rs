@@ -30,6 +30,11 @@
 //! of a successful application build is mounted as the run's preview (TODO
 //! §7b), beside the live mount, for `view_app` to look at. Publishing is still
 //! the admin's Build button.
+//!
+//! **And the application's checklists run against the preview**
+//! (TODO-checklists C2.6, [`super::checklists`]): each is one more check,
+//! `checklist:<name>`, with a baseline like the others, so a checklist the run
+//! breaks makes `check` red and one that was already red does not.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -44,6 +49,7 @@ use sc_types::Attrs;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
+use super::checklists::ChecklistCheck;
 use super::ledger::{Ledger, PreImage};
 use super::script::{Project, Ran, npm_run, project, tail};
 use super::state::CodingState;
@@ -199,7 +205,7 @@ pub enum Outcome {
 
 impl Outcome {
     /// What the baseline records of it; `None` for a check that did not run.
-    fn baseline(&self) -> Option<Baseline> {
+    pub(super) fn baseline(&self) -> Option<Baseline> {
         match self {
             Outcome::Skipped(_) => None,
             Outcome::Undeclared | Outcome::TimedOut(_) => Some(Baseline {
@@ -326,22 +332,25 @@ async fn run_build(
 }
 
 /// Mount or refresh the run's preview of `subdomain` from a green build's
-/// bundle (TODO §7b), and say so. Nothing is said where the server mounts no
-/// previews.
+/// bundle (TODO §7b), and say so; with the preview, when it was mounted.
+/// Nothing is said where the server mounts no previews.
 async fn mount_preview(
     subdomain: &str,
     bundle: &std::path::Path,
     ctx: &TraitContext<'_>,
-) -> Option<String> {
+) -> Option<(String, Option<sc_agent::PreviewInfo>)> {
     let previews = ctx.previews?;
     Some(
         match previews.mount_preview(ctx.run, subdomain, bundle).await {
-            Ok(preview) => format!(
-                "preview: this build of `{subdomain}` is mounted for this run at {}; \
-                 the live application is unchanged.",
-                preview.host
+            Ok(preview) => (
+                format!(
+                    "preview: this build of `{subdomain}` is mounted for this run at {}; \
+                     the live application is unchanged.",
+                    preview.host
+                ),
+                Some(preview),
             ),
-            Err(e) => format!("preview: this build could not be mounted: {e}"),
+            Err(e) => (format!("preview: this build could not be mounted: {e}"), None),
         },
     )
 }
@@ -578,6 +587,7 @@ pub async fn run_checks(
         record_runs(&mut state, &runs);
     }
     let mut preview = None;
+    let mut checklists: Vec<ChecklistCheck> = Vec::new();
     if let Some(subdomain) = &application {
         // The type check found new errors: the build would fail on them too.
         let blocked = runs.iter().find(|run| {
@@ -591,14 +601,22 @@ pub async fn run_checks(
             },
             None => {
                 let (build, bundle) = run_build(subdomain, ctx).await?;
-                if let Some(bundle) = bundle {
-                    preview = mount_preview(subdomain, &bundle, ctx).await;
+                if let Some(bundle) = bundle
+                    && let Some((said, mounted)) = mount_preview(subdomain, &bundle, ctx).await
+                {
+                    preview = Some(said);
+                    if let Some(mounted) = mounted {
+                        checklists =
+                            super::checklists::run_on_preview(subdomain, &mounted, ctx).await?;
+                    }
                 }
                 build
             }
         };
         if unchanged {
             record_runs(&mut state, std::slice::from_ref(&build));
+            let checks: Vec<CheckRun> = checklists.iter().map(|c| c.check.clone()).collect();
+            record_runs(&mut state, &checks);
         }
         runs.push(build);
     }
@@ -619,6 +637,14 @@ pub async fn run_checks(
             &[],
             Some(run.elapsed),
         ));
+    }
+    let mut checklist_lines: Vec<String> = Vec::new();
+    for checklist in &checklists {
+        let baseline = state.baseline.get(&checklist.check.name);
+        if has_new_failures(&checklist.check.outcome, baseline) {
+            red.push(&checklist.check.name);
+        }
+        checklist_lines.push(super::checklists::describe(checklist, baseline));
     }
     if weakened.is_empty() {
         lines.push("ratchet: passed.".to_owned());
@@ -663,6 +689,15 @@ pub async fn run_checks(
         state.store(ctx.trait_state);
     }
     lines.extend(preview);
+    if !checklist_lines.is_empty() {
+        lines.push(format!(
+            "checklists of `{}` against this run's preview (what the application's owner wrote \
+             down as working; fix what you broke, never weaken a checklist, and name every one \
+             still failing in your final summary):",
+            application.as_deref().unwrap_or("")
+        ));
+        lines.extend(checklist_lines);
+    }
     head.push('\n');
     head.push_str(&lines.join("\n"));
     Ok(CheckReport {

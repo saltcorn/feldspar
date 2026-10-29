@@ -75,6 +75,7 @@ async fn setup(db: &TestDb) -> Result<Arc<Catalog>> {
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     // `install_streams_with` bootstraps it too, but these tests save a stream
     // *before* starting the supervisor — which is the ordering a second process

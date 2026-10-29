@@ -8977,6 +8977,7 @@ dependencies = [
  "sc-action",
  "sc-agent",
  "sc-auth",
+ "sc-browser",
  "sc-catalog",
  "sc-db",
  "sc-db-postgres",
@@ -9114,6 +9115,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-browser"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "sc-auth",
+ "sc-error",
+ "uuid",
+]
+
+[[package]]
 name = "sc-catalog"
 version = "0.1.0"
 dependencies = [
@@ -9137,6 +9148,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-check"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "regex-lite",
+ "sc-action",
+ "sc-agent",
+ "sc-api",
+ "sc-app",
+ "sc-auth",
+ "sc-browser",
+ "sc-catalog",
+ "sc-db",
+ "sc-db-postgres",
+ "sc-email",
+ "sc-error",
+ "sc-expr",
+ "sc-files",
+ "sc-llm",
+ "sc-log",
+ "sc-query",
+ "sc-test-harness",
+ "sc-types",
+ "sc-viewpattern",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "sc-cli"
 version = "0.1.0"
 dependencies = [
@@ -9152,6 +9195,7 @@ dependencies = [
  "sc-app",
  "sc-auth",
  "sc-catalog",
+ "sc-check",
  "sc-config",
  "sc-config-file",
  "sc-core-traits",
@@ -9262,6 +9306,7 @@ dependencies = [
  "sc-app",
  "sc-auth",
  "sc-catalog",
+ "sc-check",
  "sc-core-actions",
  "sc-db",
  "sc-db-postgres",
@@ -9379,6 +9424,7 @@ dependencies = [
  "sc-config",
  "sc-error",
  "sc-test-harness",
+ "serde_json",
  "tokio",
  "tokio-rustls",
 ]
@@ -9687,6 +9733,7 @@ dependencies = [
  "sc-app",
  "sc-auth",
  "sc-catalog",
+ "sc-check",
  "sc-config",
  "sc-core-actions",
  "sc-core-traits",

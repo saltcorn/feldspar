@@ -298,6 +298,9 @@ async fn dispatch_rpc(
             let listed: Vec<Json> = tools
                 .specs(catalog)
                 .into_iter()
+                // The checklist tools (TODO-checklists C1.15): `sc-check`'s,
+                // the same six the copilot offers.
+                .chain(sc_check::tools::tool_specs())
                 .map(|spec| {
                     json!({
                         "name": spec.name,
@@ -407,6 +410,13 @@ subdomain; fix whatever the diagnostics report and build again until it succeeds
 To change an existing application, `describe_applications` gives its `project_dir`: work \
 there, connect any new table with `update_application`, and rebuild.
 
+Checklists record what \"working\" means for an application, so a later change can be checked \
+against it. After building something the user asked for, write one with `save_checklist` (the \
+step types are in `describe_step_types`), and after every change `run_checklists` and fix what \
+fails. Add steps freely with `append_steps`. Never weaken a check to make it pass: changing an \
+existing step is a proposal (`propose_step_change`) that a person accepts or rejects, and the \
+old step keeps running until then.
+
 Live updates (pages that update when rows change, collaborative editing, presence, toasts). \
 `edit_streams` creates the stream: `table_changes` for row changes, `document` on a \
 `collab_doc` field for a shared document (presence is built in), `internal` for messages that \
@@ -446,6 +456,10 @@ async fn call_tool(
         );
     };
     let arguments = params.get("arguments").cloned().unwrap_or(Json::Null);
+
+    if sc_check::tools::is_tool(name) {
+        return json_rpc_result(id, tool_result(checklist_tool(state, catalog, caller, name, &arguments).await));
+    }
 
     let tools = tool_set(state, caller);
     // An unknown tool is wrong with the *call*, so it is a JSON-RPC error rather
@@ -527,6 +541,43 @@ fn tool_result(outcome: Result<Json>) -> Json {
             "isError": true,
         }),
     }
+}
+
+/// One of the checklist tools, as this token: the token is the "run" whose
+/// unaccepted steps it may still edit (an MCP session has no run of its own),
+/// and its `checklists` grant decides the rest (docs/CHECKLISTS.md §4).
+async fn checklist_tool(
+    state: &AppState,
+    catalog: &Arc<Catalog>,
+    caller: &ApiCaller,
+    name: &str,
+    arguments: &Json,
+) -> Result<Json> {
+    let flags = sc_api::mcp::token_flags(&caller.token.grants);
+    let registry = sc_check::StepRegistry::installed();
+    let services = state.apps.agents().map(|a| a.registry().view_services());
+    let requests = services
+        .and_then(|s| s.requests())
+        .map(|r| r.as_ref() as &dyn sc_agent::AppRequester);
+    let browser = services
+        .and_then(|s| s.browser())
+        .map(|b| b.as_ref() as &dyn sc_agent::BrowserDriver);
+    let evaluator = state.apps.evaluator();
+    let env = sc_check::CheckEnv::new(catalog, &registry)
+        .with_triggers(state.apps.triggers())
+        .with_evaluator(evaluator.as_ref())
+        .with_requests(requests)
+        .with_browser(browser);
+    let call = sc_check::tools::ToolCall {
+        env,
+        editor: sc_check::Editor::Agent {
+            run: format!("mcp:{}", caller.token.id),
+            grant: sc_check::ChecklistGrant::from_attrs(&flags),
+        },
+        role: caller.user.role,
+    };
+    sc_log::log_info!("MCP [{}] {name}", caller.token.label);
+    sc_check::tools::call_tool(name, arguments, &call).await
 }
 
 /// The tools this token was granted: the fifteen composite ones and the tagged

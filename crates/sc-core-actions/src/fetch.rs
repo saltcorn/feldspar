@@ -268,6 +268,7 @@ impl Action for Fetch {
         };
 
         let mut request = client.request(method.clone(), url.clone()).timeout(timeout);
+        let mut sent_body = Json::Null;
         if takes_body(&method) {
             // The default body is the event itself: the common case is "tell that
             // service what happened", and spelling it out as a formula would be
@@ -281,6 +282,19 @@ impl Action for Fetch {
                 None => event_json(ctx.event),
             };
             request = request.json(&body);
+            sent_body = body;
+        }
+        // On behalf of a checklist run, the request is kept on the run's outbox
+        // and not made (TODO-checklists C4.1); there is no response, so the
+        // result is `null`, as for an empty one.
+        if let Some(outbox) = sc_catalog::outbox::current() {
+            outbox.capture(sc_catalog::outbox::Sent::new(
+                sc_catalog::outbox::SentKind::Webhook,
+                vec![url.to_string()],
+                method.as_str(),
+                sent_body,
+            ));
+            return Ok(Json::Null);
         }
         // The configured headers go on last, so an explicit `content-type`
         // overrides the one the JSON body set.

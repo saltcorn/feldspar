@@ -111,6 +111,7 @@ async fn a_running_fit_reports_progress_to_its_row_and_stops_when_the_row_says_s
         .map_err(|e| Error::database(e.to_string()))?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     catalog.reload().await?;
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
     let mut registry = models.base_registry()?;

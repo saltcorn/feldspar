@@ -25,7 +25,9 @@ export type UserRow = ListUsersResponse[number];
  * `disabled` is an action in the row menu rather than a field — disabling
  * somebody is a thing you do, not a checkbox you forget to tick — and `language`
  * is a select over the enabled locales rather than a text box somebody types
- * `french` into.
+ * `french` into. `email_verified` and `attributes` are kept by the system
+ * itself (sign-up, emailed links, the checklist user) and are not the admin's
+ * to type into either.
  */
 export const SYSTEM_USER_COLUMNS = [
   "id",
@@ -34,6 +36,8 @@ export const SYSTEM_USER_COLUMNS = [
   "password_hash",
   "disabled",
   "language",
+  "email_verified",
+  "attributes",
 ];
 
 /** The role a new user gets when the admin does not choose: see [defaultUserRole]. */

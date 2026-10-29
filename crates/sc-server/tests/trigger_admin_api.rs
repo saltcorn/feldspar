@@ -150,6 +150,7 @@ async fn setup() -> sc_error::Result<Server> {
 
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     let agents = sc_server::install_agents(&catalog).await?;
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
@@ -818,6 +819,8 @@ async fn the_actions_describe_their_own_settings() -> sc_error::Result<()> {
             "insert_row",
             "publish",
             "run_agent",
+            // Scheduled checklist runs (TODO-checklists C4.4).
+            "run_checklists",
             "run_js_code",
             "run_python_code",
             "send_email",

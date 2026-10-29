@@ -38,6 +38,7 @@ use sc_server::{
     AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ProviderConnector, ServerConfig,
     admin_handlers, build_router_with_apps,
 };
+use sc_test_harness::Teardown;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -86,7 +87,7 @@ impl LlmProvider for Endless {
 
 // --- the server ---------------------------------------------------------------
 
-struct TempDir(PathBuf);
+struct TempDir(PathBuf, Teardown);
 
 impl TempDir {
     fn new(tag: &str) -> TempDir {
@@ -96,7 +97,7 @@ impl TempDir {
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        TempDir(dir)
+        TempDir(dir, Teardown::new())
     }
 
     fn path(&self) -> &Path {
@@ -235,6 +236,7 @@ async fn serve(provider: Arc<dyn LlmProvider>, tools: sc_app::ToolDetail) -> Res
     let tmp = TempDir::new("srv");
     let driver = Arc::new(SqliteDriver::open(tmp.path().join("shop.db"))?);
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    tmp.1.add(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;

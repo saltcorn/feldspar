@@ -207,19 +207,26 @@ pub const CFG_ALLOW_TRIGGERS: &str = sc_api::mcp::Area::Triggers.key();
 /// offered at all. On by default, and read exactly as [`CFG_ALLOW_TRIGGERS`] is.
 pub const CFG_ALLOW_APPLICATIONS: &str = sc_api::mcp::Area::Applications.key();
 
+/// What this agent may do to **checklists** (TODO-checklists C1.13): `none`,
+/// `append` (the default) or `full` — the same key and values an MCP token's
+/// grants carry, read by `sc_check::ChecklistGrant::from_attrs`. The tools
+/// themselves are `sc-check`'s, shared with the MCP server.
+pub const CFG_CHECKLISTS: &str = sc_api::mcp::CHECKLISTS_GRANT;
+
 /// Build and inspect the schema and the triggers over it.
 pub struct AdminCopilot;
 
 /// Every tool this trait can offer, under fixed names — the schema's two, the
 /// triggers' four, the code API's reference, the applications' six, the
-/// streams' one, the translations' two, the code libraries' three and its own two.
+/// streams' one, the translations' two, the code libraries' three, its own two
+/// and the checklists' six.
 ///
 /// *Can*, not *does*: the two area checkboxes decide whether the trigger and
 /// application halves are offered at all, so a configured instance offers a
 /// subset of these. This is the whole set, which is what the admin UI's "what
 /// will this be called?" and §11.2's collision check want — a name that any
 /// configuration could produce is a name that could collide.
-pub fn tool_names() -> [&'static str; 21] {
+pub fn tool_names() -> [&'static str; 27] {
     [
         TOOL_DESCRIBE,
         TOOL_EDIT,
@@ -242,6 +249,12 @@ pub fn tool_names() -> [&'static str; 21] {
         TOOL_DELETE_CODE_LIBRARY,
         TOOL_DELEGATE,
         TOOL_PUBLISH,
+        sc_check::tools::TOOL_DESCRIBE_STEP_TYPES,
+        sc_check::tools::TOOL_DESCRIBE_CHECKLISTS,
+        sc_check::tools::TOOL_SAVE_CHECKLIST,
+        sc_check::tools::TOOL_APPEND_STEPS,
+        sc_check::tools::TOOL_PROPOSE_STEP_CHANGE,
+        sc_check::tools::TOOL_RUN_CHECKLISTS,
     ]
 }
 
@@ -287,6 +300,16 @@ impl AgentTrait for AdminCopilot {
                      code to coding agents",
                 )
                 .default_value(true),
+            FormField::new(CFG_CHECKLISTS, BasicType::Text)
+                .label("Checklists")
+                .options(sc_api::mcp::CHECKLISTS_GRANT_VALUES)
+                .default_value("append")
+                .sublabel(
+                    "append: write new checklists and add steps, edit its own unaccepted \
+                     steps, and propose every other change for a person to accept. full: \
+                     change and delete checks unsupervised. Only a person ever disables a \
+                     checklist or runs one as a user who is not a check user.",
+                ),
         ]
     }
 
@@ -315,6 +338,9 @@ impl AgentTrait for AdminCopilot {
             specs.push(delegate_spec());
             specs.push(publish_spec());
         }
+        // Offered under every grant: a `none` agent may still read checklists
+        // and run them, and a refused write names the grant.
+        specs.extend(sc_check::tools::tool_specs());
         specs
     }
 
@@ -401,9 +427,38 @@ impl AgentTrait for AdminCopilot {
                 _ => publish_application(args, ctx).await,
             };
         }
+        if sc_check::tools::is_tool(tool) {
+            return checklist_tool(config, tool, args, ctx).await;
+        }
         let tools = tool_set(config);
         tools.call(tool, args, &tool_context(ctx)).await
     }
+}
+
+/// One of `sc-check`'s checklist tools, as this run: its id is the author of
+/// what it writes, its `checklists` setting the grant, and the run's evaluator,
+/// trigger dispatcher and application router what the steps run with.
+async fn checklist_tool(
+    config: &Attrs,
+    tool: &str,
+    args: &Json,
+    ctx: &TraitContext<'_>,
+) -> Result<Json> {
+    let registry = sc_check::StepRegistry::installed();
+    let env = sc_check::CheckEnv::new(ctx.catalog, &registry)
+        .with_triggers(ctx.triggers)
+        .with_evaluator(ctx.evaluator)
+        .with_requests(ctx.requests)
+        .with_browser(ctx.browser);
+    let call = sc_check::tools::ToolCall {
+        env,
+        editor: sc_check::Editor::Agent {
+            run: ctx.run.to_string(),
+            grant: sc_check::ChecklistGrant::from_attrs(config),
+        },
+        role: ctx.caller.role,
+    };
+    sc_check::tools::call_tool(tool, args, &call).await
 }
 
 // --- delegate_to_coding_agent -------------------------------------------------
@@ -737,6 +792,7 @@ mod tests {
         let set = tool_set(&Attrs::new());
         let mut names = set.all_names();
         names.extend([TOOL_DELEGATE, TOOL_PUBLISH]);
+        names.extend(sc_check::tools::TOOL_NAMES);
         assert_eq!(names, tool_names().to_vec());
         assert_eq!(*set.grants(), grants(&Attrs::new()));
     }

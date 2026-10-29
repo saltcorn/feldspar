@@ -1,0 +1,68 @@
+[package]
+name = "sc-check"
+description = "Checklists: what \"working\" means for an application, as ordered steps run as one user (layer 9)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# One integration-test binary, as everywhere in this workspace: every test target
+# statically links V8.
+autotests = false
+
+[dependencies]
+sc-error.workspace = true
+sc-log.workspace = true
+# `FormField` for a step type's declared parameters and `Attrs` for the values.
+sc-types.workspace = true
+# The three `_fd_checklist*` tables are stored metadata, read and written through
+# the query language like `_fd_agents`.
+sc-catalog.workspace = true
+sc-query.workspace = true
+sc-db.workspace = true
+# `Template`: a step's string parameters are interpolated over the run's
+# variables. `JsEvaluator`: a `data.*` step reads and writes as `run_as`, and a
+# table whose ownership formula does not translate is decided in V8.
+sc-expr.workspace = true
+# `User` and the check-user flag; the user a checklist runs as is loaded here.
+sc-auth.workspace = true
+# `TriggerDispatcher`, for `data.run_trigger`.
+sc-action.workspace = true
+# The row layer as a caller who is not an API surface (`read_rows_as` and its
+# siblings), the filter object, and the grant vocabulary the MCP token and the
+# copilot share.
+sc-api.workspace = true
+# The application a checklist checks, and its build for `app.builds`.
+sc-app.workspace = true
+# Saltcorn UI's views, which the `saltcorn_ui.*` step types name (C3.3).
+sc-viewpattern.workspace = true
+# `AppRequester`: an `http.*` step goes through the server's own router, as
+# `call_api` does. The trait lives with the agents; the server implements it.
+sc-agent.workspace = true
+# The tool specs offered to the copilot and the MCP server.
+sc-llm.workspace = true
+# The headless browser the `browser.*` steps drive, and its locators (C2).
+sc-browser.workspace = true
+# The internal store a failed browser step's screenshot is kept in (C2.5).
+sc-files.workspace = true
+async-trait.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+regex-lite.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+sc-db-postgres.workspace = true
+sc-email.workspace = true
+sc-test-harness.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

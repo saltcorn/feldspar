@@ -168,6 +168,15 @@ pub fn base_action_registry(
         Arc::new(models.clone()),
     )
     .context("registering the model action")?;
+    // And `run_checklists` (TODO-checklists C4.4): a scheduled trigger with it
+    // is a scheduled checklist run. It reaches the application router and the
+    // headless browser through the agents' view services, as the admin's Run
+    // button does.
+    registry
+        .register(Arc::new(sc_check::RunChecklists::new(Arc::clone(
+            agents.registry().view_services(),
+        ))))
+        .context("registering the checklists action")?;
     Ok(registry)
 }
 

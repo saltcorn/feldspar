@@ -233,6 +233,7 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<(Router, Arc<Catalog>, TestDb)
 
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
 
     write_app_source(tmp.path());
@@ -502,6 +503,7 @@ async fn mounting_an_app_without_a_base_domain_is_refused() -> sc_error::Result<
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
 
     let framework = Arc::new(CodeFramework::new("code", Default::default()));
     let app = Application::new("Blog", "blog", code_framework());
@@ -527,6 +529,7 @@ async fn two_apps_cannot_claim_the_same_subdomain() -> sc_error::Result<()> {
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
 
     let one = MountedApp::new(
         Application::new("Blog", "blog", code_framework()),

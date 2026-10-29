@@ -339,7 +339,7 @@ async fn authenticated(
         return Err(refusal(
             StatusCode::UNAUTHORIZED,
             "a build agent authenticates by `Authorization: Bearer <token>`: the token \
-             shown when the host was added under Settings → Build hosts",
+             shown when the host was added under Settings → Development → Build hosts",
         ));
     };
     match authenticate_build_host(&catalog, &presented).await {

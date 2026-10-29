@@ -19,6 +19,7 @@ pub mod app;
 pub mod auth;
 pub mod backup_password;
 pub mod build_agent;
+pub mod check;
 pub mod cmdstan;
 pub mod config;
 pub mod db;
@@ -122,6 +123,11 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
     sc_core_traits::bootstrap_agent_memory(&catalog)
         .await
         .context("ensuring the agent memory table exists")?;
+    // Checklists (TODO-checklists C1.1): what "working" means for an
+    // application, its steps' versions, its runs and its pending proposals.
+    sc_check::bootstrap_checklists(&catalog)
+        .await
+        .context("ensuring the checklist tables exist")?;
     // The Analytics UI's datasets and workspaces (analytics TODO A1). Models
     // bootstrap the datasets table too, because a model's dataset is a row of
     // it; this is for a server whose models are never installed.
@@ -173,6 +179,12 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
     }
     sc_config::set_host_config(&catalog, pinned)
         .context("reading the TLS settings in the configuration file")?;
+    // A production environment refuses checklists that write data unless they
+    // are allowed there (TODO-checklists C1.6).
+    if db.is_production() {
+        eprintln!("feldspar: this is a production environment");
+    }
+    catalog.set_production(db.is_production());
     // The LLM provider the selected environment supplies, on the same footing:
     // usable by every agent, listed read-only, never stored.
     let provider = db

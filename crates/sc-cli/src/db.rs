@@ -360,6 +360,15 @@ impl DbConfig {
         self.selected.as_ref().map(|s| s.name.as_str())
     }
 
+    /// Whether the selected environment is marked `production`
+    /// (TODO-checklists C1.6). No configuration file is not production: there
+    /// is nothing that says so.
+    pub fn is_production(&self) -> bool {
+        self.selected
+            .as_ref()
+            .is_some_and(SelectedEnvironment::is_production)
+    }
+
     /// The **serving** half of the selected environment: where this deployment's
     /// applications are reachable.
     ///

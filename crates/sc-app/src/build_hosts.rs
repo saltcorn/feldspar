@@ -176,7 +176,7 @@ pub async fn list_build_hosts(catalog: &Catalog) -> Result<Vec<BuildHost>> {
         .iter()
         .map(host_from_row)
         .collect::<Result<_>>()?;
-    hosts.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    hosts.sort_by_key(|h| h.name.to_lowercase());
     Ok(hosts)
 }
 
@@ -247,7 +247,7 @@ pub async fn authenticate_build_host(catalog: &Catalog, presented: &str) -> Resu
         .ok_or_else(|| {
             Error::auth(
                 "this build host token is not recognised: the host may have been removed. \
-                 An administrator adds it again under Settings → Build hosts.",
+                 An administrator adds it again under Settings → Development → Build hosts.",
             )
         })
 }

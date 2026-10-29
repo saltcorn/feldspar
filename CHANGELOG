@@ -2,6 +2,86 @@
 
 Changes in reverse chronological order.
 
+## Fix: editing a user in the admin UI failed with "`email_verified` is not an admin-defined field"
+
+The admin UI's `SYSTEM_USER_COLUMNS` (`ui/admin/src/userForm.ts`) had fallen behind
+`sc_auth::SYSTEM_USER_COLUMNS`: it lacked `email_verified` and `attributes`, so the user form showed
+them as admin-added fields and sent them back in `extra`, which the server rightly refuses. Both are
+now in the list; `userForm.test.ts` checks neither is offered as a field, and a new repo hygiene
+test (`the_admin_ui_knows_every_system_user_column` in `crates/sc-cli/tests/repo_hygiene.rs`) fails
+if the UI's list ever differs from `sc_auth::SYSTEM_USER_COLUMNS` again.
+
+## Admin UI: Development tab — admin subdomain first, labelled verbosity levels, MCP switches hidden when off
+
+- **Admin subdomain** is now the first field of Settings → Development.
+- **Log verbosity**: each option in the dropdown now shows its value and what it prints
+  (`warning: also what is about to fail`); the sentence under the control is just "How much is
+  printed to stderr." The stored value is unchanged. This is a new, generic piece of the settings
+  vocabulary: `FormField::option_labels` (presentation only, in the options' order), set with
+  `FormField::labelled_options([(value, label)])`, translated by `translate_spec`, sent as
+  `option_labels` in every form-field JSON (optional in `form_field_schema`, client regenerated) and
+  rendered by `SettingField`'s select through `optionLabel`. A field without labels shows each value
+  as itself, as before.
+- **MCP from this machine only** has `show_if: mcp_enabled = true`, and the **Administration MCP
+  tokens** card is shown only while Administration MCP server is ticked. Both follow the form as it
+  is being edited, not the stored value. The settings screen now applies `show_if` to its fields
+  (`isShown` over every section's fields).
+- The new option labels are not yet in the translation catalogues, so they show in English until
+  the catalogues are refreshed.
+- Tests: `the_section_declares_the_two_mcp_switches` (field order with the admin subdomain first;
+  the loopback switch applies only while MCP is on), `the_section_declares_a_checkbox_and_the_five_levels`
+  (each level has a label that starts with its value); `settingsScreen.test.ts` (loopback hidden while
+  unticked, `optionLabel` with and without labels).
+
+## Admin UI: data-layer checklists, build hosts and Clear all move within Settings
+
+- The data-only (Data Layer) checklists left the sidebar and are now **Settings → Checklists**, a
+  tab between Modules and Backup. The list renders without its own page header there (Run all and
+  New checklist head the tab). An application's checklists stay under that application.
+  `/settings/<tab>` opens Settings on that tab (`settingsTabFromPath`, `initialTab(sections,
+  requested)`); `checklistsPath(null)` is now `/settings/checklists`, so a checklist's Back and
+  Delete land there. A checklist's own screen (`/checklists/<id>`) and runs (`/checklist-runs/<id>`)
+  keep their routes and light up Settings in the sidebar; the `/checklists` list route is gone.
+- **Build hosts** is no longer a Settings tab: its card (`BuildHostsPanel`) is the last panel of the
+  Development tab. Server and CLI messages now say "Settings → Development → Build hosts".
+- **Clear all** moved from the bottom of Development to the bottom of the Backup tab.
+- Tests: `settingsScreen.test.ts` (tab list and order, opening on a routed tab, no Build hosts tab),
+  `nav.test.ts` (no Checklists entry; checklist routes light up Settings), `checklists.test.ts`.
+
+## Checklists C4: run outbox, `data.expect_sent`, after-build runs, schedules
+
+- **Run outbox** (`sc_catalog::outbox`). While a checklist run is open, what is sent on its
+  behalf is kept on the run instead of sent (`Sent`: kind `email`/`webhook`/`module`, recipients,
+  subject, body, time). The runner opens the outbox around the steps; it travels as a task-local,
+  so it covers `data.*` steps, the triggers they fire and `http.*` requests through the in-process
+  router. The browser context of a run carries the `sc_check_run` cookie, and the router's
+  `request_outbox` middleware puts a request inside the run only while that run is open. Hooks:
+  `sc_email::Withholding` wraps every mailer the `TriggerDispatcher` is given (`with_mailer`); the
+  `fetch` action and `fetch` in a code body (`CodeFetchHost`) record instead of requesting; a
+  module action whose module holds the `net` permission is recorded whole instead of run
+  (`ModuleAction::with_network`). The run row gained a nullable `outbox` column (migration in
+  `TABLES_RENAME.sql`), and the run screen lists the withheld messages.
+- **`data.expect_sent`**: `kind`, `to`, `subject`, `body` (case-insensitive contains) and `count`
+  (exact; at least one when absent). Its value is the matching messages.
+- **After-build runs**: the application attribute `check_after_build` (a switch on the application
+  form, off by default). A full build (not a quick one) then runs the application's enabled
+  checklists, triggered `build`. The build response gained `checks` (id, checklist, name, status)
+  and the log ends with a summary. The admin's build notice turns red when one did not pass.
+- **Scheduled runs**: the `run_checklists` action (`sc_check::RunChecklists`, registered in the
+  server's base action set), put on an `often`/`hourly`/`daily`/`weekly` trigger. Config:
+  application subdomain (blank for data-only checklists) and an optional checklist name. Runs are
+  triggered `schedule`, and one that does not pass fails the action.
+- Tests: `mail_sent_during_a_run_is_kept_on_the_run_and_not_sent` (sc-check: a trigger mails
+  during a run, the recording mailer gets nothing, `data.expect_sent` passes, and outside a run the
+  same trigger sends); `a_build_with_after_build_checks_records_a_run` (sc-server);
+  `a_fetch_inside_a_checklist_run_is_kept_and_not_sent` (sc-core-actions); the outbox unit test in
+  sc-catalog; and the build notice in `appActions.test.ts`.
+- Verified on a machine that can run them: the whole workspace suite, the admin UI's vitest
+  suite and every UI's typecheck pass. Fixes from that run: TECHNICAL_DESIGN.md §2's dependency
+  table now lists `sc-check → sc-viewpattern` and `sc-cli → sc-email, sc-module`
+  (`repo_hygiene` caught the drift), and two clippy 1.97 lints (`sc-app` `build_hosts`,
+  `sc-check` `matches`) are fixed without changing behaviour.
+
 ## CLI: set up a hosted server without the admin UI (modules, routes-only tokens, settings, mail, app tables)
 
 feldspar-hosted's root daemon can only use the `feldspar` CLI, so it could not do two setup jobs
@@ -50,6 +130,366 @@ routes-only token against both authenticators; a refused `set-cfg --json` writin
 `send-email` against `TestSmtp`; and `app tables`. Also
 `modules_api::a_sighup_reload_picks_up_a_module_changed_elsewhere`, plus parser unit tests in
 `sc_cli::{module, email, config, app, mcp_token}`.
+
+## Server tests tear their catalog down
+
+`cargo test --workspace` from a desktop terminal failed `sc-server`'s `it` binary with "Too many
+open files" (220 of 668 tests, wherever the next `open` happened: npm, V8, Postgres). Terminals here
+start at systemd's soft limit of 1024, and the binary climbed steadily to ~1000 descriptors and ~600
+threads because nothing a server test built was ever freed. It now peaks around 120 descriptors and
+passes at 1024 with no limit raised.
+
+- **Cause — reference cycles.** The services a server installs on its `Catalog` hold the catalog
+  back: `ModelServices` in `set_model_host`, the trigger dispatcher in `add_table_events` (its
+  `SettingsMailer` holds the catalog), `AppMounts` as the schema observer, and so on. The dispatcher
+  and the workflow engine also hold each other, and every running stream held its own sink, which
+  held the stream and the trigger bridge (catalog and dispatcher). So each test's catalog outlived it
+  together with its formula evaluator, whose isolate threads (`sc-expr-js-eval`, `sc-code-*`) each
+  anchor that test's tokio runtime handle (an epoll and an eventfd), and its pool's sockets. In
+  production there is one catalog per process, so none of this grew there.
+- **`Catalog::teardown`** empties every slot a layer above fills with a service (table-event
+  listeners, schema observer, rename hook, module/live/model/admin hosts, formula evaluator, table
+  providers, host LLM provider, stream registry, file stores), calling each table-event listener's
+  new **`TableEvents::teardown`** (default: nothing) first. **`TriggerDispatcher::teardown`**
+  (its `TableEvents::teardown`) lets go of the workflow engine and the observer.
+  `Catalog::teardown_hook()` is the same as a closure for a test guard.
+- **`StreamSupervisor` stops its streams on drop** (`Drop` calls `shutdown`), which breaks the
+  running stream / sink cycle. There is one supervisor per server, built at boot.
+- **`sc-test-harness`**: a `Teardown` guard (closures run on drop, latest first, also when a test
+  panics), and `TestDb::on_teardown`, which runs them before the database is dropped. New test
+  `teardowns_run_when_the_test_ends_latest_first`.
+- **Tests**: every `sc-server`/`sc-cli` setup that builds a catalog registers
+  `db.on_teardown(catalog.teardown_hook())` (117 sites). The SQLite ones, which have no `TestDb`, carry
+  a `Teardown` in their scratch-directory struct; `tutorial_code_library`'s `setup` returns one. New
+  `sc-server` test `catalog_teardown`: a full server stack's catalog and evaluator are freed when its
+  runtime ends, and (the control) are not without the teardown.
+
+## Checklists C3: framework and module step types, starter checklists
+
+Frameworks and modules now add their own checklist step types, and a framework can offer a new
+application a starter checklist (docs/CHECKLISTS.md §2, TODO-checklists C3).
+
+- **Framework step types** (C3.1, `sc-check/src/registry.rs`). New `StepType::framework()`,
+  returning a `FrameworkScope`: `Named("react")`, or `ServerRendered` for any framework whose
+  build declares a server entry (an Astro site is a module's framework, named whatever the
+  module calls it). A framework's types are:
+  - offered only for that framework's applications (`StepRegistry::offered`);
+  - refused when saved on any other checklist. `validate_draft` now takes the checklist's
+    loaded application. Changing a checklist's application re-validates its steps;
+  - an error at run time if the application has since changed framework.
+
+  `describe_step_types` and `listChecklistStepTypes` report the `framework`.
+  `StepRegistry::builtin()` now includes the built-in frameworks' types.
+- **`react.*`** (C3.2, `steps/react.rs`):
+  - `react.typecheck` calls the new `sc_app::typecheck_application`. That function regenerates
+    the client and runtime as a build would, installs the dependencies if they are missing, and
+    runs the project's `typecheck` script (`tsc --noEmit`), or `tsc --noEmit` when the project
+    has no such script. Nothing is bundled. A failure lists `file:line: message` for each error.
+  - `react.open_route` opens a route and waits until it has rendered. Rendered means no request
+    in flight and no `[data-feldspar-pending]` element, for half a second. The implicit clean
+    check follows.
+  - `react.no_error_boundary` fails if a `[data-feldspar-error-boundary]` element is showing,
+    and quotes it.
+  - The scaffold's `src/main.tsx` now wraps the app in a `RootBoundary` error boundary and a
+    root `<Suspense>`, whose fallbacks carry those two attributes.
+  - The browser seam reports in-flight requests: `BrowserReport::pending_requests`. The Chromium
+    driver tracks it from `requestWillBeSent` / `loadingFinished` / `loadingFailed`. Event
+    sources and sockets are not counted, since they never finish.
+- **`saltcorn_ui.*`** (C3.3, `steps/saltcorn_ui.rs`; `sc-check` now depends on
+  `sc-viewpattern`):
+  - `open_view` opens a view by name, with state as its query, through `browser.open`. A view
+    the application does not have fails by name.
+  - `fill_field` fills the form control named after a table field (`form [name="…"]`), so the
+    step survives a relabelling.
+  - `views_render` fetches every view `run_as` may see over HTTP. Views above their role are
+    left out, and `skip` lists views to leave out by name. It fails naming each view that
+    answers 4xx/5xx, quoting the error page, **or that names a field its table no longer
+    has**. v1's patterns render a deleted field as an empty cell and answer 200; this was
+    found while writing the test. The new pure function
+    `sc_viewpattern::referenced_fields(configuration)` collects `field_name`, `order_field` and
+    the first hop of `join_field`.
+- **`server_render.page_renders`** (C3.4, `steps/server_render.rs`): for server-rendered
+  sites. A GET of a path must answer 2xx with a non-empty body, optionally containing a given
+  text. A redirect fails, naming its target.
+- **Module step types** (C3.5):
+  - A module exports `checklist_steps: { "ns.name": { description, config_fields, needs,
+    mutates, framework, timeout, run(params, ctx) } }`. The keys are namespaced names, and the
+    export may be a function of the configuration.
+  - The declaration crosses once, when the module loads (`ModuleManifest::check_steps`,
+    `CheckStepManifest`). The server translates it into `sc_check::StepDecl` and installs it
+    whole after every module change (`sc-server/src/check_steps.rs` →
+    `sc_check::install_step_types`). Names that are not namespaced, belong to a built-in or are
+    declared twice are reported and left out. `StepRegistry::installed()` is the built-ins
+    plus the installed types; the admin API (built per request), the MCP server, the copilot,
+    the coding agent and the CLI use it.
+  - `run` is one `check_step_run` call to the module's worker
+    (`ModuleHost::run_check_step`). The call carries **only** the new `check` ask surface
+    (`CallHosts::with_check`, `CheckAsks`): no `db`, no triggers.
+  - `ctx` asks the host for three things, answered in the step's own context (run browser,
+    user, variables, clean-up list) by `sc_check::declared::answer`:
+    - run a core step (`ctx.runStep(type, params)`, and the `ctx.browser.*`, `ctx.http.request`
+      and `ctx.data.insert/update/delete` shorthands), answered `{outcome, message, value}`;
+    - inspect the page (`ctx.browser.inspect(locator)`);
+    - read rows as `run_as` (`ctx.data.rows(table, where, limit)`).
+  - What the declaration did not claim is refused by the same check a core type gets: a
+    browser it does not `need`, or a writing step when it did not declare `mutates`. So
+    `Checklist::mutates` and the production guard stay truthful.
+  - `run` answers `{outcome: "pass"|"fail"|"error", message, value}` or a bare boolean, and a
+    throw is an error. `value` is what the step's `as` captures.
+- **Starter checklists** (C3.6, `sc-check/src/starter.rs`):
+  - `starters(catalog, app)` lists what the application's framework offers and does not
+    already have (by name):
+    - React: `app.builds`, `react.typecheck`, `react.open_route /`, `react.no_error_boundary`;
+    - Saltcorn UI: `views_render`, once for visitors and once per role that has a check user;
+    - server-rendered: `page_renders /` and `browser.open /`;
+    - any other framework with a UI: `app.builds` (when it builds) and `browser.open /`;
+    - `none`: nothing.
+  - `create_starter` creates one through `create_checklist`. Nothing is created automatically.
+  - Admin API `listChecklistStarters` (`GET /api/checklist-starters?application=`) and
+    `createChecklistStarter` (`POST`). The application's Checklists tab shows a **Suggested
+    checklists** card with each offer's steps and a Create button. The admin clients were
+    regenerated.
+- **Tests** (C3.7):
+  - `sc-check` `framework_steps`:
+    - a React step is refused on a `code` app's checklist and on a data-only one, and moving its
+      checklist to a `code` app is refused;
+    - **renaming `tasks.title` breaks `react.typecheck` on a scaffolded React app**, naming
+      `src/pages/Tasks.tsx`. This runs the real `npm install` and `tsc`, and skips without npm;
+    - a starter is offered, created on request, and not offered again.
+  - `sc-server` `checklist_frameworks`:
+    - **`views_render` over the restored BooksDB passes (9 views), and fails after
+      `Books.pages` is dropped**, naming List, Show, Edit and Filter Books. Needs the Saltcorn
+      UI bundle;
+    - **a module step type runs**: the `check-step-module` fixture reads rows, composes
+      `data.expect_rows`, captures its value, and is refused an undeclared write and an
+      undeclared browser. Needs npm.
+  - `sc-server` `checklist_browser::react_steps_wait_for_the_render_and_see_an_error_boundary`
+    runs in Chromium: `react.open_route` waits out a one-second suspense fallback, and
+    `react.no_error_boundary` catches a boundary's fallback.
+  - Unit tests cover offering by framework, installing module types, starters per framework,
+    answer-to-outcome translation, `referenced_fields`, view paths and error-page text.
+  - `module_routes`' setup can be reused by a test that holds the module-registry lock for
+    writing (`setup_unlocked`).
+
+## Checklists C2: browser steps and preview runs
+
+Checklists can now drive the application in the server's headless Chromium, and the coding
+agent runs an application's checklists against its own preview before anything is deployed
+(docs/CHECKLISTS.md §2–§3, TODO-checklists C2).
+
+- **New crate `sc-browser`** (layer 5): the `BrowserDriver` trait, `BrowserAction`,
+  `BrowserRequest` and `BrowserReport`, moved out of `sc-agent/src/view.rs` so the agents and
+  `sc-check` both depend on it. `sc-agent` re-exports it, so `view_app` is unchanged.
+  - A browser context is now keyed by a plain `Uuid` (an agent run's or a checklist run's id),
+    and a request names a `BrowserTarget`: an application's **live** mount (new) or an agent
+    run's **preview** (`PreviewTarget`: label, host and owning run). `PreviewInfo::target` and
+    `PreviewInfo::preview_target` build them.
+  - Stable locators (`Locator`, parsed from one string): `button "Save"` / `link Sign in` (role and
+    accessible name; quoted means the whole name, unquoted a part, case and whitespace ignored),
+    `role=checkbox`, `label=Email`, `text="Order saved"`, `testid=submit` and `css=…`. The role
+    form is the line `view_app`'s snapshot prints, so an agent can copy what it saw.
+  - New actions: `Select`, `Check`, `Upload`, `Press` with an optional element, and `Inspect`
+    (the elements a locator finds and the page's visible text, without a snapshot). `Click` and
+    `Fill` take an `Element`: a snapshot ref (`view_app`) or a locator (checklists).
+- **Chromium driver** (`sc-server/src/browser`):
+  - New `locate` module: finds role/label/text locators in the same accessibility tree
+    `view_app`'s snapshot renders, so hidden text is never "visible". `testid` and `css` are DOM
+    queries (`DOM.querySelectorAll`), described from the tree. It is pure and unit-tested.
+  - An action on a locator waits for its element until the call's deadline. Visible matches are
+    preferred (a hidden file input is used only when nothing visible matches). A locator that
+    matches several elements is refused with their names, so a step never clicks the wrong
+    button.
+  - `select` sets a `<select>` by value or text through the native setter and fires
+    `input`/`change`. `check` clicks only when the state differs, then verifies it changed.
+    `upload` uses `DOM.setFileInputFiles`.
+  - A live target is `<subdomain>.<base-domain>` (or the base domain for the root application)
+    on the loopback listener. A preview pass is allowed only for a preview target.
+- **The in-process requester** (`AppRequests`) can send to a preview: `AppHttpRequest.preview`.
+  It mints a pass the preview's run allows, for that one request, and revokes it afterwards
+  (`AppMounts::revoke_preview_token`).
+- **`browser.*` step types** (`sc-check/src/steps/browser.rs`): `browser.open`, `click`, `fill`,
+  `select`, `check`, `press`, `upload` (a named file with given text content, written to the
+  run's scratch directory and removed with the run), `expect_text`, `expect_no_text`,
+  `expect_element` (`state` visible/hidden/enabled/disabled/checked/unchecked, exact `count`,
+  `value`), `expect_url` (path and query; `equals`/`contains`/`matches`), `expect_clean` and
+  `screenshot`.
+  - Assertions poll the page until they hold or the step's time is nearly up, so no step needs a
+    `core.wait` in front of it. A failure quotes what the page does show.
+  - A locator is checked when the step is saved, unless it is a template (new optional
+    `StepType::check` hook, called from `validate_draft`).
+  - Browser steps are offered (`StepRegistry::offered`, now given the application) and run only
+    for an application whose framework `serves_ui()`. Otherwise the step is an error, not a skip.
+  - None of them counts as mutating (§3: a checklist that only reads and clicks runs anywhere).
+  - Only `browser.open` gets a 30 s floor, for the first launch of the browser. Every other step
+    keeps the checklist's timeout, so a missing element fails as soon as it should.
+- **Implicit clean check** (C2.4): after every `browser.open` the page must have logged no
+  console error, thrown no uncaught exception and had no request fail or answer 4xx/5xx. It
+  waits a moment after load, for errors thrown once data arrives. Off with
+  `attributes.implicit_clean = false`, a switch in the checklist's settings form. Each step's
+  result carries the console errors and failed requests its browser calls saw, whether or not it
+  failed.
+- **Screenshots** (C2.5): a failed or errored browser step is photographed, and so is a
+  `browser.screenshot`. The JPEG goes to an internal file store,
+  `<data dir>/checklist-screenshots/<run id>/<step>.jpg` (`sc_check::screenshots`, a
+  `LocalFileStore`; `CheckEnv::with_screenshots` overrides the directory). The step result's
+  new `screenshot` field holds that path. The new admin endpoint `getChecklistScreenshot`
+  serves it (only paths of that shape), and the run detail shows it under the step, enlarging
+  on a click. A screenshot that cannot be kept is listed with the run's clean-up errors.
+- **The runner**: `CheckEnv` gained `with_browser`, `with_preview` and `with_screenshots`. A run
+  shares one browser context, signed in as `run_as`, closed when the run ends. A run against a
+  preview records the preview's label as its `target`, and its `http.*` steps go to the
+  preview too. The admin API, the MCP checklist tools and the copilot pass the server's browser.
+  The CLI has none, so its browser steps are skipped and the run is `incomplete`.
+- **The coding agent's verification** (C2.6, `sc-core-traits/src/coding/checklists.rs`): after a
+  green build is mounted as the run's preview, `check` runs every enabled checklist of the
+  application against that preview (trigger `agent:<run id>`), each reported as a check
+  `checklist:<name>`.
+  - A checklist gets the same baseline as the other checks. A failing step is a diagnostic keyed
+    by its position, label and type, never by its message, which names this run's values. So a
+    checklist the run breaks turns `check` red, and one that was already red does not.
+  - The report lists each failing step with its message, marked new or pre-existing.
+  - A mutating checklist is skipped on production unless it is allowed there. An incomplete run
+    (no browser) is reported as not green.
+  - The prompt tells the agent to fix what it broke, never weaken a checklist, and name every
+    checklist still failing in its final summary.
+- **Admin UI**: the run detail shows each step's screenshot. The checklist settings have an
+  "every opened page is clean" switch (`implicit_clean`). The generated clients are regenerated.
+- **Tests**:
+  - `sc-browser`: the locator syntax.
+  - `sc-server` `browser::locate`: role, label and text matching; hidden text; element state.
+  - `sc-check`: `browser.*` expectations and save-time checks, and the screenshot store's path
+    confinement. Its integration test `browser_steps_on_a_host_without_chromium_make_the_run_incomplete`
+    also covers a framework without a UI.
+  - `sc-core-traits`: a checklist's failing steps as new or pre-existing diagnostics.
+  - `sc-server` `checklist_browser` (real Chromium, skipped without one):
+    - an order form filled, selected, checked, saved and asserted live, as a member, passes, and
+      its screenshot is kept;
+    - the same checklist against a preview whose button is renamed fails at the click with a
+      screenshot, while the live mount still passes and an `http.*` step reaches the preview;
+    - a page whose script throws fails the implicit clean check, and with `implicit_clean` off
+      it passes with the error still recorded on the step.
+  - `view_app::check_runs_the_applications_checklists_against_its_preview`: `check` reports a
+    passing and a pre-existing failing checklist against the preview, and records both runs with
+    the preview's label and the agent's trigger.
+
+## Checklists C1: entities, runner, data and HTTP steps, agent policy
+
+What "working" means for an application, written down so every change — a person's or an
+agent's — can be checked against it (docs/CHECKLISTS.md, TODO-checklists C1).
+
+- **New crate `sc-check`** (layer 9, between `sc-app`/`sc-agent` and the copilot and server).
+  - Tables `_fd_checklists`, `_fd_checklist_steps`, `_fd_checklist_runs` and
+    `_fd_checklist_proposals`, created at bootstrap and in `TABLES_RENAME.sql`. Steps are never
+    updated in place: an edit writes a new version and sets `superseded_by` on the old one, and a
+    delete supersedes it with a tombstone row (`deleted`), so every check's history is kept. Only
+    `superseded_by` and `accepted` are ever updated. A step's `position` is a float, so
+    inserting before a step never renumbers others. `Checklist::mutates` is recomputed from the
+    current steps' types after every change (a type this server no longer has counts as
+    mutating).
+  - The step-type registry: `StepType` (`name`, `description`, `config_spec`, `needs`,
+    `mutates`, `min_timeout`, `run`), `Needs` (data/http/browser/build), `StepContext`, which
+    hands a step only the capabilities its type declared, and `StepOutcome`
+    (pass/fail/error/skipped, a message, the value an `as` captures). Names must be
+    `namespace.name`, and a duplicate registration is an error. A step's params are checked
+    against its `config_spec` on save, its templates must parse, its `as` must be an identifier
+    other than `run`, and a step that reaches the application is refused on a checklist without
+    one.
+  - Variables: every string anywhere in a step's params is an `sc-expr` template over earlier
+    captures and `run.id`. A string that is exactly one `{{ x }}` keeps the value's JSON type, so
+    `"{{ order.id }}"` is a number when the id is one. To support this, `sc-expr`'s `Template`
+    gained `render_paths` and `sole_path`, which render name and member-chain tokens
+    (`{{ run.id }}`, `{{ order.lines[0].sku }}`) against a JSON scope without an evaluator.
+  - The runner: loads the current steps, runs them in order as `run_as` (`NULL` is an anonymous
+    visitor), stops at the first fail or error unless `stop_on_failure` is false (the steps not
+    reached are still listed), and records the run with its trigger, target, status, per-step
+    results and step versions. A step whose capability the host lacks is `skipped` and makes the
+    run `incomplete`, never `passed`. A `core.manual` step is skipped too, but does not make the
+    run incomplete, because otherwise such a checklist could never pass. Rows written by
+    `data.insert` are deleted at the end, newest first, as the system and best effort. A row a
+    later step already deleted is fine; any other failure is listed in the run's
+    `cleanup_errors`. Each step has a timeout (`attributes.timeout`, default 60 s, at least the
+    type's `min_timeout`: 10 minutes for `app.builds`).
+  - Step types: `core.wait`, `core.manual`; `data.insert`, `data.update`, `data.delete`,
+    `data.expect_rows` (a `where` filter object, an exact `count`, `fields` every row must
+    hold), `data.expect_denied`, `data.run_trigger` (`run_as` must meet the trigger's
+    `min_role`; expect `success`, or `error` with an optional pattern), and
+    `data.expect_calculated`. All of them go through `sc_api::read_rows_as` and its siblings as
+    `run_as`, so they test permissions as well as data. Also `http.request`,
+    `http.expect_status` (it sends its own request when given a `path`, else checks the last
+    response) and `http.expect_json` (`equals`/`contains`/`matches`/`exists` at a path like
+    `items[0].name`), all through the server's `AppRequester` with a session for `run_as`; and
+    `app.builds` (an application with nothing to build passes).
+  - `data.expect_denied` writes nothing. It asks for the access rules' verdict instead of
+    attempting the write, so it is not a mutating step and can run on production. For this,
+    `sc-api` gained `row_insertable_as` and `row_deletable_as` beside `row_updatable_as`, which
+    now shares one implementation with the delete check.
+  - The agent policy (`sc_check::edit`, §4). Every change goes through it, the admin API's as
+    `Editor::Human`. The grant is `checklists: none | append | full`, default `append`. Under
+    `append` an agent may create checklists, append steps, and edit, remove or insert before the
+    unaccepted steps its own run wrote. Every other change (an edit of another step, an insert
+    before one, a reorder, a `run_as` change) is stored as a proposal with its reason, and the
+    old step keeps running until a person accepts it. Accepting writes the new version, recorded
+    as the agent's and marked accepted; rejecting discards the proposal. Deleting a checklist or
+    an accepted step needs `full`. Under every grant, only a person may disable a checklist, set
+    `allow_on_production`, or point `run_as` at a user who is not a check user. Refusals name the
+    missing grant.
+  - The agent tools `describe_step_types`, `describe_checklists`, `save_checklist`,
+    `append_steps`, `propose_step_change` (it applies directly where the rules allow, and stores
+    a proposal otherwise) and `run_checklists`. They are offered by `admin_copilot` under a new
+    `checklists` setting (`none`/`append`/`full`) and by the MCP server under the token's
+    `checklists` grant. `sc_api::mcp::CHECKLISTS_GRANT` names the key, `validate_flags` checks
+    its value, and a token mint writes it explicitly, as `append` unless the mint asked
+    otherwise. `allow_all` does not make it `full`. An MCP token is its own "run": the steps it
+    may still edit are the ones that token wrote.
+- **Check users (C1.5).** The users table gains a nullable `attributes` JSON system column, and
+  `{"check_user": true}` in it marks an account a checklist may run as. `User::is_check_user`
+  reads the flag and `sc_auth::set_check_user` sets it. It is set only through the admin API's
+  `setCheckUser`, and user rows now report `check_user`. The runner needs no password: it signs
+  `run_as` in through the application router's per-request session.
+- **Production guard (C1.6).** An environment in `feldspar.toml` may say `production = true`,
+  and the one named `production` is production unless it says `production = false`. The CLI
+  records the selected environment's answer on the catalog (`Catalog::set_production`).
+  There, a checklist that mutates is refused unless its `attributes.allow_on_production` is set,
+  which only a person can set. The refusal is recorded as a run with status `error` and the
+  reason, so the admin UI shows why it did not run.
+- **Admin API (C1.11):** `listChecklists` (by application, `none`, or all, with the last run
+  and the count waiting for a person), `createChecklist`, `getChecklist` (steps, proposals,
+  recent runs), `updateChecklist`, `deleteChecklist`, `addChecklistStep` (at the end, or
+  `before` a step), `updateChecklistStep`, `deleteChecklistStep`, `acceptChecklistStep`,
+  `reorderChecklistSteps`, `acceptChecklistProposal`, `rejectChecklistProposal`, `runChecklist`,
+  `runChecklists`, `listChecklistRuns`, `getChecklistRun`, `listChecklistStepTypes`,
+  `setCheckUser` and `listChecklistUsers`. These are served by `sc-server/src/checklists.rs`,
+  with the server's application router for the `http.*` steps.
+- **Admin UI (C1.16):** each application has a Checklists link
+  (`/applications/:app/checklists`), and the Data Layer has a Checklists entry for checklists with
+  no application (`/checklists`).
+  - The list shows each checklist's last result and when it ran, how many items wait for a
+    person, and a "Writes data" badge, with Run, Run all and New checklist buttons.
+  - A checklist's page puts what waits for review first: each proposal with its reason, the
+    current and proposed step side by side, and the last run's result for that step;
+    unaccepted agent steps are listed there too. Each has Accept/Reject.
+  - The steps table shows label, type, `as`, author and whether a person accepted it, with
+    move up/down, edit and remove. The step form is drawn from the type's `config_spec`.
+  - The settings cover run-as (check users are marked), enabled, stop at first failure,
+    timeout and allow on production, and the page lists recent runs.
+  - A run's page shows every step's outcome, message, captured value and duration, and any
+    clean-up errors.
+  - The Users screen gets a "Check user" badge and a menu item that sets the flag. The pure
+    logic is in `ui/admin/src/checklists.ts`, with its tests. The admin client and its ide,
+    builder and analytics copies were regenerated.
+- **CLI (C1.12):** `feldspar mcp-token create` takes `--checklists none|append|full`, and
+  `feldspar check run [--app SUB] [--checklist NAME]` brings up the triggers and
+  the mounted applications as `serve` does, without listening, so `http.*` steps run. It prints
+  each step's result and exits non-zero when any checklist fails, errors or is incomplete, or
+  when nothing matched. `feldspar check list` lists the checklists with their last result.
+- Tests: `sc-check`'s `tests/checklists.rs` covers a data checklist that inserts a row, runs a
+  trigger and asserts its effect, and leaves its row gone; `data.expect_denied` going red after
+  the table's role is loosened; the `append` policy (append yes; deleting or directly editing an
+  accepted step no; the edit becomes a proposal while the old step keeps running; accepting
+  it); `run_as` limited to check users for an agent; the production refusal; and an HTTP step
+  on a host without the router making the run `incomplete`. `sc-cli`'s `tests/check.rs` checks
+  that `feldspar check run` exits non-zero on a failing checklist. There are unit tests for the
+  run status, the registry, the variables and the JSON paths.
 
 ## i18n: wrap the strings the lint found, and fill the core, admin and builder catalogues
 

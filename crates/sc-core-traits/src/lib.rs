@@ -566,7 +566,8 @@ mod tests {
         // triggers and an application's custom SQL queries alike, which is why
         // there are still four of them. Then the two **areas**, which are the
         // other question and therefore two more checkboxes rather than eight more
-        // grants: not "what may it do?" but "to which of the three?".
+        // grants: not "what may it do?" but "to which of the three?". Last the
+        // checklists grant, which has three values rather than two.
         assert_eq!(
             spec("admin_copilot"),
             vec![
@@ -576,6 +577,7 @@ mod tests {
                 CFG_ALLOW_ACCESS,
                 CFG_ALLOW_TRIGGERS,
                 CFG_ALLOW_APPLICATIONS,
+                crate::admin_copilot::CFG_CHECKLISTS,
             ]
         );
     }
@@ -685,13 +687,13 @@ mod tests {
             ]
         );
         // `admin_copilot`'s names are fixed rather than derived, and say the
-        // same twenty-one things every deployment's do — two over the schema,
+        // same twenty-seven things every deployment's do — two over the schema,
         // four over the triggers, one reference for a code body, six over
         // applications (reading, creating one and its store, changing one —
         // its tables, static directories and CSP — and its custom SQL
         // queries), one over its streams, two over its translations, three over the code
-        // libraries, and its own two: delegating code to a coding agent and
-        // publishing.
+        // libraries, its own two: delegating code to a coding agent and
+        // publishing, and the six checklist tools `sc-check` shares with MCP.
         assert_eq!(
             tool_names::admin_copilot(),
             [
@@ -716,6 +718,12 @@ mod tests {
                 "delete_code_library",
                 "delegate_to_coding_agent",
                 "publish_application",
+                "describe_step_types",
+                "describe_checklists",
+                "save_checklist",
+                "append_steps",
+                "propose_step_change",
+                "run_checklists",
             ]
         );
         for name in tool_names::admin_copilot() {

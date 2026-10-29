@@ -241,6 +241,42 @@ pub fn referenced_views(value: &Json) -> Vec<String> {
     out.into_iter().collect()
 }
 
+/// The keys whose text names a field of the view's own table: a column's or a
+/// layout item's field, a feed's sort order, and a join's first hop.
+const FIELD_REFERENCE_KEYS: [&str; 3] = ["field_name", "order_field", "join_field"];
+
+/// Every field of its own table a view's configuration names, sorted and
+/// without repeats — a column's or layout item's `field_name`, a feed's
+/// `order_field`, and the key a `join_field` (`author.last_name`) starts from.
+///
+/// What a checklist's `saltcorn_ui.views_render` checks against the table as
+/// it is now (TODO-checklists C3.3): v1's patterns render a field that has gone
+/// as an empty cell or a missing column, not as an error, so a view broken by a
+/// field's deletion still answers 200.
+pub fn referenced_fields(configuration: &Json) -> Vec<String> {
+    fn walk(out: &mut std::collections::BTreeSet<String>, value: &Json) {
+        match value {
+            Json::Object(item) => {
+                for (key, child) in item {
+                    if FIELD_REFERENCE_KEYS.contains(&key.as_str())
+                        && let Some(raw) = child.as_str()
+                        && let Some(first) = raw.split('.').next().map(str::trim)
+                        && !first.is_empty()
+                    {
+                        out.insert(first.to_owned());
+                    }
+                    walk(out, child);
+                }
+            }
+            Json::Array(items) => items.iter().for_each(|i| walk(out, i)),
+            _ => {}
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    walk(&mut out, configuration);
+    out.into_iter().collect()
+}
+
 /// Refuse a view that names an action this server will not run (§12.3): every
 /// action it names is one of v1's [`VIEW_ACTIONS`] or a trigger in the
 /// application's declared subset. A v1 state action, a plugin's action, a
@@ -374,5 +410,21 @@ mod tests {
         view.table_name = None;
         let err = check_view_shape(&view, &app, &builtin_patterns()).unwrap_err();
         assert!(err.to_string().contains("needs one"), "{err}");
+    }
+    #[test]
+    fn the_fields_a_configuration_names_are_its_own_tables() {
+        let configuration = serde_json::json!({
+            "columns": [
+                { "type": "Field", "field_name": "pages" },
+                { "type": "JoinField", "join_field": "author.last_name" },
+                { "type": "ViewLink", "view": "Show Books" },
+            ],
+            "layout": { "above": [{ "type": "field", "field_name": "title" }, { "field_name": "" }] },
+            "order_field": "title",
+        });
+        assert_eq!(
+            referenced_fields(&configuration),
+            ["author", "pages", "title"]
+        );
     }
 }

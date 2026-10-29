@@ -39,6 +39,7 @@ use sc_server::{
     AppMounts, CSRF_COOKIE, CSRF_HEADER, FILE_PATH_HEADER, FILE_URL_HEADER, MountedApp,
     ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator, install_triggers,
 };
+use sc_test_harness::Teardown;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -49,7 +50,7 @@ const ROLE_MEMBER: u8 = 80;
 const MB: usize = 1024 * 1024;
 
 /// A scratch directory removed when the guard drops.
-struct TempDir(PathBuf);
+struct TempDir(PathBuf, Teardown);
 
 impl TempDir {
     fn new(tag: &str) -> TempDir {
@@ -60,7 +61,7 @@ impl TempDir {
         ));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
-        TempDir(dir)
+        TempDir(dir, Teardown::new())
     }
 
     fn path(&self) -> &Path {
@@ -316,6 +317,7 @@ async fn setup(tmp: &TempDir, config: ServerConfig) -> sc_error::Result<Server> 
     std::fs::create_dir_all(&db_dir).map_err(sc_error::Error::from)?;
     let driver = Arc::new(SqliteDriver::open(db_dir.join("drop.db"))?);
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    tmp.1.add(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;

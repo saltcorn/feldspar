@@ -45,6 +45,10 @@ members = [
     "crates/sc-catalog",
     # Layer 5 — users/auth, files, configuration values
     "crates/sc-auth",
+    # The headless-browser seam (TODO-checklists C2.1): the `BrowserDriver`
+    # trait, its actions and the stable locators. Below the agents and the
+    # checklists, which both drive the browser; the server implements it.
+    "crates/sc-browser",
     "crates/sc-files",
     "crates/sc-config",
     # Datasets (analytics TODO A1): a base and an ordered list of operations,
@@ -121,6 +125,11 @@ members = [
     # them write rows through it), the core built-in agent traits (above it for
     # exactly the same reason) and the server
     "crates/sc-core-actions",
+    # Checklists (TODO-checklists): what "working" means for an application,
+    # as ordered steps run as one user. Above `sc-app` and `sc-agent` (it
+    # builds an application and sends requests through `AppRequester`), below
+    # the copilot and the server, which both offer its tools.
+    "crates/sc-check",
     "crates/sc-core-traits",
     "crates/sc-server",
     # Layer 10 — CLI binary
@@ -170,6 +179,7 @@ sc-db-sqlite = { path = "crates/sc-db-sqlite" }
 sc-types = { path = "crates/sc-types" }
 sc-catalog = { path = "crates/sc-catalog" }
 sc-auth = { path = "crates/sc-auth" }
+sc-browser = { path = "crates/sc-browser" }
 sc-files = { path = "crates/sc-files" }
 sc-repomap = { path = "crates/sc-repomap" }
 sc-config = { path = "crates/sc-config" }
@@ -189,6 +199,7 @@ sc-live = { path = "crates/sc-live" }
 sc-api = { path = "crates/sc-api" }
 sc-app = { path = "crates/sc-app" }
 sc-viewpattern = { path = "crates/sc-viewpattern" }
+sc-check = { path = "crates/sc-check" }
 sc-core-actions = { path = "crates/sc-core-actions" }
 sc-core-traits = { path = "crates/sc-core-traits" }
 sc-server = { path = "crates/sc-server" }

@@ -219,6 +219,7 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<(Router, Arc<Catalog>, TestDb)
 
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     // A static directory reads its store's floor off this table before it serves
@@ -959,5 +960,76 @@ async fn a_static_directory_added_by_an_edit_serves_without_a_rebuild() -> sc_er
     let (_, body) = app.raw("GET", "/img/hero.png", None).await;
     assert_ne!(&body[..], HERO, "the directory an admin removed is gone");
 
+    Ok(())
+}
+
+/// **Checklists after a build** (TODO-checklists C4.3): with the application's
+/// `check_after_build` setting on, a build runs its enabled checklists,
+/// records each run as triggered `build`, and reports them with the build;
+/// with it off, a build runs none.
+#[tokio::test]
+async fn a_build_with_after_build_checks_records_a_run() -> sc_error::Result<()> {
+    let tmp = TempDir::new("after-build");
+    let (router, catalog, _db) = setup(&tmp).await?;
+    sc_check::bootstrap_checklists(&catalog).await?;
+    let user = create_user(&catalog, "admin@example.com", "correct-horse", ROLE_ADMIN).await?;
+    let mut admin = Client::new(router.clone(), BASE_DOMAIN);
+    admin.login("admin@example.com", "correct-horse").await;
+
+    write_bundler(tmp.path(), "v1", true);
+    let mut body = blog_body();
+    body["attributes"] = json!({ "check_after_build": true });
+    let (status, created) = admin.send("POST", "/api/applications", Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap().to_owned();
+    let app_id = uuid::Uuid::parse_str(&id).unwrap();
+
+    let registry = sc_check::StepRegistry::installed();
+    let mut input = sc_check::ChecklistInput::new("Nothing is mailed");
+    input.application = Some(app_id);
+    input.run_as = Some(user.id);
+    let checklist = sc_check::edit::create_checklist(
+        &catalog,
+        &registry,
+        &sc_check::Editor::Human(user.id),
+        input,
+        vec![sc_check::StepDraft::new("data.expect_sent").param("count", 0)],
+    )
+    .await?;
+
+    let (status, report) = admin
+        .send("POST", &format!("/api/applications/{id}/build"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    let checks = report["checks"].as_array().expect("the checks ran");
+    assert_eq!(checks.len(), 1, "{report}");
+    assert_eq!(checks[0]["checklist_name"], json!("Nothing is mailed"));
+    assert_eq!(checks[0]["status"], json!("passed"), "{report}");
+    assert!(
+        report["log"]
+            .as_str()
+            .unwrap()
+            .contains("checklists after build: 1 of 1 passed"),
+        "{report}"
+    );
+    let run_id = uuid::Uuid::parse_str(checks[0]["id"].as_str().unwrap()).unwrap();
+    let run = sc_check::store::load_run(&catalog, run_id)
+        .await?
+        .expect("the run is recorded");
+    assert_eq!(run.trigger, sc_check::TRIGGER_BUILD);
+    assert_eq!(run.checklist, checklist.id);
+
+    // Off: the build runs none.
+    let mut body = blog_body();
+    body["attributes"] = json!({});
+    let (status, _) = admin
+        .send("PUT", &format!("/api/applications/{id}"), Some(body))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, report) = admin
+        .send("POST", &format!("/api/applications/{id}/build"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["checks"], Value::Null, "{report}");
     Ok(())
 }

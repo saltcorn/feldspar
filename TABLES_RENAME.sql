@@ -875,3 +875,68 @@ CREATE TABLE IF NOT EXISTS "_fd_table_edits" (
   "name" text PRIMARY KEY,
   "updated_at" timestamptz NOT NULL
 );
+
+-- TODO-checklists C1.1: checklists, every version of their steps, their runs and
+-- their pending agent proposals (2026-10-28). Bootstrap creates these too.
+-- Postgres; on SQLite use `TEXT` for uuid/jsonb/timestamptz, `INTEGER` for
+-- boolean and `REAL` for double precision.
+CREATE TABLE IF NOT EXISTS "_fd_checklists" (
+  "id" uuid NOT NULL PRIMARY KEY,
+  "name" text NOT NULL UNIQUE,
+  "description" text,
+  "application" uuid,
+  "run_as" uuid,
+  "enabled" boolean NOT NULL,
+  "mutates" boolean NOT NULL,
+  "attributes" jsonb NOT NULL,
+  "updated_at" timestamptz
+);
+CREATE TABLE IF NOT EXISTS "_fd_checklist_steps" (
+  "id" uuid NOT NULL PRIMARY KEY,
+  "checklist" uuid NOT NULL,
+  "position" double precision NOT NULL,
+  "type" text NOT NULL,
+  "params" jsonb NOT NULL,
+  "label" text,
+  "capture" text,
+  "author" text NOT NULL,
+  "accepted" boolean NOT NULL,
+  "superseded_by" uuid,
+  "deleted" boolean NOT NULL,
+  "created_at" timestamptz NOT NULL
+);
+CREATE TABLE IF NOT EXISTS "_fd_checklist_runs" (
+  "id" uuid NOT NULL PRIMARY KEY,
+  "checklist" uuid NOT NULL,
+  "checklist_name" text NOT NULL,
+  "trigger" text NOT NULL,
+  "target" text NOT NULL,
+  "status" text NOT NULL,
+  "run_as" uuid,
+  "started_at" timestamptz NOT NULL,
+  "finished_at" timestamptz NOT NULL,
+  "step_versions" jsonb NOT NULL,
+  "steps" jsonb NOT NULL,
+  "cleanup_errors" jsonb NOT NULL,
+  "message" text
+);
+CREATE TABLE IF NOT EXISTS "_fd_checklist_proposals" (
+  "id" uuid NOT NULL PRIMARY KEY,
+  "checklist" uuid NOT NULL,
+  "kind" text NOT NULL,
+  "step" uuid,
+  "change" jsonb NOT NULL,
+  "reason" text NOT NULL,
+  "author" text NOT NULL,
+  "created_at" timestamptz NOT NULL
+);
+
+-- TODO-checklists C1.5: a user's system attributes, where the check-user flag
+-- lives (`{"check_user": true}`). NULL reads as none. (Bootstrap adds it too.)
+-- On SQLite use `ADD COLUMN "attributes" TEXT` without `IF NOT EXISTS`.
+ALTER TABLE IF EXISTS "users" ADD COLUMN IF NOT EXISTS "attributes" jsonb;
+
+-- TODO-checklists C4.1: what a checklist run kept instead of sending (its
+-- outbox), as a JSON array. NULL reads as nothing. (Bootstrap adds it too.)
+-- On SQLite use `ADD COLUMN "outbox" TEXT` without `IF NOT EXISTS`.
+ALTER TABLE IF EXISTS "_fd_checklist_runs" ADD COLUMN IF NOT EXISTS "outbox" jsonb;

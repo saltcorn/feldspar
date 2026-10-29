@@ -264,6 +264,7 @@ async fn setup(
 
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     // The overlays and the store-definition table have to exist for the admin
     // to configure through, just as `connect_catalog` bootstraps them on the

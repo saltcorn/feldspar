@@ -101,7 +101,8 @@ pub use tables::{
     LIBRARY_TABLE, PAGES_TABLE, VIEWS_TABLE, bootstrap,
 };
 pub use validate::{
-    VIEW_ACTIONS, check_name, check_view_actions, configured_actions, referenced_views,
+    VIEW_ACTIONS, check_name, check_view_actions, configured_actions, referenced_fields,
+    referenced_views,
 };
 pub use view::{Page, PageId, View, ViewId};
 pub use view_set::{ViewSet, ViewSets};

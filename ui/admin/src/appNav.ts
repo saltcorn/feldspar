@@ -32,6 +32,7 @@ export type AppNavLink = {
   | "pages"
   | "library"
   | "translations"
+  | "checklists"
   | "settings";
   label: string;
   /** Where it goes. Absent for the links that *do* something (build, build a
@@ -107,6 +108,8 @@ export function builderAgentFor(
  * - One that is **constructed** from views and pages (Saltcorn UI) gets those,
  *   and the library its views and pages place.
  * - Either gets a new chat with its coding agent, when it has one.
+ * - **Every application has checklists** (TODO-checklists C1.16): what is
+ *   checked about it does not depend on how it is made.
  * - **Settings is always there, and always last**; deleting is not a sidebar
  *   action at all — it stays on the applications list, beside the rest of the
  *   rows, where it cannot be clicked on the way to something else.
@@ -165,6 +168,12 @@ export function appNavLinks(
       matches: [],
     });
   }
+  links.push({
+    id: "checklists",
+    label: "Checklists",
+    href: `#${base}/checklists`,
+    matches: [`${base}/checklists`],
+  });
   links.push({
     id: "settings",
     label: "Settings",

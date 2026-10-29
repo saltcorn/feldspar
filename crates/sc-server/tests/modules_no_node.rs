@@ -60,6 +60,7 @@ async fn the_server_serves_a_module_with_node_off_the_path() -> sc_error::Result
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     bootstrap_modules(&catalog).await?;
 
     // Step one, with a working toolchain: npm installs the package. This is the

@@ -60,6 +60,10 @@ pub(crate) struct CodeFetchHost {
     /// The trigger this body belongs to, so a failure names it the way every
     /// other failure of a firing does.
     trigger: String,
+    /// The checklist run the body runs on behalf of, whose outbox a request
+    /// goes to instead of out (TODO-checklists C4.1). Read when the host is
+    /// built, in the action's task: the isolate's calls may arrive on another.
+    outbox: Option<std::sync::Arc<sc_catalog::outbox::RunOutbox>>,
 }
 
 impl CodeFetchHost {
@@ -67,6 +71,7 @@ impl CodeFetchHost {
         CodeFetchHost {
             client,
             trigger: trigger.into(),
+            outbox: sc_catalog::outbox::current(),
         }
     }
 }
@@ -83,6 +88,27 @@ impl FetchHost for CodeFetchHost {
         )?;
         let headers = parse_headers(request.get("headers"))?;
         let timeout = parse_timeout(request.get("timeout_ms"));
+
+        // On behalf of a checklist run: kept, not made, and answered with an
+        // empty `200` — there is nothing to answer with.
+        if let Some(outbox) = &self.outbox {
+            let body = parse_body(&request)?
+                .map_or(Json::Null, |b| Json::String(String::from_utf8_lossy(&b).into_owned()));
+            outbox.capture(sc_catalog::outbox::Sent::new(
+                sc_catalog::outbox::SentKind::Webhook,
+                vec![url.to_string()],
+                method.as_str(),
+                body,
+            ));
+            return Ok(json!({
+                "status": 200,
+                "status_text": "OK",
+                "url": url.as_str(),
+                "redirected": false,
+                "headers": [],
+                "text": "",
+            }));
+        }
 
         let mut send = self
             .client

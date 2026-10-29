@@ -43,7 +43,8 @@
 use std::time::Duration;
 
 use sc_agent::{
-    BrowserAction, BrowserRequest, Elidable, PreviewInfo, RunMode, TraitCheck, TraitContext,
+    BrowserAction, BrowserRequest, Element, Elidable, PreviewInfo, RunMode, TraitCheck,
+    TraitContext,
 };
 use sc_auth::User;
 use sc_error::{Error, Result};
@@ -220,17 +221,20 @@ fn action(args: &Json, limit: Duration) -> Result<BrowserAction> {
                 path: text("path")?,
             },
             "click" => BrowserAction::Click {
-                reference: text("ref")?,
+                element: Element::Ref(text("ref")?),
             },
             "fill" => BrowserAction::Fill {
-                reference: text("ref")?,
+                element: Element::Ref(text("ref")?),
                 text: args
                     .get("text")
                     .and_then(Json::as_str)
                     .unwrap_or_default()
                     .to_owned(),
             },
-            "press" => BrowserAction::Press { key: text("key")? },
+            "press" => BrowserAction::Press {
+                key: text("key")?,
+                element: None,
+            },
             "wait_for" => {
                 let (text, reference) = (optional("text"), optional("ref"));
                 if text.is_none() && reference.is_none() {
@@ -381,17 +385,17 @@ pub async fn call(config: &Attrs, args: &Json, ctx: &mut TraitContext<'_>) -> Re
     let name = action.name();
     let target = match &action {
         BrowserAction::Goto { path } => format!(" {path}"),
-        BrowserAction::Click { reference } | BrowserAction::Fill { reference, .. } => {
-            format!(" {reference}")
+        BrowserAction::Click { element } | BrowserAction::Fill { element, .. } => {
+            format!(" {element}")
         }
-        BrowserAction::Press { key } => format!(" {key}"),
+        BrowserAction::Press { key, .. } => format!(" {key}"),
         _ => String::new(),
     };
     let report = ctx
         .require_browser()?
         .act(BrowserRequest {
-            run: ctx.run,
-            preview: &preview,
+            context: ctx.run.0,
+            target: &preview.target(ctx.run),
             user: user.as_ref(),
             action,
             timeout: limit,

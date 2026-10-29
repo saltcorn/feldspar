@@ -14,7 +14,9 @@
 //!   application.
 //! - [`BrowserDriver`] performs one [`BrowserAction`] in the run's own browser
 //!   context, as a session for the run's caller or signed out, and reports what
-//!   the page is now.
+//!   the page is now. The trait lives in `sc-browser`, below this crate, so
+//!   the checklist runner drives the same browser (TODO-checklists C2.1); it
+//!   is re-exported here.
 //! - [`AppRequester`] sends one HTTP request to an application through the
 //!   server's own router, as a session for a user or as nobody, and hands back
 //!   the response — `call_api`'s way of seeing what an endpoint answers.
@@ -37,6 +39,10 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use sc_auth::User;
+pub use sc_browser::{
+    BrowserAction, BrowserDriver, BrowserReport, BrowserRequest, BrowserTarget, Element,
+    ElementInfo, Locator, PreviewTarget, TextMatch,
+};
 use sc_error::Result;
 use serde_json::Value as Json;
 
@@ -80,6 +86,24 @@ pub struct PreviewInfo {
     pub host: String,
 }
 
+impl PreviewInfo {
+    /// This preview, which `owner` mounted, as a request or a checklist run
+    /// names it.
+    pub fn preview_target(&self, owner: RunId) -> PreviewTarget {
+        PreviewTarget {
+            label: self.label.clone(),
+            host: self.host.clone(),
+            owner: owner.0,
+        }
+    }
+
+    /// What a browser context opens to reach this preview, which `owner`
+    /// mounted.
+    pub fn target(&self, owner: RunId) -> BrowserTarget {
+        BrowserTarget::preview(self.subdomain.clone(), self.preview_target(owner))
+    }
+}
+
 /// Mounts a run's preview of an application (TODO 6b.3).
 #[async_trait::async_trait]
 pub trait AppPreviewer: Send + Sync {
@@ -102,99 +126,15 @@ pub trait AppPreviewer: Send + Sync {
     fn unmount_previews(&self, run: RunId);
 }
 
-/// One thing to do in the page.
-#[derive(Debug, Clone, PartialEq)]
-pub enum BrowserAction {
-    /// Open a path on the preview host.
-    Goto { path: String },
-    /// Click the element a snapshot named `@eN`.
-    Click { reference: String },
-    /// Type into the element a snapshot named, replacing its value.
-    Fill { reference: String, text: String },
-    /// Press a key (`Enter`, `Tab`, `Escape`, …) in the focused element.
-    Press { key: String },
-    /// Wait until the text appears in the page, or the element exists.
-    WaitFor {
-        text: Option<String>,
-        reference: Option<String>,
-        timeout: Duration,
-    },
-    /// Only look.
-    Snapshot,
-    /// A JPEG of the viewport, or of the whole page.
-    Screenshot { full_page: bool },
-}
-
-impl BrowserAction {
-    /// The action's name, as the tool spells it.
-    pub fn name(&self) -> &'static str {
-        match self {
-            BrowserAction::Goto { .. } => "goto",
-            BrowserAction::Click { .. } => "click",
-            BrowserAction::Fill { .. } => "fill",
-            BrowserAction::Press { .. } => "press",
-            BrowserAction::WaitFor { .. } => "wait_for",
-            BrowserAction::Snapshot => "snapshot",
-            BrowserAction::Screenshot { .. } => "screenshot",
-        }
-    }
-}
-
-/// One call on a run's browser context.
-pub struct BrowserRequest<'a> {
-    /// The run whose context this is. A first request creates it.
-    pub run: RunId,
-    /// The preview the page belongs to. Navigation anywhere else is refused.
-    pub preview: &'a PreviewInfo,
-    /// Whom the context's session is for: the run's caller, or the configured
-    /// user of a run nobody is present for. `None` looks as a visitor who is
-    /// not signed in: the context carries no session for this call, and a
-    /// later call with a user signs it back in.
-    pub user: Option<&'a User>,
-    /// What to do.
-    pub action: BrowserAction,
-    /// How long the whole call may take, including waiting for a context.
-    pub timeout: Duration,
-}
-
-/// What the page is after an action.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct BrowserReport {
-    /// The page's URL.
-    pub url: String,
-    /// The HTTP status of the last document loaded, when known.
-    pub status: Option<u16>,
-    /// The accessibility snapshot, with refs on interactive elements. `None`
-    /// for a screenshot.
-    pub snapshot: Option<String>,
-    /// The JPEG, for a screenshot.
-    pub screenshot: Option<Vec<u8>>,
-    /// Console errors and uncaught exceptions since the previous call.
-    pub console_errors: Vec<String>,
-    /// Requests that failed or answered 4xx/5xx since the previous call.
-    pub failed_requests: Vec<String>,
-    /// Something about the action the model should know: a `wait_for` that
-    /// timed out, a navigation that was refused.
-    pub note: Option<String>,
-}
-
-/// Drives the headless browser (TODO 6b.6).
-#[async_trait::async_trait]
-pub trait BrowserDriver: Send + Sync {
-    /// Perform one action in the request's run context, creating the context
-    /// and its session on first use, and report the page.
-    async fn act(&self, request: BrowserRequest<'_>) -> Result<BrowserReport>;
-
-    /// Close `run`'s context and delete its session. Synchronous, because it is
-    /// called from the driver's drop guard: start the release and return.
-    fn close(&self, run: RunId);
-}
-
 /// One HTTP request to an application (`call_api`).
 #[derive(Debug, Clone)]
 pub struct AppHttpRequest<'a> {
-    /// The application's subdomain. The request goes to its live mount.
+    /// The application's subdomain. The request goes to its live mount, unless
+    /// `preview` names a run's preview of it.
     pub subdomain: &'a str,
+    /// A run's preview of the application to send the request to instead of
+    /// the live mount (a checklist run against a preview, TODO-checklists C2.6).
+    pub preview: Option<&'a PreviewTarget>,
     /// The method, upper case.
     pub method: String,
     /// The path, with any query string.
@@ -228,7 +168,8 @@ pub struct AppHttpResponse {
 /// Sends a request to an application as its own client would.
 #[async_trait::async_trait]
 pub trait AppRequester: Send + Sync {
-    /// Send `request` to the application's live mount, with a session for
+    /// Send `request` to the application's live mount (or the preview it
+    /// names), with a session for
     /// `request.user` made for this one request and ended after it, and a
     /// valid CSRF token, so the answer is the one the application's own page
     /// would get.

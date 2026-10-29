@@ -1,5 +1,5 @@
 /**
- * Settings → Build hosts: what the tab tells an admin about a host, and the
+ * Settings → Development → Build hosts: what the tab tells an admin about a host, and the
  * command it hands them for the build host.
  */
 

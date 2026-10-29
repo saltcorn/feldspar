@@ -522,3 +522,38 @@ async fn a_broken_fetch_configuration_is_refused_on_save() -> Result<()> {
     validate_trigger(&catalog, &registry, &ok).await?;
     Ok(())
 }
+
+/// On behalf of a checklist run (TODO-checklists C4.1) the request is kept on
+/// the run's outbox, with its URL, method and body, and never made.
+#[tokio::test]
+async fn a_fetch_inside_a_checklist_run_is_kept_and_not_sent() -> Result<()> {
+    let db = TestDb::new().await?;
+    let catalog = Arc::new(setup(&db).await?);
+    db.on_teardown(catalog.teardown_hook());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/hook", listener.local_addr().unwrap());
+
+    let opened = sc_catalog::outbox::open(uuid::Uuid::new_v4());
+    let cfg = config(&[("url", json!(url)), ("body", json!("row"))]);
+    let result = sc_catalog::outbox::scope(
+        Arc::clone(opened.outbox()),
+        run(&catalog, &book_insert(), &cfg),
+    )
+    .await?;
+    assert_eq!(result, Json::Null);
+
+    let sent = opened.outbox().sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].kind, sc_catalog::outbox::SentKind::Webhook);
+    assert_eq!(sent[0].to, vec![url]);
+    assert_eq!(sent[0].subject, "POST");
+    assert_eq!(sent[0].body, json!({ "id": 7, "title": "A Book", "pages": 100 }));
+    // Nobody connected.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), listener.accept())
+            .await
+            .is_err(),
+        "the request was sent"
+    );
+    Ok(())
+}

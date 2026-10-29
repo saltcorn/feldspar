@@ -33,6 +33,8 @@ mod build_archive;
 mod builder;
 mod change_log_cleanup;
 mod chat;
+mod check_steps;
+mod checklists;
 mod clear_all;
 mod config;
 mod entities;

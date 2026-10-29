@@ -100,3 +100,27 @@ async fn database_is_dropped_on_teardown() {
     }
     assert!(gone, "database {name} should be dropped on teardown");
 }
+
+/// What a test registers with `on_teardown` runs when its database is dropped,
+/// latest first — and a bare `Teardown` guard does the same when it goes.
+#[tokio::test]
+async fn teardowns_run_when_the_test_ends_latest_first() {
+    use std::sync::{Arc, Mutex};
+    let ran = Arc::new(Mutex::new(Vec::new()));
+    let db = TestDb::new().await.expect("create test db");
+    for n in [1, 2] {
+        let ran = Arc::clone(&ran);
+        db.on_teardown(move || ran.lock().unwrap().push(n));
+    }
+    assert!(ran.lock().unwrap().is_empty(), "ran before the test ended");
+    drop(db);
+    assert_eq!(*ran.lock().unwrap(), vec![2, 1]);
+
+    let guard = sc_test_harness::Teardown::new();
+    {
+        let ran = Arc::clone(&ran);
+        guard.add(move || ran.lock().unwrap().push(3));
+    }
+    drop(guard);
+    assert_eq!(*ran.lock().unwrap(), vec![2, 1, 3]);
+}

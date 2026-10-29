@@ -298,7 +298,11 @@ async fn a_failed_redemption_leaves_the_token_and_the_password_as_they_were() ->
     };
     alter(r#"ALTER TABLE "users" DROP COLUMN "email_verified""#).await?;
 
-    assert!(redeem_password_token(&f.catalog, &token, "pat-pw").await.is_err());
+    assert!(
+        redeem_password_token(&f.catalog, &token, "pat-pw")
+            .await
+            .is_err()
+    );
     assert_eq!(count(&f.catalog, PASSWORD_TOKENS_TABLE).await?, 1);
     assert!(!user_has_password(&f.catalog, user.id).await?);
 

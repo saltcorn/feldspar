@@ -300,6 +300,11 @@ impl ModuleServices {
                 sc_error::format_chain(&e)
             );
         }
+        // And the **checklist step types** a module declares (TODO-checklists
+        // C3.5), into `sc-check`'s registry — whole, like the frameworks, so a
+        // step of an uninstalled module's type errors naming why instead of
+        // half-running.
+        crate::check_steps::install_module_step_types(&self.host, &set);
         // And the **view patterns** (TODO "Saltcorn UI" 11.1): into
         // `sc-viewpattern`'s registry, which a view's save is checked against,
         // and into the view runtime's, which renders them — both whole, so an

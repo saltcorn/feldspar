@@ -206,8 +206,11 @@ impl TriggerDispatcher {
     /// mailer runs every other action normally, and a trigger that sends mail
     /// fails there with a message saying so rather than at a half-written
     /// `Option` somewhere further in.
+    ///
+    /// Installed [withholding](sc_email::Withholding): what a checklist run
+    /// sends goes to the run's outbox (TODO-checklists C4.1).
     pub fn with_mailer(mut self, mailer: Arc<dyn Mailer>) -> TriggerDispatcher {
-        self.services.mailer = Some(mailer);
+        self.services.mailer = Some(sc_email::Withholding::wrap(mailer));
         self
     }
 
@@ -299,6 +302,21 @@ impl TriggerDispatcher {
         if let Ok(mut guard) = self.engine.write() {
             *guard = Some(engine);
         }
+    }
+
+    /// Let go of the workflow engine and the observer, both of which hold this
+    /// dispatcher (or its catalog) back — what a test's `Catalog::teardown`
+    /// reaches through [`TableEvents::teardown`].
+    pub fn teardown(&self) {
+        let engine = match self.engine.write() {
+            Ok(mut guard) => guard.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        let observer = match self.observer.write() {
+            Ok(mut guard) => guard.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        drop((engine, observer));
     }
 
     /// The workflow engine, if this process has one.
@@ -715,6 +733,10 @@ impl TableEvents for TriggerDispatcher {
         reveal_secrets(catalog, write.table, &mut event);
         self.fire_in(catalog, &event, write.tx.as_ref()).await;
         Ok(())
+    }
+
+    fn teardown(&self) {
+        TriggerDispatcher::teardown(self);
     }
 }
 

@@ -53,6 +53,9 @@ import { ApplicationForm } from "./screens/ApplicationForm";
 import { ApplicationLibrary } from "./screens/ApplicationLibrary";
 import { ApplicationTranslations } from "./screens/Translations";
 import { ApplicationViews } from "./screens/ApplicationViews";
+import { ChecklistDetail } from "./screens/ChecklistDetail";
+import { ChecklistRun } from "./screens/ChecklistRun";
+import { Checklists } from "./screens/Checklists";
 import { PageProperties } from "./screens/PageProperties";
 import { ViewEditor } from "./screens/ViewEditor";
 import { DbConnections } from "./screens/DbConnections";
@@ -66,7 +69,7 @@ import { LlmProviderForm } from "./screens/LlmProviderForm";
 import { McpServers } from "./screens/McpServers";
 import { Login } from "./screens/Login";
 import { Roles } from "./screens/Roles";
-import { Settings } from "./screens/Settings";
+import { Settings, settingsTabFromPath } from "./screens/Settings";
 import { CodeLibraries } from "./screens/CodeLibraries";
 import { SharedTranslations } from "./screens/SharedTranslations";
 import { StreamForm } from "./screens/StreamForm";
@@ -262,7 +265,10 @@ export const NAV: NavItem[] = [
     // Last, and one entry however many sections it grows: settings are about
     // the *installation* rather than about anything in it, and an admin looks
     // for them in one place rather than under whichever thing they configure.
-    matches: ["/settings", "/code-libraries", "/translations"],
+    // The data-only checklists (TODO-checklists C1.16) are its Checklists tab,
+    // so a checklist's own screen and its runs light it up as well. An
+    // application's checklists are under that application instead.
+    matches: ["/settings", "/code-libraries", "/translations", "/checklists", "/checklist-runs"],
   },
 ];
 
@@ -646,6 +652,34 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
       <ApplicationTranslations appId={decodeURIComponent(translationsMatch[1])} />
     );
   }
+  // An application's checklists (TODO-checklists C1.16) live under its own
+  // route, so the sidebar keeps it current; the data-only ones are below.
+  const appChecklistRunMatch = path.match(
+    /^\/applications\/([^/]+)\/checklists\/runs\/([^/]+)$/,
+  );
+  if (appChecklistRunMatch) {
+    return (
+      <ChecklistRun
+        key={path}
+        appId={decodeURIComponent(appChecklistRunMatch[1])}
+        runId={decodeURIComponent(appChecklistRunMatch[2])}
+      />
+    );
+  }
+  const appChecklistMatch = path.match(/^\/applications\/([^/]+)\/checklists\/([^/]+)$/);
+  if (appChecklistMatch) {
+    return (
+      <ChecklistDetail
+        key={path}
+        appId={decodeURIComponent(appChecklistMatch[1])}
+        checklistId={decodeURIComponent(appChecklistMatch[2])}
+      />
+    );
+  }
+  const appChecklistsMatch = path.match(/^\/applications\/([^/]+)\/checklists$/);
+  if (appChecklistsMatch) {
+    return <Checklists key={path} appId={decodeURIComponent(appChecklistsMatch[1])} />;
+  }
   const libraryMatch = path.match(/^\/applications\/([^/]+)\/library$/);
   if (libraryMatch) {
     return <ApplicationLibrary appId={decodeURIComponent(libraryMatch[1])} />;
@@ -802,6 +836,22 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   if (runMatch) {
     return <RunDetail runId={decodeURIComponent(runMatch[1])} />;
   }
+  const checklistRunMatch = path.match(/^\/checklist-runs\/([^/]+)$/);
+  if (checklistRunMatch) {
+    return (
+      <ChecklistRun key={path} appId={null} runId={decodeURIComponent(checklistRunMatch[1])} />
+    );
+  }
+  const checklistMatch = path.match(/^\/checklists\/([^/]+)$/);
+  if (checklistMatch) {
+    return (
+      <ChecklistDetail
+        key={path}
+        appId={null}
+        checklistId={decodeURIComponent(checklistMatch[1])}
+      />
+    );
+  }
   if (path.startsWith("/users")) {
     return <Users />;
   }
@@ -809,7 +859,7 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
     return <Roles />;
   }
   if (path.startsWith("/settings")) {
-    return <Settings />;
+    return <Settings key={path} requestedTab={settingsTabFromPath(path)} />;
   }
   // Settings → Development → Code library (TODO F3.3).
   if (path.startsWith("/code-libraries")) {

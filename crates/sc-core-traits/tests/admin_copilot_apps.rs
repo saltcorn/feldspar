@@ -462,19 +462,19 @@ async fn the_areas_decide_which_tools_the_model_is_offered() -> Result<()> {
     let all = offered(&default_grants());
     assert!(all.contains(&TOOL_DESCRIBE_APPS.to_owned()), "{all:?}");
     assert!(all.contains(&TOOL_DESCRIBE_TRIGGERS.to_owned()), "{all:?}");
-    assert_eq!(all.len(), 21, "{all:?}");
+    assert_eq!(all.len(), 27, "{all:?}");
 
     // Switched off, the tools are *gone* rather than present and refusing: a tool
     // the model can see is a tool it will try. The code-body reference stays, as
-    // the schema tools do: it belongs to no area and grants nothing.
+    // the schema tools do: it belongs to no area and grants nothing. So do the
+    // checklist tools, which the checklists grant governs rather than an area.
     let schema_only = config(&[
         (CFG_ALLOW_TRIGGERS, json!(false)),
         (CFG_ALLOW_APPLICATIONS, json!(false)),
     ]);
-    assert_eq!(
-        offered(&schema_only),
-        vec!["describe_schema", "edit_schema", "describe_code_api"]
-    );
+    let mut expected = vec!["describe_schema", "edit_schema", "describe_code_api"];
+    expected.extend(sc_check::tools::TOOL_NAMES);
+    assert_eq!(offered(&schema_only), expected);
     env.check(TRAIT, &schema_only).await?;
 
     // …and a name that arrives anyway is refused, naming the checkbox.

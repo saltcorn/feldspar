@@ -411,6 +411,7 @@ async fn load_one(
         )
         .with_file_areas(Arc::clone(&areas))
         .with_role_ceiling(module.permissions.roles)
+        .with_network(!module.permissions.net.is_empty())
         .with_types(action.payload.clone(), action.returns.clone());
         // A type that does not lower is reported and dropped: the action still
         // runs, and its client method is `unknown` rather than wrong.
@@ -605,6 +606,7 @@ mod tests {
             services: Vec::new(),
             webhooks: Vec::new(),
             routes: Vec::new(),
+            check_steps: Vec::new(),
             reads: Vec::new(),
             csp: Vec::new(),
             frameworks: Vec::new(),

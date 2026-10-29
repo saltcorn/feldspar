@@ -246,6 +246,13 @@ pub struct FormField {
     /// Presentation only, like [`sublabel`](FormField::sublabel): the module
     /// itself decides what a blank value means.
     pub env_fallback: Option<String>,
+    /// The label each of the static options is shown with, in the options'
+    /// order — `"warning: also what is about to fail"` for the value
+    /// `"warning"`. Empty shows each value as itself.
+    ///
+    /// Presentation only, like [`sublabel`](FormField::sublabel): what is
+    /// stored and validated is still the value.
+    pub option_labels: Vec<String>,
     // Post-MVP (§6.2, §6.3, §12): `fieldview: FieldViewRef` and
     // `visibility: Option<Formula>`. Both name types that do not exist yet —
     // fieldviews and formulas are out of MVP scope — so they are left out rather
@@ -272,6 +279,7 @@ impl FormField {
             pattern: None,
             pattern_error: None,
             env_fallback: None,
+            option_labels: Vec::new(),
         }
     }
 
@@ -395,6 +403,22 @@ impl FormField {
     /// Restrict the field to a fixed set of values, rendered as a select.
     pub fn options(mut self, options: impl IntoIterator<Item = impl Into<Json>>) -> FormField {
         self.options_source = OptionsSource::Static(options.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Restrict the field to a fixed set of values, each shown with its own
+    /// label: `(value, label)` pairs. The value is what is stored; the label is
+    /// what the select offers ([`option_labels`](FormField::option_labels)).
+    pub fn labelled_options<V: Into<Json>, L: Into<String>>(
+        mut self,
+        options: impl IntoIterator<Item = (V, L)>,
+    ) -> FormField {
+        let (values, labels): (Vec<Json>, Vec<String>) = options
+            .into_iter()
+            .map(|(value, label)| (value.into(), label.into()))
+            .unzip();
+        self.options_source = OptionsSource::Static(values);
+        self.option_labels = labels;
         self
     }
 
