@@ -287,6 +287,8 @@ graph TD
   expr --> query
   expr --> ratelimit["sc-ratelimit"]
   api --> ratelimit
+  api --> docs["sc-docs"]
+  docs --> help
   server --> ratelimit
   python --> expr
   files --> types["sc-types"]

@@ -2,6 +2,12 @@
 
 Changes in reverse chronological order.
 
+## Crate diagram includes `sc-docs`
+
+§2's crate diagram in `docs/TECHNICAL_DESIGN.md` now draws the `sc-docs` crate (`sc-api --> sc-docs
+--> sc-help`). Without it, `repo_hygiene::the_design_crate_diagram_matches_the_workspace_manifests`
+failed with "the crate diagram is missing `sc-docs`".
+
 ## Security fix: v1 `{{= }}` re-interpolates names, not code
 
 Security review #36. Saltcorn UI's vendored v1 `interpolate` parsed a `{{= field }}` token's
