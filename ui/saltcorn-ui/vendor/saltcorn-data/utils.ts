@@ -524,20 +524,34 @@ const interpolate = (
       // row keys last, so a field called `row` or `user` shadows those bindings
       const context = { row, user, ...(row || {}) };
 
-      const go_interp = (s: string): string =>
-        s.replace(/\{\{([!=]?)([\s\S]+?)\}\}/g, renderToken);
+      // `depth` is 0 for what the admin wrote; above it, the text is a `{{= }}`
+      // token's value - row data - whose tokens only name values (see
+      // `fromDataToken`), as the Rust engine's `from_data` holds them.
+      const go_interp = (s: string, depth: number): string =>
+        s.replace(/\{\{([!=]?)([\s\S]+?)\}\}/g, (_m, bang, code) =>
+          renderToken(bang, code, depth)
+        );
 
-      const renderToken = (_match: string, bang: string, code: string) => {
-        const val = evaluator.evaluate(code.trim(), context);
+      const renderToken = (bang: string, code: string, depth: number) => {
+        const val =
+          depth === 0
+            ? evaluator.evaluate(code.trim(), context)
+            : fromDataToken(`{{${bang}${code}}}`, code, context);
         const strVal =
           val === null || typeof val === "undefined" ? "" : String(val);
-        return bang === "="
-          ? go_interp(escapeHtml(strVal))
-          : bang === "!"
-            ? strVal
-            : escapeHtml(strVal);
+        if (bang === "=") {
+          const text = escapeHtml(strVal);
+          if (!text.includes("{{")) return text;
+          if (depth >= MAX_REINTERPOLATIONS)
+            throw new Error(
+              `{{=${code}}} is still interpolating after ${MAX_REINTERPOLATIONS} passes - a value that renders itself`
+            );
+          return go_interp(text, depth + 1);
+        }
+        // `{{! }}` in row data is escaped like `{{ }}`: data puts no markup on the page
+        return bang === "!" && depth === 0 ? strVal : escapeHtml(strVal);
       };
-      return go_interp(s);
+      return go_interp(s, 0);
     } else return s || "";
   } catch (e: any) {
     e.message = `In evaluating the interpolation ${s}${
@@ -547,9 +561,51 @@ const interpolate = (
   }
 };
 
+/** How deep `{{= }}` re-interpolates: the Rust engine's `MAX_PASSES`. */
+const MAX_REINTERPOLATIONS = 5;
+
+/** A name and its static members: `firstName`, `user.name`, `customerⱵemail`. */
+const NAME_PATH = /^[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*(\.[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*)*$/u;
+
+/** Members that lead from a value to its prototype or its constructor. */
+const UNSAFE_MEMBERS = new Set(["constructor", "__proto__", "prototype"]);
+
+/**
+ * A token inside a `{{= }}` token's value: row data, which whoever wrote the
+ * row chose (security review #36). It may only name a value, and the name is
+ * looked up in `context` by own properties - never evaluated, since the
+ * evaluator's realm is shared by every viewer's render.
+ */
+function fromDataToken(token: string, code: string, context: any): any {
+  const path = code.trim();
+  const segments = path.split(".");
+  if (!NAME_PATH.test(path) || segments.some((s) => UNSAFE_MEMBERS.has(s)))
+    throw new Error(
+      `${token}: a value re-interpolated with {{= }} may only name fields, as in {{ firstName }}`
+    );
+  const has = (o: any, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+  if (!has(context, segments[0]))
+    throw new ReferenceError(`${token}: ${segments[0]} is not defined`);
+  let value = context[segments[0]];
+  for (let i = 1; i < segments.length; i++) {
+    if (value === null || typeof value === "undefined")
+      throw new TypeError(
+        `${token}: cannot read ${segments[i]} of ${segments.slice(0, i).join(".")}, which is ${value}`
+      );
+    value = Object(value);
+    value = has(value, segments[i]) ? value[segments[i]] : undefined;
+  }
+  return value;
+}
+
 function escapeHtml(str: string): string {
   if (!str || !str.replace) return str;
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 const prepMobileRows = (rows: Row[], fields: Field[]) => {

@@ -2,6 +2,42 @@
 
 Changes in reverse chronological order.
 
+## Security fix: v1 `{{= }}` re-interpolates names, not code
+
+Security review #36. Saltcorn UI's vendored v1 `interpolate` parsed a `{{= field }}` token's
+value (row data, or a page's query string) as a template again, and evaluated every token in it
+as JavaScript in the view worker's shared `vm` realm. So any user who could write a field could
+place `{{! … }}` markup on the page (stored XSS) or run code that every viewer's render shares.
+The Rust engine got the matching fix for #23. The vendored copy had not.
+
+- **Only names in re-interpolated values** (`ui/saltcorn-ui/vendor/saltcorn-data/utils.ts`). The
+  admin's own template is evaluated as before. A token inside a re-interpolated value must be a
+  name and its static members (`firstName`, `user.name`, `customerⱵemail`), and none of the
+  members may be `constructor`, `__proto__` or `prototype`. It is **looked up** in the row/user
+  context by own properties and never reaches the evaluator, so it cannot fall through to the
+  evaluator's globals either.
+  - Anything else is an error ("a value re-interpolated with {{= }} may only name fields, as in
+    {{ firstName }}"), as is an unknown name. This matches the Rust engine.
+  - `{{! }}` in data is escaped like `{{ }}`.
+  - Nested `{{= }}` still works, up to 5 passes (Rust's `MAX_PASSES`). Before, a value that
+    rendered itself recursed until the stack overflowed.
+- **`escapeHtml` escapes quotes.** `"` and `'` now become `&quot;` and `&#39;`, as in the Rust
+  `escape_html`. This applies to every v1 `{{ }}` output and to file contents shown by
+  `fileviews`.
+- **Still open** (TODO S1): run the view runtime in its own worker, and limit the view call's file
+  and trigger hosts to the viewer's authority.
+- **Tests:** `sc-module` `view_runtime::a_reinterpolated_value_only_names_fields_and_is_escaped`
+  renders a page whose HTML block holds `{{= bio}}`, with `bio` taken from the query string. It
+  checks that:
+  - fields and their static members resolve;
+  - `{{! }}` and the value's own markup are escaped;
+  - calls, operators, computed members, `constructor` and `__proto__` are refused;
+  - a global name (`JSON`) is not found;
+  - a self-rendering value stops after 5 passes;
+  - the admin's own expression still runs, with its quotes escaped.
+
+  The test fails against the previous code.
+
 ## `coding` offers `search_docs` and `read_docs`; shared tools
 
 The `coding` trait now offers the documentation tools itself, in every mode (`act`, `plan` and

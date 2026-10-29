@@ -294,6 +294,92 @@ async fn a_page_embeds_a_page_and_a_cycle_of_pages_is_named() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Security review #36: a `{{= }}` token's value is data — here the query
+/// string, which anyone sends — so the tokens inside it only name values, are
+/// looked up rather than evaluated, and are escaped even when they say `{{! }}`.
+/// A value that renders itself stops after five passes. The admin's own
+/// template is still JavaScript, and escapes quotes too.
+#[tokio::test]
+async fn a_reinterpolated_value_only_names_fields_and_is_escaped() {
+    skip_without!(bundle().is_some(), NO_BUNDLE);
+    let root = temp_root("view-runtime-reinterpolate");
+    let host = Arc::new(ModuleHost::new(&root).with_view_runtime(bundle()));
+    let runtime = ModuleViewRuntime::new(&host);
+    let app = AppId::new();
+    let views = snapshot(
+        app,
+        1,
+        &json!({
+            "application": { "name": "Books" },
+            "views": [],
+            "pages": [{ "name": "Bio", "min_role": 100, "layout": {
+                "type": "blank", "isHTML": true,
+                "contents": "<p>[{{= bio}}]</p><p>[{{ name.toUpperCase() + `'\"` }}]</p>",
+            }}],
+        }),
+    );
+    let render = |bio: &str| {
+        let mut request = ViewRequest::default();
+        request.query.insert("bio".into(), bio.into());
+        request.query.insert("name".into(), "Ann".into());
+        request.query.insert("me".into(), "{{= me}}".into());
+        let runtime = &runtime;
+        let views = &views;
+        async move {
+            runtime
+                .render_page(&Page::new(app, "Bio"), ViewContext::bare(views, &request))
+                .await
+                .map(|out| out.body.as_str().unwrap().to_owned())
+                .map_err(|e| e.to_string())
+        }
+    };
+
+    // Fields, and their static members, are still reached.
+    let html = render("Hi {{ name }}, {{ name.length }}").await.unwrap();
+    assert!(html.contains("[Hi Ann, 3]"), "{html}");
+    // The admin's expression is JavaScript, and its quotes come out escaped.
+    assert!(html.contains("[ANN&#39;&quot;]"), "{html}");
+    // `{{! }}` in data is escaped; so is the value's own markup.
+    let html = render("<b>{{! name }}</b>").await.unwrap();
+    assert!(html.contains("[&lt;b&gt;Ann&lt;/b&gt;]"), "{html}");
+    let mut request = ViewRequest::default();
+    request.query.insert("bio".into(), "{{! raw }}".into());
+    request.query.insert("raw".into(), "<script>x()</script>".into());
+    request.query.insert("name".into(), "Ann".into());
+    let html = runtime
+        .render_page(&Page::new(app, "Bio"), ViewContext::bare(&views, &request))
+        .await
+        .unwrap();
+    let html = html.body.as_str().unwrap();
+    assert!(!html.contains("<script>x()"), "{html}");
+    assert!(html.contains("[&lt;script&gt;x()&lt;/script&gt;]"), "{html}");
+
+    // Code is refused, not run.
+    for code in [
+        "{{ ''.constructor.constructor('return 1')() }}",
+        "{{ 1+1 }}",
+        "{{ name.toUpperCase() }}",
+        "{{ name['length'] }}",
+        "{{ name.constructor }}",
+        "{{ row.__proto__ }}",
+    ] {
+        let err = render(code).await.unwrap_err();
+        assert!(
+            err.contains("may only name fields, as in {{ firstName }}"),
+            "{code}: {err}"
+        );
+    }
+    // A name the context lacks is not looked for in the evaluator's globals.
+    let err = render("{{ JSON }}").await.unwrap_err();
+    assert!(err.contains("JSON is not defined"), "{err}");
+    // A value that renders itself stops.
+    let err = render("{{= me}}").await.unwrap_err();
+    assert!(err.contains("still interpolating after 5 passes"), "{err}");
+
+    host.shutdown().await;
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// §4: the JSON crosses when the worker does not hold the generation, and not
 /// otherwise. Told by lying: the second call carries different JSON at the same
 /// generation, and the worker must still answer from the first.
