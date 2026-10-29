@@ -61,10 +61,11 @@ pub use defs::{
     definition, internal_defs, known_keys,
 };
 pub use development::{
-    ADMIN_SUBDOMAIN, DevelopmentSettings, LOG_SQL, LOG_VERBOSITY, MCP_ENABLED, MCP_LOOPBACK_ONLY,
-    McpSettings, ROOT_SUBDOMAIN, admin_subdomain, admin_subdomain_from, apply_development_settings,
-    check_admin_subdomain, development_section, development_settings, development_settings_from,
-    mcp_settings, mcp_settings_from,
+    ADMIN_SUBDOMAIN, DevelopmentSettings, IDE_TERMINAL_ENABLED, LOG_SQL, LOG_VERBOSITY,
+    MCP_ENABLED, MCP_LOOPBACK_ONLY, McpSettings, ROOT_SUBDOMAIN, admin_subdomain,
+    admin_subdomain_from, apply_development_settings, check_admin_subdomain, development_section,
+    development_settings, development_settings_from, ide_terminal_enabled,
+    ide_terminal_enabled_from, mcp_settings, mcp_settings_from,
 };
 pub use email::{
     CERTIFICATE_ACCEPT_ANY, CERTIFICATE_VERIFY, DEFAULT_SMTP_PORT, EMAIL_FROM, EmailSettings,

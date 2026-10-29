@@ -55,6 +55,9 @@ use crate::security::{
     admin_content_security_policy, build_cookie, csrf_middleware, is_native_client,
     upgrade_origin_allowed, upgrade_origin_refused,
 };
+use crate::terminal::{
+    TERMINAL_ROUTE, TerminalQuery, TerminalSlots, terminal_slots, terminal_upgrade,
+};
 
 /// A WebSocket upgrade, **if this request is one** — the extractor the fallback
 /// needs and axum does not provide (TODO "Streams" §10, task 8.2).
@@ -167,6 +170,10 @@ pub(crate) struct AppState {
     lsp_slots: ServerSlots,
     /// The language server the IDE runs ([`ServerConfig::language_server`]).
     language_server: Arc<std::path::PathBuf>,
+    /// How many more terminals the IDE may open (design §12.1).
+    terminal_slots: TerminalSlots,
+    /// The Claude Code the IDE's terminal runs ([`ServerConfig::claude_cli`]).
+    claude_cli: Arc<std::path::PathBuf>,
     /// The tier-2 MCP tools: one per endpoint tagged
     /// [`Endpoint::mcp`](sc_api::Endpoint::mcp), built once here because
     /// dispatching one needs the handler registry (§13.6).
@@ -291,6 +298,8 @@ pub fn build_router_with_apps(
         extra_base_domains: Arc::new(config.extra_base_domains.clone()),
         lsp_slots: server_slots(),
         language_server: Arc::new(config.language_server.clone()),
+        terminal_slots: terminal_slots(),
+        claude_cli: Arc::new(config.claude_cli.clone()),
         mcp_endpoint_tools,
         max_request_body: config.max_request_body,
         max_upload_bytes: config.max_upload_bytes,
@@ -345,6 +354,9 @@ pub fn build_router_with_apps(
         // not a request the fallback's `Bytes` body could survive: it has to be
         // extracted before the body is touched.
         .route(LSP_ROUTE, axum::routing::get(language_server))
+        // Claude Code in an IDE terminal tab (§12.1): the language server's
+        // sibling, an upgrade for the same reason.
+        .route(TERMINAL_ROUTE, axum::routing::get(ide_terminal))
         // The admin chat socket (§11.4). A real route for the same reason the
         // language server's is: an upgrade cannot survive the fallback's `Bytes`
         // body, and a chat turn is bidirectional in a way the typed endpoint
@@ -1030,6 +1042,43 @@ async fn language_server(
         &state.lsp_slots,
         Arc::clone(&state.language_server),
         store,
+    )
+    .await
+}
+
+/// The IDE's terminal (§12.1): admin-only, one program per connection.
+///
+/// The language server's auth story again: this is a route that hands its
+/// holder a process on the server, so the admin check is answered before the
+/// upgrade and the handshake's `Origin` must be this host's own.
+async fn ide_terminal(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    jar: CookieJar,
+    AxumPath(store): AxumPath<String>,
+    axum::extract::Query(query): axum::extract::Query<TerminalQuery>,
+    ws: axum::extract::ws::WebSocketUpgrade,
+) -> Response {
+    if let Some(refused) = admin_host_only(&state, &headers, &jar) {
+        return refused;
+    }
+    if !upgrade_origin_allowed(&headers) {
+        return upgrade_origin_refused();
+    }
+    let user = match session_user(&state, &jar).await {
+        Ok(user) => user,
+        Err(response) => return *response,
+    };
+    if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
+        return rejection;
+    }
+    terminal_upgrade(
+        ws,
+        state.apps.catalog(),
+        &state.terminal_slots,
+        Arc::clone(&state.claude_cli),
+        store,
+        query,
     )
     .await
 }

@@ -36,6 +36,9 @@ pub const LOG_VERBOSITY: &str = "log_verbosity";
 pub const MCP_ENABLED: &str = "mcp_enabled";
 /// Whether that route refuses a peer that is not on this machine.
 pub const MCP_LOOPBACK_ONLY: &str = "mcp_loopback_only";
+/// Whether the file-store IDE may open a terminal running Claude Code on this
+/// server (§12.1, "Claude Code in a terminal tab").
+pub const IDE_TERMINAL_ENABLED: &str = "ide_terminal_enabled";
 /// The subdomain of the base domain the admin UI is served on. Empty serves it
 /// on the base domain itself.
 pub const ADMIN_SUBDOMAIN: &str = "admin_subdomain";
@@ -48,8 +51,8 @@ pub fn development_section() -> ConfigSection {
     ConfigSection {
         name: "development",
         label: "Development",
-        description: "Settings for logging, MCP server availability and where the admin UI is \
-                      served",
+        description: "Settings for logging, MCP server availability, the IDE's Claude Code \
+                      terminal and where the admin UI is served",
         fields: vec![
             ConfigDef::help(
                 FormField::new(LOG_SQL, BasicType::Bool)
@@ -82,6 +85,18 @@ pub fn development_section() -> ConfigSection {
                     .label("MCP from this machine only")
                     .default_value(true),
                 "Refuse an MCP request whose peer is not on this machine.",
+            ),
+            // §12.1. Off by default for the reason `mcp_enabled` is: a terminal
+            // runs any command as the server's operating-system user, which is
+            // an operator's decision rather than a side effect of opening the IDE.
+            ConfigDef::help(
+                FormField::new(IDE_TERMINAL_ENABLED, BasicType::Bool)
+                    .label("Claude Code in the IDE")
+                    .default_value(false),
+                "Let an admin open Claude Code in a terminal tab of the file-store IDE. It runs \
+                 on this server, in the store's directory, as the server's operating-system \
+                 user, and can run any command that user can. Only stores on this machine's \
+                 disk can have one.",
             ),
             // Live, like the rest of this section: saving it moves the admin UI
             // (and orders the new name's certificate) without a restart.
@@ -209,6 +224,23 @@ pub fn mcp_settings_from(config: &Attrs) -> McpSettings {
 /// Read the MCP settings out of `_fd_config`.
 pub async fn mcp_settings(catalog: &Catalog) -> Result<McpSettings> {
     Ok(mcp_settings_from(&crate::store::all_config(catalog).await?))
+}
+
+/// Whether the IDE may open a Claude Code terminal, out of a settings bag.
+///
+/// Read per request by the one route that enforces it, as [`McpSettings`] is,
+/// so turning it on or off is a save rather than a restart. A value that is not
+/// a boolean reads as off, for `mcp_settings_from`'s reason: a malformed row
+/// must not be a way to open a shell.
+pub fn ide_terminal_enabled_from(config: &Attrs) -> bool {
+    matches!(config.get(IDE_TERMINAL_ENABLED), Some(Json::Bool(true)))
+}
+
+/// Whether the IDE may open a Claude Code terminal, out of `_fd_config`.
+pub async fn ide_terminal_enabled(catalog: &Catalog) -> Result<bool> {
+    Ok(ide_terminal_enabled_from(
+        &crate::store::all_config(catalog).await?,
+    ))
 }
 
 /// Read the admin subdomain out of a settings bag: `None` when the admin UI is
@@ -371,11 +403,16 @@ mod tests {
                 LOG_VERBOSITY,
                 MCP_ENABLED,
                 MCP_LOOPBACK_ONLY,
+                IDE_TERMINAL_ENABLED,
                 ADMIN_SUBDOMAIN,
             ]
         );
 
-        for (key, default) in [(MCP_ENABLED, false), (MCP_LOOPBACK_ONLY, true)] {
+        for (key, default) in [
+            (MCP_ENABLED, false),
+            (MCP_LOOPBACK_ONLY, true),
+            (IDE_TERMINAL_ENABLED, false),
+        ] {
             let def = section.fields.iter().find(|def| def.key() == key).unwrap();
             assert_eq!(
                 def.field.base.type_,
@@ -420,6 +457,21 @@ mod tests {
         ]));
         assert!(!settings.enabled);
         assert!(settings.loopback_only);
+    }
+
+    /// The IDE terminal is off until someone turns it on, and anything but
+    /// `true` leaves it off.
+    #[test]
+    fn the_ide_terminal_is_off_unless_it_is_exactly_on() {
+        assert!(!ide_terminal_enabled_from(&Attrs::new()));
+        assert!(ide_terminal_enabled_from(&attrs(&[(
+            IDE_TERMINAL_ENABLED,
+            json!(true)
+        )])));
+        assert!(!ide_terminal_enabled_from(&attrs(&[(
+            IDE_TERMINAL_ENABLED,
+            json!("true")
+        )])));
     }
 
     /// Empty is the base domain; a label is lower-cased and kept.

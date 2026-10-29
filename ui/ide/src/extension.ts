@@ -18,6 +18,7 @@ import type {
 } from "@codingame/monaco-vscode-api/extensions";
 
 import { BUILD_COMMAND, BUILD_ON_SAVE_COMMAND, registerBuildCommand } from "./build";
+import { CLAUDE_COMMAND, CLAUDE_CONTEXT } from "./claudeTerminal";
 import type { StoreFileSystemProvider } from "./fileSystemProvider";
 import { registerPrettierFormatter } from "./formatter";
 import { StoreGit } from "./git";
@@ -65,6 +66,12 @@ const MANIFEST: IExtensionManifest = {
         title: "Toggle Build on Save",
         category: "Saltcorn",
         icon: "$(sync)",
+      },
+      {
+        command: CLAUDE_COMMAND,
+        title: "Open Claude Code",
+        category: "Saltcorn",
+        icon: "$(sparkle)",
       },
       {
         command: COMMIT_COMMAND,
@@ -236,6 +243,8 @@ const MANIFEST: IExtensionManifest = {
         },
       ],
       commandPalette: [
+        // Registered only where an operator has turned the terminal on.
+        { command: CLAUDE_COMMAND, when: CLAUDE_CONTEXT },
         { command: COMMIT_COMMAND, when: `${GIT_STORE_CONTEXT}` },
         { command: PULL_COMMAND, when: `${GIT_STORE_CONTEXT}` },
         { command: PUSH_COMMAND, when: `${GIT_STORE_CONTEXT}` },

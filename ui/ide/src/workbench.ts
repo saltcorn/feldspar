@@ -52,6 +52,13 @@ import defaultConfiguration from "./user/configuration.json?raw";
 import defaultKeybindings from "./user/keybindings.json?raw";
 import { api } from "./api";
 import { activateAgentChat, declareAgentChat } from "./chat";
+import {
+  claudeCodeEnabled,
+  loadTerminalServices,
+  openClaudeTerminal,
+  registerClaudeCommand,
+  type TerminalServices,
+} from "./claudeTerminal";
 import { codingAgentsForStore } from "./codingAgents";
 import {
   activateSaltcornExtension,
@@ -61,19 +68,22 @@ import { storeGit, type FileStoreSummary } from "./git";
 import { configureWorkers } from "./workers";
 import { registerStoreSearch } from "./searchProvider";
 import { toUriPath } from "./storeFiles";
+import { claudeRequest, withoutClaudeRequest } from "./terminal";
 import { registerStoreFilesystem, storeFolderUri } from "./workspace";
 
 /**
  * The services this IDE runs on, plus `chat`'s when the store has an agent to
- * chat with.
+ * chat with and `terminal`'s when the installation lets an admin open Claude
+ * Code.
  *
  * `getWorkbenchServiceOverride` is the whole point (design §12.1): it renders VS
  * Code's real workbench — activity bar, explorer tree, editor tabs, panels, status
  * bar — rather than an editor we have to surround with our own furniture. The rest
  * are the services that workbench then expects to find, and the list is
- * deliberately shorter than upstream's demo: no debug, no notebooks, no terminal
- * (a shell on the server is a decision of its own), no extension gallery
- * (installing extensions is out of scope for this milestone).
+ * deliberately shorter than upstream's demo: no debug, no notebooks, no extension
+ * gallery (installing extensions is out of scope for this milestone), and a
+ * terminal only where an operator has turned it on, because a program on the
+ * server is a decision of its own (`claudeTerminal.ts`).
  *
  * **Chat is conditional**, which source control deliberately is not. The
  * difference is what the empty state costs: a workbench with the SCM service and
@@ -84,7 +94,10 @@ import { registerStoreFilesystem, storeFolderUri } from "./workspace";
  * nothing to explain — and does not download the five megabytes that would have
  * drawn it.
  */
-function services(chat: ChatServices | null): IEditorOverrideServices {
+function services(
+  chat: ChatServices | null,
+  terminal: TerminalServices | null,
+): IEditorOverrideServices {
   return {
     ...getWorkbenchServiceOverride(),
     ...getExplorerServiceOverride(),
@@ -130,6 +143,7 @@ function services(chat: ChatServices | null): IEditorOverrideServices {
     // which the workbench otherwise stubs out (see `decorations.ts`).
     ...getDecorationsServiceOverride(),
     ...(chat?.services ?? {}),
+    ...(terminal?.services ?? {}),
   };
 }
 
@@ -283,12 +297,13 @@ export async function bootWorkbench(
   // so which participants exist has to be known before the workbench starts. A
   // failure to read it costs the chat panel and nothing else — an IDE that will
   // not open because the agent listing was slow would be a poor trade.
-  const agents = await storeAgents(store);
+  const [agents, terminalEnabled] = await Promise.all([storeAgents(store), claudeCodeEnabled()]);
   const chat = declareAgentChat(agents);
   const chatServices = chat == null ? null : await loadChatServices();
+  const terminal = terminalEnabled ? await loadTerminalServices(store) : null;
   const git = storeGit(summary, api);
   await initializeVscodeApi(
-    services(chatServices),
+    services(chatServices, terminal),
     container,
     constructionOptions(store),
     environment,
@@ -310,6 +325,7 @@ export async function bootWorkbench(
       refreshSourceControl: saltcorn.refreshSourceControl,
     });
   }
+  await openRequestedClaude(store, terminal);
   if (open != null) {
     // A file that is not there is said by the editor itself; the workbench is
     // still the store's.
@@ -341,5 +357,33 @@ async function storeAgents(store: string) {
       err,
     );
     return [];
+  }
+}
+
+/**
+ * Honour a `claude=1` link (TODO CT2.2), and offer another session from the
+ * status bar either way.
+ *
+ * The request is taken off the URL whether or not it could be honoured: a
+ * reload is not a second click.
+ */
+async function openRequestedClaude(store: string, terminal: TerminalServices | null): Promise<void> {
+  const request = claudeRequest(window.location.href);
+  if (request != null) {
+    history.replaceState(history.state, "", withoutClaudeRequest(window.location.href));
+  }
+  if (terminal == null) {
+    if (request != null) {
+      void vscode.window.showWarningMessage(
+        'Claude Code is turned off on this server (Settings → Development → "Claude Code in the IDE").',
+      );
+    }
+    return;
+  }
+  registerClaudeCommand(terminal, store, request);
+  if (request != null) {
+    await openClaudeTerminal(terminal, store, request.app).catch((err: unknown) =>
+      console.warn("[saltcorn] could not open Claude Code", err),
+    );
   }
 }

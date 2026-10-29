@@ -552,5 +552,7 @@
   "verify accepts only a certificate from a trusted CA, issued for the host (or the certificate name). accept_any accepts any certificate — self-signed, expired or for another name: the connection is still encrypted, but use it only for a server on a network you trust.": "verify 仅接受由受信任的 CA 签发、且与主机名（或证书名称）匹配的证书。accept_any 接受任何证书，包括自签名、已过期或名称不匹配的证书：连接仍会加密，但请仅对您信任的网络中的服务器使用此选项。",
   "view_app timeout per action (seconds)": "view_app 每个操作的超时时间（秒）",
   "your account may not use this application": "您的账户无权使用此应用",
+  "Claude Code in the IDE": "IDE 中的 Claude Code",
+  "Let an admin open Claude Code in a terminal tab of the file-store IDE. It runs on this server, in the store's directory, as the server's operating-system user, and can run any command that user can. Only stores on this machine's disk can have one.": "允许管理员在文件存储 IDE 的终端标签页中打开 Claude Code。它在此服务器上、在存储的目录中、以服务器的操作系统用户身份运行，并且可以运行该用户能运行的任何命令。只有位于本机磁盘上的存储才能使用。",
   "—": "—"
 }

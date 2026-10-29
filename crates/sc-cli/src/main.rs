@@ -3171,6 +3171,7 @@ fn print_usage() {
     --no-browser-sandbox     start that browser with --no-sandbox
     --browser-contexts N     view_app runs that may hold a browser context at once (default 4)
     --language-server PATH   the typescript-language-server the IDE runs (default: on PATH)
+    --claude-cli PATH        the Claude Code the IDE's terminal runs (default: claude on PATH)
     --preview-idle-minutes N unmount a run's preview after N idle minutes (default 60)"
     );
     eprintln!(

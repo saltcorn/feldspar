@@ -63,6 +63,7 @@ mod serve;
 mod streams;
 mod systemd;
 mod table_rename;
+mod terminal;
 // Build targets as background jobs the admin UI polls (§13.3).
 pub mod public_datasets;
 pub mod target_builds;
@@ -209,6 +210,7 @@ pub use security::{
 pub use serve::{serve, serve_browser};
 pub use streams::{StreamServices, TriggerBridge, install_streams, install_streams_with};
 pub use systemd::ServiceManager;
+pub use terminal::{MAX_TERMINALS, TERMINAL_ROUTE};
 pub use tls::{
     AcmeCertificate, Certificate, CertificateStatus, PastedCertificate, TlsHandle, TlsNames,
     TlsSettings, check_certificate, https_addr, install_crypto_provider, redirect_router,

@@ -552,5 +552,7 @@
   "verify accepts only a certificate from a trusted CA, issued for the host (or the certificate name). accept_any accepts any certificate — self-signed, expired or for another name: the connection is still encrypted, but use it only for a server on a network you trust.": "verify accepte uniquement un certificat provenant d’une autorité de certification de confiance et émis pour l’hôte (ou le nom du certificat). accept_any accepte tout certificat — autosigné, expiré ou émis pour un autre nom : la connexion reste chiffrée, mais n’utilisez cette option que pour un serveur situé sur un réseau de confiance.",
   "view_app timeout per action (seconds)": "délai d'expiration de view_app par action (secondes)",
   "your account may not use this application": "votre compte n’est pas autorisé à utiliser cette application",
+  "Claude Code in the IDE": "Claude Code dans l'IDE",
+  "Let an admin open Claude Code in a terminal tab of the file-store IDE. It runs on this server, in the store's directory, as the server's operating-system user, and can run any command that user can. Only stores on this machine's disk can have one.": "Permet à un administrateur d'ouvrir Claude Code dans un onglet de terminal de l'IDE des magasins de fichiers. Il s'exécute sur ce serveur, dans le répertoire du magasin, sous l'utilisateur système du serveur, et peut lancer toute commande que cet utilisateur peut lancer. Seuls les magasins sur le disque de cette machine peuvent en avoir un.",
   "—": "—"
 }

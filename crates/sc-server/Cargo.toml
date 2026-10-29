@@ -162,6 +162,13 @@ sha2.workspace = true
 russh.workspace = true
 russh-sftp.workspace = true
 
+# The IDE terminal (`terminal.rs`): the pseudo-terminal from `pty-process`,
+# the signals that end the program and what it started from `libc`. Unix only:
+# elsewhere the route refuses with a reason.
+[target.'cfg(unix)'.dependencies]
+pty-process.workspace = true
+libc.workspace = true
+
 [dev-dependencies]
 # The Saltcorn UI golden-HTML test normalises what legitimately differs between
 # two renders (a user's UUID, v1's random element ids).

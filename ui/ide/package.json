@@ -42,6 +42,7 @@
     "@codingame/monaco-vscode-search-service-override": "^36.2.7",
     "@codingame/monaco-vscode-secret-storage-service-override": "^36.2.7",
     "@codingame/monaco-vscode-storage-service-override": "^36.2.7",
+    "@codingame/monaco-vscode-terminal-service-override": "^36.2.7",
     "@codingame/monaco-vscode-textmate-service-override": "^36.2.7",
     "@codingame/monaco-vscode-theme-defaults-default-extension": "^36.2.7",
     "@codingame/monaco-vscode-theme-service-override": "^36.2.7",

@@ -492,6 +492,10 @@ rustls-acme = { version = "0.15", features = ["tokio", "axum"] }
 # reads `/etc/resolv.conf`, `tokio` is the runtime the queries run on.
 hickory-resolver = { version = "0.25", features = ["system-config", "tokio"] }
 libc = "0.2"
+# The IDE terminal's pseudo-terminal (`sc-server`'s `terminal.rs`): `openpty`,
+# the child's session and controlling terminal, and resizing, as a tokio type.
+# Pinned below 0.5.4, which needs a newer tokio than the one locked here.
+pty-process = { version = "=0.5.3", features = ["async"] }
 # Certificate generation **for tests only** (a dev-dependency wherever it is
 # used): a TLS test needs a certificate, and the two alternatives — checking one
 # into the repository or asking a CA for one — are a key in git and a network

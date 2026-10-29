@@ -135,6 +135,8 @@ mod graphql_serving;
 mod ide_language_server;
 #[path = "ide_route.rs"]
 mod ide_route;
+#[path = "ide_terminal.rs"]
+mod ide_terminal;
 #[path = "ide_typecheck.rs"]
 mod ide_typecheck;
 #[path = "live_mounting.rs"]

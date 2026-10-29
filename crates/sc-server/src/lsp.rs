@@ -180,7 +180,7 @@ pub(crate) async fn language_server_upgrade(
 }
 
 /// Close a socket, saying why. The IDE turns this into one notification.
-async fn refuse(mut socket: WebSocket, reason: String) {
+pub(crate) async fn refuse(mut socket: WebSocket, reason: String) {
     let _ = socket
         .send(Message::Close(Some(CloseFrame {
             code: close_code::POLICY,
@@ -194,7 +194,7 @@ async fn refuse(mut socket: WebSocket, reason: String) {
 /// The boundary is not a nicety: these sentences contain em dashes, and cutting
 /// a `String` mid-character panics — inside the task serving a socket, which is
 /// the worst place to find out that a store's name was long.
-fn fit_close_reason(reason: String) -> String {
+pub(crate) fn fit_close_reason(reason: String) -> String {
     if reason.len() <= MAX_CLOSE_REASON {
         return reason;
     }
