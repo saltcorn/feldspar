@@ -129,8 +129,16 @@ pub(crate) fn matches(expected: &Json, actual: &Json) -> bool {
     }
     match (expected, actual) {
         (Json::Number(a), Json::Number(b)) => a.as_f64() == b.as_f64(),
-        (Json::String(s), Json::Number(_) | Json::Bool(_)) => s.as_str() == actual.to_string(),
-        (Json::Number(_) | Json::Bool(_), Json::String(s)) => s.as_str() == expected.to_string(),
+        // Written out first: `str == Json` would compare against a JSON string,
+        // which a number or a boolean never is.
+        (Json::String(s), Json::Number(_) | Json::Bool(_)) => {
+            let written = actual.to_string();
+            *s == written
+        }
+        (Json::Number(_) | Json::Bool(_), Json::String(s)) => {
+            let written = expected.to_string();
+            *s == written
+        }
         (Json::Object(want), Json::Object(have)) => want
             .iter()
             .all(|(k, v)| have.get(k).is_some_and(|h| matches(v, h))),

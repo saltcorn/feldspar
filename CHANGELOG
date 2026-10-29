@@ -30,6 +30,11 @@ Changes in reverse chronological order.
   same trigger sends); `a_build_with_after_build_checks_records_a_run` (sc-server);
   `a_fetch_inside_a_checklist_run_is_kept_and_not_sent` (sc-core-actions); the outbox unit test in
   sc-catalog; and the build notice in `appActions.test.ts`.
+- Verified on a machine that can run them: the whole workspace suite, the admin UI's vitest
+  suite and every UI's typecheck pass. Fixes from that run: TECHNICAL_DESIGN.md §2's dependency
+  table now lists `sc-check → sc-viewpattern` and `sc-cli → sc-email, sc-module`
+  (`repo_hygiene` caught the drift), and two clippy 1.97 lints (`sc-app` `build_hosts`,
+  `sc-check` `matches`) are fixed without changing behaviour.
 
 ## CLI: set up a hosted server without the admin UI (modules, routes-only tokens, settings, mail, app tables)
 
