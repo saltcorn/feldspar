@@ -19,6 +19,7 @@ import {
   filterSpec,
   missingPages,
   orderSpec,
+  pagesToFetch,
   pageBounds,
   pageOf,
   pagesCovering,
@@ -94,6 +95,15 @@ describe("orderSpec and toggleSort", () => {
     expect(orderSpec(sorting)).toBe("pages.desc,title.asc");
   });
 
+  it("ends on the primary key, so offset pages are pages of one order", () => {
+    expect(orderSpec([], "id")).toBe("id.asc");
+    expect(orderSpec([{ id: "pages", desc: true }], "id")).toBe("pages.desc,id.asc");
+    // Already sorted on it: it is not added a second time, nor its direction changed.
+    expect(orderSpec([{ id: "id", desc: true }], "id")).toBe("id.desc");
+    // No single-column key: nothing to end on.
+    expect(orderSpec([], null)).toBeUndefined();
+  });
+
   it("cycles a header through ascending, descending and unsorted", () => {
     let sorting: Sort[] = [];
     sorting = toggleSort(sorting, "title", false);
@@ -134,5 +144,21 @@ describe("paging", () => {
     expect(missingPages([0, 1, 2], [0, 2])).toEqual([1]);
     expect(missingPages([4], [])).toEqual([4]);
     expect(missingPages([], [1])).toEqual([]);
+  });
+
+  it("at rest, asks for every page the viewport is missing", () => {
+    expect(pagesToFetch([40, 41], [0, 1], false)).toEqual([40, 41]);
+  });
+
+  it("while scrolling, asks only for the pages next to held ones", () => {
+    // A wheel through the rows: page 2 is next to page 1, which is held.
+    expect(pagesToFetch([1, 2], [0, 1], true)).toEqual([2]);
+    // The thumb dragged half way down: nothing near page 250 is held, so it
+    // waits for the scroll to settle rather than being one of hundreds of reads.
+    expect(pagesToFetch([250, 251], [0, 1], true)).toEqual([]);
+    // A page in flight counts as held.
+    expect(pagesToFetch([3], [0, 1, 2], true)).toEqual([3]);
+    // Nothing held at all — the first read of a new question — asks.
+    expect(pagesToFetch([7], [], true)).toEqual([7]);
   });
 });

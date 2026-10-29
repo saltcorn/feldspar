@@ -2,6 +2,44 @@
 
 Changes in reverse chronological order.
 
+## Admin UI: table data grid — Key labels and dropdown, date pickers, full height, steadier paging
+
+On `/#/tables/{table}/data` (`ui/admin/src/screens/DataGrid.tsx`):
+
+- **Key columns show the target's summary field.** Every page of rows that arrives is followed by
+  one read per Key column of the target table (`target_field=in.(…)` over that page's keys), and
+  the answers are cached per column, so a key is asked about once. Keys that aren't found are
+  cached too, so they aren't asked about again. A key with no summary field, or one that has no
+  target row, shows the key itself. Copy and paste still carry the stored key, so the
+  copy-and-paste-back round trip is unchanged. The bookkeeping lives in the new
+  `ui/admin/src/grid/gridKeys.ts`.
+- **A Key cell is edited through a dropdown** (`KeyEditor`). It is a search box over the target
+  table (`ilike` on a text summary, `eq` on other types), listing the first 50 matching rows by
+  label, ordered by the summary field, with "— none —" offered on a nullable key. The highlight
+  starts on the row the cell points at. Arrow keys move it, Enter or Tab picks, and Escape or
+  clicking away changes nothing. The list is rendered into `document.body` and positioned under
+  the cell, so the grid's scroller doesn't clip it.
+- **`date`, `time` and `timestamp` cells use the HTML5 pickers** (`date`, `time`,
+  `datetime-local`, to the second). A timestamp is shown in the cell and in the picker as its
+  local wall-clock reading, and is sent back as a UTC instant. The conversions are
+  `pickerType` / `toPicker` / `fromPicker` / `displayTemporal` in `gridValues.ts`. The row form
+  (`TableData.tsx`) uses the same pickers.
+- **The grid runs to the bottom of the screen.** The screen is now a `.data-page`, which claims
+  the viewport the way the entities list does. The grid's scroller takes the height left under
+  the header and toolbar (at least 16rem) instead of `min(70vh, 44rem)`.
+- **Paging over large tables:**
+  - The read order always ends on the primary key (`orderSpec(sorting, pk)`). Without a total
+    order, offset pages may overlap, so a scroll could show one row twice and another never.
+  - A page that arrives after the sort or filter changed is now discarded. The old check compared
+    the query key with itself, so it always passed.
+  - While the viewport is moving, only pages next to already-held pages are requested
+    (`pagesToFetch`). Dragging the scrollbar thumb across 50k rows no longer queues a read for
+    every page it passes; the rest are requested once the scroll settles.
+  - Half a page either side of the viewport is prefetched.
+- Tests: `gridKeys.test.ts` (new), plus picker cases in `gridValues.test.ts` (the timestamp
+  round trip holds in any time zone) and tiebreaker and `pagesToFetch` cases in
+  `gridQuery.test.ts`.
+
 ## Fix: editing a user in the admin UI failed with "`email_verified` is not an admin-defined field"
 
 The admin UI's `SYSTEM_USER_COLUMNS` (`ui/admin/src/userForm.ts`) had fallen behind

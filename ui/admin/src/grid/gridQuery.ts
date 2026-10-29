@@ -112,10 +112,19 @@ export function activeFilterCount(
  *
  * Precedence is the list's own order, which is the order the columns were
  * shift-clicked in — the same rule every spreadsheet has.
+ *
+ * `tiebreaker` is the table's primary key, appended last unless it is already
+ * sorted on. The grid reads in pages by offset, and an offset is only a position
+ * in an order the database will give again: unsorted, or sorted on a column with
+ * repeats, two reads of "rows 100–199" may disagree, so a scroll would show one
+ * row twice and another never. Ending on a unique column makes the order total.
  */
-export function orderSpec(sorting: Sort[]): string | undefined {
-  if (sorting.length === 0) return undefined;
-  return sorting.map((s) => `${s.id}.${s.desc ? "desc" : "asc"}`).join(",");
+export function orderSpec(sorting: Sort[], tiebreaker: string | null = null): string | undefined {
+  const keys = sorting.map((s) => `${s.id}.${s.desc ? "desc" : "asc"}`);
+  if (tiebreaker !== null && !sorting.some((s) => s.id === tiebreaker)) {
+    keys.push(`${tiebreaker}.asc`);
+  }
+  return keys.length === 0 ? undefined : keys.join(",");
 }
 
 /**
@@ -188,6 +197,28 @@ export function pagesCovering(
 export function missingPages(wanted: number[], have: Iterable<number>): number[] {
   const held = new Set(have);
   return wanted.filter((p) => !held.has(p));
+}
+
+/**
+ * The pages to request now, of the `wanted` ones the viewport covers.
+ *
+ * At rest, every missing one. While the viewport is moving, only those next to a
+ * page already held or on its way: that is a scroll *through* the rows, a wheel
+ * or a held arrow key, and the page it is about to need should be asked for
+ * before it gets there. A missing page with no held neighbour is a jump — the
+ * scrollbar thumb dragged across forty thousand rows — and asking for each of
+ * the four hundred pages it passes would queue four hundred reads to draw rows
+ * nobody stopped on. Those wait for the scroll to settle, which re-asks.
+ */
+export function pagesToFetch(
+  wanted: number[],
+  have: Iterable<number>,
+  scrolling: boolean,
+): number[] {
+  const held = new Set(have);
+  const missing = missingPages(wanted, held);
+  if (!scrolling || held.size === 0) return missing;
+  return missing.filter((p) => held.has(p - 1) || held.has(p + 1));
 }
 
 /** `text` split at its first `sep`, or `[text, null]` when there is none. */
