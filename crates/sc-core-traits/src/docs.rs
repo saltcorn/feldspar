@@ -3,14 +3,13 @@
 //! `search_docs` and `read_docs` ([`sc_docs::tools`]) over the tutorials,
 //! references and help topics compiled into the binary. `admin_copilot` offers
 //! the same two tools already, through the administrative tool set it shares
-//! with the MCP server; this trait is how every other agent gets them — an
-//! application's builder is created with it (`sc_app::builder_agent`), because a
-//! coding agent writing against this server's API is the agent most likely to
-//! write it from memory.
+//! with the MCP server, and `coding` offers them beside its file tools; this
+//! trait is how every other agent gets them — a support agent answering
+//! questions about the installation, say.
 //!
-//! Its tools have **fixed names**, so it is one per agent, and not beside an
-//! `admin_copilot`, which already has them: either is refused on save as a
-//! collision (§11.2), naming the tool.
+//! `coding` offers the same two tools too, so an agent with a `coding` trait
+//! does not need this one. The tools are **shared** ([`AgentTrait::shared_tools`]):
+//! beside a `coding` or an `admin_copilot` they are one tool, not a collision.
 //!
 //! No configuration: what it reaches is documentation, which is the same for
 //! every caller and grants nothing.
@@ -53,6 +52,10 @@ impl AgentTrait for Docs {
                 tools::read_parameters(),
             ),
         ]
+    }
+
+    fn shared_tools(&self) -> &[&'static str] {
+        &sc_docs::tools::TOOL_NAMES
     }
 
     async fn call(

@@ -8159,10 +8159,12 @@ of those endpoints are the SPA's own plumbing.
   tutorials and references and the admin UI's help topics, all compiled in, and reading a
   document whole, as its outline, or one section at a time (capped at 12 000 bytes). A help
   topic is one more document, rendered with an empty context. Which files of `docs/` are in is
-  an allowlist, which are out (planning notes, this document, the security review) a denylist,
-  and a test fails on a file in neither. Agents other than `admin_copilot` get the same two
-  tools from the settings-less `docs` trait, which an application's builder agent is created
-  with.
+  an allowlist of patterns in `sc-docs`' `build.rs` (`tutorial-*.md`, `GRAPHQL_API.md`, …),
+  expanded at build time; anything it does not match (planning notes, this document, the
+  security review) is simply not compiled in. `coding` offers the same two tools in every mode, and
+  any other agent gets them from the settings-less `docs` trait. The three traits declare them
+  **shared** (`AgentTrait::shared_tools`): identical shared tools from two enabled traits are
+  one tool rather than a §11.2 collision, offered once and answered by the first.
 - **Tier 2 — generated from tagged endpoints.** An `Endpoint` gains an opt-in MCP tag carrying
   the prose a model reads. Everything else is already in the value: the name, the typed path and
   query parameters, and both `TypeSchema`s. `TypeSchema` → JSON Schema is the one new function,

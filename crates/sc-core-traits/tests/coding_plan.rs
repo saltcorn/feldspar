@@ -814,15 +814,18 @@ async fn explore_answers_from_a_cheap_read_only_session() -> Result<()> {
     );
     assert!(explored.ends_with("[…]"), "{explored}");
     assert_eq!(explored.split_whitespace().count(), 301, "{explored}");
-    // The explore session had only the read-only tools, and its brief.
+    // The explore session had only the read-only tools (the documentation's
+    // among them), and its brief.
     let exploring = models.cheap.requests();
     let tools: Vec<&str> = exploring[0].tools.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
         tools,
         [
             "find_files_apps_todo",
+            "read_docs",
             "read_file_apps_todo",
             "repo_map_apps_todo",
+            "search_docs",
             "search_files_apps_todo"
         ]
     );

@@ -142,7 +142,8 @@ async fn an_agent_greps_edits_builds_reads_the_error_it_caused_and_fixes_it() ->
     );
 
     // Every tool was offered under the name its configuration derives — the
-    // seven the one `coding` trait contributes and the build's, sorted by name
+    // seven the one `coding` trait contributes (and its two documentation
+    // tools) and the build's, sorted by name
     // so the request's prefix is stable (TODO §9). `run_script_apps_web` is not
     // among them: that grant was left off.
     let requests = provider.requests();
@@ -154,8 +155,10 @@ async fn an_agent_greps_edits_builds_reads_the_error_it_caused_and_fixes_it() ->
             "edit_file_apps_web",
             "explore_apps_web",
             "find_files_apps_web",
+            "read_docs",
             "read_file_apps_web",
             "repo_map_apps_web",
+            "search_docs",
             "search_files_apps_web",
             "write_file_apps_web",
         ]

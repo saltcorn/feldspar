@@ -444,85 +444,21 @@ impl AgentTrait for Coding {
     /// `explore` and, under the grants, the write tool, the one edit tool the
     /// edit format picks, the script runner, `check`, `view_app` and the
     /// shell.
+    ///
+    /// And in every mode, after those, the server's documentation
+    /// (`search_docs`, `read_docs`): a coding agent writing against this
+    /// server's API is the agent most likely to write it from memory.
     fn tools(&self, cx: &ToolsContext<'_>, config: &Attrs) -> Vec<ToolSpec> {
-        let config = &*for_caller(config, cx.caller);
-        let scope = scope_as_written(config);
-        let mut tools = vec![
-            read::spec(&scope, config),
-            find::spec(&scope, config),
-            search::spec(&scope, config),
-            repo_map::spec(&scope),
-        ];
-        // The application's assets, in every mode: it reads names and sizes,
-        // which is not a grant, and a `plan` that does not know the images
-        // exist plans around them.
-        if assets::offered(config) {
-            tools.push(assets::spec(&scope, config));
-        }
-        // Looking at an image reads it, so it goes where reading goes — but only
-        // to a model that can see one.
-        if cx.capabilities.vision {
-            tools.push(view_image::spec(&scope, config));
-        }
-        // The application's API, wherever there is an application: asking it
-        // what it answers is how a page gets written against what it returns.
-        // Every method in `act`; `GET` elsewhere, and the tool refuses the rest.
-        if call_api::offered(config) {
-            tools.push(call_api::spec(&scope, config, cx.mode));
-        }
-        match cx.mode {
-            RunMode::Explore => return tools,
-            RunMode::Plan => {
-                tools.push(plan::spec(&scope));
-                tools.push(feature::spec(&scope));
-                tools.push(explore::spec(&scope));
-                // Looking only: a plan is written from what the page is.
-                if may(config, CFG_MAY_VIEW_APP) {
-                    tools.push(view_app::spec(
-                        &scope,
-                        config,
-                        cx.capabilities.vision,
-                        RunMode::Plan,
-                    ));
-                }
-                return tools;
-            }
-            RunMode::Act => tools.push(explore::spec(&scope)),
-        }
-        if may(config, CFG_MAY_EDIT) {
-            let format = edit_format(config, cx.capabilities.edit_format);
-            tools.push(write::spec(&scope, format));
-            match format {
-                EditFormat::StrReplace => tools.push(edit::spec(&scope)),
-                // Always the function tool: rig 0.41 cannot declare OpenAI's
-                // native `apply_patch` tool type (TODO 5.8).
-                EditFormat::ApplyPatch => tools.push(patch::spec(&scope)),
-                EditFormat::WholeFile => {}
-            }
-        }
-        if may(config, CFG_MAY_RUN_SCRIPTS) {
-            tools.push(script::spec(&scope));
-        }
-        if may(config, CFG_MAY_CHECK) {
-            tools.push(check::spec(&scope));
-        }
-        if may(config, CFG_MAY_VIEW_APP) {
-            tools.push(view_app::spec(
-                &scope,
-                config,
-                cx.capabilities.vision,
-                RunMode::Act,
-            ));
-        }
-        if may(config, CFG_MAY_USE_SHELL) && cx.caller.is_some_and(is_admin) {
-            tools.push(shell::spec(&scope, config));
-            tools.push(process::spec(&scope));
-        }
-        if may(config, CFG_MAY_INSTALL_MODULES) && cx.caller.is_some_and(is_admin) {
-            tools.push(modules::list_spec(&scope));
-            tools.push(modules::install_spec(&scope));
-        }
+        let mut tools = scoped_tools(cx, config);
+        tools.extend(docs_specs());
         tools
+    }
+
+    /// The documentation tools are the same for every scope, so a second
+    /// `coding` trait, a `docs` trait or an `admin_copilot` beside this one
+    /// offers them once rather than colliding (§11.2).
+    fn shared_tools(&self) -> &[&'static str] {
+        &sc_docs::tools::TOOL_NAMES
     }
 
     async fn call(
@@ -532,6 +468,9 @@ impl AgentTrait for Coding {
         args: &Json,
         ctx: &mut TraitContext<'_>,
     ) -> Result<Json> {
+        if sc_docs::tools::TOOL_NAMES.contains(&tool) {
+            return sc_docs::tools::call(tool, args);
+        }
         let scope = configured_scope(config)?;
         if (tool == script::tool_name(&scope) || tool == check::tool_name(&scope))
             && !is_admin(ctx.caller)
@@ -632,9 +571,14 @@ impl AgentTrait for Coding {
 
     /// The workflow, the rules and the active edit format's rules, for the
     /// mode and the grants — and in `act`, with the shell offered, how to use it
-    /// (TODO 8.1, 6a.7). The same text on every step, so the prefix caches.
+    /// (TODO 8.1, 6a.7) — then where the server's documentation is. The same
+    /// text on every step, so the prefix caches.
     fn prompt(&self, cx: &ToolsContext<'_>, config: &Attrs) -> Option<String> {
-        Some(prompt::prompt(cx, &for_caller(config, cx.caller)))
+        Some(format!(
+            "{}\n\n{}",
+            prompt::prompt(cx, &for_caller(config, cx.caller)),
+            sc_docs::tools::PROMPT
+        ))
     }
 
     /// The session header: `AGENTS.md`, a repo map focused on what the brief
@@ -701,6 +645,106 @@ impl AgentTrait for Coding {
         )
         .await
     }
+}
+
+/// The tools named after the scope, for the mode and the grants (see
+/// [`Coding`]'s `tools`).
+fn scoped_tools(cx: &ToolsContext<'_>, config: &Attrs) -> Vec<ToolSpec> {
+    let config = &*for_caller(config, cx.caller);
+    let scope = scope_as_written(config);
+    let mut tools = vec![
+        read::spec(&scope, config),
+        find::spec(&scope, config),
+        search::spec(&scope, config),
+        repo_map::spec(&scope),
+    ];
+    // The application's assets, in every mode: it reads names and sizes,
+    // which is not a grant, and a `plan` that does not know the images
+    // exist plans around them.
+    if assets::offered(config) {
+        tools.push(assets::spec(&scope, config));
+    }
+    // Looking at an image reads it, so it goes where reading goes — but only
+    // to a model that can see one.
+    if cx.capabilities.vision {
+        tools.push(view_image::spec(&scope, config));
+    }
+    // The application's API, wherever there is an application: asking it
+    // what it answers is how a page gets written against what it returns.
+    // Every method in `act`; `GET` elsewhere, and the tool refuses the rest.
+    if call_api::offered(config) {
+        tools.push(call_api::spec(&scope, config, cx.mode));
+    }
+    match cx.mode {
+        RunMode::Explore => return tools,
+        RunMode::Plan => {
+            tools.push(plan::spec(&scope));
+            tools.push(feature::spec(&scope));
+            tools.push(explore::spec(&scope));
+            // Looking only: a plan is written from what the page is.
+            if may(config, CFG_MAY_VIEW_APP) {
+                tools.push(view_app::spec(
+                    &scope,
+                    config,
+                    cx.capabilities.vision,
+                    RunMode::Plan,
+                ));
+            }
+            return tools;
+        }
+        RunMode::Act => tools.push(explore::spec(&scope)),
+    }
+    if may(config, CFG_MAY_EDIT) {
+        let format = edit_format(config, cx.capabilities.edit_format);
+        tools.push(write::spec(&scope, format));
+        match format {
+            EditFormat::StrReplace => tools.push(edit::spec(&scope)),
+            // Always the function tool: rig 0.41 cannot declare OpenAI's
+            // native `apply_patch` tool type (TODO 5.8).
+            EditFormat::ApplyPatch => tools.push(patch::spec(&scope)),
+            EditFormat::WholeFile => {}
+        }
+    }
+    if may(config, CFG_MAY_RUN_SCRIPTS) {
+        tools.push(script::spec(&scope));
+    }
+    if may(config, CFG_MAY_CHECK) {
+        tools.push(check::spec(&scope));
+    }
+    if may(config, CFG_MAY_VIEW_APP) {
+        tools.push(view_app::spec(
+            &scope,
+            config,
+            cx.capabilities.vision,
+            RunMode::Act,
+        ));
+    }
+    if may(config, CFG_MAY_USE_SHELL) && cx.caller.is_some_and(is_admin) {
+        tools.push(shell::spec(&scope, config));
+        tools.push(process::spec(&scope));
+    }
+    if may(config, CFG_MAY_INSTALL_MODULES) && cx.caller.is_some_and(is_admin) {
+        tools.push(modules::list_spec(&scope));
+        tools.push(modules::install_spec(&scope));
+    }
+    tools
+}
+
+/// `search_docs` and `read_docs`, as `sc-docs` defines them.
+fn docs_specs() -> [ToolSpec; 2] {
+    use sc_docs::tools::{self as docs, TOOL_READ_DOCS, TOOL_SEARCH_DOCS};
+    [
+        ToolSpec::new(
+            TOOL_SEARCH_DOCS,
+            docs::search_description(),
+            docs::search_parameters(),
+        ),
+        ToolSpec::new(
+            TOOL_READ_DOCS,
+            docs::read_description(),
+            docs::read_parameters(),
+        ),
+    ]
 }
 
 /// Whether a grant is on. An absent checkbox reads as off, which is the reading

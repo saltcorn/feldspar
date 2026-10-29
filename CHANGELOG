@@ -2,6 +2,35 @@
 
 Changes in reverse chronological order.
 
+## `coding` offers `search_docs` and `read_docs`; shared tools
+
+The `coding` trait now offers the documentation tools itself, in every mode (`act`, `plan` and
+`explore`), after its file tools, and its prompt ends with the same "search before guessing"
+line. An application's builder agent therefore no longer carries a separate `docs` trait: it is
+back to `coding`, `http` and `preview_pane`. The `docs` trait stays, for agents without
+`coding`.
+
+- **Shared tools** (`sc-agent`): a new `AgentTrait::shared_tools()` (empty by default) names
+  fixed-name tools whose behaviour depends on no configuration. Two enabled traits that offer one
+  of these, both declaring it shared and with identical specs, now offer **one** tool instead of
+  failing validation as a collision. The model sees it once (`stable_prefix` drops the repeat),
+  and the first such trait answers it. Identical prompt contributions are also included only
+  once. Everything else is still a collision, including one `coding` scope enabled twice.
+  `coding`, `docs` and `admin_copilot` each declare `search_docs` and `read_docs` shared, so an
+  agent with two `coding` traits, or with `coding` and `admin_copilot`, can be saved.
+- **The docs allowlist takes wildcards, and there is no denylist** (`sc-docs`). `build.rs` holds
+  the allowlist (`tutorial-*.md`, `AGG_EXPRS.md`, `CHECKLISTS.md`, `GRAPHQL_API.md`, `I18N.md`,
+  `OPERATIONS.md`, `ROW_HISTORY.md`). It expands the patterns against `docs/` and generates the
+  `include_str!`s into `FILES`, and Cargo reruns it when `docs/` changes. Files no pattern matches
+  are left out. `EXCLUDED`, and the test that every `docs/*.md` file be in one of the two lists,
+  are gone, so adding a document no longer breaks a test. A new tutorial is compiled in without
+  being listed.
+- **Tests:** `coding_prompt::the_documentation_tools_are_one_tool_however_many_traits_offer_them`
+  saves an agent with two `coding` traits, `docs` and `admin_copilot`, and checks that each
+  documentation tool is offered once in every mode and that the same scope twice is still
+  refused. The `coding` tests that pin the exact tools offered now include the two
+  documentation tools.
+
 ## Documentation search for agents: `search_docs` and `read_docs`
 
 Agents can now search and read the server's own documentation, so they look up how a feature

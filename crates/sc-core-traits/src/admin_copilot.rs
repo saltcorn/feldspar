@@ -347,6 +347,11 @@ impl AgentTrait for AdminCopilot {
         specs
     }
 
+    /// The documentation's two, which `coding` and `docs` offer identically.
+    fn shared_tools(&self) -> &[&'static str] {
+        &sc_docs::tools::TOOL_NAMES
+    }
+
     /// Where the documentation is, and the build playbook where this agent may
     /// work on applications at all.
     fn prompt(&self, _cx: &ToolsContext<'_>, config: &Attrs) -> Option<String> {

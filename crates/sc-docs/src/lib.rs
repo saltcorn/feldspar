@@ -25,12 +25,12 @@
 //!
 //! The documents are `include_str!`ed, so the documentation an agent reads is
 //! the documentation of the binary it is talking to, and a single-file install
-//! has its documentation with it. Which files are in is [`FILES`], and which are
-//! deliberately not is [`EXCLUDED`]; a test fails on a file in `docs/` that is in
-//! neither, so a new document is a decision rather than an omission. Planning
-//! notes, design documents and the security review are out: they are about how
-//! the server is built rather than how to build with it, they go stale in ways a
-//! tutorial is tested not to, and the last of them is a list of weaknesses.
+//! has its documentation with it. Which files are in is an **allowlist** of
+//! patterns in `build.rs` (`tutorial-*.md`, `GRAPHQL_API.md`, …), expanded
+//! against `docs/` at build time into [`FILES`]: a new tutorial is in with
+//! nobody listing it. Anything the allowlist does not match is out — planning
+//! notes, design documents and the security review, which are about how the
+//! server is built rather than how to build with it.
 //!
 //! ## Search
 //!
@@ -52,141 +52,7 @@ use serde_json::{Value as Json, json};
 
 pub use text::slug;
 
-/// The files of `docs/` agents read, by id — the file name without `.md`.
-pub const FILES: &[(&str, &str)] = &[
-    ("AGG_EXPRS", include_str!("../../../docs/AGG_EXPRS.md")),
-    ("CHECKLISTS", include_str!("../../../docs/CHECKLISTS.md")),
-    ("GRAPHQL_API", include_str!("../../../docs/GRAPHQL_API.md")),
-    ("I18N", include_str!("../../../docs/I18N.md")),
-    ("OPERATIONS", include_str!("../../../docs/OPERATIONS.md")),
-    ("ROW_HISTORY", include_str!("../../../docs/ROW_HISTORY.md")),
-    (
-        "tutorial-agents",
-        include_str!("../../../docs/tutorial-agents.md"),
-    ),
-    (
-        "tutorial-analytics",
-        include_str!("../../../docs/tutorial-analytics.md"),
-    ),
-    (
-        "tutorial-astro",
-        include_str!("../../../docs/tutorial-astro.md"),
-    ),
-    (
-        "tutorial-code-framework",
-        include_str!("../../../docs/tutorial-code-framework.md"),
-    ),
-    (
-        "tutorial-code-library",
-        include_str!("../../../docs/tutorial-code-library.md"),
-    ),
-    (
-        "tutorial-constraints",
-        include_str!("../../../docs/tutorial-constraints.md"),
-    ),
-    (
-        "tutorial-file-fields",
-        include_str!("../../../docs/tutorial-file-fields.md"),
-    ),
-    (
-        "tutorial-graphql",
-        include_str!("../../../docs/tutorial-graphql.md"),
-    ),
-    (
-        "tutorial-history",
-        include_str!("../../../docs/tutorial-history.md"),
-    ),
-    (
-        "tutorial-i18n",
-        include_str!("../../../docs/tutorial-i18n.md"),
-    ),
-    (
-        "tutorial-live",
-        include_str!("../../../docs/tutorial-live.md"),
-    ),
-    (
-        "tutorial-mail",
-        include_str!("../../../docs/tutorial-mail.md"),
-    ),
-    (
-        "tutorial-mcp",
-        include_str!("../../../docs/tutorial-mcp.md"),
-    ),
-    (
-        "tutorial-models",
-        include_str!("../../../docs/tutorial-models.md"),
-    ),
-    (
-        "tutorial-modules",
-        include_str!("../../../docs/tutorial-modules.md"),
-    ),
-    (
-        "tutorial-ownership",
-        include_str!("../../../docs/tutorial-ownership.md"),
-    ),
-    (
-        "tutorial-payments",
-        include_str!("../../../docs/tutorial-payments.md"),
-    ),
-    (
-        "tutorial-payments-credits",
-        include_str!("../../../docs/tutorial-payments-credits.md"),
-    ),
-    (
-        "tutorial-payments-saas",
-        include_str!("../../../docs/tutorial-payments-saas.md"),
-    ),
-    (
-        "tutorial-python",
-        include_str!("../../../docs/tutorial-python.md"),
-    ),
-    (
-        "tutorial-react-todo",
-        include_str!("../../../docs/tutorial-react-todo.md"),
-    ),
-    (
-        "tutorial-rest-queries",
-        include_str!("../../../docs/tutorial-rest-queries.md"),
-    ),
-    (
-        "tutorial-saltcorn-ui",
-        include_str!("../../../docs/tutorial-saltcorn-ui.md"),
-    ),
-    (
-        "tutorial-stan",
-        include_str!("../../../docs/tutorial-stan.md"),
-    ),
-    (
-        "tutorial-streams",
-        include_str!("../../../docs/tutorial-streams.md"),
-    ),
-    (
-        "tutorial-table-providers",
-        include_str!("../../../docs/tutorial-table-providers.md"),
-    ),
-    (
-        "tutorial-triggers",
-        include_str!("../../../docs/tutorial-triggers.md"),
-    ),
-    (
-        "tutorial-workflows",
-        include_str!("../../../docs/tutorial-workflows.md"),
-    ),
-];
-
-/// The files of `docs/` agents do not read, by name; a name ending in `*` is a
-/// prefix.
-pub const EXCLUDED: &[&str] = &[
-    "AGENT_EVAL.md",
-    "BUILD_ALPINE_MUSL.md",
-    "GOALS.md",
-    "Saltcorn1_description.md",
-    "SECURITY_REVIEW_*",
-    "TECHNICAL_DESIGN.md",
-    "TODO-*",
-    "analytics-ui-goals.md",
-    "saltcorn-coding-agent-design*",
-];
+include!(concat!(env!("OUT_DIR"), "/files.rs"));
 
 /// How much of a document one `read_docs` answers, in bytes.
 pub const READ_CAP: usize = 12_000;
@@ -587,25 +453,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_file_in_docs_is_included_or_excluded_on_purpose() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs");
-        let excluded = |name: &str| {
-            EXCLUDED.iter().any(|e| match e.strip_suffix('*') {
-                Some(prefix) => name.starts_with(prefix),
-                None => name == *e,
-            })
-        };
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let name = entry.unwrap().file_name().into_string().unwrap();
-            let Some(stem) = name.strip_suffix(".md") else {
-                continue;
-            };
-            let included = FILES.iter().any(|(id, _)| *id == stem);
-            assert!(
-                included != excluded(&name),
-                "docs/{name} must be in exactly one of sc-docs' FILES and EXCLUDED"
-            );
-        }
+    fn the_allowlist_takes_patterns_and_leaves_the_rest_out() {
+        let ids: Vec<&str> = FILES.iter().map(|(id, _)| *id).collect();
+        // `tutorial-*.md` brings in every tutorial, a name brings in one file…
+        assert!(ids.contains(&"tutorial-mcp") && ids.contains(&"tutorial-ownership"));
+        assert!(ids.contains(&"GRAPHQL_API"), "{ids:?}");
+        // …and what no pattern matches is not compiled in.
+        assert!(!ids.contains(&"TECHNICAL_DESIGN"), "{ids:?}");
+        assert!(!ids.iter().any(|id| id.starts_with("TODO-")), "{ids:?}");
     }
 
     #[test]

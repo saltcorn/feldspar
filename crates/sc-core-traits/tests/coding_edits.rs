@@ -378,7 +378,9 @@ async fn the_edit_format_picks_the_edit_tool() -> Result<()> {
             // Claude can see, so it is offered the image viewer beside the reader.
             "view_image_code",
             "explore_code",
-            "write_file_code"
+            "write_file_code",
+            "search_docs",
+            "read_docs"
         ]
     );
 

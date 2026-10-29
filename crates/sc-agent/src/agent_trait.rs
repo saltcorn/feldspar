@@ -102,6 +102,20 @@ pub trait AgentTrait: Send + Sync {
     /// agent has no tools", and the second is not a repairable message.
     fn tools(&self, cx: &ToolsContext<'_>, config: &Attrs) -> Vec<ToolSpec>;
 
+    /// The tools of this trait that are **shared**: fixed-name tools whose
+    /// behaviour depends on nothing in any trait's configuration, so that any
+    /// trait offering one answers it the same way — `search_docs` and
+    /// `read_docs`, which `coding`, `docs` and `admin_copilot` all offer.
+    ///
+    /// Two enabled traits offering a tool under one name collide (§11.2),
+    /// *except* when both declare it shared and offer an identical spec: then it
+    /// is one tool, shown to the model once and answered by the first of them.
+    /// Anything else stays a collision, including the same trait enabled twice
+    /// over the same target.
+    fn shared_tools(&self) -> &[&'static str] {
+        &[]
+    }
+
     /// Run one of this trait's tools.
     ///
     /// `config` is *this enabled instance's* configuration, `tool` is one of the

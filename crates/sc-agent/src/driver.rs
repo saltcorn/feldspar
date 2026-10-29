@@ -1568,7 +1568,8 @@ impl<'a> Runner<'a> {
     }
 
     /// Which enabled trait offers `tool` in this mode, by position, and the
-    /// tool's spec — the answer validation guaranteed is unique.
+    /// tool's spec — the answer validation guaranteed is unique, or, for a
+    /// tool two traits offer identically, the first of them.
     fn owner(&self, tool: &str, cx: &ToolsContext<'_>) -> Option<(usize, ToolSpec)> {
         self.agent
             .traits
@@ -1590,12 +1591,11 @@ impl<'a> Runner<'a> {
         let mut names: Vec<String> = Vec::new();
         for enabled in &self.agent.traits {
             if let Ok(trait_) = self.registry.require(&enabled.trait_) {
-                names.extend(
-                    trait_
-                        .tools(cx, &enabled.config)
-                        .into_iter()
-                        .map(|t| t.name),
-                );
+                for tool in trait_.tools(cx, &enabled.config) {
+                    if !names.contains(&tool.name) {
+                        names.push(tool.name);
+                    }
+                }
             }
         }
         if names.is_empty() {
@@ -1873,13 +1873,21 @@ pub fn stable_prefix(
     let mut tools: Vec<ToolSpec> = Vec::new();
     for enabled in &agent.traits {
         let trait_ = registry.require(&enabled.trait_)?;
+        // Each text once: two traits that say the same thing about a tool they
+        // both offer say it once, as the tool is offered once.
         if let Some(text) = trait_
             .prompt(cx, &enabled.config)
-            .filter(|t| !t.trim().is_empty())
+            .filter(|t| !t.trim().is_empty() && !parts.contains(t))
         {
             parts.push(text);
         }
-        tools.extend(trait_.tools(cx, &enabled.config));
+        // A tool two traits offer identically is one tool (validation refuses
+        // two *different* tools under one name).
+        for tool in trait_.tools(cx, &enabled.config) {
+            if !tools.contains(&tool) {
+                tools.push(tool);
+            }
+        }
     }
     // An agent with no traits offers no tools, which is a request with an
     // empty list rather than one with a field the vendors read as "call
