@@ -430,6 +430,7 @@ async fn furnish(server: &mut Server) -> sc_error::Result<()> {
 
 /// A fresh, unique temp directory (created on disk) for one server's file store.
 fn temp_dir() -> std::path::PathBuf {
+    sc_test_harness::sweep_stale_scratch("sc-backup-test");
     let base = std::env::temp_dir().join(format!(
         "sc-backup-test-{}-{:?}",
         std::process::id(),

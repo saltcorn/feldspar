@@ -33,6 +33,7 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(tag: &str) -> sc_error::Result<TempDir> {
+        sc_test_harness::sweep_stale_scratch("sc-app-tutorial");
         let dir = std::env::temp_dir().join(format!(
             "sc-app-tutorial-{}-{tag}-{:?}",
             std::process::id(),

@@ -2,6 +2,19 @@
 
 Changes in reverse chronological order.
 
+## Tests clear the scratch directories earlier runs left in the temp dir
+
+`graphql_scaffold` and `tutorial_app_build` failed with "Disk quota exceeded" (`npm install`:
+errno -122): `/tmp` is a 16G tmpfs here, and three days of test runs had left 13G of scratch
+directories in it. Drop guards do not catch every case. A killed run never drops them; the
+`OnceLock` data dirs in `git_store_api` and `build_from_a_sentence` are never dropped; and an
+`npm install` started by an app's creation in `app_builder_agent` keeps writing `node_modules`
+after the guard removed its directory. New `sc_test_harness::sweep_stale_scratch(prefix)`
+removes `<temp>/<prefix>-<pid>…` entries whose process is gone (once per prefix per process,
+Linux only). The worst leakers call it when they make their scratch dir: `sc-server-builderagent`,
+`sc-server-adminapp`, `sc-build-sentence`, `sc-git-api`, `sc-backup-test`, `sc-module` and
+`sc-app-tutorial`.
+
 ## Crate diagram includes `sc-docs`
 
 §2's crate diagram in `docs/TECHNICAL_DESIGN.md` now draws the `sc-docs` crate (`sc-api --> sc-docs

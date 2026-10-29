@@ -40,6 +40,8 @@ use tower::ServiceExt;
 fn data_dir() -> &'static Path {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
+        // Never removed (it outlives every test), so a later run clears it.
+        sc_test_harness::sweep_stale_scratch("sc-build-sentence");
         let dir = std::env::temp_dir().join(format!("sc-build-sentence-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();

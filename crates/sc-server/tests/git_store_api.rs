@@ -101,6 +101,8 @@ impl Client {
 fn data_dir() -> &'static Path {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
+        // Never removed (it outlives every test), so a later run clears it.
+        sc_test_harness::sweep_stale_scratch("sc-git-api");
         let dir = std::env::temp_dir().join(format!("sc-git-api-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // Never the developer's real data directory: a test that cloned there
