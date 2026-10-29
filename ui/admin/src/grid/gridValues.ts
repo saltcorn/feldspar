@@ -99,3 +99,96 @@ export function sameValue(a: unknown, b: unknown): boolean {
   if ((a === null || a === undefined) && (b === null || b === undefined)) return true;
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
+
+// --- dates and times -------------------------------------------------------
+//
+// A `date`, `time` or `timestamp` cell is edited through the browser's own
+// picker (`<input type="date">`, `"time"`, `"datetime-local"`), and each picker
+// has a value format of its own that is not quite the wire's. A date is the
+// same on both sides. A time arrives as `10:30:00` (or with a fraction) and the
+// picker wants `HH:MM[:SS]`. A timestamp is the hard one: it arrives as an
+// RFC 3339 instant in UTC, and a `datetime-local` picker holds a *wall-clock*
+// reading with no zone — so the picker is filled with the instant as read in the
+// browser's time zone, and what comes back out is turned into an instant again
+// the same way. Showing an admin UTC in a picker that does not say so would put
+// every timestamp an hour or nine off what they meant.
+
+/** The picker a temporal column is edited through, or `null` for any other type. */
+export function pickerType(type: string): "date" | "time" | "datetime-local" | null {
+  switch (type) {
+    case "date":
+      return "date";
+    case "time":
+      return "time";
+    case "timestamp":
+      return "datetime-local";
+    default:
+      return null;
+  }
+}
+
+/** Two digits. */
+function pad(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** A `Date` as the local wall-clock reading `datetime-local` takes, to the second. */
+function localReading(d: Date): string {
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  );
+}
+
+/**
+ * A stored temporal value as the text its picker opens with — `""` for an empty
+ * cell, and for a value the picker could not hold (it then opens empty rather
+ * than on a wrong date).
+ */
+export function toPicker(type: string, value: unknown): string {
+  const text = display(value).trim();
+  if (text === "") return "";
+  switch (pickerType(type)) {
+    case "date": {
+      const m = /^\d{4}-\d{2}-\d{2}/.exec(text);
+      return m ? m[0] : "";
+    }
+    case "time": {
+      const m = /^(\d{2}:\d{2})(:\d{2})?/.exec(text);
+      return m ? m[1] + (m[2] ?? ":00") : "";
+    }
+    case "datetime-local": {
+      const d = new Date(text);
+      return Number.isNaN(d.getTime()) ? "" : localReading(d);
+    }
+    default:
+      return text;
+  }
+}
+
+/** A picker's text as the JSON to send: `null` when it was cleared, and a
+ * timestamp as the UTC instant its local reading means. */
+export function fromPicker(type: string, raw: string): unknown {
+  const text = raw.trim();
+  if (text === "") return null;
+  switch (pickerType(type)) {
+    case "time":
+      // `HH:MM` when the seconds are zero, which some browsers drop.
+      return /^\d{2}:\d{2}$/.test(text) ? `${text}:00` : text;
+    case "datetime-local": {
+      // No zone in the text, so `Date` reads it as local — which it is.
+      const d = new Date(text);
+      return Number.isNaN(d.getTime()) ? raw : d.toISOString();
+    }
+    default:
+      return text;
+  }
+}
+
+/** What a temporal cell shows: a timestamp as its local reading (`2024-05-01
+ * 12:00:00`), the same one its picker opens on, and anything else as itself. */
+export function displayTemporal(type: string, value: unknown): string {
+  if (pickerType(type) !== "datetime-local") return display(value);
+  const reading = toPicker(type, value);
+  return reading === "" ? display(value) : reading.replace("T", " ");
+}

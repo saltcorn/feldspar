@@ -165,7 +165,10 @@ export function App() {
   return (
     <I18nProvider locale={status.locales?.current ?? "en"}>
       {!status.any_user_exists ? (
-        <FirstUser onCreated={refresh} />
+        <FirstUser
+          tokenRequired={status.first_user_token_required}
+          onCreated={refresh}
+        />
       ) : !status.current_user ? (
         <Login onLoggedIn={refresh} />
       ) : (

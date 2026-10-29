@@ -31,6 +31,18 @@ pub const SESSION_TTL_HOURS: &str = "session_ttl_hours";
 /// provider at a time, not as a form field.
 pub const OAUTH_PROVIDERS: &str = "oauth_providers";
 
+/// The token that creating the **first user** needs, when one is set: what a
+/// hosting control panel stores with `feldspar set-cfg` before the instance
+/// first starts, and puts in the link it gives the instance's owner
+/// (`/?first_user_token=…`). Unset, whoever reaches a fresh installation first
+/// creates its admin.
+///
+/// Internal and secret: nobody types it into the settings form, and nothing
+/// prints it back. It only matters while there are no users, so it is not
+/// consumed. Clear all keeps it, so the installation it empties is still
+/// claimable only through the same link.
+pub const FIRST_USER_TOKEN: &str = "first_user_token";
+
 /// A session's lifetime when nothing is stored: one day.
 pub const DEFAULT_SESSION_TTL_HOURS: i64 = 24;
 /// The longest session the setting allows: a year. Past that a session is a
@@ -109,6 +121,23 @@ pub fn session_ttl_hours_from(config: &Attrs) -> Result<i64> {
 /// Read the session lifetime, in hours, out of `_fd_config`.
 pub async fn session_ttl_hours(catalog: &Catalog) -> Result<i64> {
     session_ttl_hours_from(&crate::store::all_config(catalog).await?)
+}
+
+/// The stored [`FIRST_USER_TOKEN`], or `None` when there is none. Blank counts
+/// as none, so `set-cfg first_user_token ""` cannot leave a token nobody can
+/// type. A database without the configuration table holds no token either:
+/// `serve` always creates it, but the create-first-user route also serves
+/// catalogs assembled without it.
+pub async fn first_user_token(catalog: &Catalog) -> Result<Option<String>> {
+    if catalog.get(crate::store::CONFIG_TABLE)?.is_none() {
+        return Ok(None);
+    }
+    Ok(
+        match crate::store::stored_config(catalog, FIRST_USER_TOKEN).await? {
+            Some(Json::String(token)) if !token.trim().is_empty() => Some(token.trim().to_owned()),
+            _ => None,
+        },
+    )
 }
 
 // --- external identity providers --------------------------------------------

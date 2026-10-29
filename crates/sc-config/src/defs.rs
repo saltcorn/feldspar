@@ -152,6 +152,14 @@ pub fn internal_defs() -> &'static [ConfigDef] {
                 FormField::new(DEFAULT_LLM_PROVIDER, sc_types::BasicType::Text)
                     .label("Default LLM provider"),
             ),
+            ConfigDef::new(
+                FormField::new(
+                    crate::authentication::FIRST_USER_TOKEN,
+                    sc_types::BasicType::Text,
+                )
+                .label("First user token")
+                .secret(),
+            ),
             // A list of provider records, each checked against
             // `oauth_provider_spec` when it is saved.
             ConfigDef::new(
@@ -234,10 +242,13 @@ mod tests {
             BACKUP_SCHEDULE_STATUS,
             DEFAULT_LLM_PROVIDER,
             crate::authentication::OAUTH_PROVIDERS,
+            crate::authentication::FIRST_USER_TOKEN,
         ] {
             assert!(known_keys().contains(&key));
             assert!(!config_spec().iter().any(|f| f.name() == key));
         }
+        // Nothing prints the first user's token back.
+        assert!(definition(crate::authentication::FIRST_USER_TOKEN).is_some_and(|f| f.secret));
     }
 
     #[test]

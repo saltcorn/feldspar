@@ -73,7 +73,7 @@ pub use credits::{
     debit_credits, grant_credits, list_credit_buckets, list_credit_entries, revoke_credits,
     set_low_balance_threshold,
 };
-pub use first_user::{any_user_exists, create_first_user};
+pub use first_user::{any_user_exists, create_first_user, first_user_token_matches};
 pub use grants::{
     COL_GRANT_CREATED_AT, COL_GRANT_EXPIRES_AT, COL_GRANT_ID, COL_GRANT_NOTE, COL_GRANT_REVOKED_AT,
     COL_GRANT_ROLE, COL_GRANT_SOURCE, COL_GRANT_SOURCE_REF, COL_GRANT_STARTS_AT, COL_GRANT_USER,

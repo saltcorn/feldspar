@@ -391,7 +391,23 @@ Four things, and three of them happen in a browser (README §2.7):
 2. **The first admin user.** Open `http://example.com` and the SPA offers a
    create-first-user screen. **That screen is open to whoever reaches it first**,
    so do it before the host is reachable from the internet, or do it over an ssh
-   tunnel.
+   tunnel. Or set a **first-user token** before the server first starts. Then
+   only someone who has the token can create the first user:
+
+   ```
+   token=$(openssl rand -hex 24)
+   feldspar set-cfg first_user_token "$token"   # needs only the database; run it before `serve`
+   echo "https://example.com/?first_user_token=$token"
+   ```
+
+   The screen reads the token from the link and sends it with the form. Without
+   the token, the screen shows no form, and `POST /api/first-user` returns `403`.
+   A script that creates the user itself sends the token as `"token"` in the
+   JSON body. The token only matters while there are no users. It is a secret:
+   `get-cfg` hides it in the full listing and prints it only when you name the
+   key. Backups leave it out. **Clear all** keeps it, so an emptied
+   installation still needs the same token. `feldspar set-cfg --unset
+   first_user_token` removes it.
 3. **TLS**, in the admin UI under **Settings → SSL / TLS certificates** — not a
    command-line flag. Choose `letsencrypt`, give a contact address, and restart.
    Validation is TLS-ALPN-01, so port 443 must be reachable from the internet,

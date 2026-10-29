@@ -96,8 +96,9 @@ pub use image::{GeneratedImage, ImageRequest, generate_image};
 pub use listing::{fetch_host_models, parse_model_listing};
 pub use logging::{LoggedProvider, request_summary, response_summary};
 pub use message::{
-    AssistantMessage, CachePlan, ImagePart, LlmDelta, LlmMessage, LlmRequest, ProviderItem,
-    StopReason, ToolCall, ToolSpec, Usage,
+    AssistantMessage, Attachment, CachePlan, ImagePart, LlmDelta, LlmMessage, LlmRequest,
+    MAX_ATTACHMENTS, MAX_IMAGE_ATTACHMENT_BYTES, MAX_TEXT_ATTACHMENT_BYTES, ProviderItem,
+    StopReason, ToolCall, ToolSpec, Usage, check_attachments,
 };
 pub use model::{
     ConnectedModel, LlmModelDef, LlmModelDefId, ModelKind, model_config_spec,

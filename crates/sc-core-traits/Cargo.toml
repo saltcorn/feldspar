@@ -20,6 +20,9 @@ sc-agent.workspace = true
 # The checklist tools (TODO-checklists C1.15), offered by `admin_copilot` beside
 # the schema tools, as the MCP server offers them.
 sc-check.workspace = true
+# `search_docs` and `read_docs`: the `docs` trait, and the line `admin_copilot`'s
+# prompt says them in.
+sc-docs.workspace = true
 # The row layer. This is what fixes this crate *above* `sc-api`, exactly as it
 # fixes `sc-core-actions` there: a trait's read goes through the same §7.3
 # access rule an API caller's does, and a trait's write (Phase 3's later items)

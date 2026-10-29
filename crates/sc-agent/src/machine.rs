@@ -493,6 +493,17 @@ impl AgentLoop {
         text: impl Into<String>,
         controls: BTreeMap<String, Json>,
     ) -> Result<()> {
+        self.push_user_attached(text, Vec::new(), controls)
+    }
+
+    /// [`push_user_with`](AgentLoop::push_user_with), with the files the
+    /// person attached to the message.
+    pub fn push_user_attached(
+        &mut self,
+        text: impl Into<String>,
+        attachments: Vec<sc_llm::Attachment>,
+        controls: BTreeMap<String, Json>,
+    ) -> Result<()> {
         // A turn boundary is the start of the run or the end of a turn. Anywhere
         // else the history is half-built — an assistant message awaiting its tool
         // results, or a question already on its way to the model.
@@ -503,7 +514,7 @@ impl AgentLoop {
                  wait for the turn to finish",
             ));
         }
-        self.messages.push(LlmMessage::user(text));
+        self.messages.push(LlmMessage::user_with(text, attachments));
         self.controls = controls;
         // The person has weighed in, so whatever was repeating starts again.
         self.control.reset();

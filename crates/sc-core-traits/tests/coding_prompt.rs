@@ -391,3 +391,52 @@ async fn the_react_builder_agents_stable_prefix_is_at_most_4000_tokens() -> Resu
     );
     Ok(())
 }
+
+/// `search_docs` and `read_docs` are offered by `coding`, `docs` and
+/// `admin_copilot` alike, and declared **shared**: on one agent they are one
+/// tool each, not a collision — while every tool named after a scope still
+/// must be distinguishable.
+#[tokio::test]
+async fn the_documentation_tools_are_one_tool_however_many_traits_offer_them() -> Result<()> {
+    let env = Env::new().await?;
+    env.with_file_store("apps", None).await?;
+    let coding = |root: &str| {
+        EnabledTrait::new("coding")
+            .config(CFG_STORE, "apps")
+            .config(CFG_ROOT, root)
+    };
+    let agent = Agent::new("everything", "main")
+        .with_trait(coding("web"))
+        .with_trait(coding("site"))
+        .with_trait(EnabledTrait::new("docs"))
+        .with_trait(EnabledTrait::new("admin_copilot"));
+    save_agent(&env.catalog, &env.registry, &agent).await?;
+
+    let caps = ModelCapabilities::built_in(sc_llm::ANTHROPIC_BACKEND, "claude-haiku-4-5");
+    let system = RunCaller::system();
+    for mode in [RunMode::Act, RunMode::Plan, RunMode::Explore] {
+        let cx = ToolsContext::new(&env.catalog, mode, &caps).for_caller(&system);
+        let prefix = stable_prefix(&env.registry, &agent, &cx)?;
+        for tool in sc_core_traits::tool_names::docs {
+            let offered = prefix.tools.iter().filter(|t| t.name == tool).count();
+            assert_eq!(offered, 1, "{tool} in {mode}");
+        }
+        assert!(
+            prefix
+                .system
+                .unwrap_or_default()
+                .contains(sc_docs::tools::PROMPT)
+        );
+    }
+
+    // The same scope twice is still refused: its file tools are not shared.
+    let clash = Agent::new("twice", "main")
+        .with_trait(coding("web"))
+        .with_trait(coding("web"));
+    let err = save_agent(&env.catalog, &env.registry, &clash)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("read_file_apps_web"), "{err}");
+    Ok(())
+}

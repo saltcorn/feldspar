@@ -6,6 +6,11 @@
 //! exists ([`any_user_exists`]) and creating the initial administrator
 //! ([`create_first_user`]).
 //!
+//! An installation may require a **token** to create its first user
+//! (`sc_config::FIRST_USER_TOKEN`), so that a fresh instance is claimed by
+//! whoever its provider gave the link to rather than by whoever reaches it
+//! first. The server reads the stored token and asks [`first_user_token_matches`].
+//!
 //! The first user is always an [admin](super::ROLE_ADMIN). Creation runs inside
 //! a transaction that re-checks the empty-table precondition, so the flow cannot
 //! be used to mint a second "first" admin. (This guards against the normal case;
@@ -20,6 +25,23 @@ use uuid::Uuid;
 use crate::password::hash_password;
 use crate::user::User;
 use crate::users::{COL_EMAIL, COL_ID, COL_PASSWORD_HASH, COL_ROLE, ROLE_ADMIN, USERS_TABLE};
+
+/// Whether `supplied` is the installation's first-user token `expected`.
+///
+/// Both are hashed before they are compared, and the digests compared in
+/// constant time, so neither the length of the token nor how much of a guess
+/// was right shows in how long the answer takes.
+pub fn first_user_token_matches(expected: &str, supplied: Option<&str>) -> bool {
+    use sha2::{Digest, Sha256};
+    let Some(supplied) = supplied else {
+        return false;
+    };
+    let (a, b) = (
+        Sha256::digest(expected.as_bytes()),
+        Sha256::digest(supplied.trim().as_bytes()),
+    );
+    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
 
 /// A `SELECT id FROM users LIMIT 1`, used to detect whether any user exists.
 fn one_user_probe() -> Statement {
@@ -100,4 +122,19 @@ pub async fn create_first_user(catalog: &Catalog, email: &str, password: &str) -
     user.extra
         .insert(COL_EMAIL.to_owned(), Value::Text(email.to_owned()));
     Ok(user)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_user_token_matches;
+
+    #[test]
+    fn only_the_same_token_matches() {
+        assert!(first_user_token_matches("abc123", Some("abc123")));
+        // What a pasted link may carry around it.
+        assert!(first_user_token_matches("abc123", Some(" abc123\n")));
+        for wrong in [None, Some(""), Some("abc12"), Some("abc1234"), Some("ABC123")] {
+            assert!(!first_user_token_matches("abc123", wrong), "{wrong:?}");
+        }
+    }
 }

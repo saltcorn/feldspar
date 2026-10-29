@@ -436,6 +436,65 @@ async fn a_second_message_continues_the_same_run() -> Result<()> {
     Ok(())
 }
 
+/// A message may carry files and no text: the model is sent them, the run is
+/// titled by their names, and the stored transcript — which the admin panel
+/// reopens a conversation from — keeps them. A file that cannot be attached is
+/// an `error` event, and the socket stays open.
+#[tokio::test]
+async fn a_message_carries_its_attachments_to_the_model() -> Result<()> {
+    use base64::Engine as _;
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    let provider = Arc::new(FakeProvider::new([Reply::says("A to-do list.")]));
+    let server = serve_with(talker(), Arc::new(Scripted(Arc::clone(&provider)))).await?;
+    let mut socket = server.connect(Some(&server.admin)).await.expect("connect");
+    send(&mut socket, json!({"type": "start", "agent": "librarian"})).await;
+
+    send(
+        &mut socket,
+        json!({"type": "message", "text": "", "attachments": [
+            {"name": "photo.tiff", "media_type": "image/tiff", "data": b64(b"tiff")},
+        ]}),
+    )
+    .await;
+    let refused = drain_turn(&mut socket).await;
+    assert_eq!(refused[0]["type"], "error", "{refused:?}");
+    assert!(
+        refused[0]["message"].as_str().unwrap().contains("PNG"),
+        "{refused:?}"
+    );
+    // The `done` that releases the composer, with no run begun.
+    assert_eq!(refused.last().unwrap()["run"], Value::Null, "{refused:?}");
+    assert!(provider.last_request().is_none());
+
+    send(
+        &mut socket,
+        json!({"type": "message", "text": "", "attachments": [
+            {"name": "todo.txt", "media_type": "text/plain", "data": b64(b"- milk\n- eggs")},
+        ]}),
+    )
+    .await;
+    let events = drain_turn(&mut socket).await;
+    assert_eq!(streamed_text(&events), "A to-do list.");
+    let asked = provider.last_request().unwrap();
+    assert!(
+        matches!(&asked.messages[0], sc_llm::LlmMessage::User { attachments, .. }
+            if attachments.len() == 1 && attachments[0].text() == "- milk\n- eggs"),
+        "{:?}",
+        asked.messages
+    );
+
+    let run_id = events.last().unwrap()["run"].as_str().unwrap().to_owned();
+    let run = sc_agent::require_run(
+        &server.catalog,
+        sc_agent::RunId(Uuid::parse_str(&run_id).unwrap()),
+    )
+    .await?;
+    assert_eq!(run.description, "todo.txt");
+    let context = serde_json::to_value(run.agent_loop()?).unwrap();
+    assert_eq!(context["messages"][0]["attachments"][0]["name"], "todo.txt");
+    Ok(())
+}
+
 // --- 3. a failure is an event ------------------------------------------------
 
 /// A provider that refuses arrives as an `error` **on an open socket**, followed

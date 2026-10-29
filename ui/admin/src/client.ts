@@ -5,8 +5,8 @@ import { clientError, requestHeaders, trackCsrf, type ClientOptions } from "./he
 
 export type { ClientOptions } from "./helper";
 
-export type AuthStatusResponse = { any_user_exists: boolean; current_user?: { id: string; email: string; role: number } | null; locales: { default: string; enabled: Array<string>; current: string } };
-export type CreateFirstUserRequest = { email: string; password: string };
+export type AuthStatusResponse = { any_user_exists: boolean; first_user_token_required: boolean; current_user?: { id: string; email: string; role: number } | null; locales: { default: string; enabled: Array<string>; current: string } };
+export type CreateFirstUserRequest = { email: string; password: string; token?: string | null };
 export type CreateFirstUserResponse = { id: string; email: string; role: number };
 export type LoginRequest = { email: string; password: string };
 export type LoginResponse = { id: string; email: string; role: number };

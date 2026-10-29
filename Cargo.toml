@@ -22,6 +22,10 @@ members = [
     # in with what the screen is about and rendered to HTML. Layer 0 because it
     # is handed plain JSON and knows nothing of the catalog.
     "crates/sc-help",
+    # The documentation agents read (`search_docs`, `read_docs`): `docs/`'s
+    # tutorials and references and the help topics, compiled in and indexed.
+    # Layer 0 beside `sc-help`, whose topics are among its documents.
+    "crates/sc-docs",
     # Layer 1 — query language, expression language
     "crates/sc-query",
     "crates/sc-expr",
@@ -155,6 +159,7 @@ sc-log = { path = "crates/sc-log" }
 sc-ratelimit = { path = "crates/sc-ratelimit" }
 sc-i18n = { path = "crates/sc-i18n" }
 sc-help = { path = "crates/sc-help" }
+sc-docs = { path = "crates/sc-docs" }
 # `feldspar.toml` — the deployment file naming this machine's databases. Layer 0
 # because both ends of the workspace read it: the binary, to know where the
 # primary database is, and the integration-test harness, to know which database

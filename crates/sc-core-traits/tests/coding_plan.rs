@@ -439,7 +439,7 @@ async fn a_planner_implements_three_features_each_checked_and_committed() -> Res
     // in `act` mode, with no trace of the planner's conversation.
     let sessions = models.executor.requests();
     let brief = |n: usize| match &sessions[n].messages[1] {
-        LlmMessage::User { content } => content.clone(),
+        LlmMessage::User { content, .. } => content.clone(),
         other => panic!("{other:?}"),
     };
     assert!(brief(0).starts_with("Implement feature `list`: Add a task list"));
@@ -814,15 +814,18 @@ async fn explore_answers_from_a_cheap_read_only_session() -> Result<()> {
     );
     assert!(explored.ends_with("[…]"), "{explored}");
     assert_eq!(explored.split_whitespace().count(), 301, "{explored}");
-    // The explore session had only the read-only tools, and its brief.
+    // The explore session had only the read-only tools (the documentation's
+    // among them), and its brief.
     let exploring = models.cheap.requests();
     let tools: Vec<&str> = exploring[0].tools.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
         tools,
         [
             "find_files_apps_todo",
+            "read_docs",
             "read_file_apps_todo",
             "repo_map_apps_todo",
+            "search_docs",
             "search_files_apps_todo"
         ]
     );

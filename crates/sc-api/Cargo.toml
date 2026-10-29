@@ -13,6 +13,7 @@ rust-version.workspace = true
 autotests = false
 
 [dependencies]
+sc-docs.workspace = true
 sc-error.workspace = true
 # A preview's `returns` mismatch is a warning (TODO F4.1).
 sc-log.workspace = true

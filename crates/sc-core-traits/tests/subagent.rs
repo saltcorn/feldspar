@@ -285,7 +285,10 @@ async fn the_sub_agent_sees_the_briefing_and_none_of_the_parents_conversation() 
     // The sub-agent's first request: one user message, which is the briefing.
     let child_request = &scripts.for_agent("researcher").requests()[0];
     assert_eq!(child_request.messages.len(), 1);
-    let LlmMessage::User { content: briefing } = &child_request.messages[0] else {
+    let LlmMessage::User {
+        content: briefing, ..
+    } = &child_request.messages[0]
+    else {
         panic!("the sub-agent's first message is the briefing");
     };
     assert!(briefing.contains("Count the books"), "{briefing}");

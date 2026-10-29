@@ -157,7 +157,7 @@ impl Match {
 /// A message's text.
 fn content(message: &LlmMessage) -> &str {
     match message {
-        LlmMessage::User { content }
+        LlmMessage::User { content, .. }
         | LlmMessage::Assistant { content, .. }
         | LlmMessage::ToolResult { content, .. } => content,
     }

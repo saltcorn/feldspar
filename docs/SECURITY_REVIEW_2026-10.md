@@ -941,7 +941,7 @@ No exploit was run.
 
 | # | Severity | Issue | Status |
 |---|----------|-------|--------|
-| 36 | High | Vendored v1 `interpolate`: `{{= }}` re-evaluates row data as JavaScript (no #23 fix) → stored XSS, code in the shared view worker | open |
+| 36 | High | Vendored v1 `interpolate`: `{{= }}` re-evaluates row data as JavaScript (no #23 fix) → stored XSS, code in the shared view worker | **fixed** (follow-ups in TODO S1) |
 | 37 | High | v1 page action buttons ignore `minRole`; the trigger then runs at admin authority, skipping its own `min_role` | **fixed** |
 | 38 | High | v1 views filter on `users.password_hash` from URL state → hash extraction oracle | **fixed** |
 | 39 | High | IMAP: forged `mail_attachments` row reads any user's stored attachment | **fixed** |
@@ -949,7 +949,7 @@ No exploit was run.
 | 41 | High | Account pre-hijack: unverified password signup, then OAuth sign-in links to it by email | **fixed** |
 | 42 | High | Admin agent-chat socket keeps admin tools after logout, disable, demotion or password reset | **fixed** |
 
-Items 37–42 are fixed (36 is open); see the CHANGELOG entry "Security fixes: v1 action roles,
+Items 36–42 are fixed (36's structural follow-ups are TODO S1); see the CHANGELOG entries "Security fix: v1 `{{= }}` re-interpolates names, not code" and "Security fixes: v1 action roles,
 hidden-column filters, module file owners, invitation columns, signup pre-hijack, chat socket".
 
 36–38 share a root cause: the vendored Saltcorn-UI v1 runtime did not get the fixes made for the
@@ -987,6 +987,12 @@ names-only and `{{!` downgraded for re-interpolated values) covers only the Rust
 **Fix.** In the vendored `interpolate`, apply the same rule: re-interpolated values may contain only
 bare names and static members, and `{{!` becomes `{{`. Better, do not re-interpolate data at all.
 Run the view runtime in its own worker. Clamp the view call's file and trigger hosts to the viewer.
+
+**Status: fixed** in the vendored `interpolate` (`ui/saltcorn-ui/vendor/saltcorn-data/utils.ts`).
+A token inside a re-interpolated value must be a name path (`a`, `user.name`) without
+`constructor`/`__proto__`/`prototype`; it is resolved by own-property lookup, never through the
+evaluator; `{{!` is escaped; nesting stops after 5 passes; anything else is an error.
+`escapeHtml` now also escapes `"` and `'`. The worker split and host clamping are TODO S1.
 
 ### 37. High — v1 action buttons ignore `minRole`, and run at admin authority (verified)
 

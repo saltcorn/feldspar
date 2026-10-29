@@ -2,6 +2,249 @@
 
 Changes in reverse chronological order.
 
+## Security: a first-user token, so a fresh instance is claimed by whoever was given the link
+
+Before this change, a fresh installation showed the create-first-user screen to whoever reached
+it first, and that person became its admin. An instance created and then forgotten could be taken
+over. An installation can now be given a **first-user token** before it first starts. Then only a
+request that carries the token can create the first user.
+
+- **The setting** (`sc-config`): `first_user_token`, an internal, secret Text key. It is declared
+  in `internal_defs`, so it is not on the settings form. `sc_config::first_user_token` reads it.
+  A blank value counts as unset, and so does a database with no `_fd_config` table, which can't
+  hold a token. `feldspar set-cfg first_user_token …` writes it **before
+  `serve` has ever run**. `set-cfg` connects through the same `connect_catalog` bootstrap as
+  `serve`, so it creates `_fd_config` (and the other tables) on an empty database. Backups do
+  not carry it, because they write only the settings-form sections.
+- **The check** (`sc-server` `createFirstUser`): when a token is set, the request body's `token`
+  must match it, or the answer is `403 {error}` and no user is created.
+  `sc_auth::first_user_token_matches` hashes both values with SHA-256 and compares the digests in
+  constant time. The token is not consumed: once a user exists, the create-first-user route
+  refuses anyway.
+- **`/api/auth/status`** has a new field, `first_user_token_required`, which is true only while
+  there are no users and a token is set.
+- **Clear all** keeps the token, as it keeps the TLS keys, so an emptied installation can still
+  be claimed only with the same token.
+- **The admin UI** (`FirstUser.tsx`) reads `?first_user_token=…` from the address and sends it
+  with the form. When a token is required and the address has none, the screen shows a message
+  asking for the setup link instead of the form (translated in the five admin locales). The
+  regenerated clients (`ui/admin`, `ui/ide`, `ui/builder`, `ui/analytics`) take an optional
+  `token`.
+- **Docs:** `OPERATIONS.md` §2.6 shows generating a token, setting it before `serve` and building
+  the link.
+- **Hosting:** a control panel that creates instances should run `feldspar set-cfg
+  first_user_token …` before it starts the service, and link the owner to
+  `https://<instance>/?first_user_token=…`. A panel script that claims the instance itself with
+  `POST /api/first-user` (as `feldspar-hosted`'s `add-instance.sh` does) must add `"token"` to
+  that body.
+- **Tests:**
+  - `admin_api::a_first_user_token_is_needed_to_create_the_first_user`: the status says a token is
+    required; no token, a wrong one, an empty one and a longer one are each refused `403` without
+    a session or a user; the right one creates the admin; afterwards the status says no token is
+    required.
+  - `admin_api::without_a_first_user_token_anyone_may_create_the_first_user`.
+  - `clear_all_api` checks that the token survives Clear all and still gates the next first user.
+  - `sc-auth`: a unit test of the matcher.
+  - `sc-config`: the key is internal and secret.
+
+## Tests clear the scratch directories earlier runs left in the temp dir
+
+`graphql_scaffold` and `tutorial_app_build` failed with "Disk quota exceeded" (`npm install`:
+errno -122): `/tmp` is a 16G tmpfs here, and three days of test runs had left 13G of scratch
+directories in it. Drop guards do not catch every case. A killed run never drops them; the
+`OnceLock` data dirs in `git_store_api` and `build_from_a_sentence` are never dropped; and an
+`npm install` started by an app's creation in `app_builder_agent` keeps writing `node_modules`
+after the guard removed its directory. New `sc_test_harness::sweep_stale_scratch(prefix)`
+removes `<temp>/<prefix>-<pid>…` entries whose process is gone (once per prefix per process,
+Linux only). The worst leakers call it when they make their scratch dir: `sc-server-builderagent`,
+`sc-server-adminapp`, `sc-build-sentence`, `sc-git-api`, `sc-backup-test`, `sc-module` and
+`sc-app-tutorial`.
+
+## Crate diagram includes `sc-docs`
+
+§2's crate diagram in `docs/TECHNICAL_DESIGN.md` now draws the `sc-docs` crate (`sc-api --> sc-docs
+--> sc-help`). Without it, `repo_hygiene::the_design_crate_diagram_matches_the_workspace_manifests`
+failed with "the crate diagram is missing `sc-docs`".
+
+## Security fix: v1 `{{= }}` re-interpolates names, not code
+
+Security review #36. Saltcorn UI's vendored v1 `interpolate` parsed a `{{= field }}` token's
+value (row data, or a page's query string) as a template again, and evaluated every token in it
+as JavaScript in the view worker's shared `vm` realm. So any user who could write a field could
+place `{{! … }}` markup on the page (stored XSS) or run code that every viewer's render shares.
+The Rust engine got the matching fix for #23. The vendored copy had not.
+
+- **Only names in re-interpolated values** (`ui/saltcorn-ui/vendor/saltcorn-data/utils.ts`). The
+  admin's own template is evaluated as before. A token inside a re-interpolated value must be a
+  name and its static members (`firstName`, `user.name`, `customerⱵemail`), and none of the
+  members may be `constructor`, `__proto__` or `prototype`. It is **looked up** in the row/user
+  context by own properties and never reaches the evaluator, so it cannot fall through to the
+  evaluator's globals either.
+  - Anything else is an error ("a value re-interpolated with {{= }} may only name fields, as in
+    {{ firstName }}"), as is an unknown name. This matches the Rust engine.
+  - `{{! }}` in data is escaped like `{{ }}`.
+  - Nested `{{= }}` still works, up to 5 passes (Rust's `MAX_PASSES`). Before, a value that
+    rendered itself recursed until the stack overflowed.
+- **`escapeHtml` escapes quotes.** `"` and `'` now become `&quot;` and `&#39;`, as in the Rust
+  `escape_html`. This applies to every v1 `{{ }}` output and to file contents shown by
+  `fileviews`.
+- **Still open** (TODO S1): run the view runtime in its own worker, and limit the view call's file
+  and trigger hosts to the viewer's authority.
+- **Tests:** `sc-module` `view_runtime::a_reinterpolated_value_only_names_fields_and_is_escaped`
+  renders a page whose HTML block holds `{{= bio}}`, with `bio` taken from the query string. It
+  checks that:
+  - fields and their static members resolve;
+  - `{{! }}` and the value's own markup are escaped;
+  - calls, operators, computed members, `constructor` and `__proto__` are refused;
+  - a global name (`JSON`) is not found;
+  - a self-rendering value stops after 5 passes;
+  - the admin's own expression still runs, with its quotes escaped.
+
+  The test fails against the previous code.
+
+## `coding` offers `search_docs` and `read_docs`; shared tools
+
+The `coding` trait now offers the documentation tools itself, in every mode (`act`, `plan` and
+`explore`), after its file tools, and its prompt ends with the same "search before guessing"
+line. An application's builder agent therefore no longer carries a separate `docs` trait: it is
+back to `coding`, `http` and `preview_pane`. The `docs` trait stays, for agents without
+`coding`.
+
+- **Shared tools** (`sc-agent`): a new `AgentTrait::shared_tools()` (empty by default) names
+  fixed-name tools whose behaviour depends on no configuration. Two enabled traits that offer one
+  of these, both declaring it shared and with identical specs, now offer **one** tool instead of
+  failing validation as a collision. The model sees it once (`stable_prefix` drops the repeat),
+  and the first such trait answers it. Identical prompt contributions are also included only
+  once. Everything else is still a collision, including one `coding` scope enabled twice.
+  `coding`, `docs` and `admin_copilot` each declare `search_docs` and `read_docs` shared, so an
+  agent with two `coding` traits, or with `coding` and `admin_copilot`, can be saved.
+- **The docs allowlist takes wildcards, and there is no denylist** (`sc-docs`). `build.rs` holds
+  the allowlist (`tutorial-*.md`, `AGG_EXPRS.md`, `CHECKLISTS.md`, `GRAPHQL_API.md`, `I18N.md`,
+  `OPERATIONS.md`, `ROW_HISTORY.md`). It expands the patterns against `docs/` and generates the
+  `include_str!`s into `FILES`, and Cargo reruns it when `docs/` changes. Files no pattern matches
+  are left out. `EXCLUDED`, and the test that every `docs/*.md` file be in one of the two lists,
+  are gone, so adding a document no longer breaks a test. A new tutorial is compiled in without
+  being listed.
+- **Tests:** `coding_prompt::the_documentation_tools_are_one_tool_however_many_traits_offer_them`
+  saves an agent with two `coding` traits, `docs` and `admin_copilot`, and checks that each
+  documentation tool is offered once in every mode and that the same scope twice is still
+  refused. The `coding` tests that pin the exact tools offered now include the two
+  documentation tools.
+
+## Documentation search for agents: `search_docs` and `read_docs`
+
+Agents can now search and read the server's own documentation, so they look up how a feature
+works instead of guessing from APIs they know from elsewhere.
+
+- **New crate `sc-docs`** (layer 0, depends on `sc-error` and `sc-help`). It compiles in the
+  user-facing files of `docs/` (the 30 tutorials plus `AGG_EXPRS`, `CHECKLISTS`, `GRAPHQL_API`,
+  `I18N`, `OPERATIONS`, `ROW_HISTORY`) and the admin UI's help topics. Each is split into
+  sections at its headings, with GitHub-style anchors, ignoring headings inside code fences, and
+  the sections are BM25-indexed on first use. Terms keep code identifiers whole and also split
+  them at `_`, so `allow_triggers` is found by itself and by "allow triggers". A help topic is
+  just another document (`ownership-formula` sits beside `tutorial-ownership`): it is rendered
+  with an empty context and given its title as a heading. `FILES` is the allowlist and
+  `EXCLUDED` the denylist (`TECHNICAL_DESIGN`, `TODO-*`, `SECURITY_REVIEW_*`, `GOALS`, the
+  coding-agent design notes, …). A test fails on any `docs/*.md` file that is in neither list.
+- **The two tools** (`sc_docs::tools`): `search_docs { query, doc?, limit? }` returns up to 10
+  hits, each with `doc`, `section`, `heading_path` and a snippet of about 300 bytes.
+  `read_docs { doc?, section? }` lists the documents when called with no arguments. Given a
+  `doc`, it returns the document whole if it fits in 12 000 bytes, or else its outline. Given a
+  `doc` and `section`, it returns that section. A section too long to read in one go returns the
+  text before its first subsection and the subsections to read next, or is cut at a line and
+  says so. `doc` accepts links as written (`tutorial-mcp.md#step-1--turn-it-on`,
+  `help:ownership-formula`), and `section` accepts heading text as well as anchors.
+- **Where they are offered:** `sc-api`'s administrative `ToolSet` always offers them, beside
+  `describe_code_api`, so the MCP server and `admin_copilot` both have them (and the generated
+  `SKILL.md` lists them). For other agents, the new **`docs`** agent trait has no settings and
+  offers the same two tools under the same names. An application's builder agent is now created
+  with it (`coding`, `http`, `preview_pane`, `docs`). The MCP handshake instructions, the
+  `admin_copilot` prompt and the `docs` trait's prompt each say to search before guessing.
+  `admin_copilot` now has 29 tools. `sc_help::markdown` renders a topic to markdown.
+- **Tests:** `sc-docs` unit tests cover sections and anchors, terms, the include/exclude check,
+  help topics as documents, search by words and by identifier, outlines, long sections and the
+  tools' argument errors. The tool lists pinned in the `sc-api`, `sc-core-traits` and
+  `sc-server` MCP and builder-agent tests are updated, and a new test checks that the builder's
+  `docs` trait is registered and collides with none of `coding`'s tools.
+
+## Agent chat: attach images and text documents
+
+A person can now attach files to a message in an agent chat, in the admin UI and in React
+applications, and ask about them or refer to them in the prompt.
+
+- **The model message** (`sc-llm`): `LlmMessage::User` has `attachments: Vec<Attachment>`
+  (`{ name, media_type, data }`, base64 in JSON, left out when empty). `Attachment::checked` /
+  `check_attachments` accept PNG, JPEG, GIF and WebP images up to 5 MiB and UTF-8 text up to
+  1 MiB, at most 10 per message. A text file with no type or `application/octet-stream` becomes
+  `text/plain`, or `text/markdown` for a `.md`. Anything else is refused with the file's name.
+  The rig bridge sends attachments before the typed text. A document goes to every model as
+  `<attachment name="…" type="…">…</attachment>` text. An image goes as an image part to a model
+  with `vision`, and as a stub naming the file to one without. The token estimate counts both,
+  and LLM logging replaces their bytes with a size, as it does for tool-result images.
+- **The agent loop** (`sc-agent`): `AgentLoop::push_user_attached`, `Runner::new_run_attached`,
+  and an `attachments` argument on `Runner::push_message`. The compaction summary lists the
+  files a user turn carried.
+- **Admin chat socket** (`/admin/agent-chat`): a `message` frame may carry `attachments`, and may
+  have empty text if it does. A refused file is an `error` event followed by `done`, and the
+  socket stays open. A run started by files alone is described by their names.
+- **App chat** (`POST {mount}/_agents/{name}/chat`): the body may carry `attachments`. They are
+  checked before a turn slot is taken (a bad file is a 400). In `runs/{id}` transcripts, each
+  file is an `attachment` part (`name`, `media_type`, `size`, and an image's `data:` `url`),
+  placed before the message's text.
+- **Generated client** (`helper.ts`): `AgentAttachment`, `AgentAttachmentPart`,
+  `agentAttachment(file)` (reads a `File`/`Blob` and checks the same limits client-side),
+  `agentAttachmentPart`, `AgentChatOptions.attachments`, and `userMessage(text, attachments?)`.
+  The scaffold's `useAgentChat` `send(text, controls?, attachments?)` passes them on, and
+  `AGENTS.md` says how. The committed `helper.ts` copies in `ui/*` are regenerated.
+- **Admin UI** (`AgentChat.tsx`, `agentChat.ts`): a **+** button in the lower left of the
+  composer opens a file picker (images and common text formats). Files can also be dropped on
+  the composer or pasted into it. Attached files show as chips above the text (an image as a
+  thumbnail, a document by name and size) and can be removed before sending. A sent message
+  shows them above its bubble, and so does a reopened stored run. New strings are translated
+  in all five locales.
+- **Tests**: `sc-llm` (checking and typing, JSON round trip, how each wire orders and
+  degrades the parts), `sc-server` `agent_chat::a_message_carries_its_attachments_to_the_model`
+  and `app_agents::a_chat_turn_carries_attached_images_and_documents`, the `tsc` check of the
+  generated agents client, and `ui/admin` `agentChat.test.ts` ("attachments").
+
+## Admin UI: table data grid — Key labels and dropdown, date pickers, full height, steadier paging
+
+On `/#/tables/{table}/data` (`ui/admin/src/screens/DataGrid.tsx`):
+
+- **Key columns show the target's summary field.** Every page of rows that arrives is followed by
+  one read per Key column of the target table (`target_field=in.(…)` over that page's keys), and
+  the answers are cached per column, so a key is asked about once. Keys that aren't found are
+  cached too, so they aren't asked about again. A key with no summary field, or one that has no
+  target row, shows the key itself. Copy and paste still carry the stored key, so the
+  copy-and-paste-back round trip is unchanged. The bookkeeping lives in the new
+  `ui/admin/src/grid/gridKeys.ts`.
+- **A Key cell is edited through a dropdown** (`KeyEditor`). It is a search box over the target
+  table (`ilike` on a text summary, `eq` on other types), listing the first 50 matching rows by
+  label, ordered by the summary field, with "— none —" offered on a nullable key. The highlight
+  starts on the row the cell points at. Arrow keys move it, Enter or Tab picks, and Escape or
+  clicking away changes nothing. The list is rendered into `document.body` and positioned under
+  the cell, so the grid's scroller doesn't clip it.
+- **`date`, `time` and `timestamp` cells use the HTML5 pickers** (`date`, `time`,
+  `datetime-local`, to the second). A timestamp is shown in the cell and in the picker as its
+  local wall-clock reading, and is sent back as a UTC instant. The conversions are
+  `pickerType` / `toPicker` / `fromPicker` / `displayTemporal` in `gridValues.ts`. The row form
+  (`TableData.tsx`) uses the same pickers.
+- **The grid runs to the bottom of the screen.** The screen is now a `.data-page`, which claims
+  the viewport the way the entities list does. The grid's scroller takes the height left under
+  the header and toolbar (at least 16rem) instead of `min(70vh, 44rem)`.
+- **Paging over large tables:**
+  - The read order always ends on the primary key (`orderSpec(sorting, pk)`). Without a total
+    order, offset pages may overlap, so a scroll could show one row twice and another never.
+  - A page that arrives after the sort or filter changed is now discarded. The old check compared
+    the query key with itself, so it always passed.
+  - While the viewport is moving, only pages next to already-held pages are requested
+    (`pagesToFetch`). Dragging the scrollbar thumb across 50k rows no longer queues a read for
+    every page it passes; the rest are requested once the scroll settles.
+  - Half a page either side of the viewport is prefetched.
+- Tests: `gridKeys.test.ts` (new), plus picker cases in `gridValues.test.ts` (the timestamp
+  round trip holds in any time zone) and tiebreaker and `pagesToFetch` cases in
+  `gridQuery.test.ts`.
+
 ## Fix: editing a user in the admin UI failed with "`email_verified` is not an admin-defined field"
 
 The admin UI's `SYSTEM_USER_COLUMNS` (`ui/admin/src/userForm.ts`) had fallen behind

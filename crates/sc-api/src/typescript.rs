@@ -415,8 +415,30 @@ export type AgentPart =
       result?: string;
     }
   | AgentDisplayPart
+  | AgentAttachmentPart
   | { type: "request"; request: AgentRequest }
   | { type: "error"; text: string };
+
+/** A file attached to a chat message, as it is sent: an image the model looks
+ * at (PNG, JPEG, GIF or WebP, up to 5 MiB) or a text document it reads, such
+ * as Markdown, plain text, CSV or JSON (up to 1 MiB). At most 10 per message.
+ * `data` is the file's bytes in base64; make one from a `File` with
+ * `agentAttachment(file)`. */
+export interface AgentAttachment {
+  name: string;
+  media_type: string;
+  data: string;
+}
+
+/** An attached file in a person's message. An image's `url` is a `data:` URL
+ * an `<img>` can show; a document has none — the person has the file. */
+export interface AgentAttachmentPart {
+  type: "attachment";
+  name: string;
+  media_type: string;
+  size: number;
+  url?: string;
+}
 
 /** Something a tool showed the person and not the model: rows, an image or
  * audio. Fetch it with `runs.partUrl(run, id)` (an image's `src`) or
@@ -521,11 +543,16 @@ export interface AgentChatOptions {
   signal?: AbortSignal;
   /** The values of the agent's composer controls (`controls()`). */
   controls?: Record<string, unknown>;
+  /** Files sent with the message (`agentAttachment(file)`): images and text
+   * documents the message can ask about. With attachments, the message may be
+   * empty. */
+  attachments?: AgentAttachment[];
 }
 
 /** Chat with an agent, and the history of the conversations. */
 export interface AgentChatApi {
-  /** One turn: send `message`, and iterate over what the agent does in answer. */
+  /** One turn: send `message`, with any `options.attachments`, and iterate
+   * over what the agent does in answer. */
   chat(message: string, options?: AgentChatOptions): AsyncGenerator<AgentEvent>;
   /** Answer the question conversation `options.run` waits on, as the next
    * turn. A question that is no longer waiting is refused. */
@@ -556,9 +583,55 @@ export interface AgentPromptApi<In> {
   promptStream(input: In, options?: { signal?: AbortSignal }): AsyncGenerator<AgentEvent>;
 }
 
-/** A message the person is sending, to show before the agent answers. */
-export function userMessage(text: string): AgentMessage {
-  return { id: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`, role: "user", parts: [{ type: "text", text }] };
+/** A message the person is sending, to show before the agent answers: its
+ * attachments, then its text — as a stored transcript reads it back. */
+export function userMessage(text: string, attachments: AgentAttachment[] = []): AgentMessage {
+  const parts: AgentPart[] = attachments.map(agentAttachmentPart);
+  if (text !== "" || parts.length === 0) parts.push({ type: "text", text });
+  return { id: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`, role: "user", parts };
+}
+
+/** The image types an attachment may be; anything else is sent as text. */
+const AGENT_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/** A file — from an `<input type="file">`, a drop or a paste — as an attachment
+ * to send with `chat(message, { attachments })`. Refused, with the file's name,
+ * when it is an image of another type, too large, or neither an image nor
+ * UTF-8 text; the server checks the same again. */
+export async function agentAttachment(file: Blob & { name?: string }): Promise<AgentAttachment> {
+  const type = file.type.toLowerCase();
+  const image = type.startsWith("image/");
+  const name = file.name || (image ? "image" : "attachment");
+  if (image && !AGENT_IMAGE_TYPES.includes(type === "image/jpg" ? "image/jpeg" : type)) {
+    throw new Error(`${name}: only PNG, JPEG, GIF and WebP images can be attached`);
+  }
+  if (file.size > (image ? 5 : 1) * 1024 * 1024) {
+    throw new Error(`${name}: an attached ${image ? "image may be at most 5" : "document may be at most 1"} MiB`);
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!image) {
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error(`${name}: only images and text documents can be attached`);
+    }
+  }
+  let binary = "";
+  for (let at = 0; at < bytes.length; at += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+  }
+  return { name, media_type: type, data: btoa(binary) };
+}
+
+/** An attachment as the part a transcript shows it as. */
+export function agentAttachmentPart(attachment: AgentAttachment): AgentAttachmentPart {
+  const padding = attachment.data.match(/=*$/)?.[0].length ?? 0;
+  const size = Math.floor((attachment.data.length * 3) / 4) - padding;
+  const part: AgentAttachmentPart = { type: "attachment", name: attachment.name, media_type: attachment.media_type, size };
+  if (AGENT_IMAGE_TYPES.includes(attachment.media_type)) {
+    part.url = `data:${attachment.media_type};base64,${attachment.data}`;
+  }
+  return part;
 }
 
 /** `messages` with `event` folded in: deltas extend the agent's last message
@@ -669,7 +742,12 @@ export function agentApi(doFetch: typeof fetch, url: string): AgentChatApi & Age
   const promptBody = (input: string | Record<string, AgentInputValue>) => (typeof input === "string" ? { prompt: input } : { input });
   return {
     chat(message, options = {}) {
-      return stream("chat", "/chat", { message, run: options.run, controls: options.controls }, options.signal);
+      return stream(
+        "chat",
+        "/chat",
+        { message, run: options.run, controls: options.controls, attachments: options.attachments },
+        options.signal,
+      );
     },
     answer(requestId, value, options) {
       return stream(
@@ -1062,9 +1140,10 @@ pub fn generate_app_client(
     }
     if !agents.is_empty() {
         out.push_str(
-            "export { applyAgentEvent, userMessage } from \"./helper\";\n\
-             export type { AgentAnswer, AgentChatApi, AgentChatOptions, AgentControl, \
-             AgentDisplayPart, AgentEvent, AgentInputValue, AgentMessage, AgentOption, AgentPart, \
+            "export { agentAttachment, agentAttachmentPart, applyAgentEvent, userMessage } \
+             from \"./helper\";\n\
+             export type { AgentAnswer, AgentAttachment, AgentAttachmentPart, AgentChatApi, \
+             AgentChatOptions, AgentControl, AgentDisplayPart, AgentEvent, AgentInputValue, AgentMessage, AgentOption, AgentPart, \
              AgentPromptApi, AgentRequest, AgentRun, AgentRunSummary } from \"./helper\";\n",
         );
     }

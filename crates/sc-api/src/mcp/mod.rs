@@ -57,6 +57,7 @@
 //! lowest layer that can name every tool in it.
 
 mod code_api;
+mod docs;
 mod endpoint_tool;
 mod json_schema;
 mod schema;
@@ -77,6 +78,7 @@ use crate::schema_edit::{self, Grants};
 pub use code_api::{JS_CODE_API, TOOL_DESCRIBE_CODE_API};
 pub use endpoint_tool::{BODY_KEY, ProjectedCall, Projection, check_caller};
 pub use json_schema::{json_schema, object_schema, scalar_schema};
+pub use sc_docs::tools::{TOOL_READ_DOCS, TOOL_SEARCH_DOCS};
 pub use schema::{TOOL_DESCRIBE, TOOL_EDIT};
 pub use triggers::{
     TOOL_DELETE_TRIGGER, TOOL_DESCRIBE_ACTION, TOOL_DESCRIBE_TRIGGERS, TOOL_SAVE_TRIGGER,
@@ -503,8 +505,8 @@ pub struct ToolSet {
 }
 
 impl ToolSet {
-    /// The tools this crate can hold: the schema's two, the triggers' four and
-    /// the code-body reference.
+    /// The tools this crate can hold: the schema's two, the triggers' four, the
+    /// code-body reference and the documentation's two.
     ///
     /// Not the whole surface — `sc_app::mcp::tool_set` adds the three
     /// application tools and is what a caller should normally build.
@@ -518,6 +520,8 @@ impl ToolSet {
                 Arc::new(triggers::SaveTrigger),
                 Arc::new(triggers::DeleteTrigger),
                 Arc::new(code_api::DescribeCodeApi),
+                Arc::new(docs::SearchDocs),
+                Arc::new(docs::ReadDocs),
             ],
             grants,
             areas,
@@ -754,11 +758,12 @@ mod tests {
     #[test]
     fn an_area_that_is_off_takes_its_tools_out_of_the_listing() {
         let set = ToolSet::core(Grants::all(), Areas::none());
-        // The schema's two and the code-body reference are unconditional; the
-        // triggers' four are gone.
-        assert_eq!(set.all_names().len(), 7);
+        // The schema's two, the code-body reference and the documentation's two
+        // are unconditional; the triggers' four are gone.
+        assert_eq!(set.all_names().len(), 9);
         assert!(set.offers(TOOL_DESCRIBE) && set.offers(TOOL_EDIT));
         assert!(set.offers(TOOL_DESCRIBE_CODE_API));
+        assert!(set.offers(TOOL_SEARCH_DOCS) && set.offers(TOOL_READ_DOCS));
         assert!(!set.offers(TOOL_SAVE_TRIGGER));
 
         let set = ToolSet::core(Grants::all(), Areas::all());

@@ -125,7 +125,7 @@ use serde_json::{Value as Json, json};
 
 pub use sc_api::mcp::{
     TOOL_DELETE_TRIGGER, TOOL_DESCRIBE, TOOL_DESCRIBE_ACTION, TOOL_DESCRIBE_CODE_API,
-    TOOL_DESCRIBE_TRIGGERS, TOOL_EDIT, TOOL_SAVE_TRIGGER,
+    TOOL_DESCRIBE_TRIGGERS, TOOL_EDIT, TOOL_READ_DOCS, TOOL_SAVE_TRIGGER, TOOL_SEARCH_DOCS,
 };
 pub use sc_app::mcp::{
     TOOL_CREATE_APP, TOOL_CREATE_STORE, TOOL_DELETE_CODE_LIBRARY, TOOL_DELETE_QUERY,
@@ -217,7 +217,8 @@ pub const CFG_CHECKLISTS: &str = sc_api::mcp::CHECKLISTS_GRANT;
 pub struct AdminCopilot;
 
 /// Every tool this trait can offer, under fixed names — the schema's two, the
-/// triggers' four, the code API's reference, the applications' six, the
+/// triggers' four, the code API's reference, the documentation's two, the
+/// applications' six, the
 /// streams' one, the translations' two, the code libraries' three, its own two
 /// and the checklists' six.
 ///
@@ -226,7 +227,7 @@ pub struct AdminCopilot;
 /// subset of these. This is the whole set, which is what the admin UI's "what
 /// will this be called?" and §11.2's collision check want — a name that any
 /// configuration could produce is a name that could collide.
-pub fn tool_names() -> [&'static str; 27] {
+pub fn tool_names() -> [&'static str; 29] {
     [
         TOOL_DESCRIBE,
         TOOL_EDIT,
@@ -235,6 +236,8 @@ pub fn tool_names() -> [&'static str; 27] {
         TOOL_SAVE_TRIGGER,
         TOOL_DELETE_TRIGGER,
         TOOL_DESCRIBE_CODE_API,
+        TOOL_SEARCH_DOCS,
+        TOOL_READ_DOCS,
         TOOL_DESCRIBE_APPS,
         TOOL_CREATE_STORE,
         TOOL_CREATE_APP,
@@ -344,11 +347,19 @@ impl AgentTrait for AdminCopilot {
         specs
     }
 
-    /// The build playbook, where this agent may work on applications at all.
+    /// The documentation's two, which `coding` and `docs` offer identically.
+    fn shared_tools(&self) -> &[&'static str] {
+        &sc_docs::tools::TOOL_NAMES
+    }
+
+    /// Where the documentation is, and the build playbook where this agent may
+    /// work on applications at all.
     fn prompt(&self, _cx: &ToolsContext<'_>, config: &Attrs) -> Option<String> {
-        areas(config)
-            .has(Area::Applications)
-            .then(|| BUILD_PLAYBOOK.to_owned())
+        let docs = sc_docs::tools::PROMPT;
+        Some(match areas(config).has(Area::Applications) {
+            true => format!("{docs}\n\n{BUILD_PLAYBOOK}"),
+            false => docs.to_owned(),
+        })
     }
 
     /// The coding agents there are, so the model can delegate to one it did not

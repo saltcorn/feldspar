@@ -15,8 +15,11 @@
 //!
 //! - `{"type":"start","agent":"librarian","run":"<uuid>"?}` — which agent this
 //!   socket is talking to, optionally continuing an existing run.
-//! - `{"type":"message","text":"…","controls":{…}?}` — one user turn, with
-//!   the values of the composer's controls (TODO-agent-skills AS6.4).
+//! - `{"type":"message","text":"…","controls":{…}?,"attachments":[…]?}` —
+//!   one user turn, with the values of the composer's controls
+//!   (TODO-agent-skills AS6.4) and the files attached to it, each
+//!   `{name, media_type, data}` with `data` in base64: images the model looks
+//!   at and text documents it reads ([`sc_llm::Attachment`]).
 //! - `{"type":"message","answers_request":"<id>","value":…,"controls":{…}?}`
 //!   — the answer to the question the run is waiting on (AS6.2), as the turn.
 //! - `{"type":"abort"}` — stop the turn that is running.
@@ -143,6 +146,9 @@ enum ClientMessage {
         /// The composer's controls.
         #[serde(default)]
         controls: std::collections::BTreeMap<String, Json>,
+        /// The files attached to the message.
+        #[serde(default)]
+        attachments: Vec<sc_llm::Attachment>,
     },
     /// Stop the turn that is running.
     Abort,
@@ -424,9 +430,11 @@ async fn chat(socket: WebSocket, mut ctx: ChatContext) {
                 answers_request,
                 value,
                 controls,
+                attachments,
             } => {
                 let input = TurnInput {
                     text,
+                    attachments,
                     answer: answers_request.map(|id| sc_agent::Answer {
                         answers_request: id,
                         value,
@@ -524,10 +532,36 @@ async fn start(
 pub(crate) struct TurnInput {
     /// What the person typed; ignored for an answer.
     pub text: String,
+    /// The files attached to the message, unchecked; none for an answer.
+    pub attachments: Vec<sc_llm::Attachment>,
     /// The answer, when the turn is one.
     pub answer: Option<sc_agent::Answer>,
     /// The composer's controls.
     pub controls: std::collections::BTreeMap<String, Json>,
+}
+
+impl TurnInput {
+    /// The attachments, checked; an answer may carry none.
+    pub(crate) fn checked_attachments(&mut self) -> Result<Vec<sc_llm::Attachment>> {
+        let attachments = std::mem::take(&mut self.attachments);
+        if self.answer.is_some() && !attachments.is_empty() {
+            return Err(Error::invalid(
+                "an answer to the agent's question cannot carry attachments; \
+                 send them with a message",
+            ));
+        }
+        sc_llm::check_attachments(attachments)
+    }
+
+    /// The run's description when this message starts one: the first line
+    /// of the text, or the names of the files when only files were sent.
+    pub(crate) fn description(&self, attachments: &[sc_llm::Attachment]) -> String {
+        if self.text.trim().is_empty() && !attachments.is_empty() {
+            let names: Vec<&str> = attachments.iter().map(|a| a.name.as_str()).collect();
+            return summarise(&names.join(", "));
+        }
+        summarise(&self.text)
+    }
 }
 
 /// How a turn ended, as far as the socket is concerned.
@@ -567,6 +601,8 @@ async fn turn(
         .providers()
         .connect(&ctx.catalog, agent, ModelRole::Executor)
         .await?;
+    let mut input = input;
+    let attachments = input.checked_attachments()?;
     let observer = SocketObserver { tx: tx.clone() };
     let mut runner = Runner::new(
         &ctx.catalog,
@@ -599,7 +635,7 @@ async fn turn(
                 Some(answer) => runner.push_answer(&mut run, answer, input.controls).await,
                 None => {
                     runner
-                        .push_message(&mut run, &input.text, input.controls)
+                        .push_message(&mut run, &input.text, attachments, input.controls)
                         .await
                 }
             };
@@ -616,11 +652,13 @@ async fn turn(
                 ));
             }
             sc_agent::check_controls(&runner.controls().await?, &input.controls)?;
-            let text = input.text;
             // The first message is the run's description: a history list carries
             // no transcript (that is what `getRun` is for), so without this a
             // list of conversations would be a list of timestamps.
-            let mut run = runner.new_run(&text)?.description(summarise(&text));
+            let description = input.description(&attachments);
+            let mut run = runner
+                .new_run_attached(input.text, attachments)?
+                .description(description);
             let mut state = run.agent_loop()?;
             state.set_controls(input.controls);
             run.record(&state);

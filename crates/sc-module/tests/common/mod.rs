@@ -106,6 +106,7 @@ pub fn fixture(name: &str) -> PathBuf {
 
 /// A throwaway modules root, removed first so a rerun starts clean.
 pub fn temp_root(tag: &str) -> PathBuf {
+    sc_test_harness::sweep_stale_scratch("sc-module");
     let dir = std::env::temp_dir().join(format!("sc-module-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     dir

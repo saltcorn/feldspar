@@ -76,7 +76,8 @@ use serde_json::{Value as Json, json};
 
 use crate::capabilities::ModelCapabilities;
 use crate::message::{
-    ImagePart, LlmDelta, LlmMessage, LlmRequest, ProviderItem, StopReason, ToolCall, Usage,
+    Attachment, ImagePart, LlmDelta, LlmMessage, LlmRequest, ProviderItem, StopReason, ToolCall,
+    Usage,
 };
 use crate::provider::DeltaStream;
 
@@ -284,8 +285,11 @@ pub(crate) fn to_rig_messages(
                 pending.append(&mut pending_images);
                 flush_tool_results(&mut pending, &mut out);
                 out.push(match other {
-                    LlmMessage::User { content } => Message::User {
-                        content: OneOrMany::one(UserContent::Text(Text::from(content))),
+                    LlmMessage::User {
+                        content,
+                        attachments,
+                    } => Message::User {
+                        content: user_content(content, &attachments, model, caps),
                     },
                     LlmMessage::Assistant {
                         content,
@@ -311,6 +315,44 @@ pub(crate) fn to_rig_messages(
     pending.append(&mut pending_images);
     flush_tool_results(&mut pending, &mut out);
     out
+}
+
+/// A user message's parts: its attachments first — a document reads better
+/// before the question about it — then what the person typed. An image goes to
+/// a model with `vision` as an image, and to one without as a stub that names
+/// it; a text document goes to every model as text.
+fn user_content(
+    content: String,
+    attachments: &[Attachment],
+    model: &str,
+    caps: &ModelCapabilities,
+) -> OneOrMany<UserContent> {
+    let mut parts: Vec<UserContent> = Vec::new();
+    for attachment in attachments {
+        if !attachment.is_image() {
+            parts.push(UserContent::Text(Text::from(attachment.as_prompt_text())));
+        } else if caps.vision {
+            parts.push(UserContent::Text(Text::from(format!(
+                "Attached image `{}`:",
+                attachment.name
+            ))));
+            let image = attachment.image();
+            parts.push(UserContent::image_base64(
+                image.base64(),
+                media_type(&image),
+                None,
+            ));
+        } else {
+            parts.push(UserContent::Text(Text::from(format!(
+                "[the attached image `{}` is omitted: the model `{model}` does not accept images]",
+                attachment.name
+            ))));
+        }
+    }
+    if !content.is_empty() || parts.is_empty() {
+        parts.push(UserContent::Text(Text::from(content)));
+    }
+    OneOrMany::many(parts).unwrap_or_else(|_| OneOrMany::one(UserContent::Text(Text::from(""))))
 }
 
 /// What replaces an image a model cannot see.
@@ -949,6 +991,62 @@ mod tests {
             );
             assert_eq!(messages.len(), 2, "{wire:?}: no image message");
         }
+    }
+
+    #[test]
+    fn a_user_messages_attachments_go_before_its_text() {
+        let attachments = vec![
+            Attachment::new("notes.md", "text/markdown", b"# Plan\nShip it.".to_vec()),
+            Attachment::new("shot.png", "image/png", b"png".to_vec()),
+        ];
+        let message = || LlmMessage::user_with("What does the plan say?", attachments.clone());
+        let kinds = |messages: &[Message]| -> Vec<String> {
+            let Message::User { content } = &messages[0] else {
+                panic!("a user message");
+            };
+            content
+                .iter()
+                .map(|c| match c {
+                    UserContent::Text(t) => format!("text:{}", t.text),
+                    UserContent::Image(_) => "image".to_owned(),
+                    _ => "other".to_owned(),
+                })
+                .collect()
+        };
+        for (wire, backend, model) in [
+            (Wire::Anthropic, ANTHROPIC_BACKEND, "claude-sonnet-4-5"),
+            (Wire::Responses, OPENAI_RESPONSES_BACKEND, "gpt-5.1"),
+            (Wire::Chat, OPENAI_CHAT_BACKEND, "gpt-5.1"),
+        ] {
+            let caps = caps(backend, model);
+            assert!(caps.vision, "{model}");
+            let got = kinds(&to_rig_messages(vec![message()], wire, model, &caps));
+            assert_eq!(
+                got,
+                [
+                    "text:<attachment name=\"notes.md\" type=\"text/markdown\">\n# Plan\nShip it.\n</attachment>",
+                    "text:Attached image `shot.png`:",
+                    "image",
+                    "text:What does the plan say?",
+                ],
+                "{wire:?}"
+            );
+        }
+        // Without vision, the image is named and the document still read.
+        let blind = caps(OPENAI_CHAT_BACKEND, "text-only-model");
+        let got = kinds(&to_rig_messages(
+            vec![message()],
+            Wire::Chat,
+            "text-only-model",
+            &blind,
+        ));
+        assert_eq!(got.len(), 3);
+        assert!(got[0].contains("Ship it."));
+        assert!(
+            got[1].contains("shot.png") && got[1].contains("omitted"),
+            "{}",
+            got[1]
+        );
     }
 
     #[test]

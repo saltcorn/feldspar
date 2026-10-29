@@ -40,9 +40,7 @@ async fn turn_text(
     message: &str,
     caller: &RunCaller,
 ) -> Result<String> {
-    let messages = vec![LlmMessage::User {
-        content: message.to_owned(),
-    }];
+    let messages = vec![LlmMessage::user(message)];
     let mut turn = Turn::new(caller, "librarian", 1);
     turn.catalog = Some(&env.catalog);
     turn.evaluator = env.evaluator.as_ref();

@@ -470,7 +470,7 @@ async fn every_tool_refuses_a_conversation_that_is_not_with_an_admin() -> Result
 }
 
 #[tokio::test]
-async fn the_trait_offers_twenty_seven_tools_and_the_trigger_ones_point_at_each_other() -> Result<()>
+async fn the_trait_offers_twenty_nine_tools_and_the_trigger_ones_point_at_each_other() -> Result<()>
 {
     let env = env().await?;
     let tools = env.tools(TRAIT, &default_grants());
@@ -485,6 +485,8 @@ async fn the_trait_offers_twenty_seven_tools_and_the_trigger_ones_point_at_each_
             "save_trigger",
             "delete_trigger",
             "describe_code_api",
+            "search_docs",
+            "read_docs",
             "describe_applications",
             "create_file_store",
             "create_application",

@@ -242,3 +242,17 @@ fn the_web_a_builder_reads_is_the_http_trait_read_only_over_public_hosts() {
         assert!(!sc_core_traits::tool_names::coding(&scope).contains(&tool));
     }
 }
+
+#[test]
+fn a_builder_reads_this_servers_documentation_through_its_coding_trait() {
+    // No `docs` trait: `coding` offers `search_docs` and `read_docs` itself.
+    for app in [react_app(), code_app()] {
+        let spec = spec_for(&app);
+        assert!(spec.traits.iter().all(|t| t.trait_ != "docs"), "{spec:?}");
+    }
+    let registry = sc_core_traits::builtin_traits().expect("the built-in traits assemble");
+    let coding = registry.get(TRAIT_CODING).unwrap();
+    for tool in sc_core_traits::tool_names::docs {
+        assert!(coding.shared_tools().contains(&tool), "{tool}");
+    }
+}

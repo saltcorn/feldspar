@@ -704,10 +704,12 @@ fn generated_bytes_and_uploads_client_type_checks() -> std::io::Result<()> {
 /// or by a template's values, each typed.
 const AGENTS_USAGE_TS: &str = r#"
 import {
+  agentAttachment,
   applyAgentEvent,
   createClient,
   userMessage,
   type AgentAnswer,
+  type AgentAttachment,
   type AgentMessage,
   type AgentRunSummary,
 } from "./client";
@@ -727,6 +729,18 @@ export async function exercise(): Promise<void> {
     const parts: number = again.messages.flatMap((m) => m.parts).length;
     await api.agents.helpdesk.runs.rename(run, `Order ${parts}`);
     await api.agents.helpdesk.runs.delete(run);
+  }
+  // Files go with a message: an image and a document, asked about.
+  const files: AgentAttachment[] = [
+    await agentAttachment(new File(["Ship on Friday."], "plan.md", { type: "text/markdown" })),
+    { name: "shot.png", media_type: "image/png", data: "iVBORw==" },
+  ];
+  messages = [...messages, userMessage("What does the plan say?", files)];
+  for await (const event of api.agents.helpdesk.chat("What does the plan say?", { run, attachments: files })) {
+    messages = applyAgentEvent(messages, event);
+  }
+  for (const part of messages.flatMap((m) => m.parts)) {
+    if (part.type === "attachment") console.log(part.name, part.size, part.url ?? "");
   }
   const answer: AgentAnswer = await api.agents.helpdesk.prompt("Tidy my tasks");
   console.log(history.length, answer.answer, messages.length);

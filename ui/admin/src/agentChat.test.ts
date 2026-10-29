@@ -25,6 +25,7 @@ import {
   conclusionNotice,
   normalizeControls,
   previewPaneOf,
+  readAttachment,
   resolvePaneUrl,
   splitCodeBlocks,
   transcriptFromRun,
@@ -364,6 +365,54 @@ describe("the session's side of the protocol", () => {
     expect(state.running).toBe(false);
     expect(state.lastState).toBe("aborted");
     expect(state.entries.map((e) => e.kind)).toEqual(["user", "tool"]);
+  });
+});
+
+describe("attachments", () => {
+  const png = { name: "shot.png", media_type: "image/png", data: "iVBORw==" };
+  const notes = { name: "notes.md", media_type: "text/markdown", data: btoa("# Notes") };
+
+  it("go with the message, and show in the transcript before the server answers", () => {
+    const { socket, chat } = session();
+    chat.send("", [png, notes]);
+    expect(socket.messages()[1]).toEqual({ type: "message", text: "", attachments: [png, notes] });
+    expect(chat.current().entries[0]).toEqual({
+      kind: "user",
+      text: "",
+      attachments: [
+        { name: "shot.png", mediaType: "image/png", size: 4, url: "data:image/png;base64,iVBORw==" },
+        { name: "notes.md", mediaType: "text/markdown", size: 7 },
+      ],
+    });
+    expect(chat.current().running).toBe(true);
+  });
+
+  it("are not needed: a plain message is the frame it always was", () => {
+    const { socket, chat } = session();
+    chat.send("hi", []);
+    expect(socket.messages()[1]).toEqual({ type: "message", text: "hi" });
+  });
+
+  it("come back when a stored run is reopened", () => {
+    const entries = transcriptFromRun({
+      messages: [{ role: "user", content: "what is this?", attachments: [png] }],
+    });
+    expect(entries[0]).toMatchObject({
+      kind: "user",
+      text: "what is this?",
+      attachments: [{ name: "shot.png", url: "data:image/png;base64,iVBORw==" }],
+    });
+  });
+
+  it("are read from a file, and refused by name when they cannot be one", async () => {
+    const text = await readAttachment(new File(["# Plan"], "plan.md", { type: "" }));
+    expect(text).toEqual({ name: "plan.md", media_type: "", data: btoa("# Plan") });
+    await expect(
+      readAttachment(new File([new Uint8Array([0xff, 0xfe, 0x00])], "a.bin")),
+    ).rejects.toThrow(/a\.bin: only images and text/);
+    await expect(
+      readAttachment(new File(["x"], "a.tiff", { type: "image/tiff" })),
+    ).rejects.toThrow(/PNG/);
   });
 });
 

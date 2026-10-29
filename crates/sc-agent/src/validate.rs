@@ -141,7 +141,7 @@ pub async fn validate_agent(
     // Numbered, because a trait may be enabled more than once and "trait
     // `query_table`" would otherwise not say which of them is wrong.
     let capabilities = executor.capabilities(&backend);
-    let mut tool_names: Vec<(String, String)> = Vec::new();
+    let mut tool_names: Vec<(sc_llm::ToolSpec, String, bool)> = Vec::new();
     for (i, enabled) in agent.traits.iter().enumerate() {
         let position = i + 1;
         let where_ = |msg: String| {
@@ -183,14 +183,26 @@ pub async fn validate_agent(
             // A collision is refused here, where it is fixable by renaming or
             // dropping one of the two, rather than discovered when the model
             // picks whichever of them the request happened to carry last.
-            if let Some((_, other)) = tool_names.iter().find(|(name, _)| *name == tool.name) {
+            //
+            //
+            // A **shared** tool twice is not a collision: two traits that both
+            // declare it shared and offer an identical spec (`search_docs` from
+            // `coding` and from `admin_copilot`) offer one tool, which the
+            // model is shown once and the first of them answers.
+            let shared = trait_.shared_tools().contains(&tool.name.as_str());
+            if let Some((other_spec, other, other_shared)) =
+                tool_names.iter().find(|(spec, _, _)| spec.name == tool.name)
+            {
+                if shared && *other_shared && *other_spec == tool {
+                    continue;
+                }
                 return Err(where_(format!(
                     "its tool `{}` has the same name as one from {other}; \
                      each enabled trait's tools must be distinguishable",
                     tool.name
                 )));
             }
-            tool_names.push((tool.name, format!("trait {position}")));
+            tool_names.push((tool, format!("trait {position}"), shared));
         }
     }
 

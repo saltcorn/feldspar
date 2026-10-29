@@ -219,6 +219,89 @@ export function imageUrl(image: ImagePart): string | null {
   return `data:${image.media_type};base64,${image.data}`;
 }
 
+/** A file attached to a message, as the socket sends it and the run stores
+ * it (`sc_llm::Attachment`): an image the model looks at, or a text document
+ * it reads. */
+export interface Attachment {
+  name: string;
+  media_type: string;
+  /** Base64. */
+  data: string;
+}
+
+/** The image types every vision model takes; the server refuses others. */
+export const ATTACHMENT_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+/** The server's limits (`sc_llm::MAX_*`), checked here so a refusal is
+ * immediate and names the file. */
+export const MAX_ATTACHMENTS = 10;
+export const MAX_IMAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+export const MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024;
+/** What the file picker offers: images, and the text formats people ask
+ * about. Anything else that is UTF-8 is still taken if dropped or pasted. */
+export const ATTACHMENT_ACCEPT = [
+  ...ATTACHMENT_IMAGE_TYPES,
+  "text/*",
+  ".md,.markdown,.txt,.csv,.tsv,.json,.yaml,.yml,.xml,.toml,.sql,.log,.html,.css,.js,.ts,.tsx,.py,.rs",
+].join(",");
+
+/** An attached file as a transcript draws it: a thumbnail for an image, a
+ * named chip for a document. */
+export interface AttachmentView {
+  name: string;
+  mediaType: string;
+  size: number;
+  /** An image's `data:` URL. */
+  url?: string;
+}
+
+/** How an attachment is drawn. */
+export function attachmentView(attachment: Attachment): AttachmentView {
+  const url = imageUrl(attachment) ?? undefined;
+  return {
+    name: attachment.name,
+    mediaType: attachment.media_type,
+    // Base64 is four characters per three bytes, less its padding.
+    size: Math.floor((attachment.data.length * 3) / 4) - (attachment.data.match(/=*$/)?.[0].length ?? 0),
+    ...(url ? { url } : {}),
+  };
+}
+
+/** Read a file the person picked, dropped or pasted into an attachment, or
+ * say why it cannot be one. The server checks again; this is so the answer
+ * comes before the message is sent. */
+export async function readAttachment(file: File): Promise<Attachment> {
+  const name = file.name || (file.type.startsWith("image/") ? "pasted-image" : "attachment");
+  const type = file.type.toLowerCase();
+  if (type.startsWith("image/")) {
+    if (!ATTACHMENT_IMAGE_TYPES.includes(type === "image/jpg" ? "image/jpeg" : type)) {
+      throw new Error(`${name}: only PNG, JPEG, GIF and WebP images can be attached`);
+    }
+    if (file.size > MAX_IMAGE_ATTACHMENT_BYTES) {
+      throw new Error(`${name}: an attached image may be at most 5 MiB`);
+    }
+  } else if (file.size > MAX_TEXT_ATTACHMENT_BYTES) {
+    throw new Error(`${name}: an attached document may be at most 1 MiB`);
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!type.startsWith("image/")) {
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error(`${name}: only images and text documents can be attached`);
+    }
+  }
+  return { name, media_type: type, data: base64Of(bytes) };
+}
+
+/** Bytes as base64, in slices so a large file does not overflow the stack. */
+function base64Of(bytes: Uint8Array): string {
+  let binary = "";
+  for (let at = 0; at < bytes.length; at += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+  }
+  return btoa(binary);
+}
+
 /** The URLs of the images a result carried, or nothing to add to an entry. */
 function imagesOf(images: ImagePart[] | undefined): { images?: string[] } {
   const urls = (images ?? []).map(imageUrl).filter((u): u is string => u !== null);
@@ -274,7 +357,7 @@ export type ControlValue = string | boolean;
 
 /** One entry in the transcript as the panel renders it. */
 export type Entry =
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; attachments?: AttachmentView[] }
   | { kind: "assistant"; text: string; reasoning: string }
   | {
       kind: "tool";
@@ -434,10 +517,18 @@ export function defaultControlValues(
  * Separate from `applyEvent` because it is the one entry the *client* knows
  * about before the server does: the server echoes nothing back, so a transcript
  * that only grew from events would show an answer to a question nobody asked. */
-export function applyUserMessage(state: ChatState, text: string): ChatState {
+export function applyUserMessage(
+  state: ChatState,
+  text: string,
+  attachments: Attachment[] = [],
+): ChatState {
+  const entry: Entry =
+    attachments.length > 0
+      ? { kind: "user", text, attachments: attachments.map(attachmentView) }
+      : { kind: "user", text };
   return {
     ...state,
-    entries: [...state.entries, { kind: "user", text }],
+    entries: [...state.entries, entry],
     running: true,
     lastState: null,
     // Answered, or passed over by an ordinary message: either way the question
@@ -753,9 +844,15 @@ export function transcriptFromRun(context: unknown): Entry[] {
       tool_call_id?: string;
       name?: string;
       images?: ImagePart[];
+      attachments?: Attachment[];
     };
     if (message.role === "user") {
-      entries.push({ kind: "user", text: message.content ?? "" });
+      const attached = message.attachments ?? [];
+      entries.push(
+        attached.length > 0
+          ? { kind: "user", text: message.content ?? "", attachments: attached.map(attachmentView) }
+          : { kind: "user", text: message.content ?? "" },
+      );
     } else if (message.role === "assistant") {
       // A turn that was only tool calls said nothing, and an empty bubble would
       // be putting words in the model's mouth.
@@ -900,10 +997,10 @@ export class ChatSession {
   /** Say something. Refused while a turn is running, as the loop itself refuses
    * it: a message spliced into a history the model is already answering is how a
    * question gets answered before it was asked. */
-  send(text: string): void {
-    if (this.state.running || text.trim() === "") return;
-    this.update(applyUserMessage(this.state, text));
-    const frame = this.messageFrame(text);
+  send(text: string, attachments: Attachment[] = []): void {
+    if (this.state.running || (text.trim() === "" && attachments.length === 0)) return;
+    this.update(applyUserMessage(this.state, text, attachments));
+    const frame = this.messageFrame(text, attachments);
     if (this.open) {
       this.socket.send(frame);
     } else {
@@ -975,15 +1072,15 @@ export class ChatSession {
     });
   }
 
-  /** One `message` frame, carrying the controls only when there are any — so an
-   * agent with no modes sends exactly the frame it sent before them. */
-  private messageFrame(text: string): string {
-    const values = this.state.controlValues;
-    return JSON.stringify(
-      Object.keys(values).length > 0
-        ? { type: "message", text, controls: values }
-        : { type: "message", text },
-    );
+  /** One `message` frame, carrying the controls and the attachments only when
+   * there are any — so a plain message is exactly the frame it always was. */
+  private messageFrame(text: string, attachments: Attachment[] = []): string {
+    return JSON.stringify({
+      type: "message",
+      text,
+      ...this.controlsField(),
+      ...(attachments.length > 0 ? { attachments } : {}),
+    });
   }
 
   /** Stop the turn. The transcript stays exactly as it is — the server ends the

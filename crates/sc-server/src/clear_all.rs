@@ -393,8 +393,11 @@ async fn delete_rows(catalog: &Catalog, table: &str) -> Result<()> {
     }
     let mut delete = Delete::from(table);
     if table == sc_config::CONFIG_TABLE {
+        // The first-user token too: an installation that may only be claimed
+        // through its setup link stays that way once it is emptied.
         let kept = sc_config::host_serving_keys()
             .into_iter()
+            .chain([sc_config::FIRST_USER_TOKEN])
             .map(|key| Expr::binary(BinOp::Ne, Expr::col("key"), Expr::lit(key)))
             .reduce(Expr::and);
         if let Some(kept) = kept {

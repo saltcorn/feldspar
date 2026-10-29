@@ -1,0 +1,17 @@
+[package]
+name = "sc-docs"
+description = "The documentation agents read: tutorials, references and the admin UI's help topics, compiled in, split into sections and searchable (layer 0)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sc-error.workspace = true
+sc-help.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

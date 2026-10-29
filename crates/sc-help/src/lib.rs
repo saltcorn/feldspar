@@ -110,6 +110,15 @@ pub fn render(id: &str, context: &Json) -> Result<HelpPage> {
     })
 }
 
+/// Topic `id` filled in with `context`, as markdown rather than HTML.
+///
+/// What `sc-docs` reads a topic as: with an empty context it is the topic's
+/// general text, the same document the popup shows on a screen with no table.
+pub fn markdown(id: &str, context: &Json) -> Result<String> {
+    let topic = topic(id).ok_or_else(|| Error::not_found(format!("no help topic `{id}`")))?;
+    fill(topic, context)
+}
+
 /// Fill `topic`'s template in with `context`, giving markdown.
 fn fill(topic: &Topic, context: &Json) -> Result<String> {
     let mut env = Environment::new();

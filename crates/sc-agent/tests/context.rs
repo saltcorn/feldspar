@@ -249,7 +249,10 @@ async fn when_clearing_is_not_enough_the_cheap_role_summarises_the_older_turns()
     let summaries = cheap.requests();
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].system.as_deref(), Some(SUMMARY_PROMPT));
-    let LlmMessage::User { content: source } = &summaries[0].messages[0] else {
+    let LlmMessage::User {
+        content: source, ..
+    } = &summaries[0].messages[0]
+    else {
         panic!("the conversation is one user message");
     };
     assert!(source.contains("build it") && source.contains("Turn 3."));
@@ -263,7 +266,7 @@ async fn when_clearing_is_not_enough_the_cheap_role_summarises_the_older_turns()
     assert_eq!(requests.len(), 5);
     let last = &requests[4];
     assert_eq!(last.messages.len(), 4);
-    let LlmMessage::User { content } = &last.messages[1] else {
+    let LlmMessage::User { content, .. } = &last.messages[1] else {
         panic!("the summary follows the header");
     };
     assert!(content.starts_with(SUMMARY_HEADING) && content.contains("## Next step"));

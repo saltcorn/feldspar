@@ -1314,11 +1314,15 @@ fn agents_md(ctx: &ProjectContext<'_>) -> String {
          \n\
          - **A chat**: `src/useAgentChat.ts` is a starting point — \
          `const chat = useAgentChat(api.agents.helpdesk)` gives `messages`, \
-         `status`, `send(text, controls?)`, `answer(requestId, value)`, `stop()`, \
-         the conversation's `run` id, and `load(id)` to reopen one from \
+         `status`, `send(text, controls?, attachments?)`, `answer(requestId, value)`, \
+         `stop()`, the conversation's `run` id, and `load(id)` to reopen one from \
          `api.agents.helpdesk.runs.list()`. A message is a list of `parts` \
-         (`text`, `reasoning`, `tool`, `display`, `request`, `error`); draw them as \
-         this app needs. A `request` part is a question the agent waits on, answered \
+         (`text`, `reasoning`, `tool`, `display`, `attachment`, `request`, `error`); \
+         draw them as this app needs. To let the person attach images or text \
+         documents (Markdown, plain text, CSV, JSON…) and ask about them, turn each \
+         picked, dropped or pasted `File` into one with `await agentAttachment(file)` \
+         (it refuses, by name, what cannot be attached) and pass the list to `send`; \
+         an `attachment` part's `url` is an image's `src`. A `request` part is a question the agent waits on, answered \
          with `answer`; a `display` part is rows, an image or audio a tool showed the \
          person, at `runs.partUrl(run, part.id)`; `controls()` lists the selects and \
          buttons the agent adds to the input row. Under it, `chat(message, {{ run, signal }})` \
@@ -1447,6 +1451,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   applyAgentEvent,
   userMessage,
+  type AgentAttachment,
   type AgentChatApi,
   type AgentEvent,
   type AgentMessage,
@@ -1459,7 +1464,8 @@ export type AgentChatStatus = "idle" | "loading" | "streaming" | "error";
  * conversation from `api.agents.helpdesk.runs.list()`. A message part of type
  * `request` is a question the agent is waiting on: `answer(request.id, value)`.
  * A part of type `display` is something a tool showed the person: an image's
- * `src` is `agent.runs.partUrl(run, part.id)`. */
+ * `src` is `agent.runs.partUrl(run, part.id)`. A part of type `attachment` is a
+ * file the person sent: an image's `src` is its `url`. */
 export function useAgentChat(agent: AgentChatApi, initialRun?: string) {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [run, setRun] = useState<string | undefined>(initialRun);
@@ -1522,12 +1528,13 @@ export function useAgentChat(agent: AgentChatApi, initialRun?: string) {
   }, []);
 
   /** Say `text` — with the values of the agent's composer controls, if it has
-   * any (`agent.controls()`) — and stream the agent's answer into `messages`. */
+   * any (`agent.controls()`), and any files (`await agentAttachment(file)`) —
+   * and stream the agent's answer into `messages`. */
   const send = useCallback(
-    async (text: string, controls?: Record<string, unknown>) => {
-      if (!text.trim() || turn.current) return;
-      setMessages((m) => [...m, userMessage(text)]);
-      await stream((signal) => agent.chat(text, { run, signal, controls }));
+    async (text: string, controls?: Record<string, unknown>, attachments: AgentAttachment[] = []) => {
+      if ((!text.trim() && attachments.length === 0) || turn.current) return;
+      setMessages((m) => [...m, userMessage(text, attachments)]);
+      await stream((signal) => agent.chat(text, { run, signal, controls, attachments }));
     },
     [agent, run, stream],
   );
@@ -6034,7 +6041,10 @@ export function Board({ id }: { id: number }) {
         );
         // The root boundary and suspense fallback carry the markers the
         // `react.*` checklist steps read (TODO-checklists C3.2).
-        assert!(main.contains(r#"data-feldspar-error-boundary="""#), "{main}");
+        assert!(
+            main.contains(r#"data-feldspar-error-boundary="""#),
+            "{main}"
+        );
         assert!(main.contains(r#"<Suspense fallback={<div data-feldspar-pending="" />}>"#));
 
         // And the pages it writes use it. Every user-visible string in a

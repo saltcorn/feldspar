@@ -29,10 +29,11 @@
 //!
 //! The agent is `coding`, plus `http` so it can read the documentation of what
 //! it is building with, plus `preview_pane` pointed at the application's own
-//! subdomain (TODO §12, "The preview pane"). Building the application is one of
-//! `coding`'s checks — its `application` setting — rather than a second trait
-//! with a tool of its own, so the build runs where the ratchet, the baseline and
-//! the preview mount are, and a model is never offered two ways to ask "does
+//! subdomain (TODO §12, "The preview pane"). *This server's* documentation is
+//! `coding`'s own (`search_docs`, `read_docs`), so it needs no trait of its
+//! own. Building the application is one of `coding`'s checks — its
+//! `application` setting — rather than a second trait with a tool of its own,
+//! so the build runs where the ratchet, the baseline and the preview mount are, and a model is never offered two ways to ask "does
 //! this compile?". It starts in `plan` mode (`workflow: planned`), may check its
 //! work and look at the result, and may not run arbitrary scripts or a shell:
 //! those execute code nobody reviewed, and are grants the admin gives

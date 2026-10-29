@@ -728,6 +728,20 @@ workflow) found what the first importer left behind. Fixture:
   A restored agent whose trait still fails (a trigger that was not imported) keeps its other
   traits, the failing one dropped with a warning.
 
+## S1 — Saltcorn UI view runtime: remaining hardening from security review #36
+
+`{{= }}` no longer evaluates row data (see the CHANGELOG). What the review also recommended:
+
+- [ ] **S1.1** Run the Saltcorn UI view runtime in its own worker, so a formula that escapes the
+  evaluator's `vm` context does not share a realm with other modules' calls.
+- [ ] **S1.2** Clamp the view call's file host and `V1Trigger.run` to the viewer's authority.
+
+## S2 — Claiming a fresh instance
+
+- [x] **S2.1** A first-user token (`first_user_token`, set with `set-cfg` before the first
+  `serve`) that creating the first user requires; the admin UI takes it from
+  `?first_user_token=`, and Clear all keeps it.
+
 ---
 
 ## Open questions
