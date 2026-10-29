@@ -280,6 +280,7 @@
   "Create stream": "创建流",
   "Create table": "创建表",
   "Create the first administrator to get started.": "创建第一位管理员以开始使用。",
+  "This installation can only be set up through the link you were given when it was created. Open that link to create the first administrator.": "此安装只能通过创建时提供给您的链接进行设置。请打开该链接以创建第一个管理员。",
   "Create trigger": "创建触发器",
   "Created": "已创建",
   "Created by the module, and kept if it is uninstalled. You can add fields, edit rows and set triggers on them; the fields the module declared cannot be deleted while it is installed.": "由模块创建，卸载模块后仍会保留。您可以添加字段、编辑行并设置触发器；模块安装期间，无法删除其声明的字段。",

@@ -49,8 +49,9 @@ pub mod store;
 
 pub use acme::{ACME_CACHE_TABLE, AcmeCache, bootstrap_acme_cache};
 pub use authentication::{
-    DEFAULT_SESSION_TTL_HOURS, MAX_SESSION_TTL_HOURS, OAUTH_PRESETS, OAUTH_PROVIDERS, OAuthPreset,
-    OAuthProvider, SESSION_TTL_HOURS, SHARED_SESSION_COOKIE, authentication_section, oauth_preset,
+    DEFAULT_SESSION_TTL_HOURS, FIRST_USER_TOKEN, MAX_SESSION_TTL_HOURS, OAUTH_PRESETS,
+    OAUTH_PROVIDERS, OAuthPreset, OAuthProvider, SESSION_TTL_HOURS, SHARED_SESSION_COOKIE,
+    authentication_section, first_user_token, oauth_preset,
     oauth_provider, oauth_provider_records, oauth_provider_spec, oauth_providers,
     save_oauth_provider_records, session_ttl_hours, session_ttl_hours_from, shared_session_cookie,
     shared_session_cookie_from,

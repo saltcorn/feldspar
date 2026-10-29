@@ -2,6 +2,51 @@
 
 Changes in reverse chronological order.
 
+## Security: a first-user token, so a fresh instance is claimed by whoever was given the link
+
+Before this change, a fresh installation showed the create-first-user screen to whoever reached
+it first, and that person became its admin. An instance created and then forgotten could be taken
+over. An installation can now be given a **first-user token** before it first starts. Then only a
+request that carries the token can create the first user.
+
+- **The setting** (`sc-config`): `first_user_token`, an internal, secret Text key. It is declared
+  in `internal_defs`, so it is not on the settings form. `sc_config::first_user_token` reads it.
+  A blank value counts as unset, and so does a database with no `_fd_config` table, which can't
+  hold a token. `feldspar set-cfg first_user_token …` writes it **before
+  `serve` has ever run**. `set-cfg` connects through the same `connect_catalog` bootstrap as
+  `serve`, so it creates `_fd_config` (and the other tables) on an empty database. Backups do
+  not carry it, because they write only the settings-form sections.
+- **The check** (`sc-server` `createFirstUser`): when a token is set, the request body's `token`
+  must match it, or the answer is `403 {error}` and no user is created.
+  `sc_auth::first_user_token_matches` hashes both values with SHA-256 and compares the digests in
+  constant time. The token is not consumed: once a user exists, the create-first-user route
+  refuses anyway.
+- **`/api/auth/status`** has a new field, `first_user_token_required`, which is true only while
+  there are no users and a token is set.
+- **Clear all** keeps the token, as it keeps the TLS keys, so an emptied installation can still
+  be claimed only with the same token.
+- **The admin UI** (`FirstUser.tsx`) reads `?first_user_token=…` from the address and sends it
+  with the form. When a token is required and the address has none, the screen shows a message
+  asking for the setup link instead of the form (translated in the five admin locales). The
+  regenerated clients (`ui/admin`, `ui/ide`, `ui/builder`, `ui/analytics`) take an optional
+  `token`.
+- **Docs:** `OPERATIONS.md` §2.6 shows generating a token, setting it before `serve` and building
+  the link.
+- **Hosting:** a control panel that creates instances should run `feldspar set-cfg
+  first_user_token …` before it starts the service, and link the owner to
+  `https://<instance>/?first_user_token=…`. A panel script that claims the instance itself with
+  `POST /api/first-user` (as `feldspar-hosted`'s `add-instance.sh` does) must add `"token"` to
+  that body.
+- **Tests:**
+  - `admin_api::a_first_user_token_is_needed_to_create_the_first_user`: the status says a token is
+    required; no token, a wrong one, an empty one and a longer one are each refused `403` without
+    a session or a user; the right one creates the admin; afterwards the status says no token is
+    required.
+  - `admin_api::without_a_first_user_token_anyone_may_create_the_first_user`.
+  - `clear_all_api` checks that the token survives Clear all and still gates the next first user.
+  - `sc-auth`: a unit test of the matcher.
+  - `sc-config`: the key is internal and secret.
+
 ## Tests clear the scratch directories earlier runs left in the temp dir
 
 `graphql_scaffold` and `tutorial_app_build` failed with "Disk quota exceeded" (`npm install`:

@@ -281,6 +281,7 @@
   "Create stream": "Stream erstellen",
   "Create table": "Tabelle erstellen",
   "Create the first administrator to get started.": "Erstellen Sie den ersten Administrator, um zu beginnen.",
+  "This installation can only be set up through the link you were given when it was created. Open that link to create the first administrator.": "Diese Installation kann nur über den Link eingerichtet werden, den Sie bei ihrer Erstellung erhalten haben. Öffnen Sie diesen Link, um den ersten Administrator anzulegen.",
   "Create trigger": "Trigger erstellen",
   "Created": "Erstellt",
   "Created by the module, and kept if it is uninstalled. You can add fields, edit rows and set triggers on them; the fields the module declared cannot be deleted while it is installed.": "Vom Modul erstellt und bei dessen Deinstallation beibehalten. Sie können Felder hinzufügen, Zeilen bearbeiten und Trigger dafür festlegen. Die vom Modul definierten Felder können nicht gelöscht werden, solange es installiert ist.",

@@ -285,6 +285,7 @@
   "Create stream": "إنشاء دفق",
   "Create table": "إنشاء جدول",
   "Create the first administrator to get started.": "أنشئ المسؤول الأول للبدء.",
+  "This installation can only be set up through the link you were given when it was created. Open that link to create the first administrator.": "لا يمكن إعداد هذا التثبيت إلا من خلال الرابط الذي حصلت عليه عند إنشائه. افتح هذا الرابط لإنشاء المسؤول الأول.",
   "Create trigger": "إنشاء مشغّل",
   "Created": "تم الإنشاء",
   "Created by the module, and kept if it is uninstalled. You can add fields, edit rows and set triggers on them; the fields the module declared cannot be deleted while it is installed.": "تنشئه الوحدة ويُحتفظ به عند إلغاء تثبيتها. يمكنك إضافة حقول وتعديل صفوف وتعيين مشغّلات لها؛ ولا يمكن حذف الحقول التي عرّفتها الوحدة ما دامت مثبّتة.",

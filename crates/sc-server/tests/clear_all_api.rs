@@ -317,6 +317,9 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
     .await?;
     let acme = sc_config::AcmeCache::new(server.catalog.clone());
     acme.store("account", b"the account key").await?;
+    // The first-user token stays too: an installation claimed through its
+    // setup link is still claimable only through it once emptied.
+    sc_config::set_config(&server.catalog, sc_config::FIRST_USER_TOKEN, json!("setup-1")).await?;
 
     // Two file stores with a file each; only one will be ticked.
     let gone = temp_dir("gone");
@@ -422,15 +425,30 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
         "{status_body}"
     );
     assert_eq!(status_body["current_user"], Value::Null, "{status_body}");
+    assert_eq!(
+        status_body["first_user_token_required"],
+        json!(true),
+        "{status_body}"
+    );
     let (status, _) = server.client.send("GET", "/api/tables", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    // Which works: a new first admin, signed straight in.
+    // Which works, with the setup link's token: a new first admin, signed
+    // straight in. Without it, it is refused.
+    let (status, body) = server
+        .client
+        .send(
+            "POST",
+            "/api/first-user",
+            Some(json!({ "email": "new@example.com", "password": PASSWORD })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     ok(
         &mut server.client,
         "POST",
         "/api/first-user",
-        json!({ "email": "new@example.com", "password": PASSWORD }),
+        json!({ "email": "new@example.com", "password": PASSWORD, "token": "setup-1" }),
     )
     .await;
     for table in [

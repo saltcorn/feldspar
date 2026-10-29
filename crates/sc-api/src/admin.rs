@@ -59,6 +59,9 @@ pub fn admin_endpoints() -> EndpointSet {
         Endpoint::new("authStatus", Method::Get, api().lit("auth/status"))
             .output(TypeSchema::struct_of([
                 StructField::new("any_user_exists", TypeSchema::bool()),
+                // Whether creating the first user needs the setup link's token
+                // (`first_user_token`); only ever true while no user exists.
+                StructField::new("first_user_token_required", TypeSchema::bool()),
                 StructField::new("current_user", TypeSchema::optional(user_summary_schema())),
                 // Which languages this installation serves (§16.1). Here rather
                 // than on the settings payload because this is the call the SPA
@@ -72,10 +75,15 @@ pub fn admin_endpoints() -> EndpointSet {
             .auth(AuthRequirement::Public),
     );
 
-    // Create the very first (admin) user. Only valid while no user exists.
+    // Create the very first (admin) user. Only valid while no user exists, and
+    // when the installation has a first-user token, only with it (`403` else).
     set.register(
         Endpoint::new("createFirstUser", Method::Post, api().lit("first-user"))
-            .input(credentials_schema())
+            .input(TypeSchema::struct_of([
+                StructField::new("email", TypeSchema::text()),
+                StructField::new("password", TypeSchema::text()),
+                StructField::new("token", TypeSchema::optional(TypeSchema::text())),
+            ]))
             .output(user_summary_schema())
             .auth(AuthRequirement::Public),
     );

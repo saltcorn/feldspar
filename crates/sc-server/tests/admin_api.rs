@@ -104,6 +104,13 @@ impl Client {
 /// client that drives it. The users table is bootstrapped so auth works. The
 /// returned [`TestDb`] must be kept in scope: dropping it deletes the database.
 async fn setup() -> sc_error::Result<(Client, TestDb)> {
+    let (client, db, _) = setup_with_catalog().await?;
+    Ok((client, db))
+}
+
+/// [`setup`], also handing back the catalog, with the configuration table
+/// bootstrapped so a test can store settings before the first request.
+async fn setup_with_catalog() -> sc_error::Result<(Client, TestDb, Arc<Catalog>)> {
     let db = TestDb::new().await?;
 
     // The multi-tenant v1 test template carries `users` tables in several
@@ -125,17 +132,83 @@ async fn setup() -> sc_error::Result<(Client, TestDb)> {
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
     db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
+    sc_config::bootstrap(&catalog).await?;
 
     let sessions = Arc::new(SessionStore::default());
     let apps = Arc::new(AppMounts::new(catalog.clone()));
     let router = build_router(
         &sc_api::admin_endpoints(),
-        admin_handlers(catalog, apps),
+        admin_handlers(catalog.clone(), apps),
         sessions,
         &ServerConfig::default(),
     )?;
 
-    Ok((Client::new(router), db))
+    Ok((Client::new(router), db, catalog))
+}
+
+/// An installation given a first-user token before it first served (what a
+/// hosting control panel does with `feldspar set-cfg first_user_token …`) is
+/// claimed only with that token: the status says so, a create without it or with
+/// a wrong one is refused `403` and creates nobody, and the right one creates
+/// the admin. Once there is a user the token no longer matters.
+#[tokio::test]
+async fn a_first_user_token_is_needed_to_create_the_first_user() -> sc_error::Result<()> {
+    let (mut client, _db, catalog) = setup_with_catalog().await?;
+    sc_config::set_config(&catalog, sc_config::FIRST_USER_TOKEN, json!("s3cret-setup")).await?;
+
+    let (_, body) = client.send("GET", "/api/auth/status", None).await;
+    assert_eq!(body["any_user_exists"], json!(false));
+    assert_eq!(body["first_user_token_required"], json!(true), "{body}");
+
+    let credentials = |token: Option<&str>| {
+        let mut body = json!({ "email": "admin@example.com", "password": "hunter2pass" });
+        if let Some(token) = token {
+            body["token"] = json!(token);
+        }
+        Some(body)
+    };
+    for token in [None, Some("wrong"), Some(""), Some("s3cret-setup-and-more")] {
+        let (status, body) = client
+            .send("POST", "/api/first-user", credentials(token))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{token:?}: {body}");
+        assert!(
+            body["error"].as_str().unwrap_or("").contains("setup link"),
+            "{body}"
+        );
+        assert!(!client.cookies.contains_key(SESSION_COOKIE));
+    }
+    assert!(!sc_auth::any_user_exists(&catalog).await?);
+
+    let (status, body) = client
+        .send("POST", "/api/first-user", credentials(Some("s3cret-setup")))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["role"], json!(1));
+    assert!(client.cookies.contains_key(SESSION_COOKIE));
+
+    let (_, body) = client.send("GET", "/api/auth/status", None).await;
+    assert_eq!(body["any_user_exists"], json!(true));
+    assert_eq!(body["first_user_token_required"], json!(false), "{body}");
+    Ok(())
+}
+
+/// Without a token, the first user is created as before, and the status says
+/// none is needed.
+#[tokio::test]
+async fn without_a_first_user_token_anyone_may_create_the_first_user() -> sc_error::Result<()> {
+    let (mut client, _db, _catalog) = setup_with_catalog().await?;
+    let (_, body) = client.send("GET", "/api/auth/status", None).await;
+    assert_eq!(body["first_user_token_required"], json!(false), "{body}");
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/first-user",
+            Some(json!({ "email": "admin@example.com", "password": "hunter2pass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    Ok(())
 }
 
 #[tokio::test]

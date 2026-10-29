@@ -736,6 +736,12 @@ workflow) found what the first importer left behind. Fixture:
   evaluator's `vm` context does not share a realm with other modules' calls.
 - [ ] **S1.2** Clamp the view call's file host and `V1Trigger.run` to the viewer's authority.
 
+## S2 — Claiming a fresh instance
+
+- [x] **S2.1** A first-user token (`first_user_token`, set with `set-cfg` before the first
+  `serve`) that creating the first user requires; the admin UI takes it from
+  `?first_user_token=`, and Clear all keeps it.
+
 ---
 
 ## Open questions

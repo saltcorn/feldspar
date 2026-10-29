@@ -161,10 +161,15 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let exists = any_user_exists(&catalog).await?;
+                // Whether the create-first-user screen needs the setup link's
+                // token. Not a secret, and only said while it can matter.
+                let token_required =
+                    !exists && sc_config::first_user_token(&catalog).await?.is_some();
                 let current = ctx.user.as_ref().map_or(Json::Null, user_summary_json);
                 let locales = sc_i18n::active();
                 Ok(HandlerResponse::ok(json!({
                     "any_user_exists": exists,
+                    "first_user_token_required": token_required,
                     "current_user": current,
                     "locales": {
                         "default": locales.default_locale().as_str(),
@@ -186,6 +191,19 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let (email, password) = credentials(&ctx.body)?;
+                // An installation set up with a first-user token is claimed
+                // only through the link that carries it (security: otherwise
+                // whoever reaches a fresh instance first becomes its admin).
+                if let Some(expected) = sc_config::first_user_token(&catalog).await? {
+                    let supplied = ctx.body.get("token").and_then(Json::as_str);
+                    if !sc_auth::first_user_token_matches(&expected, supplied) {
+                        return Ok(HandlerResponse::ok(json!({
+                            "error": "this installation's first user can only be created \
+                                      through the setup link it was given",
+                        }))
+                        .with_status(403));
+                    }
+                }
                 let user = create_first_user(&catalog, &email, &password).await?;
                 // Log the new admin straight in — they came from the bootstrap
                 // screen and expect to land in the app.
