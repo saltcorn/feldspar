@@ -439,7 +439,7 @@ async fn a_planner_implements_three_features_each_checked_and_committed() -> Res
     // in `act` mode, with no trace of the planner's conversation.
     let sessions = models.executor.requests();
     let brief = |n: usize| match &sessions[n].messages[1] {
-        LlmMessage::User { content } => content.clone(),
+        LlmMessage::User { content, .. } => content.clone(),
         other => panic!("{other:?}"),
     };
     assert!(brief(0).starts_with("Implement feature `list`: Add a task list"));

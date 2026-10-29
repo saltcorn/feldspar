@@ -20,7 +20,10 @@
 //! fetched from `…/runs/{id}/parts/{part}`. A turn that ends on a question is
 //! `done` with `conclusion: "awaiting_user"` and the `request`; the answer is
 //! the next `chat` body, `{ answers_request, value, run }`. A chat body may
-//! carry `controls`, the values of what `…/controls` lists.
+//! carry `controls`, the values of what `…/controls` lists, and
+//! `attachments`: files, each `{ name, media_type, data }` with `data` in
+//! base64 — images the model looks at and text documents it reads
+//! ([`sc_llm::Attachment`]). A transcript shows each as an `attachment` part.
 //!
 //! **A client that goes away stops the agent.** The turn runs in a task that
 //! watches the response's channel; when the response is dropped — the page was
@@ -64,7 +67,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::agents::AgentServices;
 use crate::apps::MountedApp;
-use crate::chat::{TurnInput, done_event, error_event, may_chat, summarise};
+use crate::chat::{TurnInput, done_event, error_event, may_chat};
 use crate::router::{AppState, app_caller, error_status, json_error, log_failure, parse_query};
 
 /// The run attribute naming whose run it is: `user:<id>` or `anon:<hash>`.
@@ -437,7 +440,7 @@ fn body_object(body: &Bytes) -> Result<serde_json::Map<String, Json>> {
     }
 }
 
-/// `POST …/chat`: one turn, `{ message, run?, controls? }` or
+/// `POST …/chat`: one turn, `{ message, run?, controls?, attachments? }` or
 /// `{ answers_request, value, run, controls? }`, streamed.
 async fn chat(ctx: AgentCtx, body: &Bytes) -> Result<Response> {
     let obj = body_object(body)?;
@@ -453,8 +456,19 @@ async fn chat(ctx: AgentCtx, body: &Bytes) -> Result<Response> {
             )));
         }
     };
+    let attachments: Vec<sc_llm::Attachment> = match obj.get("attachments") {
+        None | Some(Json::Null) => Vec::new(),
+        Some(value) => serde_json::from_value(value.clone()).map_err(|e| {
+            Error::invalid(format!(
+                "`attachments` should be a list of `{{ name, media_type, data }}`, \
+                 with `data` in base64: {e}"
+            ))
+        })?,
+    };
     let text = match obj.get("message") {
         Some(Json::String(s)) if !s.trim().is_empty() => s.clone(),
+        Some(Json::String(s)) if !attachments.is_empty() => s.clone(),
+        None | Some(Json::Null) if !attachments.is_empty() => String::new(),
         _ if answer.is_some() => String::new(),
         _ => return Err(Error::invalid("a chat turn needs a `message`, as text")),
     };
@@ -467,11 +481,14 @@ async fn chat(ctx: AgentCtx, body: &Bytes) -> Result<Response> {
             )));
         }
     };
-    let input = TurnInput {
+    let mut input = TurnInput {
         text,
+        attachments,
         answer,
         controls,
     };
+    // Checked before a slot is taken, so a refused file costs no turn.
+    input.attachments = input.checked_attachments()?;
     // Continuing needs somebody to continue as: a conversation nobody can be
     // told apart from anybody else by is one nobody can come back to.
     if ctx.asker.owner.is_none() {
@@ -526,6 +543,7 @@ async fn prompt(ctx: AgentCtx, body: &Bytes, stream: bool) -> Result<Response> {
     };
     let input = TurnInput {
         text,
+        attachments: Vec::new(),
         answer: None,
         controls: std::collections::BTreeMap::new(),
     };
@@ -614,7 +632,7 @@ async fn drive_turn(
                 Some(answer) => runner.push_answer(&mut run, answer, input.controls).await?,
                 None => {
                     runner
-                        .push_message(&mut run, &input.text, input.controls)
+                        .push_message(&mut run, &input.text, input.attachments, input.controls)
                         .await?;
                 }
             }
@@ -627,8 +645,10 @@ async fn drive_turn(
                 ));
             }
             sc_agent::check_controls(&runner.controls().await?, &input.controls)?;
-            let text = input.text;
-            let run = runner.new_run(&text)?.description(summarise(&text));
+            let description = input.description(&input.attachments);
+            let run = runner
+                .new_run_attached(input.text, input.attachments)?
+                .description(description);
             let mut run = ctx.claim(run, mode);
             let mut state = run.agent_loop()?;
             state.set_controls(input.controls);
@@ -880,11 +900,20 @@ fn transcript_of(
     let mut out: Vec<Building> = Vec::new();
     for (index, message) in messages.iter().enumerate() {
         match message {
-            LlmMessage::User { content } => out.push(Building {
-                id: format!("m{index}"),
-                assistant: false,
-                parts: vec![json!({ "type": "text", "text": content })],
-            }),
+            LlmMessage::User {
+                content,
+                attachments,
+            } => {
+                let mut parts: Vec<Json> = attachments.iter().map(attachment_part).collect();
+                if !content.is_empty() || parts.is_empty() {
+                    parts.push(json!({ "type": "text", "text": content }));
+                }
+                out.push(Building {
+                    id: format!("m{index}"),
+                    assistant: false,
+                    parts,
+                })
+            }
             LlmMessage::Assistant {
                 content,
                 tool_calls,
@@ -954,6 +983,27 @@ fn transcript_of(
             })
         })
         .collect()
+}
+
+/// An attachment as a transcript shows it: its name, type and size, and an
+/// image's bytes as a `data:` URL, so a page can draw it without another
+/// request (the default CSP allows `data:` images). A document's text is not
+/// repeated: the person has the file.
+fn attachment_part(attachment: &sc_llm::Attachment) -> Json {
+    let mut part = json!({
+        "type": "attachment",
+        "name": attachment.name,
+        "media_type": attachment.media_type,
+        "size": attachment.data.len(),
+    });
+    if attachment.is_image() {
+        part["url"] = json!(format!(
+            "data:{};base64,{}",
+            attachment.media_type,
+            attachment.image().base64()
+        ));
+    }
+    part
 }
 
 /// The parts of the agent's message being built: the last message's when it
@@ -1088,9 +1138,7 @@ mod tests {
 
     fn conversation() -> Vec<LlmMessage> {
         vec![
-            LlmMessage::User {
-                content: "Where is order 7?".to_owned(),
-            },
+            LlmMessage::user("Where is order 7?"),
             LlmMessage::Assistant {
                 content: "Let me look.".to_owned(),
                 tool_calls: vec![ToolCall {

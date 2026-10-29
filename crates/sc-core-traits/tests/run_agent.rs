@@ -218,7 +218,7 @@ async fn an_insert_starts_an_agent_with_a_prompt_built_from_the_row() -> Result<
 
     // The row's data reached the prompt — checked in the run's transcript…
     let messages = run.agent_loop()?.messages().to_vec();
-    let sc_llm::LlmMessage::User { content } = &messages[0] else {
+    let sc_llm::LlmMessage::User { content, .. } = &messages[0] else {
         panic!("the run should open with the prompt: {messages:?}")
     };
     assert_eq!(content, r#"Summarise the post "Hello": The first post."#);

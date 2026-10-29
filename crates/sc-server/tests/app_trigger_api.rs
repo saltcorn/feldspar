@@ -505,7 +505,7 @@ async fn an_app_can_expose_a_trigger_whose_action_is_an_agent() -> sc_error::Res
     assert_eq!(run.user, None);
     assert!(run.description.contains("summarise"), "{run:?}");
     let messages = run.agent_loop()?.messages().to_vec();
-    let sc_llm::LlmMessage::User { content } = &messages[0] else {
+    let sc_llm::LlmMessage::User { content, .. } = &messages[0] else {
         panic!("the run should open with the prompt: {messages:?}")
     };
     assert_eq!(content, r#"Summarise the post "homepage""#);

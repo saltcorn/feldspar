@@ -133,7 +133,7 @@ fn last_user(request: &LlmRequest) -> String {
         .iter()
         .rev()
         .find_map(|m| match m {
-            LlmMessage::User { content } => Some(content.clone()),
+            LlmMessage::User { content, .. } => Some(content.clone()),
             _ => None,
         })
         .unwrap_or_default()

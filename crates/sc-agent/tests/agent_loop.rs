@@ -461,7 +461,7 @@ async fn per_step_context_follows_a_byte_identical_prefix() -> Result<()> {
     let second = &requests[1].messages;
     assert_eq!(first[..first.len() - 1], second[..first.len() - 1]);
     let last_text = |m: &[sc_llm::LlmMessage]| match m.last() {
-        Some(sc_llm::LlmMessage::User { content }) => content.clone(),
+        Some(sc_llm::LlmMessage::User { content, .. }) => content.clone(),
         other => panic!("the request should end on the context: {other:?}"),
     };
     assert!(last_text(first).contains("The page is /books. (step 1)"));

@@ -1018,7 +1018,7 @@ impl<'a> Turn<'a> {
     /// turn answers — or `None` when there is none (AS7.1's `every_message`).
     pub fn user_message(&self) -> Option<&str> {
         self.messages.iter().rev().find_map(|m| match m {
-            sc_llm::LlmMessage::User { content } if !content.trim().is_empty() => {
+            sc_llm::LlmMessage::User { content, .. } if !content.trim().is_empty() => {
                 Some(content.as_str())
             }
             _ => None,

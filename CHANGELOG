@@ -2,6 +2,46 @@
 
 Changes in reverse chronological order.
 
+## Agent chat: attach images and text documents
+
+A person can now attach files to a message in an agent chat, in the admin UI and in React
+applications, and ask about them or refer to them in the prompt.
+
+- **The model message** (`sc-llm`): `LlmMessage::User` has `attachments: Vec<Attachment>`
+  (`{ name, media_type, data }`, base64 in JSON, left out when empty). `Attachment::checked` /
+  `check_attachments` accept PNG, JPEG, GIF and WebP images up to 5 MiB and UTF-8 text up to
+  1 MiB, at most 10 per message. A text file with no type or `application/octet-stream` becomes
+  `text/plain`, or `text/markdown` for a `.md`. Anything else is refused with the file's name.
+  The rig bridge sends attachments before the typed text. A document goes to every model as
+  `<attachment name="…" type="…">…</attachment>` text. An image goes as an image part to a model
+  with `vision`, and as a stub naming the file to one without. The token estimate counts both,
+  and LLM logging replaces their bytes with a size, as it does for tool-result images.
+- **The agent loop** (`sc-agent`): `AgentLoop::push_user_attached`, `Runner::new_run_attached`,
+  and an `attachments` argument on `Runner::push_message`. The compaction summary lists the
+  files a user turn carried.
+- **Admin chat socket** (`/admin/agent-chat`): a `message` frame may carry `attachments`, and may
+  have empty text if it does. A refused file is an `error` event followed by `done`, and the
+  socket stays open. A run started by files alone is described by their names.
+- **App chat** (`POST {mount}/_agents/{name}/chat`): the body may carry `attachments`. They are
+  checked before a turn slot is taken (a bad file is a 400). In `runs/{id}` transcripts, each
+  file is an `attachment` part (`name`, `media_type`, `size`, and an image's `data:` `url`),
+  placed before the message's text.
+- **Generated client** (`helper.ts`): `AgentAttachment`, `AgentAttachmentPart`,
+  `agentAttachment(file)` (reads a `File`/`Blob` and checks the same limits client-side),
+  `agentAttachmentPart`, `AgentChatOptions.attachments`, and `userMessage(text, attachments?)`.
+  The scaffold's `useAgentChat` `send(text, controls?, attachments?)` passes them on, and
+  `AGENTS.md` says how. The committed `helper.ts` copies in `ui/*` are regenerated.
+- **Admin UI** (`AgentChat.tsx`, `agentChat.ts`): a **+** button in the lower left of the
+  composer opens a file picker (images and common text formats). Files can also be dropped on
+  the composer or pasted into it. Attached files show as chips above the text (an image as a
+  thumbnail, a document by name and size) and can be removed before sending. A sent message
+  shows them above its bubble, and so does a reopened stored run. New strings are translated
+  in all five locales.
+- **Tests**: `sc-llm` (checking and typing, JSON round trip, how each wire orders and
+  degrades the parts), `sc-server` `agent_chat::a_message_carries_its_attachments_to_the_model`
+  and `app_agents::a_chat_turn_carries_attached_images_and_documents`, the `tsc` check of the
+  generated agents client, and `ui/admin` `agentChat.test.ts` ("attachments").
+
 ## Admin UI: table data grid — Key labels and dropdown, date pickers, full height, steadier paging
 
 On `/#/tables/{table}/data` (`ui/admin/src/screens/DataGrid.tsx`):

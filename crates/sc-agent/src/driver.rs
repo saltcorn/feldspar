@@ -304,8 +304,17 @@ impl<'a> Runner<'a> {
     /// runner's starting mode and role — not yet saved, so a caller can give it
     /// a description first.
     pub fn new_run(&self, message: impl Into<String>) -> Result<Run> {
+        self.new_run_attached(message, Vec::new())
+    }
+
+    /// [`new_run`](Runner::new_run), with files attached to the first message.
+    pub fn new_run_attached(
+        &self,
+        message: impl Into<String>,
+        attachments: Vec<sc_llm::Attachment>,
+    ) -> Result<Run> {
         let mut state = AgentLoop::for_agent(self.agent);
-        state.push_user(message)?;
+        state.push_user_attached(message, attachments, Default::default())?;
         Ok(Run::new(&self.agent.name, &self.caller, &state)
             .with_mode(self.mode)
             .with_role(self.role))
@@ -345,7 +354,8 @@ impl<'a> Runner<'a> {
         message: impl Into<String>,
         controls: std::collections::BTreeMap<String, Json>,
     ) -> Result<Conclusion> {
-        self.push_message(run, message, controls).await?;
+        self.push_message(run, message, Vec::new(), controls)
+            .await?;
         self.drive(run).await
     }
 
@@ -368,11 +378,12 @@ impl<'a> Runner<'a> {
         &self,
         run: &mut Run,
         message: impl Into<String>,
+        attachments: Vec<sc_llm::Attachment>,
         controls: std::collections::BTreeMap<String, Json>,
     ) -> Result<()> {
         crate::interact::check_controls(&self.controls().await?, &controls)?;
         let mut state = run.agent_loop()?;
-        state.push_user_with(message, controls)?;
+        state.push_user_attached(message, attachments, controls)?;
         run.record(&state);
         save_run(self.catalog, run).await
     }
@@ -1078,7 +1089,7 @@ impl<'a> Runner<'a> {
             .messages()
             .iter()
             .find_map(|m| match m {
-                LlmMessage::User { content } => Some(content.clone()),
+                LlmMessage::User { content, .. } => Some(content.clone()),
                 _ => None,
             })
             .unwrap_or_default();

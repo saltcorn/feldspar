@@ -33,7 +33,7 @@ use sc_catalog::{Catalog, DataField};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
-use sc_llm::{ConnectedModel, LlmDelta, LlmProvider, LlmRequest, LlmStream};
+use sc_llm::{ConnectedModel, LlmDelta, LlmMessage, LlmProvider, LlmRequest, LlmStream};
 use sc_server::{
     AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ProviderConnector, ServerConfig,
     admin_handlers, build_router_with_apps,
@@ -569,6 +569,97 @@ async fn a_chat_turn_streams_and_leaves_a_conversation_its_owner_can_manage() ->
         .await
         .json();
     assert_eq!(listed, json!([]));
+    Ok(())
+}
+
+/// Files sent with a chat turn reach the model — an image as an image, a
+/// document as text it can be asked about — and come back in the transcript
+/// as `attachment` parts. A file that is neither is refused before a turn is
+/// spent on it.
+#[tokio::test]
+async fn a_chat_turn_carries_attached_images_and_documents() -> Result<()> {
+    use base64::Engine as _;
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    let provider = Arc::new(FakeProvider::new([Reply::says(
+        "It says to ship on Friday.",
+    )]));
+    let server = serve(provider.clone(), sc_app::ToolDetail::Names).await?;
+    let mut alice = Browser::new(&server);
+    alice.login("alice").await;
+
+    let refused = alice
+        .send(
+            "POST",
+            "/api/_agents/helpdesk/chat",
+            Some(json!({
+                "message": "What is this?",
+                "attachments": [{ "name": "a.bin", "media_type": "application/octet-stream",
+                                  "data": b64(&[0, 159, 146]) }],
+            })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert!(String::from_utf8_lossy(&refused.body).contains("not text"));
+    assert!(provider.last_request().is_none(), "no turn was spent");
+
+    let turn = alice
+        .send(
+            "POST",
+            "/api/_agents/helpdesk/chat",
+            Some(json!({
+                "message": "When do we ship?",
+                "attachments": [
+                    { "name": "plan.md", "media_type": "", "data": b64(b"# Plan\nShip on Friday.") },
+                    { "name": "chart.png", "media_type": "image/png", "data": b64(b"png") },
+                ],
+            })),
+        )
+        .await;
+    assert_eq!(
+        turn.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&turn.body)
+    );
+    let events = turn.events();
+    assert_eq!(text_of(&events), "It says to ship on Friday.");
+    let run = events[0]["run"].as_str().unwrap().to_owned();
+
+    let asked = provider.last_request().unwrap();
+    let LlmMessage::User {
+        content,
+        attachments,
+    } = &asked.messages[0]
+    else {
+        panic!("the person's message first: {:?}", asked.messages);
+    };
+    assert_eq!(content, "When do we ship?");
+    let kinds: Vec<(&str, &str)> = attachments
+        .iter()
+        .map(|a| (a.name.as_str(), a.media_type.as_str()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [("plan.md", "text/markdown"), ("chart.png", "image/png")]
+    );
+    assert_eq!(attachments[0].text(), "# Plan\nShip on Friday.");
+
+    let read = alice
+        .send("GET", &format!("/api/_agents/helpdesk/runs/{run}"), None)
+        .await
+        .json();
+    let parts = &read["messages"][0]["parts"];
+    assert_eq!(parts[0]["type"], "attachment", "{read}");
+    assert_eq!(parts[0]["name"], "plan.md");
+    assert!(parts[0].get("url").is_none(), "a document is not repeated");
+    assert_eq!(
+        parts[1]["url"],
+        format!("data:image/png;base64,{}", b64(b"png"))
+    );
+    assert_eq!(
+        parts[2],
+        json!({ "type": "text", "text": "When do we ship?" })
+    );
     Ok(())
 }
 

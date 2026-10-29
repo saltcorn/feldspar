@@ -4911,7 +4911,9 @@ history for that agent.
 
 - **The socket protocol, as it settled.** Client → server: `{"type":"start","agent":…,"run":…?}`
   binds the socket to an agent and optionally continues a run; `{"type":"message","text":…}` is
-  one user turn; `{"type":"abort"}` stops the turn that is running. Server → client: `text`,
+  one user turn, which may carry `attachments` (`[{name, media_type, data}]`, base64: images
+  the model looks at and text documents it reads, stored on the run's user message as
+  `sc_llm::Attachment`); `{"type":"abort"}` stops the turn that is running. Server → client: `text`,
   `reasoning`, `tool_call`, `tool_result`, `done` and `error`. `done` carries the run id and the
   run's state (`done` | `failed` | `aborted`), which is what the client needs and the delta
   stream alone cannot say. A successful `start` is answered with **silence** — the composer is
@@ -5059,7 +5061,7 @@ mount, as the live socket and the upload slots do (`sc_app::agent_route`):
 
 | Route | |
 |---|---|
-| `POST {mount}/_agents/{name}/chat` | `{ message, run? }` → one turn, as `text/event-stream` |
+| `POST {mount}/_agents/{name}/chat` | `{ message, run?, attachments? }` → one turn, as `text/event-stream`; attachments are images (PNG/JPEG/GIF/WebP ≤ 5 MiB) and UTF-8 text documents (≤ 1 MiB), at most 10 |
 | `POST …/prompt` | `{ prompt }` or `{ input }` → `{ run, state, answer, conclusion, tools }`; `?stream=1` streams it |
 | `GET …/runs` | the caller's own conversations with it, without transcripts |
 | `GET / PATCH / DELETE …/runs/{id}` | one of them with its transcript; rename (`{ title }`); delete |
