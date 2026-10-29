@@ -1,4 +1,4 @@
-// Settings → Build hosts: the machines that build an application's targets for
+// Settings → Development → Build hosts: the machines that build an application's targets for
 // this server, such as a Mac for iOS while the server runs on Linux
 // (`TODO-build-hosts.md`).
 //
@@ -33,7 +33,7 @@ import { AlertBody } from "../layout";
 import { when } from "../mcpTokens";
 import { T, useT } from "../i18n";
 
-export function BuildHostsTab() {
+export function BuildHostsPanel() {
   const { t } = useT();
   const [hosts, setHosts] = useState<BuildHost[] | null>(null);
   const [choices, setChoices] = useState<Array<{ name: string; label: string }>>([]);

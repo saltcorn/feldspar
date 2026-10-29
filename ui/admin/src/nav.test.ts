@@ -78,10 +78,11 @@ describe("the admin sidebar", () => {
     expect(activeLabels("/models")).toEqual([]);
   });
 
-  it("lights up Checklists for the data-only checklists, and not for an application's", () => {
-    expect(activeLabels("/checklists")).toEqual(["Checklists"]);
-    expect(activeLabels("/checklists/c1")).toEqual(["Checklists"]);
-    expect(activeLabels("/checklist-runs/r1")).toEqual(["Checklists"]);
+  it("lights up Settings for the data-only checklists, and not for an application's", () => {
+    expect(NAV.map((item) => item.label)).not.toContain("Checklists");
+    expect(activeLabels("/settings/checklists")).toEqual(["Settings"]);
+    expect(activeLabels("/checklists/c1")).toEqual(["Settings"]);
+    expect(activeLabels("/checklist-runs/r1")).toEqual(["Settings"]);
     // An application's checklists belong to the Applications half.
     expect(activeLabels("/applications/a1/checklists")).toEqual([]);
   });

@@ -22,16 +22,20 @@ import {
   SECRET_SENTINEL,
   buildConfig,
   initialValues,
+  isShown,
+  optionLabel,
   readConfig,
 } from "../settings";
 import {
   BACKUP_TAB,
-  BUILD_HOSTS_TAB,
+  CHECKLISTS_TAB,
   MODULES_TAB,
   allFields,
   initialTab,
   SHARED_SESSION_COOKIE,
   settingsPayload,
+  settingsTabFromPath,
+  settingsTabPath,
   settingsTabs,
   signsEveryoneOut,
 } from "./Settings";
@@ -240,7 +244,7 @@ describe("the settings screen's tabs", () => {
       { id: "email", label: "Email" },
       { id: "development", label: "Development" },
       { id: MODULES_TAB, label: "Modules" },
-      { id: BUILD_HOSTS_TAB, label: "Build hosts" },
+      { id: CHECKLISTS_TAB, label: "Checklists" },
       { id: BACKUP_TAB, label: "Backup" },
     ]);
   });
@@ -251,21 +255,21 @@ describe("the settings screen's tabs", () => {
   it("has no tab without a section, and no section without a tab", () => {
     const tabs = settingsTabs([...sections, emailSection]);
     const sectionNames = [...sections, emailSection].map((s) => s.name);
-    const standalone = [MODULES_TAB, BUILD_HOSTS_TAB, BACKUP_TAB];
+    const standalone = [MODULES_TAB, CHECKLISTS_TAB, BACKUP_TAB];
     expect(
       tabs.filter((t) => !standalone.includes(t.id)).map((t) => t.id),
     ).toEqual(sectionNames);
-    // Modules, Build hosts and Backup are the tabs that are not sections, and
+    // Modules, Checklists and Backup are the tabs that are not sections, and
     // they are last, in that order.
     expect(tabs.slice(-3).map((t) => t.id)).toEqual(standalone);
     expect(tabs.filter((t) => t.id === BACKUP_TAB)).toHaveLength(1);
     expect(tabs.filter((t) => t.id === MODULES_TAB)).toHaveLength(1);
   });
 
-  it("keeps Modules, Build hosts and Backup even when the server declares no sections at all", () => {
+  it("keeps Modules, Checklists and Backup even when the server declares no sections at all", () => {
     expect(settingsTabs([])).toEqual([
       { id: MODULES_TAB, label: "Modules" },
-      { id: BUILD_HOSTS_TAB, label: "Build hosts" },
+      { id: CHECKLISTS_TAB, label: "Checklists" },
       { id: BACKUP_TAB, label: "Backup" },
     ]);
     expect(initialTab([])).toBe(MODULES_TAB);
@@ -273,6 +277,21 @@ describe("the settings screen's tabs", () => {
 
   it("opens on the first settings section rather than on Backup", () => {
     expect(initialTab([...sections, emailSection])).toBe("ssl");
+  });
+
+  /** `/settings/checklists` is where a data-only checklist's screen goes back
+   * to, so the route has to open that tab — and a tab that does not exist
+   * falls back to the usual first one rather than showing nothing. */
+  it("opens on the tab its route names", () => {
+    expect(settingsTabFromPath("/settings")).toBeNull();
+    expect(settingsTabFromPath(settingsTabPath(CHECKLISTS_TAB))).toBe(CHECKLISTS_TAB);
+    expect(initialTab([...sections, emailSection], CHECKLISTS_TAB)).toBe(CHECKLISTS_TAB);
+    expect(initialTab([...sections, emailSection], "email")).toBe("email");
+    expect(initialTab([...sections, emailSection], "build-hosts")).toBe("ssl");
+  });
+
+  it("has no Build hosts tab: build hosts are under Development", () => {
+    expect(settingsTabs([...sections]).map((t) => t.label)).not.toContain("Build hosts");
   });
 
   /** Every section's fields are still edited as **one** payload, from whichever
@@ -373,5 +392,50 @@ describe("the Authentication tab's shared sign-in", () => {
     expect(signsEveryoneOut({}, off)).toBe(false);
     expect(signsEveryoneOut(on, on)).toBe(false);
     expect(signsEveryoneOut(off, { ...off, log_sql: "true" })).toBe(false);
+  });
+});
+
+describe("the Development tab's MCP switches and verbosity labels", () => {
+  const mcpFields = [
+    {
+      name: "mcp_enabled",
+      label: "Administration MCP server",
+      type: "bool",
+      required: false,
+      default: false,
+      options: [],
+      multiline: false,
+      show_if: [],
+    },
+    {
+      name: "mcp_loopback_only",
+      label: "MCP from this machine only",
+      type: "bool",
+      required: false,
+      default: true,
+      options: [],
+      multiline: false,
+      show_if: [{ name: "mcp_enabled", values: [true] }],
+    },
+  ];
+
+  /** Who may reach the MCP server is only asked while it is ticked — on the
+   * form, before it is saved. */
+  it("hides MCP from this machine only while the MCP server is unticked", () => {
+    const loopback = mcpFields[1];
+    expect(isShown(loopback, mcpFields, {})).toBe(false);
+    expect(isShown(loopback, mcpFields, { mcp_enabled: "false" })).toBe(false);
+    expect(isShown(loopback, mcpFields, { mcp_enabled: "true" })).toBe(true);
+  });
+
+  /** The select shows what a level prints; what is stored is still the level. */
+  it("shows each level with its declared label, and a value with none as itself", () => {
+    const field = {
+      options: ["error", "warning"],
+      option_labels: ["error: failures only", "warning: also what is about to fail"],
+    };
+    expect(optionLabel(field, 1)).toBe("warning: also what is about to fail");
+    expect(optionLabel({ options: ["error"] }, 0)).toBe("error");
+    expect(optionLabel({ options: ["error"], option_labels: [] }, 0)).toBe("error");
   });
 });

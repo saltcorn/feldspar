@@ -51,6 +51,7 @@ import {
   SettingField,
   buildConfig,
   initialValues,
+  isShown,
   readConfig,
   type FieldSpec,
 } from "../settings";
@@ -62,7 +63,8 @@ import { SharedTranslationsPanel } from "./SharedTranslations";
 import { McpTokensPanel } from "./McpTokens";
 import { OAuthProvidersPanel } from "./OAuthProviders";
 import { ModulesTab } from "./ModulesTab";
-import { BuildHostsTab } from "./BuildHosts";
+import { BuildHostsPanel } from "./BuildHosts";
+import { Checklists } from "./Checklists";
 import { PythonStatusPanel } from "./PythonStatus";
 import { TestEmail } from "./TestEmail";
 import { T, useT } from "../i18n";
@@ -124,10 +126,10 @@ export const BACKUP_TAB = "backup";
  * about the *installation* rather than about anything in it. */
 export const MODULES_TAB = "modules";
 
-/** The Build hosts tab's identity: the machines that build native apps for
- * this server (`TODO-build-hosts.md`). A list of records, like Modules, not a
- * bag of values. */
-export const BUILD_HOSTS_TAB = "build-hosts";
+/** The Checklists tab's identity: the Data Layer's checklists, the ones with
+ * no application (TODO-checklists C1.16). A list of records, like Modules, not
+ * a bag of values; an application's checklists stay under that application. */
+export const CHECKLISTS_TAB = "checklists";
 
 /** Which tab is showing: a section's `name`, or {@link BACKUP_TAB}. */
 export type SettingsTab = string;
@@ -136,7 +138,7 @@ export type SettingsTab = string;
 export type TabSpec = { id: SettingsTab; label: string };
 
 /** The tabs this screen has, in the order they are shown: one per declared
- * section, then Backup.
+ * section, then Modules, Checklists and Backup.
  *
  * A pure function of the sections, so what an admin sees is exactly what the
  * server declared — a section with no tab, or a tab with no section, cannot
@@ -145,18 +147,34 @@ export function settingsTabs(sections: Section[]): TabSpec[] {
   return [
     ...sections.map((section) => ({ id: section.name, label: section.label })),
     { id: MODULES_TAB, label: "Modules" },
-    { id: BUILD_HOSTS_TAB, label: "Build hosts" },
+    { id: CHECKLISTS_TAB, label: "Checklists" },
     { id: BACKUP_TAB, label: "Backup" },
   ];
 }
 
 /** Which tab a freshly loaded screen opens on: the first settings section, and
  * Backup only when the server declared no sections at all. */
-export function initialTab(sections: Section[]): SettingsTab {
+export function initialTab(sections: Section[], requested?: string | null): SettingsTab {
+  if (requested && settingsTabs(sections).some((entry) => entry.id === requested)) {
+    return requested;
+  }
   return sections.length > 0 ? sections[0].name : MODULES_TAB;
 }
 
-export function Settings() {
+/** The tab a `/settings/<tab>` route asks for, or `null` for plain `/settings`.
+ * What a screen elsewhere links to when "back" means one tab of this one — the
+ * checklist screens' way back to the Checklists tab. */
+export function settingsTabFromPath(path: string): string | null {
+  const match = path.match(/^\/settings\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+/** The route that opens this screen on `tab`. */
+export function settingsTabPath(tab: SettingsTab): string {
+  return `/settings/${encodeURIComponent(tab)}`;
+}
+
+export function Settings({ requestedTab = null }: { requestedTab?: string | null }) {
   const { t } = useT();
   // The sections are loaded *here* rather than inside a panel because the tab
   // strip is derived from them: a screen whose panels fetched their own could
@@ -188,7 +206,7 @@ export function Settings() {
     setValues(initialValues(allFields(response.sections), config));
     setStored(config);
     setHostKeys(response.host_keys);
-    if (opening) setTab(initialTab(response.sections));
+    if (opening) setTab(initialTab(response.sections, requestedTab));
   };
 
   useEffect(() => {
@@ -298,6 +316,7 @@ export function Settings() {
             <form onSubmit={save}>
               <SectionCard
                 section={section}
+                spec={allFields(sections)}
                 values={values}
                 hostKeys={hostKeys}
                 onChange={(name, v) => setValues((current) => ({ ...current, [name]: v }))}
@@ -311,17 +330,20 @@ export function Settings() {
             {/* Whatever this section has beyond its fields — the Email tab's
                 test message. Outside the form on purpose: it is a different
                 verb, and it acts on what is *stored*. */}
-            <SectionExtra name={section.name} stored={stored} />
+            <SectionExtra name={section.name} stored={stored} values={values} />
           </TabPanel>
         ))}
         <TabPanel id={MODULES_TAB} showing={tab}>
           <ModulesTab />
         </TabPanel>
-        <TabPanel id={BUILD_HOSTS_TAB} showing={tab}>
-          <BuildHostsTab />
+        <TabPanel id={CHECKLISTS_TAB} showing={tab}>
+          <Checklists appId={null} />
         </TabPanel>
         <TabPanel id={BACKUP_TAB} showing={tab}>
           <BackupTab />
+          {/* At the bottom of Backup: emptying the installation is the act a
+              backup is taken before, and it sits beside the restore that undoes it. */}
+          <ClearAllPanel />
         </TabPanel>
         {moving && <AdminMove onClose={() => setMoving(false)} />}
         <Modal show={confirming} onHide={() => setConfirming(false)} centered>
@@ -370,11 +392,14 @@ function TabPanel({
 /** One section's heading, explanation and controls. */
 function SectionCard({
   section,
+  spec,
   values,
   hostKeys,
   onChange,
 }: {
   section: Section;
+  /** Every section's fields: what a field's `show_if` may name. */
+  spec: FieldSpec[];
   values: Record<string, string>;
   hostKeys: string[];
   onChange: (name: string, value: string) => void;
@@ -392,7 +417,10 @@ function SectionCard({
         </div>
       </div>
       <div className="card-body">
-        {section.fields.map((field) => (
+        {/* A field whose `show_if` does not hold for what the form shows now
+            is hidden, as the admin edits — MCP from this machine only, while
+            the MCP server is unticked. */}
+        {section.fields.filter((field) => isShown(field, spec, values)).map((field) => (
           <div key={field.name}>
             <SettingField
               field={field}
@@ -423,9 +451,11 @@ function SectionCard({
 function SectionExtra({
   name,
   stored,
+  values,
 }: {
   name: string;
   stored: Record<string, string>;
+  values: Record<string, string>;
 }) {
   if (name === "email") return <TestEmail />;
   // Settings → Localisation → Translations (shared) (TODO F6).
@@ -437,9 +467,14 @@ function SectionExtra({
     return (
       <>
         <PythonStatusPanel />
-        <McpTokensPanel enabled={mcpEnabled(stored)} />
+        {/* Hidden while the MCP server is unticked on the form, as its
+            loopback switch is; ticked but not yet saved, the panel says the
+            route is not served yet. */}
+        {mcpEnabled(values) && <McpTokensPanel enabled={mcpEnabled(stored)} />}
         <CodeLibraryPanel />
-        <ClearAllPanel />
+        {/* The machines that build native apps for this server
+            (`TODO-build-hosts.md`). */}
+        <BuildHostsPanel />
       </>
     );
   return null;

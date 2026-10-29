@@ -260,8 +260,8 @@ describe("where things are", () => {
     expect(checklistRunPath("r1", "a1")).toBe("/applications/a1/checklists/runs/r1");
   });
 
-  it("puts a data-only checklist under the Data Layer", () => {
-    expect(checklistsPath(null)).toBe("/checklists");
+  it("lists the data-only checklists on Settings → Checklists", () => {
+    expect(checklistsPath(null)).toBe("/settings/checklists");
     expect(checklistPath("c1", null)).toBe("/checklists/c1");
     expect(checklistRunPath("r1")).toBe("/checklist-runs/r1");
   });

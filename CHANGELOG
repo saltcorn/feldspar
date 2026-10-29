@@ -2,6 +2,43 @@
 
 Changes in reverse chronological order.
 
+## Admin UI: Development tab — admin subdomain first, labelled verbosity levels, MCP switches hidden when off
+
+- **Admin subdomain** is now the first field of Settings → Development.
+- **Log verbosity**: each option in the dropdown now shows its value and what it prints
+  (`warning: also what is about to fail`); the sentence under the control is just "How much is
+  printed to stderr." The stored value is unchanged. This is a new, generic piece of the settings
+  vocabulary: `FormField::option_labels` (presentation only, in the options' order), set with
+  `FormField::labelled_options([(value, label)])`, translated by `translate_spec`, sent as
+  `option_labels` in every form-field JSON (optional in `form_field_schema`, client regenerated) and
+  rendered by `SettingField`'s select through `optionLabel`. A field without labels shows each value
+  as itself, as before.
+- **MCP from this machine only** has `show_if: mcp_enabled = true`, and the **Administration MCP
+  tokens** card is shown only while Administration MCP server is ticked. Both follow the form as it
+  is being edited, not the stored value. The settings screen now applies `show_if` to its fields
+  (`isShown` over every section's fields).
+- The new option labels are not yet in the translation catalogues, so they show in English until
+  the catalogues are refreshed.
+- Tests: `the_section_declares_the_two_mcp_switches` (field order with the admin subdomain first;
+  the loopback switch applies only while MCP is on), `the_section_declares_a_checkbox_and_the_five_levels`
+  (each level has a label that starts with its value); `settingsScreen.test.ts` (loopback hidden while
+  unticked, `optionLabel` with and without labels).
+
+## Admin UI: data-layer checklists, build hosts and Clear all move within Settings
+
+- The data-only (Data Layer) checklists left the sidebar and are now **Settings → Checklists**, a
+  tab between Modules and Backup. The list renders without its own page header there (Run all and
+  New checklist head the tab). An application's checklists stay under that application.
+  `/settings/<tab>` opens Settings on that tab (`settingsTabFromPath`, `initialTab(sections,
+  requested)`); `checklistsPath(null)` is now `/settings/checklists`, so a checklist's Back and
+  Delete land there. A checklist's own screen (`/checklists/<id>`) and runs (`/checklist-runs/<id>`)
+  keep their routes and light up Settings in the sidebar; the `/checklists` list route is gone.
+- **Build hosts** is no longer a Settings tab: its card (`BuildHostsPanel`) is the last panel of the
+  Development tab. Server and CLI messages now say "Settings → Development → Build hosts".
+- **Clear all** moved from the bottom of Development to the bottom of the Backup tab.
+- Tests: `settingsScreen.test.ts` (tab list and order, opening on a routed tab, no Build hosts tab),
+  `nav.test.ts` (no Checklists entry; checklist routes light up Settings), `checklists.test.ts`.
+
 ## Checklists C4: run outbox, `data.expect_sent`, after-build runs, schedules
 
 - **Run outbox** (`sc_catalog::outbox`). While a checklist run is open, what is sent on its

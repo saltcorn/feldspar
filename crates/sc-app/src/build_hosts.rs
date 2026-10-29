@@ -247,7 +247,7 @@ pub async fn authenticate_build_host(catalog: &Catalog, presented: &str) -> Resu
         .ok_or_else(|| {
             Error::auth(
                 "this build host token is not recognised: the host may have been removed. \
-                 An administrator adds it again under Settings → Build hosts.",
+                 An administrator adds it again under Settings → Development → Build hosts.",
             )
         })
 }

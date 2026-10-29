@@ -5118,7 +5118,7 @@ pub fn admin_endpoints() -> EndpointSet {
         .auth(AuthRequirement::admin()),
     );
 
-    // **Clear all**: back to an empty installation (Settings → Development).
+    // **Clear all**: back to an empty installation (Settings → Backup).
     //
     // Two calls because the dialog asks a question first: every file store and
     // the directory it occupies, so the admin can choose which ones leave the
@@ -8305,6 +8305,12 @@ fn form_field_schema() -> TypeSchema {
         StructField::new("required", TypeSchema::bool()),
         StructField::new("default", TypeSchema::optional(TypeSchema::json())),
         StructField::new("options", TypeSchema::array(TypeSchema::json())),
+        // The label each option is shown with, in the same order; absent or
+        // empty shows each value as itself.
+        StructField::new(
+            "option_labels",
+            TypeSchema::optional(TypeSchema::array(TypeSchema::text())),
+        ),
         StructField::new("multiline", TypeSchema::bool()),
         // Whether the value is a secret (§11.1): the form renders a password
         // input, and what it is handed for this field is the redaction

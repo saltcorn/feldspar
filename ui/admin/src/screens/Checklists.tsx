@@ -1,6 +1,7 @@
 // The Checklists tab (TODO-checklists C1.16, CHECKLISTS.md §5): one
 // application's checklists, or — with no application — the data-only ones that
-// belong to the Data Layer.
+// belong to the Data Layer. The data-only list is a tab of Settings rather than
+// a page of its own, so it renders without a page header there.
 //
 // Each row is what an admin scans for: did it pass last time, when, and is an
 // agent waiting for somebody to look at a step it wrote or a change it
@@ -132,180 +133,193 @@ export function Checklists({ appId }: { appId: string | null }) {
     }
   };
 
+  const actions = (
+    <>
+      <Button
+        variant="outline-primary"
+        disabled={busy || !items || items.length === 0}
+        onClick={() => void runAll()}
+      >
+        <T text="Run all" />
+      </Button>
+      <Button onClick={() => setCreating(true)}>
+        <IconPlus className="icon-2" />
+        <T text="New checklist" />
+      </Button>
+    </>
+  );
+
+  const body = (
+    <>
+      {error && (
+        <Alert variant="danger" dismissible onClose={() => setError(null)}>
+          {error}
+        </Alert>
+      )}
+      {notice && (
+        <Alert variant="info" dismissible onClose={() => setNotice(null)}>
+          {notice}
+        </Alert>
+      )}
+      {!appId && (
+        <p className="text-secondary">
+          <T text="Checklists with no application check data only: rows, triggers and the API. An application's checklists are under that application in the sidebar." />
+        </p>
+      )}
+
+      <Card>
+        <Table hover responsive className="card-table table-vcenter">
+          <thead>
+            <tr>
+              <th><T text="Name" /></th>
+              <th><T text="Steps" /></th>
+              <th><T text="Last result" /></th>
+              <th><T text="Last run" /></th>
+              <th><T text="Pending" /></th>
+              <th><T text="Status" /></th>
+              <th className="w-1" />
+            </tr>
+          </thead>
+          <tbody>
+            {items?.length === 0 && (
+              <tr>
+                <td colSpan={7} className="text-muted">
+                  <T text="No checklists yet." />
+                </td>
+              </tr>
+            )}
+            {items?.map((item) => (
+              <tr key={item.id}>
+                <td>
+                  <a href={`#${checklistPath(item.id, appId)}`}>{item.name}</a>
+                  {item.description && (
+                    <div className="small text-secondary">{item.description}</div>
+                  )}
+                </td>
+                <td>{item.steps}</td>
+                <td>
+                  {item.last_run ? (
+                    <a href={`#${checklistRunPath(item.last_run.id, appId)}`}>
+                      <RunStatus status={item.last_run.status} />
+                    </a>
+                  ) : (
+                    <span className="text-secondary"><T text="Never run" /></span>
+                  )}
+                </td>
+                <td className="small text-nowrap">{when(item.last_run?.finished_at)}</td>
+                <td>
+                  {item.pending > 0 ? (
+                    <StatusBadge
+                      tone="yellow"
+                      title={t("Agent steps and proposals waiting for a person")}
+                    >
+                      {item.pending}
+                    </StatusBadge>
+                  ) : (
+                    "—"
+                  )}
+                </td>
+                <td>
+                  <div className="d-flex gap-1 flex-wrap">
+                    {item.enabled ? (
+                      <StatusBadge tone="green"><T text="Enabled" /></StatusBadge>
+                    ) : (
+                      <StatusBadge tone="secondary"><T text="Disabled" /></StatusBadge>
+                    )}
+                    {item.mutates && (
+                      <StatusBadge tone="blue" title={t("At least one step writes data")}>
+                        <T text="Writes data" />
+                      </StatusBadge>
+                    )}
+                  </div>
+                </td>
+                <td>
+                  <div className="btn-list justify-content-end flex-nowrap">
+                    <Button
+                      size="sm"
+                      variant="outline-primary"
+                      disabled={busy}
+                      onClick={() => void runOne(item)}
+                    >
+                      <T text="Run" />
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline-secondary"
+                      href={`#${checklistPath(item.id, appId)}`}
+                    >
+                      <T text="Open" />
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      </Card>
+
+      {starters.length > 0 && (
+        <Card className="mt-3">
+          <Card.Header>
+            <Card.Title><T text="Suggested checklists" /></Card.Title>
+          </Card.Header>
+          <Card.Body>
+            <p className="text-secondary">
+              <T text="This application's framework offers these as a start. Nothing is created until you choose one." />
+            </p>
+            {starters.map((starter) => (
+              <div
+                key={starter.name}
+                className="d-flex justify-content-between align-items-start gap-3 py-2 border-top"
+              >
+                <div>
+                  <div className="fw-medium">{starter.name}</div>
+                  <div className="small text-secondary">{starter.description}</div>
+                  <ol className="small mb-0 mt-1">
+                    {starter.steps.map((step, i) => (
+                      <li key={i}>
+                        {step.label || step.type} <code className="ms-1">{step.type}</code>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline-primary"
+                  disabled={busy}
+                  onClick={() => void createStarter(starter)}
+                >
+                  <T text="Create" />
+                </Button>
+              </div>
+            ))}
+          </Card.Body>
+        </Card>
+      )}
+
+      <NewChecklistDialog
+        show={creating}
+        appId={appId}
+        onClose={() => setCreating(false)}
+      />
+    </>
+  );
+
+  // Settings → Checklists: the screen's header is Settings'; the actions head
+  // the tab instead.
+  if (!appId) {
+    return (
+      <>
+        <div className="btn-list justify-content-end mb-3">{actions}</div>
+        {body}
+      </>
+    );
+  }
+
   return (
     <>
-      <PageHeader
-        pretitle={appId ? (appName ?? "") : t("Data Layer")}
-        title={t("Checklists")}
-        actions={
-          <>
-            <Button
-              variant="outline-primary"
-              disabled={busy || !items || items.length === 0}
-              onClick={() => void runAll()}
-            >
-              <T text="Run all" />
-            </Button>
-            <Button onClick={() => setCreating(true)}>
-              <IconPlus className="icon-2" />
-              <T text="New checklist" />
-            </Button>
-          </>
-        }
-      />
-      <PageBody>
-        {error && (
-          <Alert variant="danger" dismissible onClose={() => setError(null)}>
-            {error}
-          </Alert>
-        )}
-        {notice && (
-          <Alert variant="info" dismissible onClose={() => setNotice(null)}>
-            {notice}
-          </Alert>
-        )}
-        {!appId && (
-          <p className="text-secondary">
-            <T text="Checklists with no application check data only: rows, triggers and the API. An application's checklists are under that application in the sidebar." />
-          </p>
-        )}
-
-        <Card>
-          <Table hover responsive className="card-table table-vcenter">
-            <thead>
-              <tr>
-                <th><T text="Name" /></th>
-                <th><T text="Steps" /></th>
-                <th><T text="Last result" /></th>
-                <th><T text="Last run" /></th>
-                <th><T text="Pending" /></th>
-                <th><T text="Status" /></th>
-                <th className="w-1" />
-              </tr>
-            </thead>
-            <tbody>
-              {items?.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="text-muted">
-                    <T text="No checklists yet." />
-                  </td>
-                </tr>
-              )}
-              {items?.map((item) => (
-                <tr key={item.id}>
-                  <td>
-                    <a href={`#${checklistPath(item.id, appId)}`}>{item.name}</a>
-                    {item.description && (
-                      <div className="small text-secondary">{item.description}</div>
-                    )}
-                  </td>
-                  <td>{item.steps}</td>
-                  <td>
-                    {item.last_run ? (
-                      <a href={`#${checklistRunPath(item.last_run.id, appId)}`}>
-                        <RunStatus status={item.last_run.status} />
-                      </a>
-                    ) : (
-                      <span className="text-secondary"><T text="Never run" /></span>
-                    )}
-                  </td>
-                  <td className="small text-nowrap">{when(item.last_run?.finished_at)}</td>
-                  <td>
-                    {item.pending > 0 ? (
-                      <StatusBadge
-                        tone="yellow"
-                        title={t("Agent steps and proposals waiting for a person")}
-                      >
-                        {item.pending}
-                      </StatusBadge>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                  <td>
-                    <div className="d-flex gap-1 flex-wrap">
-                      {item.enabled ? (
-                        <StatusBadge tone="green"><T text="Enabled" /></StatusBadge>
-                      ) : (
-                        <StatusBadge tone="secondary"><T text="Disabled" /></StatusBadge>
-                      )}
-                      {item.mutates && (
-                        <StatusBadge tone="blue" title={t("At least one step writes data")}>
-                          <T text="Writes data" />
-                        </StatusBadge>
-                      )}
-                    </div>
-                  </td>
-                  <td>
-                    <div className="btn-list justify-content-end flex-nowrap">
-                      <Button
-                        size="sm"
-                        variant="outline-primary"
-                        disabled={busy}
-                        onClick={() => void runOne(item)}
-                      >
-                        <T text="Run" />
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline-secondary"
-                        href={`#${checklistPath(item.id, appId)}`}
-                      >
-                        <T text="Open" />
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </Table>
-        </Card>
-
-        {starters.length > 0 && (
-          <Card className="mt-3">
-            <Card.Header>
-              <Card.Title><T text="Suggested checklists" /></Card.Title>
-            </Card.Header>
-            <Card.Body>
-              <p className="text-secondary">
-                <T text="This application's framework offers these as a start. Nothing is created until you choose one." />
-              </p>
-              {starters.map((starter) => (
-                <div
-                  key={starter.name}
-                  className="d-flex justify-content-between align-items-start gap-3 py-2 border-top"
-                >
-                  <div>
-                    <div className="fw-medium">{starter.name}</div>
-                    <div className="small text-secondary">{starter.description}</div>
-                    <ol className="small mb-0 mt-1">
-                      {starter.steps.map((step, i) => (
-                        <li key={i}>
-                          {step.label || step.type} <code className="ms-1">{step.type}</code>
-                        </li>
-                      ))}
-                    </ol>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline-primary"
-                    disabled={busy}
-                    onClick={() => void createStarter(starter)}
-                  >
-                    <T text="Create" />
-                  </Button>
-                </div>
-              ))}
-            </Card.Body>
-          </Card>
-        )}
-
-        <NewChecklistDialog
-          show={creating}
-          appId={appId}
-          onClose={() => setCreating(false)}
-        />
-      </PageBody>
+      <PageHeader pretitle={appName ?? ""} title={t("Checklists")} actions={actions} />
+      <PageBody>{body}</PageBody>
     </>
   );
 }

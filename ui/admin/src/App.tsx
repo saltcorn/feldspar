@@ -30,7 +30,6 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconFolder,
-  IconListCheck,
   IconLogout,
   IconMoon,
   IconRobot,
@@ -70,7 +69,7 @@ import { LlmProviderForm } from "./screens/LlmProviderForm";
 import { McpServers } from "./screens/McpServers";
 import { Login } from "./screens/Login";
 import { Roles } from "./screens/Roles";
-import { Settings } from "./screens/Settings";
+import { Settings, settingsTabFromPath } from "./screens/Settings";
 import { CodeLibraries } from "./screens/CodeLibraries";
 import { SharedTranslations } from "./screens/SharedTranslations";
 import { StreamForm } from "./screens/StreamForm";
@@ -251,15 +250,6 @@ export const NAV: NavItem[] = [
     matches: ["/streams"],
   },
   {
-    href: "#/checklists",
-    label: "Checklists",
-    icon: <IconListCheck />,
-    // The data-only checklists (TODO-checklists C1.16): the ones with no
-    // application to drive, which check rows, triggers and the API. An
-    // application's checklists are under that application instead.
-    matches: ["/checklists", "/checklist-runs"],
-  },
-  {
     href: "#/users",
     label: "Users",
     icon: <IconUsers />,
@@ -275,7 +265,10 @@ export const NAV: NavItem[] = [
     // Last, and one entry however many sections it grows: settings are about
     // the *installation* rather than about anything in it, and an admin looks
     // for them in one place rather than under whichever thing they configure.
-    matches: ["/settings", "/code-libraries", "/translations"],
+    // The data-only checklists (TODO-checklists C1.16) are its Checklists tab,
+    // so a checklist's own screen and its runs light it up as well. An
+    // application's checklists are under that application instead.
+    matches: ["/settings", "/code-libraries", "/translations", "/checklists", "/checklist-runs"],
   },
 ];
 
@@ -859,9 +852,6 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
       />
     );
   }
-  if (path === "/checklists") {
-    return <Checklists key={path} appId={null} />;
-  }
   if (path.startsWith("/users")) {
     return <Users />;
   }
@@ -869,7 +859,7 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
     return <Roles />;
   }
   if (path.startsWith("/settings")) {
-    return <Settings />;
+    return <Settings key={path} requestedTab={settingsTabFromPath(path)} />;
   }
   // Settings → Development → Code library (TODO F3.3).
   if (path.startsWith("/code-libraries")) {

@@ -12286,6 +12286,7 @@ fn form_field_json(field: &FormField) -> Json {
         "required": field.required,
         "default": field.default.clone().unwrap_or(Json::Null),
         "options": field.static_options(),
+        "option_labels": field.option_labels,
         "multiline": field.multiline,
         "secret": field.secret,
         "create_only": field.create_only,

@@ -342,19 +342,22 @@ export function attributesWith(
 //
 // An application's checklists live under the application's own route, so the
 // sidebar keeps that application current and lights up its Checklists link
-// while the admin is in one of them; a data-only checklist lives under
-// `/checklists`, which is the Data Layer's entry.
+// while the admin is in one of them; the data-only checklists are listed on
+// Settings → Checklists, and each one's own screen lives under `/checklists`.
 
 /** The list a checklist belongs in. */
 export function checklistsPath(application?: string | null): string {
   return application
     ? `/applications/${encodeURIComponent(application)}/checklists`
-    : "/checklists";
+    : "/settings/checklists";
 }
 
 /** One checklist's screen. */
 export function checklistPath(id: string, application?: string | null): string {
-  return `${checklistsPath(application)}/${encodeURIComponent(id)}`;
+  const base = application
+    ? `/applications/${encodeURIComponent(application)}/checklists`
+    : "/checklists";
+  return `${base}/${encodeURIComponent(id)}`;
 }
 
 /** One run's screen. */
