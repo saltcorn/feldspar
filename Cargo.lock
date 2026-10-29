@@ -9037,6 +9037,7 @@ dependencies = [
  "sc-db",
  "sc-db-postgres",
  "sc-db-sqlite",
+ "sc-docs",
  "sc-email",
  "sc-error",
  "sc-expr",
@@ -9310,6 +9311,7 @@ dependencies = [
  "sc-core-actions",
  "sc-db",
  "sc-db-postgres",
+ "sc-docs",
  "sc-email",
  "sc-error",
  "sc-expr",
@@ -9409,6 +9411,15 @@ dependencies = [
  "libc",
  "sc-error",
  "tokio",
+]
+
+[[package]]
+name = "sc-docs"
+version = "0.1.0"
+dependencies = [
+ "sc-error",
+ "sc-help",
+ "serde_json",
 ]
 
 [[package]]

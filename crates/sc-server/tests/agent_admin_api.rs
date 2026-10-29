@@ -401,6 +401,11 @@ async fn the_traits_endpoint_declares_each_traits_configuration() -> sc_error::R
     ];
     for trait_ in traits {
         let spec = trait_["config_spec"].as_array().unwrap();
+        // `docs` alone has no form: documentation is the same for every agent.
+        if trait_["name"] == json!("docs") {
+            assert!(spec.is_empty(), "{trait_}");
+            continue;
+        }
         assert!(!spec.is_empty(), "{trait_}");
         if trait_["name"] == json!("admin_copilot") {
             // Grants: the boolean ones, and the checklists grant, which has

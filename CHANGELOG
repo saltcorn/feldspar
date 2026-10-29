@@ -2,6 +2,42 @@
 
 Changes in reverse chronological order.
 
+## Documentation search for agents: `search_docs` and `read_docs`
+
+Agents can now search and read the server's own documentation, so they look up how a feature
+works instead of guessing from APIs they know from elsewhere.
+
+- **New crate `sc-docs`** (layer 0, depends on `sc-error` and `sc-help`). It compiles in the
+  user-facing files of `docs/` (the 30 tutorials plus `AGG_EXPRS`, `CHECKLISTS`, `GRAPHQL_API`,
+  `I18N`, `OPERATIONS`, `ROW_HISTORY`) and the admin UI's help topics. Each is split into
+  sections at its headings, with GitHub-style anchors, ignoring headings inside code fences, and
+  the sections are BM25-indexed on first use. Terms keep code identifiers whole and also split
+  them at `_`, so `allow_triggers` is found by itself and by "allow triggers". A help topic is
+  just another document (`ownership-formula` sits beside `tutorial-ownership`): it is rendered
+  with an empty context and given its title as a heading. `FILES` is the allowlist and
+  `EXCLUDED` the denylist (`TECHNICAL_DESIGN`, `TODO-*`, `SECURITY_REVIEW_*`, `GOALS`, the
+  coding-agent design notes, …). A test fails on any `docs/*.md` file that is in neither list.
+- **The two tools** (`sc_docs::tools`): `search_docs { query, doc?, limit? }` returns up to 10
+  hits, each with `doc`, `section`, `heading_path` and a snippet of about 300 bytes.
+  `read_docs { doc?, section? }` lists the documents when called with no arguments. Given a
+  `doc`, it returns the document whole if it fits in 12 000 bytes, or else its outline. Given a
+  `doc` and `section`, it returns that section. A section too long to read in one go returns the
+  text before its first subsection and the subsections to read next, or is cut at a line and
+  says so. `doc` accepts links as written (`tutorial-mcp.md#step-1--turn-it-on`,
+  `help:ownership-formula`), and `section` accepts heading text as well as anchors.
+- **Where they are offered:** `sc-api`'s administrative `ToolSet` always offers them, beside
+  `describe_code_api`, so the MCP server and `admin_copilot` both have them (and the generated
+  `SKILL.md` lists them). For other agents, the new **`docs`** agent trait has no settings and
+  offers the same two tools under the same names. An application's builder agent is now created
+  with it (`coding`, `http`, `preview_pane`, `docs`). The MCP handshake instructions, the
+  `admin_copilot` prompt and the `docs` trait's prompt each say to search before guessing.
+  `admin_copilot` now has 29 tools. `sc_help::markdown` renders a topic to markdown.
+- **Tests:** `sc-docs` unit tests cover sections and anchors, terms, the include/exclude check,
+  help topics as documents, search by words and by identifier, outlines, long sections and the
+  tools' argument errors. The tool lists pinned in the `sc-api`, `sc-core-traits` and
+  `sc-server` MCP and builder-agent tests are updated, and a new test checks that the builder's
+  `docs` trait is registered and collides with none of `coding`'s tools.
+
 ## Agent chat: attach images and text documents
 
 A person can now attach files to a message in an agent chat, in the admin UI and in React

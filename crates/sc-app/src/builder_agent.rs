@@ -25,11 +25,13 @@
 //! Assembling a spec into an [`Agent`](sc_agent::Agent) and storing it is the
 //! server's, for the same layering reason: this crate does not know agents exist.
 //!
-//! ## Three traits, planned
+//! ## Four traits, planned
 //!
 //! The agent is `coding`, plus `http` so it can read the documentation of what
 //! it is building with, plus `preview_pane` pointed at the application's own
-//! subdomain (TODO §12, "The preview pane"). Building the application is one of
+//! subdomain (TODO §12, "The preview pane"), plus `docs` so it can search and
+//! read *this server's* documentation — the API it is building against is one
+//! no model has seen elsewhere. Building the application is one of
 //! `coding`'s checks — its `application` setting — rather than a second trait
 //! with a tool of its own, so the build runs where the ratchet, the baseline and
 //! the preview mount are, and a model is never offered two ways to ask "does
@@ -116,6 +118,10 @@ pub const TRAIT_PREVIEW_PANE: &str = "preview_pane";
 pub const TRAIT_CFG_PREVIEW_URL: &str = "url";
 /// `preview_pane`'s "reload when the agent has finished a turn" setting.
 pub const TRAIT_CFG_PREVIEW_RELOAD: &str = "reload_on_turn";
+
+/// The trait that searches and reads this server's own documentation
+/// (`search_docs`, `read_docs`). It has no settings.
+pub const TRAIT_DOCS: &str = "docs";
 
 /// The `preview_pane` URL an application's builder is created with: the
 /// application's own subdomain on the base domain the admin reports.
@@ -337,6 +343,9 @@ fn coding_agent(
             BuilderTrait::new(TRAIT_PREVIEW_PANE)
                 .with(TRAIT_CFG_PREVIEW_URL, preview_pane_url(app))
                 .with(TRAIT_CFG_PREVIEW_RELOAD, true),
+            // The server's own documentation: how its REST API, triggers and
+            // the rest work, which a model would otherwise write from memory.
+            BuilderTrait::new(TRAIT_DOCS),
         ],
     })
 }
@@ -520,11 +529,14 @@ mod tests {
         assert_eq!(spec.name, "build-todo");
         assert!(spec.description.contains("Todo"), "{}", spec.description);
 
-        // `coding` builds it, `http` reads the documentation, and
-        // `preview_pane` shows it: building is one of `coding`'s checks, not a
-        // trait of its own.
+        // `coding` builds it, `http` reads the web's documentation, `docs` this
+        // server's, and `preview_pane` shows it: building is one of `coding`'s
+        // checks, not a trait of its own.
         let names: Vec<&str> = spec.traits.iter().map(|t| t.trait_.as_str()).collect();
-        assert_eq!(names, [TRAIT_CODING, TRAIT_HTTP, TRAIT_PREVIEW_PANE]);
+        assert_eq!(
+            names,
+            [TRAIT_CODING, TRAIT_HTTP, TRAIT_PREVIEW_PANE, TRAIT_DOCS]
+        );
         assert_eq!(
             spec.traits[2].config[TRAIT_CFG_PREVIEW_URL],
             Json::from("//todo.{base}")
@@ -660,7 +672,10 @@ mod tests {
 
         assert_eq!(spec.name, "build-landing");
         let names: Vec<&str> = spec.traits.iter().map(|t| t.trait_.as_str()).collect();
-        assert_eq!(names, [TRAIT_CODING, TRAIT_HTTP, TRAIT_PREVIEW_PANE]);
+        assert_eq!(
+            names,
+            [TRAIT_CODING, TRAIT_HTTP, TRAIT_PREVIEW_PANE, TRAIT_DOCS]
+        );
         let coding = &spec.traits[0];
         assert_eq!(coding.config[TRAIT_CFG_STORE], Json::from("site"));
         assert_eq!(coding.config[TRAIT_CFG_ROOT], Json::from("public"));

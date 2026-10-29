@@ -125,8 +125,8 @@ pub use builder_agent::{
     TRAIT_CFG_HTTP_PRIVATE_NETWORK, TRAIT_CFG_MAY_CHECK, TRAIT_CFG_MAY_EDIT,
     TRAIT_CFG_MAY_RUN_SCRIPTS, TRAIT_CFG_MAY_USE_SHELL, TRAIT_CFG_MAY_VIEW_APP,
     TRAIT_CFG_PREVIEW_RELOAD, TRAIT_CFG_PREVIEW_URL, TRAIT_CFG_ROOT, TRAIT_CFG_STORE,
-    TRAIT_CFG_WORKFLOW, TRAIT_CODING, TRAIT_HTTP, TRAIT_PREVIEW_PANE, WORKFLOW_PLANNED,
-    builder_agent_in, builder_agent_name, framework_builder_agent, preview_pane_url,
+    TRAIT_CFG_WORKFLOW, TRAIT_CODING, TRAIT_DOCS, TRAIT_HTTP, TRAIT_PREVIEW_PANE,
+    WORKFLOW_PLANNED, builder_agent_in, builder_agent_name, framework_builder_agent, preview_pane_url,
 };
 pub use code_libraries::{
     LibraryUse, code_library_from_json, code_library_json, code_library_uses,

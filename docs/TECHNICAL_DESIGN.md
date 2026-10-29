@@ -76,6 +76,9 @@ feldspar/
 │  │                              #    tree-sitter extractor is behind an `extract` feature
 │  ├─ sc-help/                    # 0. admin UI help topics: markdown templates filled in with
 │  │                              #    the screen's context, rendered to HTML
+│  ├─ sc-docs/                    # 0. the documentation agents read: docs/'s tutorials and
+│  │                              #    references and the help topics, compiled in, split into
+│  │                              #    sections, BM25-indexed; the search_docs/read_docs tools
 │  ├─ sc-query/                   # 1. universal query language (enum AST) + SQL rendering trait
 │  ├─ sc-repomap/                 # 1. the coding agent's repo map: tree-sitter tags, personalised
 │  │                              #    PageRank, rendering to a token budget. No store, no deps
@@ -308,6 +311,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-repomap` | — (nothing in the workspace) |
 | `sc-i18n` | `sc-error` |
 | `sc-help` | `sc-error` |
+| `sc-docs` | `sc-error` `sc-help` |
 | `sc-types` | `sc-error` `sc-i18n` `sc-query` |
 | `sc-db` | `sc-error` `sc-query` |
 | `sc-db-postgres` | `sc-db` `sc-error` `sc-log` `sc-query` |
@@ -329,7 +333,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-browser` | `sc-auth` `sc-error` |
 | `sc-agent` | `sc-action` `sc-auth` `sc-browser` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
-| `sc-api` | `sc-action` `sc-auth` `sc-catalog` `sc-dataset` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
+| `sc-api` | `sc-action` `sc-auth` `sc-catalog` `sc-dataset` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
 | `sc-app` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-stream` `sc-types` |
 | `sc-live` | `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-stream` `sc-types` |
 | `sc-core-actions` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-query` `sc-types` |
@@ -337,7 +341,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-module` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
 | `sc-python` | `sc-action` `sc-catalog` `sc-core-actions` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
 | `sc-check` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-browser` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
-| `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-repomap` `sc-types` |
+| `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-repomap` `sc-types` |
 | `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-help` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-module` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
@@ -8150,6 +8154,15 @@ of those endpoints are the SPA's own plumbing.
   list because a schema is a set of connected tables and a per-operation tool turns a
   twelve-table domain into forty round trips; `describe_action` is progressive disclosure
   because no fixed schema can carry every action's settings.
+  Beside them, always offered because a reference grants nothing: `describe_code_api`, and
+  **`search_docs` / `read_docs`** (`sc-docs`) — BM25 search over the sections of `docs/`'s
+  tutorials and references and the admin UI's help topics, all compiled in, and reading a
+  document whole, as its outline, or one section at a time (capped at 12 000 bytes). A help
+  topic is one more document, rendered with an empty context. Which files of `docs/` are in is
+  an allowlist, which are out (planning notes, this document, the security review) a denylist,
+  and a test fails on a file in neither. Agents other than `admin_copilot` get the same two
+  tools from the settings-less `docs` trait, which an application's builder agent is created
+  with.
 - **Tier 2 — generated from tagged endpoints.** An `Endpoint` gains an opt-in MCP tag carrying
   the prose a model reads. Everything else is already in the value: the name, the typed path and
   query parameters, and both `TypeSchema`s. `TypeSchema` → JSON Schema is the one new function,

@@ -106,6 +106,7 @@ mod ask_user;
 mod build_application;
 mod coding;
 mod delete_rows;
+mod docs;
 mod files;
 mod generate_js;
 pub mod http;
@@ -172,6 +173,7 @@ pub use coding::{
     run_plan,
 };
 pub use delete_rows::DeleteRows;
+pub use docs::Docs;
 pub use generate_js::{
     ARG_CODE, CFG_ALLOW_FETCH, CFG_ALLOW_LIBRARIES, CFG_CODE_DESCRIPTION, CFG_FETCH_HOSTS,
     CFG_FOLLOW_UP_PROMPT, CFG_GEN_TIMEOUT, CFG_GEN_TOOL_DESCRIPTION, CFG_GEN_TOOL_NAME,
@@ -272,6 +274,7 @@ pub mod tool_names {
     pub use crate::subagent::tool_name as subagent;
     pub use crate::update_rows::tool_name as update_rows;
     pub use crate::web_search::tool_name as web_search;
+    pub use sc_docs::tools::TOOL_NAMES as docs;
 }
 
 /// The built-in trait set a server installs.
@@ -321,6 +324,7 @@ pub fn register_builtin_traits(registry: &mut AgentRegistry) -> Result<()> {
     registry.register(Arc::new(PreviewPane))?;
     registry.register(Arc::new(UpdateRows))?;
     registry.register(Arc::new(DeleteRows))?;
+    registry.register(Arc::new(Docs))?;
     registry.register(Arc::new(RunTrigger))?;
     registry.register(Arc::new(RunJsCode))?;
     registry.register(Arc::new(LibraryTools))?;
@@ -360,6 +364,7 @@ mod tests {
                 "build_application",
                 "coding",
                 "delete_rows",
+                "docs",
                 "generate_image",
                 "generate_js",
                 "http",
@@ -400,6 +405,12 @@ mod tests {
         for trait_ in registry.all() {
             assert!(!trait_.description().is_empty(), "{}", trait_.name());
             let spec = trait_.config_spec();
+            // `docs` alone has no form at all: documentation is the same for
+            // every agent, so there is nothing about it to configure.
+            if trait_.name() == "docs" {
+                assert!(spec.is_empty());
+                continue;
+            }
             assert!(!spec.is_empty(), "{}", trait_.name());
             // `speech` names no target either: a blank form reads answers
             // aloud with the default provider's default speech model.
@@ -687,8 +698,9 @@ mod tests {
             ]
         );
         // `admin_copilot`'s names are fixed rather than derived, and say the
-        // same twenty-seven things every deployment's do — two over the schema,
-        // four over the triggers, one reference for a code body, six over
+        // same twenty-nine things every deployment's do — two over the schema,
+        // four over the triggers, one reference for a code body, two over the
+        // documentation, six over
         // applications (reading, creating one and its store, changing one —
         // its tables, static directories and CSP — and its custom SQL
         // queries), one over its streams, two over its translations, three over the code
@@ -704,6 +716,8 @@ mod tests {
                 "save_trigger",
                 "delete_trigger",
                 "describe_code_api",
+                "search_docs",
+                "read_docs",
                 "describe_applications",
                 "create_file_store",
                 "create_application",

@@ -120,7 +120,7 @@ fn the_grants_and_the_build_target_are_the_settings_the_coding_trait_means() {
     // by planning, and may not run scripts or a shell.
     let app = react_app();
     let spec = spec_for(&app);
-    assert_eq!(spec.traits.len(), 3, "{:?}", spec.traits);
+    assert_eq!(spec.traits.len(), 4, "{:?}", spec.traits);
     let coding = &spec.traits[0];
     assert_eq!(coding.trait_, TRAIT_CODING);
     for (key, value) in [
@@ -240,5 +240,34 @@ fn the_web_a_builder_reads_is_the_http_trait_read_only_over_public_hosts() {
             .unwrap();
         let scope = sc_core_traits::configured_scope(&coding.config).unwrap();
         assert!(!sc_core_traits::tool_names::coding(&scope).contains(&tool));
+    }
+}
+
+#[test]
+fn a_builder_reads_this_servers_documentation_through_the_docs_trait() {
+    use sc_app::TRAIT_DOCS;
+    let registry = sc_core_traits::builtin_traits().expect("the built-in traits assemble");
+    assert!(registry.get(TRAIT_DOCS).is_some());
+
+    for app in [react_app(), code_app()] {
+        let spec = spec_for(&app);
+        let docs = spec
+            .traits
+            .iter()
+            .find(|t| t.trait_ == TRAIT_DOCS)
+            .expect("a builder agent reads the server's documentation");
+        assert!(docs.config.is_empty());
+        // Its two tools collide with none of `coding`'s, nor with `fetch_web`.
+        let coding = spec
+            .traits
+            .iter()
+            .find(|t| t.trait_ == TRAIT_CODING)
+            .unwrap();
+        let scope = sc_core_traits::configured_scope(&coding.config).unwrap();
+        let coding_tools = sc_core_traits::tool_names::coding(&scope);
+        for tool in sc_core_traits::tool_names::docs {
+            assert!(!coding_tools.iter().any(|t| t == tool), "{tool}");
+            assert_ne!(tool, sc_core_traits::tool_names::http("web"));
+        }
     }
 }

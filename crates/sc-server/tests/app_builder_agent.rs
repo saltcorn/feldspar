@@ -302,7 +302,7 @@ async fn creating_an_application_creates_the_agent_that_builds_it() -> sc_error:
     // a trait of its own, `http` reads documentation, and the pane is what puts
     // the application beside the chat.
     let traits = stored["traits"].as_array().unwrap();
-    assert_eq!(traits.len(), 3, "{stored}");
+    assert_eq!(traits.len(), 4, "{stored}");
     let coding = &traits[0];
     assert_eq!(coding["trait"], json!("coding"));
     // Scoped to *this* application's project directory, which the framework
@@ -339,6 +339,10 @@ async fn creating_an_application_creates_the_agent_that_builds_it() -> sc_error:
     assert_eq!(pane["trait"], json!("preview_pane"));
     assert_eq!(pane["config"]["url"], json!("//todo.{base}"));
     assert_eq!(pane["config"]["reload_on_turn"], json!(true));
+
+    // ...and this server's own documentation, which has nothing to configure.
+    // It saved beside `coding` and `http`, so none of its tools collided.
+    assert_eq!(traits[3]["trait"], json!("docs"));
 
     // A second application gets its own agent, scoped to its own directory: two
     // apps in one store are two agents, neither able to edit the other's source.
