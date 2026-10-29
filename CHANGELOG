@@ -2,6 +2,15 @@
 
 Changes in reverse chronological order.
 
+## Fix: editing a user in the admin UI failed with "`email_verified` is not an admin-defined field"
+
+The admin UI's `SYSTEM_USER_COLUMNS` (`ui/admin/src/userForm.ts`) had fallen behind
+`sc_auth::SYSTEM_USER_COLUMNS`: it lacked `email_verified` and `attributes`, so the user form showed
+them as admin-added fields and sent them back in `extra`, which the server rightly refuses. Both are
+now in the list; `userForm.test.ts` checks neither is offered as a field, and a new repo hygiene
+test (`the_admin_ui_knows_every_system_user_column` in `crates/sc-cli/tests/repo_hygiene.rs`) fails
+if the UI's list ever differs from `sc_auth::SYSTEM_USER_COLUMNS` again.
+
 ## Admin UI: Development tab — admin subdomain first, labelled verbosity levels, MCP switches hidden when off
 
 - **Admin subdomain** is now the first field of Settings → Development.

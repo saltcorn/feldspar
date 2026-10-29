@@ -49,6 +49,8 @@ const fields: ListFieldsResponse = [
   field("password_hash"),
   field("disabled", { sql_type: "bool" }),
   field("language"),
+  field("email_verified", { sql_type: "bool" }),
+  field("attributes", { sql_type: "jsonb" }),
   field("nickname"),
   field("full_name", { kind: { type: "calc", expression: "nickname" } }),
 ];
@@ -73,6 +75,13 @@ describe("adminUserFields", () => {
   it("does not offer the language column as a text box", () => {
     expect(SYSTEM_USER_COLUMNS).toContain("language");
     expect(adminUserFields(fields).map((f) => f.name)).not.toContain("language");
+  });
+
+  // The server refuses either in `extra`, so offering them made every edit fail.
+  it("does not offer email_verified or attributes as fields", () => {
+    const names = adminUserFields(fields).map((f) => f.name);
+    expect(names).not.toContain("email_verified");
+    expect(names).not.toContain("attributes");
   });
 
   it("leaves out calculated fields, which have no column to write", () => {
