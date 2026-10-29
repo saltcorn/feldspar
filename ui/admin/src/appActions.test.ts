@@ -42,6 +42,23 @@ describe("application builds", () => {
     expect(state.outcome).toEqual({ ok: false, title: "Build failed — Todo", text: "tsc: 2 errors" });
   });
 
+  it("turns the news red when a checklist run after the build did not pass", () => {
+    const passed = { status: "passed" };
+    let state = buildFinished(INITIAL_APP_ACTIONS, app, { ok: true, log: "done", checks: [passed] });
+    expect(state.outcome?.ok).toBe(true);
+    state = buildFinished(state, app, {
+      ok: true,
+      log: "done",
+      checks: [passed, { status: "failed" }],
+    });
+    expect(buildStatus(state, "a1")).toBe("built");
+    expect(state.outcome).toEqual({
+      ok: false,
+      title: "Build succeeded — Todo, but 1 of 2 checklists did not pass",
+      text: "done",
+    });
+  });
+
   it("names a deep clean as one, while ending in the same build state", () => {
     let state = buildStarted(INITIAL_APP_ACTIONS, "a1");
     state = buildFinished(state, app, { ok: true, log: "Deleted node_modules; reinstalling." }, "Deep clean");

@@ -759,7 +759,7 @@ mod tests {
         ] {
             assert!(registry.get(name).is_some(), "{name}");
         }
-        assert_eq!(registry.all().count(), 26 + 7);
+        assert_eq!(registry.all().count(), 27 + 7);
         // Without an application, only the steps that need none are offered.
         let names: Vec<&str> = registry.offered(None).iter().map(|t| t.name()).collect();
         assert!(names.contains(&"data.insert"));

@@ -2,6 +2,35 @@
 
 Changes in reverse chronological order.
 
+## Checklists C4: run outbox, `data.expect_sent`, after-build runs, schedules
+
+- **Run outbox** (`sc_catalog::outbox`). While a checklist run is open, what is sent on its
+  behalf is kept on the run instead of sent (`Sent`: kind `email`/`webhook`/`module`, recipients,
+  subject, body, time). The runner opens the outbox around the steps; it travels as a task-local,
+  so it covers `data.*` steps, the triggers they fire and `http.*` requests through the in-process
+  router. The browser context of a run carries the `sc_check_run` cookie, and the router's
+  `request_outbox` middleware puts a request inside the run only while that run is open. Hooks:
+  `sc_email::Withholding` wraps every mailer the `TriggerDispatcher` is given (`with_mailer`); the
+  `fetch` action and `fetch` in a code body (`CodeFetchHost`) record instead of requesting; a
+  module action whose module holds the `net` permission is recorded whole instead of run
+  (`ModuleAction::with_network`). The run row gained a nullable `outbox` column (migration in
+  `TABLES_RENAME.sql`), and the run screen lists the withheld messages.
+- **`data.expect_sent`**: `kind`, `to`, `subject`, `body` (case-insensitive contains) and `count`
+  (exact; at least one when absent). Its value is the matching messages.
+- **After-build runs**: the application attribute `check_after_build` (a switch on the application
+  form, off by default). A full build (not a quick one) then runs the application's enabled
+  checklists, triggered `build`. The build response gained `checks` (id, checklist, name, status)
+  and the log ends with a summary. The admin's build notice turns red when one did not pass.
+- **Scheduled runs**: the `run_checklists` action (`sc_check::RunChecklists`, registered in the
+  server's base action set), put on an `often`/`hourly`/`daily`/`weekly` trigger. Config:
+  application subdomain (blank for data-only checklists) and an optional checklist name. Runs are
+  triggered `schedule`, and one that does not pass fails the action.
+- Tests: `mail_sent_during_a_run_is_kept_on_the_run_and_not_sent` (sc-check: a trigger mails
+  during a run, the recording mailer gets nothing, `data.expect_sent` passes, and outside a run the
+  same trigger sends); `a_build_with_after_build_checks_records_a_run` (sc-server);
+  `a_fetch_inside_a_checklist_run_is_kept_and_not_sent` (sc-core-actions); the outbox unit test in
+  sc-catalog; and the build notice in `appActions.test.ts`.
+
 ## CLI: set up a hosted server without the admin UI (modules, routes-only tokens, settings, mail, app tables)
 
 feldspar-hosted's root daemon can only use the `feldspar` CLI, so it could not do two setup jobs

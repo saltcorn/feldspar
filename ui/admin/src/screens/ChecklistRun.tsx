@@ -201,6 +201,45 @@ export function ChecklistRun({ runId, appId }: { runId: string; appId: string | 
                 </tbody>
               </Table>
             </Card>
+
+            {run.outbox.length > 0 && (
+              <Card className="mt-3">
+                <Card.Header>
+                  <h3 className="card-title"><T text="Withheld messages" /></h3>
+                </Card.Header>
+                <Card.Body className="pb-0">
+                  <p className="text-secondary">
+                    <T text="Mail, webhooks and module calls made during the run were kept here instead of sent." />
+                  </p>
+                </Card.Body>
+                <Table responsive className="card-table">
+                  <thead>
+                    <tr>
+                      <th><T text="Kind" /></th>
+                      <th><T text="To" /></th>
+                      <th><T text="Subject" /></th>
+                      <th><T text="Body" /></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {run.outbox.map((sent, i) => (
+                      <tr key={i}>
+                        <td><StatusBadge tone="secondary">{sent.kind}</StatusBadge></td>
+                        <td className="small">{sent.to.join(", ")}</td>
+                        <td>{sent.subject}</td>
+                        <td>
+                          <pre className="small mb-0 text-wrap" style={{ maxHeight: 160, overflow: "auto" }}>
+                            {typeof sent.body === "string"
+                              ? sent.body
+                              : JSON.stringify(sent.body, null, 2)}
+                          </pre>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </Table>
+              </Card>
+            )}
           </>
         )}
       </PageBody>

@@ -143,7 +143,7 @@ else, as `run_as`, so they test permissions as well as data.
 - `data.expect_rows` — a table, a filter (in the expression language), and an expected count or field values.
 - `data.expect_denied` — `run_as` must **not** be able to read / insert / update / delete this. The regression we most want to catch from a role or ownership-formula edit, and invisible in a UI test that only checks the happy path.
 - `data.run_trigger` — run a trigger (action, workflow or agent) with a row, as `run_as`; expect success or an error matching a pattern. Its effects are then asserted with `data.expect_rows` / `data.expect_sent`.
-- `data.expect_sent` — an e-mail (or webhook) was produced during this run, to whom, with what subject. Requires §3's outbox.
+- `data.expect_sent` — an e-mail (or webhook, or module call) was produced during this run, to whom, with what subject and body. Reads §3's outbox: `kind` (`email`, `webhook`, `module`), `to`, `subject` and `body` are case-insensitive "contains" matches, and `count` is exact when given (at least one otherwise; `0` asserts nothing was sent).
 - `data.expect_calculated` — a calculated field's value on a given row (catches a broken formula after a field rename).
 
 **`app.*`**
@@ -215,8 +215,15 @@ without Chromium runs every non-browser step and reports the rest as skipped.
 - By the coding agent, through a `run_checklists` tool; its verification
   step runs the application's checklists after a build, and its final report
   must list any that fail.
-- Optionally after each build of an application (an application setting, off by default).
-- On a schedule through the existing trigger machinery (later).
+- Optionally after each build of an application (the application attribute
+  `check_after_build`, off by default; a switch on the application form). Only a
+  full build, not a dev-loop quick one. The runs are recorded triggered `build`,
+  and the build's response and log report them.
+- On a schedule through the existing trigger machinery: a trigger on `often`,
+  `hourly`, `daily` or `weekly` with the `run_checklists` action (an application
+  subdomain, or blank for the data-only checklists; optionally one checklist by
+  name). Runs are recorded triggered `schedule`; one that does not pass fails the
+  action, so the trigger's error event hears of it.
 
 **Data and side effects.** A checklist that `mutates` writes real rows into
 the instance it runs against. Proposal:
@@ -226,7 +233,16 @@ the instance it runs against. Proposal:
   unless the checklist is explicitly allowed there.
 - During a run, outbound e-mail, webhooks and payment calls made on behalf of
   the run go to a **run outbox** instead of out of the server; `data.expect_sent`
-  reads it. (Needs a small hook in `sc-email` and the outbound-HTTP path.)
+  reads it, and the run keeps it (`outbox` on the run). How "on behalf of"
+  travels: a task-local the runner opens around each step
+  (`sc_catalog::outbox`), which covers the `data.*` steps, the triggers they
+  fire inline and an `http.*` step's request through the in-process router; a
+  browser's requests carry the run's id in the `sc_check_run` cookie, honoured
+  only while that run is open. The hooks: the dispatcher's mailer is wrapped in
+  `sc_email::Withholding`, the `fetch` action and `fetch` in a code body record
+  instead of sending, and a module action whose module has the `net` permission
+  is recorded whole (kind `module`) instead of run — a payment call. A workflow
+  resumed after the run has ended is outside it, and sends.
 - Rows written by `data.insert` are deleted at the end of the run (best effort,
   in reverse order); rows the *application* created during the run are found
   by the `{{ run.id }}` convention, or cleaned by an explicit last step.

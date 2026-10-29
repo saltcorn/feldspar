@@ -242,6 +242,8 @@ export function ApplicationForm({
   // one lasts — its cookie's age — in days.
   const [guestSessions, setGuestSessions] = useState(false);
   const [guestDays, setGuestDays] = useState("30");
+  // Run the application's checklists after each build (TODO-checklists C4.3).
+  const [checkAfterBuild, setCheckAfterBuild] = useState(false);
 
   // Load the frameworks (always) and, when editing, the app to prefill.
   useEffect(() => {
@@ -322,6 +324,7 @@ export function ApplicationForm({
           setCspSources(cspSourcesOf(existing.attributes));
           const attributes = attributesOf(existing.attributes);
           setGuestSessions(attributes.guest_sessions === true);
+          setCheckAfterBuild(attributes.check_after_build === true);
           if (typeof attributes.guest_session_days === "number") {
             setGuestDays(String(attributes.guest_session_days));
           }
@@ -427,6 +430,7 @@ export function ApplicationForm({
           csp_sources: cspSources,
           guest_sessions: guestSessions,
           guest_session_days: Number.parseInt(guestDays, 10) || 30,
+          check_after_build: checkAfterBuild,
         },
         min_role: minRole,
         max_role: maxRole,
@@ -1201,6 +1205,18 @@ export function ApplicationForm({
                     formula: <code>session_id === session.id</code>,
                   }}
                 />
+              </Form.Text>
+            </Form.Group>
+
+            <Form.Group className="mb-3" controlId="appCheckAfterBuild">
+              <Form.Check
+                type="switch"
+                checked={checkAfterBuild}
+                onChange={(e) => setCheckAfterBuild(e.target.checked)}
+                label={t("Run this application's checklists after each build")}
+              />
+              <Form.Text muted>
+                <T text="Every enabled checklist runs after a full build, and the build reports how they went. Mail, webhooks and payment calls made during a run are kept on the run instead of sent." />
               </Form.Text>
             </Form.Group>
 

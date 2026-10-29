@@ -20,6 +20,7 @@ use sc_check::{
 };
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
+use sc_email::{Email, Mailbox, Mailer, RecordingMailer};
 use sc_error::{Repr, Result};
 use sc_test_harness::TestDb;
 use sc_types::FormField;
@@ -51,9 +52,39 @@ impl Action for Stamp {
     }
 }
 
+/// A trigger action that mails the payload's customer a confirmation.
+struct Confirm;
+
+#[async_trait::async_trait]
+impl Action for Confirm {
+    fn name(&self) -> &str {
+        "confirm"
+    }
+    fn description(&self) -> &str {
+        "Mail the payload's customer a confirmation (test only)"
+    }
+    fn config_spec(&self) -> Vec<FormField> {
+        Vec::new()
+    }
+    async fn run(&self, ctx: &mut ActionContext<'_>) -> Result<Json> {
+        let to = ctx.event.payload["email"].as_str().unwrap_or_default().to_owned();
+        let mut email = Email::new(Mailbox {
+            name: None,
+            address: "shop@example.com".to_owned(),
+        });
+        email.to.push(Mailbox { name: None, address: to });
+        email.subject = "Your order is confirmed".to_owned();
+        email.text = Some("Thank you for your order.".to_owned());
+        ctx.mailer()?.send(&email).await?;
+        Ok(Json::Null)
+    }
+}
+
 struct Env {
     catalog: Arc<Catalog>,
     triggers: Arc<TriggerDispatcher>,
+    /// What the dispatcher's mailer was actually handed.
+    mailer: Arc<RecordingMailer>,
     registry: StepRegistry,
     admin: User,
     member: User,
@@ -81,6 +112,7 @@ async fn setup(tag: &str) -> Result<Env> {
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;
@@ -102,15 +134,22 @@ async fn setup(tag: &str) -> Result<Env> {
 
     let mut actions = ActionRegistry::new();
     actions.register(Arc::new(Stamp))?;
+    actions.register(Arc::new(Confirm))?;
     let actions = Arc::new(actions);
     let trigger = Trigger::new("stamp_order", EventKind::None, "stamp").min_role(80);
     save_trigger(&catalog, &actions, &trigger).await?;
-    let triggers = Arc::new(TriggerDispatcher::new(actions));
+    let confirm = Trigger::new("confirm_order", EventKind::None, "confirm").min_role(80);
+    save_trigger(&catalog, &actions, &confirm).await?;
+    let mailer = Arc::new(RecordingMailer::new());
+    let triggers = Arc::new(
+        TriggerDispatcher::new(actions).with_mailer(Arc::clone(&mailer) as Arc<dyn Mailer>),
+    );
     triggers.reload(&catalog).await?;
 
     Ok(Env {
         catalog,
         triggers,
+        mailer,
         registry: StepRegistry::builtin(),
         admin,
         member,
@@ -205,6 +244,62 @@ async fn a_data_checklist_inserts_runs_a_trigger_asserts_and_cleans_up() -> Resu
         .collect();
     assert_eq!(stored.step_versions(), current);
     assert_eq!(stored.trigger, "manual");
+    Ok(())
+}
+
+#[tokio::test]
+async fn mail_sent_during_a_run_is_kept_on_the_run_and_not_sent() -> Result<()> {
+    let env = setup("outbox").await?;
+    let mut input = ChecklistInput::new("Orders are confirmed by mail");
+    input.run_as = Some(env.member.id);
+    let checklist = edit::create_checklist(
+        &env.catalog,
+        &env.registry,
+        &env.human(),
+        input,
+        vec![
+            StepDraft::new("data.run_trigger")
+                .param("trigger", "confirm_order")
+                .param("payload", json!({ "email": "customer-{{ run.id }}@example.com" })),
+            StepDraft::new("data.expect_sent")
+                .param("kind", "email")
+                .param("to", "customer-{{ run.id }}@example.com")
+                .param("subject", "confirmed")
+                .param("count", 1)
+                .label("The confirmation was sent"),
+            StepDraft::new("data.expect_sent")
+                .param("kind", "webhook")
+                .param("count", 0)
+                .label("No webhook was called"),
+        ],
+    )
+    .await?;
+
+    let run = run_checklist(&env.env(), &checklist, "manual").await?;
+    assert_eq!(run.status, RunStatus::Passed, "{:#?}", run.steps);
+    assert!(env.mailer.sent().is_empty(), "a run must not send mail");
+    assert_eq!(run.outbox.len(), 1);
+    assert_eq!(run.outbox[0].to, vec![format!("customer-{}@example.com", run.id)]);
+    let stored = store::load_run(&env.catalog, run.id).await?.expect("stored");
+    assert_eq!(stored.outbox, run.outbox);
+
+    // Outside a run the same trigger sends.
+    env.triggers
+        .run_trigger(&env.catalog, "confirm_order", json!({ "email": "real@example.com" }), None)
+        .await?;
+    assert_eq!(env.mailer.only()?.to[0].address, "real@example.com");
+
+    // An expectation the outbox does not meet fails the step.
+    let failing = edit::create_checklist(
+        &env.catalog,
+        &env.registry,
+        &env.human(),
+        ChecklistInput::new("Nothing was mailed"),
+        vec![StepDraft::new("data.expect_sent").param("to", "nobody@example.com")],
+    )
+    .await?;
+    let run = run_checklist(&env.env(), &failing, "manual").await?;
+    assert_eq!(run.status, RunStatus::Failed, "{:#?}", run.steps);
     Ok(())
 }
 

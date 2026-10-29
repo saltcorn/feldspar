@@ -819,6 +819,8 @@ async fn the_actions_describe_their_own_settings() -> sc_error::Result<()> {
             "insert_row",
             "publish",
             "run_agent",
+            // Scheduled checklist runs (TODO-checklists C4.4).
+            "run_checklists",
             "run_js_code",
             "run_python_code",
             "send_email",

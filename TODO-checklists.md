@@ -113,12 +113,12 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## C4 — Outbox, after-build runs, schedules
 
-- [ ] C4.1 Run outbox: e-mail, webhooks and payment calls made on behalf of a checklist run are
+- [x] C4.1 Run outbox: e-mail, webhooks and payment calls made on behalf of a checklist run are
       captured on the run instead of being sent (a hook in `sc-email` and the outbound HTTP
       path).
-- [ ] C4.2 Step type `data.expect_sent` reads the outbox.
-- [ ] C4.3 An application setting to run its checklists after each build (off by default); the
+- [x] C4.2 Step type `data.expect_sent` reads the outbox.
+- [x] C4.3 An application setting to run its checklists after each build (off by default); the
       result is shown with the build.
-- [ ] C4.4 Scheduled runs through the existing trigger machinery.
-- [ ] C4.5 Tests: a trigger that sends mail during a run sends nothing and `data.expect_sent`
+- [x] C4.4 Scheduled runs through the existing trigger machinery.
+- [x] C4.5 Tests: a trigger that sends mail during a run sends nothing and `data.expect_sent`
       passes; a build with after-build checks enabled records a run.
