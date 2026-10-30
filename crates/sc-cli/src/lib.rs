@@ -9,7 +9,7 @@
 //! ([`api`]), the `get-cfg`/`set-cfg` commands' arguments ([`config`]), the
 //! `mcp-token` commands ([`mcp_token`]), the `module` commands ([`module`]), the `add-user`/`modify-user`
 //! commands' arguments and password prompt ([`users`]), the `backup`/`restore`
-//! password ([`backup_password`]), resolving an application's project
+//! password ([`backup_password`]), `feldspar setup` ([`setup`]), resolving an application's project
 //! directory for `app list` ([`app`]) and
 //! standing up a connected [`Catalog`] ([`connect_catalog`]) —
 //! live here so integration tests can drive the same boot path the CLI uses.
@@ -29,6 +29,7 @@ pub mod eval;
 pub mod i18n;
 pub mod mcp_token;
 pub mod module;
+pub mod setup;
 pub mod users;
 
 /// The `feldspar.toml` reader. It lives in its own layer-0 crate because the
@@ -48,6 +49,14 @@ use sc_files::{FileStoreDef, connect_from_def};
 
 pub use config_file::{ConfigFile, Environment, SelectedEnvironment};
 pub use db::{DbConfig, Serving};
+
+/// The seccomp profile the Docker image runs under — `feldspar seccomp-profile`
+/// prints it. Docker's default profile with one entry added: the `clone`,
+/// `unshare` and `chroot` that Chromium's sandbox makes inside the user
+/// namespace it creates, which the default allows only to a privileged
+/// container. Without it `view_app` cannot start its browser sandboxed, and is
+/// never started without the sandbox instead (README §2.9).
+pub const SECCOMP_PROFILE: &str = include_str!("../../../deploy/docker/seccomp.json");
 
 /// Connect to the primary database described by `db`, initialise the
 /// [`Catalog`] from its live schema, and ensure the platform tables (`users`,
@@ -170,15 +179,16 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
     // The TLS settings the selected environment pins (§13.5), before anything
     // reads a setting: from here every read of them — the boot's, the settings
     // screen's, `get-cfg`'s — sees the file's value, and a write is refused.
-    let pinned = db.serving().host_config();
+    // `FELDSPAR_SSL_MODE` pins the mode on the same terms.
+    let pinned = db.host_config();
     if !pinned.is_empty() {
         eprintln!(
-            "feldspar: {} set by the configuration file",
+            "feldspar: {} set by the host configuration",
             pinned.keys().cloned().collect::<Vec<_>>().join(", ")
         );
     }
     sc_config::set_host_config(&catalog, pinned)
-        .context("reading the TLS settings in the configuration file")?;
+        .context("reading the TLS settings the host configuration pins")?;
     // A production environment refuses checklists that write data unless they
     // are allowed there (TODO-checklists C1.6).
     if db.is_production() {

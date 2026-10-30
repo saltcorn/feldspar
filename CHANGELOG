@@ -112,6 +112,216 @@ token that matches one of them. When both are set and differ, either is accepted
 - Tests: `first_user_tokens_come_from_the_environment_and_the_table` (sc-config) and
   `either_of_two_tokens_matches` (sc-auth).
 
+## Saltcorn 1 import: every built-in action is translated or refused with a reason
+
+Before this change, a v1 backup's triggers kept their action names and settings unchanged.
+Of the 31 actions in v1's base plugin, 28 were refused on restore as unknown (`modify_row`, `toast`,
+`navigate` …). The other three restored but did not work. `delete_rows` and `send_email`
+have the same names here with different settings. `run_js_code` bodies relied on v1's scope
+(`table`, fields by bare name), and a `none` trigger here binds no `row` (TODO F10.9).
+
+- **`backup/v1/actions.rs`** (new): one converter for all 31 actions, plus v1's multi-step triggers. Most become a
+  `run_js_code` body that does what v1's `run` did, written against v1's `Table`, with the
+  row's fields in scope by name. The row is read from wherever it comes from: a table
+  event's `row`, a button's `payload`, or a workflow's `context`. `send_email` becomes this
+  system's `send_email`, with templates. Browser actions answer v1's own objects, which
+  Saltcorn UI's `common_done` handles. `emit_event`, `notify_user`,
+  `find_or_create_dm_room`, `convert_session_to_user`, `train_model_instance`,
+  `install_progressive_web_app`, server `sleep` and a view-bodied `send_email` are refused
+  with the reason.
+- **Multi-step triggers** become a body that runs the steps, with v1's `only_if`, goto,
+  halt, clear and `set_fields`. A built-in step becomes its own trigger.
+- **Buttons.** An action column or action segment, at any depth, in a view, a page or a
+  library item (and a multi-step column's step) that names a built-in action directly becomes
+  a `none` trigger, `<view> · <action> <n>`. Container click actions and List's row-click
+  action are not affected, because v1 only lets those name triggers.
+  It gets the view's table, and its role is the stricter of the view's and the button's.
+  The button is rewritten to name it.
+- **Workflows.** A built-in action in a workflow step goes through the same converter, over
+  the context. `webhook`'s `response_var` and `insert_any_row`'s `id_variable` become
+  workflow variables.
+- A refused trigger or button stays declared by the application, so the view that names it
+  still saves. When an action answers the page with JavaScript, the application's CSP gains
+  `'unsafe-eval'`, and the report says so. v1's `Startup` event now maps to `startup`.
+- **Tests:**
+  - unit tests in `actions.rs` and `v1.rs`, including
+    `every_kind_of_button_running_a_built_in_action_becomes_a_trigger`;
+  - `backup_api::v1s_built_in_actions_are_translated_and_run` restores BooksDB with 16
+    extra triggers and a button, and runs each in the real engine: toast, navigate, modify_row, loop_rows,
+    a multi-step trigger, insert/delete/duplicate, v1-style `run_js_code` with `Actions`,
+    `run_js_code_in_field`, `set_user_language`, download, and a made button trigger;
+  - `saltcorn_ui_render::a_v1_button_running_a_built_in_action_answers_as_v1s_did` presses
+    a `toast` button through the view's `run_action` route;
+  - BooksDB's `TrimPages` is now imported, so the render tests no longer write a stand-in.
+    The refused-trigger test makes its trigger a `notify_user` instead.
+- Documented in `docs/tutorial-triggers.md` ("What a Saltcorn 1 backup's actions become").
+
+## Deployment: `feldspar setup` installs Node.js and a headless browser
+
+`feldspar setup` now does what `scripts/setup-host.sh` does for Node.js and the browser,
+so `setup-host.sh` is no longer needed for them (TODO D1.3).
+
+- **Node.js** (`--node` / `--no-node`): on Debian and Ubuntu, Node `NODE_MAJOR`.x (26,
+  the same line as `setup-host.sh` and the Docker image) from NodeSource. The steps are:
+  install `ca-certificates curl`, write the key to `/etc/apt/keyrings/nodesource.asc`,
+  write the source to `sources.list.d/nodesource.list`, pin it in
+  `preferences.d/nodesource`, then install `nodejs`. On Alpine it is `apk add nodejs npm`.
+  `Host` now records what `npm --version` says. An npm of 9.3 or newer is kept, and an
+  older one is replaced, with a note saying why (`npm_new_enough`).
+- **The browser** (`--browser` / `--no-browser`): `Host` records the browser the server
+  would find (`sc_server::detect_browser`, so a snap is skipped), and an existing one is
+  kept. Otherwise setup installs apt's `chromium` on Debian, `apk add chromium` on Alpine,
+  or, on Ubuntu (`ubuntu_like`: `ID` or `ID_LIKE`), `google-chrome-stable` from Google's
+  apt repository. That only works on x86_64. On any other architecture setup prints a note
+  and skips the check.
+- **A new step, `Step::CheckBrowser`**, comes after the account exists and before the
+  service starts. It starts the browser headless (`--dump-dom about:blank`, with a
+  throwaway profile directory that is removed afterwards) as the service account, via
+  `su -s /bin/sh`, which busybox also has. If that fails, it tries again with
+  `--no-sandbox`. If the second try works, setup suggests `browser_sandbox = false` for
+  the environment. If both fail, it prints the last 20 lines of the browser's stderr.
+  The check never fails the setup. A browser installed earlier in the same run is found
+  on `PATH` at check time.
+- **Defaults.** A production setup installs both. A development setup installs neither
+  unless you pass `--node` or `--browser`. At a terminal it asks, but only about what is
+  missing and only where it knows how to install it. So `--dev` still needs no root.
+  The closing notes say what was left out, with `feldspar setup --dev --node` (or
+  `--browser`, or the `--server` form) as the fix.
+- **Tests** (`sc-cli/tests/setup.rs`):
+  - the plan on a bare Debian: order, the NodeSource files, one prerequisite install
+    shared by both repositories, and the check placed between the account and the unit;
+  - Ubuntu on x86_64 and on aarch64, Alpine, a too-old npm, and the opt-out flags;
+  - the development questions;
+  - `NODE_MAJOR` agrees with `setup-host.sh`;
+  - the check run for real against three stand-in browsers: one that starts, one that
+    starts only without its sandbox, and one that does not start.
+  - The check command was also run by hand against this machine's Google Chrome (snap
+    Chromium skipped).
+
+## Deployment: a production Docker image, and `ssl_mode = "proxy"`
+
+`deploy/docker` is a second way to deploy, beside the systemd install (README §2.9).
+
+- **The image** (`deploy/docker/Dockerfile`):
+  - **Base.** Docker Hardened Images' Debian 13, `dhi.io/debian-base:trixie-debian13-dev`.
+    Pulling it needs `docker login dhi.io`. The `-dev` variant is used because the server needs
+    a package manager's worth of things at run time: Chromium, Node from NodeSource (at
+    `setup-host.sh`'s major), git, `libpython3.13`/`python3`/`python3-venv`, and `tini`.
+  - **The binary** is the released `debian13-python` tarball from the bucket, checked against
+    its `.sha256` and unpacked at `/opt/feldspar`. It is not built from source, and there is no
+    build argument to supply another tarball.
+  - **Running.** Uid 10001, an account written straight into `/etc/passwd` and `/etc/group`:
+    the hardened base has no `useradd` and no `nologin`. Plain HTTP on 8080. `/var/lib/feldspar` is the only writable path
+    (a volume, `HOME` and `SC_DATA_DIR`). The image works with `--read-only --cap-drop ALL`.
+    It has a `/health` health check.
+  - **Entrypoint.** `tini -- feldspar serve --bind 0.0.0.0:8080`, so arguments after the
+    image name are serve flags.
+  - **Database.** From `DATABASE_URL` or `PG*`.
+- **`compose.yml` and `env.example`.** The compose file runs the image with `postgres:17`, the
+  seccomp profile, `no-new-privileges`, `cap_drop: ALL`, a read-only root and `shm_size: 512m`.
+  The base domain and database password come from `.env`.
+- **Chromium keeps its sandbox in a container.** Docker's default seccomp profile blocks the
+  user namespace the sandbox needs: tested here, Chromium fails with "No usable sandbox!". The
+  setuid `chromium-sandbox` helper fails too, because the container has no `CAP_SYS_ADMIN`.
+  - **The profile.** `deploy/docker/seccomp.json` is Docker's default profile plus one entry
+    allowing `clone`, `unshare` and `chroot`. `chroot` is needed once capabilities are dropped.
+    Under it Chromium renders a page sandboxed, with `--cap-drop ALL` and `no-new-privileges`.
+  - **`feldspar seccomp-profile`** prints the profile, which is embedded in the binary. Users of
+    plain `docker run` get it from the image itself, and nothing on the host changes.
+  - **A boot check.** The server now starts the browser once at boot
+    (`sc_server::check_browser_sandbox`). A browser that reports "No usable sandbox" makes
+    `view_app` unavailable, with a log line naming the profile. Any other failure is left for
+    `view_app` to report. The browser is never retried without its sandbox.
+- **`ssl_mode = "proxy"`** (`sc-config`): plain HTTP here, HTTPS at a proxy in front.
+  - **Effect.** `TlsSettings::from_ssl` treats it as off, so no ACME traffic happens.
+    `SslSettings::public_https()` is true, so `serve` makes the session cookie `Secure` and the
+    public origin `https://` on `https_port` (443 by default).
+  - **Host-only.** It is not among the settings screen's options. A save cannot store it, and
+    `set_host_config` accepts it as a pin.
+  - **How it is set.** As before in `feldspar.toml`, or with the new **`FELDSPAR_SSL_MODE`**
+    variable. The variable outranks the file's `ssl_mode` (`DbConfig::host_config`), because an
+    image cannot see the file a user mounts.
+  - **The settings screen.** While it is pinned, `GET /api/settings` leaves the TLS section out
+    (`sc_config::hidden_sections`), so the admin UI shows no SSL / TLS tab. The screen posts back
+    only the fields it was sent, so the stored TLS rows stay as they were. There is no UI change.
+  - **Saving pinned values.** A save now compares against the pin before checking the value
+    against its declaration, so a form that sends a pinned `proxy` back is a no-op, not a
+    rejected option. The refusal message now says "feldspar.toml (or its environment)".
+- **Tests.**
+  - `sc-config`: the proxy mode's settings and options, and pinned-but-never-saved against
+    Postgres.
+  - `sc-server`: the TLS plan, the boot sandbox check with fake browsers, and a proxy-pinned
+    settings API with no TLS section.
+  - `sc-cli`: `FELDSPAR_SSL_MODE` over the file.
+  - `sc-cli/tests/docker_image.rs`:
+    - the Dockerfile matches `build-static.sh`'s bucket, object and prefix, and
+      `setup-host.sh`'s Node major;
+    - the compose file matches the image;
+    - the profile is the default plus exactly the one entry;
+    - `feldspar seccomp-profile` prints the file.
+  - An `#[ignore]`d end-to-end test builds the image, runs it against `postgres:17`, checks
+    `/health`, and checks Chromium sandboxed under the profile. It also checks that under the
+    default profile the boot reports `view_app` unavailable with the fix.
+
+## Deployment: a one-line installer, and `feldspar setup`
+
+A new machine now needs two commands: `curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh`,
+then `feldspar setup`. Before this, it needed a tarball, its `install.sh` and `setup-host.sh`
+(TODO D1).
+
+- **`scripts/install.sh`** is a POSIX `sh` script, because Alpine has no bash. It recognises
+  Debian, Ubuntu and Alpine (from `ID` or `ID_LIKE`) on x86_64, and refuses anything else unless
+  given `--force`. It installs only `ca-certificates`, `tar`/`gzip` and `curl` when they are
+  missing (apt or apk). It downloads `feldspar.tar.gz` with curl or busybox `wget`, checks it
+  against its `.sha256`, runs the tarball's own `install.sh` (the tree at `/opt/feldspar`,
+  the same path an upgrade takes) and links `/usr/local/bin/feldspar`. It uses `sudo` or `doas`
+  when not root, and also takes `--dry-run`, `--base-url` and `--no-packages`. It has been run in
+  `debian:12-slim`, `ubuntu:24.04` and `alpine:3.20` (busybox `wget`) against a release served
+  locally.
+- **`build-static.sh --release`** now also uploads `scripts/install.sh` to the bucket as
+  `install.sh`, after the tarballs, and prints the one-line install. It checks that the script
+  exists before the build.
+- **`feldspar setup`** (`sc-cli/src/setup.rs`):
+  - **Choices.** The kind of instance is development or production. The database is SQLite,
+    PostgreSQL on this machine, or PostgreSQL elsewhere (`--database-url`, or `--db-host`,
+    `--db-port`, `--db-user`, `--db-password`, `--db-name`). `--server` (production, local
+    PostgreSQL) and `--dev` (development, SQLite) ask nothing. Otherwise, choices the flags leave
+    open are asked at a terminal, and the plan is shown for confirmation. Off a terminal, a
+    missing choice is an error that names the flags.
+  - **Plan.** The command first builds a list of steps (commands and files). `--dry-run` prints
+    that list, and the same list is what gets executed.
+  - **Development** writes `[environments.development]` into `~/.config/feldspar/feldspar.toml`
+    (mode 0600). For a local PostgreSQL, the user's login becomes the role.
+  - **Production** creates a `feldspar` system account (adduser on Debian and Ubuntu, busybox
+    `addgroup`/`adduser` on Alpine) and `/var/lib/feldspar`. It writes
+    `/etc/feldspar/feldspar.toml` (`root:feldspar` 0640) and either the README §2.6 systemd unit
+    or an OpenRC `supervise-daemon` script with `cap_net_bind_service`. Then it enables and
+    restarts the service.
+  - **Local PostgreSQL** is installed only when nothing is listening on `/var/run/postgresql`.
+    On Alpine that also means `rc-service postgresql setup`. The role and the database are each
+    created only when missing. The role must be the account that connects, because
+    authentication is peer.
+  - **Safe to repeat.** An existing configuration file is merged into, not replaced: other
+    environments and `default_environment` are kept. A section that already says the same thing
+    is left alone. One that says something else is refused, or replaced with its sub-tables
+    under `--force`. The service file follows the same rule. Account creation runs only when the
+    account is missing.
+  - **Refusals.** A production binary in a home directory is refused (`ProtectHome`), and so is
+    a production setup on a distribution or service manager setup doesn't know.
+  - **Not installed.** Node.js and a browser are not installed. The closing notes say how.
+- **`sc-config-file`** exports `user_config_file()` and `system_config_file()`, so `setup` writes
+  where `serve` searches.
+- **Run for real**: `feldspar setup --server` in an Ubuntu 26.04 container with systemd as PID 1
+  installed PostgreSQL 18, created the account, role, database, configuration and unit, and the
+  service answered `/health`. A second run changed nothing and restarted the service.
+- **Tests**: `sc-cli/tests/setup.rs` covers the presets and flag conflicts, the Debian, Alpine
+  and remote-database plans, the refusals, the unit against the README, merging the
+  configuration file, the service-file rule and the questions (answered by a script). It also
+  runs `feldspar setup --dev` through the binary, followed by `get-cfg` against the SQLite
+  database it named. `sc-cli/tests/install_script.rs` covers the installer against a fake
+  release over `file://`, with `sudo` stubbed: the install, a checksum mismatch, `--dry-run`, and
+  POSIX `sh`. `build_static_release.rs` now expects the installer upload.
+
 ## Security: a first-user token, so a fresh instance is claimed by whoever was given the link
 
 Before this change, a fresh installation showed the create-first-user screen to whoever reached

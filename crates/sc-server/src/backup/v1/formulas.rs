@@ -52,6 +52,10 @@ struct V1FieldInfo {
     key_target: Option<String>,
     /// A calculated field's v1 expression (`__aggregation` for an aggregation).
     calc: Option<String>,
+    /// v1's type name (`String`, `Key`, `File` …).
+    type_name: String,
+    /// v1's label, which `sync_table_from_external` matches fields by.
+    label: String,
 }
 
 /// How deep calculated fields are inlined into each other before giving up —
@@ -75,6 +79,8 @@ impl V1Schema {
                             .flatten(),
                         calc: (field.get("calculated").and_then(Json::as_bool) == Some(true))
                             .then(|| text(field, "expression")),
+                        type_name: text(field, "type"),
+                        label: text(field, "label"),
                     };
                     (name_of(field), info)
                 })
@@ -94,8 +100,37 @@ impl V1Schema {
             .is_some_and(|fields| fields.contains_key(field))
     }
 
-    fn key_target(&self, table: &str, field: &str) -> Option<&str> {
+    pub(super) fn key_target(&self, table: &str, field: &str) -> Option<&str> {
         self.tables.get(table)?.get(field)?.key_target.as_deref()
+    }
+
+    /// The names of `table`'s fields that hold a value — its calculated ones
+    /// left out, since there is no column to write them to.
+    pub(super) fn stored_fields(&self, table: &str) -> Vec<&str> {
+        self.tables
+            .get(table)
+            .into_iter()
+            .flatten()
+            .filter(|(_, info)| info.calc.is_none())
+            .map(|(name, _)| name.as_str())
+            .collect()
+    }
+
+    /// The names of all of `table`'s fields, calculated ones included: what v1
+    /// puts in an action's scope by name.
+    pub(super) fn field_names(&self, table: &str) -> Vec<&str> {
+        self.tables
+            .get(table)
+            .into_iter()
+            .flat_map(BTreeMap::keys)
+            .map(String::as_str)
+            .collect()
+    }
+
+    /// The v1 type and label of a field, if `table` has it.
+    pub(super) fn type_and_label(&self, table: &str, field: &str) -> Option<(&str, &str)> {
+        let info = self.tables.get(table)?.get(field)?;
+        Some((info.type_name.as_str(), info.label.as_str()))
     }
 
     fn calc(&self, table: &str, field: &str) -> Option<&str> {

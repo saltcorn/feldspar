@@ -728,6 +728,16 @@ workflow) found what the first importer left behind. Fixture:
   A restored agent whose trait still fails (a trigger that was not imported) keeps its other
   traits, the failing one dropped with a warning.
 
+- [x] **F10.9** Every one of v1's 31 built-in actions has a deliberate outcome on import:
+  translated (mostly into a `run_js_code` body in v1's scope, `send_email` into this one's
+  templates), or refused with the reason. Same-named actions (`delete_rows`, `send_email`,
+  `run_js_code`) are translated too, because their settings differ. Multi-step triggers
+  run their steps, a view's or page's button that names a built-in action becomes a trigger,
+  and workflow steps use the same converter.
+- [ ] **F10.10** What F10.9 refuses: `send_email` with a view as its body (needs
+  view-to-email rendering), a confirmation field, `notify_user` (needs notifications),
+  `emit_event`, and server-side `sleep` / `loop_rows`' interval (no timers in a code body).
+
 ## S1 — Saltcorn UI view runtime: remaining hardening from security review #36
 
 `{{= }}` no longer evaluates row data (see the CHANGELOG). What the review also recommended:
@@ -743,6 +753,21 @@ workflow) found what the first importer left behind. Fixture:
   `?first_user_token=`, and Clear all keeps it.
 - [x] **S2.2** The first-user token can also be set with `FELDSPAR_FIRST_USER_TOKEN`; when both it
   and the stored setting are set, either is accepted.
+
+## D1 — Installing from one line
+
+- [x] **D1.1** `scripts/install.sh`, the curl-to-sh installer: Debian, Ubuntu and Alpine on
+  x86_64; installs the static release at `/opt/feldspar`, `feldspar` on `PATH`, and only
+  `ca-certificates`, a downloader and `tar` beside it. `build-static.sh --release` publishes it
+  to the bucket as `install.sh`.
+- [x] **D1.2** `feldspar setup`: a development instance (user config, `feldspar serve` by hand) or a
+  production one (system account, `/etc/feldspar/feldspar.toml`, systemd unit or OpenRC
+  script), over SQLite or PostgreSQL, local (installed when not running) or remote; asked at a
+  terminal or given as flags, with `--server` and `--dev` as presets that ask nothing.
+- [x] **D1.3** `feldspar setup` installs Node.js (with npm 9.3 or newer) and a headless browser,
+  as `setup-host.sh` does, so that it can replace that script.
+- [ ] **D1.4** An end-to-end run of `feldspar setup --server` on Alpine with OpenRC. Debian and
+  Ubuntu have been run under systemd, and Alpine so far only through its plan.
 
 ---
 

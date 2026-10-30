@@ -11348,8 +11348,15 @@ async fn settings_json(catalog: &Catalog, locale: &Locale) -> Result<Json> {
     // sentence, and each setting's label and help text. The help is the one
     // `translate_spec` cannot reach — it hangs off `ConfigDef` rather than off
     // `FormField` — so it is translated where it is serialised, which is here.
+    //
+    // A section the host has taken out of the admin's hands is not sent at all:
+    // with `ssl_mode = "proxy"` pinned, the certificates are the proxy's, and a
+    // tab of settings that do nothing is worse than none. The screen posts back
+    // only the fields it was sent, so the stored TLS rows are left as they are.
+    let hidden = sc_config::hidden_sections(catalog);
     let sections: Vec<Json> = sc_config::config_sections()
         .iter()
+        .filter(|section| !hidden.contains(&section.name))
         .map(|section| {
             json!({
                 "name": section.name,

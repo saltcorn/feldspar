@@ -302,3 +302,39 @@ async fn a_key_the_host_pins_wins_over_the_table_and_cannot_be_saved_over() -> R
     );
     Ok(())
 }
+
+/// `proxy` is a mode only the host may choose: it pins like any other, reads
+/// back as HTTPS in public and plain HTTP here, and a save cannot store it —
+/// it is not among the settings screen's options.
+#[tokio::test]
+async fn the_proxy_mode_is_pinned_by_the_host_and_never_saved() -> Result<()> {
+    let (catalog, _db) = fixture().await?;
+
+    let refused = set_config(&catalog, SSL_MODE, json!(sc_config::MODE_PROXY))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains(SSL_MODE), "{refused}");
+    assert_eq!(stored_config(&catalog, SSL_MODE).await?, None);
+
+    let pinned: Attrs = json!({ SSL_MODE: sc_config::MODE_PROXY })
+        .as_object()
+        .unwrap()
+        .clone();
+    sc_config::set_host_config(&catalog, pinned)?;
+    let settings = ssl_settings(&catalog).await?;
+    assert_eq!(settings.mode, SslMode::Proxy);
+    assert!(!settings.enabled());
+    assert!(settings.public_https());
+    assert_eq!(sc_config::host_config_keys(&catalog), [SSL_MODE]);
+
+    // The settings form, hidden section and all, still saves the rest.
+    let form: Attrs = json!({ SSL_MODE: sc_config::MODE_PROXY, SMTP_PORT: 2525 })
+        .as_object()
+        .unwrap()
+        .clone();
+    set_config_many(&catalog, &form).await?;
+    assert_eq!(stored_config(&catalog, SSL_MODE).await?, None);
+    assert_eq!(stored_config(&catalog, SMTP_PORT).await?, Some(json!(2525)));
+    Ok(())
+}

@@ -239,7 +239,9 @@ pub struct ServerConfig {
     /// default is [`Off`](TlsSettings::Off), which is plain HTTP.
     pub tls: TlsSettings,
     /// The port HTTPS is served on when [`tls`](Self::tls) is on
-    /// (`--https-port`, or `https_port` in `feldspar.toml`; default 443).
+    /// (`--https-port`, or `https_port` in `feldspar.toml`; default 443) — or,
+    /// with `ssl_mode = "proxy"`, the port the proxy in front serves it on,
+    /// which is what the public URLs carry.
     ///
     /// A flag rather than a stored setting, although the certificates are
     /// stored: the port is a property of this host — what its firewall and its

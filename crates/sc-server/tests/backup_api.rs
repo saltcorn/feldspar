@@ -1099,9 +1099,9 @@ async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
             .any(|l| l == &json!("trigger `AddBook`: with its workflow (1 step)")),
         "{report}"
     );
-    // A v1 action this system does not have is refused by name by the ordinary
-    // trigger validation, not quietly turned into the nearest thing that exists.
-    assert!(warned("TrimPages") && warned("modify_row"), "{report}");
+    // v1's `modify_row`, which this system has no action of, is translated into
+    // a body that does what it did — and so restores like any other trigger.
+    assert!(!warned("TrimPages"), "{report}");
 
     // --- the application its views and page became (§13) --------------------
     let did = |report: &Value, text: &str| {
@@ -1607,6 +1607,319 @@ async fn a_v1_calculated_summary_field_and_an_array_aggregation_are_imported()
     assert_eq!(rows[0]["label"], json!("My things!"), "{rows}");
     assert_eq!(rows[0]["qtys"], json!([5]), "{rows}");
     Ok(())
+}
+
+/// Every kind of v1 built-in action, imported and **run** (TODO F10.9): each
+/// is translated into an action here that does what v1's did — mostly a
+/// `run_js_code` body in v1's scope — so the generated code is executed by the
+/// real engine here, against the restored rows, rather than only compared as
+/// text. A button that names an action directly, with no trigger, becomes a
+/// trigger the view names instead, and what has no counterpart is reported.
+#[tokio::test]
+async fn v1s_built_in_actions_are_translated_and_run() -> sc_error::Result<()> {
+    let archive = with_pack(V1_BACKUP, |pack| {
+        let triggers = pack["triggers"].as_array_mut().unwrap();
+        let never = |name: &str, action: &str, table: Option<&str>, configuration: Value| {
+            json!({ "name": name, "description": "", "action": action, "when_trigger": "Never",
+                    "table_name": table, "configuration": configuration, "channel": null,
+                    "min_role": 100 })
+        };
+        triggers.extend([
+            never("Hello", "toast", Some("Books"),
+                json!({ "notify_type": "Success", "text": "Read {{title}}!", "title": "Books" })),
+            never("ShowIt", "navigate", Some("Books"),
+                json!({ "nav_action": "Go to View", "view": "Show Books", "state_formula": "{id}" })),
+            never("Back", "navigate", None, json!({ "nav_action": "Back" })),
+            never("Dup", "duplicate_row", Some("Books"), json!({})),
+            never("Gone", "delete_rows", Some("Books"), json!({ "delete_triggering_row": true })),
+            never("Penname", "insert_any_row", Some("Books"), json!({ "table": "Authors",
+                "row_expr": "{ first_name: title.split(' ')[0], last_name: 'Pen' }" })),
+            never("Hook", "webhook", None, json!({ "url": "http://127.0.0.1:9/{{x}}" })),
+            // v1 numbers the pack's triggers from 1: TrimPages is the first.
+            never("TrimAll", "loop_rows", None, json!({ "table_name": "Books",
+                "where": "{ pages: { gt: 600 } }", "trigger_id": 1 })),
+            json!({ "name": "TwoSteps", "description": "", "action": "Multi-step action",
+                    "when_trigger": "Never", "table_name": "Books", "channel": null,
+                    "min_role": 100, "configuration": { "steps": [
+                        { "step_action_name": "toast", "text": "first" },
+                        { "step_action_name": "TrimPages", "step_only_if": "pages > 100" },
+                        { "step_action_name": "step_control_flow", "control_action": "Halt steps" },
+                        { "step_action_name": "toast", "text": "never" },
+                    ] } }),
+            never("Ping", "notify_user", None, json!({ "user_spec": "*", "title": "hi" })),
+            never("Mixed", "delete_rows", None,
+                json!({ "table_name": "Authors", "delete_where": "{ last_name: 'Pen' }" })),
+            // v1's own code: the row's fields bare, and another trigger as an action.
+            never("Code", "run_js_code", Some("Books"), json!({ "run_where": "Server",
+                "code": "const title = 'shadowed';\nconst toast = await Actions.Hello({ title: 'x' });\nreturn { twice: pages * 2, title, toast };" })),
+            never("CodeInField", "run_js_code_in_field", Some("Books"),
+                json!({ "code_field": "title", "run_where": "Server" })),
+            never("Clip", "copy_to_clipboard", Some("Books"), json!({ "text_template": "{{title}}" })),
+            never("French", "set_user_language", None, json!({ "language": "fr" })),
+            never("Fetch", "download_file_to_browser", None, json!({ "file_field": "path" })),
+        ]);
+        // A button of the list that runs v1's `toast` directly, with no trigger.
+        let list = pack["views"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|v| v["name"] == json!("List Books"))
+            .unwrap();
+        list["configuration"]["columns"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+            "type": "Action", "rndid": "t0a5t1", "action_name": "toast", "minRole": 80,
+            "configuration": { "text": "Hi {{title}}" } }));
+    });
+    let mut server = setup_for_booksdb().await?;
+    let report = restore_everything(&mut server, &archive).await;
+    let warned = |text: &str| report_has(&report, "warnings", text);
+    for name in [
+        "Hello", "ShowIt", "Back", "Dup", "Gone", "Penname", "Hook", "TrimAll", "TwoSteps", "Mixed",
+    ] {
+        assert!(!warned(&format!("`{name}`")), "{name}: {report}");
+    }
+    // What has nothing to become is said, with the reason.
+    assert!(warned("`Ping`") && warned("no notifications"), "{report}");
+    // `navigate`'s Back answers the page with a script, so the application's
+    // policy is relaxed to run it — and the report says so.
+    assert!(warned("'unsafe-eval'"), "{report}");
+
+    let (_, triggers) = server.client.send("GET", "/api/triggers", None).await;
+    let moby = book_rows(&mut server)
+        .await
+        .into_iter()
+        .find(|b| b["title"] == json!("Moby Dick"))
+        .unwrap();
+
+    // The browser's answers are v1's objects, the row's fields read by name.
+    assert_eq!(
+        run_named(&mut server, &triggers, "Hello", moby.clone()).await,
+        json!({ "notify_success": "Read Moby Dick!", "toast_title": "Books" })
+    );
+    assert_eq!(
+        run_named(&mut server, &triggers, "ShowIt", moby.clone()).await,
+        json!({ "goto": "/view/Show Books?id=1" })
+    );
+    assert_eq!(
+        run_named(&mut server, &triggers, "Back", json!({})).await,
+        json!({ "eval_js": "history.back()" })
+    );
+
+    // v1's `modify_row` on the row it was run on: 500 pages, 10% fewer.
+    run_named(&mut server, &triggers, "TrimPages", moby.clone()).await;
+    let pages = |rows: &[Value], title: &str| {
+        rows.iter().find(|b| b["title"] == json!(title)).unwrap()["pages"].clone()
+    };
+    assert_eq!(
+        pages(&book_rows(&mut server).await, "Moby Dick"),
+        json!(450)
+    );
+
+    // `loop_rows` runs the first trigger of the pack over the rows its query
+    // picks: only War and Peace has more than 600 pages.
+    run_named(&mut server, &triggers, "TrimAll", json!({})).await;
+    let rows = book_rows(&mut server).await;
+    assert_eq!(pages(&rows, "War and Peace"), json!(900));
+    assert_eq!(pages(&rows, "Moby Dick"), json!(450));
+
+    // A multi-step trigger: a toast, TrimPages (its `only_if` holds), then a
+    // halt, so the last toast never runs.
+    let moby = rows
+        .iter()
+        .find(|b| b["title"] == json!("Moby Dick"))
+        .unwrap()
+        .clone();
+    assert_eq!(
+        run_named(&mut server, &triggers, "TwoSteps", moby.clone()).await,
+        json!({ "notify": "first", "halt_steps": true })
+    );
+    assert_eq!(
+        pages(&book_rows(&mut server).await, "Moby Dick"),
+        json!(405)
+    );
+
+    // Rows written and deleted through v1's `Table`, with the row's fields.
+    run_named(&mut server, &triggers, "Penname", moby.clone()).await;
+    let (_, authors) = server
+        .client
+        .send("GET", "/api/tables/Authors/rows", None)
+        .await;
+    assert!(
+        authors
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["first_name"] == json!("Moby") && a["last_name"] == json!("Pen")),
+        "{authors}"
+    );
+    run_named(&mut server, &triggers, "Mixed", json!({})).await;
+    let (_, authors) = server
+        .client
+        .send("GET", "/api/tables/Authors/rows", None)
+        .await;
+    assert!(
+        !authors
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["last_name"] == json!("Pen")),
+        "{authors}"
+    );
+    run_named(&mut server, &triggers, "Dup", moby.clone()).await;
+    let copies: Vec<Value> = book_rows(&mut server)
+        .await
+        .into_iter()
+        .filter(|b| b["title"] == json!("Moby Dick"))
+        .collect();
+    assert_eq!(copies.len(), 2, "{copies:?}");
+    // The copy is of the row it was handed, which is the one before TwoSteps.
+    let copy = copies
+        .iter()
+        .find(|b| b["id"] != moby["id"])
+        .unwrap()
+        .clone();
+    assert_eq!(copy["pages"], moby["pages"]);
+    run_named(&mut server, &triggers, "Gone", copy.clone()).await;
+    assert_eq!(
+        book_rows(&mut server)
+            .await
+            .iter()
+            .filter(|b| b["title"] == json!("Moby Dick"))
+            .count(),
+        1
+    );
+
+    // v1's code, in v1's scope.
+    assert_eq!(
+        run_named(
+            &mut server,
+            &triggers,
+            "Code",
+            json!({ "pages": 21, "title": "T" })
+        )
+        .await,
+        json!({ "twice": 42, "title": "shadowed",
+                "toast": { "notify_success": "Read x!", "toast_title": "Books" } })
+    );
+    assert_eq!(
+        run_named(
+            &mut server,
+            &triggers,
+            "CodeInField",
+            json!({ "pages": 4, "title": "return { n: pages + row.pages };" })
+        )
+        .await,
+        json!({ "n": 8 })
+    );
+    assert_eq!(
+        run_named(
+            &mut server,
+            &triggers,
+            "Clip",
+            json!({ "title": "a \"b\"" })
+        )
+        .await,
+        json!({ "eval_js": "navigator.clipboard.writeText(\"a \\\"b\\\"\")" })
+    );
+    assert_eq!(
+        run_named(&mut server, &triggers, "French", json!({})).await,
+        json!({ "reload_page": true })
+    );
+    let (_, users) = server
+        .client
+        .send("GET", "/api/tables/users/rows", None)
+        .await;
+    assert!(
+        users
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|u| u["language"] == json!("fr")),
+        "{users}"
+    );
+    let download = run_named(
+        &mut server,
+        &triggers,
+        "Fetch",
+        json!({ "path": "Each+session+is+30+mins.png" }),
+    )
+    .await;
+    assert_eq!(
+        download["download"]["filename"],
+        json!("Each+session+is+30+mins.png"),
+        "{download}"
+    );
+    assert_eq!(
+        download["download"]["mimetype"],
+        json!("image/png"),
+        "{download}"
+    );
+    assert!(
+        download["download"]["blob"]
+            .as_str()
+            .unwrap()
+            .starts_with("iVBORw0KGgo"),
+        "{download}"
+    );
+
+    // The list's button became a trigger of its own, which the view now names,
+    // at the stricter of the view's role and the button's.
+    let made = triggers
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == json!("List Books · toast 1"))
+        .unwrap_or_else(|| panic!("{triggers}"));
+    assert_eq!(made["min_role"], json!(1), "{made}");
+    assert_eq!(
+        run_named(&mut server, &triggers, "List Books · toast 1", moby.clone()).await,
+        json!({ "notify": "Hi Moby Dick" })
+    );
+    let (_, apps) = server.client.send("GET", "/api/applications", None).await;
+    let app = apps
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["subdomain"] == json!("booksdb"))
+        .unwrap_or_else(|| panic!("{apps}"));
+    assert!(
+        app["triggers"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("List Books · toast 1")),
+        "{app}"
+    );
+    Ok(())
+}
+
+/// Run the trigger called `name` (one of `triggers`, the trigger list) with
+/// `payload`, and answer what its action answered.
+async fn run_named(server: &mut Server, triggers: &Value, name: &str, payload: Value) -> Value {
+    let id = triggers
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == json!(name))
+        .unwrap_or_else(|| panic!("no trigger `{name}`: {triggers}"))["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (status, ran) = server
+        .client
+        .send("POST", &format!("/api/triggers/{id}/run"), Some(payload))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{name}: {ran}");
+    ran["result"].clone()
+}
+
+async fn book_rows(server: &mut Server) -> Vec<Value> {
+    let (_, rows) = server
+        .client
+        .send("GET", "/api/tables/Books/rows", None)
+        .await;
+    rows.as_array().unwrap().clone()
 }
 
 /// A server with the `BooksDB` store defined at its own temp path, which is
@@ -2264,7 +2577,7 @@ fn git(dir: &std::path::Path, args: &[&str]) -> String {
 
 /// The same zip with its `pack.json` edited by `edit` — a variant of a v1
 /// fixture without a second binary checked in.
-fn with_pack(archive: &[u8], edit: impl FnOnce(&mut Value)) -> Vec<u8> {
+pub(crate) fn with_pack(archive: &[u8], edit: impl FnOnce(&mut Value)) -> Vec<u8> {
     let mut source = zip::ZipArchive::new(std::io::Cursor::new(archive)).expect("a zip");
     let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let mut edit = Some(edit);

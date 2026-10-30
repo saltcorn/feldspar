@@ -1173,6 +1173,12 @@ async fn a_sighup_reload_picks_up_a_module_changed_elsewhere() -> sc_error::Resu
     // A module removed elsewhere is dropped by the next signal too.
     sc_module::delete_module(&server.catalog, row.id).await?;
     assert!(sc_server::reload_all(&apps).await.modules_reloaded);
-    assert!(server.modules.modules().get("@saltcorn-test/echo").is_none());
+    assert!(
+        server
+            .modules
+            .modules()
+            .get("@saltcorn-test/echo")
+            .is_none()
+    );
     Ok(())
 }

@@ -77,6 +77,7 @@ use super::archive::Entries;
 use super::{Available, Item, MANIFEST_FILE};
 use crate::handlers::csp_json;
 
+mod actions;
 mod agents;
 mod formulas;
 mod workflows;
@@ -207,7 +208,30 @@ pub(super) fn convert(entries: &Entries) -> Result<Entries> {
         }
     }
 
-    let triggers = convert_triggers(pack, &agents, &mut notes);
+    // v1's actions are translated, not carried by name ([`actions`]): the
+    // triggers', and the ones a view's or a page's button runs without a
+    // trigger, which become triggers of their own. The buttons are rewritten to
+    // name them, so the pack the application is made from is this copy.
+    let mut pack = pack.clone();
+    let trigger_order = actions::pack_trigger_names(&array(&pack, "triggers"));
+    let action_site = actions::Site {
+        schema: &schema,
+        triggers: &trigger_order,
+        store: Some(site.as_str()),
+    };
+    // A trigger or a button whose action was refused is still *declared* by the
+    // application, as one the restore refused is: a view naming it can then be
+    // saved, and says it is missing when it is pressed rather than not being
+    // there at all.
+    let mut refused = Vec::new();
+    let mut triggers = convert_triggers(&pack, &agents, &action_site, &mut refused, &mut notes);
+    triggers.extend(convert_button_actions(
+        &mut pack,
+        &action_site,
+        &mut refused,
+        &mut notes,
+    ));
+    let pack = &pack;
     contents.agents = i64::try_from(agents.agents.len()).unwrap_or(i64::MAX);
     // The MCP servers travel under the LLM providers' choice, as they do in a
     // backup of this system's own.
@@ -232,11 +256,22 @@ pub(super) fn convert(entries: &Entries) -> Result<Entries> {
         );
     }
     contents.triggers = i64::try_from(triggers.len()).unwrap_or(i64::MAX);
-    let trigger_names: Vec<String> = triggers
+    let mut trigger_names: Vec<String> = triggers
         .iter()
-        .filter_map(|t| t.get("name").and_then(Json::as_str).map(str::to_owned))
+        .map(|t| t.document["name"].as_str().unwrap_or_default().to_owned())
         .collect();
-    out.insert("triggers.json".to_owned(), pretty(&Json::Array(triggers))?);
+    for name in refused {
+        if !trigger_names.contains(&name) {
+            trigger_names.push(name);
+        }
+    }
+    let browser_eval = triggers.iter().any(|t| t.browser_eval);
+    out.insert(
+        "triggers.json".to_owned(),
+        pretty(&Json::Array(
+            triggers.into_iter().map(|t| t.document).collect(),
+        ))?,
+    );
 
     let mut store_name = None;
     if let Some(store) = convert_files(entries, &site, wants_store, &user_keys, &mut notes)? {
@@ -254,7 +289,7 @@ pub(super) fn convert(entries: &Entries) -> Result<Entries> {
     }
 
     let tables: Vec<String> = contents.tables.iter().map(|t| t.name.clone()).collect();
-    let application = convert_application(
+    let mut application = convert_application(
         entries,
         pack,
         &site,
@@ -263,6 +298,20 @@ pub(super) fn convert(entries: &Entries) -> Result<Entries> {
         &trigger_names,
         &mut notes,
     );
+    // Some of v1's actions answer the page with JavaScript to run, which the
+    // page's script can only do with `'unsafe-eval'` ([`actions`]).
+    if browser_eval {
+        application.document["csp"] = csp_json(
+            &saltcorn_ui_csp()
+                .directive("script-src", ["'self'", "'unsafe-inline'", "'unsafe-eval'"]),
+        );
+        notes.push(
+            "the application's content security policy allows `'unsafe-eval'`: some of its v1 \
+             actions answer the page with JavaScript to run (going back, submitting a form, \
+             copying to the clipboard, code run in the page)"
+                .to_owned(),
+        );
+    }
     let subdomain = &application.subdomain;
     out.insert(
         format!("applications/{subdomain}.json"),
@@ -1086,18 +1135,29 @@ fn site_name(entries: &Entries) -> String {
 
 // --- triggers -------------------------------------------------------------------
 
-/// v1's actions as this system's triggers.
+/// A trigger the import makes, and whether its action answers the browser
+/// with JavaScript to run ([`actions::Converted::browser_eval`]).
+struct ImportedTrigger {
+    document: Json,
+    browser_eval: bool,
+}
+
+/// v1's triggers as this system's.
 ///
-/// The *name* of the action is carried through unchanged rather than mapped:
-/// where the two systems have an action in common the settings mean the same
-/// thing, and where they do not, `save_trigger` refuses the trigger by name —
-/// "unknown action `modify_row`" — which is a better answer than an action
-/// silently turned into the nearest one that exists.
+/// A trigger's *event* crosses as the same event; its *action* is translated
+/// ([`actions`]) — a v1 built-in action into what does the same thing here, a
+/// v1 multi-step trigger into a body that runs its steps, each built-in step a
+/// trigger of its own. An action that is not one of v1's own (a plugin's) is
+/// carried by name, so that a module installed here that has it runs it, and
+/// `save_trigger` refuses it by name otherwise — which is a better answer than
+/// an action silently turned into the nearest one that exists.
 fn convert_triggers(
     pack: &Map<String, Json>,
     agents: &agents::ConvertedAgents,
+    site: &actions::Site<'_>,
+    refused: &mut Vec<String>,
     notes: &mut Vec<String>,
-) -> Vec<Json> {
+) -> Vec<ImportedTrigger> {
     let mut out = Vec::new();
     for value in array(pack, "triggers") {
         let Some(trigger) = value.as_object() else {
@@ -1110,7 +1170,7 @@ fn convert_triggers(
         }
         // A workflow crosses step for step ([`workflows`]), or not at all.
         let workflow = if trigger.contains_key("steps") {
-            match workflows::convert_workflow(trigger) {
+            match workflows::convert_workflow(trigger, site) {
                 Ok(workflow) => Some(workflow),
                 Err(e) => {
                     notes.push(format!(
@@ -1133,13 +1193,15 @@ fn convert_triggers(
             ));
             continue;
         };
+        let min_role = trigger.get("min_role").and_then(Json::as_i64);
         // v1 consolidates every agent's memories at once; here the action
         // names its agent, so there is one trigger per agent with a memory.
         if text(trigger, "action") == agents::CONSOLIDATE_ACTION {
             let consolidations = agents.consolidations(&name);
             if consolidations.is_empty() {
                 notes.push(format!(
-                    "trigger `{name}` was not imported: it consolidates agents' memories,                      and no agent here has a memory"
+                    "trigger `{name}` was not imported: it consolidates agents' memories, \
+                     and no agent here has a memory"
                 ));
             }
             for (each, configuration) in consolidations {
@@ -1150,13 +1212,21 @@ fn convert_triggers(
                     "action": "consolidate_memory",
                     "configuration": configuration,
                 });
-                if let Some(min_role) = trigger.get("min_role").and_then(Json::as_i64) {
+                if let Some(min_role) = min_role {
                     converted["min_role"] = json!(min_role);
                 }
-                out.push(converted);
+                out.push(ImportedTrigger {
+                    document: converted,
+                    browser_eval: false,
+                });
             }
             continue;
         }
+        let table_event = matches!(when, "insert" | "update" | "delete");
+        let table = trigger
+            .get("table_name")
+            .and_then(Json::as_str)
+            .filter(|t| !t.is_empty());
         let mut out_trigger = Map::new();
         out_trigger.insert("name".to_owned(), json!(name));
         out_trigger.insert(
@@ -1167,17 +1237,107 @@ fn convert_triggers(
         // Only a table event has a table. v1 keeps a table on a `Never` trigger
         // as the rows it can be run against, which this system expresses on the
         // action itself; a channel there would be refused.
-        if matches!(when, "insert" | "update" | "delete") {
-            out_trigger.insert("channel".to_owned(), json!(text(trigger, "table_name")));
+        if table_event {
+            out_trigger.insert("channel".to_owned(), json!(table.unwrap_or_default()));
         }
+        if let Some(min_role) = min_role {
+            out_trigger.insert("min_role".to_owned(), json!(min_role));
+        }
+        let origin = actions::Origin {
+            table,
+            row: if table_event {
+                actions::RowSource::Event
+            } else {
+                actions::RowSource::Payload
+            },
+            formula: &as_written,
+            bindings: Vec::new(),
+        };
+        let action = text(trigger, "action");
+        let mut browser_eval = false;
         if let Some(workflow) = workflow {
             out_trigger.insert("body".to_owned(), json!(sc_action::TriggerBody::WORKFLOW));
             out_trigger.insert("workflow".to_owned(), workflow);
+        } else if actions::is_multi_step(trigger) {
+            // Each step a built-in action is made a trigger of its own, run with
+            // the row as its payload; a step naming a trigger runs that one.
+            let mut steps = Vec::new();
+            for (i, (step_action, step)) in actions::multi_step_steps(trigger).iter().enumerate() {
+                let only_if = text(step, "step_only_if");
+                if !actions::is_builtin(step_action) {
+                    steps.push((step_action.clone(), only_if));
+                    continue;
+                }
+                let mut config = step.clone();
+                config.remove("step_action_name");
+                config.remove("step_only_if");
+                let step_name = actions::made_trigger_name(&name, step_action, i + 1);
+                let step_origin = actions::Origin {
+                    table,
+                    row: actions::RowSource::Payload,
+                    formula: &as_written,
+                    bindings: Vec::new(),
+                };
+                match made_trigger(
+                    &step_name,
+                    &format!("Step {} of the trigger `{name}`.", i + 1),
+                    step_action,
+                    &config,
+                    &step_origin,
+                    site,
+                    min_role,
+                ) {
+                    Ok(made) => {
+                        notes.extend(made.notes);
+                        out.push(made.trigger);
+                        steps.push((step_name, only_if));
+                    }
+                    Err(e) => {
+                        notes.push(format!(
+                            "trigger `{name}` was not imported: step {}: {e}",
+                            i + 1
+                        ));
+                        steps.clear();
+                        break;
+                    }
+                }
+            }
+            if steps.is_empty() {
+                refused.push(name);
+                continue;
+            }
+            match actions::multi_step(&origin, site, &steps) {
+                Ok(converted) => {
+                    insert_action(&mut out_trigger, converted);
+                }
+                Err(e) => {
+                    notes.push(format!("trigger `{name}` was not imported: {}", e.causes()));
+                    refused.push(name);
+                    continue;
+                }
+            }
+        } else if actions::is_builtin(&action) {
+            let config = actions::configuration_of(trigger.get("configuration"));
+            match actions::convert_action(&action, &config, &origin, site) {
+                Ok(converted) => {
+                    browser_eval = converted.browser_eval;
+                    for note in &converted.notes {
+                        notes.push(format!("trigger `{name}` (v1's `{action}`): {note}"));
+                    }
+                    insert_action(&mut out_trigger, converted);
+                }
+                Err(e) => {
+                    notes.push(format!(
+                        "trigger `{name}` was not imported: v1's `{action}` has no counterpart \
+                         here: {}",
+                        e.causes()
+                    ));
+                    refused.push(name);
+                    continue;
+                }
+            }
         } else {
-            out_trigger.insert(
-                "action".to_owned(),
-                trigger.get("action").cloned().unwrap_or(Json::Null),
-            );
+            out_trigger.insert("action".to_owned(), json!(action));
             out_trigger.insert(
                 "configuration".to_owned(),
                 trigger
@@ -1186,12 +1346,236 @@ fn convert_triggers(
                     .unwrap_or_else(|| json!({})),
             );
         }
-        if let Some(min_role) = trigger.get("min_role").and_then(Json::as_i64) {
-            out_trigger.insert("min_role".to_owned(), json!(min_role));
-        }
-        out.push(Json::Object(out_trigger));
+        out.push(ImportedTrigger {
+            document: Json::Object(out_trigger),
+            browser_eval,
+        });
     }
     out
+}
+
+/// A v1 expression where the generated body reads it as v1 did, unchanged.
+fn as_written(source: &str) -> Result<String> {
+    Ok(source.to_owned())
+}
+
+/// A converted action's settings onto a trigger's document.
+fn insert_action(trigger: &mut Map<String, Json>, converted: actions::Converted) {
+    trigger.insert("action".to_owned(), json!(converted.action));
+    trigger.insert("configuration".to_owned(), converted.configuration);
+    if let Some(only_if) = converted.only_if {
+        trigger.insert("only_if".to_owned(), json!(only_if));
+    }
+}
+
+/// A trigger the import makes where v1 had an action and no trigger: run only
+/// when asked (`none`), with the row as its payload.
+struct MadeTrigger {
+    trigger: ImportedTrigger,
+    notes: Vec<String>,
+}
+
+fn made_trigger(
+    name: &str,
+    description: &str,
+    action: &str,
+    config: &Map<String, Json>,
+    origin: &actions::Origin<'_>,
+    site: &actions::Site<'_>,
+    min_role: Option<i64>,
+) -> std::result::Result<MadeTrigger, String> {
+    let converted = actions::convert_action(action, config, origin, site)
+        .map_err(|e| format!("v1's `{action}` has no counterpart here: {}", e.causes()))?;
+    let notes = converted
+        .notes
+        .iter()
+        .map(|note| format!("trigger `{name}` (v1's `{action}`): {note}"))
+        .collect();
+    let browser_eval = converted.browser_eval;
+    let mut document = Map::new();
+    document.insert("name".to_owned(), json!(name));
+    document.insert("description".to_owned(), json!(description));
+    document.insert("when".to_owned(), json!("none"));
+    if let Some(min_role) = min_role {
+        document.insert("min_role".to_owned(), json!(min_role));
+    }
+    insert_action(&mut document, converted);
+    Ok(MadeTrigger {
+        trigger: ImportedTrigger {
+            document: Json::Object(document),
+            browser_eval,
+        },
+        notes,
+    })
+}
+
+/// The v1 built-in actions views, pages and library items run by name, as triggers.
+///
+/// v1 lets an action column, an action segment or a multi-step column's step
+/// name one of its own actions directly, configured in place; here a view only
+/// runs the application's triggers (§12.2). So each such action becomes a
+/// trigger — named after its view or page, the action and its place
+/// ([`actions::made_trigger_name`]), with the view's table and the floor of who
+/// may press it (the view's role and the button's own, whichever is stricter) —
+/// and the button is rewritten to name it. The pack is changed in place, so the
+/// views the application is made from are the rewritten ones.
+fn convert_button_actions(
+    pack: &mut Map<String, Json>,
+    site: &actions::Site<'_>,
+    refused: &mut Vec<String>,
+    notes: &mut Vec<String>,
+) -> Vec<ImportedTrigger> {
+    let mut out = Vec::new();
+    // A library item has no role of its own: it is pressed inside the view or
+    // page that places it, whose role the route checks first.
+    for (kind, key) in [
+        ("view", "views"),
+        ("page", "pages"),
+        ("library item", "library"),
+    ] {
+        let Some(Json::Array(items)) = pack.get_mut(key) else {
+            continue;
+        };
+        for item in items.iter_mut() {
+            let Some(item) = item.as_object_mut() else {
+                continue;
+            };
+            let owner = name_of(item);
+            let table = item
+                .get("table")
+                .and_then(Json::as_str)
+                .filter(|t| !t.is_empty())
+                .map(str::to_owned);
+            let min_role = role(item, "min_role");
+            let mut buttons = Buttons {
+                kind,
+                owner: &owner,
+                table: table.as_deref(),
+                min_role,
+                site,
+                made: 0,
+                out: &mut out,
+                refused: &mut *refused,
+                notes: &mut *notes,
+            };
+            let field = if kind == "view" {
+                "configuration"
+            } else {
+                "layout"
+            };
+            if let Some(value) = item.get_mut(field) {
+                buttons.walk(value, kind == "view");
+            }
+        }
+    }
+    out
+}
+
+/// One view's or page's walk for [`convert_button_actions`].
+struct Buttons<'a> {
+    kind: &'a str,
+    owner: &'a str,
+    table: Option<&'a str>,
+    min_role: i64,
+    site: &'a actions::Site<'a>,
+    made: usize,
+    out: &'a mut Vec<ImportedTrigger>,
+    refused: &'a mut Vec<String>,
+    notes: &'a mut Vec<String>,
+}
+
+impl Buttons<'_> {
+    /// Every action column (`columns`, at the top of a view's configuration)
+    /// and every `action` segment, at any depth.
+    fn walk(&mut self, value: &mut Json, top: bool) {
+        match value {
+            Json::Object(item) => {
+                let kind = item.get("type").and_then(Json::as_str).unwrap_or_default();
+                if kind == "action" {
+                    self.button(item);
+                }
+                if top && let Some(Json::Array(columns)) = item.get_mut("columns") {
+                    for column in columns.iter_mut().filter_map(Json::as_object_mut) {
+                        if column.get("type").and_then(Json::as_str) == Some("Action") {
+                            self.button(column);
+                        }
+                    }
+                }
+                for (key, child) in item.iter_mut() {
+                    if !(top && key == "columns") {
+                        self.walk(child, false);
+                    }
+                }
+            }
+            Json::Array(items) => items.iter_mut().for_each(|i| self.walk(i, false)),
+            _ => {}
+        }
+    }
+
+    fn button(&mut self, item: &mut Map<String, Json>) {
+        let floor = match item.get("minRole").and_then(Json::as_i64) {
+            Some(role) if (1..=100).contains(&role) => role.min(self.min_role),
+            _ => self.min_role,
+        };
+        let name = text(item, "action_name");
+        let configuration = actions::configuration_of(item.get("configuration"));
+        if name == "Multi-step action" {
+            let steps = configuration
+                .get("steps")
+                .and_then(Json::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(Json::Array(names)) = item.get_mut("step_action_names") {
+                for (i, step) in names.iter_mut().enumerate() {
+                    let action = step.as_str().unwrap_or_default().to_owned();
+                    let config = actions::configuration_of(steps.get(i));
+                    if let Some(made) = self.make(&action, &config, floor) {
+                        *step = json!(made);
+                    }
+                }
+            }
+        } else if let Some(made) = self.make(&name, &configuration, floor) {
+            item.insert("action_name".to_owned(), json!(made));
+        }
+    }
+
+    /// The trigger made of `action`, if it is one of v1's own; its name.
+    fn make(&mut self, action: &str, config: &Map<String, Json>, floor: i64) -> Option<String> {
+        if !actions::is_builtin(action) || matches!(action, "Agent" | "Multi-step action") {
+            return None;
+        }
+        self.made += 1;
+        let name = actions::made_trigger_name(self.owner, action, self.made);
+        let origin = actions::Origin {
+            table: self.table,
+            row: actions::RowSource::Payload,
+            formula: &as_written,
+            bindings: Vec::new(),
+        };
+        match made_trigger(
+            &name,
+            &format!("A button of the {} `{}`.", self.kind, self.owner),
+            action,
+            config,
+            &origin,
+            self.site,
+            Some(floor),
+        ) {
+            Ok(made) => {
+                self.notes.extend(made.notes);
+                self.out.push(made.trigger);
+                Some(name)
+            }
+            Err(e) => {
+                self.notes.push(format!(
+                    "a `{action}` button of the {} `{}` was not imported: {e}",
+                    self.kind, self.owner
+                ));
+                self.refused.push(action.to_owned());
+                None
+            }
+        }
+    }
 }
 
 /// A v1 `when_trigger` as this system's event name, or `None` for an event it
@@ -1205,6 +1589,7 @@ fn convert_event(when: &str) -> Option<&'static str> {
         // `none`; so is an API call, which is one of the things that asks.
         "Never" | "API call" => "none",
         "Login" => "login",
+        "Startup" => "startup",
         "Error" => "error",
         "Often" => "often",
         "Hourly" => "hourly",
@@ -2230,9 +2615,8 @@ mod tests {
         );
     }
 
-    /// v1's actions, under the names they had: where this system has the same
-    /// action the settings mean the same thing, and where it does not, the restore
-    /// refuses the trigger by name rather than guessing.
+    /// v1's actions become triggers on the same events, each action translated:
+    /// v1's own `run_js_code` keeps its body, inside the scope v1 gave it.
     #[test]
     fn actions_become_triggers_and_the_events_it_does_not_have_are_reported() {
         let out = convert(&v1_archive()).expect("a conversion");
@@ -2243,7 +2627,14 @@ mod tests {
         assert_eq!(triggers[0]["when"], json!("insert"));
         assert_eq!(triggers[0]["channel"], json!("Books"));
         assert_eq!(triggers[0]["action"], json!("run_js_code"));
-        assert_eq!(triggers[0]["configuration"]["code"], json!("return 1;"));
+        let code = triggers[0]["configuration"]["code"].as_str().unwrap();
+        assert!(code.contains("\nreturn 1;\n"), "{code}");
+        // A table event's row, its fields by name, and the table.
+        assert!(code.contains("{ borrowed_by, cover, id,"), "{code}");
+        assert!(
+            code.ends_with("})(row ?? {}, Table.findOne(\"Books\"), row ?? {});\n"),
+            "{code}"
+        );
         assert_eq!(triggers[0]["min_role"], json!(100));
         // A scheduled trigger has no table, and a channel on one would be refused.
         assert_eq!(triggers[1]["when"], json!("daily"));
@@ -2413,6 +2804,102 @@ mod tests {
         edit(&mut pack);
         entries.insert(PACK.to_owned(), serde_json::to_vec(&pack).unwrap());
         entries
+    }
+
+    /// A v1 button that names one of v1's own actions directly — wherever it is:
+    /// a List's action column, a multi-step column's step, an action segment
+    /// nested in a Show's layout, on a page or in a library item — becomes a
+    /// trigger, and the button names it. A button naming a trigger is left alone.
+    #[test]
+    fn every_kind_of_button_running_a_built_in_action_becomes_a_trigger() {
+        let toast = |text: &str| json!({ "text": text });
+        let out = convert(&with_pack(|pack| {
+            pack["views"][0]["configuration"]["columns"] = json!([
+                { "type": "Action", "action_name": "toast", "minRole": 40,
+                  "configuration": toast("column") },
+                { "type": "Action", "action_name": "Multi-step action",
+                  "step_action_names": ["toast", "Trim"],
+                  "configuration": { "steps": [toast("step"), {}] } },
+                { "type": "Action", "action_name": "Trim", "configuration": {} },
+            ]);
+            pack["views"].as_array_mut().unwrap().push(json!({
+                "name": "BookShow", "viewtemplate": "Show", "table": "Books", "min_role": 1,
+                "configuration": { "layout": { "above": [{ "type": "container", "contents":
+                    { "type": "action", "action_name": "navigate",
+                      "configuration": { "nav_action": "Reload page" } } }] } } }));
+            pack["pages"][0]["layout"] = json!({ "above": [
+                { "type": "action", "action_name": "toast", "configuration": toast("page") }] });
+            pack["library"] = json!([{ "name": "Card", "icon": "", "layout":
+                { "type": "action", "action_name": "toast", "configuration": toast("card") } }]);
+        }))
+        .expect("a conversion");
+        let triggers = document(&out, "triggers.json");
+        let made = |name: &str| {
+            triggers
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == json!(name))
+                .unwrap_or_else(|| panic!("no `{name}` in {triggers}"))
+                .clone()
+        };
+        // The column's floor is the stricter of the view's (80) and its own (40).
+        assert_eq!(made("BookList · toast 1")["min_role"], json!(40));
+        assert_eq!(made("BookList · toast 1")["when"], json!("none"));
+        assert!(
+            made("BookList · toast 2")["configuration"]["code"]
+                .as_str()
+                .unwrap()
+                .contains("`step`")
+        );
+        assert!(
+            made("BookShow · navigate 1")["configuration"]["code"]
+                .as_str()
+                .unwrap()
+                .contains("reload_page")
+        );
+        made("Home · toast 1");
+        made("Card · toast 1");
+
+        let views = document(&out, "applications/booksdb/views.json");
+        let columns = &views[0]["configuration"]["columns"];
+        assert_eq!(columns[0]["action_name"], json!("BookList · toast 1"));
+        assert_eq!(columns[1]["action_name"], json!("Multi-step action"));
+        assert_eq!(
+            columns[1]["step_action_names"],
+            json!(["BookList · toast 2", "Trim"])
+        );
+        assert_eq!(columns[2]["action_name"], json!("Trim"));
+        let show = views
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["name"] == json!("BookShow"))
+            .unwrap();
+        assert_eq!(
+            show["configuration"]["layout"]["above"][0]["contents"]["action_name"],
+            json!("BookShow · navigate 1")
+        );
+        let pages = document(&out, "applications/booksdb/pages.json");
+        assert_eq!(
+            pages[0]["layout"]["above"][0]["action_name"],
+            json!("Home · toast 1")
+        );
+        let library = document(&out, "applications/booksdb/library.json");
+        assert_eq!(library[0]["layout"]["action_name"], json!("Card · toast 1"));
+        // And the application declares every trigger made.
+        let app = document(&out, "applications/booksdb.json");
+        for name in [
+            "BookList · toast 1",
+            "BookShow · navigate 1",
+            "Home · toast 1",
+            "Card · toast 1",
+        ] {
+            assert!(
+                app["triggers"].as_array().unwrap().contains(&json!(name)),
+                "{name}: {app}"
+            );
+        }
     }
 
     /// The builder 4.1: v1's library entries have no ids, so each gets a UUID by

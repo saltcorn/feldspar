@@ -927,9 +927,7 @@ async fn resolve(page: &Page, locator: &Locator, deadline: Instant) -> Result<i6
             }
         }
         if Instant::now() >= until {
-            return Err(Error::invalid(format!(
-                "no element matches `{locator}`"
-            )));
+            return Err(Error::invalid(format!("no element matches `{locator}`")));
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
@@ -956,7 +954,11 @@ async fn query_all(page: &Page, selector: &str) -> Result<Vec<i64>> {
     let ids = page
         .execute(QuerySelectorAllParams::new(root, selector))
         .await
-        .map_err(|e| Error::invalid(format!("`{selector}` is not a CSS selector the page takes ({e})")))?
+        .map_err(|e| {
+            Error::invalid(format!(
+                "`{selector}` is not a CSS selector the page takes ({e})"
+            ))
+        })?
         .result
         .node_ids;
     let mut out = Vec::new();

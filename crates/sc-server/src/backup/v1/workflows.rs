@@ -25,7 +25,8 @@
 //! | `UserForm` | `UserForm`, answers under the step |
 //! | `TerminateWorkflow` | an empty `Set` that ends the run |
 //! | `modify_row` on a table | `update_rows`, its query as the `where` |
-//! | any other action | an `Action` step of that name, as a trigger's action crosses |
+//! | another of v1's own actions | an `Action` step running it as [`super::actions`] converts it, over the context |
+//! | any other action | an `Action` step of that name, as a trigger's plugin action crosses |
 //!
 //! What has no counterpart — a step's `only_if`, a loop's index variable, v1's
 //! locks and error handlers — fails the whole workflow with a reason, rather
@@ -37,6 +38,7 @@ use sc_error::{Error, Result};
 use sc_expr::{object_literal_entries, rewrite_free_refs};
 use serde_json::{Map, Value as Json, json};
 
+use super::actions::{self, Origin, RowSource, Site};
 use super::{array, name_of, text};
 
 /// Names that mean the same thing in a v1 formula and in one here, and so are
@@ -65,7 +67,7 @@ const V1_LAYOUT_KEYS: &[&str] = &["workflow_position"];
 
 /// The workflow document a v1 workflow trigger's `steps` become — what
 /// `triggers.json` carries under `workflow` and the restore saves as version 1.
-pub(super) fn convert_workflow(trigger: &Map<String, Json>) -> Result<Json> {
+pub(super) fn convert_workflow(trigger: &Map<String, Json>, site: &Site<'_>) -> Result<Json> {
     let steps: Vec<Map<String, Json>> = array(trigger, "steps")
         .into_iter()
         .filter_map(|s| s.as_object().cloned())
@@ -83,7 +85,7 @@ pub(super) fn convert_workflow(trigger: &Map<String, Json>) -> Result<Json> {
     let converted = steps
         .iter()
         .map(|step| {
-            convert_step(step, &scope, &names)
+            convert_step(step, &scope, &names, site)
                 .map_err(|e| Error::invalid(format!("step `{}`: {}", name_of(step), e.causes())))
         })
         .collect::<Result<Vec<Json>>>()?;
@@ -106,6 +108,16 @@ impl Scope {
                     let var = text(&config, "query_variable");
                     if !var.is_empty() {
                         aliases.insert(var, format!("context.{name}"));
+                    }
+                }
+                // What v1 merges into its context under a name the step's
+                // settings give is kept under the step here.
+                "webhook" | "insert_any_row" => {
+                    for key in ["response_var", "id_variable"] {
+                        let var = text(&config, key);
+                        if !var.is_empty() {
+                            aliases.insert(var.clone(), format!("context.{name}.{var}"));
+                        }
                     }
                 }
                 "UserForm" => {
@@ -144,6 +156,16 @@ impl Scope {
     }
 }
 
+impl Scope {
+    /// The names v1 had in scope in a step's code, and where each lives here.
+    fn bindings(&self) -> Vec<(String, String)> {
+        self.aliases
+            .iter()
+            .map(|(name, path)| (name.clone(), path.clone()))
+            .collect()
+    }
+}
+
 fn configuration(step: &Map<String, Json>) -> Map<String, Json> {
     let mut config = step
         .get("configuration")
@@ -156,7 +178,12 @@ fn configuration(step: &Map<String, Json>) -> Map<String, Json> {
     config
 }
 
-fn convert_step(step: &Map<String, Json>, scope: &Scope, names: &[String]) -> Result<Json> {
+fn convert_step(
+    step: &Map<String, Json>,
+    scope: &Scope,
+    names: &[String],
+    site: &Site<'_>,
+) -> Result<Json> {
     let name = name_of(step);
     if !text(step, "only_if").trim().is_empty() {
         return Err(Error::invalid(
@@ -213,8 +240,27 @@ fn convert_step(step: &Map<String, Json>, scope: &Scope, names: &[String]) -> Re
             )));
         }
         "" => return Err(Error::invalid("it names no action")),
-        // Any other action, as a trigger's crosses: by name, with its settings,
-        // for the workflow's validation to accept or to refuse by that name.
+        // v1's own actions as [`actions`] converts them, over the run's context
+        // rather than a row.
+        other if actions::is_builtin(other) => {
+            let formula = |source: &str| scope.formula(source);
+            let origin = Origin {
+                table: None,
+                row: RowSource::Context,
+                formula: &formula,
+                bindings: scope.bindings(),
+            };
+            let converted = actions::convert_action(other, &config, &origin, site)
+                .map_err(|e| Error::invalid(format!("v1's `{other}`: {}", e.causes())))?;
+            if let Some(note) = converted.notes.first() {
+                return Err(Error::invalid(format!("v1's `{other}`: {note}")));
+            }
+            json!({ "type": "action", "action": converted.action,
+                    "configuration": converted.configuration })
+        }
+        // Any other action — a plugin's — as a trigger's crosses: by name, with
+        // its settings, for the workflow's validation to accept or to refuse by
+        // that name.
         other => json!({ "type": "action", "action": other, "configuration": config }),
     };
     // A loop ends its run differently here than its body does, but a v1
@@ -338,9 +384,22 @@ mod tests {
         .clone()
     }
 
+    fn site_for<T>(then: impl FnOnce(&Site<'_>) -> T) -> T {
+        let schema = super::super::formulas::V1Schema::of(&Map::new());
+        then(&Site {
+            schema: &schema,
+            triggers: &[],
+            store: None,
+        })
+    }
+
+    fn convert(trigger: &Map<String, Json>) -> Result<Json> {
+        site_for(|site| convert_workflow(trigger, site))
+    }
+
     #[test]
     fn a_query_a_loop_and_a_row_update_become_the_same_program() {
-        let workflow = convert_workflow(&discount_all()).unwrap();
+        let workflow = convert(&discount_all()).unwrap();
         assert_eq!(workflow["start"], json!("step1"));
         let steps = workflow["steps"].as_array().unwrap();
         assert_eq!(
@@ -372,7 +431,7 @@ mod tests {
 
     #[test]
     fn the_shape_is_one_the_engine_reads() {
-        let mut document = convert_workflow(&discount_all()).unwrap();
+        let mut document = convert(&discount_all()).unwrap();
         document["id"] = json!(uuid::Uuid::new_v4());
         document["version"] = json!(1);
         let workflow: sc_workflow::Workflow = serde_json::from_value(document).unwrap();
@@ -390,7 +449,7 @@ mod tests {
             { "name": "keep", "next_step": "", "action_name": "SetContext",
               "configuration": { "ctx_values": "{ shout: title.toUpperCase(), n: count + 1 }" } },
         ] });
-        let workflow = convert_workflow(trigger.as_object().unwrap()).unwrap();
+        let workflow = convert(trigger.as_object().unwrap()).unwrap();
         assert_eq!(
             workflow["steps"][0]["kind"],
             json!({ "type": "user_form", "assign_to": "ask", "fields": [
@@ -422,7 +481,7 @@ mod tests {
     fn what_has_no_counterpart_fails_the_workflow_naming_the_step() {
         let mut trigger = Json::Object(discount_all());
         trigger["steps"][1]["only_if"] = json!("orders.length > 0");
-        let e = convert_workflow(trigger.as_object().unwrap())
+        let e = convert(trigger.as_object().unwrap())
             .unwrap_err()
             .to_string();
         assert!(e.contains("step `step2`") && e.contains("only_if"), "{e}");

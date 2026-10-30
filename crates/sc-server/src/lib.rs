@@ -91,7 +91,9 @@ pub use oauth::{
 // The S3 request signer, for the fake S3 server the automated-backup tests
 // check every request's signature against.
 pub use backup::s3::{Signing as S3Signing, authorization as s3_authorization};
-pub use browser::{BROWSER_NAMES, ChromiumDriver, DriverConfig, detect_browser};
+pub use browser::{
+    BROWSER_NAMES, ChromiumDriver, DriverConfig, check_browser_sandbox, detect_browser,
+};
 pub use chat::AGENT_CHAT_ROUTE;
 pub use sc_agent::{ProviderConnector, StoredProviders};
 

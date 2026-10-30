@@ -86,7 +86,13 @@ pub fn for_restore(
     env: Option<String>,
     encrypted: bool,
 ) -> Result<Option<String>> {
-    for_restore_with(flag, env, encrypted, std::io::stdin().is_terminal(), ask_once)
+    for_restore_with(
+        flag,
+        env,
+        encrypted,
+        std::io::stdin().is_terminal(),
+        ask_once,
+    )
 }
 
 fn for_restore_with(
@@ -173,7 +179,10 @@ mod tests {
             for_backup_with(None, Some("env".into()), never).unwrap(),
             Some("env".into())
         );
-        assert_eq!(for_backup_with(None, Some(String::new()), never).unwrap(), None);
+        assert_eq!(
+            for_backup_with(None, Some(String::new()), never).unwrap(),
+            None
+        );
         assert_eq!(for_backup_with(None, None, never).unwrap(), None);
         assert_eq!(
             for_backup_with(Some(PasswordArg::Prompt), None, || Ok("typed".into())).unwrap(),
@@ -186,8 +195,14 @@ mod tests {
     fn a_restore_asks_only_for_a_protected_backup_and_only_when_it_can() {
         // Not encrypted: nothing is asked and nothing is used.
         let flag = || Some(PasswordArg::Value("flag".into()));
-        assert_eq!(for_restore_with(flag(), None, false, true, never).unwrap(), None);
-        assert_eq!(for_restore_with(None, None, false, true, never).unwrap(), None);
+        assert_eq!(
+            for_restore_with(flag(), None, false, true, never).unwrap(),
+            None
+        );
+        assert_eq!(
+            for_restore_with(None, None, false, true, never).unwrap(),
+            None
+        );
         // Encrypted: flag, then environment, then the terminal.
         assert_eq!(
             for_restore_with(flag(), Some("env".into()), true, true, never).unwrap(),
@@ -205,6 +220,9 @@ mod tests {
         let err = for_restore_with(None, None, true, false, never)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("--password") && err.contains(PASSWORD_ENV), "{err}");
+        assert!(
+            err.contains("--password") && err.contains(PASSWORD_ENV),
+            "{err}"
+        );
     }
 }
