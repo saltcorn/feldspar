@@ -3415,7 +3415,10 @@ One dispatch, for each matching trigger in name order:
 **One trigger's failure is one trigger's failure**: every run is independent, and none of it
 reaches the write that caused it — which has already committed. A request that inserted a row
 gets its row back even when the audit trigger it fired is misconfigured, and the reason is
-reported rather than lost.
+reported rather than lost: logged, and raised as an **`error` event** (`method` `"TRIGGER"`,
+`path` `/<trigger>`, plus `trigger`, `event`, `table` and the row's primary `key` in the
+payload). That event is how an application learns that a mail its update trigger sent was never
+accepted: an `error` trigger can write the outcome back to the row the payload names.
 
 The `error` event is guarded against re-entrancy at exactly one place (the fire-and-forget
 path), so an error raised while handling an error cannot become an infinite loop at the worst

@@ -33,6 +33,8 @@ mod run_python_code;
 mod send_email;
 #[path = "send_email_relay.rs"]
 mod send_email_relay;
+#[path = "trigger_failure_event.rs"]
+mod trigger_failure_event;
 #[path = "tutorial_triggers.rs"]
 mod tutorial_triggers;
 #[path = "undo_action.rs"]

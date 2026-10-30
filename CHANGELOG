@@ -2,6 +2,27 @@
 
 Changes in reverse chronological order.
 
+## A trigger that fails after commit raises the `error` event
+
+When a table trigger's action failed (a `send_email` to an unreachable or refusing SMTP server,
+say), the failure only went to stderr. The write that fired it had already committed, so nothing
+an application could read said the mail was not accepted.
+
+- **`sc-action`**: the fire-and-forget path (`TriggerDispatcher::fire_in`, which table writes,
+  logins, startup and streams use) now raises an `error` event for each trigger that fails, in
+  the same transaction as the failed run. New constructor `Event::trigger_failure`. Its payload
+  is the usual `{kind, message, method, path}`, with `method` `"TRIGGER"` and `path`
+  `/<trigger>`, plus `trigger`, `event` (the failed event's kind), `table` (its channel) and
+  `key` (the row's primary key: the value for a single-column key, an object for a composite
+  one; null when there is no row). The caller and origin are the failed event's. A failure while
+  handling an `error` event raises nothing, as before.
+- So an `error` trigger can write the outcome back to the row, e.g. `update_rows` on the table
+  with `where: id === payload.key` and `error: payload.message`.
+- Test: `crates/sc-core-actions/tests/trigger_failure_event.rs`. An update trigger runs
+  `send_email` with no SMTP settings, and an `error` trigger marks the row failed with the
+  message.
+- §10.2 of the design notes the new event.
+
 ## First-run onboarding: "How do you want to build?" (TODO O1.1)
 
 The first admin to sign in now gets a sequence of modal dialogs that sets up what their answer

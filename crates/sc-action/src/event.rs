@@ -323,6 +323,51 @@ impl Event {
         }))
     }
 
+    /// The **`error`** event for a trigger whose run **failed** on an event
+    /// nobody was waiting on — a table write's, a login's, a stream element's.
+    ///
+    /// Such a failure has no response to become, so without this an app could
+    /// not tell that its `send_email` never reached the mail server: the write
+    /// that fired it had long since committed. The payload is
+    /// [`error`](Event::error)'s, so an alerting trigger needs no second shape,
+    /// with `method` `"TRIGGER"` and `path` `/<trigger>`, plus what identifies
+    /// the run:
+    ///
+    /// - `trigger` — the trigger that failed;
+    /// - `event` — the kind of the event it was handling (`"update"`, …);
+    /// - `table` — the event's channel (the table, for a table event), or null;
+    /// - `key` — the affected row's primary key, or null: the value for a
+    ///   single-column key, an object of the columns for a composite one.
+    ///
+    /// The caller and origin are the failed event's: the person whose write
+    /// set this off is who the failure happened to.
+    pub fn trigger_failure(
+        failed: &Event,
+        trigger: &str,
+        error: &Error,
+        key: Option<Json>,
+    ) -> Event {
+        let mut event = Event::error(
+            error.kind(),
+            format!(
+                "trigger `{trigger}` on the {} event: {}",
+                failed.kind,
+                sc_error::format_chain(error)
+            ),
+            "TRIGGER",
+            &format!("/{trigger}"),
+        )
+        .caller(failed.role, failed.user.clone())
+        .from_origin(failed.origin());
+        if let Json::Object(payload) = &mut event.payload {
+            payload.insert("trigger".to_owned(), Json::from(trigger));
+            payload.insert("event".to_owned(), Json::from(failed.kind.as_str()));
+            payload.insert("table".to_owned(), failed.channel.clone().into());
+            payload.insert("key".to_owned(), key.unwrap_or(Json::Null));
+        }
+        event
+    }
+
     /// The **`stream`** event: an element arrived on the stream named `stream`
     /// (TODO "Streams" §8).
     ///

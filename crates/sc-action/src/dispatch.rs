@@ -434,8 +434,21 @@ impl TriggerDispatcher {
     /// [`fire`](TriggerDispatcher::fire) **inside a transaction** — see
     /// [`dispatch_in`](TriggerDispatcher::dispatch_in).
     pub async fn fire_in(&self, catalog: &Catalog, event: &Event, tx: Option<&SharedTx>) {
+        self.fire_keyed(catalog, event, tx, None).await;
+    }
+
+    /// [`fire_in`](TriggerDispatcher::fire_in), with the primary key of the
+    /// event's row — what a failure's `error` event names the row by
+    /// ([`Event::trigger_failure`]). Only the row layer knows the key.
+    async fn fire_keyed(
+        &self,
+        catalog: &Catalog,
+        event: &Event,
+        tx: Option<&SharedTx>,
+        key: Option<Json>,
+    ) {
         if event.kind != EventKind::Error {
-            self.report(catalog, event, tx).await;
+            self.report(catalog, event, tx, key).await;
             return;
         }
         if HANDLING_ERROR.try_with(|()| ()).is_ok() {
@@ -444,12 +457,28 @@ impl TriggerDispatcher {
             return;
         }
         HANDLING_ERROR
-            .scope((), async { self.report(catalog, event, tx).await })
+            .scope((), async { self.report(catalog, event, tx, None).await })
             .await;
     }
 
-    /// [`dispatch`](TriggerDispatcher::dispatch), logging what failed.
-    async fn report(&self, catalog: &Catalog, event: &Event, tx: Option<&SharedTx>) {
+    /// [`dispatch`](TriggerDispatcher::dispatch), logging what failed — and
+    /// raising each failure as an `error` event (§16), so an application can
+    /// observe a trigger that failed where nobody was waiting for it: a mail
+    /// that was never accepted is otherwise invisible to everything but stderr.
+    ///
+    /// Not for a failure *while handling* an error event, which is what the
+    /// re-entrancy guard in [`fire_in`](TriggerDispatcher::fire_in) is for; it
+    /// is skipped here rather than left for the guard to drop, so the rule
+    /// reads where it applies. In `tx`, like the failed run: the alert's writes
+    /// land where the event's did, and a transaction that holds the write lock
+    /// is never waited on by a write outside it.
+    async fn report(
+        &self,
+        catalog: &Catalog,
+        event: &Event,
+        tx: Option<&SharedTx>,
+        key: Option<Json>,
+    ) {
         for run in self.dispatch_in(catalog, event, tx).await {
             if let Err(e) = run.outcome {
                 eprintln!(
@@ -458,6 +487,10 @@ impl TriggerDispatcher {
                     event.kind,
                     sc_error::format_chain(&e)
                 );
+                if event.kind != EventKind::Error {
+                    let failure = Event::trigger_failure(event, &run.trigger, &e, key.clone());
+                    Box::pin(self.fire_in(catalog, &failure, tx)).await;
+                }
             }
         }
     }
@@ -801,7 +834,9 @@ impl TableEvents for TriggerDispatcher {
         // (§10.3, decision 6).
         let mut event = table_event(&write);
         reveal_secrets(catalog, write.table, &mut event);
-        self.fire_in(catalog, &event, write.tx.as_ref()).await;
+        let key = row_key(write.table, &write.row);
+        self.fire_keyed(catalog, &event, write.tx.as_ref(), key)
+            .await;
         Ok(())
     }
 
@@ -828,6 +863,22 @@ fn table_event(write: &TableWrite<'_>) -> Event {
         None => event
             .caller(ROLE_PUBLIC, None)
             .in_changeset(sc_catalog::changeset::current()),
+    }
+}
+
+/// The primary key of a written row, as a trigger failure's `error` event names
+/// it: the value for a single-column key, an object of the key's columns for a
+/// composite one, and `None` for a table with no key.
+fn row_key(table: &sc_catalog::Table, row: &Json) -> Option<Json> {
+    match table.primary_key.as_slice() {
+        [] => None,
+        [column] => row.get(column).cloned(),
+        columns => Some(Json::Object(
+            columns
+                .iter()
+                .map(|c| (c.clone(), row.get(c).cloned().unwrap_or(Json::Null)))
+                .collect(),
+        )),
     }
 }
 
