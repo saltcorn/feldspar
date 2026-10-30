@@ -43,6 +43,7 @@ members = [
     "crates/sc-db",
     "crates/sc-db-postgres",
     "crates/sc-db-sqlite",
+    "crates/sc-migrate",
     # Layer 3 — types
     "crates/sc-types",
     # Layer 4 — catalog
@@ -181,6 +182,7 @@ sc-python = { path = "crates/sc-python", default-features = false }
 sc-db = { path = "crates/sc-db" }
 sc-db-postgres = { path = "crates/sc-db-postgres" }
 sc-db-sqlite = { path = "crates/sc-db-sqlite" }
+sc-migrate = { path = "crates/sc-migrate" }
 sc-types = { path = "crates/sc-types" }
 sc-catalog = { path = "crates/sc-catalog" }
 sc-auth = { path = "crates/sc-auth" }

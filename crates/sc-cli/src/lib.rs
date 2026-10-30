@@ -44,6 +44,7 @@ use sc_catalog::{
     Catalog, DbConnections, FileStoreConnections, connect_all_db_connections,
     connect_all_file_stores,
 };
+use sc_db::DatabaseDriver;
 use sc_error::{Context, Error, Result};
 use sc_files::{FileStoreDef, connect_from_def};
 
@@ -58,14 +59,40 @@ pub use db::{DbConfig, Serving};
 /// never started without the sandbox instead (README §2.9).
 pub const SECCOMP_PROFILE: &str = include_str!("../../../deploy/docker/seccomp.json");
 
+/// Apply the pending migrations to `driver`'s database, saying on stderr what
+/// runs and how long it took. A database new to Feldspar is recorded as having
+/// them all, silently: there is nothing to tell.
+pub async fn migrate_database(driver: &dyn DatabaseDriver) -> Result<sc_migrate::Report> {
+    sc_migrate::run(driver, &mut |event| match event {
+        sc_migrate::Event::Stamped { .. } => {}
+        sc_migrate::Event::Applying(migration) => eprintln!(
+            "feldspar: applying migration `{}` ({})",
+            migration.id, migration.description
+        ),
+        sc_migrate::Event::Applied {
+            migration,
+            duration,
+        } => eprintln!(
+            "feldspar: migration `{}` applied in {} ms",
+            migration.id,
+            duration.as_millis()
+        ),
+    })
+    .await
+}
+
 /// Connect to the primary database described by `db`, initialise the
 /// [`Catalog`] from its live schema, and ensure the platform tables (`users`,
 /// `_fd_applications`, `_fd_file_stores`, `_fd_tables`) exist.
 ///
 /// This is the whole "bring the data layer up" step of `feldspar serve`. The
-/// first real connection happens inside [`Catalog::init`] (introspection), so a
-/// database that is unreachable or misconfigured fails here — with the redacted
+/// first real connection happens in [`migrate_database`], so a database that is
+/// unreachable or misconfigured fails here — with the redacted
 /// [`DbConfig::target`] in the message rather than a silent, half-booted server.
+///
+/// **Migrations run first** (technical design §5.3), before the catalog reads
+/// the schema: each sees the schema of the release before it, and the catalog
+/// and the bootstraps see what they leave.
 ///
 /// Every bootstrap is idempotent (each no-ops when its table already exists), so
 /// this runs on every boot: a legacy database gains the tables on first serve,
@@ -81,6 +108,9 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
         .connect()
         .await
         .with_context(|| format!("connecting to database {}", db.target()))?;
+    migrate_database(driver.as_ref())
+        .await
+        .with_context(|| format!("migrating database {}", db.target()))?;
     let catalog = Catalog::init(driver)
         .await
         .with_context(|| format!("reading the schema of database {}", db.target()))?;

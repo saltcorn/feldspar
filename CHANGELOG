@@ -2,6 +2,38 @@
 
 Changes in reverse chronological order.
 
+## Migrations: database changes the bootstrap cannot make run once, on the first start
+
+A new crate, `sc-migrate`, holds an ordered registry of migrations (`MIGRATIONS`, empty for now)
+and the runner that applies them (TECHNICAL_DESIGN §5.3, TODO M1).
+
+- **A migration** has a date-prefixed id (`2026-11-02-agent-traits`) and a body that is either
+  SQL, one script per backend (`migrations/<id>/{postgres,sqlite}.sql`, `None` where it has
+  nothing to do), or a Rust function over a `MigrationCtx` (the transaction, the backend and
+  its placeholder, `table_exists`, `column_exists`). Postgres SQL is no longer meant to be
+  translated to SQLite. `check_registry` refuses malformed, repeated or out-of-order ids.
+- **What ran is recorded** in `_fd_migrations` (id, applied_at, version, duration_ms). A start
+  reads it once, so nothing re-runs and a migration need not be idempotent.
+- **`sc_cli::connect_catalog` migrates before `Catalog::init`**, so every command that opens the
+  database does, each migration sees the previous release's schema, and the catalog and the
+  bootstraps see the result. A database without `_fd_config` (new to Feldspar) is recorded as
+  having every migration and runs none. Each pending migration runs in its own transaction
+  together with its record, under a lock (a Postgres advisory lock; SQLite's `BEGIN
+  IMMEDIATE`), so two processes starting together apply it once. A failure rolls it back and
+  stops the start, naming it; a recorded id this binary does not know (a newer release
+  migrated the database) refuses to start. Applied migrations are logged to stderr with their
+  durations.
+- **`feldspar migrate [status]`**: run the pending migrations and say what happened, or list
+  applied, pending and unknown ones without changing anything.
+- **Clear all keeps `_fd_migrations`**: the schema it describes stays.
+- `bootstrap_table`'s refusal to add a `NOT NULL` column to a table with rows no longer says
+  there is no migration framework. `TABLES_RENAME.sql` is frozen: nothing is added to it.
+- Tests: `crates/sc-migrate/tests/migrate.rs` runs each scenario on SQLite and Postgres (a new
+  database recorded, not migrated; an older one running each migration once, including a
+  Postgres-only one and a later one; a failure leaving neither change nor record; the
+  newer-release refusal; two concurrent runners; `run_one`), plus the registry checks.
+  `clear_all_api` checks the record survives a clear.
+
 ## Apps serve no generic row API by default; custom queries run as their caller
 
 **Connecting a table is no longer publishing it.** An application's `tables` are what its custom

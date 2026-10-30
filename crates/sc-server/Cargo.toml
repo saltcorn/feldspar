@@ -100,6 +100,8 @@ sc-core-traits.workspace = true
 # with this server's application router.
 sc-check.workspace = true
 sc-db.workspace = true
+# Clear all keeps the migration record (`sc_migrate::MIGRATIONS_TABLE`).
+sc-migrate.workspace = true
 sc-db-postgres.workspace = true
 sc-query.workspace = true
 sc-types.workspace = true

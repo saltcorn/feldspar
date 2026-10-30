@@ -36,5 +36,13 @@ you add a service that holds the catalog in a new way. To reproduce a leak, run 
 ## Status
 
 The system is in prototype status. Do not add any code to handle backwards compatibility with 
-previously created applications. However, if the database needs to migrate, add SQL commands 
-(which should be idempotent) to TABLE_RENAME.sql so we can manually migrate a handful of running systems
+previously created applications.
+
+If the database needs a change the bootstrap cannot make (a rename, a type or nullability change,
+rewriting stored data), add a migration to `crates/sc-migrate`, with a test that runs it with
+`run_one`. Additive changes (a new table, a new nullable column) stay with the bootstrap. The
+migration system is documented in docs/TECHNICAL_DESIGN.md §5.3 (the design: when migrations run,
+how they are recorded, locking, new vs. older databases) and in the crate docs at the top of
+`crates/sc-migrate/src/lib.rs` (how to write one: ids, SQL vs. Rust bodies, why a migration must
+not use the catalog). See the tests in `crates/sc-migrate/tests/migrate.rs` for examples of both
+kinds. `TABLES_RENAME.sql` is frozen: never add to it.

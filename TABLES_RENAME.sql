@@ -1,4 +1,10 @@
 -- ---------------------------------------------------------------------------
+-- FROZEN (2026-10-30). Database changes are now migrations, applied once on the
+-- first start of the release that brings them (`crates/sc-migrate`, technical
+-- design §5.3). Nothing is added to this file any more; it stays only to bring
+-- a database from before the migration framework up to date by hand.
+-- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
 -- Feldspar: rename the metadata tables from the `_sc_` prefix to `_fd_`.
 -- ---------------------------------------------------------------------------
 --

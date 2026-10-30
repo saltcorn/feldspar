@@ -23,6 +23,8 @@
 //!   first user is created with one.
 //! - **File stores' directories**, only for the stores the admin ticked.
 //!
+//! The migration record (`_fd_migrations`) stays: the schema it describes does.
+//!
 //! Settings go back to their defaults at once where this process applies them
 //! from the database (localisation, development logging). **The TLS settings
 //! stay**, with the ACME cache: they say how this host serves, a backup leaves
@@ -388,7 +390,9 @@ async fn clear_system_rows(catalog: &Catalog, report: &mut ClearReport) {
 /// The ACME cache goes with them because a cleared account and certificate is
 /// a fresh order against the CA's rate limits for names it already certified.
 async fn delete_rows(catalog: &Catalog, table: &str) -> Result<()> {
-    if table == sc_config::ACME_CACHE_TABLE {
+    // The migration record describes the schema, which stays; emptied, the next
+    // start would re-run every migration against tables that already have them.
+    if table == sc_config::ACME_CACHE_TABLE || table == sc_migrate::MIGRATIONS_TABLE {
         return Ok(());
     }
     let mut delete = Delete::from(table);

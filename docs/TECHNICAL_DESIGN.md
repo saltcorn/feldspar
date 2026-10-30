@@ -84,7 +84,8 @@ feldspar/
 │  │                              #    PageRank, rendering to a token budget. No store, no deps
 │  │                              #    in the tree; its C grammars behind the `grammars` feature
 │  ├─ sc-bus/                     # 1. message bus trait + drivers (pg NOTIFY, in-proc, redis…)
-│  ├─ sc-db/                      # 2. DatabaseDriver trait, connection, migrations, tx
+│  ├─ sc-db/                      # 2. DatabaseDriver trait, connection, tx
+│  ├─ sc-migrate/                 # 2. migrations of the primary database: registry, runner (§5.3)
 │  │   ├─ sc-db-postgres/         #    Postgres driver (MVP)
 │  │   └─ sc-db-sqlite/           #    SQLite driver (primary database, or a file in a store)
 │  ├─ sc-types/                   # 3. type system: RichType, BasicType, attributes, validation
@@ -597,9 +598,8 @@ Design rules from GOALS:
   identity key would look like a key somebody has to type). The third is what makes the
   first two honest — the admin UI tells the admin what a key *does*, not what creating it
   was supposed to do, which differ for every table Saltcorn picks up as it finds it.
-- **Migrations are arrays of Postgres SQL values** translated per-dialect by `dialect()`.
-  Per GOALS, we **do not** run schema-changing migrations during early development — we
-  evolve the initial setup instead until the metadata schema is stable.
+- **Migrations are not translated between dialects.** A migration carries its own SQL per
+  backend, or is Rust (§5.3); `dialect()` renders `sc-query` statements and nothing else.
 
 ### 5.0 Secondary databases (Connections)
 
@@ -773,6 +773,115 @@ and `rls_available` is false), no `listen_notify` (§16's bus does not use the d
 `unlogged_tables`. Row constraints, which are generated as PL/pgSQL triggers, and full-text
 indexes, which are `to_tsvector` expressions, are Postgres-only for now: they fail at the
 database with the database's own message rather than being silently skipped.
+
+### 5.3 Migrations (`sc-migrate`)
+
+A release that needs the primary database in a different shape brings it there itself, on its
+first start. Two mechanisms share that work, and the line between them is what each can do
+without being told what the database held before:
+
+- **The bootstrap** (`Catalog::bootstrap_table` and the `bootstrap_*` functions every crate
+  has) creates a table that is missing and adds a column that is missing — nullable, or
+  `NOT NULL` on an empty table. It reads the introspection the catalog does anyway, so it costs
+  nothing on a boot where nothing is missing, and it is what a fresh database is built by.
+- **A migration** does everything else: renames, a type or nullability change, rewriting stored
+  JSON, backfilling a column from another, deleting rows a release no longer reads, replacing a
+  trigger or function. It runs **once** per database and is recorded, so a boot never re-runs
+  it and a migration need not be idempotent.
+
+Migrations start empty: the framework's first release has none. What `TABLES_RENAME.sql` holds
+is frozen, for bringing a database from before the framework up to date by hand; nothing is
+added to it again.
+
+**A migration is a Rust value in one ordered registry**, `sc_migrate::MIGRATIONS`:
+
+```rust
+pub struct Migration {
+    /// Date-prefixed, lowercase, `-`-separated: `2026-11-02-agent-traits`. Sorting the ids is
+    /// the order they run in; two branches each adding one do not collide.
+    pub id: &'static str,
+    /// One sentence, for the log and `feldspar migrate status`.
+    pub description: &'static str,
+    pub body: Body,
+}
+
+pub enum Body {
+    /// One script per backend, `include_str!`ed from `migrations/<id>/postgres.sql` and
+    /// `migrations/<id>/sqlite.sql`. `None`: the migration has nothing to do on that backend
+    /// (and is still recorded there).
+    Sql { postgres: Option<&'static str>, sqlite: Option<&'static str> },
+    /// For what SQL says badly — reshaping stored JSON, a step that depends on what is there.
+    Rust(fn(&mut MigrationCtx<'_>) -> BoxFuture<'_, Result<()>>),
+}
+```
+
+- **SQL is the default**: DDL and set-based updates, reviewed as they will run. There is no
+  Postgres-to-SQLite translation; the two backends differ too much (no `DO` blocks, no
+  `ADD COLUMN IF NOT EXISTS`, a table rebuild for any column change, different JSON functions)
+  for one to be derived from the other.
+- **Rust is for JSON and for conditions**: read the rows, change each as a
+  `serde_json::Value`, write it back. One implementation serves both backends.
+- **A migration is frozen.** It is written against the schema of the release before it, so it
+  must not use anything that describes the current one: no `Catalog`, `Table`, field metadata,
+  or a crate's row structs, which a later release will change under it. `MigrationCtx` gives
+  it the transaction (`batch`, `query` and `execute` with binds), the backend and its
+  placeholder spelling, and `table_exists` / `column_exists` — nothing more.
+- They live in one crate, `sc-migrate`, which depends on `sc-db` only, so that the order is one
+  list read top to bottom rather than something assembled from every crate.
+
+**What has run** is recorded in the primary database:
+
+```sql
+CREATE TABLE "_fd_migrations" (
+  "id"          text PRIMARY KEY,
+  "applied_at"  timestamptz NOT NULL,
+  "version"     text NOT NULL,     -- the CARGO_PKG_VERSION that applied it
+  "duration_ms" bigint NOT NULL
+);
+```
+
+(v1 records its own in `_sc_migrations`, so the two do not meet in a shared schema.)
+
+**When it runs.** `sc_cli::connect_catalog` runs `sc_migrate::run(&driver)` after connecting
+and **before** `Catalog::init` and every bootstrap — so every command that opens the database
+migrates it, a migration sees the previous release's schema, and the catalog introspects the
+result. A migration that needs a column the bootstrap would add therefore adds it itself.
+
+1. One query: `SELECT id FROM "_fd_migrations"`. Every id known: done.
+2. **No `_fd_migrations` and no `_fd_config`** — a new database, or an existing one Feldspar is
+   being pointed at for the first time (`_fd_config` is bootstrapped on every start, so every
+   database Feldspar has started against has it): create `_fd_migrations` and record **every**
+   migration as applied without running it. The bootstrap then builds the current shape.
+3. **No `_fd_migrations`, but `_fd_config`** — a database from before the framework: create
+   it empty, and continue as below (every migration is newer than such a database).
+4. Each pending id, in order, in **its own transaction**: take the lock (a transaction-scoped
+   advisory lock on Postgres, which also covers creating the table; SQLite's transactions
+   begin `IMMEDIATE`), check again that the id is not recorded, run the body, insert the
+   record, commit. The change
+   and its record commit together, so a crash cannot leave one without the other; the lock
+   means two processes starting together (a deploy, a CLI command beside the server) apply it
+   once.
+5. **A failure** rolls that migration back and stops the start with its id and the database's
+   message. Those before it stay applied, and the next start resumes from it.
+6. **An id in `_fd_migrations` this binary does not know** means a newer release has migrated
+   the database. The start is refused rather than running older code against it.
+
+Each applied migration is logged to stderr with its duration. Nothing is backed up first: that
+is the deployment's job. Clear all leaves `_fd_migrations` alone — it describes the schema,
+which stays — or the next start would re-run every migration against tables that have them. `feldspar migrate status` lists applied and pending ids; `feldspar migrate`
+runs the pending ones and reports each.
+
+**Scope.** The primary database only. A connected database holds application tables and
+nothing of Feldspar's (a SQLite one's `_fd_object_comments` excepted, which no migration
+touches). Backups are unaffected: they are JSON with their own `FORMAT_VERSION`,
+restored through current code.
+
+**Tests.** The framework is tested on both backends: a new database is stamped and runs
+nothing; a database with `_fd_*` tables but no record runs everything; a second start runs
+nothing; a failing migration leaves neither its change nor its record; an unknown id refuses;
+two concurrent runners apply a migration once. Every migration has a test of its own: a fixture
+builds the shape it migrates from, `sc_migrate::run_one(id)` runs it alone, and the result is
+checked — on each backend it has a body for.
 
 ---
 
@@ -12572,7 +12681,7 @@ The rules, each chosen so that "on every load" is safe:
   the code that wrote it, and an admin's own field on a module table (`mail_messages.handled`) is
   theirs. A declared field whose type or reference the database disagrees with is reported as an
   issue on the module's card and left alone: retyping a column with rows in it is a migration, and
-  there is no migration framework (§3.3).
+  migrations (§5.3) are Feldspar's own, not a module's.
 - **A field an upgrade adds is nullable**, whatever it declares, with no default: the table has
   rows, and `NOT NULL` on them needs a value nobody declared.
 - **Table settings belong to the creation.** `label`, `ownership` and the minimum roles go into

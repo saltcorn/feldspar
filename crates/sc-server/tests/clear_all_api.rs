@@ -359,6 +359,19 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
         "{preview}"
     );
 
+    // A migration on record, which must outlive the clear: the schema it
+    // describes does.
+    const RECORDED: sc_migrate::Migration = sc_migrate::Migration {
+        id: "2026-01-01-recorded",
+        description: "nothing",
+        body: sc_migrate::Body::Sql {
+            postgres: None,
+            sqlite: None,
+        },
+    };
+    sc_migrate::run_one(server.catalog.primary().as_ref(), &[RECORDED], RECORDED.id).await?;
+    server.catalog.reload().await?;
+
     let report = ok(
         c,
         "POST",
@@ -367,6 +380,17 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
     )
     .await;
     assert_eq!(report["warnings"], json!([]), "{report}");
+    let migrations = server
+        .catalog
+        .primary()
+        .query(&sc_query::Statement::raw(
+            "SELECT id FROM \"_fd_migrations\"",
+            Vec::new(),
+        ))
+        .await?
+        .try_collect()
+        .await?;
+    assert_eq!(migrations.len(), 1, "the migration record stays");
 
     // The tables are gone.
     assert!(server.catalog.get("books")?.is_none());

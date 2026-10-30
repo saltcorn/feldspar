@@ -23,7 +23,7 @@ use sc_cli::{
     connect_catalog, connect_file_stores, connect_stored_databases, connect_stored_file_stores,
     extract_file_stores,
 };
-use sc_error::Result;
+use sc_error::{Context, Result};
 use sc_server::{AppMounts, ServerConfig, ServiceManager, admin_handlers, mount_all, serve};
 
 #[tokio::main]
@@ -49,6 +49,7 @@ async fn run(args: &[String]) -> Result<()> {
         Some("build-app") => build_app_command(&args[1..]).await,
         Some("api") => api_command(&args[1..]).await,
         Some("get-cfg") => get_cfg_command(&args[1..]).await,
+        Some("migrate") => migrate_command(&args[1..]).await,
         Some("set-cfg") => set_cfg_command(&args[1..]).await,
         Some("auth") => auth_command(&args[1..]).await,
         Some("mcp-token") => mcp_token_command(&args[1..]).await,
@@ -1069,6 +1070,88 @@ async fn remove_query_command(args: &[String]) -> Result<()> {
         parsed.app
     );
     reemit_client(&catalog, &saved).await;
+    Ok(())
+}
+
+/// `feldspar migrate [database flags]` applies the pending migrations (§5.3)
+/// and says what it did; `feldspar migrate status` lists what is applied and
+/// what is pending, and changes nothing.
+///
+/// Every command that opens the database migrates it anyway, `serve` included,
+/// so this is for running them at a time of the operator's choosing — before a
+/// restart, with the old server stopped — and for watching them run.
+async fn migrate_command(args: &[String]) -> Result<()> {
+    let (db, rest) = DbConfig::extract(args)?;
+    let status = match rest.as_slice() {
+        [] => false,
+        [word] if word == "status" => true,
+        _ => {
+            return Err(sc_error::Error::config(format!(
+                "usage: feldspar migrate [status] [database flags] (got `{}`)",
+                rest.join(" ")
+            )));
+        }
+    };
+    if let Some(source) = db.source() {
+        eprintln!("feldspar: database configured from {source}");
+    }
+    let driver = db
+        .connect()
+        .await
+        .with_context(|| format!("connecting to database {}", db.target()))?;
+    sc_log::set_log_sql(false);
+    if status {
+        return print_migration_status(&sc_migrate::status(driver.as_ref()).await?);
+    }
+    let report = sc_cli::migrate_database(driver.as_ref()).await?;
+    match (report.stamped, report.applied.len()) {
+        (0, 0) => println!("The database is up to date; there was nothing to migrate."),
+        (0, n) => println!("Applied {n} migration{}.", if n == 1 { "" } else { "s" }),
+        (n, _) => println!(
+            "The database is new to Feldspar: recorded {n} migration{} as applied, since the \
+             tables are created in their current shape.",
+            if n == 1 { "" } else { "s" }
+        ),
+    }
+    Ok(())
+}
+
+/// What `feldspar migrate status` prints.
+fn print_migration_status(status: &sc_migrate::Status) -> Result<()> {
+    if status.new_database {
+        println!(
+            "The database is new to Feldspar. The next start creates its tables in their current \
+             shape and records every migration ({}) as applied.",
+            status.pending.len()
+        );
+        return Ok(());
+    }
+    if status.applied.is_empty() {
+        println!("Applied: none");
+    } else {
+        println!("Applied:");
+        for record in &status.applied {
+            println!(
+                "  {}  {}  by {} in {} ms",
+                record.id, record.applied_at, record.version, record.duration_ms
+            );
+        }
+    }
+    if status.pending.is_empty() {
+        println!("Pending: none");
+    } else {
+        println!("Pending (the next start applies these, in this order):");
+        for migration in &status.pending {
+            println!("  {}  {}", migration.id, migration.description);
+        }
+    }
+    if !status.unknown.is_empty() {
+        println!(
+            "Unknown: {} — applied by a newer release; this binary will not start against \
+             this database.",
+            status.unknown.join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -3131,6 +3214,7 @@ fn print_usage() {
     eprintln!("  feldspar api remove-query --app SUBDOMAIN [--api MOUNT] --name NAME");
     eprintln!("  feldspar check run [--app SUBDOMAIN] [--checklist NAME] [database flags]");
     eprintln!("  feldspar check list [--app SUBDOMAIN] [--checklist NAME] [database flags]");
+    eprintln!("  feldspar migrate [status] [database flags]");
     eprintln!("  feldspar get-cfg [KEY] [--json] [database flags]");
     eprintln!("  feldspar set-cfg KEY [VALUE] [database flags]   (no VALUE: read it from stdin)");
     eprintln!(

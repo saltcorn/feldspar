@@ -229,7 +229,7 @@ Models and model instances: stored in `_fd_models` and `_fd_model_instances` tab
 
 Users: users are stored in a database table called `users` in the primary database. Passwords are stored encrypted according to best practices. The user primary key should be UUID, for importing legacy saltcorn applications where the user id was autoincrementing integers, a legacy_id field can be created as needed. Initially every user has an email, but this field can be deleted by the admin and a different field can be introduced. Code should never assume the user has any other field than the id (which must not be deletable). Admin can add any field to the user table.
 
-Migrations: Similar to Saltcorn1. Migration is an array of Postgresql SQL valus. Databse drivers must be able to translate to their own SQL dialect. Howver, do not start changing the table definitions with migrations until we are much more stable - until then change the initial setup.
+Migrations: Similar to Saltcorn1: an ordered list of migrations, each run once on the first start of a release that adds it and recorded so that it never runs again. A migration is SQL (one file per database backend) or a Rust function, registered in Rust. Additive changes (new tables, new nullable columns) are still made by the bootstrap; a migration is for what the bootstrap cannot do. See TECHNICAL_DESIGN §5.3.
 
 ### HTTP server
 
