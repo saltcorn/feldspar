@@ -2,6 +2,24 @@
 
 Changes in reverse chronological order.
 
+## Trigger docs: a trigger that fails raises the `error` event
+
+The `error` event for a failed trigger (below) was only in the design document, so app builders
+had no way to know the event existed or how to use it.
+
+- **`docs/tutorial-triggers.md`**: new section "When a trigger fails: the `error` event", after
+  `send_email`. It says that the write still succeeds and nothing is written to the row
+  automatically. It lists the payload fields and shows an `error` trigger running
+  `update_rows` that marks the row failed. It also covers what raises no event: a trigger
+  run directly (Run button, `POST /actions/{name}`, `trigger("…").run()`), which returns its
+  failure to the caller instead, and a failure inside an `error` trigger. The "Errors are
+  events" bullet under "Things that trip people up" now mentions failed triggers too.
+- The documented `where` is `id === payload.key && payload.method === "TRIGGER"`, so a request's
+  `error` event, which has no `key`, matches no row.
+- Test: `crates/sc-core-actions/tests/trigger_failure_event.rs` now uses that `where`. A new
+  test checks that a request's `error` event runs the trigger without failing and leaves every
+  row alone.
+
 ## Settings → System: which version is installed, and Restart
 
 Users could not tell which build of feldspar a server was running. A new **System** tab, last

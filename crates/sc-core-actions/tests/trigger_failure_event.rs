@@ -10,14 +10,14 @@
 
 use std::sync::Arc;
 
-use sc_action::{EventKind, Trigger, TriggerDispatcher, bootstrap_triggers, save_trigger};
+use sc_action::{Event, EventKind, Trigger, TriggerDispatcher, bootstrap_triggers, save_trigger};
 use sc_api::rows;
 use sc_catalog::{Catalog, TableEvents};
 use sc_core_actions::builtin_actions;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_email::{Mailer, SettingsMailer};
-use sc_error::{Error, Result};
+use sc_error::{Error, ErrorKind, Result};
 use sc_expr::DenoEvaluator;
 use sc_test_harness::TestDb;
 use serde_json::json;
@@ -37,11 +37,16 @@ fn send() -> Trigger {
         .config("text", "Hello")
 }
 
-/// Record a failed send on the row it was for, from the `error` event's payload.
+/// Record a failed send on the row it was for, from the `error` event's payload
+/// — the trigger docs/tutorial-triggers.md shows ("When a trigger fails"), so
+/// the `where` it tells people to write is the one tested here.
 fn record_failure() -> Trigger {
     Trigger::new("record_failure", EventKind::Error, "update_rows")
         .config("table", "mails")
-        .config("where", "id === payload.key")
+        .config(
+            "where",
+            "id === payload.key && payload.method === \"TRIGGER\"",
+        )
         .config(
             "assignments",
             json!({
@@ -52,8 +57,9 @@ fn record_failure() -> Trigger {
         )
 }
 
-#[tokio::test]
-async fn a_failed_send_on_a_row_update_raises_the_error_event_naming_the_row() -> Result<()> {
+/// The `mails` table, the two triggers, and a mailer with no SMTP host — every
+/// send fails, as one to an unreachable server does.
+async fn setup() -> Result<(TestDb, Arc<Catalog>, Arc<TriggerDispatcher>)> {
     let db = TestDb::new().await?;
     db.client()
         .await?
@@ -63,8 +69,7 @@ async fn a_failed_send_on_a_row_update_raises_the_error_event_naming_the_row() -
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
     db.on_teardown(catalog.teardown_hook());
-    // The settings `SettingsMailer` reads, with no SMTP host in them: every
-    // send fails, as one to an unreachable server does.
+    // The settings `SettingsMailer` reads, with no SMTP host in them.
     sc_config::bootstrap_config(&catalog).await?;
     bootstrap_triggers(&catalog).await?;
     let registry = Arc::new(builtin_actions()?);
@@ -81,6 +86,12 @@ async fn a_failed_send_on_a_row_update_raises_the_error_event_naming_the_row() -
         sc_catalog::TRIGGER_EVENTS,
         Arc::clone(&dispatcher) as Arc<dyn TableEvents>,
     )?;
+    Ok((db, catalog, dispatcher))
+}
+
+#[tokio::test]
+async fn a_failed_send_on_a_row_update_raises_the_error_event_naming_the_row() -> Result<()> {
+    let (_db, catalog, _dispatcher) = setup().await?;
     let mails = catalog.require("mails")?;
 
     let first = rows::create_row(
@@ -115,5 +126,33 @@ async fn a_failed_send_on_a_row_update_raises_the_error_event_naming_the_row() -
     assert!(error.contains("Email"), "the mail failure is said: {error}");
     // And only the row the failure was for.
     assert_eq!(row(&second["id"])["status"], json!("draft"));
+    Ok(())
+}
+
+/// A request's `error` event has no `key`: the documented `where` matches no
+/// row for it, and does so without failing.
+#[tokio::test]
+async fn a_request_error_leaves_the_rows_alone() -> Result<()> {
+    let (_db, catalog, dispatcher) = setup().await?;
+    let mails = catalog.require("mails")?;
+    rows::create_row(
+        &catalog,
+        &mails,
+        &json!({ "recipient": "ada@example.com", "status": "draft" }),
+    )
+    .await?;
+
+    let event = Event::error(
+        ErrorKind::Application,
+        "no such book",
+        "GET",
+        "/api/books/9",
+    );
+    let runs = dispatcher.dispatch_in(&catalog, &event, None).await;
+    assert_eq!(runs.len(), 1);
+    assert!(runs[0].outcome.is_ok(), "{:?}", runs[0].outcome);
+
+    let all = rows::list_rows(&catalog, &mails).await?;
+    assert_eq!(all[0]["status"], json!("draft"), "{all}");
     Ok(())
 }

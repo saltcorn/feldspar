@@ -851,6 +851,50 @@ Microsoft 365 file whatever you send through their SMTP into the account's Sent 
 themselves. Most other providers (GMX, IONOS, Fastmail, a plain Dovecot/Postfix) do not, and the
 mail will not appear there.
 
+### When a trigger fails: the `error` event
+
+A trigger on a row write runs **after the write has committed**. So when its action fails, say a
+`send_email` to a mail server that is down or refuses the message, the write still succeeds.
+The request that saved the row gets its row back, and nothing is written to the row for you.
+What happens instead is that the server raises an **`error` event**, and a trigger on that event
+can do something about it.
+
+The event's payload is the one every `error` event has, plus four fields that say which run
+failed:
+
+| Field | Value |
+|---|---|
+| `kind` | `application` or `system` |
+| `message` | ``trigger `send_mail` on the update event: …``, the whole reason |
+| `method` | `TRIGGER` |
+| `path` | `/send_mail`, the failed trigger's name |
+| `trigger` | `send_mail` |
+| `event` | the event it was handling: `insert`, `update`, `delete`, `login`, … |
+| `table` | the table the row is in, or null for an event with no table |
+| `key` | the row's primary key, or null when there is no row (an object of the key's columns for a composite key) |
+
+`user` is whoever made the write, as it was for the trigger that failed.
+
+To record the outcome on the row, give the table a column for it and add one trigger:
+
+- **Event** `error`, **Action** `update_rows`
+- `table`: `mails`
+- `where`: `id === payload.key && payload.method === "TRIGGER"`
+- `assignments`: `status` ← `'failed'`, `error` ← `payload.message`
+
+An `error` event also fires when a request fails, which is why the `where` checks `method`. When
+`key` is null, as it is for a failed `login` trigger, `id === null` matches no row.
+
+Some things raise no `error` event, because someone is already waiting for the answer:
+
+- **A trigger you run directly** (the **Run** button, the app's `POST /actions/{name}`, or
+  `trigger("…").run()` in code) returns its failure to whoever ran it instead. In code that is
+  an exception to catch.
+- **A failure while handling an `error` event** raises nothing more, so a broken alerting trigger
+  cannot loop. It is still logged.
+
+Every failure is also written to the server log, whether or not anything handles the event.
+
 ### `undo`, an Undo button for your application
 
 `undo` takes back what the person pressing the button last did, the way an editor's undo does:
@@ -933,8 +977,9 @@ triggers did outside the database, such as an email they sent, is not undone.
   `{{ }}` template are evaluated in a sandbox with no database access at all, on purpose: a
   formula that could query is a formula that could be slow on every row of every read. If a
   condition needs a lookup, put the lookup in a `run_js_code` body.
-- **Errors are events, but rejections are not.** The `error` event fires when a request fails,
-  not when one is refused: a 404 for a bad URL or a 401 from the auth gate is a rejection, and an
+- **Errors are events, but rejections are not.** The `error` event fires when a request fails
+  or when a trigger nobody ran directly fails (see
+  [When a trigger fails](#when-a-trigger-fails-the-error-event)), not when a request is refused: a 404 for a bad URL or a 401 from the auth gate is a rejection, and an
   alerting trigger that fired on every probe of a wrong path would be useless for what it is for.
 
 ## What next
