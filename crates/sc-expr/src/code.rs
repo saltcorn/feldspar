@@ -3425,6 +3425,7 @@ const SETUP: &str = r#"
   const logline = Deno.core.ops.op_sc_log;
   const done = Deno.core.ops.op_sc_done;
   const fail = Deno.core.ops.op_sc_fail;
+  const refusedOp = Deno.core.ops.op_sc_refused;
   const markOp = Deno.core.ops.op_sc_mark;
   const httpErrorOp = Deno.core.ops.op_sc_http_error;
   const respondOp = Deno.core.ops.op_sc_respond;
@@ -3452,6 +3453,15 @@ const SETUP: &str = r#"
   // again when its host work comes back (see `settle` below).
   let current = null;
   const mark = (token) => { current = token; markOp(token); };
+  // A host's answer as the `Error` a body catches. An auth refusal is marked
+  // with its own message, so a run that lets it escape ends as that refusal
+  // (`failed` below), which a transport answers with a 403 naming it.
+  const REFUSED = Symbol("sc.refused");
+  const hostError = (reply) => {
+    const e = new Error(reply.error);
+    if (typeof reply.refused === "string") e[REFUSED] = reply.refused;
+    return e;
+  };
   const notAwaited = () =>
     new Error(
       "this database call was not awaited — write `await db.invoices.rows()`"
@@ -3491,7 +3501,7 @@ const SETUP: &str = r#"
       // trigger an overrun should name. One sync op, once per host call.
       mark(token);
       const reply = JSON.parse(answer);
-      if (reply.error !== undefined) reject(new Error(reply.error));
+      if (reply.error !== undefined) reject(hostError(reply));
       else resolve(reply.ok);
     }, reject);
   }));
@@ -3549,7 +3559,7 @@ const SETUP: &str = r#"
     disk(token, request).then((answer) => {
       mark(token);
       const reply = JSON.parse(answer);
-      if (reply.error !== undefined) reject(new Error(reply.error));
+      if (reply.error !== undefined) reject(hostError(reply));
       else resolve(reply.ok);
     }, reject);
   }));
@@ -3579,7 +3589,7 @@ const SETUP: &str = r#"
     runs(token, request).then((answer) => {
       mark(token);
       const reply = JSON.parse(answer);
-      if (reply.error !== undefined) reject(new Error(reply.error));
+      if (reply.error !== undefined) reject(hostError(reply));
       else resolve(reply.ok);
     }, reject);
   }));
@@ -4197,6 +4207,10 @@ const SETUP: &str = r#"
       httpErrorOp(token, status, e.message, body === undefined ? "" : body);
       return;
     }
+    if (e !== null && typeof e === "object" && typeof e[REFUSED] === "string") {
+      refusedOp(token, e[REFUSED], describe(e));
+      return;
+    }
     fail(token, describe(e));
   };
   fixed("__scInvoke", (token, key, bindings, stores, triggers, functions, schemaGeneration, consoleMethods, libs) => {
@@ -4534,6 +4548,20 @@ impl RunTable {
 #[cfg(feature = "eval")]
 fn refuse(message: impl Into<String>) -> Json {
     serde_json::json!({ "error": message.into() })
+}
+
+/// A host's `Err` as the reply envelope. An [`Repr::Auth`](sc_error::Repr::Auth)
+/// refusal also carries its own message as `refused`, so the guest can mark the
+/// `Error` it rejects with: one the body lets escape ends the run as that
+/// refusal (`op_sc_refused`), which a transport answers with a 403 naming it
+/// rather than the 500 any other failure is.
+#[cfg(feature = "eval")]
+fn host_refusal(e: &Error) -> Json {
+    let mut reply = refuse(e.to_string());
+    if let Some(message) = e.auth_message() {
+        reply["refused"] = Json::from(message);
+    }
+    reply
 }
 
 #[cfg(feature = "eval")]
@@ -4938,7 +4966,7 @@ async fn trigger_call(state: &Rc<RefCell<OpState>>, token: &str, request: &str) 
 
     match host.run(plan).await {
         Ok(value) => serde_json::json!({ "ok": value }),
-        Err(e) => refuse(e.to_string()),
+        Err(e) => host_refusal(&e),
     }
 }
 
@@ -4988,7 +5016,7 @@ async fn file_call(state: &Rc<RefCell<OpState>>, token: &str, request: &str) -> 
 
     match host.files(plan).await {
         Ok(value) => serde_json::json!({ "ok": value }),
-        Err(e) => refuse(e.to_string()),
+        Err(e) => host_refusal(&e),
     }
 }
 
@@ -5147,7 +5175,7 @@ async fn host_call(state: &Rc<RefCell<OpState>>, token: &str, request: &str) -> 
 
     match outcome {
         Ok(value) => serde_json::json!({ "ok": value }),
-        Err(e) => refuse(e.to_string()),
+        Err(e) => host_refusal(&e),
     }
 }
 
@@ -5250,6 +5278,23 @@ fn op_sc_fail(state: &mut OpState, #[string] token: &str, #[string] message: &st
         token,
         Err(Error::invalid(format!("JavaScript code failed: {message}"))),
     );
+}
+
+/// A run threw a host's auth refusal it did not catch (`host_refusal`): the
+/// same failure [`op_sc_fail`] reports, with the refusal underneath it, so
+/// [`Error::auth_message`] finds it and a transport can answer 403.
+#[cfg(feature = "eval")]
+#[deno_core::op2(fast)]
+fn op_sc_refused(
+    state: &mut OpState,
+    #[string] token: &str,
+    #[string] refusal: &str,
+    #[string] message: &str,
+) {
+    use sc_error::Context as _;
+    let failure = Err::<Json, _>(Error::auth(refusal.to_owned()))
+        .context(format!("JavaScript code failed: {message}"));
+    finish(state, token, failure);
 }
 
 /// One `ratelimit.hit` / `ratelimit.check` (TODO F4.5): a hit on `key` in the
@@ -5382,6 +5427,7 @@ deno_core::extension!(
         op_sc_live_doc,
         op_sc_done,
         op_sc_fail,
+        op_sc_refused,
         op_sc_mark,
         op_sc_log,
         op_sc_random,

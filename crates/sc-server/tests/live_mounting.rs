@@ -440,3 +440,36 @@ async fn boot_mounts_every_built_app_without_building_and_skips_an_unbuilt_one()
     assert_eq!(body, b"<!doctype html><div id=root>fixed</div>");
     Ok(())
 }
+
+/// A code library changed by another process — straight into
+/// `_fd_code_libraries` — is what a body imports after a reload. Before it,
+/// the set loaded at boot is still the one held.
+#[tokio::test]
+async fn a_reload_picks_up_a_code_library_changed_in_the_database() -> sc_error::Result<()> {
+    let tmp = TempDir::new("reload-libraries");
+    let (apps, _router, catalog, db) = setup(&tmp).await?;
+    sc_catalog::bootstrap_code_libraries(&catalog).await?;
+    sc_catalog::save_code_library(
+        &catalog,
+        &sc_catalog::CodeLibrary::new("greet", "exports.hello = 1;"),
+    )
+    .await?;
+    let held = |catalog: &Catalog| {
+        catalog
+            .code_libraries_for(None)
+            .and_then(|set| set.get("greet").map(str::to_owned))
+    };
+    assert_eq!(held(&catalog).as_deref(), Some("exports.hello = 1;"));
+
+    db.client()
+        .await?
+        .batch_execute("UPDATE _fd_code_libraries SET code = 'exports.hello = 2;'")
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    assert_eq!(held(&catalog).as_deref(), Some("exports.hello = 1;"));
+
+    let report = reload_all(&apps).await;
+    assert!(report.code_libraries_error.is_none(), "{report:?}");
+    assert_eq!(held(&catalog).as_deref(), Some("exports.hello = 2;"));
+    Ok(())
+}

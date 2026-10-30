@@ -629,10 +629,20 @@ fn body_error(py: Python<'_>, error: &PyErr, filename: &str, timeout: Duration) 
             timeout.as_millis()
         ));
     }
-    Error::invalid(format!(
-        "this Python code failed: {}",
-        rendered(py, error, filename)
-    ))
+    let message = format!("this Python code failed: {}", rendered(py, error, filename));
+    // A host's auth refusal the body let escape: the same failure, with the
+    // refusal underneath it for a transport to find (`bridge::REFUSED_ATTR`).
+    let refusal = error
+        .value(py)
+        .getattr(bridge::REFUSED_ATTR)
+        .and_then(|attr| attr.extract::<String>());
+    if let Ok(refusal) = refusal {
+        use sc_error::Context as _;
+        if let Err(e) = Err::<(), _>(Error::auth(refusal)).context(message.clone()) {
+            return e;
+        }
+    }
+    Error::invalid(message)
 }
 
 /// A compile failure, which is a `SyntaxError` with the author's own line and

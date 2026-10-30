@@ -35,6 +35,10 @@ mod python_db_live;
 mod python_imports;
 
 #[cfg(feature = "python-host")]
+#[path = "python_refusal.rs"]
+mod python_refusal;
+
+#[cfg(feature = "python-host")]
 #[path = "python_fetch.rs"]
 mod python_fetch;
 

@@ -34,6 +34,11 @@
 //! slow and a duplicate of the work that prompted the signal. An application
 //! that has never been built has nothing to load and says so.
 //!
+//! The **code libraries** are reloaded too, so a library changed by another
+//! process (a restore, a script writing `_fd_code_libraries`) is what the next
+//! `lib()` imports. Only a save or delete through this server reloads them
+//! otherwise.
+//!
 //! A **Saltcorn UI** application has no bundle: its views and pages are rows,
 //! and a reload re-reads them under a new generation (TODO "Saltcorn UI" 5.7).
 //!
@@ -116,6 +121,9 @@ pub struct ReloadReport {
     pub modules_reloaded: bool,
     /// Why the modules could not be reloaded, if they could not.
     pub modules_error: Option<String>,
+    /// Why the code libraries could not be reloaded, if they could not. The
+    /// set loaded before is still the one imported.
+    pub code_libraries_error: Option<String>,
 }
 
 impl ReloadReport {
@@ -126,6 +134,7 @@ impl ReloadReport {
             && self.applications_error.is_none()
             && self.streams_error.is_none()
             && self.modules_error.is_none()
+            && self.code_libraries_error.is_none()
     }
 
     /// Write the reload to the operator's console — one line per thing that
@@ -153,6 +162,9 @@ impl ReloadReport {
                 plural(self.tables),
                 ms(self.catalog)
             );
+        }
+        if let Some(e) = &self.code_libraries_error {
+            eprintln!("feldspar: the code libraries could not be reloaded: {e}");
         }
         if let Some(e) = &self.applications_error {
             eprintln!("feldspar: the applications could not be listed: {e}");
@@ -235,6 +247,16 @@ pub async fn reload_all(apps: &AppMounts) -> ReloadReport {
         Err(e) => report.catalog_error = Some(e.to_string()),
     }
     report.catalog = phase.elapsed();
+
+    // The code libraries: held in memory, and otherwise reloaded only by a
+    // save or delete through this server. A failure keeps the set already
+    // loaded; a process that never loaded them (generation 0) has no table to
+    // read them from.
+    if catalog.code_libraries_generation() > 0
+        && let Err(e) = sc_catalog::reload_code_libraries(&catalog).await
+    {
+        report.code_libraries_error = Some(e.to_string());
+    }
 
     let phase = Instant::now();
     match list_applications(&catalog).await {

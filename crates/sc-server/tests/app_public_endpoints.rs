@@ -204,6 +204,24 @@ fn guests_app() -> Application {
             CustomQuery::new("spin", Method::Get, "/js/spin", "while (true) {}")
                 .language(QueryLanguage::Javascript)
                 .min_role(ROLE_PUBLIC),
+            // A read of the admin-only table, run as an anonymous caller: the
+            // refusal let through, and the same refusal caught and replaced.
+            CustomQuery::new(
+                "peek",
+                Method::Get,
+                "/js/peek",
+                "return await db.secrets.rows();",
+            )
+            .language(QueryLanguage::Javascript)
+            .min_role(ROLE_PUBLIC),
+            CustomQuery::new(
+                "peekCaught",
+                Method::Get,
+                "/js/peek-caught",
+                "try { await db.secrets.rows(); } catch (e) { throw new Error('no secrets'); }",
+            )
+            .language(QueryLanguage::Javascript)
+            .min_role(ROLE_PUBLIC),
         ],
     )
     .unwrap();
@@ -539,6 +557,16 @@ async fn a_code_body_chooses_its_status_and_never_shows_its_stack() -> sc_error:
     let (status, body, _) = send(r, "GET", "/api/js/spin", None, &[], None).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert_eq!(body, json!({ "error": "timeout" }));
+
+    // A refusal the body let escape is a 403 naming it, to anybody; the same
+    // refusal caught and replaced is the 500 any other throw is.
+    let (status, body, _) = send(r, "GET", "/api/js/peek", None, &[], None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], json!("you may not read `secrets`"), "{body}");
+    assert!(body["id"].is_string(), "{body}");
+    let (status, body, _) = send(r, "GET", "/api/js/peek-caught", None, &[], None).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["error"], json!("internal error"), "{body}");
 
     // An exposed trigger is the same contract.
     let (status, body, _) =

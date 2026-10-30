@@ -214,7 +214,7 @@ impl Action for RunPythonCode {
         adapter
             .run_code(hosts.call(code, bindings, timeout))
             .await
-            .map_err(|e| Error::invalid(format!("{}: `{CFG_CODE}`: {e}", code_body::subject(ctx))))
+            .map_err(|e| code_body::failure(ctx, CFG_CODE, e))
     }
 }
 

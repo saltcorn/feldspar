@@ -182,6 +182,16 @@ impl Error {
         }
     }
 
+    /// The message of the [`Repr::Auth`] refusal this error is, if it is one —
+    /// looking through any context wrapped around it.
+    pub fn auth_message(&self) -> Option<&str> {
+        match &self.repr {
+            Repr::Auth(message) => Some(message),
+            Repr::Context { source, .. } => source.downcast_ref::<Error>()?.auth_message(),
+            _ => None,
+        }
+    }
+
     /// A [`Repr::NotFound`] from any displayable message.
     #[track_caller]
     pub fn not_found(msg: impl Into<String>) -> Self {
@@ -622,6 +632,16 @@ mod tests {
         assert!(matches!(Error::file("t").repr(), Repr::File(_)));
         assert!(matches!(Error::serde("t").repr(), Repr::Serde(_)));
         assert!(matches!(Error::msg("t").repr(), Repr::Internal(_)));
+    }
+
+    #[test]
+    fn an_auth_message_is_found_through_a_context() {
+        let wrapped = Err::<(), _>(Error::auth("you may not read `t`"))
+            .context("JavaScript code failed: Error: …")
+            .unwrap_err();
+        assert_eq!(wrapped.auth_message(), Some("you may not read `t`"));
+        assert_eq!(wrapped.to_string(), "JavaScript code failed: Error: …");
+        assert!(Error::invalid("x").auth_message().is_none());
     }
 
     #[test]

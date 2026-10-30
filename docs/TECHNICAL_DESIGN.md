@@ -2751,12 +2751,12 @@ and then writes them one at a time, as `update_rows` does; the events are the po
 **Authority: the run's default, `asUser()` / `asAdmin()` to choose.** A handle the body did not
 narrow or widen sends `authority: "default"`, and the **host** resolves it per run:
 
-- a **trigger's** body (and a workflow step, a module, an agent tool) runs as the **admin**,
-  carrying the event's user (so an RLS policy that reads `user` still sees who caused it) —
-  a trigger is server-side configuration;
-- a body that **answers a request** — a JavaScript or Python custom query (§13.4), a
-  server-rendered page's entry — runs as the **caller**, so the table's role rules and
-  ownership formulas hold exactly as they do on the row API. Ownership checks are *opt-out*
+- a **trigger's** body (and a workflow step, a module, an agent tool, a server-rendered
+  page's entry) runs as the **admin**, carrying the event's user (so an RLS policy that reads
+  `user` still sees who caused it) — a trigger is server-side configuration, and a table's
+  read floor defaults to admin-only, so a public site's page would otherwise see nothing;
+- a JavaScript or Python **custom query** (§13.4) runs as the **caller**, so the table's role
+  rules and ownership formulas hold exactly as they do on the row API. Ownership checks are *opt-out*
   there (`asAdmin()`), not opt-in: an app's endpoints are what coding agents write, and the
   safe one must be the one written by saying nothing.
 

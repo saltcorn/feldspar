@@ -72,8 +72,10 @@ const overdue = await db.invoices
 await db.invoices.where({ id: overdue[0].id }).update({ chased: true });
 ```
 
-Writes are validated, and fire the table's own triggers. Code runs as the server; add
-`.asUser()` to run a query as the event's user, with their access rules. For what the chain
+Writes are validated, and fire the table's own triggers. In a trigger, code runs as the
+server; add `.asUser()` to run a query as the event's user, with their access rules. (A
+JavaScript **custom query** is the other way round: it runs as the person calling it, and
+`.asAdmin()` reads or writes as the server — see the code API reference.) For what the chain
 cannot say there is `await db.sql("select … where x > $1", [10])`.
 {% if tables %}
 

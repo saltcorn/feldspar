@@ -19,6 +19,51 @@ had no way to know the event existed or how to use it.
 - Test: `crates/sc-core-actions/tests/trigger_failure_event.rs` now uses that `where`. A new
   test checks that a request's `error` event runs the trigger without failing and leaves every
   row alone.
+  
+## A refused read in a code query is a 403 naming it; SIGHUP reloads code libraries; doc fixes
+
+Follow-ups from upgrading apps to caller-authority custom queries.
+
+**An auth refusal a code body lets escape is a 403, not a bare 500.** A JavaScript or Python
+custom query run for somebody below a table's read floor got `500 {"error":"internal
+error"}`, with the reason only in the server log. Now a host refusal the body does not catch (a
+table it may not read or write, a file, a trigger) answers **403** ``{"error": "you may not read
+`t`", "id"}`` to every caller. An admin still gets the full text. A refusal the body catches and
+replaces with its own error is still the 500 any other throw is.
+- The host's reply carries an auth refusal's own message as `refused`
+  (`sc_expr::code::host_refusal`, used for `db`, `fs` and `trigger`). The JS guest marks the
+  `Error` it rejects with (a private symbol). One that ends the run reports through the new
+  `op_sc_refused`, with the same failure text as before and the refusal underneath it. Python
+  does the same with an attribute on the `DbError`/`FileError`/`TriggerError`
+  (`bridge::REFUSED_ATTR`, read in `interp::body_error`).
+- `sc_error::Error::auth_message` finds a `Repr::Auth` through any context.
+  `sc_core_actions::code_body::failure` is now the one place both actions name a failed body.
+  It keeps a refusal underneath, so a failed body is no longer always `Invalid` (a refused one
+  is a context over `Auth`; its text is unchanged). `rest::code_answer` maps it to the 403.
+- Tests: `app_public_endpoints` (an anonymous read of an admin-only table is the 403, the same
+  refusal caught and replaced is the 500), `sc-python`'s `python_refusal` (uncaught, re-raised,
+  replaced, and a non-auth error), and `sc-error`'s unit test.
+
+**SIGHUP reloads the code libraries.** They are held in memory and were reloaded only by a save
+or delete through this server, so a library changed in `_fd_code_libraries` by another process
+was ignored until a restart, even after SIGHUP. `reload_all` now reloads them when this process
+loaded them. A failure is `ReloadReport::code_libraries_error`, and the set already loaded stays.
+Tested in `live_mounting` (a direct SQL edit is not seen before the reload and is seen after it).
+
+**Docs that told coding agents the wrong default.**
+- The `javascript-code` help topic (also served through `read_docs`) said "code runs as the
+  server" without saying that is only true in a trigger. It now says a custom query runs as its
+  caller.
+- `describe_code_api` (`code_api_js.md`) said a server-rendered page runs as the caller. It
+  runs as the admin (`TriggerDispatcher::run_code`). The design document §10.1 said the same and
+  is corrected.
+- `code_api_js.md` also said a row the caller may not see is "simply absent". That holds for
+  rows ownership filters out. A table below the read floor throws, and is now documented as the
+  403.
+- `code_api_js.md` now warns that `db = db.asAdmin()` in a query does not reach the libraries it
+  imports: a library gets the run's handles.
+- `tutorial-rest-queries.md` documents the 403, and the out-of-date comment on `code_response`
+  about which file handles are checked is fixed.
 
 ## Settings → System: which version is installed, and Restart
 

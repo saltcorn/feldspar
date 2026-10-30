@@ -92,9 +92,11 @@ return response({ status: 201, headers: { "x-id": id }, body: { id } });
 ```
 
 `httpError` takes 400–599. `response` takes 200–599 and any header except the ones the server
-owns (`set-cookie`, the CSP, framing, `content-type` on a JSON body, …), which it refuses. **Any other throw is
-a 500** `{ "error": "internal error", "id": "…" }` to callers who are not admins — the query
-name and stack go to the server log under that id, and to admin callers. A body stopped by its
+owns (`set-cookie`, the CSP, framing, `content-type` on a JSON body, …), which it refuses. **A refusal the body
+did not catch** — a table, file or trigger the caller may not use — **is a 403**
+``{ "error": "you may not read `t`", "id": "…" }``. **Any other throw is a 500**
+`{ "error": "internal error", "id": "…" }` to callers who are not admins — the query name and
+stack go to the server log under that id, and to admin callers. A body stopped by its
 timeout, its slice or the heap is a 503 `{ "error": "timeout" }`.
 
 **Bytes and files out.** A `Uint8Array` body is served raw under the `content-type` you name.
@@ -247,13 +249,16 @@ Joins ride in a read: `"customerⱵemail"` is a column of the row a key field po
 Writes go through the row layer: they are validated, coerced, checked against ownership when
 they run as a user, and **fire the table's own triggers**.
 
-**Whose authority.** In a **custom query** (and a server-rendered page) `db`, `fs`, `models` and
-`trigger(...)` act **as the caller** by default: the table's role rules and ownership formula
-decide every row exactly as on the row API, and a row the caller may not see is simply absent.
-`.asAdmin()` (on `db`, a table, one query, a store, a model or a trigger) acts as the server
-instead — every row, no rules — so use it only where the query must, and never on a value the
-caller chose without checking it. In a **trigger** the default is the other way round: it acts
-as the server, and `.asUser()` acts as the event's user.
+**Whose authority.** In a **custom query** `db`, `fs`, `models` and `trigger(...)` act **as the
+caller** by default: the table's role rules and ownership formula decide every row exactly as on
+the row API. A row the ownership formula keeps from the caller is simply absent; a table below
+the caller's read floor (admin-only unless its roles say otherwise) is refused outright — the
+call throws ``you may not read `t` ``, and a query that lets that escape answers **403** with that
+message. `.asAdmin()` (on `db`, a table, one query, a store, a model or a trigger) acts as the
+server instead — every row, no rules — so use it only where the query must, and never on a
+value the caller chose without checking it. In a **trigger** (and a server-rendered page) the
+default is the other way round: it acts as the server, and `.asUser()` acts as the event's
+user.
 
 For what the chain cannot say, raw SQL with `$1` binds, answering the rows:
 
@@ -375,6 +380,10 @@ const me = requireUser();
   with **the importing run's own** `db`, `fs`, `fetch`, `trigger`, `modfn`, `live`, `console`
   and `user`, so it can do no more than the code that imported it. Nothing carries over from
   one run to the next.
+- That is the run's handle, **not the importing code's variable**: `db = db.asAdmin()` in a
+  query rebinds its own `db` and does not reach a library it imports, whose `db` still acts as
+  the caller. A library that must read as the server says `.asAdmin()` itself — or, clearer,
+  takes the handle as an argument (`ownShare(db.asAdmin(), token)`).
 - Names resolve to the application's own library first, then the instance-wide one. A trigger
   belongs to no application and sees instance-wide libraries only.
 - A library may `lib()` another; a cycle throws naming the chain (`a → b → a`).

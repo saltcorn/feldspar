@@ -178,6 +178,27 @@ pub(crate) fn subject(ctx: &ActionContext<'_>) -> String {
     }
 }
 
+/// A body's failure as this run's error, naming what it is the body of.
+///
+/// A `throw httpError(…)` is the answer the body chose (TODO F1.4) and is kept
+/// whole so the transport can serve it. A host's auth refusal the body let
+/// escape keeps the refusal underneath ([`Error::auth_message`]), so a
+/// transport can answer 403 naming it; its text is the failure's, as before.
+/// Anything else is the `Invalid` it always was.
+pub(crate) fn failure(ctx: &ActionContext<'_>, config_key: &str, e: Error) -> Error {
+    use sc_error::Context as _;
+    if e.http_reply().is_some() {
+        return e;
+    }
+    let message = format!("{}: `{config_key}`: {e}", subject(ctx));
+    if let Some(refusal) = e.auth_message()
+        && let Err(wrapped) = Err::<(), _>(Error::auth(refusal.to_owned())).context(message.clone())
+    {
+        return wrapped;
+    }
+    Error::invalid(message)
+}
+
 /// The six host surfaces one run may reach — and the schema it reads without
 /// reaching for anything — built from the context that fired it and borrowed by
 /// the [`CodeCall`] for exactly as long as the run.

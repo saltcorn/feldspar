@@ -501,6 +501,11 @@ stack under that id, and so does the same request made by an admin, so you can d
 browser while you are signed in. A body that spins without awaiting is stopped at its slice and
 answers **503** `{"error":"timeout"}`.
 
+One failure is not hidden: a refusal the body did not catch. If `shareBook` ran for somebody
+below the books table's read floor, `db.books.get` would throw, and the answer would be a
+**403** ``{"error":"you may not read `books`","id":"…"}`` — what they may not do is theirs to
+know, and it is the refusal the row API would have named.
+
 Exposed triggers (`POST /api/actions/<name>`) answer the same way: `httpError`, `response` and
 the 500 without a stack are the contract for every code body somebody calls over HTTP.
 

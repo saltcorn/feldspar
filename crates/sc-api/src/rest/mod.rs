@@ -1578,6 +1578,11 @@ fn list_query_params(table: &Table) -> Vec<QueryParam> {
 ///   stopped it — to a caller who is not an admin, with the full text (the
 ///   query's name, the stack) in the log under that id. An admin gets the full
 ///   text, under the same status;
+/// - except a host's **auth refusal** the body did not catch — a table it may
+///   not read, a file it may not write — which is a **403**
+///   ``{ "error": "you may not read `t`", "id" }`` to everybody, because what
+///   the caller may not do is theirs to know — the row API names the same
+///   refusal;
 /// - a refusal before the body ran (a missing trigger, a role that may not run
 ///   it) is left as the error it is.
 async fn code_answer(
@@ -1622,7 +1627,12 @@ async fn code_answer(
     eprintln!("feldspar: code failure {id}: {}", err.chain());
     let (status, public) = match failure {
         sc_expr::CodeFailure::Timeout => (503, json!({ "error": "timeout" })),
-        sc_expr::CodeFailure::Threw => (500, json!({ "error": "internal error", "id": id })),
+        // A host's auth refusal the body let escape is the caller's to know
+        // about: what they may not do, not how the code failed.
+        sc_expr::CodeFailure::Threw => match err.auth_message() {
+            Some(refusal) => (403, json!({ "error": refusal, "id": id })),
+            None => (500, json!({ "error": "internal error", "id": id })),
+        },
     };
     let admin = user.is_some_and(|u| u.role == sc_auth::ROLE_ADMIN);
     let body = match admin {
@@ -1656,10 +1666,10 @@ fn check_preview_returns(query: &CustomQuery, response: &ApiResponse) {
 /// and headers (TODO F1.4), raw bytes under their content type (TODO F2.9), or
 /// a store file through the shared file response builder (TODO F2.10).
 ///
-/// A file handle opened `asUser` is checked against the caller here, by the
-/// owner rule (§2.1), and one they may not read is the `404` a missing file
-/// is. One opened with the default admin authority is not: the query's own
-/// code was the access check.
+/// A file handle not opened `asAdmin` — the default, or `asUser` — is checked
+/// against the caller here, by the owner rule (§2.1), and one they may not
+/// read is the `404` a missing file is. One opened `asAdmin` is not: the
+/// code's own logic was the access check.
 async fn code_response(
     reply: sc_expr::CodeResponse,
     cat: &Catalog,
