@@ -369,6 +369,20 @@ impl DatabaseDriver for PgDriver {
         &self.dialect
     }
 
+    /// `server_version` is the bare number (`16.4`), where `version()` is a
+    /// sentence naming the compiler as well.
+    async fn server_version(&self) -> Result<sc_db::DbVersion> {
+        let client = self.client().await?;
+        let row = client
+            .query_one("SHOW server_version", &[])
+            .await
+            .map_err(|e| Error::database(format!("read the server version: {e}")))?;
+        Ok(sc_db::DbVersion {
+            product: "PostgreSQL",
+            version: row.get::<_, String>(0),
+        })
+    }
+
     fn spatial(&self) -> SpatialSupport {
         PgDriver::spatial(self)
     }

@@ -36,6 +36,7 @@ import {
   settingsPayload,
   settingsTabFromPath,
   settingsTabPath,
+  SYSTEM_TAB,
   settingsTabs,
   signsEveryoneOut,
 } from "./Settings";
@@ -246,6 +247,7 @@ describe("the settings screen's tabs", () => {
       { id: MODULES_TAB, label: "Modules" },
       { id: CHECKLISTS_TAB, label: "Checklists" },
       { id: BACKUP_TAB, label: "Backup" },
+      { id: SYSTEM_TAB, label: "System" },
     ]);
   });
 
@@ -255,22 +257,23 @@ describe("the settings screen's tabs", () => {
   it("has no tab without a section, and no section without a tab", () => {
     const tabs = settingsTabs([...sections, emailSection]);
     const sectionNames = [...sections, emailSection].map((s) => s.name);
-    const standalone = [MODULES_TAB, CHECKLISTS_TAB, BACKUP_TAB];
+    const standalone = [MODULES_TAB, CHECKLISTS_TAB, BACKUP_TAB, SYSTEM_TAB];
     expect(
       tabs.filter((t) => !standalone.includes(t.id)).map((t) => t.id),
     ).toEqual(sectionNames);
-    // Modules, Checklists and Backup are the tabs that are not sections, and
-    // they are last, in that order.
-    expect(tabs.slice(-3).map((t) => t.id)).toEqual(standalone);
+    // Modules, Checklists, Backup and System are the tabs that are not
+    // sections, and they are last, in that order.
+    expect(tabs.slice(-4).map((t) => t.id)).toEqual(standalone);
     expect(tabs.filter((t) => t.id === BACKUP_TAB)).toHaveLength(1);
     expect(tabs.filter((t) => t.id === MODULES_TAB)).toHaveLength(1);
   });
 
-  it("keeps Modules, Checklists and Backup even when the server declares no sections at all", () => {
+  it("keeps Modules, Checklists, Backup and System even when the server declares no sections at all", () => {
     expect(settingsTabs([])).toEqual([
       { id: MODULES_TAB, label: "Modules" },
       { id: CHECKLISTS_TAB, label: "Checklists" },
       { id: BACKUP_TAB, label: "Backup" },
+      { id: SYSTEM_TAB, label: "System" },
     ]);
     expect(initialTab([])).toBe(MODULES_TAB);
   });
@@ -287,6 +290,7 @@ describe("the settings screen's tabs", () => {
     expect(settingsTabFromPath(settingsTabPath(CHECKLISTS_TAB))).toBe(CHECKLISTS_TAB);
     expect(initialTab([...sections, emailSection], CHECKLISTS_TAB)).toBe(CHECKLISTS_TAB);
     expect(initialTab([...sections, emailSection], "email")).toBe("email");
+    expect(initialTab([...sections, emailSection], SYSTEM_TAB)).toBe(SYSTEM_TAB);
     expect(initialTab([...sections, emailSection], "build-hosts")).toBe("ssl");
   });
 

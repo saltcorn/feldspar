@@ -5033,6 +5033,83 @@ pub fn admin_endpoints() -> EndpointSet {
             .auth(AuthRequirement::admin()),
     );
 
+    // **Settings → System**: which feldspar this is and what it is doing to
+    // the machine. The build fields are null for a binary not built by
+    // `scripts/build-static.sh`; a reading this platform cannot take is null.
+    // Read-only, except for the restart beside it.
+    set.register(
+        Endpoint::new("getSystemInfo", Method::Get, api().lit("system"))
+            .output(TypeSchema::struct_of([
+                StructField::new("version", TypeSchema::text()),
+                StructField::new("build_time", TypeSchema::optional(TypeSchema::text())),
+                StructField::new("commit", TypeSchema::optional(TypeSchema::text())),
+                StructField::new("platform", TypeSchema::text()),
+                StructField::new("pid", TypeSchema::int()),
+                StructField::new("started_at", TypeSchema::timestamp()),
+                StructField::new("uptime_seconds", TypeSchema::int()),
+                StructField::new(
+                    "database",
+                    TypeSchema::struct_of([
+                        StructField::new("product", TypeSchema::optional(TypeSchema::text())),
+                        StructField::new("version", TypeSchema::optional(TypeSchema::text())),
+                        StructField::new("error", TypeSchema::optional(TypeSchema::text())),
+                    ]),
+                ),
+                StructField::new(
+                    "memory",
+                    TypeSchema::optional(TypeSchema::struct_of([
+                        StructField::new("process_bytes", TypeSchema::optional(TypeSchema::int())),
+                        StructField::new("total_bytes", TypeSchema::optional(TypeSchema::int())),
+                        StructField::new(
+                            "available_bytes",
+                            TypeSchema::optional(TypeSchema::int()),
+                        ),
+                    ])),
+                ),
+                // Percentages of the whole machine (every core), over a
+                // quarter-second sample taken when this is asked.
+                StructField::new(
+                    "cpu",
+                    TypeSchema::optional(TypeSchema::struct_of([
+                        StructField::new("process_percent", TypeSchema::Value(ValueType::Float)),
+                        StructField::new("system_percent", TypeSchema::Value(ValueType::Float)),
+                        StructField::new("cores", TypeSchema::int()),
+                        StructField::new(
+                            "load_average",
+                            TypeSchema::array(TypeSchema::Value(ValueType::Float)),
+                        ),
+                    ])),
+                ),
+                // The filesystem the data directory is on.
+                StructField::new(
+                    "disk",
+                    TypeSchema::optional(TypeSchema::struct_of([
+                        StructField::new("path", TypeSchema::text()),
+                        StructField::new("total_bytes", TypeSchema::int()),
+                        StructField::new("available_bytes", TypeSchema::int()),
+                    ])),
+                ),
+            ]))
+            .auth(AuthRequirement::admin()),
+    );
+
+    // Exit the process, always, for whatever manages it to start it again
+    // (`Restart=on-failure` under systemd, `restart: unless-stopped` under
+    // Docker). Nothing is checked first: with no manager, the server stays
+    // stopped. The answer comes back before the exit.
+    set.register(
+        Endpoint::new(
+            "restartServer",
+            Method::Post,
+            api().lit("system").lit("restart"),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "restarting",
+            TypeSchema::bool(),
+        )]))
+        .auth(AuthRequirement::admin()),
+    );
+
     // --- backup & restore ---------------------------------------------------
     // Two of the four backup operations are here; the other two are routes outside
     // this set, because one *is* a file and the other *takes* one, and a
@@ -6305,7 +6382,7 @@ fn checklist_run_schema() -> TypeSchema {
         StructField::new("target", TypeSchema::text()),
         StructField::new("status", TypeSchema::text()),
         StructField::new("run_as", TypeSchema::optional(TypeSchema::uuid())),
-        StructField::new("started_at", TypeSchema::text()),
+        StructField::new("started_at", TypeSchema::timestamp()),
         StructField::new("finished_at", TypeSchema::text()),
         StructField::new("steps", TypeSchema::array(step)),
         StructField::new("step_versions", TypeSchema::array(TypeSchema::uuid())),
@@ -8517,6 +8594,8 @@ mod tests {
             "updateBackupSchedule",
             "deleteBackupSchedule",
             "clearAll",
+            // Nor restarting the server under the agent's feet.
+            "restartServer",
             // `listUsers`, `setUserDisabled` and `deleteUser` are projected
             // (TODO F1.9); creating one, becoming one and setting a password
             // still are not.

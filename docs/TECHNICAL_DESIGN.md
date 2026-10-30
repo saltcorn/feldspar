@@ -13716,7 +13716,23 @@ archives are left out too. Already-encoded and range responses are skipped, and
 suits dynamic JSON. About BREACH: the secrets a cross-site attacker wants, the CSRF token and
 the session, travel in cookies, and headers are not compressed.
 
-**Clear all** (Settings → Development, `sc-server`'s `clear_all.rs`) resets a running
+**Settings → System** (`sc-server`'s `system.rs`, `getSystemInfo` and `restartServer`) answers
+"which feldspar is this?": the workspace version (`[workspace.package] version`, which every
+crate inherits and the release tarball is named after), plus the build time (UTC) and full git
+commit (`-dirty` for a checkout with edits) that `scripts/build-static.sh` compiles in as
+`SC_BUILD_TIME` and `SC_BUILD_COMMIT` (`option_env!`; a binary built any other way shows "not a
+release build"). Beside it: the primary database's product and version
+(`DatabaseDriver::server_version`), when the process started (the kernel's record in `/proc`, so
+the boot is counted), its pid, and readings taken when the tab is opened — resident memory and
+the machine's, CPU over a quarter-second sample, load average, and the filesystem holding the data
+directory. **Restart** answers, then always exits with code 75 after half a second: the server
+does not restart itself, whatever manages it does (`Restart=on-failure` in the unit `feldspar
+setup` writes, `restart: unless-stopped` in the compose file). It does not try to detect a
+manager — there are too many init systems to recognise, and seeing one does not say whether it
+restarts — so the dialog says that without one the server stays stopped. The admin UI then polls until a different process answers and reloads; sessions are rows, so
+the admin stays signed in.
+
+**Clear all** (Settings → System, `sc-server`'s `clear_all.rs`) resets a running
 installation to the empty state, as Saltcorn 1's button of the same name did. Every table the
 admin made in the primary database, and every column an admin added to `users`, is dropped
 through one schema-editor batch, ordered so a table goes after everything referencing it (keys

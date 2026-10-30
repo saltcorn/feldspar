@@ -236,6 +236,15 @@ impl DatabaseDriver for SqliteDriver {
         &self.dialect
     }
 
+    /// The SQLite library linked into this binary, which is the database
+    /// engine: there is no server to ask.
+    async fn server_version(&self) -> Result<sc_db::DbVersion> {
+        Ok(sc_db::DbVersion {
+            product: "SQLite",
+            version: rusqlite::version().to_owned(),
+        })
+    }
+
     /// SpatiaLite is out of scope (analytics TODO, "Explicitly out of scope").
     fn spatial(&self) -> sc_db::SpatialSupport {
         sc_db::SpatialSupport::not_postgres("SQLite")

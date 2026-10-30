@@ -52,6 +52,8 @@ pub async fn serve(
     // because this is the function that owns the process's signal behaviour, and
     // it holds the registry a reload mutates.
     crate::reload::spawn_sighup_reload(apps.clone());
+    // Settings → System's uptime, where the kernel cannot say when this started.
+    crate::system::started_at();
     // Previews a crashed run left behind go when idle (TODO §7b).
     spawn_preview_sweep(apps.clone());
     // Uploads abandoned for a day go, with their bytes (TODO F2, §2.3).

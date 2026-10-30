@@ -89,6 +89,11 @@ COPY . ${PREFIX}
 # `SC_BUILD_ADMIN` decides whether the UI bundles are built at all; when they
 # are, `SC_BUNDLE_PREFIX` decides which path the binary carries for them.
 ARG SC_BUILD_ADMIN=1
+# The build's identity, from `scripts/build-static.sh` (the context has no `.git`
+# to read it from): when the script ran, and the commit it built. Compiled into
+# the binary for Settings → System; empty means "not a release build".
+ARG SC_BUILD_TIME=""
+ARG SC_BUILD_COMMIT=""
 ARG JOBS=
 ENV SC_BUNDLE_PREFIX=${PREFIX}
 
@@ -111,6 +116,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/build/target,sharing=locked \
     set -eu; \
     export SC_BUILD_ADMIN="${SC_BUILD_ADMIN}"; \
+    export SC_BUILD_TIME="${SC_BUILD_TIME}" SC_BUILD_COMMIT="${SC_BUILD_COMMIT}"; \
     export CARGO_TARGET_DIR="/build/target/${VARIANT}"; \
     case "${VARIANT}" in \
         static) \

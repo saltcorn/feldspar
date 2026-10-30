@@ -211,6 +211,69 @@ async fn without_a_first_user_token_anyone_may_create_the_first_user() -> sc_err
     Ok(())
 }
 
+/// Settings → System: the build's version, the database it runs on, and the
+/// process's readings — for an admin only. (`restartServer` is not called: it
+/// would exit this test binary.)
+#[tokio::test]
+async fn the_system_tab_names_the_version_and_the_database() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+    let (status, _) = client.send("GET", "/api/system", None).await;
+    assert!(
+        status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
+        "anonymous: {status}"
+    );
+
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/first-user",
+            Some(json!({ "email": "admin@example.com", "password": "hunter2pass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = client.send("GET", "/api/system", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["version"], json!(env!("CARGO_PKG_VERSION")));
+    // A test build is not stamped by the release script.
+    assert_eq!(body["commit"], Value::Null, "{body}");
+    assert_eq!(body["build_time"], Value::Null, "{body}");
+    assert_eq!(body["database"]["product"], json!("PostgreSQL"), "{body}");
+    let version = body["database"]["version"].as_str().unwrap_or_default();
+    assert!(
+        version.chars().next().is_some_and(|c| c.is_ascii_digit()),
+        "the bare server version: {body}"
+    );
+    assert_eq!(body["pid"], json!(std::process::id()));
+    assert!(
+        body["started_at"].as_str().is_some_and(|t| t.contains('T')),
+        "{body}"
+    );
+    assert!(body["uptime_seconds"].as_u64().is_some(), "{body}");
+    #[cfg(target_os = "linux")]
+    {
+        assert!(
+            body["memory"]["process_bytes"]
+                .as_u64()
+                .is_some_and(|b| b > 0),
+            "{body}"
+        );
+        let cpu = &body["cpu"];
+        assert!(cpu["cores"].as_u64().is_some_and(|c| c >= 1), "{body}");
+        assert!(
+            cpu["system_percent"]
+                .as_f64()
+                .is_some_and(|p| (0.0..=100.0).contains(&p)),
+            "{body}"
+        );
+        assert!(
+            body["disk"]["total_bytes"].as_u64().is_some_and(|b| b > 0),
+            "{body}"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn full_admin_api_story() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;

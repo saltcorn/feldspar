@@ -63,6 +63,7 @@ mod router;
 mod security;
 mod serve;
 mod streams;
+mod system;
 mod systemd;
 mod table_rename;
 // Build targets as background jobs the admin UI polls (§13.3).

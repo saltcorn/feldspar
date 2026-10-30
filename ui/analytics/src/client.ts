@@ -398,6 +398,8 @@ export type CreateAdminHandoffResponse = { host: string; path: string };
 export type SendTestEmailRequest = { to?: string | null };
 export type SendTestEmailResponse = { sent_to: string };
 export type GetPythonStatusResponse = { state: string; version?: string | null; explanation: string; dir?: string | null; site_packages?: string | null; bin?: string | null; packages: Array<{ name: string; version?: string | null }>; max_inflight: number; resident: number; threads: number; stuck: number; max_stuck: number; env_error?: string | null };
+export type GetSystemInfoResponse = { version: string; build_time?: string | null; commit?: string | null; platform: string; pid: number; started_at: string; uptime_seconds: number; database: { product?: string | null; version?: string | null; error?: string | null }; memory?: { process_bytes?: number | null; total_bytes?: number | null; available_bytes?: number | null } | null; cpu?: { process_percent: number; system_percent: number; cores: number; load_average: Array<number> } | null; disk?: { path: string; total_bytes: number; available_bytes: number } | null };
+export type RestartServerResponse = { restarting: boolean };
 export type GetBackupOptionsResponse = { available: { tables: Array<{ name: string; label: string; count?: number | null }>; applications: Array<{ name: string; label: string; count?: number | null }>; file_stores: Array<{ name: string; label: string; count?: number | null }>; users: number; modules: number; db_connections: number; streams: number; datasets: number; models: number; workspaces: number; fits: number; llm_providers: number; agents: number; code_libraries: number; triggers: number; views: number; pages: number; ssl: boolean; settings: boolean }; include: { tables: Array<string>; table_data: Array<string>; applications: Array<string>; file_stores: Array<string>; users: boolean; modules: boolean; db_connections: boolean; streams: boolean; analytics: boolean; fits: boolean; llm_providers: boolean; agents: boolean; code_libraries: boolean; triggers: boolean; views: boolean; pages: boolean; ssl: boolean; settings: boolean } };
 export type UnlockBackupRequest = { id: string; password: string };
 export type UnlockBackupResponse = { id: string; encrypted: boolean; locked: boolean; created_at?: string | null; source?: string | null; available: { tables: Array<{ name: string; label: string; count?: number | null }>; applications: Array<{ name: string; label: string; count?: number | null }>; file_stores: Array<{ name: string; label: string; count?: number | null }>; users: number; modules: number; db_connections: number; streams: number; datasets: number; models: number; workspaces: number; fits: number; llm_providers: number; agents: number; code_libraries: number; triggers: number; views: number; pages: number; ssl: boolean; settings: boolean }; include: { tables: Array<string>; table_data: Array<string>; applications: Array<string>; file_stores: Array<string>; users: boolean; modules: boolean; db_connections: boolean; streams: boolean; analytics: boolean; fits: boolean; llm_providers: boolean; agents: boolean; code_libraries: boolean; triggers: boolean; views: boolean; pages: boolean; ssl: boolean; settings: boolean } };
@@ -752,6 +754,8 @@ export interface ApiClient {
   createAdminHandoff(): Promise<CreateAdminHandoffResponse>;
   sendTestEmail(body: SendTestEmailRequest): Promise<SendTestEmailResponse>;
   getPythonStatus(): Promise<GetPythonStatusResponse>;
+  getSystemInfo(): Promise<GetSystemInfoResponse>;
+  restartServer(): Promise<RestartServerResponse>;
   getBackupOptions(): Promise<GetBackupOptionsResponse>;
   unlockBackup(body: UnlockBackupRequest): Promise<UnlockBackupResponse>;
   restoreBackup(body: RestoreBackupRequest): Promise<RestoreBackupResponse>;
@@ -3103,6 +3107,22 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("getPythonStatus", res);
       return (await res.json()) as GetPythonStatusResponse;
+    },
+    async getSystemInfo() {
+      const res = await doFetch(`${baseUrl}/api/system`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getSystemInfo", res);
+      return (await res.json()) as GetSystemInfoResponse;
+    },
+    async restartServer() {
+      const res = await doFetch(`${baseUrl}/api/system/restart`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("restartServer", res);
+      return (await res.json()) as RestartServerResponse;
     },
     async getBackupOptions() {
       const res = await doFetch(`${baseUrl}/api/backup`, {

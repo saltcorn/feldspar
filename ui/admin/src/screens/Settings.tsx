@@ -2,7 +2,7 @@
 // and, beside them, backup and restore.
 //
 // The screen is **tabbed**, and the tabs are **the sections the server declared**,
-// plus Backup. That is the whole of what this screen knows about how settings are
+// plus Modules, Checklists, Backup and System. That is the whole of what this screen knows about how settings are
 // grouped: a section arriving from the server gets a tab labelled with its own
 // label, and nothing here names `ssl` or `email`. Backup is the exception because
 // it is not a section at all — it is the pair of operations that produce and
@@ -57,7 +57,6 @@ import {
 } from "../settings";
 import { AdminMove } from "./AdminMove";
 import { BackupTab } from "./BackupTab";
-import { ClearAllPanel } from "./ClearAll";
 import { CodeLibraryPanel } from "./CodeLibraries";
 import { SharedTranslationsPanel } from "./SharedTranslations";
 import { McpTokensPanel } from "./McpTokens";
@@ -66,6 +65,7 @@ import { ModulesTab } from "./ModulesTab";
 import { BuildHostsPanel } from "./BuildHosts";
 import { Checklists } from "./Checklists";
 import { PythonStatusPanel } from "./PythonStatus";
+import { SystemTab } from "./SystemTab";
 import { TestEmail } from "./TestEmail";
 import { T, useT } from "../i18n";
 
@@ -131,6 +131,11 @@ export const MODULES_TAB = "modules";
  * a bag of values; an application's checklists stay under that application. */
 export const CHECKLISTS_TAB = "checklists";
 
+/** The System tab's identity: which build this is, what the process is doing
+ * to the machine, and the two acts on the whole installation — Restart and
+ * Clear all. Facts about the running server, not settings; last in the strip. */
+export const SYSTEM_TAB = "system";
+
 /** Which tab is showing: a section's `name`, or {@link BACKUP_TAB}. */
 export type SettingsTab = string;
 
@@ -138,7 +143,7 @@ export type SettingsTab = string;
 export type TabSpec = { id: SettingsTab; label: string };
 
 /** The tabs this screen has, in the order they are shown: one per declared
- * section, then Modules, Checklists and Backup.
+ * section, then Modules, Checklists, Backup and System.
  *
  * A pure function of the sections, so what an admin sees is exactly what the
  * server declared — a section with no tab, or a tab with no section, cannot
@@ -149,6 +154,7 @@ export function settingsTabs(sections: Section[]): TabSpec[] {
     { id: MODULES_TAB, label: "Modules" },
     { id: CHECKLISTS_TAB, label: "Checklists" },
     { id: BACKUP_TAB, label: "Backup" },
+    { id: SYSTEM_TAB, label: "System" },
   ];
 }
 
@@ -341,9 +347,11 @@ export function Settings({ requestedTab = null }: { requestedTab?: string | null
         </TabPanel>
         <TabPanel id={BACKUP_TAB} showing={tab}>
           <BackupTab />
-          {/* At the bottom of Backup: emptying the installation is the act a
-              backup is taken before, and it sits beside the restore that undoes it. */}
-          <ClearAllPanel />
+        </TabPanel>
+        <TabPanel id={SYSTEM_TAB} showing={tab}>
+          {/* Clear all is at the bottom of this tab, with Restart: the acts on
+              the whole installation rather than on anything in it. */}
+          <SystemTab />
         </TabPanel>
         {moving && <AdminMove onClose={() => setMoving(false)} />}
         <Modal show={confirming} onHide={() => setConfirming(false)} centered>

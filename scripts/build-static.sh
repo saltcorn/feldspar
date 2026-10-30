@@ -423,6 +423,19 @@ if git -C "${REPO_ROOT}" rev-parse --git-dir >/dev/null 2>&1; then
     git -C "${REPO_ROOT}" diff --quiet HEAD 2>/dev/null || GIT_DESC="${GIT_DESC}-dirty"
 fi
 
+# The build's identity, compiled into the binary and shown under Settings → System
+# (`crates/sc-server/src/system.rs`), so "which version is installed?" has an
+# answer on the server itself. Both are read with `option_env!`: a binary built
+# any other way has neither and says it is not a release build. The commit is the
+# full hash, `-dirty` as above; the time is when this script ran, in UTC.
+SC_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+SC_BUILD_COMMIT=""
+if [[ -n "${GIT_DESC}" ]]; then
+    SC_BUILD_COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+    [[ "${GIT_DESC}" == *-dirty ]] && SC_BUILD_COMMIT="${SC_BUILD_COMMIT}-dirty"
+fi
+export SC_BUILD_TIME SC_BUILD_COMMIT
+
 BASE_NAME="feldspar-${VERSION}${GIT_DESC:+-${GIT_DESC}}-${TARGET}"
 STAGE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/feldspar-package.XXXXXX")"
 trap 'rm -rf "${STAGE_ROOT}"' EXIT
@@ -450,7 +463,7 @@ select_variant() {
 
 log() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 
-log "feldspar ${VERSION}${GIT_DESC:+ (${GIT_DESC})}"
+log "feldspar ${VERSION}${GIT_DESC:+ (${GIT_DESC})}, built ${SC_BUILD_TIME}"
 log "target ${TARGET}, ${MODE} build, install prefix ${PREFIX}, variants: ${VARIANTS[*]}"
 [[ "${MODE}" == "native" ]] && ! command -v docker >/dev/null &&
     log "note: no docker/buildx here, so this is a build with the local toolchain"
@@ -524,6 +537,8 @@ MSG
         --build-arg "TARGET=${TARGET}" \
         --build-arg "PREFIX=${PREFIX}" \
         --build-arg "SC_BUILD_ADMIN=${BUILD_UI}" \
+        --build-arg "SC_BUILD_TIME=${SC_BUILD_TIME}" \
+        --build-arg "SC_BUILD_COMMIT=${SC_BUILD_COMMIT}" \
         --build-arg "JOBS=${JOBS}" \
         "${REPO_ROOT}"
 }

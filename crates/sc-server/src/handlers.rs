@@ -4975,6 +4975,27 @@ pub fn admin_handlers_with(
         }
     });
 
+    // Settings → System: which build this is, its database, and what the
+    // process is doing to the machine (`crate::system`).
+    reg.register("getSystemInfo", {
+        let catalog = catalog.clone();
+        move |_ctx| {
+            let catalog = catalog.clone();
+            async move {
+                Ok(HandlerResponse::ok(
+                    crate::system::system_info(&catalog).await,
+                ))
+            }
+        }
+    });
+
+    // Exit for whatever manages the process to start it again. The answer goes
+    // out first; the exit follows it (`crate::system::schedule_restart`).
+    reg.register("restartServer", move |_ctx| async move {
+        crate::system::schedule_restart();
+        Ok(HandlerResponse::ok(json!({ "restarting": true })))
+    });
+
     // --- backup & restore ---------------------------------------------------
     // Four handlers for one screen, split by what crosses the wire rather than by
     // what they do (§16): the *choice* is JSON and typed, the *archive* is bytes

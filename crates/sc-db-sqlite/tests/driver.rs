@@ -1055,3 +1055,19 @@ async fn concurrent_queries_do_not_queue_behind_one_connection() -> Result<()> {
     }
     Ok(())
 }
+
+/// Settings → System names the database: the engine linked into the binary,
+/// and the version `sqlite_version()` reports from inside it.
+#[tokio::test]
+async fn names_itself_and_its_version() -> Result<()> {
+    let driver = driver();
+    let found = DatabaseDriver::server_version(&driver).await?;
+    assert_eq!(found.product, "SQLite");
+    let rows = driver
+        .query(&Statement::raw("SELECT sqlite_version() AS v", vec![]))
+        .await?
+        .try_collect()
+        .await?;
+    assert_eq!(rows[0].get("v"), Some(&Value::Text(found.version.clone())));
+    Ok(())
+}

@@ -2,6 +2,42 @@
 
 Changes in reverse chronological order.
 
+## Settings → System: which version is installed, and Restart
+
+Users could not tell which build of feldspar a server was running. A new **System** tab, last
+in Settings, says so, and gathers the acts on the whole installation.
+
+- **Version card**: the workspace version (`0.1.0`, from `[workspace.package]` in the root
+  `Cargo.toml`, which `sc-cli` inherits), the git commit and the build time in UTC, the platform,
+  and one line to paste into a bug report. A binary not built by the release script shows "Not a
+  release build".
+- **`scripts/build-static.sh`** now captures `SC_BUILD_TIME` (when the script ran, UTC) and
+  `SC_BUILD_COMMIT` (full hash, `-dirty` when the tree had edits) and passes them to `cargo build`,
+  natively and through `static-build.Dockerfile` as build args (the Docker context has no
+  `.git`). `sc-server` reads them with `option_env!`; an empty value counts as none.
+- **Database card**: product and version. New `DatabaseDriver::server_version` (`sc-db`),
+  returning `DbVersion { product, version }`: Postgres answers `SHOW server_version`, SQLite the
+  linked library's version. The default errors, and the tab shows the error.
+- **Process and resources card**: start time and uptime (from `/proc/self/stat`, so a long boot
+  is counted), pid, resident memory, the machine's memory, CPU (process and
+  machine, as a share of every core over a 250 ms sample), load average, and the filesystem
+  holding the data directory. Readings a platform cannot take come back null. Refresh re-reads.
+- **Restart**: `POST /api/system/restart` (`restartServer`, admin only, not an MCP tool) answers,
+  then always exits with code 75 after 500 ms, after stopping the agents' managed processes.
+  systemd's `Restart=on-failure` and Docker's `restart: unless-stopped` start it again. No
+  attempt is made to detect a service manager (there are too many init systems); the dialog says
+  that without one the server stays stopped. The page then polls `getSystemInfo` until a different process
+  answers (pid or start time changed) and reloads.
+- **Clear all** moved here from the Backup tab.
+- `module_routes`' `fs_size` and the new tab share one `statvfs` wrapper
+  (`system::filesystem_size`) and `parse_meminfo`.
+- New strings translated in the five admin locales. Design doc: a paragraph before "Clear all"
+  (whose location now says Settings → System).
+- Tests: `sc-server` unit tests for the `/proc` parsers and a live read of this machine;
+  `admin_api::the_system_tab_names_the_version_and_the_database` (admin only, version, Postgres
+  version, readings); `sc-db-sqlite` `names_itself_and_its_version`;
+  `ui/admin/src/systemInfo.test.ts`; `settingsScreen.test.ts` updated for the System tab.
+
 ## A trigger that fails after commit raises the `error` event
 
 When a table trigger's action failed (a `send_email` to an unreachable or refusing SMTP server,
