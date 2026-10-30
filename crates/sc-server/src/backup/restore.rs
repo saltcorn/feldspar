@@ -2118,6 +2118,11 @@ async fn import_application(
                 app.tables.push(table);
             }
         }
+        for table in incoming.api_tables {
+            if !app.api_tables.contains(&table) {
+                app.api_tables.push(table);
+            }
+        }
         for store in incoming.file_stores {
             if !app.file_stores.contains(&store) {
                 app.file_stores.push(store);

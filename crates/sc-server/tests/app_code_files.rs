@@ -287,13 +287,13 @@ fn queries() -> Vec<CustomQuery> {
             "shareFile",
             Method::Get,
             "/share",
-            r#"const share = await db.shares.where({ token: query.token }).first();
+            r#"const share = await db.asAdmin().shares.where({ token: query.token }).first();
                if (!share) throw httpError(404, "no such share");
                if (!(await crypto.password.verify(query.password ?? "", share.hash))) {
                  throw httpError(403, "wrong password");
                }
                return response({
-                 file: fs("files").open(share.path),
+                 file: fs("files").asAdmin().open(share.path),
                  filename: share.filename,
                  download: true,
                  headers: { "cache-control": "private, no-store" },

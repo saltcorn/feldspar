@@ -213,6 +213,10 @@ pub struct TableHost<'a> {
     /// Whether the caller's authority is the **ceiling** rather than something a
     /// plan may step down to ([`viewer_only`](TableHost::viewer_only)).
     viewer_only: bool,
+    /// What a plan that names no authority runs under: the admin's for a
+    /// trigger, the caller's for a body answering a request
+    /// ([`defaulting_to`](TableHost::defaulting_to)).
+    default_authority: Authority,
 }
 
 impl<'a> TableHost<'a> {
@@ -228,7 +232,18 @@ impl<'a> TableHost<'a> {
             executor: rows::Executor::Pooled,
             calls: AtomicU32::new(0),
             viewer_only: false,
+            default_authority: Authority::Admin,
         }
+    }
+
+    /// Run a plan that names no authority under `authority` instead of the
+    /// admin's — what a body **answering a request** is given (a custom query, a
+    /// server-rendered page), with [`Authority::User`], so the caller's
+    /// ownership rules hold unless the body says `asAdmin()`.
+    #[must_use]
+    pub fn defaulting_to(mut self, authority: Authority) -> TableHost<'a> {
+        self.default_authority = authority.resolve(&Authority::Admin);
+        self
     }
 
     /// Run every statement of this host **inside `tx`** — what a workflow step
@@ -410,8 +425,10 @@ impl<'a> TableHost<'a> {
         if self.viewer_only {
             return self.viewer_actor(authority);
         }
-        match authority {
-            Authority::Admin => Ok(Actor::Admin(self.caller())),
+        match authority.resolve(&self.default_authority) {
+            // `Default` cannot survive the resolve: the host's own default is
+            // never `Default` (`defaulting_to` resolves it on the way in).
+            Authority::Default | Authority::Admin => Ok(Actor::Admin(self.caller())),
             Authority::User => Ok(Actor::Caller {
                 role: self.role,
                 user: User::from_json(self.role, self.user.as_ref())?,
@@ -423,7 +440,7 @@ impl<'a> TableHost<'a> {
                 user: None,
             }),
             Authority::Named(id) => {
-                let user = load_named_user(self.catalog, id).await?;
+                let user = load_named_user(self.catalog, &id).await?;
                 Ok(Actor::Caller {
                     role: user.role,
                     user: Some(user),
@@ -446,7 +463,7 @@ impl<'a> TableHost<'a> {
             })
         };
         match authority {
-            Authority::Admin | Authority::User => caller(),
+            Authority::Default | Authority::Admin | Authority::User => caller(),
             Authority::Public => Ok(Actor::Caller {
                 role: ROLE_PUBLIC,
                 user: None,

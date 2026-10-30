@@ -522,9 +522,46 @@ impl TriggerDispatcher {
         Ok(result.unwrap_or(Json::Null))
     }
 
-    /// Run a **code body that is not a trigger's** — an application's
-    /// JavaScript or Python custom query (§13.4) — on `action`
-    /// (`run_js_code` / `run_python_code`).
+    /// Run an application's JavaScript or Python **custom query** (§13.4) on
+    /// `action` (`run_js_code` / `run_python_code`), as
+    /// [`run_code`](TriggerDispatcher::run_code) does — except whose authority
+    /// its handles default to.
+    ///
+    /// A custom query answers an outside request, so its `db`, `fs`, `models`
+    /// and `trigger(...)` act **as the caller** unless the body says
+    /// `asAdmin()`: the table's role rules and ownership formula decide every
+    /// row exactly as they would on the row API, and the endpoint an agent
+    /// writes without thinking about authority is the narrow one.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_query_code(
+        &self,
+        catalog: &Catalog,
+        action: &str,
+        name: &str,
+        code: &str,
+        request: Attrs,
+        caller: Option<&CallerContext>,
+        application: Option<uuid::Uuid>,
+        file_urls: Option<Arc<dyn crate::FileUrls>>,
+    ) -> Result<Json> {
+        self.run_code_as(
+            catalog,
+            action,
+            name,
+            code,
+            request,
+            caller,
+            application,
+            file_urls,
+            None,
+            true,
+        )
+        .await
+    }
+
+    /// Run a **code body that is not a trigger's** — a server-rendered page's
+    /// entry, or a body run by hand — on `action` (`run_js_code` /
+    /// `run_python_code`).
     ///
     /// The same action, with the same host surfaces, bounds and authority, that
     /// an exposed trigger's body would have: the event is a `none` event carrying
@@ -532,7 +569,8 @@ impl TriggerDispatcher {
     /// cascade chain and in an error message. What differs is scope: the body
     /// sees `request`'s names (`body`, `query`) and `user`, and no `payload`,
     /// and its `lib()` imports `application`'s code libraries over the
-    /// instance's.
+    /// instance's. A custom query runs through
+    /// [`run_query_code`](TriggerDispatcher::run_query_code) instead.
     #[allow(clippy::too_many_arguments)]
     pub async fn run_code(
         &self,
@@ -576,6 +614,37 @@ impl TriggerDispatcher {
         file_urls: Option<Arc<dyn crate::FileUrls>>,
         trace: Option<sc_expr::TraceSink>,
     ) -> Result<Json> {
+        self.run_code_as(
+            catalog,
+            action,
+            name,
+            code,
+            request,
+            caller,
+            application,
+            file_urls,
+            trace,
+            false,
+        )
+        .await
+    }
+
+    /// The one implementation of the two above: `as_caller` is whose authority
+    /// the body's handles default to.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_code_as(
+        &self,
+        catalog: &Catalog,
+        action: &str,
+        name: &str,
+        code: &str,
+        request: Attrs,
+        caller: Option<&CallerContext>,
+        application: Option<uuid::Uuid>,
+        file_urls: Option<Arc<dyn crate::FileUrls>>,
+        trace: Option<sc_expr::TraceSink>,
+        as_caller: bool,
+    ) -> Result<Json> {
         let mut event = Event::new(EventKind::None);
         if let Some(caller) = caller {
             event = event.caused_by(caller);
@@ -590,7 +659,8 @@ impl TriggerDispatcher {
             .with_chain(chain)
             .with_request(request)
             .with_application(application)
-            .with_file_urls(file_urls);
+            .with_file_urls(file_urls)
+            .as_caller(as_caller);
         if let Some(trace) = trace {
             ctx = ctx.with_trace(trace);
         }

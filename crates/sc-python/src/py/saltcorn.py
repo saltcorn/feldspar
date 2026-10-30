@@ -373,7 +373,7 @@ class Query:
         return self._derive(authority="user")
 
     def as_admin(self):
-        """Run under the trigger's own authority — the default."""
+        """Run under the trigger's own authority — the admin's."""
         return self._derive(authority="admin")
 
     # -- the plan ----------------------------------------------------------
@@ -663,7 +663,9 @@ class Db:
 
     __slots__ = ("_authority",)
 
-    def __init__(self, authority="admin"):
+    # "default" is the run's own, which the host resolves: the admin's in a
+    # trigger, the caller's in a body answering a request (a custom query).
+    def __init__(self, authority="default"):
         self._authority = authority
 
     def table(self, name):
@@ -676,9 +678,10 @@ class Db:
         return Db("user")
 
     def as_admin(self):
-        """The trigger's own authority — the default, because a trigger is
-        server-side configuration and the audit row a caller may not insert is
-        the archetype of what a trigger exists to write."""
+        """The trigger's own authority — a trigger's default, because a trigger
+        is server-side configuration and the audit row a caller may not insert
+        is the archetype of what a trigger exists to write. A custom query runs
+        as its caller unless it says this."""
         return Db("admin")
 
     def sql(self, sql, params=None, as_user=None):
@@ -1123,7 +1126,7 @@ class Fs:
                 f"there is no file store named `{name}`; this server has: "
                 + ", ".join(known)
             )
-        return Store(name, "admin")
+        return Store(name, "default")
 
     @property
     def stores(self):
@@ -1161,7 +1164,7 @@ class Store:
         return Store(self.name, "user")
 
     def as_admin(self):
-        """The trigger's own authority — the default."""
+        """The trigger's own authority — the admin's."""
         return Store(self.name, "admin")
 
     def __repr__(self):
@@ -1496,8 +1499,8 @@ class TriggerHandle:
         return TriggerHandle(self.name, "user")
 
     def as_admin(self):
-        """The trigger's own authority — the default, because running one
-        trigger from another is configuration calling configuration."""
+        """The trigger's own authority — a trigger's default, because running
+        one trigger from another is configuration calling configuration."""
         return TriggerHandle(self.name, "admin")
 
     def __repr__(self):
@@ -1524,7 +1527,7 @@ class Triggers:
                 f"there is no trigger named `{name}`; this server has: "
                 + ", ".join(known)
             )
-        return TriggerHandle(name, "admin")
+        return TriggerHandle(name, "default")
 
     @property
     def names(self):
@@ -1836,7 +1839,7 @@ class Model:
 
     __slots__ = ("_got", "_authority")
 
-    def __init__(self, got, authority="admin"):
+    def __init__(self, got, authority="default"):
         object.__setattr__(self, "_got", got)
         object.__setattr__(self, "_authority", authority)
 
@@ -1903,8 +1906,7 @@ class Model:
         return Model(self._got, "user")
 
     def as_admin(self):
-        """The same handle, writing back under the trigger's own authority —
-        the default."""
+        """The same handle, writing back under the trigger's own authority."""
         return Model(self._got, "admin")
 
     def __getattr__(self, name):
@@ -2028,7 +2030,7 @@ class Models:
 # refuse by saying which surface this body was not given.
 
 #: The tables.
-db = Db("admin")
+db = Db()
 #: The file stores.
 fs = Fs()
 #: The other triggers.

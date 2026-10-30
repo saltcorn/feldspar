@@ -514,6 +514,9 @@ async fn the_react_framework_is_offered_first_and_brings_its_own_defaults() -> s
             "config": { "store": "apps", "project": "todo" }
         },
         "tables": ["posts"],
+        // Its row API opted in, which is what the scaffold's pages are written
+        // against.
+        "api_tables": ["posts"],
         "file_stores": ["apps"],
         "apis": [{ "provider": "rest", "mount": "/api" }],
     });
@@ -569,8 +572,9 @@ async fn the_react_framework_is_offered_first_and_brings_its_own_defaults() -> s
     let project = tmp.path().join("todo");
     assert!(project.join("package.json").is_file());
     assert!(project.join("src/feldspar/hooks.ts").is_file());
-    // Generated against the app's declared table.
+    // Generated against the app's declared table, whose row API it serves.
     assert!(project.join("src/pages/Posts.tsx").is_file());
+    assert_eq!(created["api_tables"], json!(["posts"]), "{created}");
 
     // A second app pointed at the *same* project directory is created (the row is
     // valid and saved) but reports why nothing was generated — scaffolding never

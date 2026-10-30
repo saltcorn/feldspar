@@ -7997,6 +7997,7 @@ pub(crate) fn application_json(app: &Application) -> Json {
         "framework": framework_ref_json(&app.framework),
         "extra_frameworks": app.extra_frameworks.iter().map(framework_ref_json).collect::<Vec<_>>(),
         "tables": app.tables.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
+        "api_tables": app.api_tables.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
         "file_stores": app.file_stores.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
         "triggers": app.triggers.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
         "streams": app.streams.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
@@ -8625,6 +8626,12 @@ pub(crate) fn application_from_body(id: AppId, body: &Json) -> Result<Applicatio
         .into_iter()
         .map(TableId)
         .collect();
+    // Absent is "serves no table's row API" — the default a new application
+    // has; each table is opted in by name, and must be one of `tables`.
+    let api_tables = parse_str_array(obj, "api_tables")?
+        .into_iter()
+        .map(TableId)
+        .collect();
     let file_stores = parse_str_array(obj, "file_stores")?
         .into_iter()
         .map(FileStoreId)
@@ -8710,6 +8717,7 @@ pub(crate) fn application_from_body(id: AppId, body: &Json) -> Result<Applicatio
         framework,
         extra_frameworks,
         tables,
+        api_tables,
         file_stores,
         triggers,
         streams,

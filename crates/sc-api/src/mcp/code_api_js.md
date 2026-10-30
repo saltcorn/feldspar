@@ -119,19 +119,22 @@ decides the rest — on every request, so each Range request of a video re-check
 ```js
 // GET /share, params token (text) and password (text, optional), min_role 100, response_type bytes
 ratelimit.check("share:" + query.token, { max: 5, window: "15m" }); // 6th try in 15 min: 429
-const share = await db.shares.where({ token: query.token }).first();
+// The token and password are the check, so the share and its file are read as the server:
+// whoever holds the link may read neither themselves.
+const share = await db.asAdmin().shares.where({ token: query.token }).first();
 if (!share) throw httpError(404, "no such share");
 if (!(await crypto.password.verify(query.password ?? "", share.password_hash))) {
   throw httpError(403, "wrong password");
 }
-return response({ file: fs("files").open(share.path), filename: share.original_name,
+return response({ file: fs("files").asAdmin().open(share.path), filename: share.original_name,
                   download: true, headers: { "cache-control": "private, no-store" } });
 ```
 
 A password in a URL lands in logs and history; where that matters, POST the password to a query
-that stores a short-lived token in a table and have the GET take the token. A handle opened with
-`fs(s).asUser()` is also checked against the caller when served (a file they may not read is a
-404); one opened as the default admin is not — the query's own code is the check.
+that stores a short-lived token in a table and have the GET take the token. A handle opened as the
+caller — the default in a query, or `fs(s).asUser()` — is also checked against the caller when
+served (a file they may not read is a 404); one opened with `fs(s).asAdmin()` is not — the
+query's own code is the check.
 
 An upload slot's **hook** is a code query too (a POST is best). It runs before an upload is
 accepted, with `body = { filename, size, mime, slot }` and `user` the uploader; throw
@@ -241,9 +244,16 @@ id: { in: [1, 2] } }`, operators `eq ne gt gte lt lte in nin like ilike is_null`
 Joins ride in a read: `"customerⱵemail"` is a column of the row a key field points at, and
 `{ n: "remindersↃinvoice.length" }` in `.select()` counts child rows.
 
-Writes go through the row layer: they are validated, coerced, checked against ownership under
-`.asUser()`, and **fire the table's own triggers**. Reads and writes run as the server by
-default; `.asUser()` (on `db`, a table or one query) runs them as the event's user.
+Writes go through the row layer: they are validated, coerced, checked against ownership when
+they run as a user, and **fire the table's own triggers**.
+
+**Whose authority.** In a **custom query** (and a server-rendered page) `db`, `fs`, `models` and
+`trigger(...)` act **as the caller** by default: the table's role rules and ownership formula
+decide every row exactly as on the row API, and a row the caller may not see is simply absent.
+`.asAdmin()` (on `db`, a table, one query, a store, a model or a trigger) acts as the server
+instead — every row, no rules — so use it only where the query must, and never on a value the
+caller chose without checking it. In a **trigger** the default is the other way round: it acts
+as the server, and `.asUser()` acts as the event's user.
 
 For what the chain cannot say, raw SQL with `$1` binds, answering the rows:
 
@@ -298,8 +308,9 @@ On any other model, `draws`, `summary`, `variables` and `writePosterior` are abs
 reaching one throws a sentence saying what the model is. A posterior does not `predict` rows:
 read its draws and compute the prediction.
 
-`writePosterior` writes the way `db` does: as the trigger by default, or as the event's user
-with `r.asUser().writePosterior(…)`. Either way, ownership is checked and the target table's
+`writePosterior` writes the way `db` does: as the run's default authority (the server in a
+trigger, the caller in a query), or explicitly with `r.asUser().writePosterior(…)` /
+`r.asAdmin().writePosterior(…)`. Either way, ownership is checked and the target table's
 triggers fire.
 
 `keys` picks positions of the first axis by key or label. `elements` is the general form:

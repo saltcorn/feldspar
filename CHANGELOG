@@ -2,6 +2,56 @@
 
 Changes in reverse chronological order.
 
+## Apps serve no generic row API by default; custom queries run as their caller
+
+**Connecting a table is no longer publishing it.** An application's `tables` are what its custom
+queries, views, streams and `schema.sql` may name. The generic row API — REST's
+list/read/create/update/delete routes and GraphQL's type for a table, and the `useX` hooks in the
+generated client — is now served only for the tables in a new opt-in subset,
+`Application::api_tables`. It must be a subset of `tables`, is checked on save, and is **empty for
+every new application**:
+
+- `create_application` (the copilot's and MCP's) always creates an app with no row API and has no
+  argument to ask for one. Its description and its `next` steps say to write a custom query
+  (`save_api_query`) for each read and write the pages make, and to leave row APIs off unless the
+  person explicitly asks for generic row access.
+- `update_application` has a new `api_tables` section (`add` / `remove` / `set`). Removing needs
+  `allow_edit`. Adding also needs `allow_access_changes`, because it widens what the app exposes.
+  Disconnecting a table through `tables` also stops serving its row API. `describe_applications`
+  reports `api_tables`.
+- The admin form has a **Tables with a row API** box under **Tables**, offering only the
+  connected tables and empty by default. The admin API's application record has `api_tables`
+  (all four generated clients regenerated). A body without it means none.
+- `feldspar app api-tables (add|remove|list) --app SUBDOMAIN` is the CLI's equivalent
+  (`sc_app::change_app_api_tables`).
+- `Application::with_table` still connects a table *and* serves its row API (what most tests
+  want). `with_connected_table` connects only. `sc_app::app_api_tables` is what REST and GraphQL
+  project over. A custom query's path and name collide only with tables that serve a row API.
+- The admin copilot's build playbook now writes the queries between connecting the tables and
+  delegating the code. The builder agent is told its data comes through custom queries, and to
+  report a missing *query* rather than reach for a table.
+- `_fd_applications` has a nullable `api_tables` column, added at startup (`NULL` reads as none).
+  `TABLES_RENAME.sql` adds it on Postgres and fills it with `tables` for existing apps, so running
+  systems keep the row APIs they had.
+
+**JavaScript and Python custom queries act as their caller by default.** A handle the body did
+not narrow or widen now sends `authority: "default"` (`sc_api::code_host::Authority::Default`, also
+what a plan with no `authority` means), and each host resolves it against the run's own default
+(`TableHost`/`FileStoreHost`/`TriggerRunHost::defaulting_to`). A custom query is run through the
+new `TriggerDispatcher::run_query_code`, which sets `ActionContext::as_caller`. Its `db`, `fs`,
+`models` and `trigger(...)` then act as the caller: the table's role floors and ownership formula
+decide every row exactly as on the row API, and a file opened by default is checked against the
+caller when served. `.asAdmin()` is the explicit way to read or write as the server. Triggers,
+agent tools, workflow steps, modules and server-rendered pages keep the admin default (a table's
+read floor defaults to admin-only, so a public site's page would otherwise see nothing). `db.sql()`
+follows the handle, so under the caller only row-level security restricts it, as before. The
+`save_api_query` description, the `describe_code_api` reference and the design document (§10.1,
+§13.2) say which to use: a `javascript` query over `db.<table>` for data users own, plain SQL for
+data anybody allowed to call it may see.
+
+Not compatible with earlier behaviour: a JavaScript or Python query that relied on reading every
+row by default now sees only what its caller may. Add `.asAdmin()` where that was intended.
+
 ## A `string` field's `options` can be written without JSON
 
 The `options` attribute (the allowed values) of the `string` rich type now takes three forms:

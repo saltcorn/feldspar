@@ -262,9 +262,18 @@ async fn an_external_agent_builds_an_application_from_a_sentence() -> sc_error::
         }] }),
     )
     .await;
-    // …then connected, which regenerates the client with them in it.
-    let before = std::fs::read_to_string(&client_ts).unwrap();
-    assert!(!before.contains("todos"), "not connected yet");
+    // …then connected, which publishes no endpoint for them: the application
+    // was created with no row API, and connecting does not add one…
+    assert_eq!(
+        sc_app::load_application_by_subdomain(&catalog, "todo-list")
+            .await?
+            .unwrap()
+            .api_tables
+            .iter()
+            .map(|t| t.0.clone())
+            .collect::<Vec<_>>(),
+        Vec::<String>::new()
+    );
     let connected = call(
         &router,
         &token,
@@ -273,8 +282,26 @@ async fn an_external_agent_builds_an_application_from_a_sentence() -> sc_error::
     )
     .await;
     assert_eq!(connected["tables"], json!(["todos"]), "{connected}");
+    assert_eq!(connected["api_tables"], json!([]), "{connected}");
     let after = std::fs::read_to_string(&client_ts).unwrap();
-    assert!(after.contains("todos"), "the client is typed for the table");
+    assert!(!after.contains("listTodos"), "no row API for the table");
+    // …and the pages' data comes through a query written for them, which runs
+    // as its caller.
+    let saved = call(
+        &router,
+        &token,
+        "save_api_query",
+        json!({
+            "application": "todo-list",
+            "name": "openTodos",
+            "path": "/todos/open",
+            "language": "javascript",
+            "code": "return await db.todos.where({ done: false }).rows();",
+            "returns": { "array": { "object": { "id": "int", "title": "string" } } },
+        }),
+    )
+    .await;
+    assert_eq!(saved["query"]["name"], json!("openTodos"), "{saved}");
     let stored = sc_app::load_application_by_subdomain(&catalog, "todo-list")
         .await?
         .unwrap();

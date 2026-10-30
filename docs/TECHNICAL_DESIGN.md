@@ -2630,16 +2630,27 @@ body is an event like any other, carrying this trigger's chain, so the cascade b
 it exactly as it does to `insert_row`. A bulk update or delete resolves its matched rows first
 and then writes them one at a time, as `update_rows` does; the events are the point.
 
-**Authority: admin by default, `asUser()` to delegate.** A code body's reads and writes are the
-admin's, carrying the event's user (so an RLS policy that reads `user` still sees who caused
-it). `asUser()` is available on the handle, on a table and on a query, and sets one field of
-the plan — so where it appears in the chain does not matter:
+**Authority: the run's default, `asUser()` / `asAdmin()` to choose.** A handle the body did not
+narrow or widen sends `authority: "default"`, and the **host** resolves it per run:
+
+- a **trigger's** body (and a workflow step, a module, an agent tool) runs as the **admin**,
+  carrying the event's user (so an RLS policy that reads `user` still sees who caused it) —
+  a trigger is server-side configuration;
+- a body that **answers a request** — a JavaScript or Python custom query (§13.4), a
+  server-rendered page's entry — runs as the **caller**, so the table's role rules and
+  ownership formulas hold exactly as they do on the row API. Ownership checks are *opt-out*
+  there (`asAdmin()`), not opt-in: an app's endpoints are what coding agents write, and the
+  safe one must be the one written by saying nothing.
+
+The same rule covers `fs`, `trigger(...)` and `models` handles. `asUser()` and `asAdmin()` are
+available on the handle, on a table and on a query, and set one field of the plan — so where
+they appear in the chain does not matter:
 
 ```js
 await db.asUser().invoices.where({ paid: false }).rows();   // the whole handle
 await db.invoices.asUser().where({ paid: false }).rows();   // one table
 await db.invoices.where({ paid: false }).asUser().rows();   // one query
-await db.invoices.asAdmin().insert({ … });                  // the default, said out loud
+await db.invoices.asAdmin().insert({ … });                  // the admin, said out loud
 ```
 
 Delegated, every operation goes through `sc_api::ownership`'s `read_rows_as` /
@@ -2862,8 +2873,8 @@ error only to something that was told to read it — `exists` is a question, not
 | `list()` | the direct children — as the same file and directory objects, so a listing is walked and acted on rather than re-opened by name. A listed entry also carries what the listing said: `size` and `modified` beside `name` and `isDirectory`, as properties and in `toJSON` (`{store, path, name, isDirectory, size, modified}`), so `JSON.stringify(await dir.list())` is a usable listing. A file that was *opened* rather than listed has `size`/`modified` `undefined` — nothing has looked at the store for it — and `stat()` works on either kind of entry |
 | `exists()`, `stat()`, `create()`, `delete()` | `create()` is `mkdir -p` and idempotent; `delete()` takes everything in it |
 
-**Authority** is `db`'s: the admin's by default, because a trigger is server-side configuration,
-and `fs(name).asUser()` delegates to the event's caller — at which point §14.1's
+**Authority** is `db`'s: the run's default (the admin's in a trigger, because a trigger is
+server-side configuration; the caller's in a custom query), and `fs(name).asUser()` delegates to the event's caller — at which point §14.1's
 **path-cumulative** `min_role` rule decides every operation (the store's floor, then every
 directory on the path, then the entry itself, most restrictive winning), and a listing is
 *filtered* rather than refused. One asymmetry is stated rather than inherited: a delegated body
@@ -5749,6 +5760,7 @@ pub struct Application {
     pub framework: FrameworkRef,         // one primary UI framework
     pub extra_frameworks: Vec<FrameworkRef>, // may bring in others (see Open Questions)
     pub tables: Vec<TableId>,            // the subset of the data layer it can access
+    pub api_tables: Vec<TableId>,        // of those, the ones with a generic row API (default: none)
     pub file_stores: Vec<FileStoreId>,
     pub triggers: Vec<TriggerRef>,       // the triggers it exposes, by name
     pub streams: Vec<StreamRef>,         // the streams it may observe, by name (§14.3)
@@ -5778,6 +5790,17 @@ pub struct StaticDir {
 **Multiple applications share one data layer**; each sees only its declared subset of
 tables and file stores. This is v2's replacement for v1 schema-per-tenant multi-tenancy —
 lighter-weight and driven by access subsets rather than separate schemas.
+
+**Connecting a table is not publishing it.** `tables` is what the app's custom queries,
+views, streams and generated `schema.sql` may name. The generic **row API** — REST's
+list/read/create/update/delete routes and GraphQL's type for a table — is served only for the
+tables in `api_tables`, a second opt-in subset that is **empty for every new application**,
+whether the admin's form, the CLI or a coding agent's `create_application` made it (the tool
+has no argument for it at all). An app reaches its data through custom queries (§13.4), one
+endpoint per thing a page does, which in JavaScript or Python run **as the caller** by default
+(§10.1, "Authority"); a row API is turned on per table, afterwards, only when somebody wants
+generic row access — `update_application`'s `api_tables` (which also needs
+`allow_access_changes`), `feldspar app api-tables`, or the form's checkbox.
 
 **An application is created and configured in the admin UI — never in Rust code and never
 by a CLI flag.** The admin picks the framework, fills in that framework's settings (a React

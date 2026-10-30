@@ -195,9 +195,16 @@ pub enum Op {
     Delete,
 }
 
-/// Whose authority a plan runs under (§5): the trigger's own by default,
-/// the event's caller when the body said `asUser()`, and — since v1's `Table`
-/// says whose view of the data it wants with an *argument* — a **named user**.
+/// Whose authority a plan runs under (§5): the run's own default when the body
+/// said nothing, the trigger's when it said `asAdmin()`, the event's caller when
+/// it said `asUser()`, and — since v1's `Table` says whose view of the data it
+/// wants with an *argument* — a **named user**.
+///
+/// **What "said nothing" means is the host's to decide**, not the guest's
+/// ([`Authority::Default`]): a trigger is server-side configuration and runs as
+/// the admin, while a body answering a request — a custom query, a server-
+/// rendered page — runs as the person who asked, so ownership rules are
+/// opt-*out* there (`asAdmin()`) rather than opt-in.
 ///
 /// The three that are not `Admin` are one thing in the end: [`Actor::Caller`],
 /// a role and a user, checked through `sc_api::ownership`'s `*_as` functions.
@@ -210,10 +217,16 @@ pub enum Op {
 /// body volunteering to be treated as them (TODO "the v1 `Table` API" §4).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Authority {
-    /// The trigger's: `ROLE_ADMIN`, carrying the event's user. The default,
-    /// because a trigger is server-side configuration and the audit row a caller
-    /// may not insert is the archetype of what a trigger exists to write.
+    /// Whatever the run defaults to, resolved by the host
+    /// ([`resolve`](Authority::resolve)) before anything is looked up: what a
+    /// handle the body did not narrow or widen sends, and what a plan with no
+    /// `authority` at all means.
     #[default]
+    Default,
+    /// The trigger's: `ROLE_ADMIN`, carrying the event's user. A trigger's
+    /// default, because a trigger is server-side configuration and the audit
+    /// row a caller may not insert is the archetype of what a trigger exists to
+    /// write.
     Admin,
     /// The event's caller, through `sc_api::ownership`'s `*_as` functions.
     User,
@@ -229,7 +242,8 @@ pub enum Authority {
 }
 
 impl<'de> Deserialize<'de> for Authority {
-    /// `"admin"`, `"user"`, `"public"` — or `{ "user": <id> }` for a named one.
+    /// `"default"`, `"admin"`, `"user"`, `"public"` — or `{ "user": <id> }` for
+    /// a named one.
     ///
     /// Hand-written rather than untagged, for the reason every other shape on
     /// this seam is `deny_unknown_fields`: an authority this server does not
@@ -240,6 +254,7 @@ impl<'de> Deserialize<'de> for Authority {
         use serde::de::Error as _;
         let json = Json::deserialize(d)?;
         match &json {
+            Json::String(s) if s == "default" => Ok(Authority::Default),
             Json::String(s) if s == "admin" => Ok(Authority::Admin),
             Json::String(s) if s == "user" => Ok(Authority::User),
             Json::String(s) if s == "public" => Ok(Authority::Public),
@@ -247,14 +262,24 @@ impl<'de> Deserialize<'de> for Authority {
                 Ok(Authority::Named(map["user"].clone()))
             }
             _ => Err(D::Error::custom(format!(
-                "`{json}` is not an authority: it is \"admin\", \"user\", \"public\", \
-                 or {{ \"user\": id }} for one particular user"
+                "`{json}` is not an authority: it is \"default\", \"admin\", \"user\", \
+                 \"public\", or {{ \"user\": id }} for one particular user"
             ))),
         }
     }
 }
 
 impl Authority {
+    /// This authority with [`Default`](Authority::Default) replaced by
+    /// `default` — the run's own, which is [`Admin`](Authority::Admin) for a
+    /// trigger and [`User`](Authority::User) for a body answering a request.
+    pub fn resolve(&self, default: &Authority) -> Authority {
+        match self {
+            Authority::Default => default.clone(),
+            other => other.clone(),
+        }
+    }
+
     /// Whether this authority is the admin's — the one form that clears every
     /// rule that can be written, and therefore the one worth asking about by
     /// name rather than by matching three others.
@@ -266,6 +291,7 @@ impl Authority {
     /// two of the four.
     pub fn spelling(&self) -> &'static str {
         match self {
+            Authority::Default => "default",
             Authority::Admin => "admin",
             Authority::User => "user",
             Authority::Public => "public",

@@ -947,20 +947,40 @@ ALTER TABLE IF EXISTS "_fd_checklist_runs" ADD COLUMN IF NOT EXISTS "outbox" jso
 -- one `edit_table_rows` entry over the same table with its one box ticked (the
 -- tool names are unchanged). Idempotent: rewritten entries no longer match.
 -- (Postgres only; on SQLite re-save the agents from the admin UI instead.)
-UPDATE "_fd_agents" a
-SET "traits" = (
-  SELECT jsonb_agg(
-    CASE t->>'trait'
-      WHEN 'insert_row' THEN jsonb_build_object('trait', 'edit_table_rows',
-        'config', coalesce(t->'config', '{}'::jsonb) || '{"allow_insert": true}'::jsonb)
-      WHEN 'update_rows' THEN jsonb_build_object('trait', 'edit_table_rows',
-        'config', coalesce(t->'config', '{}'::jsonb) || '{"allow_update": true}'::jsonb)
-      WHEN 'delete_rows' THEN jsonb_build_object('trait', 'edit_table_rows',
-        'config', coalesce(t->'config', '{}'::jsonb) || '{"allow_delete": true}'::jsonb)
-      ELSE t
-    END ORDER BY ord)
-  FROM jsonb_array_elements(a."traits") WITH ORDINALITY AS e(t, ord)
-)
-WHERE jsonb_typeof(a."traits") = 'array'
-  AND EXISTS (SELECT 1 FROM jsonb_array_elements(a."traits") t
-              WHERE t->>'trait' IN ('insert_row', 'update_rows', 'delete_rows'));
+-- Guarded so the script also runs on a database with no agents table yet.
+DO $$
+BEGIN
+  IF to_regclass('"_fd_agents"') IS NOT NULL THEN
+    UPDATE "_fd_agents" a
+    SET "traits" = (
+      SELECT jsonb_agg(
+        CASE t->>'trait'
+          WHEN 'insert_row' THEN jsonb_build_object('trait', 'edit_table_rows',
+            'config', coalesce(t->'config', '{}'::jsonb) || '{"allow_insert": true}'::jsonb)
+          WHEN 'update_rows' THEN jsonb_build_object('trait', 'edit_table_rows',
+            'config', coalesce(t->'config', '{}'::jsonb) || '{"allow_update": true}'::jsonb)
+          WHEN 'delete_rows' THEN jsonb_build_object('trait', 'edit_table_rows',
+            'config', coalesce(t->'config', '{}'::jsonb) || '{"allow_delete": true}'::jsonb)
+          ELSE t
+        END ORDER BY ord)
+      FROM jsonb_array_elements(a."traits") WITH ORDINALITY AS e(t, ord)
+    )
+    WHERE jsonb_typeof(a."traits") = 'array'
+      AND EXISTS (SELECT 1 FROM jsonb_array_elements(a."traits") t
+                  WHERE t->>'trait' IN ('insert_row', 'update_rows', 'delete_rows'));
+  END IF;
+END $$;
+
+-- Applications gain `api_tables`: the connected tables whose generic row API
+-- (REST list/read/create/update/delete, GraphQL type) they serve. New
+-- applications serve none; existing ones keep serving every connected table,
+-- as they did before. Idempotent: only rows that have no value yet are filled.
+-- (On SQLite the column is added at startup and reads as none; re-tick the
+-- tables in each application's form.)
+ALTER TABLE IF EXISTS "_fd_applications" ADD COLUMN IF NOT EXISTS "api_tables" jsonb;
+DO $$
+BEGIN
+  IF to_regclass('"_fd_applications"') IS NOT NULL THEN
+    UPDATE "_fd_applications" SET "api_tables" = "tables" WHERE "api_tables" IS NULL;
+  END IF;
+END $$;

@@ -197,7 +197,9 @@ async fn setup() -> sc_error::Result<(Router, TestDb)> {
     .await?;
     create_user(&catalog, READER, PASSWORD, 80).await?;
     create_user(&catalog, ADMIN, PASSWORD, ROLE_ADMIN).await?;
-    save_table_meta(&catalog, &TableMeta::new("books")).await?;
+    // Step 11: books' minimum read role `Reader (80)`, so `shareBook`, which reads
+    // as its caller, can see the book being shared.
+    save_table_meta(&catalog, &TableMeta::new("books").access(80, ROLE_ADMIN)).await?;
 
     let mut api = ApiConfig::new("rest", "/api");
     set_custom_queries(&mut api.config, &tutorial_queries())?;

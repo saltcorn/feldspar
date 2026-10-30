@@ -32,10 +32,10 @@ use crate::application::{
     ApiConfig, AppId, Application, CspPolicy, FrameworkRef, StaticDir, StreamRef, TriggerRef,
 };
 use crate::applications::{
-    APPLICATIONS_TABLE, COL_ACCESS_IF, COL_AGENTS, COL_APIS, COL_ATTRIBUTES, COL_CSP,
-    COL_DESCRIPTION, COL_EXTRA_FRAMEWORKS, COL_FILE_STORES, COL_FRAMEWORK, COL_ID, COL_MAX_ROLE,
-    COL_MIN_ROLE, COL_NAME, COL_STATIC_DIRS, COL_STREAMS, COL_SUBDOMAIN, COL_TABLES, COL_TRIGGERS,
-    COL_UPLOADS,
+    APPLICATIONS_TABLE, COL_ACCESS_IF, COL_AGENTS, COL_API_TABLES, COL_APIS, COL_ATTRIBUTES,
+    COL_CSP, COL_DESCRIPTION, COL_EXTRA_FRAMEWORKS, COL_FILE_STORES, COL_FRAMEWORK, COL_ID,
+    COL_MAX_ROLE, COL_MIN_ROLE, COL_NAME, COL_STATIC_DIRS, COL_STREAMS, COL_SUBDOMAIN, COL_TABLES,
+    COL_TRIGGERS, COL_UPLOADS,
 };
 use crate::framework::{CFG_STORE, validate_framework_config};
 
@@ -123,6 +123,10 @@ pub async fn save_application(catalog: &Catalog, app: &Application) -> Result<Ap
     // …and the static directories, against the same two things: the store subset
     // this app declares, and the mounts the APIs above have just claimed (§13.2).
     validate_static_dirs(app)?;
+    // …and the tables whose row API it serves, against the tables it is
+    // connected to: a row API over a table the app does not include would be a
+    // door into something the app was never given.
+    crate::validate_api_tables(app)?;
     // …and the upload slots, against the same store subset and the app's own
     // code queries, which a hook must be one of (TODO F2, §2.3).
     crate::validate_upload_slots(app)?;
@@ -293,6 +297,7 @@ fn app_columns() -> Vec<String> {
         COL_FRAMEWORK,
         COL_EXTRA_FRAMEWORKS,
         COL_TABLES,
+        COL_API_TABLES,
         COL_FILE_STORES,
         COL_TRIGGERS,
         COL_STREAMS,
@@ -324,6 +329,7 @@ fn app_values(app: &Application) -> Result<Vec<Value>> {
             app.extra_frameworks.iter().map(framework_to_json).collect(),
         )),
         Value::Json(names_to_json(app.tables.iter().map(|t| &t.0))),
+        Value::Json(names_to_json(app.api_tables.iter().map(|t| &t.0))),
         Value::Json(names_to_json(app.file_stores.iter().map(|s| &s.0))),
         // Written as `[]` rather than left NULL, so a row this version saves is
         // never one the tolerant read below has to forgive.
@@ -407,6 +413,12 @@ pub(crate) fn application_from_row(row: &Row) -> Result<Application> {
             .map(|v| framework_from_json(v.clone(), COL_EXTRA_FRAMEWORKS))
             .collect::<Result<_>>()?,
         tables: names_from_json(row, COL_TABLES)?
+            .into_iter()
+            .map(TableId)
+            .collect(),
+        // Read leniently for `NULL`/absent, as the triggers are: the column
+        // arrived after the table did.
+        api_tables: optional_names_from_json(row, COL_API_TABLES)?
             .into_iter()
             .map(TableId)
             .collect(),

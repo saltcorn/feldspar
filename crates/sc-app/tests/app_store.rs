@@ -65,12 +65,13 @@ fn code_framework() -> FrameworkRef {
 
 /// An application exercising every column: both §9 required extras
 /// (description, attributes), a configured framework, both subsets, an API, a
-/// static dir, and a non-default CSP.
+/// static dir, a non-default CSP, and one connected table serving its row API
+/// beside one that does not.
 fn blog() -> Application {
     Application::new("My Blog", "blog", code_framework())
         .description("The company blog")
         .with_table(TableId("posts".to_owned()))
-        .with_table(TableId("comments".to_owned()))
+        .with_connected_table(TableId("comments".to_owned()))
         .with_file_store(FileStoreId("uploads".to_owned()))
         .with_api(ApiConfig::new("rest", "/api").with("row_cap", 100))
         .with_static_dir(StaticDir::new(
@@ -95,6 +96,17 @@ async fn an_application_round_trips_through_the_table() -> Result<()> {
     // app's only definition, so anything lost here is lost for good.
     let loaded = load_application(&cat, app.id).await?.expect("saved app");
     assert_eq!(loaded, app);
+    // …which includes which connected tables serve a row API.
+    assert_eq!(loaded.api_tables, vec![TableId("posts".to_owned())]);
+
+    // A row API over a table the app is not connected to is refused on save.
+    let mut wider = app.clone();
+    wider.api_tables.push(TableId("users".to_owned()));
+    let refused = save_application(&cat, &wider)
+        .await
+        .expect_err("users is not connected")
+        .to_string();
+    assert!(refused.contains("not connected"), "{refused}");
 
     // Including each API provider's own settings, which are as much part of the
     // app's definition as the framework's: a row that lost them would be an app

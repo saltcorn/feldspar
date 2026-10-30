@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use sc_app::{
-    ApiConfig, Application, FrameworkRef, app_client, app_endpoints, app_providers,
+    ApiConfig, Application, FrameworkRef, app_client, app_endpoints, app_providers, app_schema_sql,
     app_source_from_config, build_application, emit_client,
 };
 use sc_catalog::{Catalog, TableId};
@@ -132,6 +132,66 @@ async fn app_client_is_generated_from_the_apps_own_endpoint_set() -> Result<()> 
         "undeclared table leaked into client"
     );
     assert!(!ts.contains("secrets"));
+    Ok(())
+}
+
+/// Connecting a table is not publishing it: a table the app is connected to
+/// but serves no row API for is in its `schema.sql` (what its queries are
+/// written against) and nowhere in its endpoints or client. Opting it into
+/// `api_tables` is what adds the four row routes.
+#[tokio::test]
+async fn a_connected_table_has_no_row_api_until_it_is_opted_in() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = catalog(&db).await?;
+    let connected = Application::new("Blog", "blog", code_framework())
+        .with_connected_table(TableId("posts".to_owned()))
+        .with_api(ApiConfig::new("rest", "/api"));
+    assert!(connected.api_tables.is_empty());
+
+    let endpoints = app_endpoints(&connected, &cat)?;
+    // Only the app's own login / logout / whoami / forgotPassword / setPassword.
+    assert_eq!(endpoints.len(), 5);
+    assert!(endpoints.find("listPosts").is_none());
+    let ts = app_client(&connected, &cat)?;
+    assert!(!ts.contains("/api/posts"), "{ts}");
+    assert!(!ts.contains("PostsRow"), "{ts}");
+    // …while its queries may still be written against it.
+    assert!(app_schema_sql(&connected, &cat)?.contains("posts"));
+
+    // The same table, opted in: the four row routes, and nothing for `secrets`.
+    let mut served = connected.clone();
+    sc_app::change_app_api_tables(
+        &mut served,
+        &sc_app::TableChange {
+            add: vec!["posts".to_owned()],
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(app_endpoints(&served, &cat)?.len(), 4 + 5);
+    assert!(app_client(&served, &cat)?.contains("/api/posts"));
+
+    // A row API over a table the app is not connected to is refused, and
+    // disconnecting a table stops serving its row API.
+    let refused = sc_app::change_app_api_tables(
+        &mut served,
+        &sc_app::TableChange {
+            add: vec!["secrets".to_owned()],
+            ..Default::default()
+        },
+    )
+    .expect_err("secrets is not connected")
+    .to_string();
+    assert!(refused.contains("not connected"), "{refused}");
+    assert_eq!(served.api_tables, vec![TableId("posts".to_owned())]);
+    sc_app::change_app_tables(
+        &cat,
+        &mut served,
+        &sc_app::TableChange {
+            remove: vec!["posts".to_owned()],
+            ..Default::default()
+        },
+    )?;
+    assert!(served.api_tables.is_empty());
     Ok(())
 }
 

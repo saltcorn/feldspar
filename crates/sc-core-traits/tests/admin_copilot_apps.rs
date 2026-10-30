@@ -701,6 +701,74 @@ async fn update_application_checks_each_section_s_grant_before_changing_anything
     Ok(())
 }
 
+/// `update_application`'s `api_tables` section: closing a table's row API is
+/// an edit, opening one widens what the application exposes and so also needs
+/// `allow_access_changes` — refused whole, with nothing stored — and a table
+/// the application is not connected to cannot be opened at all.
+#[tokio::test]
+async fn opening_a_tables_row_api_needs_the_access_changes_grant() -> Result<()> {
+    let env = Env::with_schema(SCHEMA).await?;
+    app_with_api(&env).await?;
+    let api_tables =
+        |app: &Application| -> Vec<String> { app.api_tables.iter().map(|t| t.0.clone()).collect() };
+    let stored = || async {
+        load_application_by_subdomain(&env.catalog, "blog")
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(api_tables(&stored().await), ["books"]);
+
+    let closed = call(
+        &env,
+        &default_grants(),
+        "update_application",
+        json!({ "application": "blog", "api_tables": { "remove": ["books"] } }),
+    )
+    .await?;
+    assert_eq!(closed["api_tables"], json!([]), "{closed}");
+    assert_eq!(closed["was"]["api_tables"], json!(["books"]), "{closed}");
+    // Still connected: its queries may name it.
+    assert_eq!(stored().await.tables.len(), 1);
+    assert!(stored().await.api_tables.is_empty());
+
+    let open = json!({ "application": "blog", "api_tables": { "add": ["books"] } });
+    let refused = call(&env, &default_grants(), "update_application", open.clone())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("allow_access_changes"), "{refused}");
+    assert!(stored().await.api_tables.is_empty(), "nothing was stored");
+
+    let opened = call(&env, &all_grants(), "update_application", open).await?;
+    assert_eq!(opened["api_tables"], json!(["books"]), "{opened}");
+
+    let unconnected = call(
+        &env,
+        &all_grants(),
+        "update_application",
+        json!({ "application": "blog", "api_tables": { "add": ["authors"] } }),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(unconnected.contains("not connected"), "{unconnected}");
+
+    let described = call(
+        &env,
+        &default_grants(),
+        TOOL_DESCRIBE_APPS,
+        json!({ "application": "blog" }),
+    )
+    .await?;
+    assert_eq!(
+        described["applications"][0]["api_tables"],
+        json!(["books"]),
+        "{described}"
+    );
+    Ok(())
+}
+
 /// `update_application`'s `uploads` section (TODO F2.6): an edit, so it needs
 /// `allow_edit`; a slot naming a store the app was not connected to connects
 /// it; a hook that is not one of the app's code queries is refused by the

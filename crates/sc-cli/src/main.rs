@@ -1543,7 +1543,9 @@ async fn check_command(args: &[String]) -> Result<()> {
         Some(other) => Err(sc_error::Error::config(format!(
             "unknown check subcommand `{other}`; there are `run` and `list`"
         ))),
-        None => Err(sc_error::Error::config("check needs a subcommand: run or list")),
+        None => Err(sc_error::Error::config(
+            "check needs a subcommand: run or list",
+        )),
     }
 }
 
@@ -1664,12 +1666,14 @@ async fn app_command(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("list") => app_list_command(&args[1..]).await,
         Some("triggers") => app_triggers_command(&args[1..]).await,
-        Some("tables") => app_tables_command(&args[1..]).await,
+        Some("tables") => app_tables_command(&args[1..], false).await,
+        Some("api-tables") => app_tables_command(&args[1..], true).await,
         Some(other) => Err(sc_error::Error::config(format!(
-            "unknown app subcommand `{other}`; there are `list`, `tables` and `triggers`"
+            "unknown app subcommand `{other}`; there are `list`, `tables`, `api-tables` \
+             and `triggers`"
         ))),
         None => Err(sc_error::Error::config(
-            "app needs a subcommand: list, tables or triggers",
+            "app needs a subcommand: list, tables, api-tables or triggers",
         )),
     }
 }
@@ -1981,13 +1985,21 @@ fn loaded_module_json(loaded: &sc_module::LoadedModule) -> serde_json::Value {
 /// `_fd_applications.tables` as JSON. Idempotent: adding a connected table or
 /// removing one that is not changes nothing.
 ///
+/// `feldspar app api-tables (add|remove|list) …` is the same command over the
+/// connected tables whose **generic row API** the application serves
+/// (`sc_app::change_app_api_tables`) — none unless somebody adds one, and a
+/// table must be connected first.
+///
 /// A running server serves the change after `SIGHUP`, which reloads every
 /// application row.
-async fn app_tables_command(args: &[String]) -> Result<()> {
+async fn app_tables_command(args: &[String], api: bool) -> Result<()> {
     let (db, rest) = DbConfig::extract(args)?;
     let (base_domain, rest) = take_option(rest, "--base-domain")?;
     let (file_stores, rest) = extract_file_stores(rest)?;
-    let parsed = sc_cli::app::parse_tables(&rest)?;
+    let parsed = match api {
+        true => sc_cli::app::parse_api_tables(&rest)?,
+        false => sc_cli::app::parse_tables(&rest)?,
+    };
 
     let (catalog, mut app) =
         open_app(&parsed.app, &db, &file_stores, base_domain.as_deref()).await?;
@@ -2005,7 +2017,11 @@ async fn app_tables_command(args: &[String]) -> Result<()> {
         }),
     };
     if let Some(change) = change {
-        if sc_app::change_app_tables(&catalog, &mut app, &change)? {
+        let changed = match api {
+            true => sc_app::change_app_api_tables(&mut app, &change)?,
+            false => sc_app::change_app_tables(&catalog, &mut app, &change)?,
+        };
+        if changed {
             app = save_application(&catalog, &app).await?;
             // The generated client is typed from the endpoints, which include
             // the exposed triggers — so an app exposing any is rewritten with
@@ -2034,7 +2050,11 @@ async fn app_tables_command(args: &[String]) -> Result<()> {
         }
     }
 
-    let tables: Vec<&str> = app.tables.iter().map(|t| t.0.as_str()).collect();
+    let listed = match api {
+        true => &app.api_tables,
+        false => &app.tables,
+    };
+    let tables: Vec<&str> = listed.iter().map(|t| t.0.as_str()).collect();
     if parsed.json {
         println!(
             "{}",
@@ -2043,7 +2063,10 @@ async fn app_tables_command(args: &[String]) -> Result<()> {
         return Ok(());
     }
     if tables.is_empty() {
-        println!("application `{}` reaches no tables", app.subdomain);
+        match api {
+            true => println!("application `{}` serves no table's row API", app.subdomain),
+            false => println!("application `{}` reaches no tables", app.subdomain),
+        }
     }
     for table in tables {
         println!("{table}");
@@ -3143,6 +3166,9 @@ fn print_usage() {
     );
     eprintln!(
         "  feldspar app tables (add|remove|list) --app SUBDOMAIN [TABLE...] [--json] [database flags]"
+    );
+    eprintln!(
+        "  feldspar app api-tables (add|remove|list) --app SUBDOMAIN [TABLE...] [--json] [database flags]"
     );
     eprintln!(
         "  feldspar module install --local DIR [--python] [--grant-read PATH]... [--grant-write PATH]..."

@@ -160,6 +160,10 @@ pub struct FileStoreHost<'a> {
     floors: Mutex<BTreeMap<String, Option<u8>>>,
     /// Where the run's application serves store files, for `file.url()`.
     urls: Option<Arc<dyn FileUrls>>,
+    /// What an operation that names no authority runs under: the admin's for a
+    /// trigger, the caller's for a body answering a request
+    /// ([`defaulting_to`](FileStoreHost::defaulting_to)).
+    default_authority: Authority,
 }
 
 impl<'a> FileStoreHost<'a> {
@@ -173,7 +177,20 @@ impl<'a> FileStoreHost<'a> {
             max_copy_bytes: COPY_BYTES.load(Ordering::Relaxed),
             floors: Mutex::new(BTreeMap::new()),
             urls: None,
+            default_authority: Authority::Admin,
         }
+    }
+
+    /// Run an operation that names no authority under `authority` rather than
+    /// the admin's — [`TableHost::defaulting_to`]'s rule, so a request-answering
+    /// body's `fs("x")` is checked against the store's file rules unless it says
+    /// `asAdmin()`.
+    ///
+    /// [`TableHost::defaulting_to`]: super::TableHost::defaulting_to
+    #[must_use]
+    pub fn defaulting_to(mut self, authority: Authority) -> FileStoreHost<'a> {
+        self.default_authority = authority.resolve(&Authority::Admin);
+        self
     }
 
     /// Attach the event's caller — the role it was served at, which is what a
@@ -497,11 +514,12 @@ fn valid_role(role: u8) -> Result<()> {
 #[async_trait]
 impl FileHost for FileStoreHost<'_> {
     async fn files(&self, request: Json) -> Result<Json> {
-        let req: FileRequest = serde_json::from_value(request).map_err(|e| {
+        let mut req: FileRequest = serde_json::from_value(request).map_err(|e| {
             Error::invalid(format!(
                 "this file request is not one the server understands: {e}"
             ))
         })?;
+        req.authority = req.authority.resolve(&self.default_authority);
         self.run(&req).await
     }
 

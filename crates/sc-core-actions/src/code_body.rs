@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sc_api::code_host::{FileStoreHost, TableHost, TriggerRunHost, schema_snapshot};
+use sc_api::code_host::{Authority, FileStoreHost, TableHost, TriggerRunHost, schema_snapshot};
 use sc_error::{Error, Result};
 use sc_expr::{
     CodeCall, CodeHosts, ConsoleSink, DEFAULT_CODE_TIMEOUT, JsEvaluator, LiveHost,
@@ -236,6 +236,15 @@ impl<'a> Hosts<'a> {
         evaluator: Option<&Arc<dyn JsEvaluator>>,
         client: reqwest::Client,
     ) -> Hosts<'a> {
+        // Whose authority a handle the body neither narrowed nor widened
+        // carries. A trigger is server-side configuration and acts as the
+        // admin; a **custom query** answers an outside request and acts as the
+        // person who asked, so the ownership rules and role floors the row API
+        // enforces hold there too, unless the body says `asAdmin()`.
+        let default = match ctx.acts_as_caller() {
+            true => Authority::User,
+            false => Authority::Admin,
+        };
         Hosts {
             // The `db` handle, for this run only: the call budget is counted on
             // it, and the event's caller and this trigger's chain ride on every
@@ -243,6 +252,7 @@ impl<'a> Hosts<'a> {
             // says who caused it and how deep in a cascade it already is.
             table: TableHost::new(ctx.catalog)
                 .caused_by(ctx.event.role, ctx.event.user.clone())
+                .defaulting_to(default.clone())
                 .chained(ctx.chain.clone())
                 // The step's transaction, when this body is a workflow step:
                 // what it writes commits with the step or is rolled back with
@@ -255,10 +265,11 @@ impl<'a> Hosts<'a> {
             fetch: CodeFetchHost::new(client, ctx.trigger),
             // The file stores, on the same terms again. It carries the event's
             // role rather than its user, because a file rule is a role floor:
-            // `as_user` is checked against it, and the admin default clears
+            // `as_user` is checked against it, and the admin's authority clears
             // every one.
             files: FileStoreHost::new(ctx.catalog)
                 .caused_by(ctx.event.role, ctx.event.user.as_ref())
+                .defaulting_to(default.clone())
                 // Where the custom query's application serves files, so
                 // `file.url()` can say (TODO F2.8); none for a trigger.
                 .with_urls(ctx.file_urls().cloned()),
@@ -272,6 +283,7 @@ impl<'a> Hosts<'a> {
             triggers: ctx.triggers().map(|d| {
                 TriggerRunHost::new(d, ctx.catalog)
                     .caused_by(ctx.event.role, ctx.event.user.clone())
+                    .defaulting_to(default.clone())
                     .chained(ctx.chain.clone())
                     .in_transaction(ctx.transaction())
             }),

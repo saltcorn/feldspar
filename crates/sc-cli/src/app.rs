@@ -99,6 +99,12 @@ pub fn parse_tables(args: &[String]) -> Result<TablesArgs> {
     parse_names("tables", "table", args)
 }
 
+/// Parse `app api-tables`'s arguments: `app tables`'s, over the connected
+/// tables whose generic row API the application serves.
+pub fn parse_api_tables(args: &[String]) -> Result<TablesArgs> {
+    parse_names("api-tables", "table", args)
+}
+
 /// `app <section> (add|remove|list) --app SUBDOMAIN [NAME…] [--json]`.
 fn parse_names(section: &str, noun: &str, args: &[String]) -> Result<TriggersArgs> {
     let usage = format!("app {section} (add|remove|list) --app SUBDOMAIN [NAME…] [--json]");

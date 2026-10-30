@@ -211,6 +211,10 @@ export function ApplicationForm({
   const [frameworkName, setFrameworkName] = useState("");
   const [config, setConfig] = useState<Record<string, string>>({});
   const [tables, setTables] = useState<string[]>([]);
+  // The connected tables whose generic row API the app serves: none for a new
+  // application, and each one ticked deliberately — its data is otherwise
+  // reached through custom queries.
+  const [apiTables, setApiTables] = useState<string[]>([]);
   const [fileStores, setFileStores] = useState<string[]>([]);
   const [triggers, setTriggers] = useState<string[]>([]);
   const [streams, setStreams] = useState<string[]>([]);
@@ -307,6 +311,7 @@ export function ApplicationForm({
           setFrameworkName(existing.framework.name);
           setConfig(readConfig(existing.framework.config));
           setTables(existing.tables);
+          setApiTables(existing.api_tables);
           setFileStores(existing.file_stores);
           setTriggers(existing.triggers);
           setStreams(existing.streams);
@@ -411,6 +416,8 @@ export function ApplicationForm({
         },
         extra_frameworks: [],
         tables,
+        // Only connected tables can serve a row API; one unticked above drops out.
+        api_tables: apiTables.filter((t) => tables.includes(t)),
         file_stores: fileStores,
         triggers,
         streams,
@@ -740,7 +747,22 @@ export function ApplicationForm({
                     onChange={setTables}
                     emptyText="This server has no tables yet."
                   />
-                  <Form.Text muted><T text="The tables this app may access." /></Form.Text>
+                  <Form.Text muted>
+                    <T text="The tables this app's custom queries, views and streams may use. Connecting a table publishes no endpoint for it." />
+                  </Form.Text>
+                </Form.Group>
+                <Form.Group className="mb-3">
+                  <Form.Label htmlFor="appApiTables"><T text="Tables with a row API" /></Form.Label>
+                  <MultiSelect
+                    id="appApiTables"
+                    options={tables.map((table) => ({ value: table }))}
+                    selected={apiTables.filter((t) => tables.includes(t))}
+                    onChange={setApiTables}
+                    emptyText="Connect a table above first."
+                  />
+                  <Form.Text muted>
+                    <T text="Serve generic list, read, create, update and delete routes for these tables. Leave this empty unless the app needs generic row access: custom queries expose only what each page does." />
+                  </Form.Text>
                 </Form.Group>
               </Col>
               <Col md={6}>
