@@ -33,7 +33,6 @@ import {
   restarted,
   shortCommit,
   usage,
-  versionLine,
 } from "../systemInfo";
 import { ClearAllPanel } from "./ClearAll";
 
@@ -92,7 +91,7 @@ export function SystemTab() {
               />
               <Reading label={t("Platform")} value={info.platform} />
             </dl>
-            <code className="d-block user-select-all">{versionLine(info)}</code>
+            <code className="d-block user-select-all">{info.version_line}</code>
           </Card>
 
           <Card title={t("Database")}>

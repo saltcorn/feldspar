@@ -213,6 +213,7 @@ pub use security::{
 };
 pub use serve::{serve, serve_browser};
 pub use streams::{StreamServices, TriggerBridge, install_streams, install_streams_with};
+pub use system::version_line;
 pub use systemd::ServiceManager;
 pub use tls::{
     AcmeCertificate, Certificate, CertificateStatus, PastedCertificate, TlsHandle, TlsNames,

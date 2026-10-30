@@ -6,7 +6,6 @@ import {
   restarted,
   shortCommit,
   usage,
-  versionLine,
 } from "./systemInfo";
 
 describe("formatBytes", () => {
@@ -48,20 +47,6 @@ describe("shortCommit", () => {
     const hash = "6f573d09a1b2c3d4e5f60718293a4b5c6d7e8f90";
     expect(shortCommit(hash)).toBe("6f573d09a1b2");
     expect(shortCommit(`${hash}-dirty`)).toBe("6f573d09a1b2-dirty");
-  });
-});
-
-describe("versionLine", () => {
-  it("names the build a release build stamped", () => {
-    expect(
-      versionLine({ version: "0.1.0", commit: "abc123", build_time: "2026-10-30T12:00:00Z" }),
-    ).toBe("feldspar 0.1.0 · abc123 · built 2026-10-30T12:00:00Z");
-  });
-
-  it("says so for a binary built any other way", () => {
-    expect(versionLine({ version: "0.1.0", commit: null, build_time: null })).toBe(
-      "feldspar 0.1.0 · not a release build",
-    );
   });
 });
 

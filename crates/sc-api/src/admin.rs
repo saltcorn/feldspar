@@ -5041,6 +5041,8 @@ pub fn admin_endpoints() -> EndpointSet {
         Endpoint::new("getSystemInfo", Method::Get, api().lit("system"))
             .output(TypeSchema::struct_of([
                 StructField::new("version", TypeSchema::text()),
+                // `feldspar --version`'s line, for a bug report.
+                StructField::new("version_line", TypeSchema::text()),
                 StructField::new("build_time", TypeSchema::optional(TypeSchema::text())),
                 StructField::new("commit", TypeSchema::optional(TypeSchema::text())),
                 StructField::new("platform", TypeSchema::text()),

@@ -63,5 +63,7 @@ mod setup_host;
 mod sqlite_primary;
 #[path = "users.rs"]
 mod users;
+#[path = "version.rs"]
+mod version;
 #[path = "whale_ci.rs"]
 mod whale_ci;

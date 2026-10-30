@@ -53,6 +53,21 @@ pub fn build_commit() -> Option<&'static str> {
     stamped(option_env!("SC_BUILD_COMMIT"))
 }
 
+/// The one line that names this build, as `feldspar --version` prints it and
+/// the System tab shows it: `feldspar 0.1.0 · <commit> · built <time>`, or
+/// `feldspar 0.1.0 · not a release build`.
+pub fn version_line() -> String {
+    let mut line = format!("feldspar {VERSION}");
+    if let Some(commit) = build_commit() {
+        line.push_str(&format!(" · {commit}"));
+    }
+    match build_time() {
+        Some(time) => line.push_str(&format!(" · built {time}")),
+        None => line.push_str(" · not a release build"),
+    }
+    line
+}
+
 /// A build variable, where an empty one — the Dockerfile passes its build
 /// arguments through whether or not they were given — is no value.
 fn stamped(value: Option<&'static str>) -> Option<&'static str> {
@@ -113,6 +128,7 @@ pub async fn system_info(catalog: &Catalog) -> Json {
     let data_dir = sc_files::data_dir().ok();
     json!({
         "version": VERSION,
+        "version_line": version_line(),
         "build_time": build_time(),
         "commit": build_commit(),
         "platform": format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
@@ -319,6 +335,14 @@ mod tests {
         assert_eq!(stamped(None), None);
         assert_eq!(stamped(Some("")), None);
         assert_eq!(stamped(Some("abc123")), Some("abc123"));
+    }
+
+    #[test]
+    fn a_test_build_names_its_version_and_says_it_is_not_a_release() {
+        assert_eq!(
+            version_line(),
+            format!("feldspar {VERSION} · not a release build")
+        );
     }
 
     #[test]

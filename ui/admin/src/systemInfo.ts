@@ -47,15 +47,6 @@ export function shortCommit(commit: string): string {
   return `${hash.slice(0, 12)}${dirty ? "-dirty" : ""}`;
 }
 
-/** The one line an operator pastes into a bug report: version, commit and
- * build time, or that this is not a release build. */
-export function versionLine(info: Pick<GetSystemInfoResponse, "version" | "commit" | "build_time">): string {
-  const parts = [`feldspar ${info.version}`];
-  if (info.commit) parts.push(info.commit);
-  parts.push(info.build_time ? `built ${info.build_time}` : "not a release build");
-  return parts.join(" · ");
-}
-
 /** Whether the server answering now is a different process from the one that
  * was asked to restart — which is when the restart is over. */
 export function restarted(

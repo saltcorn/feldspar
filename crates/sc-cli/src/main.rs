@@ -70,6 +70,11 @@ async fn run(args: &[String]) -> Result<()> {
         Some("demo") => demo_command(&args[1..]).await,
         // The profile is the file the binary was built with, so the one a
         // container is run under always matches the image it runs.
+        // The build's version, commit and build time — the System tab's line.
+        Some("--version" | "-V" | "version") => {
+            println!("{}", sc_server::version_line());
+            Ok(())
+        }
         Some("seccomp-profile") => {
             print!("{}", sc_cli::SECCOMP_PROFILE);
             Ok(())
@@ -3196,6 +3201,7 @@ fn plural(n: usize) -> &'static str {
 /// Print the short usage summary.
 fn print_usage() {
     eprintln!("feldspar — usage:");
+    eprintln!("  feldspar --version   the version, git commit and build time of this binary");
     eprintln!("  feldspar setup [--server | --dev] [--help for the rest]");
     eprintln!("  feldspar serve [database flags] [server flags]");
     eprintln!("  feldspar seccomp-profile   the seccomp profile for running the Docker image");

@@ -238,6 +238,7 @@ async fn the_system_tab_names_the_version_and_the_database() -> sc_error::Result
     // A test build is not stamped by the release script.
     assert_eq!(body["commit"], Value::Null, "{body}");
     assert_eq!(body["build_time"], Value::Null, "{body}");
+    assert_eq!(body["version_line"], json!(sc_server::version_line()));
     assert_eq!(body["database"]["product"], json!("PostgreSQL"), "{body}");
     let version = body["database"]["version"].as_str().unwrap_or_default();
     assert!(

@@ -29,6 +29,10 @@ in Settings, says so, and gathers the acts on the whole installation.
   that without one the server stays stopped. The page then polls `getSystemInfo` until a different process
   answers (pid or start time changed) and reloads.
 - **Clear all** moved here from the Backup tab.
+- **`feldspar --version`** (also `-V` and `version`) prints the same line the tab shows, from
+  `sc_server::version_line()`: `feldspar 0.1.0 · <commit> · built <time>`, or `feldspar 0.1.0 ·
+  not a release build`. `getSystemInfo` returns it as `version_line`, so the format is written
+  once. Test: `crates/sc-cli/tests/version.rs`.
 - `module_routes`' `fs_size` and the new tab share one `statvfs` wrapper
   (`system::filesystem_size`) and `parse_meminfo`.
 - New strings translated in the five admin locales. Design doc: a paragraph before "Clear all"
