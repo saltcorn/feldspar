@@ -141,9 +141,10 @@ if [ -z "${VARIANT}" ]; then
 fi
 case "${VARIANT}" in
     static) OBJECT="feldspar.tar.gz" ;;
-    # Published under the Debian 13 build's name, which hosts already fetch,
-    # until the names carry the platform (TODO-portable-release D5, R3.1).
-    linux|python|debian13-python) VARIANT="linux"; OBJECT="feldspar-debian13-python.tar.gz" ;;
+    # Its name carries the platform (TODO-portable-release D13). x86_64 is the
+    # one this script installs (below); the release also publishes the same
+    # tarball as feldspar-debian13-python.tar.gz, for older installers.
+    linux|python|debian13-python) VARIANT="linux"; OBJECT="feldspar-linux-x86_64.tar.gz" ;;
     *) die "--variant must be static or linux, got ${VARIANT}" ;;
 esac
 

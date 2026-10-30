@@ -390,7 +390,7 @@ fn the_linux_variant_is_fetched_and_its_libc_forecast() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}");
     assert!(
-        stdout.contains("feldspar-debian13-python.tar.gz -> "),
+        stdout.contains("feldspar-linux-x86_64.tar.gz -> "),
         "{stdout}"
     );
     assert!(

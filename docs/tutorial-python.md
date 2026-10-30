@@ -32,9 +32,29 @@ Go to **Settings → Development**. There is a **Python** panel, and it says one
 
 **Python is a build-time decision, not a setting.** There is no flag that turns it on: the
 interpreter is *linked* into the binary by the build, so a server without it cannot grow one at
-run time. In particular **the shipped release tarball has no Python** — that artifact is a
-static binary with no shared-library dependencies at all, and a linked `libpython` is exactly a
-shared-library dependency. A Python-capable server is a separate, dynamically-linked build:
+run time.
+
+**The easy way is the release's Linux artifact**, which has Python and needs **nothing
+Python-related on the host**: no `python3`, no `libpython`, no `python3-venv`, on any of the
+distributions it supports (Debian, Ubuntu, Fedora, RHEL, openSUSE, Arch, Alpine;
+docs/OPERATIONS.md §1.1):
+
+```bash
+curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh -s -- --variant linux
+feldspar python check                   # the interpreter starts, imports ssl, reaches PyPI
+```
+
+`python/` in that tarball holds a pinned CPython 3.13 that the binary finds next to itself, and
+`pip` runs that same interpreter, so the two can never disagree on a version. `feldspar python
+check` starts it without a database and says where it found its standard library, which libc the
+process runs on, and whether `ssl`, `sqlite3`, `ctypes` and `zoneinfo` load and PyPI answers
+over HTTPS.
+
+The other release artifact, the **static** one (`feldspar.tar.gz`, the installer's default
+without `--variant linux`), has no Python: it is a static binary with no shared-library
+dependencies at all, and a linked `libpython` is exactly a shared-library dependency.
+
+**Building it yourself** is the other way:
 
 ```bash
 sudo apt install python3-dev            # the libpython this links against
@@ -45,12 +65,6 @@ The result runs on any host that has the `libpython3.x.so` it was linked against
 of the `python3` it was built with (`PYO3_PYTHON` picks another). On a host without one it will
 not start at all: you get a dynamic-linker error before the server prints anything, which is the
 honest failure and the reason the feature is off by default.
-
-The release's Python-capable artifact is that build with its own CPython beside it: `python/` in
-the tarball holds a pinned CPython 3.13 that the binary finds next to itself, so the host needs
-nothing Python-related, and `pip` runs that same interpreter. `feldspar python check` starts it
-without a database and says where it found its standard library and whether `ssl`, `sqlite3`,
-`ctypes` and `zoneinfo` load and PyPI answers over HTTPS.
 
 Once it is running, five flags shape it, all needing a restart:
 

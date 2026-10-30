@@ -34,34 +34,45 @@ There is one binary, `feldspar`, and three ways to get it: two prebuilt tarballs
 and a build from source. Everything else in this document is the same for all
 three.
 
-| | **Static artifact** | **Debian 13 + Python artifact** | **From source** |
+| | **Linux artifact** (with Python) | **Static artifact** | **From source** |
 |---|---|---|---|
-| Where it comes from | `https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz`, or `scripts/build-static.sh` in a checkout | `https://feldspar-latest-static.saltcorn.com/feldspar-debian13-python.tar.gz`, or the same script | `cargo build --release -p sc-cli` |
-| Linkage | statically linked glibc (`+crt-static`), a static-PIE: no shared libraries, no interpreter | dynamic, against Debian 13's glibc and `libpython3.13.so.1.0`; V8 and every Rust crate still linked in | dynamic, against this machine's glibc |
-| Runs on | Debian, Ubuntu, RHEL **and** Alpine, from the same tarball | **Debian 13 (trixie) only** | the machine it was built on, and machines like it |
-| Packages on the host | none | `libpython3.13` to start at all (`install.sh` adds it), `python3` and `python3-venv` to install Python modules (`setup-host.sh` adds them) | — |
+| Where it comes from | `https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz`, or `scripts/build-static.sh` in a checkout | `https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz`, or the same script | `cargo build --release -p sc-cli` |
+| Linkage | dynamic, built on Debian 12 (glibc 2.36), against its **own** CPython 3.13 in `/opt/feldspar/python`; V8 and every Rust crate linked in | statically linked glibc (`+crt-static`), a static-PIE: no shared libraries, no interpreter | dynamic, against this machine's glibc |
+| Runs on | every distribution in §1.1, Alpine included | the same, minus Python | the machine it was built on, and machines like it |
+| Packages on the host | none. The host's glibc where it is 2.36 or newer, else the bundled one (§1.2) | none | — |
 | Toolchain on the host | none | none | Rust, a C toolchain, `libclang`, Node, a few GB of RAM |
 | Installed at | `/opt/feldspar` (the prefix is compiled in) | `/opt/feldspar`, the same | `/usr/local/bin/feldspar`, with the checkout kept where it was built |
-| **Python triggers and modules** | **no** — embedding CPython means linking `libpython`, which a static binary cannot do | **yes** | yes, with `--features python` |
-| Native Node addons in modules | no — a static binary cannot `dlopen` | yes | yes |
-| **Built-in model providers** | yes — five smartcore providers plus two hypothesis tests | the same | the same, unless built `--no-default-features` |
+| **Python triggers and modules** | **yes**, with nothing Python-related on the host | **no**: embedding CPython means linking `libpython`, which a static binary cannot do | yes, with `--features python` |
+| Native Node addons in modules | yes | no: a static binary cannot `dlopen` | yes |
+| **Built-in model providers** | yes: five smartcore providers plus two hypothesis tests | the same | the same, unless built `--no-default-features` |
 | Name resolution | in-process (`sc-dns`), **not** glibc NSS | in-process (`sc-dns`), the same | in-process (`sc-dns`) |
 
-`/opt/feldspar/VARIANT` says which of the two tarballs a host is running: `static`
-or `debian13-python`.
+**The Linux artifact is the one to install.** It runs everywhere the static one
+does and has Python. The static artifact is still published beside it for a
+release or two while the Linux artifact's bundled-glibc path (§1.2) proves itself
+on Alpine; after that, `feldspar.tar.gz` becomes a copy of the Linux artifact
+(TODO-portable-release D8, R3.3).
+
+The Linux artifact is published under two names. `feldspar-linux-x86_64.tar.gz`
+is its own (`feldspar-linux-aarch64.tar.gz` once aarch64 builds are published).
+`feldspar-debian13-python.tar.gz` is the same file under the name of the
+Debian-13-only build it replaced, so hosts and scripts that fetch that name get
+it without anyone editing a URL. Both have a `.sha256` that names its own file.
+
+`/opt/feldspar/VARIANT` says which tarball a host is running: `linux` or
+`static`. A host installed before the Linux artifact may still say
+`debian13-python`, the build that ran on Debian 13 only; its next upgrade
+replaces it with `linux` (§3.2).
 
 Consequences worth knowing before you choose:
 
-- **Python needs the Debian 13 artifact or a source build.** A static binary cannot
+- **Python needs the Linux artifact or a source build.** A static binary cannot
   embed CPython. The link against `libpython` fails under `+crt-static`, and even a
   binary that linked could not `dlopen` CPython's own extension modules or any
-  compiled wheel (numpy, scikit-learn). So the Python-capable tarball is a second,
-  dynamically linked build. It is made on Debian 13 and links Debian 13's
-  `libpython3.13`, which is why it runs there and nowhere else. There is no flag
-  that adds Python to the static binary. A trigger with a Python body on a server
-  without Python fails at fire time with a message saying so, rather than at
-  configuration time, so a trigger's configuration keeps its meaning across
-  deployments.
+  compiled wheel (numpy, scikit-learn). There is no flag that adds Python to the
+  static binary. A trigger with a Python body on a server without Python fails at
+  fire time with a message saying so, rather than at configuration time, so a
+  trigger's configuration keeps its meaning across deployments.
 - **The machine-learning built-ins are a default-on cargo feature.** `sc-model`'s
   `smartcore` feature carries `linear_regression`, `logistic_regression`,
   `random_forest`, `kmeans` and `pca`; a build with `--no-default-features` leaves
@@ -98,6 +109,123 @@ whatever is being installed. The server checks before it runs npm and says so;
 `scripts/setup-host.sh` installs Node from NodeSource for this reason, and
 `sudo npm install -g npm@latest` fixes a host that already has the old one.
 
+### 1.1 Where it runs
+
+On **x86_64**:
+
+| Family | Distributions | `install.sh` | `setup-host.sh` |
+|---|---|---|---|
+| Debian | Debian 12 and 13, Ubuntu 24.04 and later, and what derives from them (Mint, MX Linux, …) | yes | yes (apt) |
+| Fedora / RHEL | recent Fedora, RHEL 10 and its rebuilds (AlmaLinux, Rocky) | yes | yes (dnf) |
+| SUSE | openSUSE Leap 16, Tumbleweed | yes | yes (zypper) |
+| Arch | Arch, CachyOS, Manjaro, EndeavourOS | yes | yes (pacman) |
+| Alpine | Alpine 3 | yes | no: Alpine runs OpenRC, not systemd. Install with `install.sh` and run the server under your own service |
+
+A derivative is recognised by the `ID_LIKE` of its `/etc/os-release`, not by
+name. Windows runs the Linux artifact under WSL2. aarch64 and macOS builds are
+TODO-portable-release R4; until then the curl installer refuses any
+architecture but x86_64.
+
+How far each family has been tried: the build's smoke test is written to
+install the tarball in a container image of each (Debian 12 and 13, Ubuntu 24.04 and the latest,
+Fedora, AlmaLinux 10, Arch, Leap 16, Tumbleweed, Alpine 3) and runs
+`feldspar python check` there, but has not yet run against a real build
+(TODO-portable-release R2.4). `setup-host.sh` on
+Fedora, openSUSE and Arch has so far been checked as a `--dry-run` plan only,
+and SELinux in enforcing mode (Fedora, RHEL) has not been tried (R2.5). Report
+what fails.
+
+### 1.2 Which libc an install uses
+
+The Linux artifact carries two copies of each of its two executables:
+
+```
+/opt/feldspar/bin/feldspar              loader: the host's /lib64/ld-linux-x86-64.so.2
+/opt/feldspar/bin/feldspar.glibc        the same program, loader in /opt/feldspar/glibc
+/opt/feldspar/python/bin/python3        likewise, for the interpreter pip and venv run
+/opt/feldspar/python/bin/python3.glibc
+/opt/feldspar/glibc/                    Debian 12's ld.so, libc, libm, libgcc_s and
+                                        glibc's own NSS modules
+```
+
+The tarball's `install.sh` picks one when it installs:
+
+- **On a glibc host whose glibc is 2.36 or newer** (every family above but Alpine),
+  the normal executables stay. The server runs on the **host's** glibc, which the
+  distribution keeps patched: unattended upgrades still reach it. The only thing
+  it brings of its own is CPython.
+- **On a musl host (Alpine), or a glibc older than 2.36**, it moves
+  `feldspar.glibc` over `feldspar` and `python3.glibc` over `python3`, so every
+  path that names them (the unit's `ExecStart`, `--python-bin`) stays the same.
+  The `.glibc` copies find their libraries through a `DT_RPATH` into
+  `/opt/feldspar/glibc`, NSS modules included, so nothing of the host's is loaded
+  by mistake. musl is detected from the loader (`/lib/ld-musl-*`) before the
+  normal binary is tried, because on Alpine with `gcompat` installed the normal
+  binary might start and then run on the shim.
+
+`/opt/feldspar/LIBC` records the choice and why, and `feldspar python check`
+prints the `libc.so.6` the process actually mapped. The `.glibc` copies and
+`glibc/` stay on a glibc host too (about 5 MB), so the installed tree is the
+tarball, and running its `install.sh` again after moving the disk to another
+host can still choose either.
+
+The bundled glibc is used only where it has to be: a process running it on a
+glibc distribution would miss that distribution's glibc security fixes, and would
+load host libraries (`ctypes`, NSS modules from `/etc/nsswitch.conf`) built
+against a newer glibc than itself.
+
+### 1.3 The bundled CPython
+
+`/opt/feldspar/python` is [python-build-standalone](https://github.com/astral-sh/python-build-standalone)'s
+CPython **3.13**, unpacked from its `install_only_stripped` tarball. The binary
+links its `libpython3.13.so.1.0` through `$ORIGIN/../python/lib`, starts the
+interpreter with that directory as its home (no `PYTHONHOME` in the environment,
+which every child would inherit), and `--python-bin` defaults to
+`/opt/feldspar/python/bin/python3`, so pip and the embedded interpreter are
+always the same version. The host needs no `python3`, `libpython` or
+`python3-venv`.
+
+`feldspar python check` starts the interpreter without a database, imports `ssl`,
+`sqlite3`, `ctypes` and `zoneinfo`, makes a verified HTTPS request (`--url` for
+another one, `--offline` for none) and prints the interpreter's version and home
+and the mapped libc. `setup-host.sh` runs it as the service account; where the
+HTTPS request fails with CPython's compiled-in certificate path and passes with
+the distribution's bundle, it writes `SSL_CERT_FILE` into the unit.
+
+**The pin.** CPython security fixes reach a host with feldspar releases, not with
+distribution updates. The version is pinned in `scripts/build-static.sh`, by
+python-build-standalone release tag and the SHA-256 of each architecture's
+tarball:
+
+```bash
+readonly PBS_RELEASE="20261026"
+readonly PBS_PYTHON="3.13.18"
+readonly PBS_SHA256_X86_64="df15fe60…"
+readonly PBS_SHA256_AARCH64="578d9da1…"
+```
+
+To take a new CPython **patch** release, change those four lines: the tag and
+version from the [releases page](https://github.com/astral-sh/python-build-standalone/releases),
+and each SHA-256 from that release's `SHA256SUMS`, for
+`cpython-<version>+<tag>-<target>-install_only_stripped.tar.gz`. A build whose
+download does not match its pin stops before it compiles anything.
+
+A new **minor** version (3.14) is a release of its own, not a pin bump. Every
+existing Python environment reports 3.13, and the server refuses to load one
+built for another minor version until it is recreated and its modules reinstalled.
+
+### 1.4 Hosts on the older `debian13-python` artifact
+
+Before the Linux artifact there was a Debian 13 only build, which linked Debian's
+`libpython3.13`. Its hosts upgrade as any other (§3.2): the installer reads
+`debian13-python` from `/opt/feldspar/VARIANT` and installs the Linux artifact.
+The Python environment and the modules installed in it keep working. The
+environment was made by Debian's `python3.13`, which is the same minor version as
+the bundled one, so at the next module install the server repoints it at the
+bundled interpreter (`python3 -m venv --upgrade`, which keeps `site-packages`).
+After that, Debian's `python3`, `python3-venv` and `libpython3.13` are no longer
+used by feldspar and can be removed if nothing else on the host needs them.
+
 ---
 
 ## 2. Installing
@@ -108,18 +236,34 @@ systemd unit. `scripts/setup-host.sh` is what produces the last four, and it is
 the same script in both modes — it only differs in whether it builds a binary or
 expects to find one.
 
-Everything below assumes a `sudo`-capable login on Debian or Ubuntu, and uses
-`example.com` as the domain applications will be served under.
+The examples below use a `sudo`-capable login and `example.com` as the domain
+applications will be served under. Mode A works on every family in §1.1;
+modes B and C are written for Debian and Ubuntu.
 
-### 2.1 Mode A — the static artifact, downloaded
+### 2.1 Mode A — the Linux artifact, downloaded
 
-The short path. No checkout, no compiler, six commands:
+The short path. No checkout, no compiler, two commands:
 
 ```bash
-curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz
-curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz.sha256
-sha256sum -c feldspar.tar.gz.sha256                     # optional, and quick
-tar -xzf feldspar.tar.gz
+curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh -s -- --variant linux
+sudo /opt/feldspar/setup-host.sh --domain example.com   # packages, database, unit
+```
+
+The curl installer (`scripts/install.sh`) installs what it needs to download and
+unpack (ca-certificates, curl or wget, tar, gzip, find, awk) with the
+distribution's package manager, downloads the tarball and its checksum, checks
+it, and runs the tarball's own `install.sh`. `--dry-run` prints every command
+without running one, and the libc it expects to use (§1.2). Without
+`--variant`, a new install gets the static artifact, and an upgrade gets
+whatever `/opt/feldspar/VARIANT` names.
+
+The same by hand:
+
+```bash
+curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz
+curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz.sha256
+sha256sum -c feldspar-linux-x86_64.tar.gz.sha256        # optional, and quick
+tar -xzf feldspar-linux-x86_64.tar.gz
 sudo feldspar-*/install.sh                              # the tree at /opt/feldspar
 sudo /opt/feldspar/setup-host.sh --domain example.com   # packages, database, unit
 ```
@@ -127,70 +271,62 @@ sudo /opt/feldspar/setup-host.sh --domain example.com   # packages, database, un
 Those URLs **carry no version**. The objects behind them are always the latest
 build, which is also what makes them the upgrade path (§3.2); there is no version
 to look up and no release page to read. The published `.sha256` names
-`feldspar.tar.gz` rather than the versioned file it was computed over, so
-`sha256sum -c` works on exactly what you downloaded.
+`feldspar-linux-x86_64.tar.gz` rather than the versioned file it was computed
+over, so `sha256sum -c` works on exactly what you downloaded.
 
-`install.sh` copies the tree to `/opt/feldspar` and puts a copy of `setup-host.sh`
-beside it, which is why the third command is run from there rather than fetched
-again. Run out of an installed tree like that, the script sees the binary beside
-it and takes `--static` as its default — there is nothing to build and no flag to
-remember.
+`install.sh` puts the tree at `/opt/feldspar` (§3.2 says how: it never writes
+over an installed tree) and chooses the libc (§1.2). The tree carries a copy of
+`setup-host.sh`, which is why the next command is run from there rather than
+fetched again. Run out of an installed tree like that, the script sees the
+binary beside it and takes `--static` as its default — there is nothing to build
+and no flag to remember. It installs PostgreSQL, Node and Chromium, initialises PostgreSQL where the family needs that done by hand
+(`postgresql-setup --initdb` on Fedora and RHEL, `initdb` on Arch), and no Python
+package at all.
 
 What lands where:
 
 ```
 /opt/feldspar/bin/feldspar        the binary (symlinked to /usr/local/bin/feldspar)
+/opt/feldspar/bin/feldspar.glibc  the same, set to run on glibc/ (§1.2)
+/opt/feldspar/python/             CPython 3.13: what the binary embeds and pip runs
+/opt/feldspar/glibc/              Debian 12's glibc, used only by the .glibc copies
 /opt/feldspar/ui/admin/dist       the admin SPA it serves
 /opt/feldspar/ui/ide/dist         the file-store IDE it serves
 /opt/feldspar/plugins/            the modules it ships with, one click to install
-/opt/feldspar/install.sh          copies the tree into place
+/opt/feldspar/install.sh          installs the tree by swapping it in
 /opt/feldspar/setup-host.sh       the host setup, run once
+/opt/feldspar/VARIANT, LIBC, MANIFEST   which artifact, which libc, what was installed
 ```
 
 **The prefix is not cosmetic.** `crates/sc-cli/build.rs` compiles the two bundle
-paths into the binary, and the IDE's has no run-time flag to override it. To
+paths into the binary, and the IDE's has no run-time flag to override it. The
+`.glibc` copies name their loader by its absolute path under the prefix too. To
 install anywhere but `/opt/feldspar`, rebuild with `scripts/build-static.sh
 --prefix <path>` — an artifact built for one prefix and installed at another
 serves a blank page.
-
-#### With Python: the Debian 13 artifact
-
-On a **Debian 13** host that is to run Python trigger bodies or install Python
-modules, download the other tarball. The commands are the same apart from the
-name:
-
-```bash
-curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar-debian13-python.tar.gz
-curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar-debian13-python.tar.gz.sha256
-sha256sum -c feldspar-debian13-python.tar.gz.sha256
-tar -xzf feldspar-debian13-python.tar.gz
-sudo feldspar-*/install.sh                              # also installs libpython3.13
-sudo /opt/feldspar/setup-host.sh --domain example.com   # also python3, python3-venv
-```
-
-The differences from the static install:
-
-- **`install.sh` installs `libpython3.13` with apt if it is missing.** The binary
-  is linked against it and does not start without it: the dynamic linker fails
-  with `error while loading shared libraries: libpython3.13.so.1.0` before the
-  server prints anything. `install.sh` installs it rather than leaving it to
-  `setup-host.sh`, because an upgrade runs only `install.sh`.
-- **`setup-host.sh` adds `python3` and `python3-venv`.** It knows to because
-  `install.sh` wrote `/opt/feldspar/VARIANT`. Installing a Python module creates a
-  virtual environment and runs `pip` in it, using the `python3` on `PATH`
-  (`--python-bin`). That interpreter has to be the same minor version as the
-  library the binary links, and on Debian 13 both are 3.13.
-- **Nothing else changes.** The prefix, the tree, the unit and `feldspar.toml` are
-  the same as for the static artifact. To switch a host from one artifact to the
-  other, install the other tarball over it as in §3.2.
 
 The interpreter is not started until the first Python body or module needs it, and
 `--python off` keeps it off. Settings → Development shows which state the server
 is in (README §3).
 
-On any other distribution (Debian 12, Ubuntu, RHEL, Alpine), this tarball does not
-run. Use the static artifact, or build from source with `--features python`
-(Mode B).
+#### The static artifact
+
+`feldspar.tar.gz` is the same server without Python, as one statically linked
+file. Install it the same way, with `--variant static` (the curl installer's
+default for a new install) or the tarball by hand:
+
+```bash
+curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz
+curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz.sha256
+sha256sum -c feldspar.tar.gz.sha256
+tar -xzf feldspar.tar.gz
+sudo feldspar-*/install.sh
+sudo /opt/feldspar/setup-host.sh --domain example.com
+```
+
+It has no `python/` or `glibc/`, and nothing to choose at install time. It is
+being retired (§1): a host on it moves to the Linux artifact with the upgrade
+command of §3.2 and `--variant linux`.
 
 ### 2.2 Mode B — compiled from source, on the host
 
@@ -231,21 +367,22 @@ binary.
 ```bash
 scripts/build-static.sh                          # both artifacts, into dist/
 scripts/build-static.sh --deploy root@vm         # ...and install the static one there
-scripts/build-static.sh --deploy vm --deploy-variant python   # ...or the Debian 13 + Python one
-scripts/build-static.sh --variant python --deploy vm          # build only that one, and install it
+scripts/build-static.sh --deploy vm --deploy-variant linux    # ...or the Linux one, with Python
+scripts/build-static.sh --variant linux --deploy vm           # build only that one, and install it
 scripts/build-static.sh --deploy vm --ssh-opt -p2222
 ```
 
 By default the script builds **both** artifacts, one after the other:
 
 ```
-dist/feldspar-<version>-<target>.tar.gz                   static, no Python
-dist/feldspar-<version>-<target>-debian13-python.tar.gz   Debian 13, with Python
+dist/feldspar-<version>-<target>.tar.gz          static, no Python
+dist/feldspar-<version>-<target>-python.tar.gz   the Linux artifact, with Python
 ```
 
-`--variant static` or `--variant python` builds only one, which halves the build
-time. `--deploy` installs one of them: the static one unless `--deploy-variant
-python` is given (or `--variant python` built nothing else).
+`--variant static` or `--variant linux` builds only one, which halves the build
+time (`python` is the old name for `linux`). `--deploy` installs one of them: the
+static one unless `--deploy-variant linux` is given (or `--variant linux` built
+nothing else).
 
 Then, on a host that has never run feldspar, the other half of the two-step
 install:
@@ -272,14 +409,14 @@ Build-environment options worth knowing:
 
 | Flag | Effect |
 |---|---|
-| `--variant static\|python\|both` | which artifacts to build (default `both`) |
-| `--docker` | build in a container with a pinned Rust and Node. The default when docker with buildx is present, because it does not depend on what this machine has installed. The static artifact is built on Debian 12 and the Python one on Debian 13 (`rust:<version>-trixie` plus `python3-dev`), each with its own cargo cache |
-| `--native` | build with this machine's toolchain. Needs the target added to rustup, clang/libclang, cmake, a C compiler, `libz.a` (`zlib1g-dev`) and, unless `--no-ui`, node and npm. The Python artifact also needs `python3-dev`, and a `python3` that is 3.13 (the script refuses otherwise). Build it natively only on Debian 13, because it links this machine's glibc; it uses its own target directory, `target/debian13-python`, so expect a second full build tree on disk |
+| `--variant static\|linux\|both` | which artifacts to build (default `both`; on aarch64, `both` is the Linux one only) |
+| `--docker` | build in a container with a pinned Rust and Node. The default when docker with buildx is present, because it does not depend on what this machine has installed. Both artifacts are built on Debian 12 (`rust:<version>-bookworm`), each with its own cargo cache; the Linux one downloads the pinned CPython (§1.3) into the container and links it there |
+| `--native` | build with this machine's toolchain. Needs the target added to rustup, clang/libclang, cmake, a C compiler, `libz.a` (`zlib1g-dev`) and, unless `--no-ui`, node and npm. The Linux artifact also needs `curl`, `patchelf` and `ldd`; no Python of this machine's is used. It links and bundles this machine's glibc, so its hosts need at least that glibc (the script warns when it is not 2.36). It uses its own target directory, `target/linux-python`, so expect a second full build tree on disk |
 | `--target aarch64-unknown-linux-gnu` | the other supported target. The **musl** targets are refused by name: V8 reaches this build as `rusty_v8`'s prebuilt static archive, which upstream publishes for gnu, darwin and Windows only |
 | `--prefix PATH` | the absolute directory the artifact will be installed to, compiled into the binary |
 | `--no-ui` | skip the five front-end bundles (`SC_BUILD_ADMIN=0`), so no Node toolchain is needed — and the artifact has no admin UI, no IDE, **no Saltcorn UI**, no builder and no Analytics UI (§5.3) |
 | `-j N` | lower cargo's parallelism if the linker runs the machine out of memory. This workspace links V8 |
-| `--no-verify` | skip the post-build checks. For the static artifact: static linkage, and a smoke run in Debian 12 and Alpine containers. For the Python artifact: the binary asks for `libpython3.13.so.1.0`, and it runs in a `debian:13-slim` container once `libpython3.13` is installed there (this check needs network access for apt) |
+| `--no-verify` | skip the post-build checks. For the static artifact: static linkage, and a smoke run in Debian 12 and Alpine containers. For the Linux artifact: the binary links `libpython3.13.so.1.0` from `$ORIGIN/../python/lib`, the `.glibc` copies have the bundled loader and `DT_RPATH`, and the smoke test of §1.1 installs it in each distribution image (this needs docker and network access) |
 
 ### 2.4 What `setup-host.sh` writes
 
@@ -449,8 +586,9 @@ curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh
 ```
 
 It fetches the artifact `/opt/feldspar/VARIANT` names (`cat` it to see which a
-host has; `debian13-python` hosts get the Python artifact under that same name),
-and runs that tarball's `install.sh`, which never writes over the installed tree
+host has): `feldspar-linux-x86_64.tar.gz` for `linux`, and for `debian13-python`,
+whose host then moves to the Linux artifact with its Python modules intact
+(§1.4); `feldspar.tar.gz` for `static`. Then it runs that tarball's `install.sh`, which never writes over the installed tree
 (`scripts/lib/install-tree.sh`):
 
 1. It copies the new tree to `/opt/feldspar.new` and starts the new binary once.
@@ -479,14 +617,14 @@ and runs that tarball's `install.sh`, which never writes over the installed tree
 The same by hand, without the curl installer:
 
 ```bash
-curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz
-curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz.sha256
-sha256sum -c feldspar.tar.gz.sha256
-tar -xzf feldspar.tar.gz
+curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz
+curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz.sha256
+sha256sum -c feldspar-linux-x86_64.tar.gz.sha256
+tar -xzf feldspar-linux-x86_64.tar.gz
 sudo feldspar-*/install.sh
 ```
 
-(`feldspar-debian13-python.tar.gz` for the artifact with Python.) An interrupted
+(`feldspar.tar.gz` for the static artifact.) An interrupted
 install leaves the old tree whole; the next run removes the `/opt/feldspar.new` it
 left.
 
@@ -544,12 +682,19 @@ with its `.sha256`, to the Cloudflare R2 bucket `feldspar-latest-static`:
 
 | Object | Artifact |
 |---|---|
-| `feldspar.tar.gz`, `feldspar.tar.gz.sha256` | static |
-| `feldspar-debian13-python.tar.gz`, `feldspar-debian13-python.tar.gz.sha256` | Debian 13 + Python |
+| `feldspar-linux-x86_64.tar.gz`, `.sha256` | Linux, with Python |
+| `feldspar-debian13-python.tar.gz`, `.sha256` | the same Linux tarball, under the name older hosts fetch (§1) |
+| `feldspar.tar.gz`, `.sha256` | static |
+| `install.sh` | the curl installer, uploaded last |
 
 The object names carry no version, so each release overwrites the last and the
-download URLs of §2.1 never change. A `--variant` release publishes only the
-artifact it built and leaves the other object as it was:
+download URLs of §2.1 never change. They carry the platform, and a build
+publishes only its own: an aarch64 build (`--target aarch64-unknown-linux-gnu`,
+on an aarch64 machine) publishes `feldspar-linux-aarch64.tar.gz` and nothing
+else, because the two older names have always been the x86_64 tarballs, and it
+refuses `--variant static`. Each `.sha256` names its own object. A `--variant`
+release publishes only the artifact it built and leaves the other objects as
+they were:
 
 ```bash
 scripts/build-static.sh --release
@@ -559,7 +704,7 @@ It runs `npx wrangler r2 object put --remote`, so it needs `npx` on `PATH` (whic
 is checked before the build starts) and a wrangler login with access to the
 bucket. `--bucket NAME` uploads somewhere else; such a bucket is not served at
 that hostname and is deliberately given no public URL in the output. The publish
-ends by printing the six download commands, so what was uploaded and what
+ends by printing the download commands for each artifact, so what was uploaded and what
 operators are told to fetch are visibly the same artifact.
 
 ### 3.5 What a restart costs

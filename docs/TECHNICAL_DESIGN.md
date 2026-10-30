@@ -13505,11 +13505,15 @@ selects a static `libpython` archive that is not PIC, and a `+crt-static` binary
 `dlopen` the `lib-dynload` extensions or any C-extension wheel even if it linked). Default-on
 would not degrade the release build, it would break it. **So the static tarball has no Python,
 and a Python-capable server is a separate dynamically-linked build.** `scripts/build-static.sh`
-ships one such build beside the static artifact: `--variant python` (built by default along with
-the static one) produces `feldspar-debian13-python.tar.gz`. It is built on Debian 13 with no
-`+crt-static`, links `libpython3.13.so.1.0`, and runs on Debian 13 only. Its `install.sh` installs
-`libpython3.13`, and `setup-host.sh` adds `python3` and `python3-venv` when `/opt/feldspar/VARIANT`
-says `debian13-python` (docs/OPERATIONS.md §2.1). The floor is CPython **3.11**. The build is
+ships one such build beside the static artifact: `--variant linux` (built by default along with
+the static one) produces the **Linux artifact**, published as `feldspar-linux-<arch>.tar.gz` (and,
+for x86_64, also under the name of the Debian 13 only build it replaced,
+`feldspar-debian13-python.tar.gz`). It is built on Debian 12 (glibc 2.36) with no `+crt-static`,
+against a **bundled** CPython 3.13 (python-build-standalone, pinned by tag and SHA-256) that ships
+in the tarball as `python/` and is linked through `$ORIGIN/../python/lib`. The host needs nothing
+Python-related; for musl hosts (Alpine) the tarball also carries Debian 12's glibc and `.glibc`
+copies of the executables, chosen by its `install.sh` (TODO-portable-release.md §2, D3;
+docs/OPERATIONS.md §1.2). A source build's floor is CPython **3.11**. The build is
 not `abi3`: an embedding binary links one versioned `libpython` (`DT_NEEDED`) whatever API it
 compiles against, and the limited API has no `PyConfig`, which is how a binary that bundles its
 CPython names the interpreter's home (TODO-portable-release R1.4). The cost of the dependency is small — 7

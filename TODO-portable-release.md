@@ -423,11 +423,18 @@ Containers and emulators always use the host's page size, so the build asserts i
 
 ## R3 — Release, documentation and retiring `static`
 
-- [ ] R3.1 `--release` publishes the new artifact as `feldspar-linux-<arch>.tar.gz` (D13) and, for
+- [~] R3.1 `--release` publishes the new artifact as `feldspar-linux-<arch>.tar.gz` (D13) and, for
       x86_64 and until R3.3, also as `feldspar-debian13-python.tar.gz` (D5). Upgrading a `debian13-python` host with the new
       tarball keeps its venv and its installed Python modules working (R1.6). Check this once by
       hand on a Debian 13 VM.
-- [ ] R3.2 Documentation:
+      *Done, apart from the check by hand:* `select_variant` gives each variant a list of
+      published names (`OBJECTS`), each uploaded with a `.sha256` naming it. The static artifact
+      keeps `feldspar.tar.gz`, and only an x86_64 build publishes it or the `debian13-python`
+      name. On aarch64, `both` means the linux artifact alone, and `--release --variant static`
+      is refused. The curl installer now fetches `feldspar-linux-x86_64.tar.gz`. **Still to do:**
+      the upgrade of a real `debian13-python` host on a Debian 13 VM. Mark done once it has
+      kept a venv with an installed module working.
+- [x] R3.2 Documentation:
       - `docs/OPERATIONS.md` §1–§2: one download, the distribution list, which libc an install
         uses and why, and the CPython pin and how to bump it;
       - `README.md` §3–§4;
@@ -437,10 +444,16 @@ Containers and emulators always use the host's page size, so the build asserts i
 
       Tell the `~/feldspar-hosted` maintainers that its `ARCHITECTURE.md` lines 168 and 171 change
       (no `python3*` packages; a new tarball name, though the old one still works).
+      *Done:* OPERATIONS §1 is rewritten (§1.1 distributions, §1.2 libc, §1.3 CPython and the
+      pin, §1.4 `debian13-python` hosts), and so are §2.1, §2.3's build options and §3.2/§3.4.
+      README §2 (the downloads, which pointed at the static artifact) changed too. The message
+      to the `~/feldspar-hosted` maintainers is for a human to send; that repository was not
+      edited. Its own scripts run `/usr/bin/python3`, so the host keeps a `python3` for those
+      even though feldspar no longer needs one.
 - [ ] R3.3 After one or two releases with both: stop building `static`. `feldspar.tar.gz` and
       `feldspar-debian13-python.tar.gz` both become copies of `feldspar-linux-x86_64.tar.gz`. Remove
       the `static` paths (`assert_static`, the `+crt-static` flags) from the scripts.
-- [ ] R3.4 CHANGELOG entry: which distributions are supported, that Python needs nothing from the
+- [x] R3.4 CHANGELOG entry: which distributions are supported, that Python needs nothing from the
       host, and the upgrade note for `debian13-python` hosts.
 
 ## R4 — aarch64 and macOS

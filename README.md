@@ -79,19 +79,20 @@ manual — the two installation modes side by side, the upgrade path for each, t
 configuration file and every environment variable, the reload signal, and running
 a coding agent against the installation.
 
-**The shortest way: one line, then `feldspar setup`.** On Debian, Ubuntu or Alpine
-(x86_64):
+**The shortest way: one line, then `feldspar setup`.** On Debian, Ubuntu, Fedora,
+RHEL, openSUSE, Arch or Alpine (x86_64):
 
 ```bash
-curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh
+curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh -s -- --variant linux
 sudo feldspar setup --server --domain example.com   # PostgreSQL here, a system service
 ```
 
 The first line installs the `feldspar` executable and nothing else: it downloads the
-static release below, checks its checksum, puts the tree at `/opt/feldspar` and links
+release below, checks its checksum, puts the tree at `/opt/feldspar` and links
 `feldspar` onto `PATH`. Beside it, it installs only what it needs to download and unpack
 (`curl` or `wget`, `tar`) and what the binary needs at run time (`ca-certificates`); the
-binary itself is statically linked. It asks for `sudo` when it is not run as root;
+binary brings its own CPython. Without `--variant linux` a new install gets the static
+artifact, which has no Python. It asks for `sudo` when it is not run as root;
 `sh -s -- --dry-run` prints what it would do, and `--help` lists the options. Run it again
 to upgrade: it swaps the new tree in by rename, stops running feldspar units for the swap
 and starts them again, and keeps the previous tree as `/opt/feldspar.old`
@@ -111,15 +112,16 @@ It also installs Node.js (npm 9.3 or newer, from NodeSource on Debian and Ubuntu
 headless browser for the coding agent's `view_app`, as `setup-host.sh` below does
 (`--no-node` and `--no-browser` leave them out). Continue at §2.7.
 
-**The short way: download the built binary.** There is a prebuilt, statically
-linked artifact of the latest build. It needs no Rust, no C toolchain and no
-checkout: it is all of §2 with the build taken out.
+**The short way: download the built binary.** There is a prebuilt artifact of the
+latest build, with its own CPython, that runs on Debian, Ubuntu, Fedora, RHEL,
+openSUSE, Arch and Alpine (docs/OPERATIONS.md §1.1). It needs no Rust, no C
+toolchain, no Python and no checkout: it is all of §2 with the build taken out.
 
 ```bash
-curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz
-curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz.sha256
-sha256sum -c feldspar.tar.gz.sha256                     # optional, and quick
-tar -xzf feldspar.tar.gz
+curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz
+curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz.sha256
+sha256sum -c feldspar-linux-x86_64.tar.gz.sha256        # optional, and quick
+tar -xzf feldspar-linux-x86_64.tar.gz
 sudo feldspar-*/install.sh                              # the tree at /opt/feldspar
 sudo /opt/feldspar/setup-host.sh --domain example.com   # packages, database, unit
 ```
@@ -133,11 +135,10 @@ doing any of it, and `--help` lists the options. Then continue at §2.7, which i
 the first admin user and TLS.
 
 Those URLs carry no version: they are always the *latest* build, which is also how a
-host is upgraded (§2.8). Two things the artifact does not have: **Python triggers**,
-which need a dynamically linked build (§3), and support for native Node addons in
-modules (§4.1). Everything else in this README applies to it unchanged. On
-**Debian 13**, `feldspar-debian13-python.tar.gz` from the same place is that
-dynamically linked build, with Python (docs/OPERATIONS.md §2.1).
+host is upgraded (§2.8). Everything else in this README applies to it unchanged.
+`feldspar.tar.gz` from the same place is the older **static** artifact: one
+statically linked file, without Python or native Node addons in modules (§4.1),
+published beside this one until it is retired (docs/OPERATIONS.md §1).
 
 **Or run it as a script.** `scripts/setup-host.sh` is this section — packages, the
 service account, the role and database, `feldspar.toml`, the unit — and it can be
@@ -509,16 +510,20 @@ sudo install -m 0755 target/release/feldspar /usr/local/bin/feldspar
 sudo systemctl restart feldspar
 ```
 
-A host installed from a static artifact is updated by installing a newer one. Only
+A host installed from a downloaded artifact is updated by installing a newer one. Only
 the release tree changes — `setup-host.sh` is not run again, the database,
 `feldspar.toml` and the unit are left alone. On the host, from the same version-less
 URL as the install:
 
 ```bash
-curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz
-tar -xzf feldspar.tar.gz
+curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz
+tar -xzf feldspar-linux-x86_64.tar.gz
 sudo feldspar-*/install.sh
 ```
+
+(`feldspar.tar.gz` on a host that runs the static artifact; `cat /opt/feldspar/VARIANT`
+says which. A host on the older Debian 13 only build, `debian13-python`, takes the
+Linux artifact and keeps its Python modules: docs/OPERATIONS.md §1.4.)
 
 `install.sh` copies the tree beside `/opt/feldspar` and swaps it in by rename, so a
 running server is never written over; it stops running feldspar units for the swap and
@@ -546,8 +551,9 @@ database (§7).
 `deploy/docker` holds a production image, a compose file and the seccomp profile it
 runs under. It is a second way to deploy, not a replacement for §2.1–2.8.
 
-- **What is in it.** The released `debian13-python` artifact from the bucket (the same
-  tarball §2.8 installs, the build with Python), checked against its `.sha256` and
+- **What is in it.** The released Linux artifact from the bucket, under its older name
+  `feldspar-debian13-python.tar.gz` (the same tarball §2.8 installs, with Python),
+  checked against its `.sha256` and
   unpacked at `/opt/feldspar`. It is not built from source. Chromium for `view_app`,
   Node and npm from NodeSource, git, Python 3.13 and `tini` are installed with it.
 - **The base** is Docker Hardened Images' Debian 13 (`dhi.io/debian-base`, the `-dev`
@@ -623,7 +629,7 @@ The volume and the database survive. The prototype caveat of §2.8 applies: take
 | **PostgreSQL** | 13 or newer (16 recommended) | the primary data store — *or* SQLite, see §5 Option C |
 | **libclang** (`libclang-dev`) | any recent | building the module runtime (`deno_runtime` → `bindgen`); build time only |
 | **npm** (and the Node.js it ships with) | **npm 9.3.0+** (Node 18+) | building the four front-end bundles — the admin UI, the IDE, Saltcorn UI and its builder (optional; see §6), **and** *installing* modules (Settings → Modules). Debian's and Ubuntu's own package is npm 9.2.0, which cannot install a module at all — install Node from NodeSource (§2.1) or `npm install -g npm@latest` |
-| **CPython** + `pip`, and `python3-dev` to build against | 3.11+ | **only** for a server that runs Python trigger bodies or installs Python modules — and only in a build that has the `python` feature (below) |
+| **CPython** + `pip`, and `python3-dev` to build against | 3.11+ | **only** for a source build that runs Python trigger bodies or installs Python modules, with the `python` feature (below). The downloaded Linux artifact brings its own CPython 3.13 and needs none of this |
 | **CmdStan**, `make` and a C++ compiler (`g++` or `clang++`) | CmdStan 2.33+ | **only** for Bayesian models with the Stan provider; `feldspar cmdstan install` fetches and builds CmdStan (below) |
 
 **The built-in model providers are a cargo feature, and it is on.** `sc-model`'s
@@ -733,22 +739,24 @@ The reason is linkage rather than policy. Python is *embedded*: the build links
 at all** on a host that has no matching library — a dynamic-linker error before the
 server prints anything — and **the static artifact of §4.1 cannot carry it**, being a
 static binary with no shared-library dependencies by design. So a Python-capable server
-is a separate, dynamically-linked build: either this one, or the prebuilt
-**Debian 13 + Python artifact** (`feldspar-debian13-python.tar.gz`, built by the same
-`scripts/build-static.sh` and published beside the static one), which links Debian 13's
-`libpython3.13` and runs on Debian 13 only. Installing it: docs/OPERATIONS.md §2.1. Such a
-build links the one CPython it was built against (3.11 or newer), so that `libpython` must be
-present on the host.
+is a dynamically-linked build: either this one, or the prebuilt **Linux artifact**
+(`feldspar-linux-x86_64.tar.gz`, built by `scripts/build-static.sh`). That one carries
+its own CPython 3.13 ([python-build-standalone](https://github.com/astral-sh/python-build-standalone),
+pinned by the build) in `/opt/feldspar/python`, links its `libpython` from there, and so
+needs nothing Python-related on the host, on any of the distributions in
+docs/OPERATIONS.md §1.1. A source build links the CPython it was built against (3.11 or
+newer), so that `libpython` must be present on the host.
 
-At run time such a server wants two more things, both only when Python is actually used:
-a `python3` on its `PATH` with `pip` available (that is what *installs* a Python module,
-into a virtual environment the server owns and creates — `--python-dir`), and nothing
-else. The interpreter that runs your code is the one linked in, and it is not started
-until the first Python body or module asks for it. `--python off` keeps it that way for
-good.
+At run time such a server wants one more thing, and only when Python is actually used:
+a `python3` with `pip` available (that is what *installs* a Python module, into a
+virtual environment the server owns and creates — `--python-dir`). The Linux artifact
+has one beside the binary. The interpreter that runs your code is the one linked in,
+and it is not started until the first Python body or module asks for it. `--python off`
+keeps it that way for good.
 
 **The interpreter `pip` runs under must match the one linked in**, to the minor version.
-`--python-bin` names it (default `python3`); on a mismatch the server refuses to put the
+`--python-bin` names it (default: `python/bin/python3` beside the binary when there is
+one, as in the Linux artifact, else `python3`); on a mismatch the server refuses to put the
 environment on its import path and says so on Settings → Development, naming both
 versions — because a compiled extension built against one version and loaded into
 another does not reliably fail, it reads the wrong memory in silence.
@@ -794,19 +802,28 @@ UI and IDE bundles. To deploy to a VM without repeating §2.1 and §3 on it, bui
 packaged artifact instead:
 
 ```bash
-scripts/build-static.sh                    # dist/feldspar-<version>-<target>.tar.gz
-scripts/build-static.sh --deploy root@vm   # ...and install it on that machine
-scripts/build-static.sh --release          # ...and publish it to the R2 bucket
+scripts/build-static.sh                    # both artifacts, into dist/
+scripts/build-static.sh --deploy root@vm   # ...and install one on that machine
+scripts/build-static.sh --release          # ...and publish them to the R2 bucket
 scripts/build-static.sh --help             # targets, install prefix, options
 ```
 
-The binary inside is statically linked (`+crt-static`), so it has no shared-library
-dependencies and no interpreter: the same tarball runs on Debian, Ubuntu, RHEL and
-on Alpine. **That is also why it has no Python** — embedding CPython means linking
-`libpython`, which a static binary cannot do (and could not `dlopen` a C-extension wheel
-even if it did), so a Python-capable server is a separate dynamically-linked build: the
-one of §3, or the Debian 13 + Python artifact this script also builds (`--variant`;
-docs/OPERATIONS.md §2.3). It carries the admin SPA and the IDE beside it, an `install.sh` that
+It builds two artifacts (`--variant static|linux|both`, default both):
+
+- **linux** (`dist/feldspar-<version>-<target>-python.tar.gz`): dynamically linked,
+  built on Debian 12 (glibc 2.36), with a bundled CPython 3.13 in `python/` that the
+  binary finds beside itself. It runs on the host's glibc where that is 2.36 or newer,
+  and on a glibc it carries in `glibc/` on Alpine (or an older glibc); its `install.sh`
+  chooses (docs/OPERATIONS.md §1.2). Python triggers and modules, with nothing
+  Python-related on the host.
+- **static** (`dist/feldspar-<version>-<target>.tar.gz`): statically linked
+  (`+crt-static`), so it has no shared-library dependencies and no interpreter, and
+  runs on the same distributions. **That is also why it has no Python** — embedding
+  CPython means linking `libpython`, which a static binary cannot do (and could not
+  `dlopen` a C-extension wheel even if it did). It is published until the Linux
+  artifact has replaced it (docs/OPERATIONS.md §1).
+
+Each carries the admin SPA and the IDE beside it, an `install.sh` that
 puts the tree at `/opt/feldspar` — the prefix compiled into the binary, which
 `--prefix` changes at build time — and a copy of `setup-host.sh`, installed at
 `/opt/feldspar/setup-host.sh`. So a machine with nothing on it takes three commands
@@ -829,21 +846,26 @@ The host still needs a database, a service account and a unit, which is the othe
 half of the two-step install: `scripts/setup-host.sh --static` on the host, in
 either order with the deploy (§2).
 
-`--release` publishes instead of deploying: the tarball and its `.sha256` go to the
+`--release` publishes instead of deploying: each tarball and its `.sha256` go to the
 Cloudflare R2 bucket `feldspar-latest-static` (`--bucket` for another) through
-`npx wrangler r2 object put --remote`, as `feldspar.tar.gz` and
-`feldspar.tar.gz.sha256`. That bucket is what §2 downloads:
+`npx wrangler r2 object put --remote`. That bucket is what §2 downloads:
 
 ```
-https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz
+https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz      linux
+https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz.sha256
+https://feldspar-latest-static.saltcorn.com/feldspar-debian13-python.tar.gz   the same, older name
+https://feldspar-latest-static.saltcorn.com/feldspar-debian13-python.tar.gz.sha256
+https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz                   static
 https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz.sha256
 ```
 
 The object names carry no version — this is the *latest*
 build, and a machine fetching it has no version to ask for — so each release
-overwrites the last and the download URL never changes. The published checksum file
-names `feldspar.tar.gz` rather than the versioned file it was computed over, so
-`sha256sum -c` works on what was downloaded. It needs a `wrangler` login with access
+overwrites the last and the download URL never changes. They carry the platform, and
+a build publishes only its own: an aarch64 build publishes
+`feldspar-linux-aarch64.tar.gz` alone, because the two older names have always been
+the x86_64 tarballs. Each published checksum file names its own object rather than the
+versioned file it was computed over, so `sha256sum -c` works on what was downloaded. It needs a `wrangler` login with access
 to the bucket; that `npx` is on `PATH` is checked before the build starts.
 
 **Name resolution does not go through glibc.** A statically linked binary that calls

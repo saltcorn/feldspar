@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const TARGET: &str = "x86_64-unknown-linux-gnu";
+const AARCH64: &str = "aarch64-unknown-linux-gnu";
 
 fn workspace_root() -> PathBuf {
     let mut dir = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
@@ -114,12 +115,14 @@ fn fixture(name: &str, npx_status: i32) -> Fixture {
     fs::create_dir_all(&uploads).unwrap();
 
     // `cargo build`, minus the compiler: leave an executable where the real build
-    // would have left one, and note the flags and the PyO3 configuration it was
-    // given.
+    // would have left one (for the `--target` it was given), and note the flags
+    // and the PyO3 configuration it was given.
     write_executable(
         &bin.join("cargo"),
         &format!(
-            "#!/bin/sh\nset -eu\nout=\"${{CARGO_TARGET_DIR:-$PWD/target}}/{TARGET}/release\"\n\
+            "#!/bin/sh\nset -eu\ntarget={TARGET}\n\
+             while [ $# -gt 0 ]; do [ \"$1\" = --target ] && target=\"$2\"; shift; done\n\
+             out=\"${{CARGO_TARGET_DIR:-$PWD/target}}/$target/release\"\n\
              printf 'RUSTFLAGS=%s\\n' \"${{RUSTFLAGS:-}}\" >> '{log}'\n\
              if [ -n \"${{PYO3_CONFIG_FILE:-}}\" ]; then cat \"$PYO3_CONFIG_FILE\" >> '{log}'; fi\n\
              mkdir -p \"$out\"\n\
@@ -130,7 +133,9 @@ fn fixture(name: &str, npx_status: i32) -> Fixture {
     );
     write_executable(
         &bin.join("rustup"),
-        &format!("#!/bin/sh\n[ \"${{1:-}}\" = target ] && echo {TARGET}\nexit 0\n"),
+        &format!(
+            "#!/bin/sh\n[ \"${{1:-}}\" = target ] && echo {TARGET} && echo {AARCH64}\nexit 0\n"
+        ),
     );
     // `npx wrangler r2 object put <bucket>/<key> -f <file> --remote`: record the
     // argv, then keep the file under the key it was uploaded as, so the test can
@@ -168,6 +173,11 @@ impl Fixture {
     /// the script, as a release bump would; without it the pin is the real
     /// one, which the fake does not match.
     fn fake_python_build_standalone(&self, pin: bool) {
+        self.fake_python_build_standalone_for("X86_64", pin);
+    }
+
+    /// The same, pinned (with `pin`) as `PBS_SHA256_<arch>`.
+    fn fake_python_build_standalone_for(&self, arch: &str, pin: bool) {
         let pbs = self.dir.join("pbs/python");
         fs::create_dir_all(pbs.join("bin")).unwrap();
         fs::create_dir_all(pbs.join("lib/python3.13")).unwrap();
@@ -240,14 +250,37 @@ impl Fixture {
                 .to_owned();
             let script = self.repo.join("scripts/build-static.sh");
             let text = fs::read_to_string(&script).unwrap();
-            let pinned: Vec<&str> = text
-                .lines()
-                .filter(|l| l.starts_with("readonly PBS_SHA256_X86_64="))
-                .collect();
-            assert_eq!(pinned.len(), 1, "one x86_64 pin in the script");
-            let text = text.replace(pinned[0], &format!("readonly PBS_SHA256_X86_64=\"{sha}\""));
+            let var = format!("readonly PBS_SHA256_{arch}=");
+            let pinned: Vec<&str> = text.lines().filter(|l| l.starts_with(&var)).collect();
+            assert_eq!(pinned.len(), 1, "one {arch} pin in the script");
+            let text = text.replace(pinned[0], &format!("{var}\"{sha}\""));
             fs::write(&script, text).unwrap();
         }
+    }
+
+    /// Make `uname -m` answer `arch`, as on a build machine of that
+    /// architecture; everything else `uname` is asked goes to the real one.
+    fn pretend_machine(&self, arch: &str) {
+        let real = Command::new("sh")
+            .args(["-c", "command -v uname"])
+            .output()
+            .unwrap();
+        let real = String::from_utf8_lossy(&real.stdout).trim().to_owned();
+        assert!(!real.is_empty(), "no uname on PATH");
+        write_executable(
+            &self.bin.join("uname"),
+            &format!(
+                "#!/bin/sh\n[ \"$*\" = -m ] && {{ echo {arch}; exit 0; }}\nexec {real} \"$@\"\n"
+            ),
+        );
+    }
+
+    /// The bucket keys the npx stub was asked to upload, in order.
+    fn objects(&self) -> Vec<String> {
+        self.npx_calls()
+            .iter()
+            .map(|c| c.split_whitespace().nth(4).unwrap().to_owned())
+            .collect()
     }
 
     /// What the `curl` and `patchelf` stubs recorded.
@@ -555,39 +588,51 @@ fn the_default_release_builds_and_publishes_the_static_and_the_linux_artifact() 
     );
     assert!(static_tarball.is_file() && linux_tarball.is_file());
 
-    // Five uploads: each tarball and its checksum, under version-less names that
-    // tell the two apart — the linux one under the name the Debian 13 build had,
-    // which existing hosts fetch (TODO-portable-release D5) — and the installer.
-    let objects: Vec<String> = f
-        .npx_calls()
-        .iter()
-        .map(|c| c.split_whitespace().nth(4).unwrap().to_owned())
-        .collect();
+    // Seven uploads: each tarball and its checksum under version-less names that
+    // tell the two apart — the linux one under its own name, which carries the
+    // platform (TODO-portable-release D13), and again under the name the Debian
+    // 13 build had, which existing hosts fetch (D5) — and the installer.
     assert_eq!(
-        objects,
+        f.objects(),
         [
             "feldspar-latest-static/feldspar.tar.gz",
             "feldspar-latest-static/feldspar.tar.gz.sha256",
+            "feldspar-latest-static/feldspar-linux-x86_64.tar.gz",
+            "feldspar-latest-static/feldspar-linux-x86_64.tar.gz.sha256",
             "feldspar-latest-static/feldspar-debian13-python.tar.gz",
             "feldspar-latest-static/feldspar-debian13-python.tar.gz.sha256",
             "feldspar-latest-static/install.sh",
         ]
     );
-    assert_eq!(
-        fs::read(f.uploads.join("feldspar-debian13-python.tar.gz")).unwrap(),
-        fs::read(&linux_tarball).unwrap(),
-    );
-    let published =
-        fs::read_to_string(f.uploads.join("feldspar-debian13-python.tar.gz.sha256")).unwrap();
+    // Both names hold the same tarball, and each checksum file names its own
+    // object, so `sha256sum -c` works on either download.
+    let digest = fs::read_to_string(format!("{}.sha256", linux_tarball.display())).unwrap();
+    let digest = digest.split_whitespace().next().unwrap();
+    for object in [
+        "feldspar-linux-x86_64.tar.gz",
+        "feldspar-debian13-python.tar.gz",
+    ] {
+        assert_eq!(
+            fs::read(f.uploads.join(object)).unwrap(),
+            fs::read(&linux_tarball).unwrap(),
+            "{object}"
+        );
+        assert_eq!(
+            fs::read_to_string(f.uploads.join(format!("{object}.sha256"))).unwrap(),
+            format!("{digest}  {object}\n"),
+        );
+        assert!(
+            stdout.contains(&format!(
+                "https://feldspar-latest-static.saltcorn.com/{object}"
+            )),
+            "{stdout}"
+        );
+    }
+    // The curl installer that was published fetches the new name.
+    let installer = fs::read_to_string(f.uploads.join("install.sh")).unwrap();
     assert!(
-        published.ends_with("  feldspar-debian13-python.tar.gz\n"),
-        "{published}"
-    );
-    assert!(
-        stdout.contains(
-            "https://feldspar-latest-static.saltcorn.com/feldspar-debian13-python.tar.gz"
-        ),
-        "{stdout}"
+        installer.contains("OBJECT=\"feldspar-linux-x86_64.tar.gz\""),
+        "{installer}"
     );
 
     // Each artifact says which it is, for setup-host.sh to read.
@@ -691,11 +736,22 @@ fn the_default_release_builds_and_publishes_the_static_and_the_linux_artifact() 
     let readme = member(&linux_tarball, "README");
     assert!(readme.contains("glibc 2.36 or newer"), "{readme}");
     assert!(readme.contains("feldspar python check"), "{readme}");
+    assert!(
+        readme.contains("https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz")
+            && readme.contains("also published as feldspar-debian13-python.tar.gz"),
+        "{readme}"
+    );
+    let static_readme = member(&static_tarball, "README");
+    assert!(
+        static_readme
+            .contains("https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz"),
+        "the static README should point at the artifact with Python:\n{static_readme}"
+    );
 
     // The download URL the operations manual gives is the one published.
     let ops = fs::read_to_string(workspace_root().join("docs/OPERATIONS.md")).unwrap();
     assert!(
-        ops.contains("https://feldspar-latest-static.saltcorn.com/feldspar-debian13-python.tar.gz"),
+        ops.contains("https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz"),
         "docs/OPERATIONS.md should document the Python artifact's download URL"
     );
     fs::remove_dir_all(&f.dir).ok();
@@ -726,4 +782,60 @@ fn a_python_download_that_does_not_match_the_pin_is_refused_before_the_build() {
     );
     assert!(!f.dir.join("dist").exists(), "a tarball was written anyway");
     fs::remove_dir_all(&f.dir).ok();
+}
+
+#[test]
+fn an_aarch64_release_publishes_only_its_own_name() {
+    // On an aarch64 build machine (D12), the default `both` is the linux
+    // artifact alone: the static one's name has no architecture in it, and
+    // the old names are the x86_64 tarball's (D13).
+    let f = fixture("aarch64", 0);
+    f.pretend_machine("aarch64");
+    f.fake_python_build_standalone_for("AARCH64", true);
+    let (output, stdout, stderr) = f.release(&["--target", AARCH64, "--variant", "both"]);
+    assert!(
+        output.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert_eq!(
+        f.objects(),
+        [
+            "feldspar-latest-static/feldspar-linux-aarch64.tar.gz",
+            "feldspar-latest-static/feldspar-linux-aarch64.tar.gz.sha256",
+            "feldspar-latest-static/install.sh",
+        ]
+    );
+    let published =
+        fs::read_to_string(f.uploads.join("feldspar-linux-aarch64.tar.gz.sha256")).unwrap();
+    assert!(
+        published.ends_with("  feldspar-linux-aarch64.tar.gz\n"),
+        "{published}"
+    );
+    assert!(
+        f.tool_calls().contains(&format!(
+            "cpython-3.13.18+20261026-{AARCH64}-install_only_stripped"
+        )),
+        "{}",
+        f.tool_calls()
+    );
+    let dist: Vec<String> = fs::read_dir(f.dir.join("dist"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        dist.iter().all(|n| n.contains("-python.tar.gz")),
+        "no static tarball should have been built: {dist:?}"
+    );
+
+    // Asking for the static one in an aarch64 release is refused before the
+    // build, rather than replacing the x86_64 feldspar.tar.gz.
+    let g = fixture("aarch64-static", 0);
+    g.pretend_machine("aarch64");
+    let (output, _stdout, stderr) = g.release(&["--target", AARCH64, "--variant", "static"]);
+    assert!(!output.status.success());
+    assert!(stderr.contains("published for x86_64 only"), "{stderr}");
+    assert!(g.npx_calls().is_empty());
+    assert!(!g.dir.join("cargo.log").exists(), "cargo ran anyway");
+    fs::remove_dir_all(&f.dir).ok();
+    fs::remove_dir_all(&g.dir).ok();
 }

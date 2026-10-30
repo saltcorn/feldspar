@@ -2,7 +2,7 @@
 #
 # The hermetic builder behind `scripts/build-static.sh --docker` (the default).
 #
-# It exists for one reason: the static binary this repository ships has to be
+# It exists for one reason: the binaries this repository ships have to be
 # built by a toolchain nobody has to assemble by hand. The workspace needs a
 # `libclang` (bindgen, reached through `deno_runtime`), a `cmake` and a C
 # compiler (`aws-lc-sys`, `rusqlite`'s bundled amalgamation), a `zlib` with a
@@ -23,7 +23,8 @@
 # (bookworm, glibc 2.36):
 #
 #   static  `+crt-static`: one file, no shared libraries, runs on any glibc or
-#           musl distribution. No Python.
+#           musl distribution. No Python. Published until the linux one has
+#           replaced it (TODO-portable-release D8).
 #   linux   dynamically linked, with `--features python` against a bundled
 #           CPython — python-build-standalone, pinned by release and SHA-256 in
 #           `scripts/build-static.sh` and unpacked at `${PREFIX}/python` — so it
@@ -31,6 +32,7 @@
 #           on the host. It also carries bookworm's glibc and `.glibc` copies of
 #           the two executables that use it, for musl hosts (Alpine). See
 #           TODO-portable-release.md §2 and `scripts/lib/python-bundle.sh`.
+#           Published as `feldspar-linux-<arch>.tar.gz` (docs/OPERATIONS.md §1).
 
 ARG RUST_VERSION=1.97
 ARG DEBIAN_SUITE=bookworm

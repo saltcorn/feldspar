@@ -37,6 +37,9 @@
 #
 # The second artifact: every Linux, with Python
 # ---------------------------------------------
+# It is the one to install; the static one is published beside it until it has
+# shipped for a release or two (TODO-portable-release D8, R3.3).
+#
 # The same `dlopen` limit is why the static binary has no Python. PyO3 embeds
 # CPython by linking `libpython`; under `+crt-static` that link fails outright,
 # and even a binary that linked could not load CPython's own `lib-dynload`
@@ -62,6 +65,14 @@
 #   dist/feldspar-<version>-<target>.tar.gz          the static artifact
 #   dist/feldspar-<version>-<target>-python.tar.gz   the linux one
 #   ...and a .sha256 beside each
+#
+# and, with `--release`, publishes them under names with no version but with
+# the platform (D13), each from the build machine of its own architecture:
+#
+#   feldspar-linux-<arch>.tar.gz       the linux artifact
+#   feldspar-debian13-python.tar.gz    (x86_64) the same file, under the name
+#                                      older hosts and the container image fetch
+#   feldspar.tar.gz                    (x86_64) the static artifact
 #
 # unpacking to the **install prefix** (`/opt/feldspar` by default):
 #
@@ -131,18 +142,22 @@ REMOTE_TMP="/tmp"
 SSH_OPTS=()
 RELEASE=0
 # The bucket the published artifact lives in. The objects inside it are named
-# without a version — `feldspar.tar.gz` — because they are the *latest* build:
-# whatever fetches them wants the current one and has no version to ask for.
+# without a version — `feldspar-linux-x86_64.tar.gz` — because they are the
+# *latest* build: whatever fetches them wants the current one and has no version
+# to ask for. They do carry the OS and architecture (TODO-portable-release D13),
+# so that each build machine publishes only its own names.
 readonly DEFAULT_R2_BUCKET="feldspar-latest-static"
 R2_BUCKET="${DEFAULT_R2_BUCKET}"
+# The static artifact's name, from before names carried a platform. It has
+# always been the x86_64 build, so only an x86_64 build publishes it.
 R2_OBJECT="feldspar.tar.gz"
 # Which artifacts to build (`--variant`), and which of them `--deploy` installs.
 VARIANT_ARG="both"
 DEPLOY_VARIANT=""
-# The name the Python-capable artifact is published under. It was the Debian 13
-# build's, and existing hosts, docs/OPERATIONS.md and the container image fetch
-# it, so the `linux` artifact takes it over (TODO-portable-release D5) until
-# R3.1 adds names that carry the OS and architecture.
+# The name the Python-capable artifact had before it was `linux`: the Debian 13
+# build's. Existing hosts, older docs and the container image fetch it, so an
+# x86_64 `linux` release is published under it as well as under its own name
+# (TODO-portable-release D5), until R3.3 retires the static artifact.
 readonly PYTHON_VARIANT="debian13-python"
 # The base every build runs on: its glibc (2.36) is the oldest a `linux` binary
 # asks of its host (D2).
@@ -254,12 +269,16 @@ Publishing
       --release         After packaging, upload each tarball and its .sha256 to the
                         Cloudflare R2 bucket ${R2_BUCKET}. The object names
                         carry no version, so each release overwrites the last and
-                        the download URLs never change:
-                          ${R2_PUBLIC_BASE}/${R2_OBJECT}
+                        the download URLs never change. They carry the platform,
+                        and a build publishes only its own architecture's:
+                          ${R2_PUBLIC_BASE}/feldspar-linux-<arch>.tar.gz
+                        and, from an x86_64 build, the names older hosts fetch:
                           ${R2_PUBLIC_BASE}/feldspar-${PYTHON_VARIANT}.tar.gz
+                                                      (the same linux tarball)
+                          ${R2_PUBLIC_BASE}/${R2_OBJECT}  (the static one)
                         (and a .sha256 beside each), and then
                         scripts/install.sh as ${R2_PUBLIC_BASE}/install.sh,
-                        the curl-to-sh installer that downloads the first.
+                        the curl-to-sh installer that downloads them.
                         Runs
                         \`npx wrangler r2 object put --remote\`, so it needs npx on
                         PATH and a wrangler login with access to the bucket.
@@ -351,8 +370,23 @@ fi
 
 # `python` is what the Python-capable variant was called when it was Debian 13's
 # alone; it is accepted, and means `linux`.
+# The architecture as published names spell it (D13).
+case "${TARGET}" in
+    x86_64-*)  TARGET_ARCH="x86_64" ;;
+    aarch64-*) TARGET_ARCH="aarch64" ;;
+    *)         TARGET_ARCH="${TARGET%%-*}" ;;
+esac
 case "${VARIANT_ARG}" in
-    both)          VARIANTS=(static linux) ;;
+    # The static artifact is published for x86_64 only (its name has no
+    # architecture in it, and every host that fetches it is x86_64), so
+    # elsewhere `both` is just the linux one.
+    both)
+        if [[ "${TARGET_ARCH}" == x86_64 ]]; then
+            VARIANTS=(static linux)
+        else
+            VARIANTS=(linux)
+        fi
+        ;;
     static)        VARIANTS=(static) ;;
     linux|python)  VARIANTS=(linux) ;;
     *) echo "error: --variant must be static, linux or both, got ${VARIANT_ARG}" >&2; exit 2 ;;
@@ -389,6 +423,12 @@ fi
 # at all.
 if [[ ${RELEASE} -eq 1 ]]; then
     [[ -n "${R2_BUCKET}" ]] || { echo "error: --bucket must not be empty" >&2; exit 2; }
+    if has_variant static && [[ "${TARGET_ARCH}" != x86_64 ]]; then
+        echo "error: the static artifact is published for x86_64 only: its name," \
+             "${R2_OBJECT}, has no architecture in it and would replace the x86_64" \
+             "one. Release ${TARGET_ARCH} with --variant linux." >&2
+        exit 2
+    fi
     command -v npx >/dev/null ||
         { echo "error: --release needs npx (node), which is not on PATH" >&2; exit 1; }
     [[ -f "${REPO_ROOT}/scripts/install.sh" ]] ||
@@ -465,21 +505,28 @@ BASE_NAME="feldspar-${VERSION}${GIT_DESC:+-${GIT_DESC}}-${TARGET}"
 STAGE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/feldspar-package.XXXXXX")"
 trap 'rm -rf "${STAGE_ROOT}"' EXIT
 
-# Each variant has its own tarball name, bucket object and staging directory.
+# Each variant has its own tarball name, bucket objects and staging directory.
 # `select_variant` sets the globals the build, package and publish steps read:
-# VARIANT, NAME, OBJECT, STAGE, BINARY and TARBALL.
+# VARIANT, NAME, OBJECT, OBJECTS, STAGE, BINARY and TARBALL. OBJECTS is every
+# name the tarball is published under; OBJECT is the first of them, the one a
+# new host is pointed at (empty for a static build that is not x86_64, which
+# has no published name).
 select_variant() {
     VARIANT="$1"
     case "${VARIANT}" in
         static)
             NAME="${BASE_NAME}"
-            OBJECT="${R2_OBJECT}"
+            OBJECTS=()
+            [[ "${TARGET_ARCH}" == x86_64 ]] && OBJECTS=("${R2_OBJECT}")
             ;;
         linux)
             NAME="${BASE_NAME}-python"
-            OBJECT="${R2_OBJECT%.tar.gz}-${PYTHON_VARIANT}.tar.gz"
+            OBJECTS=("feldspar-linux-${TARGET_ARCH}.tar.gz")
+            [[ "${TARGET_ARCH}" == x86_64 ]] &&
+                OBJECTS+=("${R2_OBJECT%.tar.gz}-${PYTHON_VARIANT}.tar.gz")
             ;;
     esac
+    OBJECT="${OBJECTS[0]:-}"
     STAGE="${STAGE_ROOT}/${VARIANT}"
     BINARY="${STAGE}/bin/feldspar"
     TARBALL="${OUTPUT_DIR}/${NAME}.tar.gz"
@@ -931,7 +978,21 @@ sed -e "s|@PREFIX@|${PREFIX}|g" -e "s|@BUILD_GLIBC@|${BUILD_GLIBC}|g" \
 chmod +x "${STAGE}/install.sh"
 
 # The parts of the README that differ between the two artifacts.
-local readme_title readme_linkage readme_needs readme_limits
+local readme_title readme_linkage readme_needs readme_limits readme_newer
+if [[ -n "${OBJECT}" ]]; then
+    readme_newer="  ${R2_PUBLIC_BASE}/${OBJECT}
+  ${R2_PUBLIC_BASE}/${OBJECT}.sha256
+  That URL is always the latest build; it carries no version, so there is nothing
+  to look up. \`sha256sum -c ${OBJECT}.sha256\` checks a download."
+    if [[ ${#OBJECTS[@]} -gt 1 ]]; then
+        readme_newer+="
+  The same tarball is also published as $(printf '%s ' "${OBJECTS[@]:1}")for the
+  hosts that fetch it by its older name."
+    fi
+else
+    readme_newer="  Nowhere: the static artifact is published for x86_64 only. The one for
+  ${TARGET_ARCH} is ${R2_PUBLIC_BASE}/feldspar-linux-${TARGET_ARCH}.tar.gz"
+fi
 if [[ "${VARIANT}" == linux ]]; then
     readme_title="${TARGET}, with Python"
     readme_linkage="This binary is dynamically linked, built on Debian 12, and carries its own
@@ -955,8 +1016,8 @@ else
     readme_linkage="This binary is statically linked: it has no shared-library dependencies and no
 interpreter, so it runs on glibc distributions (Debian, Ubuntu, RHEL) and on musl
 ones (Alpine) without anything installed alongside it. It has no Python support:
-that is the other artifact,
-${R2_PUBLIC_BASE}/${R2_OBJECT%.tar.gz}-${PYTHON_VARIANT}.tar.gz"
+that is the other artifact, which runs on the same hosts,
+${R2_PUBLIC_BASE}/feldspar-linux-${TARGET_ARCH}.tar.gz"
     readme_needs="  Nothing to run the server: this binary has no library dependencies, and none of
   the build-time toolchain (libclang, cmake, a C compiler) is needed here."
     readme_limits="Limits of a static binary
@@ -987,10 +1048,7 @@ command is the whole upgrade. Take a database dump first (docs/OPERATIONS.md
 §3.1); install.sh prints the command that puts the previous tree back.
 
 Where a newer one comes from
-  ${R2_PUBLIC_BASE}/${OBJECT}
-  ${R2_PUBLIC_BASE}/${OBJECT}.sha256
-  That URL is always the latest build; it carries no version, so there is nothing
-  to look up. \`sha256sum -c ${OBJECT}.sha256\` checks a download.
+${readme_newer}
 
 Run
   feldspar serve --database-url postgres://user:pass@host/db
@@ -1087,34 +1145,38 @@ done
 # Publish
 # ---------------------------------------------------------------------------
 
-# Copy the artifact to the R2 bucket under a fixed, version-less name, so that an
-# installer can always fetch the same URL and get the newest build.
+# Copy the artifact to the R2 bucket under each of its fixed, version-less
+# names, so that an installer can always fetch the same URL and get the newest
+# build.
 publish_to_r2() {
     if [[ "${GIT_DESC}" == *-dirty ]]; then
         log "warning: publishing a build from a dirty checkout (${GIT_DESC})"
     fi
 
-    # The checksum file written next to the tarball names the versioned file it
-    # was computed over, which is not the name it has in the bucket — a
-    # `sha256sum -c` after downloading would look for a file that is not there.
-    # The published copy therefore names the published object.
-    local published_sha="${STAGE}/${OBJECT}.sha256"
-    printf '%s  %s\n' \
-        "$(cut -d' ' -f1 < "${TARBALL}.sha256")" "${OBJECT}" > "${published_sha}"
+    local object published_sha
+    for object in "${OBJECTS[@]}"; do
+        # The checksum file written next to the tarball names the versioned file
+        # it was computed over, which is not the name it has in the bucket — a
+        # `sha256sum -c` after downloading would look for a file that is not
+        # there. Each published copy therefore names its published object.
+        published_sha="${STAGE}/${object}.sha256"
+        printf '%s  %s\n' \
+            "$(cut -d' ' -f1 < "${TARBALL}.sha256")" "${object}" > "${published_sha}"
 
-    log "uploading $(du -h "${TARBALL}" | cut -f1) to r2://${R2_BUCKET}/${OBJECT}"
-    (cd "${REPO_ROOT}" && npx wrangler r2 object put \
-        "${R2_BUCKET}/${OBJECT}" -f "${TARBALL}" --remote)
+        log "uploading $(du -h "${TARBALL}" | cut -f1) to r2://${R2_BUCKET}/${object}"
+        (cd "${REPO_ROOT}" && npx wrangler r2 object put \
+            "${R2_BUCKET}/${object}" -f "${TARBALL}" --remote)
 
-    log "uploading r2://${R2_BUCKET}/${OBJECT}.sha256"
-    (cd "${REPO_ROOT}" && npx wrangler r2 object put \
-        "${R2_BUCKET}/${OBJECT}.sha256" -f "${published_sha}" --remote)
+        log "uploading r2://${R2_BUCKET}/${object}.sha256"
+        (cd "${REPO_ROOT}" && npx wrangler r2 object put \
+            "${R2_BUCKET}/${object}.sha256" -f "${published_sha}" --remote)
 
-    log "published ${NAME}.tar.gz as ${R2_BUCKET}/${OBJECT}"
+        log "published ${NAME}.tar.gz as ${R2_BUCKET}/${object}"
+    done
     if [[ "${R2_BUCKET}" == "${DEFAULT_R2_BUCKET}" ]]; then
         cat <<EOF
 
-It is now what a new host downloads$( [[ "${VARIANT}" == linux ]] && echo " for a server with Python"):
+It is now what a new host downloads$( [[ "${VARIANT}" == linux ]] && echo " for a server with Python, on any supported distribution"):
 
   curl -fLO ${R2_PUBLIC_BASE}/${OBJECT}
   curl -fLO ${R2_PUBLIC_BASE}/${OBJECT}.sha256
@@ -1122,6 +1184,11 @@ It is now what a new host downloads$( [[ "${VARIANT}" == linux ]] && echo " for 
   tar -xzf ${OBJECT} && sudo feldspar-*/install.sh
   sudo ${PREFIX}/setup-host.sh --domain example.com
 EOF
+        local older
+        for older in "${OBJECTS[@]:1}"; do
+            echo
+            echo "It is also what a host that fetches its older name gets: ${R2_PUBLIC_BASE}/${older}"
+        done
     fi
 }
 
