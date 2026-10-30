@@ -93,7 +93,9 @@ static release below, checks its checksum, puts the tree at `/opt/feldspar` and 
 (`curl` or `wget`, `tar`) and what the binary needs at run time (`ca-certificates`); the
 binary itself is statically linked. It asks for `sudo` when it is not run as root;
 `sh -s -- --dry-run` prints what it would do, and `--help` lists the options. Run it again
-to upgrade, then restart the service.
+to upgrade: it swaps the new tree in by rename, stops running feldspar units for the swap
+and starts them again, and keeps the previous tree as `/opt/feldspar.old`
+(docs/OPERATIONS.md §3.2).
 
 The second line makes the machine an instance (§7, "Setting up an instance"):
 
@@ -508,25 +510,24 @@ sudo systemctl restart feldspar
 ```
 
 A host installed from a static artifact is updated by installing a newer one. Only
-the binary and the bundles change — `setup-host.sh` is not run again, the database,
-`feldspar.toml` and the unit are left alone — and nothing restarts by itself. On the
-host, from the same version-less URL as the install:
+the release tree changes — `setup-host.sh` is not run again, the database,
+`feldspar.toml` and the unit are left alone. On the host, from the same version-less
+URL as the install:
 
 ```bash
 curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz
 tar -xzf feldspar.tar.gz
-sudo feldspar-*/install.sh          # over the running install; ETXTBSY if it is up
-sudo systemctl restart feldspar
+sudo feldspar-*/install.sh
 ```
 
-`install.sh` copies over `/opt/feldspar/bin/feldspar`, and the kernel refuses to write
-the executable of a live process, so stop the service first (`sudo systemctl stop
-feldspar`) if that is where it fails. Or push a build from the workstation, which
-stops and starts the unit around the install for you:
+`install.sh` copies the tree beside `/opt/feldspar` and swaps it in by rename, so a
+running server is never written over; it stops running feldspar units for the swap and
+starts them again, and keeps the previous tree as `/opt/feldspar.old`
+(docs/OPERATIONS.md §3.2). The curl installer does the same in one line, and so does a
+build pushed from the workstation:
 
 ```bash
 scripts/build-static.sh --deploy root@host
-ssh root@host systemctl restart feldspar
 ```
 
 The restart rebuilds and remounts every stored application; one that fails to build is

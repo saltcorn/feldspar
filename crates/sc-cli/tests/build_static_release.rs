@@ -91,13 +91,16 @@ fn fixture(name: &str, npx_status: i32) -> Fixture {
         repo.join("scripts/install.sh"),
     )
     .expect("copy install.sh");
-    // And the bundle step the linux variant runs.
+    // And the bundle step the linux variant runs, and the tree installer every
+    // artifact ships as its install.sh.
     fs::create_dir_all(repo.join("scripts/lib")).unwrap();
-    fs::copy(
-        root.join("scripts/lib/python-bundle.sh"),
-        repo.join("scripts/lib/python-bundle.sh"),
-    )
-    .expect("copy python-bundle.sh");
+    for lib in ["python-bundle.sh", "install-tree.sh"] {
+        fs::copy(
+            root.join("scripts/lib").join(lib),
+            repo.join("scripts/lib").join(lib),
+        )
+        .unwrap_or_else(|e| panic!("copy {lib}: {e}"));
+    }
     fs::copy(root.join("Cargo.toml"), repo.join("Cargo.toml")).unwrap();
     // And the bundled modules, which the packaging step also puts in the
     // artifact.
@@ -656,12 +659,35 @@ fn the_default_release_builds_and_publishes_the_static_and_the_linux_artifact() 
         "{stderr}"
     );
 
-    // install.sh swaps the runtime trees in rather than writing over a mapped
-    // libpython, and asks the host for no Python package at all.
-    let install = member(&linux_tarball, "install.sh");
-    assert!(install.contains("for tree in python glibc"), "{install}");
-    assert!(!install.contains("apt-get"), "{install}");
-    assert!(!member(&static_tarball, "install.sh").contains("for tree in"));
+    // install.sh is the tree installer (R2.6) — it swaps the whole prefix in
+    // rather than writing over a mapped libpython, and chooses the libc —
+    // with this build's prefix and glibc filled in. It asks the host for no
+    // Python package at all.
+    let installer = fs::read_to_string(workspace_root().join("scripts/lib/install-tree.sh"))
+        .unwrap()
+        .replace("@PREFIX@", "/opt/feldspar")
+        .replace("@BUILD_GLIBC@", "2.36");
+    for tarball in [&linux_tarball, &static_tarball] {
+        let install = member(tarball, "install.sh");
+        assert_eq!(install, installer, "{tarball:?}");
+        assert!(!install.contains("apt-get"), "{install}");
+    }
+    // Owned by root in the archive, whoever built it: install.sh keeps what it
+    // copies as it is (`cp -p`), so a tree unpacked as root would otherwise
+    // belong to the build account's uid.
+    let verbose = Command::new("tar")
+        .args(["-tvzf"])
+        .arg(&linux_tarball)
+        .arg("--numeric-owner")
+        .output()
+        .unwrap();
+    let verbose = String::from_utf8_lossy(&verbose.stdout);
+    assert!(
+        verbose
+            .lines()
+            .all(|l| l.split_whitespace().nth(1) == Some("0/0")),
+        "every member should be 0/0:\n{verbose}"
+    );
     let readme = member(&linux_tarball, "README");
     assert!(readme.contains("glibc 2.36 or newer"), "{readme}");
     assert!(readme.contains("feldspar python check"), "{readme}");

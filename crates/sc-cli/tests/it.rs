@@ -49,6 +49,8 @@ mod hosted_setup;
 mod i18n;
 #[path = "install_script.rs"]
 mod install_script;
+#[path = "install_tree.rs"]
+mod install_tree;
 #[path = "mcp_token.rs"]
 mod mcp_token;
 #[path = "repo_hygiene.rs"]

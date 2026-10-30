@@ -330,19 +330,30 @@ Containers and emulators always use the host's page size, so the build asserts i
 
 ## R2 — Installing on every distribution
 
-- [ ] R2.1 `install.sh`: detect musl (D6). On musl, or when the normal binary does not start, move
+- [x] R2.1 `install.sh`: detect musl (D6). On musl, or when the normal binary does not start, move
       the `.glibc` copies over the normal ones and log which libc this install uses. On glibc,
       delete the `.glibc` copies and `glibc/`, or keep them for a later host move (decide; keeping
       costs about 5 MB). Accept `ID`/`ID_LIKE` for Fedora, RHEL, SUSE and Arch, and install the
       few packages it needs there (ca-certificates, tar) with dnf, zypper and pacman. `--dry-run`
       shows the chosen libc.
-- [ ] R2.2 `setup-host.sh` (D9): a package table per family (Debian, Fedora/RHEL, SUSE, Arch) for
+      *Done:* the choice is made by the tarball's installer (`scripts/lib/install-tree.sh`, R2.6),
+      which writes it to `${PREFIX}/LIBC`; the curl installer prints a forecast. **Decided: keep**
+      the `.glibc` copies and `glibc/` on a glibc host, so the installed tree is the tarball. The
+      curl installer also gained `--variant static|linux` (default: the installed `VARIANT`), and
+      installs `findutils`/`gawk` where a minimal image lacks them.
+- [x] R2.2 `setup-host.sh` (D9): a package table per family (Debian, Fedora/RHEL, SUSE, Arch) for
       PostgreSQL, the client, ca-certificates, curl, Node and Chromium. PostgreSQL's first-run
       initialisation and service name per family. No Python packages anywhere. Keep accepting
       `VARIANT` = `static` or `debian13-python` from older installs.
-- [ ] R2.3 `setup-host.sh`: write `SSL_CERT_FILE` into the unit where the self-check's HTTPS call
+      *Done:* checked as `--dry-run` plans with the package managers stubbed; not run on a real
+      Fedora, openSUSE or Arch host. The openSUSE Node package names (`nodejs-default`/
+      `npm-default` on Tumbleweed, `nodejs22`/`npm22` on Leap) are the least certain part.
+- [x] R2.3 `setup-host.sh`: write `SSL_CERT_FILE` into the unit where the self-check's HTTPS call
       fails without it (D10), on whichever families the smoke test shows need it.
-- [ ] R2.4 The smoke test in `build-static.sh` runs the R1.7 self-check on `debian:13-slim`,
+      *Done:* decided per host rather than per family: `setup-host.sh` runs `feldspar python
+      check` as the service account and writes the line only when the check passes with the
+      host's bundle and fails without it. The smoke test reports `NEEDS SSL_CERT_FILE` per image.
+- [~] R2.4 The smoke test in `build-static.sh` runs the R1.7 self-check on `debian:13-slim`,
       `debian:12-slim`, `ubuntu:24.04`, `ubuntu:latest`, `fedora:latest`, `almalinux:10`,
       `archlinux:latest`, `opensuse/leap:16.0`, `opensuse/tumbleweed` and `alpine:3`, each after
       the tarball's own `install.sh`. It also checks:
@@ -355,10 +366,14 @@ Containers and emulators always use the host's page size, so the build asserts i
 
       Derivatives (Mint, MX, CachyOS, Manjaro, EndeavourOS, Rocky) are covered by `ID_LIKE`, not
       by images.
+      *Written, never run:* `smoke_test_distros` and `scripts/lib/smoke-linux.sh` install through
+      the curl installer from a `file://` release, and the self-check now prints the mapped libc
+      and takes `--import`. The machine this was written on has no docker; the first `--docker`
+      build will be the first run. Mark done once it passes on every image.
 - [ ] R2.5 SELinux: on a Fedora or Alma VM with SELinux enforcing, `setup-host.sh` then a Python
       trigger works. V8 and CPython both need writable and executable memory, from a binary under
       `/opt`. Note the result in `docs/OPERATIONS.md`; make a fix only if it fails.
-- [ ] R2.6 Install by swapping trees (D11). The tarball's `install.sh` (generated in
+- [x] R2.6 Install by swapping trees (D11). The tarball's `install.sh` (generated in
       `build-static.sh`):
       - copies the tree to `${PREFIX}.new` on the same filesystem, applies R2.1's libc choice
         there, and starts `${PREFIX}.new/bin/feldspar` with no arguments as a final check;
@@ -393,6 +408,18 @@ Containers and emulators always use the host's page size, so the build asserts i
       - a file an operator added (e.g. `${PREFIX}/local.conf`) is still there after the upgrade,
         and the output names it in a warning;
       - running the installer a second time with the same tarball changes nothing but `.old`.
+
+      *Done:* `scripts/lib/install-tree.sh`, copied into every tarball as `install.sh`. The
+      stop/start lives there, between the copy and the swap, so the downtime is two renames and
+      a hand-run `sudo ./install.sh` gets it too. The final check of a bundled-glibc binary runs
+      after the swap (its loader path is under `${PREFIX}`), and a failure swaps back. Caches
+      and build output are dropped, not carried. Checked first, nothing writes into the prefix at
+      run time, with one exception found: pip's in-place build of a setuptools-based bundled
+      module (`plugins/markdown`, `plugins/sklearn`) writes `*.egg-info` there. Under the service
+      account that **fails**, so those modules cannot be installed from a tarball install today.
+      That is a module-installer bug (copy the directory before `pip install`), not fixed here.
+      The tests above run locally in `crates/sc-cli/tests/install_tree.rs`. In the smoke test
+      they are written but not yet run (R2.4).
 
 ## R3 — Release, documentation and retiring `static`
 

@@ -17,15 +17,19 @@ use sc_python::{PythonEnv, SelfCheck};
 pub const DEFAULT_CHECK_URL: &str = "https://pypi.org/simple/";
 
 const USAGE: &str = "usage: feldspar python check [--url URL | --offline] \
-                     [--python-dir PATH] [--python-bin PATH]";
+                     [--python-dir PATH] [--python-bin PATH] [--import MODULE]...";
 
 /// A parsed `feldspar python …` command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PythonArgs {
-    /// `check [--url URL | --offline] [--python-dir PATH] [--python-bin PATH]`.
+    /// `check [--url URL | --offline] [--python-dir PATH] [--python-bin PATH]
+    /// [--import MODULE]...`.
     Check {
         /// The HTTPS URL to fetch, or `None` for `--offline`.
         url: Option<String>,
+        /// Further modules to import, from the environment's `site-packages`
+        /// (`--import`, repeatable): a wheel pip installed is importable here.
+        imports: Vec<String>,
         /// The environment flags `serve` takes, so the check describes the
         /// same environment the server would use.
         env: PythonEnv,
@@ -44,6 +48,7 @@ impl PythonArgs {
             None => return Err(Error::config(format!("python needs a subcommand\n{USAGE}"))),
         }
         let mut url = Some(DEFAULT_CHECK_URL.to_owned());
+        let mut imports = Vec::new();
         let mut env = PythonEnv::default();
         let mut it = args[1..].iter();
         while let Some(arg) = it.next() {
@@ -57,6 +62,7 @@ impl PythonArgs {
                 "--offline" => url = None,
                 "--python-dir" => env.dir = Some(PathBuf::from(value()?)),
                 "--python-bin" => env.bin = Some(PathBuf::from(value()?)),
+                "--import" => imports.push(value()?),
                 other => {
                     return Err(Error::config(format!(
                         "unknown python check argument `{other}`\n{USAGE}"
@@ -64,7 +70,7 @@ impl PythonArgs {
                 }
             }
         }
-        Ok(PythonArgs::Check { url, env })
+        Ok(PythonArgs::Check { url, imports, env })
     }
 }
 
@@ -72,7 +78,7 @@ impl PythonArgs {
 /// check.
 pub fn format_check(found: &SelfCheck, pip: &std::path::Path) -> String {
     let mut out = format!(
-        "python {} ({})\n  home        {}\n  executable  {}\n  pip runs    {}\n",
+        "python {} ({})\n  home        {}\n  executable  {}\n  pip runs    {}\n{}",
         found.version,
         if found.bundled {
             "bundled with this binary"
@@ -82,6 +88,11 @@ pub fn format_check(found: &SelfCheck, pip: &std::path::Path) -> String {
         found.home,
         found.executable,
         pip.display(),
+        if found.libc.is_empty() {
+            String::new()
+        } else {
+            format!("  libc        {}\n", found.libc)
+        },
     );
     for check in &found.checks {
         out.push_str(&format!(
@@ -127,16 +138,27 @@ mod tests {
             PythonArgs::parse(&args(&["check"])).unwrap(),
             PythonArgs::Check {
                 url: Some(DEFAULT_CHECK_URL.to_owned()),
+                imports: Vec::new(),
                 env: PythonEnv::default()
             }
         );
-        let PythonArgs::Check { url, env } =
+        let PythonArgs::Check { url, env, .. } =
             PythonArgs::parse(&args(&["check", "--offline", "--python-dir", "/srv/py"])).unwrap();
         assert_eq!(url, None);
         assert_eq!(env.dir, Some(PathBuf::from("/srv/py")));
         let PythonArgs::Check { url, .. } =
             PythonArgs::parse(&args(&["check", "--url", "https://example.org/"])).unwrap();
         assert_eq!(url.as_deref(), Some("https://example.org/"));
+        let PythonArgs::Check { imports, .. } = PythonArgs::parse(&args(&[
+            "check",
+            "--import",
+            "six",
+            "--import",
+            "markupsafe._speedups",
+        ]))
+        .unwrap();
+        assert_eq!(imports, ["six", "markupsafe._speedups"]);
+        assert!(PythonArgs::parse(&args(&["check", "--import"])).is_err());
         assert!(PythonArgs::parse(&args(&[])).is_err());
         assert!(PythonArgs::parse(&args(&["doctor"])).is_err());
         assert!(PythonArgs::parse(&args(&["check", "--url"])).is_err());
@@ -149,6 +171,7 @@ mod tests {
             version: "3.13.18".to_owned(),
             home: "/opt/feldspar/python".to_owned(),
             executable: "/opt/feldspar/python/bin/python3".to_owned(),
+            libc: "/opt/feldspar/glibc/libc.so.6".to_owned(),
             bundled: true,
             checks: vec![
                 SelfCheckItem {
@@ -173,6 +196,10 @@ mod tests {
         );
         assert!(
             text.contains("home        /opt/feldspar/python\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  libc        /opt/feldspar/glibc/libc.so.6\n"),
             "{text}"
         );
         assert!(text.contains("FAIL https"), "{text}");

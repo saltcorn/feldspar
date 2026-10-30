@@ -2888,12 +2888,12 @@ async fn cmdstan_command(args: &[String]) -> Result<()> {
 async fn python_command(args: &[String]) -> Result<()> {
     use sc_cli::python::{PythonArgs, format_check, verdict};
 
-    let PythonArgs::Check { url, env } = PythonArgs::parse(args)?;
+    let PythonArgs::Check { url, imports, env } = PythonArgs::parse(args)?;
     let pip = env.interpreter();
     let runtime = sc_python::PythonRuntime::new().with_env(env);
     // On a blocking thread: the HTTPS request waits on the network with the
     // interpreter's thread, and this command has nothing else to do meanwhile.
-    let found = tokio::task::spawn_blocking(move || runtime.self_check(url.as_deref()))
+    let found = tokio::task::spawn_blocking(move || runtime.self_check(url.as_deref(), &imports))
         .await
         .map_err(|e| sc_error::Error::msg(format!("the Python self-check panicked: {e}")))??;
     print!("{}", format_check(&found, &pip));
@@ -3321,7 +3321,8 @@ fn print_usage() {
     eprintln!("  feldspar cmdstan status [--cmdstan DIR]");
     eprintln!("  feldspar cmdstan install [--version V] [--dir D] [--jobs J]");
     eprintln!(
-        "  feldspar python check [--url URL | --offline] [--python-dir PATH] [--python-bin PATH]"
+        "  feldspar python check [--url URL | --offline] [--python-dir PATH] [--python-bin PATH] \
+         [--import MODULE]..."
     );
     eprintln!();
     eprintln!("  database (or the DATABASE_URL / PG* environment variables):");

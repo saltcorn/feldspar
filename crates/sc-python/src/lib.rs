@@ -267,10 +267,15 @@ pub struct SelfCheck {
     pub home: String,
     /// `sys.executable`.
     pub executable: String,
+    /// The `libc.so.6` this process has mapped — the host's, or the release's
+    /// bundled one on a musl host (TODO-portable-release R2.1). Empty where
+    /// there is no `/proc/self/maps` to read.
+    pub libc: String,
     /// Whether this binary started CPython at a bundled home
     /// ([`env::bundled_python_home`]) rather than by CPython's own search.
     pub bundled: bool,
-    /// The imports and the HTTPS request, in the order they ran.
+    /// The imports (the four fixed ones, then any the caller named) and the
+    /// HTTPS request, in the order they ran.
     pub checks: Vec<SelfCheckItem>,
 }
 
@@ -597,18 +602,21 @@ impl PythonRuntime {
     /// what a release on a foreign distribution is most likely to be unable
     /// to: import `ssl`, `sqlite3`, `ctypes` and `zoneinfo`, and — given a
     /// `url` — make a verified HTTPS request (`feldspar python check`).
+    /// Each of `imports` is imported after those four, from the environment's
+    /// `site-packages` as a run would find it: the release smoke test's check
+    /// that a wheel pip installed loads here (TODO-portable-release R2.4).
     ///
     /// Blocking: the request waits on the network, so an async caller runs
     /// this on a blocking thread.
-    pub fn self_check(&self, url: Option<&str>) -> Result<SelfCheck> {
+    pub fn self_check(&self, url: Option<&str>, imports: &[String]) -> Result<SelfCheck> {
         #[cfg(feature = "python-host")]
         {
             self.admit()?;
-            interp::self_check(&self.env, url)
+            interp::self_check(&self.env, url, imports)
         }
         #[cfg(not(feature = "python-host"))]
         {
-            let _ = url;
+            let _ = (url, imports);
             Err(not_built())
         }
     }

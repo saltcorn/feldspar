@@ -2,6 +2,127 @@
 
 Changes in reverse chronological order.
 
+## Portable release R2: installing on every distribution, by swapping trees
+
+Milestone R2 of `TODO-portable-release.md`. The release installs on Fedora, RHEL and its
+rebuilds, openSUSE and Arch as well as Debian, Ubuntu and Alpine. The `linux` artifact picks its
+libc as it installs. An install, and so an upgrade, never writes over the installed tree. R2.5
+(SELinux on a real Fedora/Alma VM) is not done, and the container smoke test (R2.4) is written
+but has never run: this machine has no docker.
+
+- **The tarball's `install.sh` is now a script of its own**, `scripts/lib/install-tree.sh`.
+  `build-static.sh` copies it into every artifact with the prefix and the build's glibc
+  (2.36) filled in, where it used to generate a heredoc. The curl installer and `--deploy` both
+  run it. It:
+  1. copies the tree to `${PREFIX}.new`, beside the prefix, with `cp -p` so the bundled
+     CPython's `.pyc` files stay valid. As root it makes the tree `root:root` and `go-w`.
+     A `.new` left by an interrupted run is removed first.
+  2. chooses the `linux` artifact's libc (R2.1, D6). A musl host is detected by what `ldd`
+     says, then `getconf GNU_LIBC_VERSION`, then `/lib/ld-musl-*`, so Alpine with gcompat
+     still counts as musl. A musl host, or a glibc host where the normal binary does not start,
+     gets the `.glibc` copies moved over `bin/feldspar` and over the file `python/bin/python3`
+     links to. `${PREFIX}/LIBC` records the choice and the reason. `--libc host|bundled`
+     overrides it. **On a glibc host the `.glibc` copies and `glibc/` are kept** (about 5 MB),
+     so the installed tree is the tarball.
+  3. starts the new binary once. A binary on the bundled glibc names its loader under
+     `${PREFIX}`, so it is checked after the swap, and if it fails the install swaps back.
+  4. writes `${PREFIX}/MANIFEST`: every path the install put there, directories included.
+  5. carries over anything under the old prefix that no install put there, copying it with a
+     warning that names it. A foreign directory is named once, not file by file. A prefix
+     without a MANIFEST is read against the old tarball layout (`bin/`, `ui/`, `plugins/`,
+     `python/`, `glibc/`, `VARIANT`, `setup-host.sh`, and R1's `python.old`/`.new`). A path the
+     new release ships wins, with a warning. Caches and build output (`__pycache__`, `*.pyc`,
+     and `node_modules`, `build/` and `*.egg-info` under `plugins/`) are dropped.
+  6. stops running `feldspar.service` and `feldspar@*.service` units (found with `systemctl
+     list-units`), renames `${PREFIX}` to `${PREFIX}.old` and `.new` into its place, and starts
+     them again. `--no-restart` leaves them alone. A unit that will not stop is warned about
+     and not started.
+  7. prints the version before and after, the dump reminder (OPERATIONS §3.1), and the rollback
+     command. `--no-next-steps` drops the setup-host advice, for callers that print their own.
+  It refuses to run from an installed copy. R1's in-place `python/`/`glibc/` swap is gone.
+- **Tarballs are packed `--owner=0 --group=0`**, because `cp -p` keeps ownership and a tree
+  unpacked as root would otherwise belong to the build account's uid.
+- **`scripts/install.sh` (the curl installer)**:
+  - **More families.** Fedora/RHEL/Alma/Rocky (dnf), openSUSE Leap/Tumbleweed (zypper, adding
+    `ca-certificates-mozilla`) and Arch/CachyOS/Manjaro/EndeavourOS (`pacman -Syu --needed`),
+    by `ID`, else by the first family `ID_LIKE` names. It knows each family's CA bundle path,
+    and also installs `findutils`/`gawk` where `find`/`awk` are missing.
+  - **`--variant static|linux`.** The default is what `${PREFIX}/VARIANT` names
+    (`debian13-python` means `linux`), else `static`, so an upgraded host keeps Python.
+  - **`--no-restart`** is passed through. `file://` base URLs are copied, which also works
+    with busybox wget.
+  - **The plan prints a libc forecast**, with `--dry-run` too.
+  - It shows the tree installer's output, no longer sending it to `/dev/null`. Its closing
+    advice no longer says to restart after upgrading.
+  - `FELDSPAR_OS_RELEASE` stands in for `/etc/os-release` in tests.
+- **`scripts/setup-host.sh` (R2.2, D9)**:
+  - **A package table per family.** It covers the certificates and curl, the PostgreSQL server
+    and client, and the source-build toolchain. PostgreSQL's first start: `postgresql-setup
+    --initdb` on Fedora/RHEL, `initdb --auth-local=peer` on Arch (whose default is `trust`),
+    and the openSUSE unit initialises its own. Each step is skipped where `PG_VERSION` already
+    exists.
+  - **The service account comes from `useradd`** off Debian.
+  - **Node comes from the distribution** off Debian: `nodejs npm`, `nodejs-default
+    npm-default` on Tumbleweed, `nodejs22 npm22` on Leap. Its npm is checked afterwards.
+    NodeSource stays Debian-only.
+  - **Chromium from the distribution**, from EPEL on RHEL and its rebuilds.
+  - **Alpine is refused by name** (OpenRC), and an unknown distribution is refused with the
+    supported list.
+  - No Python package anywhere, except Debian's for a host still on the old `debian13-python`
+    artifact.
+- **`SSL_CERT_FILE` where it is needed (R2.3, D10).** On a `linux` install, `setup-host.sh` runs
+  `feldspar python check` as the service account. If the HTTPS request passes only with the
+  host's CA bundle in `SSL_CERT_FILE`, the unit gets `Environment=SSL_CERT_FILE=…`, or is told
+  to add it when the unit is kept. This is decided per host, not by a list of families, since
+  the smoke test that would say which need it has not run.
+- **`feldspar python check`** gains a `libc` line: the `libc.so.6` (or musl loader) in
+  `/proc/self/maps`, i.e. the host's or the bundle's. It also gains `--import MODULE`
+  (repeatable), which imports from the environment's `site-packages` as a run would.
+  `PythonRuntime::self_check` takes the imports, and `SelfCheck` has `libc`.
+- **The smoke test (R2.4)** now runs after packaging. It installs the `linux` tarball in
+  `debian:13-slim`, `debian:12-slim`, `ubuntu:24.04`, `ubuntu:latest`, `fedora:latest`,
+  `almalinux:10`, `archlinux:latest`, `opensuse/leap:16.0`, `opensuse/tumbleweed` and
+  `alpine:3`, through the curl installer from a `file://` release
+  (`scripts/lib/smoke-linux.sh`). Then:
+  - `python check` must pass with its HTTPS request. Where that needs `SSL_CERT_FILE`, it
+    reports `NEEDS SSL_CERT_FILE`.
+  - the process must map the host's libc on glibc images and the bundle's on Alpine.
+  - on Debian 13 and Alpine, a bundled `venv` + `pip install six markupsafe` must import in the
+    embedded interpreter.
+  - on Debian 13 and Alpine, R2.6's upgrade checks run: a server running from an older tree
+    survives, `.old` holds the old tree, an old-only file is gone, `local.conf` is carried with
+    a warning, and a second install changes nothing but `.old`.
+- **`python-bundle.sh`** recompiles the `sysconfig` it rewrites, so no root process writes a
+  `.pyc` into the prefix later.
+- **`deploy/docker/Dockerfile`** accepted only `VARIANT` = `debian13-python`, which R1 changed
+  to `linux`, so the image build would have failed on the first R1 artifact. It now accepts
+  both.
+- Docs: OPERATIONS §3.2 is rewritten as "run the installer again". §2.3 and §3.4 describe
+  `--deploy` through the tree installer, and the ETXTBSY row is updated. New troubleshooting
+  rows cover "carrying over" and `LIBC: bundled`. README's upgrade passages follow. The rest of
+  §1–§2 is R3.2's.
+- Tests:
+  - `tests/install_tree.rs` (new) runs the tree installer for real against fake trees, with
+    `systemctl` always stubbed. It covers a first install and its manifest, an upgrade under a
+    running process (D11's cases), a second install changing nothing but `.old`, a legacy
+    prefix, musl, a glibc too old, a bundled binary that fails and is swapped back, units
+    stopped and started around the swap (`--no-restart`, a failed stop), a broken binary, and
+    refusing the installed copy.
+  - `install_script.rs` covers every family's package command, derivatives by `ID_LIKE`,
+    `--variant linux`, the libc forecast (musl too), `--no-restart`, and a `file://` release
+    with wget alone.
+  - `setup_host.rs` covers each family's packages, PostgreSQL setup, Node, browser and
+    account, the Alpine and unknown refusals, and `SSL_CERT_FILE` in the unit only where HTTPS
+    needs it.
+  - `build_static_release.rs` checks that `install.sh` is the filled-in tree installer and that
+    the tarball is `0/0`, and the deploy tests answer `list-units`.
+  - `sc-python` tests named imports and the mapped libc.
+- **Found, not fixed:** installing a bundled Python module (`markdown`, `sklearn`: setuptools)
+  from a read-only `/opt/feldspar/plugins/<id>` fails, because pip builds in place and
+  setuptools writes `*.egg-info` there ("Getting requirements to build wheel did not run
+  successfully"). That is the case on every tarball install, where the prefix is root's and
+  the unit has `ProtectSystem=strict`. The module installer should copy the directory first.
+
 ## Portable release R1: one Linux artifact with its own CPython
 
 The Python-capable release was built on Debian 13 and linked the host's `libpython3.13`, so it

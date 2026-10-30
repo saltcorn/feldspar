@@ -259,12 +259,13 @@ whose binary is not there yet: it enables the unit and leaves it stopped, and an
 earlier setup is finished by `systemctl start feldspar`.
 
 What `--deploy` does on the remote, in order: copies the tarball to `/tmp`
-(`--remote-tmp` elsewhere), unpacks it, **stops `feldspar.service` if and only if
-it is running**, runs `install.sh` under `sudo` unless the login is root, starts
-the unit again if it stopped it, runs the installed binary once as a smoke check,
-and removes the staging copy. A machine with no systemd, no `feldspar.service`, or
-a service deliberately left down is left exactly as it was — nothing is started
-behind your back. That the host answers ssh at all is checked **before** the build
+(`--remote-tmp` elsewhere), unpacks it, runs its `install.sh` under `sudo` unless
+the login is root, runs the installed binary once as a smoke check, and removes the
+staging copy. `install.sh` is the upgrade of §3.2: it swaps the tree in by rename,
+and **stops `feldspar.service` and `feldspar@*.service` units if and only if they
+are running**, for the swap, starting them again after it. A machine with no
+systemd, no feldspar unit, or a service deliberately left down is left exactly as
+it was — nothing is started behind your back. That the host answers ssh at all is checked **before** the build
 starts rather than after it.
 
 Build-environment options worth knowing:
@@ -437,45 +438,62 @@ sudo -u feldspar pg_dump -h /var/run/postgresql feldspar > ~/feldspar-$(date +%F
 ls -l ~/feldspar-$(date +%F).sql
 ```
 
-### 3.2 A static install — redownload
+### 3.2 An installed artifact — run the installer again
 
-The same version-less URL that installed it. Only the binary and the bundles
-change: `setup-host.sh` is **not** run again, and the database, `feldspar.toml`
-and the unit are left alone.
+The installer that installed it is the upgrade. Only the release tree changes:
+`setup-host.sh` is **not** run again, and the database, `feldspar.toml` and the
+unit are left alone.
+
+```bash
+curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh
+```
+
+It fetches the artifact `/opt/feldspar/VARIANT` names (`cat` it to see which a
+host has; `debian13-python` hosts get the Python artifact under that same name),
+and runs that tarball's `install.sh`, which never writes over the installed tree
+(`scripts/lib/install-tree.sh`):
+
+1. It copies the new tree to `/opt/feldspar.new` and starts the new binary once.
+   The artifact with Python chooses its libc there: the host's glibc where the
+   normal binary starts on it, else the bundled one in `glibc/`, which a musl host
+   (Alpine) always gets. `/opt/feldspar/LIBC` records the choice and why.
+2. Anything under `/opt/feldspar` that no install put there is copied into the new
+   tree, with a warning naming it (`/opt/feldspar/MANIFEST` lists what the install
+   put there). Caches and build output (`__pycache__`, `*.pyc`, and `node_modules`,
+   `build/` and `*.egg-info` under `plugins/`) are dropped instead.
+3. It stops running `feldspar.service` and `feldspar@*.service` units, renames
+   `/opt/feldspar` to `/opt/feldspar.old` and the new tree into its place, and
+   starts the same units again: the downtime is two renames. `--no-restart` leaves
+   them running on the old tree until they are restarted, which the rename makes
+   safe.
+4. It prints the version before and after, and the command that goes back:
+
+   ```bash
+   sudo mv /opt/feldspar /opt/feldspar.bad && sudo mv /opt/feldspar.old /opt/feldspar
+   sudo systemctl restart feldspar     # or the feldspar@… instances
+   ```
+
+   Going back does not undo a database migration the new release ran: that is what
+   the dump in §3.1 is for.
+
+The same by hand, without the curl installer:
 
 ```bash
 curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz
 curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz.sha256
 sha256sum -c feldspar.tar.gz.sha256
 tar -xzf feldspar.tar.gz
-sudo systemctl stop feldspar
 sudo feldspar-*/install.sh
-sudo systemctl start feldspar
 ```
 
-A host running the Debian 13 + Python artifact updates the same way from its own
-URL. `cat /opt/feldspar/VARIANT` shows which artifact a host has.
+(`feldspar-debian13-python.tar.gz` for the artifact with Python.) An interrupted
+install leaves the old tree whole; the next run removes the `/opt/feldspar.new` it
+left.
 
-```bash
-curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar-debian13-python.tar.gz
-curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar-debian13-python.tar.gz.sha256
-sha256sum -c feldspar-debian13-python.tar.gz.sha256
-tar -xzf feldspar-debian13-python.tar.gz
-sudo systemctl stop feldspar
-sudo feldspar-*/install.sh
-sudo systemctl start feldspar
-```
-
-**Switching a static host to Python** is the same update with the other tarball,
-followed by `sudo apt install python3 python3-venv` (or a re-run of
-`setup-host.sh`, which keeps the existing config and unit) so that Python modules
-can be installed. **Switching back** loses Python. Triggers with Python bodies then
-fail at fire time.
-
-**Stop the service first.** `install.sh` copies over `/opt/feldspar/bin/feldspar`,
-and the kernel refuses to write the executable of a live process — that is what
-`ETXTBSY` / `Text file busy` means if you try it while the server is up. Nothing
-restarts by itself.
+**Switching a static host to Python** is the same upgrade with `--variant linux`
+(`curl … | sh -s -- --variant linux`). The host needs no Python package: the
+artifact brings its own CPython. **Switching back** (`--variant static`) loses
+Python. Triggers with Python bodies then fail at fire time.
 
 ### 3.3 A source install — recompile
 
@@ -504,7 +522,7 @@ scripts/build-static.sh --deploy root@app1
 scripts/build-static.sh --deploy root@app2
 ```
 
-`--deploy` stops a running `feldspar.service` around the install and starts it
+The tree's `install.sh` stops running feldspar units for the swap and starts them
 again, so **for a host that was already running, that one command is the whole
 update** — there is no separate restart to remember. The build itself happens
 once per invocation; to push one artifact to several hosts without rebuilding it,
@@ -516,9 +534,7 @@ for h in app1 app2 app3; do
   scp dist/feldspar-*-x86_64-unknown-linux-gnu.tar.gz "root@$h:/tmp/"
   ssh -t "root@$h" 'set -e
     tar -xzf /tmp/feldspar-*.tar.gz -C /tmp
-    systemctl stop feldspar
-    /tmp/feldspar-*/install.sh
-    systemctl start feldspar
+    /tmp/feldspar-*/install.sh        # stops and starts running units itself
     rm -rf /tmp/feldspar-*'
 done
 ```
@@ -1791,7 +1807,9 @@ looking hung. Ctrl-C does the same interactively.
 | `/builder/…` says "This server was built without the builder (ui/builder)", and a view's layout step or a page shows JSON instead of **Open in builder** / **Edit** | the binary was built with `SC_BUILD_ADMIN=0` or `--no-ui` (§5.3). Everything else about Saltcorn UI works. Rebuild with the variable unset |
 | the builder's canvas stays empty, or its console reports a Content-Security-Policy violation | the builder document's policy is fixed: the admin UI's, plus its application's origin in `img-src` (README §6, *The builder*). A violation means the bundle loaded something the policy does not name, which is a bug to report with the console line, not a setting to change. An image that will not show usually means the application's public origin is wrong: the canvas's `/files/serve/…` images are redirected there |
 | "the Saltcorn UI bundle is missing its view runtime" | the recorded `ui/saltcorn-ui/dist` exists but has no `view-runtime.js` — an interrupted build or a partly copied release tree. Run `npm ci && npm run build` in `ui/saltcorn-ui`, or reinstall the tree, then `SIGHUP` |
-| `ETXTBSY` / `Text file busy` during an update | the service is running and holds its own executable open. `systemctl stop feldspar` first (§3.2), or use `--deploy`, which stops and starts it for you |
+| `ETXTBSY` / `Text file busy` during an update | the `install.sh` of a release from before the tree swap (§3.2), which copied over the running binary. `systemctl stop feldspar` first, or install a newer tarball, whose `install.sh` renames the tree instead and cannot hit this |
+| an install warns "carrying over /opt/feldspar/…: no install put it there" | a file under the prefix that no install put there (`MANIFEST` lists what one did). It is copied into the new tree, and will be named again at every upgrade: the prefix is the release's, so such a file belongs somewhere else (`/etc/feldspar`, the state directory) |
+| `/opt/feldspar/LIBC` says `bundled` on a glibc distribution | the normal binary did not start on this host's glibc — older than 2.36 — so the install uses the glibc in `/opt/feldspar/glibc`, which misses the distribution's glibc security updates. The line says what the binary printed. Upgrade the distribution, then reinstall |
 | a Python trigger says the server was built without Python | it was. `--features python` is build-time and no flag substitutes for it. Settings → Development names which of the four states this process is in |
 | `error while loading shared libraries: libpython3.x.so` | a Python-feature binary on a host with no matching `libpython`. Install it, or run a binary built without the feature. The *soname* is version-specific: it must be the CPython the build linked against |
 | login does not stick behind HTTPS | add `--secure-cookies` (or `secure_cookies = true`). Conversely, do **not** set it for plain-HTTP local development, or the browser drops the cookies |

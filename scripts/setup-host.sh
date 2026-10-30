@@ -5,6 +5,29 @@
 # This is README §2 (the Debian quick start) as a script, and it is safe to run
 # again — anything that already exists is left alone.
 #
+# Distributions
+# -------------
+# Four package families, told apart by /etc/os-release (ID, else the first
+# family ID_LIKE names, which is what covers Mint, MX, Rocky, CachyOS,
+# Manjaro, EndeavourOS and the rest):
+#
+#   debian   Debian, Ubuntu        apt; PostgreSQL is set up and started by
+#                                  the package; Node from NodeSource (§1b)
+#   fedora   Fedora, RHEL, Alma,   dnf; `postgresql-setup --initdb`; Chromium
+#            Rocky                 from EPEL on RHEL and its rebuilds
+#   suse     openSUSE Leap and     zypper; the postgresql unit initialises its
+#            Tumbleweed            own data directory on first start
+#   arch     Arch, CachyOS,        pacman; `initdb` with peer authentication
+#            Manjaro, EndeavourOS  on the socket
+#
+# Alpine is not one: it runs OpenRC, not systemd, and this script writes a
+# systemd unit. On Alpine, install.sh is the whole install and the service is
+# the operator's own (TODO-portable-release D9).
+#
+# No Python package is installed on any of them: the `linux` artifact brings
+# its own CPython. Only a host still on the older `debian13-python` artifact,
+# whose binary links Debian's libpython3.13, gets Debian's Python packages.
+#
 # The two ways to get a binary onto the host
 # ------------------------------------------
 # 1. **Static artifact — no toolchain on the host.** The release tarball carries
@@ -229,6 +252,53 @@ case "${CONFIG_FILE}" in /*) ;; *) echo "error: --config must be absolute, got $
 case "${UNIT_FILE}" in /*) ;; *) echo "error: --unit must be absolute, got ${UNIT_FILE}" >&2; exit 2 ;; esac
 
 # ---------------------------------------------------------------------------
+# Which distribution
+# ---------------------------------------------------------------------------
+
+# Read in place of /etc/os-release when set: how the tests stand in for
+# another distribution. Each value is read in a subshell, so the file's other
+# variables (NAME, VERSION, …) do not land in this script's.
+OS_RELEASE="${FELDSPAR_OS_RELEASE:-/etc/os-release}"
+os_field() {
+    (
+        ID="" ID_LIKE="" VERSION_ID=""
+        # shellcheck disable=SC1090
+        [ -r "${OS_RELEASE}" ] && . "${OS_RELEASE}"
+        case "$1" in
+            ID)         printf '%s' "${ID}" ;;
+            ID_LIKE)    printf '%s' "${ID_LIKE}" ;;
+            VERSION_ID) printf '%s' "${VERSION_ID}" ;;
+        esac
+    )
+}
+OS_ID="$(os_field ID)"
+OS_ID_LIKE="$(os_field ID_LIKE)"
+OS_VERSION_ID="$(os_field VERSION_ID)"
+
+family_of() {
+    case "$1" in
+        debian|ubuntu)                                        echo debian ;;
+        fedora|rhel|centos|almalinux|rocky)                   echo fedora ;;
+        opensuse|opensuse-leap|opensuse-tumbleweed|sles|suse) echo suse ;;
+        arch|archarm|cachyos|manjaro|endeavouros)             echo arch ;;
+        alpine)                                               echo alpine ;;
+    esac
+}
+FAMILY="$(family_of "${OS_ID}")"
+if [ -z "${FAMILY}" ]; then
+    for _like in ${OS_ID_LIKE}; do
+        FAMILY="$(family_of "${_like}")"
+        [ -n "${FAMILY}" ] && break
+    done
+fi
+
+# Which artifact is installed here (build-static.sh writes it beside the
+# binary): `linux` brings its own CPython, `static` has none, and
+# `debian13-python` is the older Debian 13 build that links the host's.
+VARIANT=""
+[ "${MODE}" = "static" ] && VARIANT="$(cat "${PREFIX}/VARIANT" 2>/dev/null || true)"
+
+# ---------------------------------------------------------------------------
 # Doing things (or, with --dry-run, saying what would be done)
 # ---------------------------------------------------------------------------
 
@@ -309,26 +379,44 @@ keep_existing() {
 # Preconditions
 # ---------------------------------------------------------------------------
 
-if ! command -v apt-get >/dev/null; then
-    EXTRA=""
-    [ "${MODE}" = "source" ] && EXTRA=", a C toolchain, pkg-config, git and libclang"
-    cat >&2 <<EOF
-error: this script installs packages with apt-get, and there is none here.
-
-  It is written for Debian and Ubuntu. On another distribution install the
-  equivalents of: postgresql, ca-certificates, curl${EXTRA}, and Node.js with
-  an npm of 9.3.0 or newer — an older npm cannot install a module (§1b below)
-  and then follow README §2.3 onwards, which is what the rest of this does.
+case "${FAMILY}" in
+    debian) PKG_TOOL="apt-get" ;;
+    fedora) PKG_TOOL="dnf" ;;
+    suse)   PKG_TOOL="zypper" ;;
+    arch)   PKG_TOOL="pacman" ;;
+    alpine)
+        cat >&2 <<EOF
+error: this is Alpine, which runs OpenRC rather than systemd, and this script
+  writes a systemd unit. On Alpine the release's install.sh is the whole install
+  (the binary runs on its bundled glibc there); run
+  ${PREFIX}/bin/feldspar serve from a service of your own.
 EOF
-    exit 1
-fi
+        exit 1
+        ;;
+    *)
+        EXTRA=""
+        [ "${MODE}" = "source" ] && EXTRA=", a C toolchain, pkg-config, git and libclang"
+        cat >&2 <<EOF
+error: this script knows Debian, Ubuntu, Fedora, RHEL, openSUSE and Arch (and what
+  derives from them), and this is '${OS_ID:-unknown}'.
+
+  On another distribution install the equivalents of: postgresql, ca-certificates,
+  curl${EXTRA}, and Node.js with an npm of 9.3.0 or newer — an older npm cannot
+  install a module (§1b below) — and then follow README §2.3 onwards, which is
+  what the rest of this does.
+EOF
+        exit 1
+        ;;
+esac
+command -v "${PKG_TOOL}" >/dev/null ||
+    { echo "error: this looks like ${OS_ID:-a ${FAMILY} system}, but there is no ${PKG_TOOL} here" >&2; exit 1; }
 command -v systemctl >/dev/null ||
     { echo "error: no systemctl here; this script installs a systemd unit" >&2; exit 1; }
 
 BINARY="${PREFIX}/bin/feldspar"
 [ "${MODE}" = "static" ] || BINARY="/usr/local/bin/feldspar"
 
-log "feldspar host setup: ${MODE} install, service user ${SERVICE_USER}, binary ${BINARY}"
+log "feldspar host setup: ${MODE} install on ${OS_ID:-unknown} (${FAMILY}), service user ${SERVICE_USER}, binary ${BINARY}"
 [ "${DRY_RUN}" -eq 1 ] && log "dry run: nothing below is executed"
 [ -n "${DOMAIN}" ] || note "no --domain: only the admin UI will be served (README §7)"
 
@@ -340,26 +428,104 @@ log "feldspar host setup: ${MODE} install, service user ${SERVICE_USER}, binary 
 # from NodeSource rather than from the distribution, because Debian's and
 # Ubuntu's npm is too old to install a module. `curl` and `ca-certificates` are
 # here partly to fetch its signing key.
-PACKAGES="ca-certificates curl"
-[ -n "${DATABASE_URL}" ] || PACKAGES="${PACKAGES} postgresql postgresql-client"
-if [ "${MODE}" = "source" ]; then
-    # libclang is a build-time requirement of the module runtime (deno_runtime
-    # reaches bindgen through rusqlite); the binary it produces does not use it.
-    PACKAGES="${PACKAGES} build-essential pkg-config git libclang-dev"
-fi
-# The Debian 13 + Python artifact (build-static.sh --variant python) says so in
-# ${PREFIX}/VARIANT. Its binary links libpython3.13, and installing a Python
-# module wants an interpreter of the same version with the venv module, which
-# Debian packages separately. install.sh already added the library, so a host it
-# ran on has it; listing it again is what makes this order-independent.
-if [ "${MODE}" = "static" ] && [ "$(cat "${PREFIX}/VARIANT" 2>/dev/null || true)" = "debian13-python" ]; then
+#
+# The package table: the same roles under each family's names.
+#
+#              certificates, curl     PostgreSQL server + client      build (--from-source)
+#   debian     ca-certificates curl   postgresql postgresql-client    build-essential pkg-config git libclang-dev
+#   fedora     ca-certificates curl   postgresql-server postgresql    gcc gcc-c++ make pkgconf-pkg-config git clang-devel
+#   suse       ca-certificates        postgresql-server postgresql    gcc gcc-c++ make pkg-config git clang-devel
+#              ca-certificates-mozilla curl
+#   arch       ca-certificates curl   postgresql                      base-devel pkgconf git clang
+#
+# libclang is a build-time requirement of the module runtime (deno_runtime
+# reaches bindgen through rusqlite); the binary it produces does not use it.
+case "${FAMILY}" in
+    debian)
+        PACKAGES="ca-certificates curl"
+        PG_PACKAGES="postgresql postgresql-client"
+        BUILD_PACKAGES="build-essential pkg-config git libclang-dev"
+        ;;
+    fedora)
+        PACKAGES="ca-certificates curl"
+        PG_PACKAGES="postgresql-server postgresql"
+        BUILD_PACKAGES="gcc gcc-c++ make pkgconf-pkg-config git clang-devel"
+        ;;
+    suse)
+        # ca-certificates is the tooling; the certificates are -mozilla.
+        PACKAGES="ca-certificates ca-certificates-mozilla curl"
+        PG_PACKAGES="postgresql-server postgresql"
+        BUILD_PACKAGES="gcc gcc-c++ make pkg-config git clang-devel"
+        ;;
+    arch)
+        PACKAGES="ca-certificates curl"
+        PG_PACKAGES="postgresql"
+        BUILD_PACKAGES="base-devel pkgconf git clang"
+        ;;
+esac
+[ -n "${DATABASE_URL}" ] || PACKAGES="${PACKAGES} ${PG_PACKAGES}"
+[ "${MODE}" = "source" ] && PACKAGES="${PACKAGES} ${BUILD_PACKAGES}"
+# The older Debian 13 + Python artifact says so in ${PREFIX}/VARIANT. Its binary
+# links Debian's libpython3.13, and installing a Python module wants an
+# interpreter of the same version with the venv module, which Debian packages
+# separately. The `linux` artifact needs none of it.
+if [ "${VARIANT}" = "debian13-python" ] && [ "${FAMILY}" = debian ]; then
     PACKAGES="${PACKAGES} libpython3.13 python3 python3-venv"
 fi
 
+# The family's package manager, non-interactively. Arch updates its package
+# database only with a full upgrade, which it requires of any install.
+pkg_refresh() {
+    case "${FAMILY}" in
+        debian) run_root apt-get update ;;
+        fedora|suse|arch) ;;
+    esac
+}
+pkg_install() {
+    case "${FAMILY}" in
+        debian) run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" ;;
+        fedora) run_root dnf install -y "$@" ;;
+        suse)   run_root zypper --non-interactive install "$@" ;;
+        arch)   run_root pacman -Syu --needed --noconfirm "$@" ;;
+    esac
+}
+
 log "installing packages: ${PACKAGES}"
-run_root apt-get update
+pkg_refresh
 # shellcheck disable=SC2086  # a word list, deliberately split
-run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y ${PACKAGES}
+pkg_install ${PACKAGES}
+
+# PostgreSQL's first start. Debian's package creates a cluster and starts it;
+# the others leave that to the administrator. Each step is skipped where its
+# work is already done, so a re-run changes nothing. Arch's initdb gets peer
+# authentication on the socket explicitly, because its default is `trust`.
+if [ -z "${DATABASE_URL}" ]; then
+    case "${FAMILY}" in
+        fedora)
+            if [ -f /var/lib/pgsql/data/PG_VERSION ]; then
+                note "PostgreSQL's data directory is already initialised"
+            else
+                log "initialising PostgreSQL's data directory"
+                run_root postgresql-setup --initdb
+            fi
+            ;;
+        arch)
+            if [ -f /var/lib/postgres/data/PG_VERSION ]; then
+                note "PostgreSQL's data directory is already initialised"
+            else
+                log "initialising PostgreSQL's data directory"
+                pg_run initdb --locale=C.UTF-8 --encoding=UTF8 --auth-local=peer \
+                    --auth-host=scram-sha-256 -D /var/lib/postgres/data
+            fi
+            ;;
+    esac
+    case "${FAMILY}" in
+        fedora|suse|arch)
+            log "enabling and starting postgresql.service"
+            run_root systemctl enable --now postgresql
+            ;;
+    esac
+fi
 
 # ---------------------------------------------------------------------------
 # 1b. Node.js, from NodeSource
@@ -411,27 +577,48 @@ else
     if command -v npm >/dev/null 2>&1; then
         note "npm $(npm --version) is too old to install a module (${MIN_NPM}+ is needed)"
     fi
-    log "installing Node.js ${NODE_MAJOR}.x from NodeSource"
-    run_root install -d -m 0755 /etc/apt/keyrings
-    # The armoured key straight to a file rather than through `gpg --dearmor`:
-    # apt reads an ASCII-armoured keyring given a `.asc` name, which is one
-    # fewer package to install and one fewer pipeline to get right under sudo.
-    run_root curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-        -o "${NODE_KEYRING}"
-    run_root chmod 0644 "${NODE_KEYRING}"
-    printf 'deb [signed-by=%s] https://deb.nodesource.com/node_%s.x nodistro main\n' \
-        "${NODE_KEYRING}" "${NODE_MAJOR}" | write_root_file "${NODE_LIST}" 0644
-    # Pinned, so that a distribution which later ships a `nodejs` of its own
-    # with a higher version string cannot quietly replace this one and put the
-    # host back where it started.
-    printf 'Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 600\n' |
-        write_root_file "${NODE_PIN}" 0644
-    run_root apt-get update
-    # NodeSource's `nodejs` carries its own npm and Conflicts/Provides the
-    # distribution's `npm` package, which is why that is not in ${PACKAGES} —
-    # and why apt removes a distribution npm already installed here rather than
-    # ending up with two.
-    run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+    case "${FAMILY}" in
+    debian)
+        log "installing Node.js ${NODE_MAJOR}.x from NodeSource"
+        run_root install -d -m 0755 /etc/apt/keyrings
+        # The armoured key straight to a file rather than through `gpg --dearmor`:
+        # apt reads an ASCII-armoured keyring given a `.asc` name, which is one
+        # fewer package to install and one fewer pipeline to get right under sudo.
+        run_root curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+            -o "${NODE_KEYRING}"
+        run_root chmod 0644 "${NODE_KEYRING}"
+        printf 'deb [signed-by=%s] https://deb.nodesource.com/node_%s.x nodistro main\n' \
+            "${NODE_KEYRING}" "${NODE_MAJOR}" | write_root_file "${NODE_LIST}" 0644
+        # Pinned, so that a distribution which later ships a `nodejs` of its own
+        # with a higher version string cannot quietly replace this one and put the
+        # host back where it started.
+        printf 'Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 600\n' |
+            write_root_file "${NODE_PIN}" 0644
+        run_root apt-get update
+        # NodeSource's `nodejs` carries its own npm and Conflicts/Provides the
+        # distribution's `npm` package, which is why that is not in ${PACKAGES} —
+        # and why apt removes a distribution npm already installed here rather than
+        # ending up with two.
+        run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+        ;;
+    *)
+        # The other families package a Node whose npm is new enough — Fedora
+        # and RHEL 10 (npm 10), openSUSE (versioned names on Leap), Arch — so
+        # theirs is used, and checked once it is there.
+        case "${FAMILY}:${OS_ID}" in
+            suse:opensuse-tumbleweed) NODE_PACKAGES="nodejs-default npm-default" ;;
+            suse:*)                   NODE_PACKAGES="nodejs22 npm22" ;;
+            *)                        NODE_PACKAGES="nodejs npm" ;;
+        esac
+        log "installing Node.js from ${OS_ID:-the distribution}'s packages: ${NODE_PACKAGES}"
+        # shellcheck disable=SC2086  # a word list, deliberately split
+        pkg_install ${NODE_PACKAGES}
+        if [ "${DRY_RUN}" -eq 0 ] && ! npm_new_enough; then
+            note "the npm that installed is $(npm --version 2>/dev/null || echo missing), and modules need ${MIN_NPM}+;"
+            note "install a newer Node (nodejs.org, nvm) before installing a module"
+        fi
+        ;;
+    esac
 fi
 
 # ---------------------------------------------------------------------------
@@ -469,9 +656,8 @@ elif BROWSER_PATH="$(find_browser)"; then
     note "a headless-capable browser is already here: ${BROWSER_PATH}"
 else
     BROWSER_PATH=""
-    . /etc/os-release 2>/dev/null || true
-    case "${ID:-}" in
-        ubuntu)
+    case "${FAMILY}:${OS_ID}" in
+        debian:ubuntu)
             ARCH="$(dpkg --print-architecture 2>/dev/null || echo unknown)"
             if [ "${ARCH}" = "amd64" ]; then
                 log "installing Google Chrome from Google's apt repository (Ubuntu's chromium-browser is a snap)"
@@ -490,13 +676,40 @@ else
                 note "unavailable until one is installed and named with \`browser\` in ${CONFIG_FILE}"
             fi
             ;;
-        *)
+        debian:*)
             # Debian 12 and 13, and anything else apt-based that packages it.
             log "installing chromium"
-            run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y chromium
+            pkg_install chromium
+            BROWSER_PATH="/usr/bin/chromium"
+            ;;
+        fedora:fedora)
+            log "installing chromium"
+            pkg_install chromium
+            BROWSER_PATH="/usr/bin/chromium-browser"
+            ;;
+        fedora:*)
+            # RHEL and its rebuilds package Chromium in EPEL. Alma and Rocky
+            # carry `epel-release` in their own extras; RHEL itself fetches it
+            # from the Fedora project.
+            log "installing chromium from EPEL"
+            if [ "${OS_ID}" = rhel ]; then
+                pkg_install "https://dl.fedoraproject.org/pub/epel/epel-release-latest-${OS_VERSION_ID%%.*}.noarch.rpm"
+            else
+                pkg_install epel-release
+            fi
+            pkg_install chromium
+            BROWSER_PATH="/usr/bin/chromium-browser"
+            ;;
+        suse:*|arch:*)
+            log "installing chromium"
+            pkg_install chromium
             BROWSER_PATH="/usr/bin/chromium"
             ;;
     esac
+    # Where the package put it, when that is not where it is on most hosts.
+    if [ "${DRY_RUN}" -eq 0 ] && [ -n "${BROWSER_PATH}" ] && [ ! -x "${BROWSER_PATH}" ]; then
+        BROWSER_PATH="$(find_browser || true)"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -515,7 +728,15 @@ else
     # It has to agree with the unit's HOME (§6), or `sudo -u ${SERVICE_USER} ...`
     # from a shell lands somewhere the account cannot write: that is where git
     # looks for the identity `feldspar`'s commits are made under.
-    run_root adduser --system --group --home "${STATE_DIR}" "${SERVICE_USER}"
+    #
+    # Debian's adduser and everyone else's useradd say the same thing: a
+    # system account with a group of its own name, that home, no login shell.
+    if [ "${FAMILY}" = debian ]; then
+        run_root adduser --system --group --home "${STATE_DIR}" "${SERVICE_USER}"
+    else
+        run_root useradd --system --user-group --create-home --home-dir "${STATE_DIR}" \
+            --shell /usr/sbin/nologin "${SERVICE_USER}"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -632,6 +853,49 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 4b. Certificates for the embedded Python
+# ---------------------------------------------------------------------------
+#
+# The `linux` artifact's CPython (python-build-standalone) has its OpenSSL's
+# certificate path compiled in, and whether a distribution keeps its bundle
+# there is that distribution's answer (TODO-portable-release D10). So the
+# answer is asked, not assumed: the self-check's verified HTTPS request, as the
+# service account. Where it fails and passes with the distribution's bundle in
+# SSL_CERT_FILE, the unit sets that. Children inherit it, which is harmless:
+# it names the right file. pip is not the reason — it brings its own
+# certificates — Python code calling `ssl` or `urllib` is.
+
+SSL_CERT_SETTING=""
+if [ "${VARIANT}" = "linux" ] && { [ -x "${BINARY}" ] || [ "${DRY_RUN}" -eq 1 ]; }; then
+    log "checking that the embedded Python makes a verified HTTPS request as ${SERVICE_USER}"
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        run_root runuser -u "${SERVICE_USER}" -- "${BINARY}" python check
+    else
+        _check() { ${SUDO} runuser -u "${SERVICE_USER}" -- env "$@" "${BINARY}" python check; }
+        _log="$(mktemp)"
+        if _check >"${_log}" 2>&1; then
+            note "it does"
+        else
+            for _bundle in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \
+                           /etc/ssl/ca-bundle.pem; do
+                [ -f "${_bundle}" ] || continue
+                if _check "SSL_CERT_FILE=${_bundle}" >/dev/null 2>&1; then
+                    SSL_CERT_SETTING="Environment=SSL_CERT_FILE=${_bundle}"
+                    note "only with SSL_CERT_FILE=${_bundle}; the unit sets it"
+                    break
+                fi
+            done
+            if [ -z "${SSL_CERT_SETTING}" ]; then
+                note "it does not, with this host's certificate bundle or without it. Python code"
+                note "that makes HTTPS requests will fail until this works (no network here?):"
+                tail -n 5 "${_log}" | sed 's/^/      | /'
+            fi
+        fi
+        rm -f "${_log}"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 5. The configuration file
 # ---------------------------------------------------------------------------
 
@@ -676,9 +940,18 @@ fi
 # ---------------------------------------------------------------------------
 
 if keep_existing "${UNIT_FILE}"; then
-    :
+    if [ -n "${SSL_CERT_SETTING}" ] && ! grep -q '^Environment=SSL_CERT_FILE=' "${UNIT_FILE}" 2>/dev/null; then
+        note "add this line to [Service] in ${UNIT_FILE}, for the reason in §4b above:"
+        note "  ${SSL_CERT_SETTING}"
+    fi
 else
     log "writing ${UNIT_FILE}"
+    # The certificate bundle for the embedded Python, where §4b found it needed.
+    UNIT_ENV="Environment=FELDSPAR_CONFIG=${CONFIG_FILE}
+Environment=HOME=${STATE_DIR}
+Environment=SC_DATA_DIR=${STATE_DIR}"
+    [ -z "${SSL_CERT_SETTING}" ] || UNIT_ENV="${UNIT_ENV}
+${SSL_CERT_SETTING}"
     # Type=notify, so `systemctl start` returns when the port is accepting rather
     # than when the process exists; the watchdog restarts a runtime that has
     # stopped scheduling; --environment is named even though it is the file's
@@ -704,9 +977,7 @@ WatchdogSec=30s
 User=${SERVICE_USER}
 Group=${SERVICE_USER}
 ExecStart=${BINARY} serve --environment ${ENVIRONMENT}
-Environment=FELDSPAR_CONFIG=${CONFIG_FILE}
-Environment=HOME=${STATE_DIR}
-Environment=SC_DATA_DIR=${STATE_DIR}
+${UNIT_ENV}
 StateDirectory=feldspar
 WorkingDirectory=${STATE_DIR}
 Restart=on-failure

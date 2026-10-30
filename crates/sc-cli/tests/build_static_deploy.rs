@@ -98,6 +98,14 @@ fn fixture(name: &str) -> Fixture {
         repo.join("scripts/setup-host.sh"),
     )
     .expect("copy setup-host.sh");
+    // And the tree installer it ships as install.sh, which is what the deploy
+    // runs on the far side.
+    fs::create_dir_all(repo.join("scripts/lib")).unwrap();
+    fs::copy(
+        root.join("scripts/lib/install-tree.sh"),
+        repo.join("scripts/lib/install-tree.sh"),
+    )
+    .expect("copy install-tree.sh");
     fs::copy(root.join("Cargo.toml"), repo.join("Cargo.toml")).unwrap();
     // And the bundled modules, which the packaging step also puts in the
     // artifact. One entry is enough to exercise the copy; the real catalog is
@@ -205,12 +213,13 @@ impl Fixture {
     }
 }
 
-/// Rewrite the fixture's `systemctl` stub. `active` decides what `is-active`
-/// answers and `stop_status` the exit code of `stop`; every call that is not a
-/// query is appended to the log together with the second line of the installed
-/// binary as it was at that moment — the line that differs between the old and
-/// the new one — which is how the ordering against install.sh is checked without
-/// timestamps.
+/// Rewrite the fixture's `systemctl` stub. `active` decides whether
+/// `list-units` — how the tree's install.sh finds running feldspar units —
+/// answers with `feldspar.service`, and `stop_status` the exit code of `stop`;
+/// every call that is not a query is appended to the log together with the
+/// second line of the installed binary as it was at that moment — the line that
+/// differs between the old and the new one — which is how the ordering against
+/// the swap is checked without timestamps.
 impl Fixture {
     fn systemctl(&self, active: bool, stop_status: i32) {
         let stub = format!(
@@ -219,14 +228,18 @@ impl Fixture {
              installed='{prefix}/bin/feldspar'\n\
              seen=\"$(sed -n 2p \"$installed\" 2>/dev/null || true)\"\n\
              case \"${{1:-}}\" in\n\
-             is-active) exit {is_active} ;;\n\
+             list-units) {list_units} ;;\n\
              stop) echo \"stop [$seen]\" >> \"$events\"; exit {stop_status} ;;\n\
              start) echo \"start [$seen]\" >> \"$events\"; exit 0 ;;\n\
              esac\n\
              exit 0\n",
             events = self.events.display(),
             prefix = self.prefix.display(),
-            is_active = i32::from(!active) * 3,
+            list_units = if active {
+                "echo 'feldspar.service loaded active running Saltcorn Feldspar'"
+            } else {
+                ":"
+            },
         );
         write_executable(&self.bin.join("systemctl"), &stub);
     }

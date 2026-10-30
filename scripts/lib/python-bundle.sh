@@ -74,7 +74,14 @@ cmd_fetch() {
                 "${f}"
         done
     done
+    # Their bytecode is stale now, so it is compiled again, by the interpreter
+    # that will read it: shipped rather than left for the first root process
+    # that imports `sysconfig` to write into the installed prefix (an install
+    # treats the prefix as read-only, TODO-portable-release R2.6). Best
+    # effort: an interpreter that cannot run here only costs that write later.
     find "${py}/lib" -path '*/__pycache__/_sysconfigdata*' -delete 2>/dev/null || true
+    "${py}/bin/python3" -I -m py_compile "${py}"/lib/python3.*/_sysconfigdata_*.py 2>/dev/null ||
+        echo "python-bundle: warning: could not recompile the rewritten sysconfig; it is compiled on first use" >&2
 
     ls "${py}"/lib/libpython3.*.so.1.0 >/dev/null 2>&1 ||
         die "${url} has no shared libpython under python/lib"

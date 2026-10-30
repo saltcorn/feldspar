@@ -75,7 +75,10 @@
 #   /opt/feldspar/ui/analytics/dist   the Analytics UI, served under /analytics/
 #   /opt/feldspar/plugins/            the modules it ships with, installable in
 #                                     one click from Settings -> Modules
-#   /opt/feldspar/install.sh          copies the tree into place
+#   /opt/feldspar/install.sh          installs the tree by swapping it in
+#                                     (scripts/lib/install-tree.sh)
+#   /opt/feldspar/MANIFEST, LIBC      written by it: what it installed, and
+#                                     (linux) which glibc the install runs on
 #   /opt/feldspar/setup-host.sh       sets the host up to run it (packages,
 #                                     database, config file, systemd unit)
 #
@@ -224,7 +227,7 @@ Packaging
                         you point at a bundle yourself.
       --no-strip        Keep debug symbols (the binary is ~2x larger).
       --no-verify       Skip the post-build checks (linkage, and a smoke run in
-                        Debian and Alpine containers).
+                        a container of each supported distribution).
 
 Deployment
       --deploy [USER@]HOST
@@ -233,9 +236,10 @@ Deployment
                         installed at ${PREFIX} on that machine. HOST is anything
                         ssh accepts, a ~/.ssh/config alias included. The remote
                         side runs install.sh under sudo unless the login is root.
-                        A running feldspar.service is stopped just before the
-                        install and started again after it; a unit that is absent
-                        or already stopped is left alone.
+                        The tree's install.sh swaps it in by rename and stops
+                        running feldspar.service and feldspar@*.service units for
+                        the swap, starting them again after it; a unit that is
+                        absent or already stopped is left alone.
       --ssh-opt OPT     Extra option for the ssh invocations, e.g. --ssh-opt -p2222
                         or --ssh-opt -oStrictHostKeyChecking=no. Repeatable; each
                         occurrence is one argv element, so write a flag and its
@@ -810,17 +814,26 @@ EOF
     log "glibc copies: loader ${want_interp}, RPATH ${want_rpath}; $(find "${STAGE}/glibc" -type f | wc -l) libraries in glibc/"
 }
 
-# The claim in this script's header, executed: the binary starts and prints its
-# usage on a glibc distribution and on a musl one. Skipped when the target is
-# not this machine's architecture (nothing here would run it) or docker is
-# absent.
+# The claim in this script's header, executed: the artifact installs and runs on
+# every distribution it is for. Skipped when the target is not this machine's
+# architecture (nothing here would run it) or docker is absent. It runs after
+# packaging, because for the linux artifact what is tested is the tarball.
 #
-# The linux tree is mounted at the prefix it was built for, because the
-# `.glibc` copies name their loader there; the normal binary runs on Debian 12
-# (the oldest glibc it promises) and 13, the `.glibc` one on Alpine, and each
-# runs `feldspar python check --offline` — the embedded interpreter starts at
-# its bundled home and loads its extension modules. R2.4 widens this to every
-# distribution and the HTTPS check.
+# The static binary is run bare on a glibc image and a musl one. The linux
+# tarball is installed in each of SMOKE_IMAGES by the curl installer from a
+# file:// release, and `scripts/lib/smoke-linux.sh` then runs the self-check
+# (with its HTTPS request), checks which libc the process maps, and on Debian 13
+# and Alpine makes a venv, pip-installs a pure-Python package and a manylinux
+# wheel and imports both, and upgrades a running install by swapping trees
+# (TODO-portable-release R2.4, R2.6). Derivatives (Mint, MX, CachyOS,
+# Manjaro, EndeavourOS, Rocky) are covered by ID_LIKE, not by images.
+readonly SMOKE_IMAGES=(
+    debian:13-slim debian:12-slim ubuntu:24.04 ubuntu:latest
+    fedora:latest almalinux:10 archlinux:latest
+    opensuse/leap:16.0 opensuse/tumbleweed alpine:3
+)
+readonly SMOKE_SCRIPT="${REPO_ROOT}/scripts/lib/smoke-linux.sh"
+
 smoke_test_distros() {
     command -v docker >/dev/null || { log "skipping distro smoke test (no docker)"; return 0; }
     local host_arch="$(uname -m)"
@@ -829,24 +842,34 @@ smoke_test_distros() {
         aarch64-*) [[ "${host_arch}" == "aarch64" ]] || { log "skipping distro smoke test (foreign architecture)"; return 0; } ;;
     esac
 
-    # The binary prints its usage on stderr and exits 0, so the output is held
-    # rather than streamed: it is a page of text per image, and it is only worth
-    # reading when the run fails.
+    # The output is held rather than streamed — a page of text per image —
+    # and shown when a run fails, or for the lines that say what it found.
     local image output
     if [[ "${VARIANT}" == linux ]]; then
-        local exe run
-        for image in debian:12-slim debian:13-slim alpine:3; do
-            exe="${PREFIX}/bin/feldspar"
-            [[ "${image}" == alpine:* ]] && exe="${PREFIX}/bin/feldspar.glibc"
-            run="${exe} >/dev/null 2>&1 && ${exe} python check --offline"
-            log "smoke test on ${image} (${exe##*/})"
-            if ! output="$(docker run --rm --network none \
-                    -v "${STAGE}:${PREFIX}:ro" \
-                    "${image}" sh -c "${run}" 2>&1)"; then
-                echo "error: the binary does not run on ${image}:" >&2
+        # The release as the bucket holds it: the object name the curl
+        # installer fetches, and a checksum file naming that object.
+        local release="${STAGE_ROOT}/smoke-release"
+        rm -rf "${release}"
+        mkdir -p "${release}"
+        cp "${TARBALL}" "${release}/${OBJECT}"
+        printf '%s  %s\n' "$(cut -d' ' -f1 < "${TARBALL}.sha256")" "${OBJECT}" \
+            > "${release}/${OBJECT}.sha256"
+        local extra
+        for image in "${SMOKE_IMAGES[@]}"; do
+            extra=()
+            case "${image}" in debian:13-slim|alpine:3) extra=(--venv --upgrade) ;; esac
+            log "smoke test on ${image}${extra[*]:+ (${extra[*]})}"
+            if ! output="$(docker run --rm \
+                    -v "${release}:/release:ro" \
+                    -v "${REPO_ROOT}/scripts/install.sh:/install.sh:ro" \
+                    -v "${SMOKE_SCRIPT}:/smoke.sh:ro" \
+                    "${image}" sh /smoke.sh /release "${OBJECT}" "${PREFIX}" \
+                    ${extra[@]+"${extra[@]}"} 2>&1)"; then
+                echo "error: the linux artifact failed its smoke test on ${image}:" >&2
                 printf '%s\n' "${output}" >&2
                 exit 1
             fi
+            grep -E '^smoke: (libc choice|maps|NEEDS)' <<<"${output}" | sed 's/^/    /' || true
         done
         return 0
     fi
@@ -869,7 +892,6 @@ verify_variant() {
     else
         assert_static
     fi
-    smoke_test_distros
 }
 
 # ---------------------------------------------------------------------------
@@ -882,10 +904,14 @@ verify_variant() {
 # `setup-host.sh` gives it a database, a service account and a unit. It is not
 # put on PATH: it is run once.
 readonly SETUP_HOST="${REPO_ROOT}/scripts/setup-host.sh"
+readonly INSTALL_TREE="${REPO_ROOT}/scripts/lib/install-tree.sh"
 
 package_variant() {
-[[ -f "${SETUP_HOST}" ]] ||
-    { echo "error: ${SETUP_HOST} is missing; it belongs in the artifact" >&2; exit 1; }
+local required
+for required in "${SETUP_HOST}" "${INSTALL_TREE}"; do
+    [[ -f "${required}" ]] ||
+        { echo "error: ${required} is missing; it belongs in the artifact" >&2; exit 1; }
+done
 cp "${SETUP_HOST}" "${STAGE}/setup-host.sh"
 chmod +x "${STAGE}/setup-host.sh"
 
@@ -895,84 +921,13 @@ chmod +x "${STAGE}/setup-host.sh"
 # running.
 echo "${VARIANT}" > "${STAGE}/VARIANT"
 
-# The linux variant's bundled CPython and glibc. Each is replaced as a whole
-# tree, by rename, and never written over in place: a running server has
-# libpython (and on a musl host, libc) mapped, and overwriting a mapped library
-# can crash it. Unlinking is safe — the running process keeps the old inodes
-# until it restarts. TODO-portable-release R2.6 moves the whole prefix to this.
-runtime_trees_step=""
-if [[ "${VARIANT}" == linux ]]; then
-    runtime_trees_step='
-# The bundled CPython and glibc, swapped in whole (see build-static.sh): a
-# running server has them mapped, so they are renamed into place, never copied
-# over.
-for tree in python glibc; do
-    [ -d "${SRC}/${tree}" ] || continue
-    rm -rf "${PREFIX}/${tree}.new"
-    mkdir -p "${PREFIX}"
-    cp -R "${SRC}/${tree}" "${PREFIX}/${tree}.new"
-    if [ -e "${PREFIX}/${tree}" ]; then
-        rm -rf "${PREFIX}/${tree}.old"
-        mv "${PREFIX}/${tree}" "${PREFIX}/${tree}.old"
-    fi
-    mv "${PREFIX}/${tree}.new" "${PREFIX}/${tree}"
-    rm -rf "${PREFIX}/${tree}.old"
-done
-'
-fi
-
-cat > "${STAGE}/install.sh" <<EOF
-#!/usr/bin/env sh
-# Install this artifact at the prefix it was built for.
-#
-# The prefix is not a choice at install time: the binary carries \`${PREFIX}/ui/...\`
-# as the location of the admin UI and the IDE, compiled in. To install elsewhere,
-# rebuild with \`scripts/build-static.sh --prefix <path>\`.
-set -eu
-
-PREFIX="${PREFIX}"
-SRC="\$(cd -- "\$(dirname -- "\$0")" && pwd)"
-
-if [ "\$(id -u)" -ne 0 ] && [ ! -w "\$(dirname "\${PREFIX}")" ]; then
-    echo "install: \${PREFIX} needs root (re-run with sudo)" >&2
-    exit 1
-fi
-${runtime_trees_step}
-# Contents, not directories: \`cp -r bin \${PREFIX}/\` would put the binary in
-# \${PREFIX}/bin/bin the second time this is run, which is the upgrade path.
-mkdir -p "\${PREFIX}/bin"
-cp -r "\${SRC}/bin/." "\${PREFIX}/bin/"
-if [ -d "\${SRC}/ui" ]; then
-    mkdir -p "\${PREFIX}/ui"
-    cp -r "\${SRC}/ui/." "\${PREFIX}/ui/"
-fi
-# The bundled modules. Copied over an existing tree rather than replacing it:
-# what an admin installed lives in the modules directory, not here, so this is
-# only ever the catalog this release ships.
-if [ -d "\${SRC}/plugins" ]; then
-    mkdir -p "\${PREFIX}/plugins"
-    cp -r "\${SRC}/plugins/." "\${PREFIX}/plugins/"
-fi
-chmod +x "\${PREFIX}/bin/feldspar"
-cp "\${SRC}/VARIANT" "\${PREFIX}/VARIANT"
-
-# Beside the tree rather than inside bin/: it is run once, by a person, and has
-# no business on PATH. Run from there it knows it is looking at an installed
-# artifact and does not offer to build one from source.
-cp "\${SRC}/setup-host.sh" "\${PREFIX}/setup-host.sh"
-chmod +x "\${PREFIX}/setup-host.sh"
-
-echo "installed \${PREFIX}/bin/feldspar"
-echo
-echo "next, set this host up to run it — packages, PostgreSQL, a service account,"
-echo "/etc/feldspar/feldspar.toml and a systemd unit:"
-echo "  sudo \${PREFIX}/setup-host.sh --domain example.com"
-echo "  sudo \${PREFIX}/setup-host.sh --help       # every option"
-echo "  sudo \${PREFIX}/setup-host.sh --dry-run    # what it would do, doing nothing"
-echo
-echo "that also puts feldspar on PATH. On a host that is already set up, only the"
-echo "service needs restarting:  sudo systemctl restart feldspar"
-EOF
+# The tree's installer (scripts/lib/install-tree.sh, TODO-portable-release
+# R2.6): it swaps the whole prefix in by rename rather than copying over a
+# running server's files, chooses the linux artifact's libc, and stops and
+# starts running feldspar units around the swap. The prefix it installs to,
+# and the glibc the binary was linked against, are this build's.
+sed -e "s|@PREFIX@|${PREFIX}|g" -e "s|@BUILD_GLIBC@|${BUILD_GLIBC}|g" \
+    "${INSTALL_TREE}" > "${STAGE}/install.sh"
 chmod +x "${STAGE}/install.sh"
 
 # The parts of the README that differ between the two artifacts.
@@ -1016,7 +971,10 @@ ${readme_linkage}
 
 Install
   sudo ./install.sh
-      copies this tree to ${PREFIX}
+      installs this tree as ${PREFIX}: copied beside it, then swapped in by
+      rename, so a running server is never written over. Running feldspar
+      units are stopped for the swap and started again (--no-restart leaves
+      them alone), and the previous tree is kept as ${PREFIX}.old.
   sudo ${PREFIX}/setup-host.sh --domain example.com
       sets this host up to run it: packages, PostgreSQL, the feldspar service
       account, /etc/feldspar/feldspar.toml and a systemd unit. Once, on a new
@@ -1025,7 +983,8 @@ Install
       prints the available commands
 
 On a host that already has a database, a service account and a unit, the first
-command is the whole upgrade — restart the service afterwards.
+command is the whole upgrade. Take a database dump first (docs/OPERATIONS.md
+§3.1); install.sh prints the command that puts the previous tree back.
 
 Where a newer one comes from
   ${R2_PUBLIC_BASE}/${OBJECT}
@@ -1044,13 +1003,17 @@ What is in the tarball
   bin/feldspar          the server and management CLI
 $(if [[ "${VARIANT}" == linux ]]; then
 cat <<INNER
-  bin/feldspar.glibc    the same, set to run on glibc/ (for a musl host)
+  bin/feldspar.glibc    the same, set to run on glibc/ (for a musl host);
+                        install.sh moves it over bin/feldspar where the host's
+                        glibc cannot run that, and says so (LIBC records it)
   python/               CPython ${PBS_PYTHON}: what bin/feldspar embeds and pip runs
   glibc/                Debian 12's glibc, used only by the .glibc copies
 INNER
 fi)
+  install.sh            the installer above
   setup-host.sh         the host setup, run once from ${PREFIX} after install.sh.
-                        Debian and Ubuntu; --dry-run prints what it would do.
+                        Debian, Ubuntu, Fedora, RHEL, openSUSE and Arch; --dry-run
+                        prints what it would do.
   plugins/              the modules this release ships with — an RSS table
                         provider and a Markdown renderer today. They are not
                         loaded until somebody installs one from Settings ->
@@ -1098,7 +1061,11 @@ mkdir -p "${OUTPUT_DIR}"
 
 # Packaged with the release name as the top-level directory, so unpacking in a
 # scratch directory does not scatter `bin/` and `ui/` over whatever is there.
-tar -czf "${TARBALL}" -C "${STAGE}" --transform "s,^\.,${NAME}," .
+# Owned by root in the archive, not by whoever built it: install.sh keeps
+# what it copies as it finds it (`cp -p`, for the .pyc timestamps), and a tree
+# unpacked as root would otherwise belong to the build account's uid.
+tar -czf "${TARBALL}" -C "${STAGE}" --owner=0 --group=0 --numeric-owner \
+    --transform "s,^\.,${NAME}," .
 (cd "${OUTPUT_DIR}" && sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
 
 log "wrote ${TARBALL} ($(du -h "${TARBALL}" | cut -f1))"
@@ -1112,6 +1079,7 @@ for v in "${VARIANTS[@]}"; do
     build_variant
     [[ ${VERIFY} -eq 1 ]] && verify_variant
     package_variant
+    [[ ${VERIFY} -eq 1 ]] && smoke_test_distros
     TARBALLS+=("${TARBALL}")
 done
 
@@ -1226,32 +1194,12 @@ else
     exit 1
 fi
 
-# A running server holds ${PREFIX}/bin/feldspar open, and the kernel refuses to
-# write over the executable of a live process ("Text file busy"), so the unit has
-# to be stopped before install.sh copies the binary in. This is as late as it can
-# be — the tarball is already here and unpacked — so the downtime is the install
-# and nothing more.
-#
-# Only a unit that is *running* is stopped and started again: on a machine with
-# no systemd, no feldspar.service, or a service deliberately left down, the
-# install happens exactly as it did before and nothing is started behind the
-# operator's back.
-restart_unit=""
-if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet feldspar 2>/dev/null; then
-    echo "stopping feldspar.service"
-    if \${sudo} systemctl stop feldspar; then
-        restart_unit="yes"
-    else
-        echo "warning: could not stop feldspar.service; installing anyway" >&2
-    fi
-fi
-
-\${sudo} "\${tree}/install.sh"
-
-if [ -n "\${restart_unit}" ]; then
-    echo "starting feldspar.service"
-    \${sudo} systemctl start feldspar
-fi
+# The tree's own install.sh swaps it in by rename, and stops running
+# feldspar.service and feldspar@*.service units just for the swap, starting them
+# again after it: a running server holds ${PREFIX}/bin/feldspar open, and is
+# never written over. A unit that is absent or stopped is left alone, and
+# nothing is started behind the operator's back.
+\${sudo} "\${tree}/install.sh" --no-next-steps
 
 # The installed binary, run where it now lives: it prints its usage and exits 0,
 # which is the claim this whole script exists to make — one file that runs on

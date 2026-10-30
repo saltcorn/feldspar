@@ -38,7 +38,7 @@ async fn every_entry_point_says_the_build_has_no_python() {
     assert_eq!(runtime.threads(), 0);
 
     let error = runtime
-        .self_check(None)
+        .self_check(None, &[])
         .expect_err("there is no interpreter to check");
     assert!(
         error.to_string().contains("built without Python support"),

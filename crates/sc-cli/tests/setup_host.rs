@@ -562,10 +562,13 @@ fn a_copy_beside_an_installed_binary_defaults_to_static() {
     fs::remove_dir_all(&dir).ok();
 }
 
-/// The Debian 13 + Python artifact leaves `VARIANT` beside its binary, and the
-/// host it is on then gets the library it links and the interpreter pip needs.
+/// The older Debian 13 + Python artifact leaves `VARIANT` beside its binary,
+/// and the host it is on then gets the library it links and the interpreter
+/// pip needs. The `linux` artifact brings its own CPython, so its host gets no
+/// Python package — and its embedded interpreter's HTTPS is checked instead
+/// (R2.3).
 #[test]
-fn a_python_artifact_gets_the_python_packages() {
+fn only_the_older_python_artifact_gets_python_packages() {
     let dir = scratch("python-variant");
     let prefix = dir.join("opt/feldspar");
     write_executable(&prefix.join("bin/feldspar"), "#!/bin/sh\necho feldspar\n");
@@ -592,6 +595,20 @@ fn a_python_artifact_gets_the_python_packages() {
     assert!(
         !plain.contains("python3-venv"),
         "the static artifact needs no Python:\n{plain}"
+    );
+    assert!(!plain.contains("python check"), "{plain}");
+    let linux = plan("linux");
+    assert!(
+        !linux.contains("python3"),
+        "the linux artifact brings its own Python:\n{linux}"
+    );
+    assert!(
+        linux.contains("embedded Python makes a verified HTTPS request")
+            && linux.contains(&format!(
+                "runuser -u feldspar -- {} python check",
+                prefix.join("bin/feldspar").display()
+            )),
+        "the linux artifact's HTTPS check should be planned:\n{linux}"
     );
 
     fs::remove_dir_all(&dir).ok();
@@ -905,4 +922,251 @@ fn the_service_account_owns_its_state_and_nothing_it_runs() {
             "{forbidden} breaks the JIT or Chromium's sandbox and must stay out:\n{service}"
         );
     }
+}
+
+/// A dry run as if on another distribution: `os_release` stands in for
+/// /etc/os-release, the package managers are stubs, npm is too old (so Node
+/// is installed) and no browser is on PATH (so one is). Answers the plan.
+fn plan_on(os_release: &str, extra: &[&str]) -> (Output, String) {
+    let dir = scratch("family");
+    let (bin, _log) = stub_dir(&dir);
+    fs::remove_file(bin.join("chromium")).unwrap();
+    write_executable(&bin.join("npm"), "#!/bin/sh\necho 9.2.0\n");
+    for tool in ["dnf", "zypper", "pacman"] {
+        write_executable(&bin.join(tool), "#!/bin/sh\nexit 0\n");
+    }
+    let tools = dir.join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    for tool in [
+        "sh", "id", "dirname", "basename", "cat", "sed", "grep", "head", "tail", "readlink",
+        "uname", "tr", "cut",
+    ] {
+        if let Ok(found) = which(tool) {
+            std::os::unix::fs::symlink(found, tools.join(tool)).unwrap();
+        }
+    }
+    let osr = dir.join("os-release");
+    fs::write(&osr, os_release).unwrap();
+    let out = Command::new(tools.join("sh"))
+        .arg(script())
+        .args(["--dry-run", "--static", "--domain", "example.com"])
+        // A prefix of its own: /opt/feldspar on the machine running the tests
+        // may hold an artifact whose VARIANT changes the plan.
+        .arg("--prefix")
+        .arg(dir.join("opt/feldspar"))
+        .arg("--config")
+        .arg(dir.join("feldspar.toml"))
+        .arg("--unit")
+        .arg(dir.join("feldspar.service"))
+        .args(extra)
+        .env("PATH", format!("{}:{}", bin.display(), tools.display()))
+        .env("FELDSPAR_OS_RELEASE", &osr)
+        .output()
+        .expect("run setup-host.sh");
+    let plan = stdout_of(&out);
+    fs::remove_dir_all(&dir).ok();
+    (out, plan)
+}
+
+/// D9: each family gets the table's packages under its own names, its own
+/// PostgreSQL first start, Node and a browser from its own repositories, and a
+/// system account made with its own tool. Derivatives come by ID_LIKE.
+#[test]
+fn each_family_gets_its_own_packages_database_setup_and_account() {
+    let fedora = [
+        "dnf install -y ca-certificates curl postgresql-server postgresql",
+        "postgresql-setup --initdb",
+        "systemctl enable --now postgresql",
+        "dnf install -y nodejs npm",
+        "dnf install -y chromium",
+        "useradd --system --user-group --create-home --home-dir /var/lib/feldspar --shell /usr/sbin/nologin feldspar",
+    ];
+    let cases: [(&str, &[&str], &[&str]); 7] = [
+        ("ID=fedora\nVERSION_ID=43\n", &fedora, &["epel-release"]),
+        (
+            "ID=almalinux\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"10.0\"\n",
+            &[
+                "dnf install -y epel-release",
+                "dnf install -y chromium",
+                "postgresql-setup --initdb",
+            ],
+            &[],
+        ),
+        (
+            "ID=rhel\nID_LIKE=fedora\nVERSION_ID=\"10.1\"\n",
+            &[
+                "dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm",
+            ],
+            &[],
+        ),
+        (
+            "ID=opensuse-tumbleweed\nID_LIKE=\"opensuse suse\"\n",
+            &[
+                "zypper --non-interactive install ca-certificates ca-certificates-mozilla curl postgresql-server postgresql",
+                "systemctl enable --now postgresql",
+                "zypper --non-interactive install nodejs-default npm-default",
+                "zypper --non-interactive install chromium",
+                "useradd --system",
+            ],
+            &["initdb", "postgresql-setup"],
+        ),
+        (
+            "ID=opensuse-leap\nID_LIKE=\"suse opensuse\"\nVERSION_ID=\"16.0\"\n",
+            &["zypper --non-interactive install nodejs22 npm22"],
+            &[],
+        ),
+        (
+            "ID=cachyos\nID_LIKE=arch\n",
+            &[
+                "pacman -Syu --needed --noconfirm ca-certificates curl postgresql",
+                "initdb --locale=C.UTF-8 --encoding=UTF8 --auth-local=peer --auth-host=scram-sha-256 -D /var/lib/postgres/data",
+                "systemctl enable --now postgresql",
+                "pacman -Syu --needed --noconfirm nodejs npm",
+                "pacman -Syu --needed --noconfirm chromium",
+            ],
+            &["postgresql-setup"],
+        ),
+        (
+            "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n",
+            &[
+                "apt-get install -y ca-certificates curl postgresql postgresql-client",
+                "deb.nodesource.com",
+                "adduser --system --group --home /var/lib/feldspar feldspar",
+            ],
+            &["useradd", "systemctl enable --now postgresql", "dnf"],
+        ),
+    ];
+    for (os_release, present, absent) in cases {
+        let (out, plan) = plan_on(os_release, &[]);
+        assert!(
+            out.status.success(),
+            "{os_release}\n{plan}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        for expected in present {
+            assert!(
+                plan.contains(expected),
+                "{os_release}: the plan should have `{expected}`:\n{plan}"
+            );
+        }
+        for unexpected in absent {
+            assert!(
+                !plan.contains(unexpected),
+                "{os_release}: the plan should not have `{unexpected}`:\n{plan}"
+            );
+        }
+        assert!(
+            !plan.contains("python3"),
+            "{os_release}: no Python packages:\n{plan}"
+        );
+    }
+
+    // A source build gets the family's toolchain.
+    let (_, plan) = plan_on("ID=fedora\n", &["--from-source"]);
+    assert!(
+        plan.contains("gcc gcc-c++ make pkgconf-pkg-config git clang-devel"),
+        "{plan}"
+    );
+    let (_, plan) = plan_on("ID=arch\n", &["--from-source"]);
+    assert!(plan.contains("base-devel pkgconf git clang"), "{plan}");
+}
+
+/// Alpine runs OpenRC, so it is refused by name and pointed at what works
+/// there; a distribution no family covers is refused naming those that are.
+#[test]
+fn alpine_and_unknown_distributions_are_refused_with_a_reason() {
+    let (out, _) = plan_on("ID=alpine\n", &[]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("OpenRC") && stderr.contains("install.sh"),
+        "{stderr}"
+    );
+
+    let (out, _) = plan_on("ID=gentoo\n", &[]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Fedora, RHEL, openSUSE and Arch") && stderr.contains("'gentoo'"),
+        "{stderr}"
+    );
+}
+
+/// R2.3 / D10: where the embedded interpreter's verified HTTPS request fails
+/// on its own and passes with the distribution's bundle in SSL_CERT_FILE, the
+/// unit sets it; where it passes, the unit does not.
+#[test]
+fn ssl_cert_file_goes_into_the_unit_only_where_https_needs_it() {
+    let bundle = "/etc/ssl/certs/ca-certificates.crt";
+    if !Path::new(bundle).is_file() {
+        eprintln!("skipped: no {bundle} on this machine");
+        return;
+    }
+    let setup = |needs_it: bool| {
+        let dir = scratch("ssl-cert");
+        let (bin, _log) = stub_dir(&dir);
+        let prefix = dir.join("opt/feldspar");
+        let unit = dir.join("feldspar.service");
+        // A binary whose self-check's HTTPS request passes only with
+        // SSL_CERT_FILE set, or always.
+        let check = if needs_it {
+            "[ -n \"${SSL_CERT_FILE:-}\" ] && exit 0; echo 'FAIL https certificate verify failed'; exit 1"
+        } else {
+            "exit 0"
+        };
+        write_executable(
+            &prefix.join("bin/feldspar"),
+            &format!(
+                "#!/bin/sh\nif [ \"${{1:-}} ${{2:-}}\" = 'python check' ]; then {check}; fi\nexit 0\n"
+            ),
+        );
+        fs::write(prefix.join("VARIANT"), "linux\n").unwrap();
+        let out = Command::new("sh")
+            .arg(script())
+            .args([
+                "--static",
+                "--database-url",
+                "postgres://x/y",
+                "--no-browser",
+            ])
+            .arg("--prefix")
+            .arg(&prefix)
+            .arg("--config")
+            .arg(dir.join("feldspar.toml"))
+            .arg("--unit")
+            .arg(&unit)
+            .env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )
+            .output()
+            .expect("run setup-host.sh");
+        let stdout = stdout_of(&out);
+        assert!(
+            out.status.success(),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let service = fs::read_to_string(&unit).unwrap();
+        fs::remove_dir_all(&dir).ok();
+        (stdout, service)
+    };
+
+    let (stdout, service) = setup(true);
+    assert!(
+        service.contains(&format!("Environment=SSL_CERT_FILE={bundle}\n")),
+        "{service}"
+    );
+    assert!(
+        stdout.contains(&format!(
+            "only with SSL_CERT_FILE={bundle}; the unit sets it"
+        )),
+        "{stdout}"
+    );
+    let (stdout, service) = setup(false);
+    assert!(!service.contains("SSL_CERT_FILE"), "{service}");
+    assert!(
+        stdout.contains("verified HTTPS request as feldspar\n    it does"),
+        "{stdout}"
+    );
 }

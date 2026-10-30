@@ -363,11 +363,18 @@ fn boot(py: Python<'_>, env: &PythonEnv) -> PyResult<String> {
 /// Outside the import gate and outside a run: this is the operator asking
 /// about the install, and `ssl`, `ctypes` and the network are exactly what the
 /// gate keeps from a body.
-pub(crate) fn self_check(env: &PythonEnv, url: Option<&str>) -> Result<crate::SelfCheck> {
+pub(crate) fn self_check(
+    env: &PythonEnv,
+    url: Option<&str>,
+    imports: &[String],
+) -> Result<crate::SelfCheck> {
     ensure(env)?;
     let answer: String = Python::attach(|py| -> PyResult<String> {
         let module = embedded(py, SELF_CHECK, c"<saltcorn self-check>", c"__sc_selfcheck")?;
-        module.getattr("run")?.call1((url,))?.extract()
+        module
+            .getattr("run")?
+            .call1((url, imports.to_vec()))?
+            .extract()
     })
     .map_err(|e| Error::msg(format!("the Python self-check did not run: {e}")))?;
     let json: Json = serde_json::from_str(&answer)
@@ -396,6 +403,7 @@ pub(crate) fn self_check(env: &PythonEnv, url: Option<&str>) -> Result<crate::Se
         version: text("version"),
         home: text("home"),
         executable: text("executable"),
+        libc: text("libc"),
         bundled: crate::env::bundled_python_home().is_some(),
         checks,
     })

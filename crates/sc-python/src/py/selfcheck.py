@@ -12,13 +12,37 @@ distribution would fail first. The HTTPS request is the certificate question:
 python-build-standalone's OpenSSL has a compiled-in certificate path, and
 whether the host keeps its bundle there is a per-distribution answer
 (TODO-portable-release D10).
+
+The `libc` answer is which `libc.so.6` this process has mapped: the host's,
+or the bundle's under `glibc/` on a musl host (R2.1). The release smoke test
+reads it on every image, and an operator asking "which libc is this using?"
+gets the file rather than a guess. `imports` are further modules to import —
+the smoke test's check that a wheel pip installed into the environment loads
+in the embedded interpreter (R2.4).
 """
 
+import importlib
 import json
 import sys
 
 
-def run(url):
+def mapped_libc():
+    """The `libc.so.6` (or musl's `ld-musl-*`) in `/proc/self/maps`, or "" off Linux."""
+    try:
+        with open("/proc/self/maps") as maps:
+            for line in maps:
+                # address, perms, offset, device, inode and — for a file — its path.
+                fields = line.split(None, 5)
+                path = fields[5].strip() if len(fields) == 6 else ""
+                name = path.rsplit("/", 1)[-1]
+                if name.startswith("libc.so") or name.startswith("libc-") or name.startswith("ld-musl-"):
+                    return path
+    except OSError:
+        pass
+    return ""
+
+
+def run(url, imports=()):
     checks = []
 
     def check(name, fn):
@@ -60,6 +84,12 @@ def run(url):
     check("import ctypes", _ctypes)
     check("import zoneinfo", _zoneinfo)
 
+    for name in imports:
+        check(
+            "import %s" % name,
+            lambda name=name: getattr(importlib.import_module(name), "__file__", None) or "built in",
+        )
+
     if url:
 
         def _https():
@@ -77,6 +107,7 @@ def run(url):
             "version": "%d.%d.%d" % sys.version_info[:3],
             "home": sys.prefix,
             "executable": sys.executable,
+            "libc": mapped_libc(),
             "checks": checks,
         }
     )

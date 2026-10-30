@@ -80,7 +80,11 @@ RUN set -eu; \
     sha256sum -c "${RELEASE_OBJECT}.sha256"; \
     mkdir -p "${PREFIX}"; \
     tar -xzf "${RELEASE_OBJECT}" -C "${PREFIX}" --strip-components=1 --no-same-owner; \
-    test "$(cat "${PREFIX}/VARIANT")" = debian13-python; \
+    # `linux` is what the artifact under this name says since it bundles its
+    # own CPython (TODO-portable-release R1); `debian13-python` before that.
+    # Unpacked rather than installed, on a Debian 13 base, so the binaries stay
+    # on the image's own glibc.
+    case "$(cat "${PREFIX}/VARIANT")" in linux|debian13-python) ;; *) exit 1 ;; esac; \
     # The host installer and host setup are the systemd install's; nothing in
     # a container runs them.
     rm -f "${PREFIX}/install.sh" "${PREFIX}/setup-host.sh"; \

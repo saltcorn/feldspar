@@ -11,7 +11,7 @@ use sc_python::{PythonEnv, PythonRuntime};
 #[test]
 fn the_self_check_starts_the_interpreter_and_imports_what_a_release_needs() {
     let runtime = PythonRuntime::new().with_env(PythonEnv::default());
-    let found = runtime.self_check(None).expect("the self-check runs");
+    let found = runtime.self_check(None, &[]).expect("the self-check runs");
     assert!(found.version.starts_with("3."), "{found:?}");
     assert!(!found.home.is_empty(), "{found:?}");
     // A `cargo test` binary has no `python/` beside it, so CPython found its
@@ -41,4 +41,47 @@ fn the_self_check_starts_the_interpreter_and_imports_what_a_release_needs() {
         "{:?}",
         runtime.state()
     );
+}
+
+/// Named imports run after the fixed four, from the environment a run would
+/// see: a module that is there passes, one that is not fails that line and
+/// only that line. And the process says which libc it has mapped — on Linux,
+/// a `libc.so.6` (or musl's loader) that exists (R2.1, R2.4).
+#[test]
+fn named_imports_are_checked_and_the_mapped_libc_is_reported() {
+    let runtime = PythonRuntime::new().with_env(PythonEnv::default());
+    let found = runtime
+        .self_check(None, &["json".to_owned(), "no_such_module_here".to_owned()])
+        .expect("the self-check runs");
+    let tail: Vec<(&str, bool)> = found.checks[4..]
+        .iter()
+        .map(|c| (c.name.as_str(), c.ok))
+        .collect();
+    assert_eq!(
+        tail,
+        [("import json", true), ("import no_such_module_here", false)],
+        "{:#?}",
+        found.checks
+    );
+    assert!(
+        found.checks[5].detail.contains("ModuleNotFoundError"),
+        "{:?}",
+        found.checks[5]
+    );
+    assert!(!found.passed());
+    if cfg!(target_os = "linux") {
+        let name = found.libc.rsplit('/').next().unwrap_or_default();
+        assert!(
+            name.starts_with("libc.so")
+                || name.starts_with("libc-")
+                || name.starts_with("ld-musl-"),
+            "{:?}",
+            found.libc
+        );
+        assert!(
+            std::path::Path::new(&found.libc).exists(),
+            "{:?}",
+            found.libc
+        );
+    }
 }
