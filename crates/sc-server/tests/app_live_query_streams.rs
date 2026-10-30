@@ -69,7 +69,8 @@ type Socket =
 /// The query a share link is opened with: the token decides the row and the
 /// mode, the page's flags only which of the app's streams it is asked for.
 const OPEN_NOTE: &str = r#"
-const link = await db.share_links.where({ token: body.token }).first();
+// The token is the check: whoever holds it may not read `share_links` themselves.
+const link = await db.asAdmin().share_links.where({ token: body.token }).first();
 if (!link || link.mode === "expired") return null;
 const stream = body.cursor ? "note_cursor" : body.hidden ? "hidden_doc" : "note_body";
 return live.stream(stream, link.note, { write: link.mode === "edit" });

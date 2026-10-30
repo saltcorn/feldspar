@@ -51,6 +51,13 @@ pub const COL_FRAMEWORK: &str = "framework";
 pub const COL_EXTRA_FRAMEWORKS: &str = "extra_frameworks";
 /// The declared table subset (JSON array of table names).
 pub const COL_TABLES: &str = "tables";
+/// The connected tables whose generic row API the app serves (JSON array of
+/// table names; [`Application::api_tables`](crate::Application::api_tables)).
+///
+/// Nullable for [`COL_TRIGGERS`]' reason: it arrived after the table did, so
+/// [`bootstrap`] adds it to tables that already have rows. `NULL` reads back as
+/// "serves no table's row API".
+pub const COL_API_TABLES: &str = "api_tables";
 /// The declared file-store subset (JSON array of store names).
 pub const COL_FILE_STORES: &str = "file_stores";
 /// The exposed trigger subset (JSON array of trigger names).
@@ -123,6 +130,8 @@ fn applications_fields() -> Vec<DataField> {
         DataField::plain(COL_FRAMEWORK, json()).required(),
         DataField::plain(COL_EXTRA_FRAMEWORKS, json()).required(),
         DataField::plain(COL_TABLES, json()).required(),
+        // Not `required`: see [`COL_API_TABLES`].
+        DataField::plain(COL_API_TABLES, json()),
         DataField::plain(COL_FILE_STORES, json()).required(),
         // Not `required`: see [`COL_TRIGGERS`] — it is reconciled onto existing
         // tables, and those rows have no value for it.

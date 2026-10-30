@@ -60,7 +60,8 @@ pub fn admin_endpoints() -> EndpointSet {
             .output(TypeSchema::struct_of([
                 StructField::new("any_user_exists", TypeSchema::bool()),
                 // Whether creating the first user needs the setup link's token
-                // (`first_user_token`); only ever true while no user exists.
+                // (`first_user_token` or `FELDSPAR_FIRST_USER_TOKEN`); only ever true
+                // while no user exists.
                 StructField::new("first_user_token_required", TypeSchema::bool()),
                 StructField::new("current_user", TypeSchema::optional(user_summary_schema())),
                 // Which languages this installation serves (§16.1). Here rather
@@ -1579,7 +1580,11 @@ pub fn admin_endpoints() -> EndpointSet {
     // writes a tombstone.
     let checklist_id = || api().lit("checklists").param("id", ValueType::Uuid);
     let step_id = || api().lit("checklist-steps").param("id", ValueType::Uuid);
-    let proposal_id = || api().lit("checklist-proposals").param("id", ValueType::Uuid);
+    let proposal_id = || {
+        api()
+            .lit("checklist-proposals")
+            .param("id", ValueType::Uuid)
+    };
     // `application` is an application's id, or `none` for the checklists with
     // no application; absent lists them all.
     set.register(
@@ -1615,24 +1620,34 @@ pub fn admin_endpoints() -> EndpointSet {
     );
     // A new step at the end, or before the step `before` names.
     set.register(
-        Endpoint::new("addChecklistStep", Method::Post, checklist_id().lit("steps"))
-            .input(TypeSchema::struct_of(
-                checklist_step_input_fields().into_iter().chain([StructField::new(
+        Endpoint::new(
+            "addChecklistStep",
+            Method::Post,
+            checklist_id().lit("steps"),
+        )
+        .input(TypeSchema::struct_of(
+            checklist_step_input_fields()
+                .into_iter()
+                .chain([StructField::new(
                     "before",
                     TypeSchema::optional(TypeSchema::uuid()),
                 )]),
-            ))
-            .output(checklist_step_schema())
-            .auth(AuthRequirement::admin()),
+        ))
+        .output(checklist_step_schema())
+        .auth(AuthRequirement::admin()),
     );
     set.register(
-        Endpoint::new("reorderChecklistSteps", Method::Put, checklist_id().lit("order"))
-            .input(TypeSchema::struct_of([StructField::new(
-                "order",
-                TypeSchema::array(TypeSchema::uuid()),
-            )]))
-            .output(checklist_detail_schema())
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            "reorderChecklistSteps",
+            Method::Put,
+            checklist_id().lit("order"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "order",
+            TypeSchema::array(TypeSchema::uuid()),
+        )]))
+        .output(checklist_detail_schema())
+        .auth(AuthRequirement::admin()),
     );
     set.register(
         Endpoint::new("runChecklist", Method::Post, checklist_id().lit("run"))
@@ -1780,14 +1795,18 @@ pub fn admin_endpoints() -> EndpointSet {
     // Every user with whether it is a check user, for the `run_as` picker: a
     // person may run a checklist as anybody, an agent only as a check user.
     set.register(
-        Endpoint::new("listChecklistUsers", Method::Get, api().lit("checklist-users"))
-            .output(TypeSchema::array(TypeSchema::struct_of([
-                StructField::new("id", TypeSchema::uuid()),
-                StructField::new("email", TypeSchema::text()),
-                StructField::new("role", TypeSchema::int()),
-                StructField::new("check_user", TypeSchema::bool()),
-            ])))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            "listChecklistUsers",
+            Method::Get,
+            api().lit("checklist-users"),
+        )
+        .output(TypeSchema::array(TypeSchema::struct_of([
+            StructField::new("id", TypeSchema::uuid()),
+            StructField::new("email", TypeSchema::text()),
+            StructField::new("role", TypeSchema::int()),
+            StructField::new("check_user", TypeSchema::bool()),
+        ])))
+        .auth(AuthRequirement::admin()),
     );
 
     // --- modules (Saltcorn v1 JavaScript plugins) ---------------------------
@@ -7167,6 +7186,9 @@ fn application_fields() -> Vec<StructField> {
             TypeSchema::array(framework_ref_schema()),
         ),
         StructField::new("tables", TypeSchema::array(TypeSchema::text())),
+        // Of those, the ones whose generic row API the app serves — none unless
+        // a table is opted in by name.
+        StructField::new("api_tables", TypeSchema::array(TypeSchema::text())),
         StructField::new("file_stores", TypeSchema::array(TypeSchema::text())),
         // The triggers this app exposes as endpoints (§10.2), by name — the same
         // opt-in subset shape the tables and stores have.

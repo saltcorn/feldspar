@@ -94,6 +94,10 @@ pub struct TriggerRunHost<'a> {
     max_runs: u32,
     /// How many it has run.
     runs: AtomicU32,
+    /// What a run that names no authority carries: the admin's for a trigger,
+    /// the caller's for a body answering a request
+    /// ([`defaulting_to`](TriggerRunHost::defaulting_to)).
+    default_authority: Authority,
 }
 
 impl<'a> TriggerRunHost<'a> {
@@ -108,7 +112,18 @@ impl<'a> TriggerRunHost<'a> {
             tx: None,
             max_runs: DEFAULT_MAX_TRIGGER_RUNS,
             runs: AtomicU32::new(0),
+            default_authority: Authority::Admin,
         }
+    }
+
+    /// Run a trigger that names no authority under `authority` rather than the
+    /// admin's — [`TableHost::defaulting_to`](super::TableHost::defaulting_to)'s
+    /// rule, so a request-answering body's `trigger("x").run()` is checked
+    /// against the trigger's `min_role` unless it says `asAdmin()`.
+    #[must_use]
+    pub fn defaulting_to(mut self, authority: Authority) -> TriggerRunHost<'a> {
+        self.default_authority = authority.resolve(&Authority::Admin);
+        self
     }
 
     /// Attach the event's caller: the role it was served at and the user's own
@@ -170,7 +185,7 @@ impl<'a> TriggerRunHost<'a> {
             // The event's own caller, which is what both of these run as: the
             // admin's authority is the *trigger's*, and the run still carries
             // who caused it.
-            Authority::Admin | Authority::User => (
+            Authority::Default | Authority::Admin | Authority::User => (
                 CallerContext::new(self.role, self.user.clone()).in_current_origin(),
                 None,
             ),
@@ -253,8 +268,9 @@ fn empty_payload() -> Json {
 #[async_trait]
 impl TriggerHost for TriggerRunHost<'_> {
     async fn run(&self, request: Json) -> Result<Json> {
-        let request: Request = serde_json::from_value(request)
+        let mut request: Request = serde_json::from_value(request)
             .map_err(|e| Error::invalid(format!("this trigger run is not one: {e}")))?;
+        request.authority = request.authority.resolve(&self.default_authority);
         self.run_one(request).await
     }
 

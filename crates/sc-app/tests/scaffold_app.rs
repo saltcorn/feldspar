@@ -392,7 +392,9 @@ async fn the_generated_runtime_is_rewritten_on_build_and_nothing_else_is() -> sc
         .await
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     cat.reload().await?;
+    // Connected and serving its row API, which is what gives it hooks.
     app.tables.push(TableId("notes".to_owned()));
+    app.api_tables.push(TableId("notes".to_owned()));
 
     let source = app_source_from_config(&app.framework)?;
     let written = emit_app_runtime(&cat, &app, &source, None).await?;

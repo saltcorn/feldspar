@@ -8,6 +8,11 @@
 //! project and its builder agent. Once the tables exist, `update_application`
 //! connects them ([`super::update`]).
 //!
+//! An application created here serves **no table's generic row API**, and
+//! there is no argument to ask for one: its data is reached through custom
+//! queries. A row API is a later, separate `update_application` call
+//! (`api_tables`), made only when the person asks for one.
+//!
 //! ## The same handlers as the admin's buttons
 //!
 //! Creating a file store and an application are **not** reimplemented here. A
@@ -27,8 +32,9 @@
 //! external agent carries on building there with its own file tools — and the
 //! name of the **builder agent** the framework created, which the chat copilot
 //! hands the code to as a sub-agent. The tables come first either way: the
-//! generated client is typed against the application's table subset, so code
-//! written before the tables exist is code written against nothing.
+//! project's `schema.sql` and the queries written against it describe the
+//! application's table subset, so code written before the tables exist is code
+//! written against nothing.
 
 use std::sync::Arc;
 
@@ -317,9 +323,14 @@ impl AdminTool for CreateApp {
              list\"), use `react` with a new local store; do not ask.\n\n\
              Answers with the `subdomain`, the absolute `project_dir` the code is \
              in, and the builder agent's name. Then: create the tables with \
-             `edit_schema`, connect them with `{TOOL_UPDATE_APP}`'s `tables` (the \
-             generated client is typed against the tables connected), and only then write \
-             the pages."
+             `edit_schema`, connect them with `{TOOL_UPDATE_APP}`'s `tables`, \
+             write a custom query (`save_api_query`) for each read and write the \
+             pages make, and only then write the pages.\n\n\
+             The application serves **no generic row API** for its tables — its \
+             data is reached only through the custom queries you write, which run \
+             as the person calling them. Do not turn one on \
+             (`{TOOL_UPDATE_APP}`'s `api_tables`) unless the person explicitly \
+             asks for generic row access to a table."
         )
     }
 
@@ -371,9 +382,10 @@ impl AdminTool for CreateApp {
                     "type": "array",
                     "items": { "type": "string" },
                     "description":
-                        "Existing tables the application's API serves. Usually \
-                         omitted: create the tables afterwards and connect them \
-                         with `update_application`.",
+                        "Existing tables to connect, for its custom queries. \
+                         Connecting serves no row API. Usually omitted: create \
+                         the tables afterwards and connect them with \
+                         `update_application`.",
                 },
             },
             "required": [ARG_NAME],
@@ -418,6 +430,8 @@ impl AdminTool for CreateApp {
             "description": optional_string(&args, ARG_DESCRIPTION)?.unwrap_or_default(),
             "framework": { "name": framework, "config": config },
             "tables": tables,
+            // Always none: a row API is opted into afterwards, by name.
+            "api_tables": [],
             "file_stores": [],
             "apis": [{ "provider": DEFAULT_API_PROVIDER, "mount": DEFAULT_API_MOUNT }],
         });
@@ -459,10 +473,14 @@ impl AdminTool for CreateApp {
         }
         out["next"] = json!(format!(
             "1. Create the tables the app needs with `edit_schema`, in one batch. \
-             2. Connect them with `{TOOL_UPDATE_APP}` so the API serves them and \
-             the generated client in src/feldspar/ is typed for them. \
-             3. Write the pages in the project directory{}. \
-             4. Build it so it is served at the subdomain.",
+             2. Connect them with `{TOOL_UPDATE_APP}`'s `tables`, so its queries may \
+             name them. \
+             3. Write a custom query (`save_api_query`) for each read and write the \
+             pages need; the generated client in src/feldspar/ gets a typed method \
+             for each. The app has no generic row API, and should not get one unless \
+             the person asks. \
+             4. Write the pages in the project directory{}. \
+             5. Build it so it is served at the subdomain.",
             match created.get("agent").and_then(Json::as_str) {
                 Some(agent) => format!(" (or hand that to the builder agent `{agent}`)"),
                 None => String::new(),

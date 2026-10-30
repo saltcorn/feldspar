@@ -333,6 +333,8 @@ fn application_json(app: &Application) -> Result<Json> {
         "description": app.description,
         "framework": app.framework.name,
         "tables": app.tables.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
+        // The connected tables that also serve a generic row API — usually none.
+        "api_tables": update::api_tables_json(app),
         "triggers": app.triggers.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
         "streams": app.streams.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
         "file_stores": app.file_stores.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
@@ -464,8 +466,16 @@ fn save_description(grants: &Grants) -> String {
            pasted into the text, so never build a filter by concatenating one in. \
            An optional parameter binds SQL NULL when it is omitted, which makes \
            `WHERE (:q IS NULL OR name = :q)` the idiom for an optional filter.\n\
-         - **The path may not be one the app's own tables answer**, and the name \
-           may not be one of their client methods.\n\
+         - **The path may not be one the app's own table routes answer**, and the \
+           name may not be one of their client methods (only tables in its \
+           `api_tables` have either).\n\
+         - **Whose rows it sees.** SQL runs as written and only row-level security \
+           filters it: an ownership formula does not. So for data each user owns \
+           (their orders, their notes), write a `javascript` query over `db.<table>`: \
+           it runs **as the caller**, so the table's role rules and ownership \
+           formula apply exactly as they would on a row API. `db.asAdmin()` reads and \
+           writes every row regardless — use it only where the query must, and say \
+           why in its description.\n\
          - **The statement is prepared against the database.** A query that will \
            not prepare comes back with the database's own message and nothing is \
            saved; one that will is stored with the columns the database says it \
@@ -554,9 +564,11 @@ fn save_parameters() -> Json {
                      other throw is a 500 with no stack for non-admin callers. \
                      Its `db`, `fetch`, `fs` and `crypto` are this server's own \
                      API: call `describe_code_api` before writing a `javascript` \
-                     body rather than guessing the methods. Prefer a table with an \
-                     ownership formula, or SQL, to a code body where either can \
-                     express it.",
+                     body rather than guessing the methods. A code body's `db`, \
+                     `fs` and `trigger(...)` act **as the caller** — ownership \
+                     formulas and role floors apply — unless it says `asAdmin()`. \
+                     Use one over a table whose rows belong to users; plain SQL \
+                     where every row may be seen by whoever may call it.",
                 "enum": ["sql", "javascript", "python"],
             },
             ARG_BODY_TYPE: {

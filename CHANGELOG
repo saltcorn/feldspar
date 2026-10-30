@@ -2,6 +2,150 @@
 
 Changes in reverse chronological order.
 
+## Migrations: database changes the bootstrap cannot make run once, on the first start
+
+A new crate, `sc-migrate`, holds an ordered registry of migrations (`MIGRATIONS`)
+and the runner that applies them (TECHNICAL_DESIGN §5.3, TODO M1).
+
+- **A migration** has a date-prefixed id (`2026-11-02-agent-traits`) and a body that is either
+  SQL, one script per backend (`migrations/<id>/{postgres,sqlite}.sql`, `None` where it has
+  nothing to do), or a Rust function over a `MigrationCtx` (the transaction, the backend and
+  its placeholder, `table_exists`, `column_exists`). Postgres SQL is no longer meant to be
+  translated to SQLite. `check_registry` refuses malformed, repeated or out-of-order ids.
+- **What ran is recorded** in `_fd_migrations` (id, applied_at, version, duration_ms). A start
+  reads it once, so nothing re-runs and a migration need not be idempotent.
+- **`sc_cli::connect_catalog` migrates before `Catalog::init`**, so every command that opens the
+  database does, each migration sees the previous release's schema, and the catalog and the
+  bootstraps see the result. A database without `_fd_config` (new to Feldspar) is recorded as
+  having every migration and runs none. Each pending migration runs in its own transaction
+  together with its record, under a lock (a Postgres advisory lock; SQLite's `BEGIN
+  IMMEDIATE`), so two processes starting together apply it once. A failure rolls it back and
+  stops the start, naming it; a recorded id this binary does not know (a newer release
+  migrated the database) refuses to start. Applied migrations are logged to stderr with their
+  durations.
+- **`feldspar migrate [status]`**: run the pending migrations and say what happened, or list
+  applied, pending and unknown ones without changing anything.
+- **Clear all keeps `_fd_migrations`**: the schema it describes stays.
+- `bootstrap_table`'s refusal to add a `NOT NULL` column to a table with rows no longer says
+  there is no migration framework. `TABLES_RENAME.sql` is frozen: nothing is added to it.
+- Tests: `crates/sc-migrate/tests/migrate.rs` runs each scenario on SQLite and Postgres (a new
+  database recorded, not migrated; an older one running each migration once, including a
+  Postgres-only one and a later one; a failure leaving neither change nor record; the
+  newer-release refusal; two concurrent runners; `run_one`), plus the registry checks.
+  `clear_all_api` checks the record survives a clear.
+
+## Apps serve no generic row API by default; custom queries run as their caller
+
+**Connecting a table is no longer publishing it.** An application's `tables` are what its custom
+queries, views, streams and `schema.sql` may name. The generic row API — REST's
+list/read/create/update/delete routes and GraphQL's type for a table, and the `useX` hooks in the
+generated client — is now served only for the tables in a new opt-in subset,
+`Application::api_tables`. It must be a subset of `tables`, is checked on save, and is **empty for
+every new application**:
+
+- `create_application` (the copilot's and MCP's) always creates an app with no row API and has no
+  argument to ask for one. Its description and its `next` steps say to write a custom query
+  (`save_api_query`) for each read and write the pages make, and to leave row APIs off unless the
+  person explicitly asks for generic row access.
+- `update_application` has a new `api_tables` section (`add` / `remove` / `set`). Removing needs
+  `allow_edit`. Adding also needs `allow_access_changes`, because it widens what the app exposes.
+  Disconnecting a table through `tables` also stops serving its row API. `describe_applications`
+  reports `api_tables`.
+- The admin form has a **Tables with a row API** box under **Tables**, offering only the
+  connected tables and empty by default. The admin API's application record has `api_tables`
+  (all four generated clients regenerated). A body without it means none.
+- `feldspar app api-tables (add|remove|list) --app SUBDOMAIN` is the CLI's equivalent
+  (`sc_app::change_app_api_tables`).
+- `Application::with_table` still connects a table *and* serves its row API (what most tests
+  want). `with_connected_table` connects only. `sc_app::app_api_tables` is what REST and GraphQL
+  project over. A custom query's path and name collide only with tables that serve a row API.
+- The admin copilot's build playbook now writes the queries between connecting the tables and
+  delegating the code. The builder agent is told its data comes through custom queries, and to
+  report a missing *query* rather than reach for a table.
+- `_fd_applications` has a nullable `api_tables` column, added at startup (`NULL` reads as none).
+  The first migration in `sc-migrate`, `2026-10-30-app-api-tables` (a Rust body, both backends),
+  adds it to an existing database and fills it with `tables`, so running systems keep the row APIs
+  they had; a new database is recorded without it running, so its apps start with none. Tested on
+  SQLite and Postgres with `run_one` in `crates/sc-migrate/tests/migrate.rs`.
+
+**JavaScript and Python custom queries act as their caller by default.** A handle the body did
+not narrow or widen now sends `authority: "default"` (`sc_api::code_host::Authority::Default`, also
+what a plan with no `authority` means), and each host resolves it against the run's own default
+(`TableHost`/`FileStoreHost`/`TriggerRunHost::defaulting_to`). A custom query is run through the
+new `TriggerDispatcher::run_query_code`, which sets `ActionContext::as_caller`. Its `db`, `fs`,
+`models` and `trigger(...)` then act as the caller: the table's role floors and ownership formula
+decide every row exactly as on the row API, and a file opened by default is checked against the
+caller when served. `.asAdmin()` is the explicit way to read or write as the server. Triggers,
+agent tools, workflow steps, modules and server-rendered pages keep the admin default (a table's
+read floor defaults to admin-only, so a public site's page would otherwise see nothing). `db.sql()`
+follows the handle, so under the caller only row-level security restricts it, as before. The
+`save_api_query` description, the `describe_code_api` reference and the design document (§10.1,
+§13.2) say which to use: a `javascript` query over `db.<table>` for data users own, plain SQL for
+data anybody allowed to call it may see.
+
+Not compatible with earlier behaviour: a JavaScript or Python query that relied on reading every
+row by default now sees only what its caller may. Add `.asAdmin()` where that was intended.
+
+## A `string` field's `options` can be written without JSON
+
+The `options` attribute (the allowed values) of the `string` rich type now takes three forms:
+
+- a JSON array, as before: `["Red", "Green", "Blue"]`;
+- plain comma-separated text: `Red, Green, Blue`. Each value is trimmed but may have spaces
+  inside (`Dark red, Light blue`), and empty values are dropped;
+- quoted comma-separated text, which is the JSON array without its brackets:
+  `"Red", "Green", "Blue"`. Use this form when a value contains a comma.
+
+`sc_types::parse_string_options` reads all three. Text that starts with `[` or `"` is parsed as
+JSON, so a typo there is an error instead of a list of fragments. `RichType` has a new
+`normalize_attrs` hook (default: do nothing). `save_field_meta_row` calls it before writing, so the
+text forms are stored as the array and every reader of `options` sees one shape. Empty text removes
+the attribute. Text that cannot be read refuses the save, and the error names the field.
+`StringType::validate` also accepts the text forms directly. The admin form already sends text that
+is not valid JSON as a string, and the field now has a sublabel showing the comma-separated form.
+
+## One `edit_table_rows` agent trait replaces `insert_row`, `update_rows` and `delete_rows`
+
+The three write traits are merged into one, `edit_table_rows` (`sc_core_traits::EditTableRows`).
+Its form names the table once and has three checkboxes: **May insert rows** (`allow_insert`),
+**May update rows** (`allow_update`) and **May delete rows** (`allow_delete`). All three are off
+by default. The field allow-list (`fields`, which bounds what an insert or update may set) and the
+row bound (`max_rows`, for updates and deletes) are shared.
+
+- Each ticked box adds one tool. The names have not changed: `insert_into_<table>`,
+  `update_<table>`, `delete_from_<table>`. A tool whose box is off is not offered. If the model
+  calls it by name anyway, the call is refused, and the message names the checkbox.
+- `validate_config` refuses a form with no box ticked, and a checkbox value that is not a boolean.
+  The update check ("no field would be changeable") applies only when updates are allowed.
+- What each write does is unchanged. The code moved to `src/edit_table_rows/{insert,update,delete}.rs`.
+  `DEFAULT_MAX_WRITE_ROWS` now lives in `edit_table_rows`. `tool_names::edit_table_rows(table)`
+  lists all three tool names. `tool_names::insert_row` / `update_rows` / `delete_rows` still name
+  the single tools.
+- The Saltcorn 1 importer maps a table skill's "insert" to `edit_table_rows` with `allow_insert`.
+- `TABLES_RENAME.sql` rewrites stored agents: each old entry becomes an `edit_table_rows` entry
+  over the same table, with its one box ticked (Postgres, idempotent).
+- The `insert_row` / `update_rows` / `delete_rows` *actions* (triggers) are unchanged.
+- Tests: `write_rows.rs` now runs against the one trait. A new test,
+  `each_checkbox_grants_its_own_tool_and_no_other`, covers which tools each checkbox adds, the
+  refusal of a blank form and of a non-boolean, and the refusal of an ungranted tool called by
+  name.
+
+## The first-user token can come from the environment
+
+`FELDSPAR_FIRST_USER_TOKEN` sets a first-user token too (`sc_config::FIRST_USER_TOKEN_ENV`). It is
+the better place for one: it is not in the database, so it survives Clear all and is never backed
+up. When the variable or the `first_user_token` setting is set, creating the first user needs a
+token that matches one of them. When both are set and differ, either is accepted.
+
+- `sc_config::first_user_token` is replaced by `first_user_tokens`, which returns every accepted
+  token (blank ones and duplicates left out). `first_user_tokens_with` takes the environment's
+  value as an argument, so tests do not have to set the process environment.
+- `sc_auth::first_user_token_matches` takes a list of tokens. It compares the supplied token with
+  every one of them in constant time, and does not stop at the first match.
+- `/api/auth/status` reports `first_user_token_required` when either source sets a token.
+- Tests: `first_user_tokens_come_from_the_environment_and_the_table` (sc-config) and
+  `either_of_two_tokens_matches` (sc-auth).
+
 ## Saltcorn 1 import: every built-in action is translated or refused with a reason
 
 Before this change, a v1 backup's triggers kept their action names and settings unchanged.

@@ -1253,9 +1253,9 @@ impl Catalog {
     /// able to start against. When there are rows, this stops with a sentence
     /// naming the table and the column rather than letting the database refuse
     /// the `ALTER`: the raw error says only that a null value violates a
-    /// constraint, and the admin needs telling that the answer is to give the
-    /// stored rows a value by hand (or drop the table) because this prototype has
-    /// no migration framework to do it for them.
+    /// constraint. Giving stored rows a value is a migration's job (`sc-migrate`,
+    /// technical design §5.3), so reaching this means a release added a required
+    /// column without one.
     pub async fn bootstrap_table(&self, name: &str, fields: &[DataField]) -> Result<Table> {
         let Some(existing) = self.get(name)? else {
             return self.create_table(name, fields).await;
@@ -1278,8 +1278,9 @@ impl Catalog {
                     return Err(Error::invalid(format!(
                         "`{name}` is missing the column `{}`, which is declared NOT NULL, and the \
                          table already has rows: the rows stored have no value for it, so adding \
-                         it would be refused. There is no migration framework here — add the \
-                         column and backfill it by hand, or drop `{name}` and let it be recreated",
+                         it would be refused. This release should have brought a migration that \
+                         fills it in; add the column and backfill it by hand, or drop `{name}` \
+                         and let it be recreated",
                         field.base.name
                     )));
                 }

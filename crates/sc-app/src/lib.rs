@@ -83,12 +83,13 @@ mod uploads;
 
 pub use access::{Admission, admit, cap_role};
 pub use api::{
-    ApiProviderInfo, AppGraphql, api_provider_config_spec, app_client, app_client_with,
-    app_endpoints, app_endpoints_with, app_graphql, app_providers, app_providers_with,
-    app_schema_sql, app_tables, app_triggers, registered_api_provider_info, select_api,
-    serves_custom_queries, validate_api_config, validate_api_mounts, validate_static_dirs,
+    ApiProviderInfo, AppGraphql, api_provider_config_spec, app_api_tables, app_client,
+    app_client_with, app_endpoints, app_endpoints_with, app_graphql, app_providers,
+    app_providers_with, app_schema_sql, app_tables, app_triggers, registered_api_provider_info,
+    select_api, serves_custom_queries, validate_api_config, validate_api_mounts,
+    validate_static_dirs,
 };
-pub use app_tables::{TableChange, change_app_tables};
+pub use app_tables::{TableChange, change_app_api_tables, change_app_tables, validate_api_tables};
 pub use application::{
     ApiConfig, AppFileUrls, AppId, Application, CSP_SOURCES_ATTRIBUTE, CspPolicy, FRAME_ANCESTORS,
     FrameworkRef, GUEST_SESSION_DAYS_ATTRIBUTE, GUEST_SESSIONS_ATTRIBUTE, StaticDir, StreamRef,
@@ -100,13 +101,13 @@ pub use applications::{
     COL_STREAMS, COL_SUBDOMAIN, COL_TABLES, COL_TRIGGERS, COL_UPLOADS, bootstrap,
 };
 pub use build::{
-    AppSource, BuildReport, TargetInfo, TargetReadiness, TargetReport, app_output_dir,
-    app_source_from_config, app_source_in, app_store_root, app_target_readiness, app_target_spec,
-    build_app, build_application, build_application_if_changed, build_application_quick,
-    build_application_target, build_code_framework, emit_app_client, emit_client,
-    framework_build_targets, load_app_bundle, prepare_remote_target, remove_app_dependencies,
-    remove_dependencies, require_target_ready, requirements_readiness, run_build, run_target,
-    target_log_path, TypecheckReport, typecheck_application,
+    AppSource, BuildReport, TargetInfo, TargetReadiness, TargetReport, TypecheckReport,
+    app_output_dir, app_source_from_config, app_source_in, app_store_root, app_target_readiness,
+    app_target_spec, build_app, build_application, build_application_if_changed,
+    build_application_quick, build_application_target, build_code_framework, emit_app_client,
+    emit_client, framework_build_targets, load_app_bundle, prepare_remote_target,
+    remove_app_dependencies, remove_dependencies, require_target_ready, requirements_readiness,
+    run_build, run_target, target_log_path, typecheck_application,
 };
 pub use build_hosts::{
     AgentReport, AnsweredTarget, BUILD_AGENT_PROTOCOL, BUILD_HOST_TOKEN_PREFIX, BUILD_HOSTS_TABLE,

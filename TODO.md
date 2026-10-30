@@ -751,6 +751,8 @@ workflow) found what the first importer left behind. Fixture:
 - [x] **S2.1** A first-user token (`first_user_token`, set with `set-cfg` before the first
   `serve`) that creating the first user requires; the admin UI takes it from
   `?first_user_token=`, and Clear all keeps it.
+- [x] **S2.2** The first-user token can also be set with `FELDSPAR_FIRST_USER_TOKEN`; when both it
+  and the stored setting are set, either is accepted.
 
 ## D1 — Installing from one line
 
@@ -766,6 +768,28 @@ workflow) found what the first importer left behind. Fixture:
   as `setup-host.sh` does, so that it can replace that script.
 - [ ] **D1.4** An end-to-end run of `feldspar setup --server` on Alpine with OpenRC. Debian and
   Ubuntu have been run under systemd, and Alpine so far only through its plan.
+
+## M1 — Migrations
+
+The design is TECHNICAL_DESIGN §5.3. The registry starts empty: nothing from
+`TABLES_RENAME.sql` becomes a migration.
+
+- [x] **M1.1** The `sc-migrate` crate (depends on `sc-db` only): `Migration`, `Body::{Sql, Rust}`,
+  `MigrationCtx` (transaction, backend, `table_exists`, `column_exists`), the empty
+  `MIGRATIONS` registry with a check that ids are well-formed, unique and sorted.
+- [x] **M1.2** The runner, `sc_migrate::run(&driver)`: `_fd_migrations`; a new database
+  stamped with every id; a pre-framework database (has `_fd_*` tables) gets an empty record;
+  each pending migration in its own locked transaction with its record; refusal on an unknown
+  id; failure names the migration. `run_one(id)` for tests. Tests on Postgres and SQLite, using
+  test-only registries: stamping, running, a second start running nothing, rollback on failure,
+  the unknown-id refusal, two concurrent runners.
+- [x] **M1.3** Call it from `sc_cli::connect_catalog` before `Catalog::init`; log each applied
+  migration and its duration.
+- [x] **M1.4** `feldspar migrate status` and `feldspar migrate`.
+- [x] **M1.5** Retire the prototype wording: `bootstrap_table`'s "There is no migration
+  framework here" message; freeze `TABLES_RENAME.sql` with a header saying so; ask the human
+  to update CLAUDE.md's "Status" paragraph (new database changes the bootstrap cannot make
+  are migrations in `sc-migrate`, each with a test).
 
 ---
 

@@ -84,7 +84,8 @@ feldspar/
 │  │                              #    PageRank, rendering to a token budget. No store, no deps
 │  │                              #    in the tree; its C grammars behind the `grammars` feature
 │  ├─ sc-bus/                     # 1. message bus trait + drivers (pg NOTIFY, in-proc, redis…)
-│  ├─ sc-db/                      # 2. DatabaseDriver trait, connection, migrations, tx
+│  ├─ sc-db/                      # 2. DatabaseDriver trait, connection, tx
+│  ├─ sc-migrate/                 # 2. migrations of the primary database: registry, runner (§5.3)
 │  │   ├─ sc-db-postgres/         #    Postgres driver (MVP)
 │  │   └─ sc-db-sqlite/           #    SQLite driver (primary database, or a file in a store)
 │  ├─ sc-types/                   # 3. type system: RichType, BasicType, attributes, validation
@@ -597,9 +598,8 @@ Design rules from GOALS:
   identity key would look like a key somebody has to type). The third is what makes the
   first two honest — the admin UI tells the admin what a key *does*, not what creating it
   was supposed to do, which differ for every table Saltcorn picks up as it finds it.
-- **Migrations are arrays of Postgres SQL values** translated per-dialect by `dialect()`.
-  Per GOALS, we **do not** run schema-changing migrations during early development — we
-  evolve the initial setup instead until the metadata schema is stable.
+- **Migrations are not translated between dialects.** A migration carries its own SQL per
+  backend, or is Rust (§5.3); `dialect()` renders `sc-query` statements and nothing else.
 
 ### 5.0 Secondary databases (Connections)
 
@@ -773,6 +773,115 @@ and `rls_available` is false), no `listen_notify` (§16's bus does not use the d
 `unlogged_tables`. Row constraints, which are generated as PL/pgSQL triggers, and full-text
 indexes, which are `to_tsvector` expressions, are Postgres-only for now: they fail at the
 database with the database's own message rather than being silently skipped.
+
+### 5.3 Migrations (`sc-migrate`)
+
+A release that needs the primary database in a different shape brings it there itself, on its
+first start. Two mechanisms share that work, and the line between them is what each can do
+without being told what the database held before:
+
+- **The bootstrap** (`Catalog::bootstrap_table` and the `bootstrap_*` functions every crate
+  has) creates a table that is missing and adds a column that is missing — nullable, or
+  `NOT NULL` on an empty table. It reads the introspection the catalog does anyway, so it costs
+  nothing on a boot where nothing is missing, and it is what a fresh database is built by.
+- **A migration** does everything else: renames, a type or nullability change, rewriting stored
+  JSON, backfilling a column from another, deleting rows a release no longer reads, replacing a
+  trigger or function. It runs **once** per database and is recorded, so a boot never re-runs
+  it and a migration need not be idempotent.
+
+Migrations start empty: the framework's first release has none. What `TABLES_RENAME.sql` holds
+is frozen, for bringing a database from before the framework up to date by hand; nothing is
+added to it again.
+
+**A migration is a Rust value in one ordered registry**, `sc_migrate::MIGRATIONS`:
+
+```rust
+pub struct Migration {
+    /// Date-prefixed, lowercase, `-`-separated: `2026-11-02-agent-traits`. Sorting the ids is
+    /// the order they run in; two branches each adding one do not collide.
+    pub id: &'static str,
+    /// One sentence, for the log and `feldspar migrate status`.
+    pub description: &'static str,
+    pub body: Body,
+}
+
+pub enum Body {
+    /// One script per backend, `include_str!`ed from `migrations/<id>/postgres.sql` and
+    /// `migrations/<id>/sqlite.sql`. `None`: the migration has nothing to do on that backend
+    /// (and is still recorded there).
+    Sql { postgres: Option<&'static str>, sqlite: Option<&'static str> },
+    /// For what SQL says badly — reshaping stored JSON, a step that depends on what is there.
+    Rust(fn(&mut MigrationCtx<'_>) -> BoxFuture<'_, Result<()>>),
+}
+```
+
+- **SQL is the default**: DDL and set-based updates, reviewed as they will run. There is no
+  Postgres-to-SQLite translation; the two backends differ too much (no `DO` blocks, no
+  `ADD COLUMN IF NOT EXISTS`, a table rebuild for any column change, different JSON functions)
+  for one to be derived from the other.
+- **Rust is for JSON and for conditions**: read the rows, change each as a
+  `serde_json::Value`, write it back. One implementation serves both backends.
+- **A migration is frozen.** It is written against the schema of the release before it, so it
+  must not use anything that describes the current one: no `Catalog`, `Table`, field metadata,
+  or a crate's row structs, which a later release will change under it. `MigrationCtx` gives
+  it the transaction (`batch`, `query` and `execute` with binds), the backend and its
+  placeholder spelling, and `table_exists` / `column_exists` — nothing more.
+- They live in one crate, `sc-migrate`, which depends on `sc-db` only, so that the order is one
+  list read top to bottom rather than something assembled from every crate.
+
+**What has run** is recorded in the primary database:
+
+```sql
+CREATE TABLE "_fd_migrations" (
+  "id"          text PRIMARY KEY,
+  "applied_at"  timestamptz NOT NULL,
+  "version"     text NOT NULL,     -- the CARGO_PKG_VERSION that applied it
+  "duration_ms" bigint NOT NULL
+);
+```
+
+(v1 records its own in `_sc_migrations`, so the two do not meet in a shared schema.)
+
+**When it runs.** `sc_cli::connect_catalog` runs `sc_migrate::run(&driver)` after connecting
+and **before** `Catalog::init` and every bootstrap — so every command that opens the database
+migrates it, a migration sees the previous release's schema, and the catalog introspects the
+result. A migration that needs a column the bootstrap would add therefore adds it itself.
+
+1. One query: `SELECT id FROM "_fd_migrations"`. Every id known: done.
+2. **No `_fd_migrations` and no `_fd_config`** — a new database, or an existing one Feldspar is
+   being pointed at for the first time (`_fd_config` is bootstrapped on every start, so every
+   database Feldspar has started against has it): create `_fd_migrations` and record **every**
+   migration as applied without running it. The bootstrap then builds the current shape.
+3. **No `_fd_migrations`, but `_fd_config`** — a database from before the framework: create
+   it empty, and continue as below (every migration is newer than such a database).
+4. Each pending id, in order, in **its own transaction**: take the lock (a transaction-scoped
+   advisory lock on Postgres, which also covers creating the table; SQLite's transactions
+   begin `IMMEDIATE`), check again that the id is not recorded, run the body, insert the
+   record, commit. The change
+   and its record commit together, so a crash cannot leave one without the other; the lock
+   means two processes starting together (a deploy, a CLI command beside the server) apply it
+   once.
+5. **A failure** rolls that migration back and stops the start with its id and the database's
+   message. Those before it stay applied, and the next start resumes from it.
+6. **An id in `_fd_migrations` this binary does not know** means a newer release has migrated
+   the database. The start is refused rather than running older code against it.
+
+Each applied migration is logged to stderr with its duration. Nothing is backed up first: that
+is the deployment's job. Clear all leaves `_fd_migrations` alone — it describes the schema,
+which stays — or the next start would re-run every migration against tables that have them. `feldspar migrate status` lists applied and pending ids; `feldspar migrate`
+runs the pending ones and reports each.
+
+**Scope.** The primary database only. A connected database holds application tables and
+nothing of Feldspar's (a SQLite one's `_fd_object_comments` excepted, which no migration
+touches). Backups are unaffected: they are JSON with their own `FORMAT_VERSION`,
+restored through current code.
+
+**Tests.** The framework is tested on both backends: a new database is stamped and runs
+nothing; a database with `_fd_*` tables but no record runs everything; a second start runs
+nothing; a failing migration leaves neither its change nor its record; an unknown id refuses;
+two concurrent runners apply a migration once. Every migration has a test of its own: a fixture
+builds the shape it migrates from, `sc_migrate::run_one(id)` runs it alone, and the result is
+checked — on each backend it has a body for.
 
 ---
 
@@ -2630,16 +2739,27 @@ body is an event like any other, carrying this trigger's chain, so the cascade b
 it exactly as it does to `insert_row`. A bulk update or delete resolves its matched rows first
 and then writes them one at a time, as `update_rows` does; the events are the point.
 
-**Authority: admin by default, `asUser()` to delegate.** A code body's reads and writes are the
-admin's, carrying the event's user (so an RLS policy that reads `user` still sees who caused
-it). `asUser()` is available on the handle, on a table and on a query, and sets one field of
-the plan — so where it appears in the chain does not matter:
+**Authority: the run's default, `asUser()` / `asAdmin()` to choose.** A handle the body did not
+narrow or widen sends `authority: "default"`, and the **host** resolves it per run:
+
+- a **trigger's** body (and a workflow step, a module, an agent tool) runs as the **admin**,
+  carrying the event's user (so an RLS policy that reads `user` still sees who caused it) —
+  a trigger is server-side configuration;
+- a body that **answers a request** — a JavaScript or Python custom query (§13.4), a
+  server-rendered page's entry — runs as the **caller**, so the table's role rules and
+  ownership formulas hold exactly as they do on the row API. Ownership checks are *opt-out*
+  there (`asAdmin()`), not opt-in: an app's endpoints are what coding agents write, and the
+  safe one must be the one written by saying nothing.
+
+The same rule covers `fs`, `trigger(...)` and `models` handles. `asUser()` and `asAdmin()` are
+available on the handle, on a table and on a query, and set one field of the plan — so where
+they appear in the chain does not matter:
 
 ```js
 await db.asUser().invoices.where({ paid: false }).rows();   // the whole handle
 await db.invoices.asUser().where({ paid: false }).rows();   // one table
 await db.invoices.where({ paid: false }).asUser().rows();   // one query
-await db.invoices.asAdmin().insert({ … });                  // the default, said out loud
+await db.invoices.asAdmin().insert({ … });                  // the admin, said out loud
 ```
 
 Delegated, every operation goes through `sc_api::ownership`'s `read_rows_as` /
@@ -2862,8 +2982,8 @@ error only to something that was told to read it — `exists` is a question, not
 | `list()` | the direct children — as the same file and directory objects, so a listing is walked and acted on rather than re-opened by name. A listed entry also carries what the listing said: `size` and `modified` beside `name` and `isDirectory`, as properties and in `toJSON` (`{store, path, name, isDirectory, size, modified}`), so `JSON.stringify(await dir.list())` is a usable listing. A file that was *opened* rather than listed has `size`/`modified` `undefined` — nothing has looked at the store for it — and `stat()` works on either kind of entry |
 | `exists()`, `stat()`, `create()`, `delete()` | `create()` is `mkdir -p` and idempotent; `delete()` takes everything in it |
 
-**Authority** is `db`'s: the admin's by default, because a trigger is server-side configuration,
-and `fs(name).asUser()` delegates to the event's caller — at which point §14.1's
+**Authority** is `db`'s: the run's default (the admin's in a trigger, because a trigger is
+server-side configuration; the caller's in a custom query), and `fs(name).asUser()` delegates to the event's caller — at which point §14.1's
 **path-cumulative** `min_role` rule decides every operation (the store's floor, then every
 directory on the path, then the entry itself, most restrictive winning), and a listing is
 *filtered* rather than refused. One asymmetry is stated rather than inherited: a delegated body
@@ -4178,9 +4298,14 @@ the single exception**, and the reason is structural rather than an oversight: s
 schema-and-triggers paragraphs at the end of this section.
 
 **Tables.** `query_table` (one configured table; tool arguments are a `where` object, an
-optional field list, an ordering and a bounded `limit`), `insert_row` and `update_rows` /
-`delete_rows` as separate opt-in traits, so read-only is the default shape of an agent and
-granting writes is a decision with a form field attached. All of them go through `sc-api::rows`
+optional field list, an ordering and a bounded `limit`) and `edit_table_rows`, whose insert,
+update and delete are three separate opt-in checkboxes (`allow_insert`, `allow_update`,
+`allow_delete`, all off by default; a form with none ticked is refused), so read-only is the
+default shape of an agent and granting writes is a decision with a form field attached. Each
+ticked box adds one tool (`insert_into_books`, `update_books`, `delete_from_books`); the table,
+the field allow-list (insert and update) and the row bound (update and delete) are shared.
+These were three traits (`insert_row`, `update_rows`, `delete_rows`) until they were merged, as
+`admin_copilot`'s grants already were. All of them go through `sc-api::rows`
 with the run's caller.
 
 **What was built, where it deviates** (Phase 3, `query_table`):
@@ -4218,7 +4343,7 @@ with the run's caller.
   fields validated and the table's own triggers fired. The REST provider keeps its own
   orchestration because it turns each denial into an HTTP status; the *rule* is the shared
   part, which is the half that must not be able to differ.
-- **`update_rows` requires a `where` as well as `delete_rows` does.** The TODO asks it of the
+- **An update requires a `where` as well as a delete does.** The TODO asks it of the
   delete alone, but a whole table rewritten by an omitted argument is the same accident as one
   emptied by it, and §10.1 already refuses both on the *actions*. A model that means every row
   writes a condition that matches every row.
@@ -4232,7 +4357,7 @@ with the run's caller.
   "The row whose title is Dune" is how a model addresses a row it may not rename, and the rows a
   filter can reach are already bounded by the caller's access. A read trait's allow-list is the
   other way round, because there a hidden field could be read back one comparison at a time.
-- **`insert_row`'s arguments are the row itself**, flat, and its schema has **no `required`
+- **An insert's arguments are the row itself**, flat, and its schema has **no `required`
   list**: a `NOT NULL` column may have a database default and the catalog does not record
   defaults, so demanding every required column would make the model invent values the database
   was going to supply. The prose says which fields are required; a genuinely missing value comes
@@ -5744,6 +5869,7 @@ pub struct Application {
     pub framework: FrameworkRef,         // one primary UI framework
     pub extra_frameworks: Vec<FrameworkRef>, // may bring in others (see Open Questions)
     pub tables: Vec<TableId>,            // the subset of the data layer it can access
+    pub api_tables: Vec<TableId>,        // of those, the ones with a generic row API (default: none)
     pub file_stores: Vec<FileStoreId>,
     pub triggers: Vec<TriggerRef>,       // the triggers it exposes, by name
     pub streams: Vec<StreamRef>,         // the streams it may observe, by name (§14.3)
@@ -5773,6 +5899,17 @@ pub struct StaticDir {
 **Multiple applications share one data layer**; each sees only its declared subset of
 tables and file stores. This is v2's replacement for v1 schema-per-tenant multi-tenancy —
 lighter-weight and driven by access subsets rather than separate schemas.
+
+**Connecting a table is not publishing it.** `tables` is what the app's custom queries,
+views, streams and generated `schema.sql` may name. The generic **row API** — REST's
+list/read/create/update/delete routes and GraphQL's type for a table — is served only for the
+tables in `api_tables`, a second opt-in subset that is **empty for every new application**,
+whether the admin's form, the CLI or a coding agent's `create_application` made it (the tool
+has no argument for it at all). An app reaches its data through custom queries (§13.4), one
+endpoint per thing a page does, which in JavaScript or Python run **as the caller** by default
+(§10.1, "Authority"); a row API is turned on per table, afterwards, only when somebody wants
+generic row access — `update_application`'s `api_tables` (which also needs
+`allow_access_changes`), `feldspar app api-tables`, or the form's checkbox.
 
 **An application is created and configured in the admin UI — never in Rust code and never
 by a CLI flag.** The admin picks the framework, fills in that framework's settings (a React
@@ -12544,7 +12681,7 @@ The rules, each chosen so that "on every load" is safe:
   the code that wrote it, and an admin's own field on a module table (`mail_messages.handled`) is
   theirs. A declared field whose type or reference the database disagrees with is reported as an
   issue on the module's card and left alone: retyping a column with rows in it is a migration, and
-  there is no migration framework (§3.3).
+  migrations (§5.3) are Feldspar's own, not a module's.
 - **A field an upgrade adds is nullable**, whatever it declares, with no default: the table has
   rows, and `NOT NULL` on them needs a value nobody declared.
 - **Table settings belong to the creation.** `label`, `ownership` and the minimum roles go into

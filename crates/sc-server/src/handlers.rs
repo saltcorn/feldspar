@@ -164,7 +164,7 @@ pub fn admin_handlers_with(
                 // Whether the create-first-user screen needs the setup link's
                 // token. Not a secret, and only said while it can matter.
                 let token_required =
-                    !exists && sc_config::first_user_token(&catalog).await?.is_some();
+                    !exists && !sc_config::first_user_tokens(&catalog).await?.is_empty();
                 let current = ctx.user.as_ref().map_or(Json::Null, user_summary_json);
                 let locales = sc_i18n::active();
                 Ok(HandlerResponse::ok(json!({
@@ -194,7 +194,8 @@ pub fn admin_handlers_with(
                 // An installation set up with a first-user token is claimed
                 // only through the link that carries it (security: otherwise
                 // whoever reaches a fresh instance first becomes its admin).
-                if let Some(expected) = sc_config::first_user_token(&catalog).await? {
+                let expected = sc_config::first_user_tokens(&catalog).await?;
+                if !expected.is_empty() {
                     let supplied = ctx.body.get("token").and_then(Json::as_str);
                     if !sc_auth::first_user_token_matches(&expected, supplied) {
                         return Ok(HandlerResponse::ok(json!({
@@ -7996,6 +7997,7 @@ pub(crate) fn application_json(app: &Application) -> Json {
         "framework": framework_ref_json(&app.framework),
         "extra_frameworks": app.extra_frameworks.iter().map(framework_ref_json).collect::<Vec<_>>(),
         "tables": app.tables.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
+        "api_tables": app.api_tables.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
         "file_stores": app.file_stores.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
         "triggers": app.triggers.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
         "streams": app.streams.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
@@ -8624,6 +8626,12 @@ pub(crate) fn application_from_body(id: AppId, body: &Json) -> Result<Applicatio
         .into_iter()
         .map(TableId)
         .collect();
+    // Absent is "serves no table's row API" — the default a new application
+    // has; each table is opted in by name, and must be one of `tables`.
+    let api_tables = parse_str_array(obj, "api_tables")?
+        .into_iter()
+        .map(TableId)
+        .collect();
     let file_stores = parse_str_array(obj, "file_stores")?
         .into_iter()
         .map(FileStoreId)
@@ -8709,6 +8717,7 @@ pub(crate) fn application_from_body(id: AppId, body: &Json) -> Result<Applicatio
         framework,
         extra_frameworks,
         tables,
+        api_tables,
         file_stores,
         triggers,
         streams,

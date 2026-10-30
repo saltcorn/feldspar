@@ -762,8 +762,8 @@ pub async fn typecheck_application(
             )
         }
     };
-    let output = output
-        .with_context(|| format!("launching `{command}` in {}", source_dir.display()))?;
+    let output =
+        output.with_context(|| format!("launching `{command}` in {}", source_dir.display()))?;
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),

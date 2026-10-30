@@ -422,6 +422,11 @@ feldspar role list
 (`feldspar add-user you@example.com --role Reader` makes an account to try it with;
 `feldspar modify-user you@example.com --disabled` takes it away again without deleting it.)
 
+A code query's `db` acts **as the person calling it**: the table's roles and ownership formula
+decide what it sees, exactly as they do for the row API. Readers may only share a book they may
+read, so give them that: on the **books** table, set **Minimum role for full read access** to
+`Reader (80)`.
+
 Add two queries on the same REST row as `topAuthors`, both with **Language** `JavaScript`.
 
 **`shareBook`** — `POST`, sub-path `/books/share`, minimum role `Reader (80)`, **no
@@ -456,7 +461,9 @@ const key = await crypto.subtle.importKey(
   "raw", new TextEncoder().encode(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
 const ok = await crypto.subtle.verify("HMAC", key, sig, new TextEncoder().encode(id));
 if (!ok) throw httpError(403, "this link is not valid");
-const book = await db.books.get(Number(id));
+// The signature is the check, and whoever holds the link may not read `books`
+// themselves — so this one read is the server's, said out loud.
+const book = await db.asAdmin().books.get(Number(id));
 return { title: book.title };
 ```
 
@@ -555,7 +562,7 @@ ratelimit.check("unlock:" + query.token, { max: 5, window: "15m" });
 const [id] = query.token.split(".");
 // In a real app the share is a row holding crypto.password.hash(password).
 if (query.password !== "open sesame") throw httpError(403, "wrong password");
-const book = await db.books.get(Number(id));
+const book = await db.asAdmin().books.get(Number(id));
 return { title: book.title };
 ```
 

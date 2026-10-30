@@ -9,7 +9,7 @@
 //!
 //! | v1 skill | here |
 //! |---|---|
-//! | `Table` (query, insert) | `query_table` and/or `insert_row` on that table; a list view is `show_results` |
+//! | `Table` (query, insert) | `query_table` and/or `edit_table_rows` (insert only) on that table; a list view is `show_results` |
 //! | `Run JavaScript code` | `run_js_code`, the code kept in the agent; a button is `mode: button` |
 //! | `Trigger` | `run_trigger` on that trigger |
 //! | `Subagent` | `subagent` delegating to that agent, with its two prompts |
@@ -420,7 +420,10 @@ impl Context<'_> {
                     agent.add("query_table", config);
                 }
                 if truthy(skill.get("insert")) {
-                    agent.add("insert_row", json!({ "table": table }));
+                    agent.add(
+                        "edit_table_rows",
+                        json!({ "table": table, "allow_insert": true }),
+                    );
                 }
             }
             "Run JavaScript code" => {
@@ -1390,7 +1393,8 @@ mod tests {
                                      "description": "what to say" } ] } },
                 { "trait": "query_table", "config": { "table": "document",
                                                        "fields": ["id", "contents"] } },
-                { "trait": "insert_row", "config": { "table": "document" } },
+                { "trait": "edit_table_rows",
+                  "config": { "table": "document", "allow_insert": true } },
             ])
         );
         // The provider is the plugin's settings, its model the default.

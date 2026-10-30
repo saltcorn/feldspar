@@ -237,7 +237,8 @@ async fn an_agent_is_created_listed_edited_and_deleted() -> sc_error::Result<()>
     let mut edit = plain_agent("librarian");
     edit["traits"] = json!([
         { "trait": "query_table", "config": { "table": "books" } },
-        { "trait": "insert_row", "config": { "table": "books" } },
+        { "trait": "edit_table_rows",
+          "config": { "table": "books", "allow_insert": true } },
     ]);
     edit["min_role"] = json!(1);
     let (status, updated) = client

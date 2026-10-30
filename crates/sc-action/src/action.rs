@@ -299,6 +299,12 @@ pub struct ActionContext<'a> {
     /// trigger, which belongs to no application and imports instance-wide
     /// libraries only.
     application: Option<uuid::Uuid>,
+    /// Whether a code body's handles act **as the event's caller** unless the
+    /// body says `asAdmin()` — a custom query's (§13.4), which answers an
+    /// outside request and so must not be wider than the row API by default.
+    /// `false` everywhere else: a trigger is server-side configuration and acts
+    /// as the admin.
+    as_caller: bool,
 }
 
 impl<'a> ActionContext<'a> {
@@ -331,6 +337,7 @@ impl<'a> ActionContext<'a> {
             request: None,
             file_urls: None,
             application: None,
+            as_caller: false,
         }
     }
 
@@ -491,6 +498,19 @@ impl<'a> ActionContext<'a> {
     /// Where the run's application serves store files, if it has one.
     pub fn file_urls(&self) -> Option<&Arc<dyn FileUrls>> {
         self.file_urls.as_ref()
+    }
+
+    /// Make the event's caller the authority a code body's handles default to
+    /// (a custom query's), in place of the admin's.
+    pub fn as_caller(mut self, as_caller: bool) -> ActionContext<'a> {
+        self.as_caller = as_caller;
+        self
+    }
+
+    /// Whether a code body's handles default to the event's caller rather than
+    /// the admin ([`as_caller`](ActionContext::as_caller)).
+    pub fn acts_as_caller(&self) -> bool {
+        self.as_caller
     }
 
     /// Run this action as code belonging to `application` (a custom query's).

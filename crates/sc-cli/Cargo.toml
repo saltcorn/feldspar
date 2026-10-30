@@ -71,6 +71,8 @@ sc-dns.workspace = true
 sc-db.workspace = true
 sc-db-postgres.workspace = true
 sc-db-sqlite.workspace = true
+# Migrations run when the database is opened, and `feldspar migrate` (§5.3).
+sc-migrate.workspace = true
 tokio.workspace = true
 # `build-agent` talks to its server over HTTPS (`TODO-build-hosts.md`).
 reqwest.workspace = true

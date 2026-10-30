@@ -38,9 +38,9 @@
 //!   configured. So it is scoped by **what it may do** rather than by what it may
 //!   reach — four checkboxes ([`CFG_ALLOW_CREATE`] and its siblings) — and that
 //!   difference is the phase's most load-bearing deviation.
-//! - **Its grants are configuration rather than separate traits.** `insert_row`,
-//!   `update_rows` and `delete_rows` are three traits over one table; these four
-//!   are booleans on one trait, because the operations share a **batch**:
+//! - **Its grants are configuration rather than separate traits**, as
+//!   `edit_table_rows`' insert, update and delete are; these four are booleans
+//!   on one trait because the operations share a **batch**:
 //!   creating `matters` with a key to an existing `clients` is a create *and* an
 //!   edit, and a batch that half-applied for want of a grant is the state the
 //!   transaction exists to avoid. A batch containing an ungranted operation is
@@ -165,19 +165,28 @@ application in a new local file store — do not ask. Only if they asked for the
 live in a git repository, first `create_file_store` with `backend: \"git\"` and pass its \
 name as `file_store`.\n\
 3. Create every table the application needs with **one** `edit_schema` batch: fields, \
-types, required flags, keys between tables. Tables come before code, because the \
-application's typed client is generated from them.\n\
+types, required flags, keys between tables, and an ownership formula on every table \
+whose rows belong to a user. Tables come before code, because the application's queries \
+are written against them.\n\
 4. `update_application` with `tables: { add: [...] }` to connect those tables to the \
-application.\n\
-5. `delegate_to_coding_agent` with the application's builder agent (the \
+application. This publishes no endpoint: the application has **no generic row API**, \
+and you do not turn one on (`api_tables`) unless the person explicitly asks for generic \
+row access to a table.\n\
+5. `save_api_query` for every read and write the pages make — a list, a detail, a \
+create, an update, a report — each a typed method on the generated client. Data that \
+belongs to users goes through a `javascript` query over `db.<table>`, which runs as the \
+caller so the ownership formula and role rules apply; plain `sql` is for data anybody \
+allowed to call it may see. Set each query's `min_role` to who needs it.\n\
+6. `delegate_to_coding_agent` with the application's builder agent (the \
 `builder_agent` that `create_application` returned): give it the full specification — \
-what the app is for, every page and what it shows, the tables and fields it reads and \
-writes, who signs in — and ask it to implement it in the scaffolded project, using the \
-generated client in `src/feldspar/`, and to check that it builds. Ask it to report what \
-it built and anything it could not do.\n\
-6. `publish_application`, so it is served on its subdomain. If the build fails, \
+what the app is for, every page and what it shows, the queries it calls for each, who \
+signs in — and ask it to implement it in the scaffolded project, using the generated \
+client in `src/feldspar/`, and to check that it builds. Ask it to report what it built, \
+any query it needed that does not exist, and anything else it could not do; write the \
+missing queries and delegate again.\n\
+7. `publish_application`, so it is served on its subdomain. If the build fails, \
 delegate the diagnostics back to the builder agent to fix, then publish again.\n\
-7. Tell the person the address and what the draft does.\n\n\
+8. Tell the person the address and what the draft does.\n\n\
 To change an existing application's code later, delegate to its builder agent the same \
 way; the session header lists the coding agents there are.";
 
@@ -487,11 +496,11 @@ fn delegate_spec() -> ToolSpec {
              This is how you write an application's code: name the application \
              (its builder agent is used) or the agent. It cannot see this \
              conversation, only what you send, so `{}` must be a complete \
-             specification: the pages, what each shows and does, the tables and \
-             fields it uses through the generated client in `src/feldspar/`, who \
+             specification: the pages, what each shows and does, the queries \
+             it calls through the generated client in `src/feldspar/`, who \
              signs in. It works on its own, checks its work builds, and returns \
-             one report. Create and connect the tables first: it cannot change \
-             the schema.",
+             one report. Create and connect the tables and write the queries \
+             first: it can change neither the schema nor the API.",
             crate::ARG_TASK
         ),
         json!({
@@ -517,8 +526,8 @@ fn delegate_spec() -> ToolSpec {
                     "type": "string",
                     "description":
                         "What it cannot see for itself: the tables and fields you \
-                         created, the application's subdomain, decisions already \
-                         made.",
+                         created, the queries you saved, the application's \
+                         subdomain, decisions already made.",
                 },
                 crate::ARG_OUTPUT: {
                     "type": "string",
@@ -816,6 +825,24 @@ mod tests {
         assert!(tables < connect && connect < code, "{BUILD_PLAYBOOK}");
         assert!(BUILD_PLAYBOOK.contains("React"), "{BUILD_PLAYBOOK}");
         assert!(BUILD_PLAYBOOK.contains("do not ask"), "{BUILD_PLAYBOOK}");
+    }
+
+    /// The data goes through custom queries written before the code, and the
+    /// generic row API is named only to say it stays off.
+    #[test]
+    fn the_playbook_writes_queries_before_code_and_leaves_row_apis_off() {
+        let connect = BUILD_PLAYBOOK.find("update_application").unwrap();
+        let queries = BUILD_PLAYBOOK.find(TOOL_SAVE_QUERY).unwrap();
+        let code = BUILD_PLAYBOOK.find(TOOL_DELEGATE).unwrap();
+        assert!(connect < queries && queries < code, "{BUILD_PLAYBOOK}");
+        assert!(
+            BUILD_PLAYBOOK.contains("no generic row API"),
+            "{BUILD_PLAYBOOK}"
+        );
+        assert!(
+            BUILD_PLAYBOOK.contains("unless the person explicitly asks"),
+            "{BUILD_PLAYBOOK}"
+        );
     }
 
     /// An area that is off removes its tools rather than leaving them to be

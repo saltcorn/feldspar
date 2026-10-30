@@ -1,5 +1,5 @@
-//! `insert_row`, `update_rows` and `delete_rows` against a real database
-//! (TODO Phase 3).
+//! `edit_table_rows` — insert, update and delete, each under its own
+//! checkbox — against a real database (TODO Phase 3).
 //!
 //! The read trait's tests pin what an agent may *see*; these pin what it may
 //! *change*, which is the half where being wrong costs data:
@@ -14,10 +14,13 @@
 //!   free to name any field, which is how a model addresses a row it may not
 //!   rename;
 //! - `max_rows` **refuses** rather than truncating, and nothing is written;
-//! - `update_rows` and `delete_rows` **require a `where`**, so no omission can
-//!   ask for the whole table;
-//! - and each trait's `validate_config` refuses, in front of the admin, a table
-//!   that is gone, a field that is not real and a field that cannot be written.
+//! - an update and a delete **require a `where`**, so no omission can ask for
+//!   the whole table;
+//! - each checkbox adds its tool and nothing else, and a tool whose checkbox is
+//!   off is refused even when it is called by name;
+//! - and `validate_config` refuses, in front of the admin, a table that is gone,
+//!   a field that is not real, a field that cannot be written and a form with
+//!   no checkbox ticked.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -30,7 +33,10 @@ use sc_action::{EventKind, Trigger, save_trigger};
 use sc_agent::testing::{FakeProvider, Reply};
 use sc_agent::{Agent, EnabledTrait, RunCaller, Runner, save_agent};
 use sc_core_actions::builtin_actions;
-use sc_core_traits::{CFG_FIELDS, CFG_MAX_ROWS, CFG_TABLE};
+use sc_core_traits::{
+    CFG_ALLOW_DELETE, CFG_ALLOW_INSERT, CFG_ALLOW_UPDATE, CFG_FIELDS, CFG_MAX_ROWS, CFG_TABLE,
+    tool_names,
+};
 use sc_error::Result;
 use sc_types::Attrs;
 use serde_json::{Value as Json, json};
@@ -56,9 +62,40 @@ const SCHEMA_WITH_AUDIT: &str = "
     );
 ";
 
-/// Every write trait over the whole of `books`.
+/// The trait under test.
+const TRAIT: &str = "edit_table_rows";
+
+/// Every grant over the whole of `books`.
 fn books() -> Attrs {
     config(&[(CFG_TABLE, json!("books"))])
+}
+
+/// `config` with all three checkboxes ticked.
+fn granted(config: &Attrs) -> Attrs {
+    let mut config = config.clone();
+    for key in [CFG_ALLOW_INSERT, CFG_ALLOW_UPDATE, CFG_ALLOW_DELETE] {
+        config.insert(key.to_owned(), json!(true));
+    }
+    config
+}
+
+/// Call one of the trait's three tools — `insert`, `update` or `delete` — with
+/// every grant ticked, so what is under test is the write and not the checkbox.
+async fn write(
+    env: &Env,
+    verb: &str,
+    config: &Attrs,
+    args: Json,
+    caller: &RunCaller,
+) -> Result<Json> {
+    let table = config[CFG_TABLE].as_str().unwrap();
+    let tool = match verb {
+        "insert" => tool_names::insert_row(table),
+        "update" => tool_names::update_rows(table),
+        _ => tool_names::delete_rows(table),
+    };
+    env.call_tool(TRAIT, &granted(config), &tool, args, caller)
+        .await
 }
 
 #[tokio::test]
@@ -67,7 +104,9 @@ async fn each_write_tool_describes_the_table_it_may_change() -> Result<()> {
 
     // An insert takes the row itself, flat, with the fields as properties —
     // including the primary key, which this table has no default for.
-    let insert = &env.tools("insert_row", &books())[0];
+    let tools = env.tools(TRAIT, &granted(&books()));
+    assert_eq!(tools.len(), 3);
+    let insert = &tools[0];
     assert_eq!(insert.name, "insert_into_books");
     let props = insert.parameters["properties"].as_object().unwrap();
     assert_eq!(props.len(), 5);
@@ -80,7 +119,7 @@ async fn each_write_tool_describes_the_table_it_may_change() -> Result<()> {
 
     // An update takes a `where` and a `set`, both required, and cannot set the
     // primary key — moving a row's identity is not an edit.
-    let update = &env.tools("update_rows", &books())[0];
+    let update = &tools[1];
     assert_eq!(update.name, "update_books");
     assert_eq!(update.parameters["required"], json!(["where", "set"]));
     let settable = update.parameters["properties"]["set"]["properties"]
@@ -97,7 +136,7 @@ async fn each_write_tool_describes_the_table_it_may_change() -> Result<()> {
 
     // A delete takes a `where` and nothing else, and says so both in the schema
     // and in the words the model reads when it is choosing.
-    let delete = &env.tools("delete_rows", &books())[0];
+    let delete = &tools[2];
     assert_eq!(delete.name, "delete_from_books");
     assert_eq!(delete.parameters["required"], json!(["where"]));
     assert_eq!(
@@ -131,14 +170,14 @@ async fn an_agents_insert_fires_the_tables_own_trigger() -> Result<()> {
     .await?;
     env.reload_triggers().await?;
 
-    let result = env
-        .call(
-            "insert_row",
-            &books(),
-            json!({"id": 5, "title": "Solaris", "pages": 204, "owner": "ada@example.com"}),
-            &RunCaller::system(),
-        )
-        .await?;
+    let result = write(
+        &env,
+        "insert",
+        &books(),
+        json!({"id": 5, "title": "Solaris", "pages": 204, "owner": "ada@example.com"}),
+        &RunCaller::system(),
+    )
+    .await?;
     // The stored row comes back whole, so the model can refer to what it made.
     assert_eq!(result["inserted"]["id"], json!(5));
     assert_eq!(result["inserted"]["notes"], json!(null));
@@ -149,15 +188,15 @@ async fn an_agents_insert_fires_the_tables_own_trigger() -> Result<()> {
 
     // The type rules apply too: a text value in a bigint column is refused by
     // name, in words the model can act on, rather than reaching the database.
-    let err = env
-        .call(
-            "insert_row",
-            &books(),
-            json!({"id": 6, "title": "Roadside Picnic", "pages": "many"}),
-            &RunCaller::system(),
-        )
-        .await
-        .unwrap_err();
+    let err = write(
+        &env,
+        "insert",
+        &books(),
+        json!({"id": 6, "title": "Roadside Picnic", "pages": "many"}),
+        &RunCaller::system(),
+    )
+    .await
+    .unwrap_err();
     assert!(err.to_string().contains("pages"), "{err}");
     Ok(())
 }
@@ -173,27 +212,27 @@ async fn a_write_reaches_only_the_rows_the_caller_may_reach() -> Result<()> {
     let bob = as_user("bob@example.com");
 
     // Ada renames her own book…
-    let result = env
-        .call(
-            "update_rows",
-            &books(),
-            json!({"where": {"title": "Dune"}, "set": {"title": "Dune (1965)"}}),
-            &ada,
-        )
-        .await?;
+    let result = write(
+        &env,
+        "update",
+        &books(),
+        json!({"where": {"title": "Dune"}, "set": {"title": "Dune (1965)"}}),
+        &ada,
+    )
+    .await?;
     assert_eq!(result["updated"], json!(1));
     assert_eq!(result["ids"], json!([1]));
 
     // …and cannot touch Bob's, which she cannot see: no row matched, so nothing
     // was changed and nothing about `Emma` was disclosed.
-    let result = env
-        .call(
-            "update_rows",
-            &books(),
-            json!({"where": {"title": "Emma"}, "set": {"title": "Emma (1815)"}}),
-            &ada,
-        )
-        .await?;
+    let result = write(
+        &env,
+        "update",
+        &books(),
+        json!({"where": {"title": "Emma"}, "set": {"title": "Emma (1815)"}}),
+        &ada,
+    )
+    .await?;
     assert_eq!(result["updated"], json!(0));
     assert_eq!(
         row_titles(&env.rows("books").await?),
@@ -202,29 +241,29 @@ async fn a_write_reaches_only_the_rows_the_caller_may_reach() -> Result<()> {
 
     // An update that would move a row out of her own ownership is refused even
     // though every value in it is valid — §6's WITH CHECK, at runtime.
-    let err = env
-        .call(
-            "update_rows",
-            &books(),
-            json!({"where": {"id": 1}, "set": {"owner": "bob@example.com"}}),
-            &ada,
-        )
-        .await
-        .unwrap_err();
+    let err = write(
+        &env,
+        "update",
+        &books(),
+        json!({"where": {"id": 1}, "set": {"owner": "bob@example.com"}}),
+        &ada,
+    )
+    .await
+    .unwrap_err();
     assert!(
         err.to_string().contains("out of what you may reach"),
         "{err}"
     );
 
     // Deleting divides the same way: Bob deletes his, Ada's are untouched.
-    let result = env
-        .call(
-            "delete_rows",
-            &books(),
-            json!({"where": {"pages": {"lt": 300}}}),
-            &bob,
-        )
-        .await?;
+    let result = write(
+        &env,
+        "delete",
+        &books(),
+        json!({"where": {"pages": {"lt": 300}}}),
+        &bob,
+    )
+    .await?;
     assert_eq!(result["deleted"], json!(1));
     assert_eq!(
         row_titles(&env.rows("books").await?),
@@ -233,22 +272,23 @@ async fn a_write_reaches_only_the_rows_the_caller_may_reach() -> Result<()> {
 
     // And an insert is checked against the row proposed: Ada may add her own
     // book and may not add one of Bob's.
-    env.call(
-        "insert_row",
+    write(
+        &env,
+        "insert",
         &books(),
         json!({"id": 7, "title": "Hyperion", "owner": "ada@example.com"}),
         &ada,
     )
     .await?;
-    let err = env
-        .call(
-            "insert_row",
-            &books(),
-            json!({"id": 8, "title": "Persuasion", "owner": "bob@example.com"}),
-            &ada,
-        )
-        .await
-        .unwrap_err();
+    let err = write(
+        &env,
+        "insert",
+        &books(),
+        json!({"id": 8, "title": "Persuasion", "owner": "bob@example.com"}),
+        &ada,
+    )
+    .await
+    .unwrap_err();
     assert!(
         err.to_string().contains("outside what you may write"),
         "{err}"
@@ -261,25 +301,25 @@ async fn a_write_reaches_only_the_rows_the_caller_may_reach() -> Result<()> {
     // and either way the table is untouched.
     let plain = Env::new().await?.with_engine();
     let ada_alone = as_user("ada@example.com");
-    let err = plain
-        .call(
-            "insert_row",
-            &books(),
-            json!({"id": 9, "title": "Hyperion"}),
-            &ada_alone,
-        )
-        .await
-        .unwrap_err();
+    let err = write(
+        &plain,
+        "insert",
+        &books(),
+        json!({"id": 9, "title": "Hyperion"}),
+        &ada_alone,
+    )
+    .await
+    .unwrap_err();
     assert!(err.to_string().contains("may not write"), "{err}");
-    let err = plain
-        .call(
-            "delete_rows",
-            &books(),
-            json!({"where": {"id": 1}}),
-            &ada_alone,
-        )
-        .await
-        .unwrap_err();
+    let err = write(
+        &plain,
+        "delete",
+        &books(),
+        json!({"where": {"id": 1}}),
+        &ada_alone,
+    )
+    .await
+    .unwrap_err();
     assert!(err.to_string().contains("may not read"), "{err}");
     assert_eq!(plain.rows("books").await?.len(), 4);
     Ok(())
@@ -295,40 +335,40 @@ async fn the_allow_list_bounds_what_may_be_set_but_not_what_may_be_matched() -> 
 
     // Matching on a field outside the list is fine — that is how a model
     // addresses a row it may not rename…
-    let result = env
-        .call(
-            "update_rows",
-            &cfg,
-            json!({"where": {"title": "Ubik"}, "set": {"notes": "shelved"}}),
-            &RunCaller::system(),
-        )
-        .await?;
+    let result = write(
+        &env,
+        "update",
+        &cfg,
+        json!({"where": {"title": "Ubik"}, "set": {"notes": "shelved"}}),
+        &RunCaller::system(),
+    )
+    .await?;
     assert_eq!(result["updated"], json!(1));
 
     // …but setting one is refused by name, with the fields that are allowed
     // listed, because a model that cannot read what it got wrong cannot fix it.
-    let err = env
-        .call(
-            "update_rows",
-            &cfg,
-            json!({"where": {"id": 1}, "set": {"title": "Doon"}}),
-            &RunCaller::system(),
-        )
-        .await
-        .unwrap_err();
+    let err = write(
+        &env,
+        "update",
+        &cfg,
+        json!({"where": {"id": 1}, "set": {"title": "Doon"}}),
+        &RunCaller::system(),
+    )
+    .await
+    .unwrap_err();
     assert!(err.to_string().contains("`title`"), "{err}");
     assert!(err.to_string().contains("pages, notes"), "{err}");
 
     // The same for an insert, which is the row itself.
-    let err = env
-        .call(
-            "insert_row",
-            &cfg,
-            json!({"id": 9, "pages": 100}),
-            &RunCaller::system(),
-        )
-        .await
-        .unwrap_err();
+    let err = write(
+        &env,
+        "insert",
+        &cfg,
+        json!({"id": 9, "pages": 100}),
+        &RunCaller::system(),
+    )
+    .await
+    .unwrap_err();
     assert!(err.to_string().contains("`id`"), "{err}");
     Ok(())
 }
@@ -342,44 +382,42 @@ async fn a_write_without_a_filter_is_refused_and_too_many_rows_change_nothing() 
     // No `where` at all, and an empty one, are both "every row of the table",
     // and neither is something an omitted argument may ask for.
     for args in [json!({}), json!({"where": {}})] {
-        let err = env
-            .call("delete_rows", &books(), args.clone(), &caller)
+        let err = write(&env, "delete", &books(), args.clone(), &caller)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("`where` is required"), "{err}");
         let mut args = args;
         args["set"] = json!({"notes": "everything"});
-        let err = env
-            .call("update_rows", &books(), args, &caller)
+        let err = write(&env, "update", &books(), args, &caller)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("`where` is required"), "{err}");
     }
     // An update with a filter but nothing to set is equally a mistake.
-    let err = env
-        .call(
-            "update_rows",
-            &books(),
-            json!({"where": {"id": 1}}),
-            &caller,
-        )
-        .await
-        .unwrap_err();
+    let err = write(
+        &env,
+        "update",
+        &books(),
+        json!({"where": {"id": 1}}),
+        &caller,
+    )
+    .await
+    .unwrap_err();
     assert!(err.to_string().contains("`set` is required"), "{err}");
 
     // A filter that matches more rows than the ceiling changes **nothing** and
     // says how to recover: a half-applied bulk write is the one outcome nobody
     // can tell apart from a whole one.
     let bounded = config(&[(CFG_TABLE, json!("books")), (CFG_MAX_ROWS, json!(2))]);
-    let err = env
-        .call(
-            "delete_rows",
-            &bounded,
-            json!({"where": {"pages": {"gt": 1}}}),
-            &caller,
-        )
-        .await
-        .unwrap_err();
+    let err = write(
+        &env,
+        "delete",
+        &bounded,
+        json!({"where": {"pages": {"gt": 1}}}),
+        &caller,
+    )
+    .await
+    .unwrap_err();
     assert!(err.to_string().contains("more than 2 rows"), "{err}");
     assert!(err.to_string().contains("nothing was changed"), "{err}");
     assert_eq!(row_titles(&env.rows("books").await?), before);
@@ -387,23 +425,23 @@ async fn a_write_without_a_filter_is_refused_and_too_many_rows_change_nothing() 
     // Exactly the ceiling is allowed, and matching nothing is a count of zero
     // rather than a failure — an idempotent call must not look broken the second
     // time it is made.
-    let result = env
-        .call(
-            "delete_rows",
-            &bounded,
-            json!({"where": {"pages": {"lt": 420}}}),
-            &caller,
-        )
-        .await?;
+    let result = write(
+        &env,
+        "delete",
+        &bounded,
+        json!({"where": {"pages": {"lt": 420}}}),
+        &caller,
+    )
+    .await?;
     assert_eq!(result["deleted"], json!(2));
-    let result = env
-        .call(
-            "delete_rows",
-            &bounded,
-            json!({"where": {"pages": {"lt": 420}}}),
-            &caller,
-        )
-        .await?;
+    let result = write(
+        &env,
+        "delete",
+        &bounded,
+        json!({"where": {"pages": {"lt": 420}}}),
+        &caller,
+    )
+    .await?;
     assert_eq!(result["deleted"], json!(0));
     Ok(())
 }
@@ -411,41 +449,106 @@ async fn a_write_without_a_filter_is_refused_and_too_many_rows_change_nothing() 
 #[tokio::test]
 async fn a_write_trait_the_catalog_contradicts_is_refused_on_save() -> Result<()> {
     let env = Env::new().await?;
-    for trait_ in ["insert_row", "update_rows", "delete_rows"] {
-        env.check(trait_, &books()).await?;
-        // A table that is not there.
-        let err = env
-            .check(trait_, &config(&[(CFG_TABLE, json!("shelves"))]))
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("shelves"), "{trait_}: {err}");
-        // A configuration with no table at all.
-        assert!(env.check(trait_, &Attrs::new()).await.is_err(), "{trait_}");
-    }
-    // A field the table does not have, on the two traits that take a list.
-    for trait_ in ["insert_row", "update_rows"] {
-        let err = env
-            .check(
-                trait_,
-                &config(&[
-                    (CFG_TABLE, json!("books")),
-                    (CFG_FIELDS, json!(["title", "athor"])),
-                ]),
-            )
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("athor"), "{trait_}: {err}");
-    }
-    // An allow-list that leaves an update with nothing it could change is a
-    // configuration mistake, not a very safe grant.
+    env.check(TRAIT, &granted(&books())).await?;
+    // A table that is not there.
+    let err = env
+        .check(TRAIT, &granted(&config(&[(CFG_TABLE, json!("shelves"))])))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("shelves"), "{err}");
+    // A configuration with no table at all.
+    assert!(env.check(TRAIT, &granted(&Attrs::new())).await.is_err());
+    // A field the table does not have.
     let err = env
         .check(
-            "update_rows",
-            &config(&[(CFG_TABLE, json!("books")), (CFG_FIELDS, json!(["id"]))]),
+            TRAIT,
+            &granted(&config(&[
+                (CFG_TABLE, json!("books")),
+                (CFG_FIELDS, json!(["title", "athor"])),
+            ])),
         )
         .await
         .unwrap_err();
+    assert!(err.to_string().contains("athor"), "{err}");
+    // An allow-list that leaves an update with nothing it could change is a
+    // configuration mistake, not a very safe grant — but only when updating
+    // is ticked: the same list is a fine bound on an insert-only grant.
+    let only_key = config(&[(CFG_TABLE, json!("books")), (CFG_FIELDS, json!(["id"]))]);
+    let err = env.check(TRAIT, &granted(&only_key)).await.unwrap_err();
     assert!(err.to_string().contains("changeable"), "{err}");
+    let mut insert_only = only_key.clone();
+    insert_only.insert(CFG_ALLOW_INSERT.to_owned(), json!(true));
+    env.check(TRAIT, &insert_only).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn each_checkbox_grants_its_own_tool_and_no_other() -> Result<()> {
+    let env = Env::new().await?;
+    let caller = RunCaller::system();
+    let with = |keys: &[&str]| {
+        let mut cfg = books();
+        for key in keys {
+            cfg.insert((*key).to_owned(), json!(true));
+        }
+        cfg
+    };
+    let names = |cfg: &Attrs| -> Vec<String> {
+        env.tools(TRAIT, cfg).into_iter().map(|t| t.name).collect()
+    };
+
+    // Each checkbox adds exactly its tool, in a fixed order.
+    assert_eq!(names(&with(&[CFG_ALLOW_INSERT])), ["insert_into_books"]);
+    assert_eq!(names(&with(&[CFG_ALLOW_UPDATE])), ["update_books"]);
+    assert_eq!(names(&with(&[CFG_ALLOW_DELETE])), ["delete_from_books"]);
+    assert_eq!(
+        names(&with(&[CFG_ALLOW_DELETE, CFG_ALLOW_INSERT])),
+        ["insert_into_books", "delete_from_books"]
+    );
+    // The admin UI's view: every tool the trait could offer, whatever is ticked.
+    assert_eq!(
+        tool_names::edit_table_rows("books"),
+        ["insert_into_books", "update_books", "delete_from_books"]
+    );
+
+    // A blank form grants nothing, and is refused on save rather than saved as
+    // an agent with no way to change the table it names.
+    assert!(names(&books()).is_empty());
+    let err = env.check(TRAIT, &books()).await.unwrap_err();
+    assert!(err.to_string().contains("allows nothing"), "{err}");
+    // A checkbox is a boolean, not a truthy string.
+    let mut stringly = books();
+    stringly.insert(CFG_ALLOW_DELETE.to_owned(), json!("yes"));
+    let err = env.check(TRAIT, &stringly).await.unwrap_err();
+    assert!(err.to_string().contains("true or false"), "{err}");
+
+    // A tool whose checkbox is off is refused even when called by name — a tool
+    // name is a string a model can produce whether or not it was offered — and
+    // the refusal names the checkbox. Nothing is deleted.
+    let insert_only = with(&[CFG_ALLOW_INSERT]);
+    let err = env
+        .call_tool(
+            TRAIT,
+            &insert_only,
+            "delete_from_books",
+            json!({"where": {"id": 1}}),
+            &caller,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains(CFG_ALLOW_DELETE), "{err}");
+    assert_eq!(env.rows("books").await?.len(), 4);
+    // …while the granted one works.
+    let inserted = env
+        .call_tool(
+            TRAIT,
+            &insert_only,
+            "insert_into_books",
+            json!({"id": 5, "title": "Solaris"}),
+            &caller,
+        )
+        .await?;
+    assert_eq!(inserted["inserted"]["id"], json!(5));
     Ok(())
 }
 
@@ -461,8 +564,9 @@ async fn an_agent_reads_and_then_changes_its_table_through_a_whole_run() -> Resu
         .system_prompt("You look after the library.")
         .with_trait(EnabledTrait::new("query_table").config(CFG_TABLE, "books"))
         .with_trait(
-            EnabledTrait::new("update_rows")
+            EnabledTrait::new(TRAIT)
                 .config(CFG_TABLE, "books")
+                .config(CFG_ALLOW_UPDATE, true)
                 .config(CFG_FIELDS, json!(["notes"])),
         );
     save_agent(&env.catalog, &env.registry, &agent).await?;

@@ -25,7 +25,7 @@ use sc_action::{
     Action, ActionContext, ActionRegistry, EventKind, Trigger, TriggerDispatcher,
     bootstrap_triggers, save_trigger,
 };
-use sc_api::code_host::TableHost;
+use sc_api::code_host::{Authority, TableHost};
 use sc_catalog::{Catalog, TableMeta, bootstrap_table_meta, enable_rls, save_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -58,6 +58,7 @@ async fn setup(db: &TestDb) -> Result<Arc<Catalog>> {
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let cat = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(cat.teardown_hook());
     bootstrap_table_meta(&cat).await?;
     Ok(cat)
 }
@@ -544,6 +545,92 @@ async fn a_delegated_aggregate_over_an_untranslatable_formula_says_where_to_put_
     assert!(
         refused.to_string().contains("cannot be aggregated for you"),
         "{refused}"
+    );
+    Ok(())
+}
+
+/// A **custom query's** host defaults to the caller: a plan that names no
+/// authority, or names `default`, is narrowed by the ownership formula exactly
+/// as `asUser()` is, and only an explicit `admin` reads the whole table. A
+/// trigger's host keeps the admin default for the same plans.
+#[tokio::test]
+async fn a_hosts_default_authority_decides_a_plan_that_names_none() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = setup(&db).await?;
+    own_books(&cat, "owner === user.email", false).await?;
+    let read = |authority: Option<&str>| {
+        let mut plan = json!({
+            "op": "select", "table": "books",
+            "select": ["id", "title"], "order": [ { "field": "id" } ],
+        });
+        if let Some(authority) = authority {
+            plan["authority"] = json!(authority);
+        }
+        plan
+    };
+
+    let query = as_reader(&cat, "ada@example.com").defaulting_to(Authority::User);
+    for authority in [None, Some("default"), Some("user")] {
+        assert_eq!(
+            titles(&ask(&query, read(authority)).await?),
+            vec!["Dune", "Ilium"],
+            "{authority:?}: a custom query reads as its caller"
+        );
+    }
+    assert_eq!(
+        titles(&ask(&query, read(Some("admin"))).await?),
+        vec!["Dune", "Emma", "Ilium", "Ubik"],
+        "`asAdmin()` is the explicit way out"
+    );
+
+    let trigger = as_reader(&cat, "ada@example.com");
+    for authority in [None, Some("default")] {
+        assert_eq!(
+            titles(&ask(&trigger, read(authority)).await?),
+            vec!["Dune", "Emma", "Ilium", "Ubik"],
+            "{authority:?}: a trigger still reads as the admin"
+        );
+    }
+    Ok(())
+}
+
+/// The same rule from a real JavaScript body: `db.books` with nothing said is
+/// the caller's view in a query, `db.asAdmin()` is the table, and a write the
+/// formula does not grant is refused rather than made.
+#[tokio::test]
+async fn a_query_bodys_db_acts_as_the_caller_unless_it_says_as_admin() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = setup(&db).await?;
+    own_books(&cat, "owner === user.email", false).await?;
+    let host = as_reader(&cat, "bob@example.com").defaulting_to(Authority::User);
+    let runtime = CodeRuntime::new();
+    let out = runtime
+        .run(CodeCall {
+            code: r#"
+                const mine = await db.books.select("title").orderBy("id").rows();
+                const all = await db.asAdmin().books.count();
+                let refused = null;
+                try {
+                  await db.books.insert({ title: "Mine now", pages: 1, owner: "ada@example.com" });
+                } catch (e) {
+                  refused = String(e.message || e);
+                }
+                return { mine: mine.map((b) => b.title), all: all, refused: refused !== null };
+            "#
+            .to_owned(),
+            host: Some(&host),
+            ..CodeCall::default()
+        })
+        .await?;
+    assert_eq!(
+        out,
+        json!({ "mine": ["Emma", "Ubik"], "all": 4, "refused": true }),
+        "bob's rows by default, the table under asAdmin(), and no insert as ada"
+    );
+    assert_eq!(
+        rows_of(&db, "SELECT title FROM books WHERE title = 'Mine now'").await,
+        Vec::<Vec<Option<String>>>::new(),
+        "the refused insert wrote nothing"
     );
     Ok(())
 }

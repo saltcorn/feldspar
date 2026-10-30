@@ -23,7 +23,7 @@ use sc_cli::{
     connect_catalog, connect_file_stores, connect_stored_databases, connect_stored_file_stores,
     extract_file_stores,
 };
-use sc_error::Result;
+use sc_error::{Context, Result};
 use sc_server::{AppMounts, ServerConfig, ServiceManager, admin_handlers, mount_all, serve};
 
 #[tokio::main]
@@ -49,6 +49,7 @@ async fn run(args: &[String]) -> Result<()> {
         Some("build-app") => build_app_command(&args[1..]).await,
         Some("api") => api_command(&args[1..]).await,
         Some("get-cfg") => get_cfg_command(&args[1..]).await,
+        Some("migrate") => migrate_command(&args[1..]).await,
         Some("set-cfg") => set_cfg_command(&args[1..]).await,
         Some("auth") => auth_command(&args[1..]).await,
         Some("mcp-token") => mcp_token_command(&args[1..]).await,
@@ -1072,6 +1073,88 @@ async fn remove_query_command(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// `feldspar migrate [database flags]` applies the pending migrations (§5.3)
+/// and says what it did; `feldspar migrate status` lists what is applied and
+/// what is pending, and changes nothing.
+///
+/// Every command that opens the database migrates it anyway, `serve` included,
+/// so this is for running them at a time of the operator's choosing — before a
+/// restart, with the old server stopped — and for watching them run.
+async fn migrate_command(args: &[String]) -> Result<()> {
+    let (db, rest) = DbConfig::extract(args)?;
+    let status = match rest.as_slice() {
+        [] => false,
+        [word] if word == "status" => true,
+        _ => {
+            return Err(sc_error::Error::config(format!(
+                "usage: feldspar migrate [status] [database flags] (got `{}`)",
+                rest.join(" ")
+            )));
+        }
+    };
+    if let Some(source) = db.source() {
+        eprintln!("feldspar: database configured from {source}");
+    }
+    let driver = db
+        .connect()
+        .await
+        .with_context(|| format!("connecting to database {}", db.target()))?;
+    sc_log::set_log_sql(false);
+    if status {
+        return print_migration_status(&sc_migrate::status(driver.as_ref()).await?);
+    }
+    let report = sc_cli::migrate_database(driver.as_ref()).await?;
+    match (report.stamped, report.applied.len()) {
+        (0, 0) => println!("The database is up to date; there was nothing to migrate."),
+        (0, n) => println!("Applied {n} migration{}.", if n == 1 { "" } else { "s" }),
+        (n, _) => println!(
+            "The database is new to Feldspar: recorded {n} migration{} as applied, since the \
+             tables are created in their current shape.",
+            if n == 1 { "" } else { "s" }
+        ),
+    }
+    Ok(())
+}
+
+/// What `feldspar migrate status` prints.
+fn print_migration_status(status: &sc_migrate::Status) -> Result<()> {
+    if status.new_database {
+        println!(
+            "The database is new to Feldspar. The next start creates its tables in their current \
+             shape and records every migration ({}) as applied.",
+            status.pending.len()
+        );
+        return Ok(());
+    }
+    if status.applied.is_empty() {
+        println!("Applied: none");
+    } else {
+        println!("Applied:");
+        for record in &status.applied {
+            println!(
+                "  {}  {}  by {} in {} ms",
+                record.id, record.applied_at, record.version, record.duration_ms
+            );
+        }
+    }
+    if status.pending.is_empty() {
+        println!("Pending: none");
+    } else {
+        println!("Pending (the next start applies these, in this order):");
+        for migration in &status.pending {
+            println!("  {}  {}", migration.id, migration.description);
+        }
+    }
+    if !status.unknown.is_empty() {
+        println!(
+            "Unknown: {} — applied by a newer release; this binary will not start against \
+             this database.",
+            status.unknown.join(", ")
+        );
+    }
+    Ok(())
+}
+
 /// `feldspar get-cfg [KEY] [database flags]` — the stored configuration values
 /// (§13.5).
 ///
@@ -1686,12 +1769,14 @@ async fn app_command(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("list") => app_list_command(&args[1..]).await,
         Some("triggers") => app_triggers_command(&args[1..]).await,
-        Some("tables") => app_tables_command(&args[1..]).await,
+        Some("tables") => app_tables_command(&args[1..], false).await,
+        Some("api-tables") => app_tables_command(&args[1..], true).await,
         Some(other) => Err(sc_error::Error::config(format!(
-            "unknown app subcommand `{other}`; there are `list`, `tables` and `triggers`"
+            "unknown app subcommand `{other}`; there are `list`, `tables`, `api-tables` \
+             and `triggers`"
         ))),
         None => Err(sc_error::Error::config(
-            "app needs a subcommand: list, tables or triggers",
+            "app needs a subcommand: list, tables, api-tables or triggers",
         )),
     }
 }
@@ -2003,13 +2088,21 @@ fn loaded_module_json(loaded: &sc_module::LoadedModule) -> serde_json::Value {
 /// `_fd_applications.tables` as JSON. Idempotent: adding a connected table or
 /// removing one that is not changes nothing.
 ///
+/// `feldspar app api-tables (add|remove|list) …` is the same command over the
+/// connected tables whose **generic row API** the application serves
+/// (`sc_app::change_app_api_tables`) — none unless somebody adds one, and a
+/// table must be connected first.
+///
 /// A running server serves the change after `SIGHUP`, which reloads every
 /// application row.
-async fn app_tables_command(args: &[String]) -> Result<()> {
+async fn app_tables_command(args: &[String], api: bool) -> Result<()> {
     let (db, rest) = DbConfig::extract(args)?;
     let (base_domain, rest) = take_option(rest, "--base-domain")?;
     let (file_stores, rest) = extract_file_stores(rest)?;
-    let parsed = sc_cli::app::parse_tables(&rest)?;
+    let parsed = match api {
+        true => sc_cli::app::parse_api_tables(&rest)?,
+        false => sc_cli::app::parse_tables(&rest)?,
+    };
 
     let (catalog, mut app) =
         open_app(&parsed.app, &db, &file_stores, base_domain.as_deref()).await?;
@@ -2027,7 +2120,11 @@ async fn app_tables_command(args: &[String]) -> Result<()> {
         }),
     };
     if let Some(change) = change {
-        if sc_app::change_app_tables(&catalog, &mut app, &change)? {
+        let changed = match api {
+            true => sc_app::change_app_api_tables(&mut app, &change)?,
+            false => sc_app::change_app_tables(&catalog, &mut app, &change)?,
+        };
+        if changed {
             app = save_application(&catalog, &app).await?;
             // The generated client is typed from the endpoints, which include
             // the exposed triggers — so an app exposing any is rewritten with
@@ -2056,7 +2153,11 @@ async fn app_tables_command(args: &[String]) -> Result<()> {
         }
     }
 
-    let tables: Vec<&str> = app.tables.iter().map(|t| t.0.as_str()).collect();
+    let listed = match api {
+        true => &app.api_tables,
+        false => &app.tables,
+    };
+    let tables: Vec<&str> = listed.iter().map(|t| t.0.as_str()).collect();
     if parsed.json {
         println!(
             "{}",
@@ -2065,7 +2166,10 @@ async fn app_tables_command(args: &[String]) -> Result<()> {
         return Ok(());
     }
     if tables.is_empty() {
-        println!("application `{}` reaches no tables", app.subdomain);
+        match api {
+            true => println!("application `{}` serves no table's row API", app.subdomain),
+            false => println!("application `{}` reaches no tables", app.subdomain),
+        }
     }
     for table in tables {
         println!("{table}");
@@ -3110,6 +3214,7 @@ fn print_usage() {
     eprintln!("  feldspar api remove-query --app SUBDOMAIN [--api MOUNT] --name NAME");
     eprintln!("  feldspar check run [--app SUBDOMAIN] [--checklist NAME] [database flags]");
     eprintln!("  feldspar check list [--app SUBDOMAIN] [--checklist NAME] [database flags]");
+    eprintln!("  feldspar migrate [status] [database flags]");
     eprintln!("  feldspar get-cfg [KEY] [--json] [database flags]");
     eprintln!("  feldspar set-cfg KEY [VALUE] [database flags]   (no VALUE: read it from stdin)");
     eprintln!(
@@ -3167,6 +3272,9 @@ fn print_usage() {
     );
     eprintln!(
         "  feldspar app tables (add|remove|list) --app SUBDOMAIN [TABLE...] [--json] [database flags]"
+    );
+    eprintln!(
+        "  feldspar app api-tables (add|remove|list) --app SUBDOMAIN [TABLE...] [--json] [database flags]"
     );
     eprintln!(
         "  feldspar module install --local DIR [--python] [--grant-read PATH]... [--grant-write PATH]..."

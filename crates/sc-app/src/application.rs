@@ -537,8 +537,22 @@ pub struct Application {
     /// Additional frameworks the app may bring in (default stance: one primary
     /// framework per app; design Open Questions §18).
     pub extra_frameworks: Vec<FrameworkRef>,
-    /// The subset of tables the app can access.
+    /// The subset of tables the app is **connected** to: what its custom
+    /// queries, views, streams and generated schema (`schema.sql`) may name.
+    ///
+    /// Connecting a table does *not* publish it. Its generic row API — list,
+    /// read, create, update, delete over REST, and its GraphQL type — exists
+    /// only for the tables in [`api_tables`](Application::api_tables).
     pub tables: Vec<TableId>,
+    /// The connected tables whose **generic row API** the app serves: an
+    /// opt-in subset of [`tables`](Application::tables), empty for a new app.
+    ///
+    /// Off by default because a generic row API is the widest door an app can
+    /// open onto a table, and most apps need only the handful of reads and
+    /// writes their pages make — which a custom query states one endpoint at a
+    /// time, running as its caller (§13.4). A table named here that is not
+    /// connected is refused on save.
+    pub api_tables: Vec<TableId>,
     /// The subset of file stores the app can access.
     pub file_stores: Vec<FileStoreId>,
     /// The triggers the app exposes as API endpoints (§10.2).
@@ -664,6 +678,7 @@ impl Application {
             framework,
             extra_frameworks: Vec::new(),
             tables: Vec::new(),
+            api_tables: Vec::new(),
             file_stores: Vec::new(),
             triggers: Vec::new(),
             streams: Vec::new(),
@@ -692,8 +707,17 @@ impl Application {
         self
     }
 
-    /// Grant the app access to a table.
+    /// Connect a table **and serve its generic row API** — the REST routes and
+    /// GraphQL type over it ([`api_tables`](Application::api_tables)).
     pub fn with_table(mut self, table: TableId) -> Application {
+        self.api_tables.push(table.clone());
+        self.tables.push(table);
+        self
+    }
+
+    /// Connect a table without serving its row API: custom queries, views and
+    /// streams may name it, and nothing else reaches it.
+    pub fn with_connected_table(mut self, table: TableId) -> Application {
         self.tables.push(table);
         self
     }
@@ -808,6 +832,11 @@ impl Application {
     /// Whether the app is permitted to access `table`.
     pub fn can_access_table(&self, table: &TableId) -> bool {
         self.tables.contains(table)
+    }
+
+    /// Whether the app serves `table`'s generic row API.
+    pub fn serves_table_api(&self, table: &TableId) -> bool {
+        self.api_tables.contains(table) && self.tables.contains(table)
     }
 
     /// Whether the app is permitted to access `store`.

@@ -360,8 +360,17 @@ pub async fn save_field_meta_row(catalog: &Catalog, meta: &FieldMeta) -> Result<
         )));
     }
 
+    // A rich type's attributes are stored in its canonical form (a `String`'s
+    // `options` typed as `Red, Green` becomes an array). An unregistered type is
+    // stored as given — see above.
+    let mut meta = meta.clone();
+    if let Some(rich) = meta.type_name.as_deref().and_then(sc_types::rich_type) {
+        rich.normalize_attrs(&mut meta.attributes)
+            .map_err(|e| Error::invalid(format!("field `{table}.{field}`: {e}")))?;
+    }
+
     let columns = meta_columns();
-    let values = meta_values(meta);
+    let values = meta_values(&meta);
     if load_field_meta(catalog, meta.id).await?.is_some() {
         let assignments = columns
             .iter()

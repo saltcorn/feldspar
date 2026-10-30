@@ -1637,7 +1637,10 @@ Object.defineProperty(globalThis, "__scMakeDb", {
       },
     });
   };
-  return handle("admin");
+  // The run's own default, which the host resolves: the admin's for a trigger,
+  // the caller's for a body answering a request. `asAdmin()` and `asUser()`
+  // say which explicitly.
+  return handle("default");
   },
 });
 // `models` (milestone 31 §3): `models.get(name)` answers a **handle** on a
@@ -1785,7 +1788,7 @@ Object.defineProperty(globalThis, "__scMakeModels", {
           fit = opts.fit;
         }
         const got = await db.__scSend({ op: "models", what: "get", model: model, fit: fit });
-        return makeHandle(got, "admin");
+        return makeHandle(got, "default");
       },
     });
   },
@@ -2630,8 +2633,12 @@ pub(crate) const FILES_PRELUDE: &str = r##"
             );
           }
           // The narrower authority of the two wins: a part opened `asUser`
-          // is read as the user even when the target was opened as the admin.
+          // is read as the user even when the target was opened as the admin,
+          // and one left at the run's default is never read as the admin.
           if (ref.handle.authority === "user") authority = "user";
+          else if (ref.handle.authority === "default" && authority === "admin") {
+            authority = "default";
+          }
           return ref.path;
         }
         if (typeof part === "string") return named(part, "concat()");
@@ -2861,9 +2868,10 @@ pub(crate) const FILES_PRELUDE: &str = r##"
     open: (path) => new SaltcornFile(handle, named(path, "open()"), INTERNAL),
     dir: (path) => new SaltcornDir(handle, norm(path, "dir()"), INTERNAL),
     root: new SaltcornDir(handle, "", INTERNAL),
-    // Authority, exactly as `db`'s: the admin's by default, because a trigger is
-    // server-side configuration, and delegated on request — at which point the
-    // path-cumulative `min_role` rule decides every operation.
+    // Authority, exactly as `db`'s: the run's default (the admin's in a trigger,
+    // the caller's in a body answering a request) unless the body says which —
+    // and when it is the caller's, the path-cumulative `min_role` rule decides
+    // every operation.
     asUser: () => makeStore({ token: handle.token, store: handle.store, authority: "user" }),
     asAdmin: () => makeStore({ token: handle.token, store: handle.store, authority: "admin" }),
   });
@@ -2893,7 +2901,7 @@ pub(crate) const FILES_PRELUDE: &str = r##"
           "there is no file store named `" + name + "`; this server has: " + known.join(", ")
         );
       }
-      return makeStore({ token: __scTok, store: name, authority: "admin" });
+      return makeStore({ token: __scTok, store: name, authority: "default" });
     };
     // What this run can reach, for a body that discovers rather than knows.
     Object.defineProperty(fs, "stores", {
@@ -2976,7 +2984,7 @@ pub(crate) const TRIGGERS_PRELUDE: &str = r#"
           "there is no trigger named `" + name + "`; this server has: " + known.join(", ")
         );
       }
-      return makeHandle({ token: __scTok, trigger: name, authority: "admin" });
+      return makeHandle({ token: __scTok, trigger: name, authority: "default" });
     };
     // What this run can reach, for a body that discovers rather than knows.
     Object.defineProperty(trigger, "names", {
@@ -7735,7 +7743,7 @@ mod tests {
         assert_eq!(out["s"]["what"], json!("summary"));
         assert_eq!(out["s"]["elements"], json!({ "1": ["Aitkin"] }));
         assert_eq!(out["w"]["what"], json!("write_posterior"));
-        assert_eq!(out["w"]["authority"], json!("admin"));
+        assert_eq!(out["w"]["authority"], json!("default"));
         assert_eq!(out["w"]["write"]["statistics"]["sd"], json!("alpha_sd"));
         assert_eq!(out["u"]["authority"], json!("user"));
         // A posterior does not predict rows, and says where to go instead,
@@ -7920,7 +7928,7 @@ mod tests {
             json!({
                 "op": "select",
                 "table": "invoices",
-                "authority": "admin",
+                "authority": "default",
                 "where": { "paid": false, "due": { "lt": "2026-08-17" } },
                 "select": [ "id", "amount", "customerⱵemail",
                             { "alias": "chased", "formula": "remindersↃinvoice.length" } ],
@@ -7983,7 +7991,7 @@ mod tests {
             json!({
                 "op": "select",
                 "table": "invoices",
-                "authority": "admin",
+                "authority": "default",
                 "where": { "paid": false },
                 "cursor": true,
                 "limit": 2,
@@ -8101,7 +8109,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authority_is_admin_until_delegated_and_where_it_is_said_does_not_matter() {
+    async fn authority_is_the_runs_default_until_delegated_and_where_it_is_said_does_not_matter() {
         let host = FakeHost::rows(json!([]));
         let rt = CodeRuntime::new();
         rt.run(with_host(
@@ -8122,7 +8130,7 @@ mod tests {
             .collect();
         assert_eq!(
             authority,
-            vec!["admin", "user", "user", "user", "admin"],
+            vec!["default", "user", "user", "user", "admin"],
             "asUser() sets one field of the plan, wherever it is said"
         );
     }
@@ -8154,7 +8162,7 @@ mod tests {
             plans[0],
             json!({
                 "op": "sql",
-                "authority": "admin",
+                "authority": "default",
                 "sql": "select count(*) as n from books where pages > $1",
                 "params": [200],
             }),
@@ -8166,7 +8174,7 @@ mod tests {
             .collect();
         assert_eq!(
             authority,
-            vec!["admin", "user", "user", "admin"],
+            vec!["default", "user", "user", "admin"],
             "the option and the handle say the same thing, and the option wins"
         );
         assert_eq!(
@@ -8300,7 +8308,7 @@ mod tests {
             json!({
                 "op": "aggregate",
                 "table": "books",
-                "authority": "admin",
+                "authority": "default",
                 "where": { "shelf": 2 },
                 "group": ["author"],
                 "having": { "n": { "gt": 2 } },
@@ -10315,7 +10323,7 @@ mod tests {
         assert_eq!(asked[1]["store"], json!("myFileStore"));
         assert_eq!(asked[1]["path"], json!("the_file.txt"));
         assert_eq!(asked[1]["encoding"], json!("text"));
-        assert_eq!(asked[1]["authority"], json!("admin"));
+        assert_eq!(asked[1]["authority"], json!("default"));
     }
 
     #[tokio::test]
@@ -10610,7 +10618,7 @@ mod tests {
             .iter()
             .map(|a| a["authority"].as_str().unwrap_or_default().to_owned())
             .collect();
-        assert_eq!(said, ["admin", "user", "admin", "user"]);
+        assert_eq!(said, ["default", "user", "admin", "user"]);
     }
 
     #[tokio::test]
@@ -10818,12 +10826,12 @@ mod tests {
         assert_eq!(asked.len(), 2, "{asked:?}");
         assert_eq!(asked[0]["trigger"], json!("archive_done"));
         assert_eq!(asked[0]["payload"], json!({ "before": "2026-08-01" }));
-        assert_eq!(asked[0]["authority"], json!("admin"));
+        assert_eq!(asked[0]["authority"], json!("default"));
         assert_eq!(asked[1]["trigger"], json!("reindex"));
     }
 
     #[tokio::test]
-    async fn authority_is_on_the_handle_and_the_default_is_the_triggers_own() {
+    async fn authority_is_on_the_handle_and_the_default_is_the_runs_own() {
         let runs = FakeTriggers::new(&["send_invoice"]);
         let rt = CodeRuntime::new();
         rt.run(with_triggers(
@@ -10840,7 +10848,7 @@ mod tests {
         let authorities: Vec<&Json> = asked.iter().map(|a| &a["authority"]).collect();
         assert_eq!(
             authorities,
-            vec![&json!("user"), &json!("admin"), &json!("admin")]
+            vec![&json!("user"), &json!("default"), &json!("admin")]
         );
         // `asUser()` answers a *new* handle: the one it came from is unchanged,
         // which is what makes `const t = trigger(…)` safe to reuse.

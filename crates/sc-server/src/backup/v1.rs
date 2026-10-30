@@ -3092,7 +3092,7 @@ mod tests {
             traits,
             [
                 "query_table",
-                "insert_row",
+                "edit_table_rows",
                 "run_js_code",
                 "run_js_code",
                 "run_trigger",

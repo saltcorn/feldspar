@@ -41,7 +41,14 @@ pub const OAUTH_PROVIDERS: &str = "oauth_providers";
 /// prints it back. It only matters while there are no users, so it is not
 /// consumed. Clear all keeps it, so the installation it empties is still
 /// claimable only through the same link.
+///
+/// [`FIRST_USER_TOKEN_ENV`] sets a token too, and is the better place for one.
 pub const FIRST_USER_TOKEN: &str = "first_user_token";
+
+/// The environment variable that sets a first-user token outside the
+/// database. Unlike [`FIRST_USER_TOKEN`] it survives Clear all and is never
+/// in a backup. When both are set and differ, either one is accepted.
+pub const FIRST_USER_TOKEN_ENV: &str = "FELDSPAR_FIRST_USER_TOKEN";
 
 /// A session's lifetime when nothing is stored: one day.
 pub const DEFAULT_SESSION_TTL_HOURS: i64 = 24;
@@ -123,21 +130,35 @@ pub async fn session_ttl_hours(catalog: &Catalog) -> Result<i64> {
     session_ttl_hours_from(&crate::store::all_config(catalog).await?)
 }
 
-/// The stored [`FIRST_USER_TOKEN`], or `None` when there is none. Blank counts
-/// as none, so `set-cfg first_user_token ""` cannot leave a token nobody can
-/// type. A database without the configuration table holds no token either:
-/// `serve` always creates it, but the create-first-user route also serves
-/// catalogs assembled without it.
-pub async fn first_user_token(catalog: &Catalog) -> Result<Option<String>> {
-    if catalog.get(crate::store::CONFIG_TABLE)?.is_none() {
-        return Ok(None);
-    }
-    Ok(
+/// The tokens that may create the first user: [`FIRST_USER_TOKEN_ENV`]'s and
+/// the stored [`FIRST_USER_TOKEN`]'s, either of which is accepted. Empty
+/// means none is needed.
+pub async fn first_user_tokens(catalog: &Catalog) -> Result<Vec<String>> {
+    first_user_tokens_with(catalog, std::env::var(FIRST_USER_TOKEN_ENV).ok()).await
+}
+
+/// [`first_user_tokens`] with the environment's token given as `env`. Blank
+/// counts as none, for both, so `set-cfg first_user_token ""` cannot leave a
+/// token nobody can type. A database without the configuration table holds
+/// no token: `serve` always creates it, but the create-first-user route also
+/// serves catalogs assembled without it.
+pub async fn first_user_tokens_with(catalog: &Catalog, env: Option<String>) -> Result<Vec<String>> {
+    let stored = if catalog.get(crate::store::CONFIG_TABLE)?.is_none() {
+        None
+    } else {
         match crate::store::stored_config(catalog, FIRST_USER_TOKEN).await? {
-            Some(Json::String(token)) if !token.trim().is_empty() => Some(token.trim().to_owned()),
+            Some(Json::String(token)) => Some(token),
             _ => None,
-        },
-    )
+        }
+    };
+    let mut tokens = Vec::new();
+    for token in [env, stored].into_iter().flatten() {
+        let token = token.trim();
+        if !token.is_empty() && !tokens.iter().any(|t| t == token) {
+            tokens.push(token.to_owned());
+        }
+    }
+    Ok(tokens)
 }
 
 // --- external identity providers --------------------------------------------

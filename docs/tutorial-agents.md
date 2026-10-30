@@ -164,11 +164,13 @@ variable in the code (`return text.toUpperCase()`), the code has the same `db` a
 list, and an agent can have as many as it needs. A Saltcorn 1 agent's "Run JavaScript code"
 skills are imported as these.
 
-There are three more table grants beside `query_table`, each its own trait so that a read-only
-agent is the default shape: `insert_row`, `update_rows` and `delete_rows`. The last two
-**require a `where`** — a table rewritten by an omitted argument is the same accident as one
-emptied by it — and both refuse a call that matches more rows than the trait's maximum rather
-than truncating it.
+To let an agent change a table, add `edit_table_rows` beside `query_table`. It names the table and
+has three checkboxes — **May insert rows**, **May update rows** and **May delete rows** — and each
+one you tick adds one tool (`insert_into_books`, `update_books`, `delete_from_books`). Nothing is
+ticked by default, so a read-only agent is still the default shape, and a form with nothing ticked
+is refused when you save. Updates and deletes **require a `where`** — a table rewritten by an
+omitted argument is the same accident as one emptied by it — and both refuse a call that matches
+more rows than the trait's maximum rather than truncating it.
 
 ## Step 5 — An agent that changes your app's code
 
@@ -835,9 +837,7 @@ Two model settings matter for an assistant that should answer in seconds:
 | Trait | Configured with | What the agent gets |
 |---|---|---|
 | `query_table` | a table, a field allow-list, a row bound | reads rows the caller may see |
-| `insert_row` | a table, the fields it may set | writes one row |
-| `update_rows` | a table, the fields it may change | updates the rows a `where` selects |
-| `delete_rows` | a table, a row bound | deletes the rows a `where` selects |
+| `edit_table_rows` | a table, three checkboxes (insert, update, delete), the fields it may set, a row bound | per ticked box: writes one row; updates the rows a `where` selects; deletes the rows a `where` selects |
 | `run_trigger` | one trigger | runs it, with a payload it supplies |
 | `run_js_code` | a tool name, a description, the code, its arguments | one tool whose JavaScript lives in the agent, run as the caller |
 | `library_tools` | a code library, and per tool a name, a description, a JSON schema and the export | one tool per function the library exports, run as the caller; a function may return a `$proposal` the person approves before anything changes |

@@ -1,10 +1,10 @@
 //! Selecting the rows a write trait is about to change (§11.3).
 //!
-//! `update_rows` and `delete_rows` both start the same way: find the rows the
+//! `edit_table_rows`' update and delete both start the same way: find the rows the
 //! filter selects, refuse the call outright if there are too many, and then
 //! write them one at a time by primary key. That shape is here once because each
 //! of its three decisions is a promise, and two of them are safety properties
-//! that must not be able to differ between the two traits.
+//! that must not be able to differ between the two.
 //!
 //! **The rows are selected through [`sc_api::read_rows_as`]** — the caller's own
 //! read. So a tool can only change rows the same caller could have been shown,

@@ -376,12 +376,13 @@ fn react_prompt(app: &Application, store: &str, root: &str) -> String {
 /// What a builder is told about being handed a whole application, which is how
 /// the `admin_copilot` agent uses it (§13.6): the tables already exist and are
 /// connected, and the brief is the specification.
-const BUILDING: &str = "When you are handed an application to build, the tables it needs \
-have been created and connected for you, so they are already in `src/feldspar/`. You cannot \
-change the schema: if data the brief needs is not in the client, build what you can and say \
-exactly which table or field is missing in your report. Replace the scaffold's placeholder \
-pages with the real ones, implement every page the brief describes, and run `check` until it \
-passes before you report.";
+const BUILDING: &str = "When you are handed an application to build, its tables have been \
+created and connected, and its data is reached through the **custom queries** written for it: \
+typed methods in `src/feldspar/`, over the tables `schema.sql` describes. You cannot change the \
+schema or the API: if a page needs a query that is missing, build what you can and name the \
+missing query (parameters, result) in your report. Replace the scaffold's placeholder pages \
+with the real ones, implement every page the brief describes, and run `check` until it passes \
+before you report.";
 
 /// Where `app` is served, as a prompt says it: on its subdomain, or — for `@`
 /// — on the base domain, which has no subdomain to name.

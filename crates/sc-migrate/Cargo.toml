@@ -1,0 +1,27 @@
+[package]
+name = "sc-migrate"
+description = "Migrations of the primary database: the ordered registry and the runner that applies each once (layer 2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sc-error.workspace = true
+sc-query.workspace = true
+sc-db.workspace = true
+futures.workspace = true
+chrono.workspace = true
+# What a Rust migration reshapes stored JSON as.
+serde_json.workspace = true
+
+[dev-dependencies]
+sc-db-postgres.workspace = true
+sc-db-sqlite.workspace = true
+sc-test-harness.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

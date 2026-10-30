@@ -1422,7 +1422,7 @@ async fn a_v1_backup_with_calculated_fields_an_agent_and_a_workflow_is_imported(
         .collect();
     assert_eq!(
         traits,
-        vec!["run_js_code", "query_table", "insert_row"],
+        vec!["run_js_code", "query_table", "edit_table_rows"],
         "{agent}"
     );
     // The JavaScript tool is the agent's own, its code as v1 wrote it.

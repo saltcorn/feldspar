@@ -9213,6 +9213,7 @@ dependencies = [
  "sc-llm",
  "sc-log",
  "sc-mcp",
+ "sc-migrate",
  "sc-module",
  "sc-query",
  "sc-server",
@@ -9590,6 +9591,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-migrate"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "sc-db",
+ "sc-db-postgres",
+ "sc-db-sqlite",
+ "sc-error",
+ "sc-query",
+ "sc-test-harness",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "sc-model"
 version = "0.1.0"
 dependencies = [
@@ -9762,6 +9779,7 @@ dependencies = [
  "sc-llm",
  "sc-log",
  "sc-mcp",
+ "sc-migrate",
  "sc-model",
  "sc-module",
  "sc-python",

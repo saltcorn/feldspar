@@ -946,7 +946,7 @@ impl RestProvider {
         let scope = custom::code_scope(query, req)?;
         let caller = ownership::caller_context(user);
         let result = dispatcher
-            .run_code(
+            .run_query_code(
                 cat,
                 action,
                 &query.name,
@@ -2083,7 +2083,7 @@ impl ApiProvider for RestProvider {
         };
         let caller = ownership::caller_context(user);
         let result = dispatcher
-            .run_code(
+            .run_query_code(
                 cat,
                 action,
                 &query.name,

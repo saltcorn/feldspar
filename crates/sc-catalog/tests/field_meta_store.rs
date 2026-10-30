@@ -128,6 +128,46 @@ async fn a_rich_type_and_its_attributes_round_trip() -> Result<()> {
 }
 
 #[tokio::test]
+async fn string_options_given_as_text_are_stored_as_an_array() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = catalog(&db).await?;
+    bootstrap_field_meta(&cat).await?;
+    create_books(&cat).await?;
+
+    let mut meta = FieldMeta::new("books", "title").rich_type("string");
+    meta.attributes
+        .insert("options".into(), json!("Paperback, Hard cover"));
+    save_field_meta(&cat, &meta).await?;
+    let loaded = load_field_meta_by_field(&cat, "books", "title")
+        .await?
+        .expect("the overlay should load");
+    assert_eq!(
+        loaded.attributes.get("options"),
+        Some(&json!(["Paperback", "Hard cover"]))
+    );
+
+    // The quoted form, too; and text that cannot be read refuses the save.
+    meta.attributes
+        .insert("options".into(), json!(r#""Paperback", "Hard, cover""#));
+    save_field_meta(&cat, &meta).await?;
+    let loaded = load_field_meta_by_field(&cat, "books", "title")
+        .await?
+        .expect("the overlay should load");
+    assert_eq!(
+        loaded.attributes.get("options"),
+        Some(&json!(["Paperback", "Hard, cover"]))
+    );
+    meta.attributes
+        .insert("options".into(), json!(r#""Paperback"#));
+    let err = save_field_meta(&cat, &meta).await.unwrap_err().to_string();
+    assert!(
+        err.contains("books.title") && err.contains("options"),
+        "{err}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn saving_again_updates_in_place_rather_than_inserting() -> Result<()> {
     let db = TestDb::new().await?;
     let cat = catalog(&db).await?;
