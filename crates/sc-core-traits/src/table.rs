@@ -1,8 +1,8 @@
 //! What every table trait shares: its configuration, and the `where` object
 //! (§11.3).
 //!
-//! `query_table`, `insert_row`, `update_rows` and `delete_rows` are four grants
-//! over one table, and the parts they have in common are here rather than copied
+//! `query_table` and `edit_table_rows`' insert, update and delete are four
+//! grants over one table, and the parts they have in common are here rather than copied
 //! four times — not to save the lines, but because each of them is a **promise
 //! to the model**. The `where` vocabulary a model learns from `query_books` is
 //! the one `delete_from_books` takes; a field named in the allow-list means the
@@ -35,8 +35,8 @@ pub const CFG_TABLE: &str = "table";
 /// The fields the model may use. Empty means all of them.
 ///
 /// What "use" means is each trait's own: for `query_table` it is what may be
-/// seen, filtered on and ordered by; for `insert_row` and `update_rows` it is
-/// what may be **written**. A read allow-list narrows a filter because a hidden
+/// seen, filtered on and ordered by; for `edit_table_rows`' insert and update
+/// it is what may be **written**. A read allow-list narrows a filter because a hidden
 /// field could otherwise be read back one comparison at a time; a write
 /// allow-list does not, because a filter naming a field the model may not change
 /// still only reaches rows the caller may already see.

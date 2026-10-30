@@ -940,3 +940,27 @@ ALTER TABLE IF EXISTS "users" ADD COLUMN IF NOT EXISTS "attributes" jsonb;
 -- outbox), as a JSON array. NULL reads as nothing. (Bootstrap adds it too.)
 -- On SQLite use `ADD COLUMN "outbox" TEXT` without `IF NOT EXISTS`.
 ALTER TABLE IF EXISTS "_fd_checklist_runs" ADD COLUMN IF NOT EXISTS "outbox" jsonb;
+
+-- The `insert_row`, `update_rows` and `delete_rows` agent traits are merged
+-- into `edit_table_rows`, whose `allow_insert` / `allow_update` /
+-- `allow_delete` checkboxes say which tools it offers. Each old entry becomes
+-- one `edit_table_rows` entry over the same table with its one box ticked (the
+-- tool names are unchanged). Idempotent: rewritten entries no longer match.
+-- (Postgres only; on SQLite re-save the agents from the admin UI instead.)
+UPDATE "_fd_agents" a
+SET "traits" = (
+  SELECT jsonb_agg(
+    CASE t->>'trait'
+      WHEN 'insert_row' THEN jsonb_build_object('trait', 'edit_table_rows',
+        'config', coalesce(t->'config', '{}'::jsonb) || '{"allow_insert": true}'::jsonb)
+      WHEN 'update_rows' THEN jsonb_build_object('trait', 'edit_table_rows',
+        'config', coalesce(t->'config', '{}'::jsonb) || '{"allow_update": true}'::jsonb)
+      WHEN 'delete_rows' THEN jsonb_build_object('trait', 'edit_table_rows',
+        'config', coalesce(t->'config', '{}'::jsonb) || '{"allow_delete": true}'::jsonb)
+      ELSE t
+    END ORDER BY ord)
+  FROM jsonb_array_elements(a."traits") WITH ORDINALITY AS e(t, ord)
+)
+WHERE jsonb_typeof(a."traits") = 'array'
+  AND EXISTS (SELECT 1 FROM jsonb_array_elements(a."traits") t
+              WHERE t->>'trait' IN ('insert_row', 'update_rows', 'delete_rows'));

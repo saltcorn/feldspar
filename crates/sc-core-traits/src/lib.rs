@@ -22,10 +22,10 @@
 //! ## The set
 //!
 //! Twelve traits over seven things an agent can be given. **Tables**:
-//! [`QueryTable`] reads one, and [`InsertRow`], [`UpdateRows`] and
-//! [`DeleteRows`] are three separate opt-in grants over one — so a read-only
-//! agent is the default shape and each way of changing data is a deliberate act
-//! with a form field attached. **Actions**: [`RunJsCode`] is one JavaScript
+//! [`QueryTable`] reads one, and [`EditTableRows`] changes one under three
+//! separate checkboxes — insert, update, delete — so a read-only agent is the
+//! default shape and each way of changing data is a deliberate act with a form
+//! field attached. **Actions**: [`RunJsCode`] is one JavaScript
 //! body kept in the agent's own configuration, run as a `run_js_code` action
 //! body is; [`RunTrigger`] exposes one configured
 //! trigger, which is what connects an agent to the whole of §10 (and, once §10.3
@@ -105,12 +105,11 @@ mod admin_copilot;
 mod ask_user;
 mod build_application;
 mod coding;
-mod delete_rows;
 mod docs;
+mod edit_table_rows;
 mod files;
 mod generate_js;
 pub mod http;
-mod insert_row;
 mod library_tools;
 mod mcp_server;
 pub mod media;
@@ -130,7 +129,6 @@ mod similar_rows;
 mod skill_file;
 mod subagent;
 mod table;
-mod update_rows;
 mod web_search;
 mod write;
 
@@ -172,15 +170,16 @@ pub use coding::{
     FeatureKind, FeatureStatus, Plan, Progress, WORKFLOW_DIRECT, WORKFLOW_PLANNED, checklist,
     run_plan,
 };
-pub use delete_rows::DeleteRows;
 pub use docs::Docs;
+pub use edit_table_rows::{
+    CFG_ALLOW_DELETE, CFG_ALLOW_INSERT, CFG_ALLOW_UPDATE, DEFAULT_MAX_WRITE_ROWS, EditTableRows,
+};
 pub use generate_js::{
     ARG_CODE, CFG_ALLOW_FETCH, CFG_ALLOW_LIBRARIES, CFG_CODE_DESCRIPTION, CFG_FETCH_HOSTS,
     CFG_FOLLOW_UP_PROMPT, CFG_GEN_TIMEOUT, CFG_GEN_TOOL_DESCRIPTION, CFG_GEN_TOOL_NAME,
     CFG_TABLE_ACCESS, CFG_TABLES, GenerateJs,
 };
 pub use http::Http;
-pub use insert_row::InsertRow;
 pub use library_tools::{CFG_LIBRARY, CFG_LIBRARY_TOOLS, LibraryTools, PROPOSAL_KEY};
 pub use mcp_server::{CFG_ALLOWED_TOOLS, CFG_READ_ONLY_TOOLS, CFG_SERVER, McpServer};
 pub use media::{GenerateImage, Speech};
@@ -236,7 +235,6 @@ pub use subagent::{
     ARG_CONTEXT, ARG_OUTPUT, ARG_TASK, CFG_HANDOFF_PROMPT, CFG_HANDOVER_PROMPT, CFG_MAX_DEPTH,
     CFG_MAX_STEPS, CFG_WHEN_TO_USE, MAX_CONFIGURABLE_DEPTH, Subagent,
 };
-pub use update_rows::{DEFAULT_MAX_WRITE_ROWS, UpdateRows};
 
 /// What each built-in trait calls the tool it derives from its configuration —
 /// the answer to "what will this be called?" the admin UI wants before an agent
@@ -259,9 +257,12 @@ pub mod tool_names {
         view_app_tool_name as view_app, view_image_tool_name as view_image,
         write_file_tool_name as write_file,
     };
-    pub use crate::delete_rows::tool_name as delete_rows;
+    pub use crate::edit_table_rows::tool_names as edit_table_rows;
+    pub use crate::edit_table_rows::{
+        delete_tool_name as delete_rows, insert_tool_name as insert_row,
+        update_tool_name as update_rows,
+    };
     pub use crate::http::tool_name as http;
-    pub use crate::insert_row::tool_name as insert_row;
     pub use crate::mcp_server::tool_name as mcp_server;
     pub use crate::media::generate_image_tool_name as generate_image;
     pub use crate::memory::tool_names as memory;
@@ -272,7 +273,6 @@ pub mod tool_names {
     pub use crate::similar_rows::tool_name as similar_rows;
     pub use crate::skill_file::tool_name as skill_file;
     pub use crate::subagent::tool_name as subagent;
-    pub use crate::update_rows::tool_name as update_rows;
     pub use crate::web_search::tool_name as web_search;
     pub use sc_docs::tools::TOOL_NAMES as docs;
 }
@@ -320,10 +320,8 @@ pub fn register_agent_actions(
 pub fn register_builtin_traits(registry: &mut AgentRegistry) -> Result<()> {
     registry.register(Arc::new(AdminCopilot))?;
     registry.register(Arc::new(QueryTable))?;
-    registry.register(Arc::new(InsertRow))?;
+    registry.register(Arc::new(EditTableRows))?;
     registry.register(Arc::new(PreviewPane))?;
-    registry.register(Arc::new(UpdateRows))?;
-    registry.register(Arc::new(DeleteRows))?;
     registry.register(Arc::new(Docs))?;
     registry.register(Arc::new(RunTrigger))?;
     registry.register(Arc::new(RunJsCode))?;
@@ -363,12 +361,11 @@ mod tests {
                 "ask_user",
                 "build_application",
                 "coding",
-                "delete_rows",
                 "docs",
+                "edit_table_rows",
                 "generate_image",
                 "generate_js",
                 "http",
-                "insert_row",
                 "library_tools",
                 "mcp_server",
                 "memory",
@@ -385,7 +382,6 @@ mod tests {
                 "skill_file",
                 "speech",
                 "subagent",
-                "update_rows",
                 "web_search",
             ]
         );
@@ -489,16 +485,20 @@ mod tests {
                 CFG_DOC_FORMAT
             ]
         );
-        // An insert has no row bound to declare — it writes one row — and a
-        // delete has no field allow-list, because it takes the whole row and a
-        // setting that narrowed nothing would suggest a grant that does not
-        // exist.
-        assert_eq!(spec("insert_row"), vec![CFG_TABLE, CFG_FIELDS]);
+        // One table, then a checkbox per way of changing it, then the two
+        // bounds the grants share: what an insert or update may set, and how
+        // many rows an update or delete may reach.
         assert_eq!(
-            spec("update_rows"),
-            vec![CFG_TABLE, CFG_FIELDS, CFG_MAX_ROWS]
+            spec("edit_table_rows"),
+            vec![
+                CFG_TABLE,
+                CFG_ALLOW_INSERT,
+                CFG_ALLOW_UPDATE,
+                CFG_ALLOW_DELETE,
+                CFG_FIELDS,
+                CFG_MAX_ROWS
+            ]
         );
-        assert_eq!(spec("delete_rows"), vec![CFG_TABLE, CFG_MAX_ROWS]);
         assert_eq!(spec("run_trigger"), vec![CFG_TRIGGER]);
         assert_eq!(
             spec("run_js_code"),
@@ -598,8 +598,8 @@ mod tests {
     ///
     /// Worth pinning: these are the names the model chooses between, and the
     /// collision check (§11.2) refuses a save that produces two of the same. If
-    /// `insert_row` and `update_rows` over `books` both derived `books_write`,
-    /// an agent could not have both.
+    /// `edit_table_rows`' insert and update tools over `books` both derived
+    /// `books_write`, an agent could not have both.
     #[test]
     fn the_derived_tool_names_are_distinct_and_say_what_they_do() {
         let scope = FileScope {

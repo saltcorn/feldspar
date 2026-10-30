@@ -2,6 +2,32 @@
 
 Changes in reverse chronological order.
 
+## One `edit_table_rows` agent trait replaces `insert_row`, `update_rows` and `delete_rows`
+
+The three write traits are merged into one, `edit_table_rows` (`sc_core_traits::EditTableRows`).
+Its form names the table once and has three checkboxes: **May insert rows** (`allow_insert`),
+**May update rows** (`allow_update`) and **May delete rows** (`allow_delete`). All three are off
+by default. The field allow-list (`fields`, which bounds what an insert or update may set) and the
+row bound (`max_rows`, for updates and deletes) are shared.
+
+- Each ticked box adds one tool. The names have not changed: `insert_into_<table>`,
+  `update_<table>`, `delete_from_<table>`. A tool whose box is off is not offered. If the model
+  calls it by name anyway, the call is refused, and the message names the checkbox.
+- `validate_config` refuses a form with no box ticked, and a checkbox value that is not a boolean.
+  The update check ("no field would be changeable") applies only when updates are allowed.
+- What each write does is unchanged. The code moved to `src/edit_table_rows/{insert,update,delete}.rs`.
+  `DEFAULT_MAX_WRITE_ROWS` now lives in `edit_table_rows`. `tool_names::edit_table_rows(table)`
+  lists all three tool names. `tool_names::insert_row` / `update_rows` / `delete_rows` still name
+  the single tools.
+- The Saltcorn 1 importer maps a table skill's "insert" to `edit_table_rows` with `allow_insert`.
+- `TABLES_RENAME.sql` rewrites stored agents: each old entry becomes an `edit_table_rows` entry
+  over the same table, with its one box ticked (Postgres, idempotent).
+- The `insert_row` / `update_rows` / `delete_rows` *actions* (triggers) are unchanged.
+- Tests: `write_rows.rs` now runs against the one trait. A new test,
+  `each_checkbox_grants_its_own_tool_and_no_other`, covers which tools each checkbox adds, the
+  refusal of a blank form and of a non-boolean, and the refusal of an ungranted tool called by
+  name.
+
 ## The first-user token can come from the environment
 
 `FELDSPAR_FIRST_USER_TOKEN` sets a first-user token too (`sc_config::FIRST_USER_TOKEN_ENV`). It is

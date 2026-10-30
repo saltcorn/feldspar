@@ -38,9 +38,9 @@
 //!   configured. So it is scoped by **what it may do** rather than by what it may
 //!   reach — four checkboxes ([`CFG_ALLOW_CREATE`] and its siblings) — and that
 //!   difference is the phase's most load-bearing deviation.
-//! - **Its grants are configuration rather than separate traits.** `insert_row`,
-//!   `update_rows` and `delete_rows` are three traits over one table; these four
-//!   are booleans on one trait, because the operations share a **batch**:
+//! - **Its grants are configuration rather than separate traits**, as
+//!   `edit_table_rows`' insert, update and delete are; these four are booleans
+//!   on one trait because the operations share a **batch**:
 //!   creating `matters` with a key to an existing `clients` is a create *and* an
 //!   edit, and a batch that half-applied for want of a grant is the state the
 //!   transaction exists to avoid. A batch containing an ungranted operation is

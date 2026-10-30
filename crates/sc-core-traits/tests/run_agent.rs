@@ -120,7 +120,11 @@ impl ProviderConnector for Scripted {
 fn summariser() -> Agent {
     Agent::new("summariser", "main")
         .system_prompt("You summarise posts.")
-        .with_trait(EnabledTrait::new("insert_row").config("table", "summaries"))
+        .with_trait(
+            EnabledTrait::new("edit_table_rows")
+                .config("table", "summaries")
+                .config("allow_insert", true),
+        )
 }
 
 /// `run_agent` configured to summarise the row that was just written.

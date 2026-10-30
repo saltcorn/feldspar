@@ -4178,9 +4178,14 @@ the single exception**, and the reason is structural rather than an oversight: s
 schema-and-triggers paragraphs at the end of this section.
 
 **Tables.** `query_table` (one configured table; tool arguments are a `where` object, an
-optional field list, an ordering and a bounded `limit`), `insert_row` and `update_rows` /
-`delete_rows` as separate opt-in traits, so read-only is the default shape of an agent and
-granting writes is a decision with a form field attached. All of them go through `sc-api::rows`
+optional field list, an ordering and a bounded `limit`) and `edit_table_rows`, whose insert,
+update and delete are three separate opt-in checkboxes (`allow_insert`, `allow_update`,
+`allow_delete`, all off by default; a form with none ticked is refused), so read-only is the
+default shape of an agent and granting writes is a decision with a form field attached. Each
+ticked box adds one tool (`insert_into_books`, `update_books`, `delete_from_books`); the table,
+the field allow-list (insert and update) and the row bound (update and delete) are shared.
+These were three traits (`insert_row`, `update_rows`, `delete_rows`) until they were merged, as
+`admin_copilot`'s grants already were. All of them go through `sc-api::rows`
 with the run's caller.
 
 **What was built, where it deviates** (Phase 3, `query_table`):
@@ -4218,7 +4223,7 @@ with the run's caller.
   fields validated and the table's own triggers fired. The REST provider keeps its own
   orchestration because it turns each denial into an HTTP status; the *rule* is the shared
   part, which is the half that must not be able to differ.
-- **`update_rows` requires a `where` as well as `delete_rows` does.** The TODO asks it of the
+- **An update requires a `where` as well as a delete does.** The TODO asks it of the
   delete alone, but a whole table rewritten by an omitted argument is the same accident as one
   emptied by it, and §10.1 already refuses both on the *actions*. A model that means every row
   writes a condition that matches every row.
@@ -4232,7 +4237,7 @@ with the run's caller.
   "The row whose title is Dune" is how a model addresses a row it may not rename, and the rows a
   filter can reach are already bounded by the caller's access. A read trait's allow-list is the
   other way round, because there a hidden field could be read back one comparison at a time.
-- **`insert_row`'s arguments are the row itself**, flat, and its schema has **no `required`
+- **An insert's arguments are the row itself**, flat, and its schema has **no `required`
   list**: a `NOT NULL` column may have a database default and the catalog does not record
   defaults, so demanding every required column would make the model invent values the database
   was going to supply. The prose says which fields are required; a genuinely missing value comes
