@@ -2,6 +2,22 @@
 
 Changes in reverse chronological order.
 
+## The first-user token can come from the environment
+
+`FELDSPAR_FIRST_USER_TOKEN` sets a first-user token too (`sc_config::FIRST_USER_TOKEN_ENV`). It is
+the better place for one: it is not in the database, so it survives Clear all and is never backed
+up. When the variable or the `first_user_token` setting is set, creating the first user needs a
+token that matches one of them. When both are set and differ, either is accepted.
+
+- `sc_config::first_user_token` is replaced by `first_user_tokens`, which returns every accepted
+  token (blank ones and duplicates left out). `first_user_tokens_with` takes the environment's
+  value as an argument, so tests do not have to set the process environment.
+- `sc_auth::first_user_token_matches` takes a list of tokens. It compares the supplied token with
+  every one of them in constant time, and does not stop at the first match.
+- `/api/auth/status` reports `first_user_token_required` when either source sets a token.
+- Tests: `first_user_tokens_come_from_the_environment_and_the_table` (sc-config) and
+  `either_of_two_tokens_matches` (sc-auth).
+
 ## Security: a first-user token, so a fresh instance is claimed by whoever was given the link
 
 Before this change, a fresh installation showed the create-first-user screen to whoever reached

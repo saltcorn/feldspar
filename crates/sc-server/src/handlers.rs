@@ -164,7 +164,7 @@ pub fn admin_handlers_with(
                 // Whether the create-first-user screen needs the setup link's
                 // token. Not a secret, and only said while it can matter.
                 let token_required =
-                    !exists && sc_config::first_user_token(&catalog).await?.is_some();
+                    !exists && !sc_config::first_user_tokens(&catalog).await?.is_empty();
                 let current = ctx.user.as_ref().map_or(Json::Null, user_summary_json);
                 let locales = sc_i18n::active();
                 Ok(HandlerResponse::ok(json!({
@@ -194,7 +194,8 @@ pub fn admin_handlers_with(
                 // An installation set up with a first-user token is claimed
                 // only through the link that carries it (security: otherwise
                 // whoever reaches a fresh instance first becomes its admin).
-                if let Some(expected) = sc_config::first_user_token(&catalog).await? {
+                let expected = sc_config::first_user_tokens(&catalog).await?;
+                if !expected.is_empty() {
                     let supplied = ctx.body.get("token").and_then(Json::as_str);
                     if !sc_auth::first_user_token_matches(&expected, supplied) {
                         return Ok(HandlerResponse::ok(json!({

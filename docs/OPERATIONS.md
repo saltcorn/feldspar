@@ -408,6 +408,11 @@ Four things, and three of them happen in a browser (README §2.7):
    key. Backups leave it out. **Clear all** keeps it, so an emptied
    installation still needs the same token. `feldspar set-cfg --unset
    first_user_token` removes it.
+
+   The token can also come from the environment variable
+   `FELDSPAR_FIRST_USER_TOKEN` of the `serve` process. This is the better
+   place for it: it is never in the database, so it survives Clear all and is
+   never in a backup. When both are set and differ, either one is accepted.
 3. **TLS**, in the admin UI under **Settings → SSL / TLS certificates** — not a
    command-line flag. Choose `letsencrypt`, give a contact address, and restart.
    Validation is TLS-ALPN-01, so port 443 must be reachable from the internet,

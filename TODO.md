@@ -741,6 +741,8 @@ workflow) found what the first importer left behind. Fixture:
 - [x] **S2.1** A first-user token (`first_user_token`, set with `set-cfg` before the first
   `serve`) that creating the first user requires; the admin UI takes it from
   `?first_user_token=`, and Clear all keeps it.
+- [x] **S2.2** The first-user token can also be set with `FELDSPAR_FIRST_USER_TOKEN`; when both it
+  and the stored setting are set, either is accepted.
 
 ---
 

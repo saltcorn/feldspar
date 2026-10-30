@@ -60,7 +60,8 @@ pub fn admin_endpoints() -> EndpointSet {
             .output(TypeSchema::struct_of([
                 StructField::new("any_user_exists", TypeSchema::bool()),
                 // Whether creating the first user needs the setup link's token
-                // (`first_user_token`); only ever true while no user exists.
+                // (`first_user_token` or `FELDSPAR_FIRST_USER_TOKEN`); only ever true
+                // while no user exists.
                 StructField::new("first_user_token_required", TypeSchema::bool()),
                 StructField::new("current_user", TypeSchema::optional(user_summary_schema())),
                 // Which languages this installation serves (§16.1). Here rather
