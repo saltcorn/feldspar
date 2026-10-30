@@ -114,10 +114,12 @@ impl StringType {
         StringType {
             attributes: vec![
                 FormField::new(ATTR_MAX_LENGTH, BasicType::Int).label("Maximum length"),
-                // A JSON array of the allowed values. Any JSON shape passes the
-                // structural check; `validate` reads it as an array of choices.
+                // The allowed values: a JSON array, or text read by
+                // [`parse_string_options`] (`Red, Green, Blue`). Saving
+                // normalizes the text forms to the array.
                 FormField::new(ATTR_OPTIONS, BasicType::Json)
-                    .label("Options (a fixed list of allowed values)"),
+                    .label("Options (a fixed list of allowed values)")
+                    .sublabel("Comma-separated, e.g. Red, Green, Blue"),
                 FormField::new(ATTR_REGEX, BasicType::Text)
                     .label("Pattern (a regular expression the value must match)"),
             ],
@@ -157,15 +159,13 @@ impl RichType for StringType {
             }
         }
 
-        // `options`, when a non-empty array, restricts the value to that set.
-        if let Some(options) = attrs
-            .get(ATTR_OPTIONS)
-            .and_then(serde_json::Value::as_array)
-        {
-            if !options.is_empty() && !options.iter().any(|o| o.as_str() == Some(s)) {
+        // `options`, when non-empty, restricts the value to that set.
+        if let Some(options) = attrs.get(ATTR_OPTIONS) {
+            let options = parse_string_options(options)?;
+            if !options.is_empty() && !options.iter().any(|o| o == s) {
                 let allowed = options
                     .iter()
-                    .map(std::string::ToString::to_string)
+                    .map(|o| format!("{o:?}"))
                     .collect::<Vec<_>>()
                     .join(", ");
                 return Err(Error::invalid(format!(
@@ -185,10 +185,76 @@ impl RichType for StringType {
         Ok(())
     }
 
+    /// `options` given as text is stored as the array it reads as; an empty
+    /// text is no options at all.
+    fn normalize_attrs(&self, attrs: &mut Attrs) -> Result<()> {
+        if let Some(text @ serde_json::Value::String(_)) = attrs.get(ATTR_OPTIONS) {
+            let options = parse_string_options(text)?;
+            if options.is_empty() {
+                attrs.remove(ATTR_OPTIONS);
+            } else {
+                attrs.insert(ATTR_OPTIONS.to_owned(), serde_json::json!(options));
+            }
+        }
+        Ok(())
+    }
+
     fn sql_types(&self) -> &[&str] {
         const TYPES: &[&str] = &["text"];
         TYPES
     }
+}
+
+/// Read a `String` field's `options` attribute as its list of allowed values.
+///
+/// Three forms are accepted, the last two for admins who do not write JSON:
+///
+/// - a JSON array of strings: `["Red", "Green", "Blue"]`;
+/// - quoted and comma-separated — the array without its brackets:
+///   `"Red", "Green", "Blue"` (how to write a value holding a comma);
+/// - plain comma-separated: `Red, Green, Blue`. Each value is trimmed, but may
+///   have spaces inside (`Dark red, Light blue`); empty ones are dropped.
+///
+/// Text starting with `[` or `"` is read as JSON, so a typo there is an error
+/// rather than a list of fragments.
+pub fn parse_string_options(options: &serde_json::Value) -> Result<Vec<String>> {
+    let bad = |detail: &str| {
+        Error::invalid(format!(
+            "`{ATTR_OPTIONS}` should be a list of values like `Red, Green, Blue`, \
+             `\"Red\", \"Green\"` or `[\"Red\", \"Green\"]`: {detail}"
+        ))
+    };
+    let items = match options {
+        serde_json::Value::Array(items) => items.clone(),
+        serde_json::Value::String(text) => {
+            let text = text.trim();
+            let json = if text.starts_with('[') {
+                text.to_owned()
+            } else if text.starts_with('"') {
+                format!("[{text}]")
+            } else {
+                return Ok(text
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|o| !o.is_empty())
+                    .map(str::to_owned)
+                    .collect());
+            };
+            match serde_json::from_str(&json) {
+                Ok(serde_json::Value::Array(items)) => items,
+                Ok(_) => return Err(bad("it is not a list")),
+                Err(e) => return Err(bad(&e.to_string())),
+            }
+        }
+        other => return Err(bad(&format!("got {other}"))),
+    };
+    items
+        .into_iter()
+        .map(|item| match item {
+            serde_json::Value::String(s) => Ok(s),
+            other => Err(bad(&format!("{other} is not text"))),
+        })
+        .collect()
 }
 
 /// A 64-bit integer with an optional minimum and maximum (design §2.2).
@@ -339,6 +405,65 @@ mod tests {
         assert!(err.contains("red") && err.contains("blue"), "{err}");
         let empty = attrs(&[(ATTR_OPTIONS, json!([]))]);
         assert!(t.validate(&Value::Text("anything".into()), &empty).is_ok());
+    }
+
+    #[test]
+    fn string_options_read_as_json_quoted_or_plain_comma_separated() {
+        let three = vec!["Red".to_owned(), "Green".to_owned(), "Blue".to_owned()];
+        // A JSON array, as an array or as text.
+        assert_eq!(
+            parse_string_options(&json!(["Red", "Green", "Blue"])).unwrap(),
+            three
+        );
+        assert_eq!(
+            parse_string_options(&json!(r#" ["Red", "Green", "Blue"] "#)).unwrap(),
+            three
+        );
+        // Plain comma-separated: trimmed, inner spaces kept, empties dropped.
+        assert_eq!(
+            parse_string_options(&json!("Red, Green,Blue ")).unwrap(),
+            three
+        );
+        assert_eq!(
+            parse_string_options(&json!(" Dark red ,, Light blue")).unwrap(),
+            ["Dark red", "Light blue"]
+        );
+        // Quoted comma-separated — the array without brackets, so a value may
+        // hold a comma.
+        assert_eq!(
+            parse_string_options(&json!(r#""Red", "Green", "Blue""#)).unwrap(),
+            three
+        );
+        assert_eq!(
+            parse_string_options(&json!(r#""Red, dark", "Green""#)).unwrap(),
+            ["Red, dark", "Green"]
+        );
+        // Nothing, and the mistakes.
+        assert!(parse_string_options(&json!("  ")).unwrap().is_empty());
+        assert!(parse_string_options(&json!(r#""Red", "Green"#)).is_err());
+        assert!(parse_string_options(&json!([1, 2])).is_err());
+        assert!(parse_string_options(&json!(3)).is_err());
+    }
+
+    #[test]
+    fn string_options_text_is_normalized_to_an_array_and_validates() {
+        let t = StringType::new();
+        let mut a = attrs(&[(ATTR_OPTIONS, json!("Red, Green"))]);
+        // Validation reads the text form directly, too.
+        assert!(t.validate(&Value::Text("Green".into()), &a).is_ok());
+        assert!(t.validate(&Value::Text("Blue".into()), &a).is_err());
+
+        t.normalize_attrs(&mut a).unwrap();
+        assert_eq!(a.get(ATTR_OPTIONS), Some(&json!(["Red", "Green"])));
+        // An array is left alone; empty text removes the attribute.
+        t.normalize_attrs(&mut a).unwrap();
+        assert_eq!(a.get(ATTR_OPTIONS), Some(&json!(["Red", "Green"])));
+        let mut blank = attrs(&[(ATTR_OPTIONS, json!(" "))]);
+        t.normalize_attrs(&mut blank).unwrap();
+        assert!(blank.get(ATTR_OPTIONS).is_none());
+        // Unreadable text is refused.
+        let mut bad = attrs(&[(ATTR_OPTIONS, json!(r#""Red"#))]);
+        assert!(t.normalize_attrs(&mut bad).is_err());
     }
 
     #[test]

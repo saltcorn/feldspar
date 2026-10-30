@@ -2,6 +2,24 @@
 
 Changes in reverse chronological order.
 
+## A `string` field's `options` can be written without JSON
+
+The `options` attribute (the allowed values) of the `string` rich type now takes three forms:
+
+- a JSON array, as before: `["Red", "Green", "Blue"]`;
+- plain comma-separated text: `Red, Green, Blue`. Each value is trimmed but may have spaces
+  inside (`Dark red, Light blue`), and empty values are dropped;
+- quoted comma-separated text, which is the JSON array without its brackets:
+  `"Red", "Green", "Blue"`. Use this form when a value contains a comma.
+
+`sc_types::parse_string_options` reads all three. Text that starts with `[` or `"` is parsed as
+JSON, so a typo there is an error instead of a list of fragments. `RichType` has a new
+`normalize_attrs` hook (default: do nothing). `save_field_meta_row` calls it before writing, so the
+text forms are stored as the array and every reader of `options` sees one shape. Empty text removes
+the attribute. Text that cannot be read refuses the save, and the error names the field.
+`StringType::validate` also accepts the text forms directly. The admin form already sends text that
+is not valid JSON as a string, and the field now has a sublabel showing the comma-separated form.
+
 ## One `edit_table_rows` agent trait replaces `insert_row`, `update_rows` and `delete_rows`
 
 The three write traits are merged into one, `edit_table_rows` (`sc_core_traits::EditTableRows`).
