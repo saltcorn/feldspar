@@ -58,7 +58,7 @@ pub use authentication::{
 };
 pub use defs::{
     BACKUP_INCLUDE, BACKUP_SCHEDULE_STATUS, BACKUP_SCHEDULES, ConfigDef, ConfigSection,
-    DEFAULT_LLM_PROVIDER, STARTUP_HISTORY, STARTUP_HISTORY_DAYS, config_sections, config_spec,
+    DEFAULT_LLM_PROVIDER, ONBOARDING_DONE, STARTUP_HISTORY, STARTUP_HISTORY_DAYS, config_sections, config_spec,
     definition, hidden_sections, internal_defs, known_keys,
 };
 pub use development::{

@@ -166,6 +166,15 @@ pub fn admin_handlers_with(
                 let token_required =
                     !exists && !sc_config::first_user_tokens(&catalog).await?.is_empty();
                 let current = ctx.user.as_ref().map_or(Json::Null, user_summary_json);
+                // Asked only of an admin: nobody else is shown the dialogs, and
+                // a signed-out caller has no business learning the answer.
+                let onboarding_pending = match &ctx.user {
+                    Some(user) if user.role == 1 => {
+                        sc_config::config_value(&catalog, sc_config::ONBOARDING_DONE).await?
+                            != json!(true)
+                    }
+                    _ => false,
+                };
                 let locales = sc_i18n::active();
                 Ok(HandlerResponse::ok(json!({
                     "any_user_exists": exists,
@@ -180,7 +189,19 @@ pub fn admin_handlers_with(
                             .map(|l| l.as_str())
                             .collect::<Vec<_>>(),
                     },
+                    "onboarding_pending": onboarding_pending,
                 })))
+            }
+        }
+    });
+
+    reg.register("finishOnboarding", {
+        let catalog = catalog.clone();
+        move |_ctx| {
+            let catalog = catalog.clone();
+            async move {
+                sc_config::set_config(&catalog, sc_config::ONBOARDING_DONE, json!(true)).await?;
+                Ok(HandlerResponse::ok(json!({ "done": true })))
             }
         }
     });

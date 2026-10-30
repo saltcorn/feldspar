@@ -129,6 +129,8 @@ async fn setup() -> sc_error::Result<(Client, TestDb)> {
     // has by the time anyone reaches a screen.
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;
+    // Where the onboarding's "done" is kept.
+    sc_config::bootstrap(&catalog).await?;
 
     let sessions = Arc::new(SessionStore::default());
     let apps = Arc::new(AppMounts::new(catalog.clone()));
@@ -499,5 +501,34 @@ async fn a_user_can_be_deleted() -> sc_error::Result<()> {
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
+    Ok(())
+}
+
+/// The first-run onboarding is offered to an admin until somebody finishes or
+/// skips it, and then to nobody: not again to that admin, not to the next one,
+/// and never to a user who is not an admin.
+#[tokio::test]
+async fn onboarding_is_pending_for_an_admin_until_it_is_finished() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+
+    let (_, status) = client.send("GET", "/api/auth/status", None).await;
+    assert_eq!(status["onboarding_pending"], json!(true), "{status}");
+
+    // Signed out, nobody learns the answer.
+    let mut stranger = client.fork().await;
+    let (_, status) = stranger.send("GET", "/api/auth/status", None).await;
+    assert_eq!(status["onboarding_pending"], json!(false), "{status}");
+    // ...and cannot finish it either.
+    let (code, _) = stranger.send("POST", "/api/onboarding/finish", None).await;
+    assert_ne!(code, StatusCode::OK);
+
+    let (code, body) = client.send("POST", "/api/onboarding/finish", None).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_eq!(body["done"], json!(true));
+    let (_, status) = client.send("GET", "/api/auth/status", None).await;
+    assert_eq!(status["onboarding_pending"], json!(false), "{status}");
+    // Finishing twice is not an error.
+    let (code, _) = client.send("POST", "/api/onboarding/finish", None).await;
+    assert_eq!(code, StatusCode::OK);
     Ok(())
 }

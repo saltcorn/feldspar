@@ -2,6 +2,39 @@
 
 Changes in reverse chronological order.
 
+## First-run onboarding: "How do you want to build?" (TODO O1.1)
+
+The first admin to sign in now gets a sequence of modal dialogs that sets up what their answer
+needs. Each dialog that does setup says at the top where the same thing is done without it.
+
+- **A dialog language** (`ui/admin/src/onboarding/flow.ts`). A flow is a record of named steps:
+  `ask` (options, each going to a step), `say` (a message with buttons), `form` (settings
+  rendered with `SettingsFields`, then a `submit`) and `run` (no dialog: a lookup or a create
+  that decides where to go next). `finish({ to, href })` closes the dialogs and opens a route or
+  a new tab. Steps share `vars`, which text and paths name as `{provider}`, and `data`. There is
+  Back, and Skip on every dialog. `checkFlow` reports a step name that does not exist or a step
+  nothing reaches. A `run` or `form` declares its `exits`, and going anywhere else throws. The
+  flow's words are marked with an identity `t()`, so `feldspar i18n extract` collects them, and
+  the renderer translates them.
+- **The script** (`onboarding/script.ts`) goes through effects (`onboarding/effects.ts`):
+  - *Generative AI*: if there is an LLM provider, use it or set up a new one. Otherwise set one up
+    in a form here (backend, its settings, a chat model), which becomes the default. It then
+    reuses an `admin_copilot` agent on that provider or creates `Admin copilot`, and opens its
+    chat.
+  - *Point and click*: creates a Saltcorn UI application (with a free subdomain from its name),
+    selects it in the sidebar, and says to create the first table under Tables.
+  - *Write code*: either the MCP settings (Settings → Development) for an outside coding agent,
+    or a React application (with a new local file store) whose IDE it offers to open.
+- **Server**: an internal config key `onboarding_done`. `authStatus` returns
+  `onboarding_pending`, which is true only for a signed-in admin while that key is unset. The new
+  admin endpoint `finishOnboarding` (`POST /api/onboarding/finish`) sets the key. The shell
+  calls it when the dialogs close.
+- **Tests**: `onboarding/flow.test.ts` covers the engine. `onboarding/script.test.ts` runs every
+  branch with fake effects and checks the requests made and where the admin ends up.
+  `admin_users_api::onboarding_is_pending_for_an_admin_until_it_is_finished` checks the server
+  side. The generated `client.ts` was regenerated, and the analytics, builder and IDE copies
+  updated to match.
+
 ## Migrations: database changes the bootstrap cannot make run once, on the first start
 
 A new crate, `sc-migrate`, holds an ordered registry of migrations (`MIGRATIONS`)

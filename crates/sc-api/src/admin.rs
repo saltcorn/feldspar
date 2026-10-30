@@ -72,8 +72,23 @@ pub fn admin_endpoints() -> EndpointSet {
                 // public for the same reason the rest of this response is — the
                 // sign-in page is a page too, and it has a language.
                 StructField::new("locales", locales_schema()),
+                // Whether the signed-in admin should be shown the first-run
+                // onboarding dialogs: true for an admin until anyone finishes
+                // or skips them (`finishOnboarding`), false otherwise.
+                StructField::new("onboarding_pending", TypeSchema::bool()),
             ]))
             .auth(AuthRequirement::Public),
+    );
+
+    // The first-run onboarding is done — finished or skipped — so it is not
+    // shown again, to this admin or any other.
+    set.register(
+        Endpoint::new("finishOnboarding", Method::Post, api().lit("onboarding/finish"))
+            .output(TypeSchema::struct_of([StructField::new(
+                "done",
+                TypeSchema::bool(),
+            )]))
+            .auth(AuthRequirement::admin()),
     );
 
     // Create the very first (admin) user. Only valid while no user exists, and

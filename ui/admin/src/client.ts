@@ -5,7 +5,8 @@ import { clientError, requestHeaders, trackCsrf, type ClientOptions } from "./he
 
 export type { ClientOptions } from "./helper";
 
-export type AuthStatusResponse = { any_user_exists: boolean; first_user_token_required: boolean; current_user?: { id: string; email: string; role: number } | null; locales: { default: string; enabled: Array<string>; current: string } };
+export type AuthStatusResponse = { any_user_exists: boolean; first_user_token_required: boolean; current_user?: { id: string; email: string; role: number } | null; locales: { default: string; enabled: Array<string>; current: string }; onboarding_pending: boolean };
+export type FinishOnboardingResponse = { done: boolean };
 export type CreateFirstUserRequest = { email: string; password: string; token?: string | null };
 export type CreateFirstUserResponse = { id: string; email: string; role: number };
 export type LoginRequest = { email: string; password: string };
@@ -494,6 +495,7 @@ export interface ApiClient {
    * comes back with `?oauth_error=<message>`. */
   oauthSignInUrl(provider: OAuthProvider, returnTo?: string): string;
   authStatus(): Promise<AuthStatusResponse>;
+  finishOnboarding(): Promise<FinishOnboardingResponse>;
   createFirstUser(body: CreateFirstUserRequest): Promise<CreateFirstUserResponse>;
   login(body: LoginRequest): Promise<LoginResponse>;
   logout(): Promise<void>;
@@ -828,6 +830,14 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("authStatus", res);
       return (await res.json()) as AuthStatusResponse;
+    },
+    async finishOnboarding() {
+      const res = await doFetch(`${baseUrl}/api/onboarding/finish`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("finishOnboarding", res);
+      return (await res.json()) as FinishOnboardingResponse;
     },
     async createFirstUser(body) {
       const res = await doFetch(`${baseUrl}/api/first-user`, {

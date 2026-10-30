@@ -102,6 +102,11 @@ pub const STARTUP_HISTORY_DAYS: i64 = 7;
 /// else the first by name (`sc_llm::default_llm_provider`).
 pub const DEFAULT_LLM_PROVIDER: &str = "default_llm_provider";
 
+/// Whether the admin UI's first-run onboarding (the "How do you want to build?"
+/// dialogs) has been finished or skipped. Unset until then, so the first admin
+/// to sign in is shown it once, and nobody after it is.
+pub const ONBOARDING_DONE: &str = "onboarding_done";
+
 /// Every section, in screen order.
 pub fn config_sections() -> &'static [ConfigSection] {
     static SECTIONS: OnceLock<Vec<ConfigSection>> = OnceLock::new();
@@ -161,6 +166,10 @@ pub fn internal_defs() -> &'static [ConfigDef] {
             ConfigDef::new(
                 FormField::new(DEFAULT_LLM_PROVIDER, sc_types::BasicType::Text)
                     .label("Default LLM provider"),
+            ),
+            ConfigDef::new(
+                FormField::new(ONBOARDING_DONE, sc_types::BasicType::Bool)
+                    .label("Onboarding finished"),
             ),
             ConfigDef::new(
                 FormField::new(

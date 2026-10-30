@@ -1,6 +1,7 @@
 // Top-level admin app: bootstraps auth state and gates the three top-level
 // states the design calls for — create-first-user, login, and the authenticated
-// admin shell — then routes between the admin screens with a tiny hash router
+// admin shell, which opens over itself the first-run onboarding dialogs the
+// first time an admin arrives (`onboarding/`) — then routes between the admin screens with a tiny hash router
 // (no router dependency, and no inline styles, so the strict CSP holds).
 //
 // The shell is Tabler's **vertical layout**: a dark sidebar holding the brand
@@ -87,6 +88,7 @@ import { WorkflowEditor } from "./screens/WorkflowEditor";
 import { WorkflowRuns } from "./screens/WorkflowRuns";
 import { T, useT } from "./i18n";
 import { modelRedirect } from "./modelRedirect";
+import { Onboarding } from "./onboarding/Onboarding";
 
 /** The authenticated user, as reported by `authStatus` / `login`. */
 export type CurrentUser = NonNullable<AuthStatusResponse["current_user"]>;
@@ -175,6 +177,7 @@ export function App() {
         <Shell
           user={status.current_user}
           locales={status.locales}
+          onboarding={status.onboarding_pending}
           onLogout={refresh}
         />
       )}
@@ -279,14 +282,20 @@ export const NAV: NavItem[] = [
 function Shell({
   user,
   locales,
+  onboarding,
   onLogout,
 }: {
   user: CurrentUser;
   locales: AuthStatusResponse["locales"];
+  /** Show the first-run onboarding dialogs (`onboarding/script.ts`). */
+  onboarding: boolean;
   onLogout: () => void;
 }) {
   const { t } = useT();
   const route = useHashRoute();
+  // Held here rather than read from `onboarding` each render: closing the
+  // dialogs is immediate, and the server's record of it is not re-fetched.
+  const [onboardingOpen, setOnboardingOpen] = useState(onboarding);
   const [menuOpen, setMenuOpen] = useState(false);
   const [theme, toggleTheme] = useTheme();
   const [folded, toggleFolded] = useFoldedSidebar();
@@ -504,6 +513,7 @@ function Shell({
       {/* A build started from the sidebar finishes wherever the admin has got
           to by then; the applications list has its own banner for the news. */}
       {path !== "/applications" && <AppOutcomeToast />}
+      {onboardingOpen && <Onboarding onClose={() => setOnboardingOpen(false)} />}
     </div>
   );
 }

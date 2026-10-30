@@ -791,6 +791,22 @@ The design is TECHNICAL_DESIGN §5.3. The registry starts empty: nothing from
   to update CLAUDE.md's "Status" paragraph (new database changes the bootstrap cannot make
   are migrations in `sc-migrate`, each with a test).
 
+## O1 — First-run onboarding
+
+- [x] **O1.1** The first admin to sign in is shown a sequence of dialogs, written in a small
+  dialog language in the admin UI (`ui/admin/src/onboarding/flow.ts`: `ask`, `say`, `form`,
+  `run`, `finish`). The script (`onboarding/script.ts`) asks how to build: **Generative AI**
+  uses the provider already there or sets one up in a form here, then makes an `admin_copilot`
+  agent and opens its chat; **Point and click** creates a Saltcorn UI application, selects it
+  and points at Tables; **Write code** goes to the MCP settings, or creates a React application
+  and opens the IDE. `authStatus.onboarding_pending` / `finishOnboarding` keep it to once.
+- [ ] **O1.2** A way to run it again (a link under Settings, or `#/onboarding`).
+- [ ] **O1.3** Point and click: create the first table in the dialog (blank, or from a CSV), add
+  it to the new application's tables, and offer to generate its views.
+- [ ] **O1.4** Generative AI: offer the models the provider lists (`fetch_host_models`) instead
+  of a free-text model name, and test the key before the copilot is made.
+- [ ] **O1.5** Translations of the onboarding's messages in `ui/admin/src/locales/*.json`.
+
 ---
 
 ## Open questions
