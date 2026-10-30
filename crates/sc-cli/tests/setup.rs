@@ -13,9 +13,10 @@ use std::process::Command;
 
 use sc_cli::config_file::ConfigFile;
 use sc_cli::setup::{
-    Choices, Database, DbKind, Family, Host, Merged, Mode, Prompter, RemotePostgres,
-    ServiceManager, SetupArgs, Step, describe, environment_section, execute, merge_config,
-    parse_os_release, plan, resolve, systemd_unit,
+    Choices, Database, DbKind, Family, Host, Merged, Mode, NODE_MAJOR, Prompter, RemotePostgres,
+    ServiceManager, SetupArgs, Step, browser_check_argv, describe, environment_section, execute,
+    merge_config, next_steps, npm_new_enough, parse_os_release, plan, resolve, systemd_unit,
+    ubuntu_like,
 };
 
 fn args(list: &[&str]) -> SetupArgs {
@@ -32,9 +33,19 @@ fn host(family: Family, services: ServiceManager) -> Host {
         services,
         login: "alice".into(),
         postgres_running: false,
-        npm: true,
+        npm: Some("10.9.2".into()),
+        browser: Some("/usr/bin/chromium".into()),
+        ubuntu: false,
+        arch: "x86_64".into(),
         service_file: None,
     }
+}
+
+/// A fresh machine: no npm and no browser.
+fn bare(mut host: Host) -> Host {
+    host.npm = None;
+    host.browser = None;
+    host
 }
 
 fn debian() -> Host {
@@ -620,5 +631,359 @@ fn dev_setup_writes_a_configuration_the_server_reads() {
         "the server should have created {}",
         db.display()
     );
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn npm_before_9_3_cannot_install_a_module() {
+    for (version, ok) in [
+        ("9.2.0", false),
+        ("8.19.4", false),
+        ("9.3.0", true),
+        ("10.9.2\n", true),
+        ("v11.0.0", true),
+        ("", false),
+        ("nonsense", false),
+    ] {
+        assert_eq!(npm_new_enough(version), ok, "{version:?}");
+    }
+    assert!(ubuntu_like("ID=ubuntu\nVERSION_ID=\"24.04\"\n"));
+    assert!(ubuntu_like("ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n"));
+    assert!(!ubuntu_like("ID=debian\n"));
+    assert!(!ubuntu_like("ID=alpine\n"));
+}
+
+/// The Node line setup installs is the one `setup-host.sh` installs.
+#[test]
+fn the_node_major_agrees_with_setup_host() {
+    let script = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/setup-host.sh"),
+    )
+    .unwrap();
+    assert!(
+        script.contains(&format!("\nNODE_MAJOR={NODE_MAJOR}\n")),
+        "setup-host.sh installs a different Node.js line from setup.rs's NODE_MAJOR"
+    );
+}
+
+/// `--server` on a bare Debian: Node from NodeSource (keyring, source, pin),
+/// apt's Chromium, and the browser started as the service account after the
+/// account exists and before the service starts.
+#[test]
+fn server_on_a_bare_debian_installs_node_and_chromium() {
+    let host = bare(debian());
+    let c = server_choices(&[], &host);
+    assert!(c.node && c.browser);
+    let steps = plan(&c, &host, None).unwrap();
+    let cmds = commands(&steps);
+    let position = |needle: &str| {
+        cmds.iter()
+            .position(|c| c == needle)
+            .unwrap_or_else(|| panic!("no `{needle}` in {cmds:#?}"))
+    };
+    let curl =
+        position("env DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl");
+    let key = position(
+        "curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o \
+         /etc/apt/keyrings/nodesource.asc",
+    );
+    let node = position("env DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs");
+    let chromium = position("env DEBIAN_FRONTEND=noninteractive apt-get install -y chromium");
+    let account = position("adduser --system --group --home /var/lib/feldspar feldspar");
+    let enable = position("systemctl enable feldspar");
+    assert!(curl < key && key < node && node < chromium && chromium < account);
+    // Installed once each, and the distribution's npm never asked for.
+    assert_eq!(
+        cmds.iter()
+            .filter(|c| c.ends_with("ca-certificates curl"))
+            .count(),
+        1
+    );
+    assert!(!cmds.iter().any(|c| c.ends_with(" npm")), "{cmds:#?}");
+
+    assert_eq!(
+        contents(written(&steps, "/etc/apt/sources.list.d/nodesource.list")),
+        format!(
+            "deb [signed-by=/etc/apt/keyrings/nodesource.asc] \
+             https://deb.nodesource.com/node_{NODE_MAJOR}.x nodistro main\n"
+        )
+    );
+    assert!(
+        contents(written(&steps, "/etc/apt/preferences.d/nodesource"))
+            .contains("Pin: origin deb.nodesource.com")
+    );
+
+    // The check: after the account, before the unit is enabled.
+    let check = steps
+        .iter()
+        .position(|s| matches!(s, Step::CheckBrowser { .. }))
+        .expect("a browser check");
+    let at = |cmd: usize| {
+        steps
+            .iter()
+            .position(|s| matches!(s, Step::Run { argv, .. } if argv.join(" ") == cmds[cmd]))
+            .unwrap()
+    };
+    assert!(at(account) < check && check < at(enable));
+    let Step::CheckBrowser {
+        browser,
+        user,
+        config,
+    } = &steps[check]
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        browser, &None,
+        "installed by the plan, so found on PATH afterwards"
+    );
+    assert_eq!(user.as_deref(), Some("feldspar"));
+    assert_eq!(
+        config,
+        "[environments.production] in /etc/feldspar/feldspar.toml"
+    );
+
+    let mut shown = Vec::new();
+    describe(&steps, &host, &mut shown);
+    let shown = String::from_utf8(shown).unwrap();
+    assert!(
+        shown.contains("$ sudo su -s /bin/sh feldspar -c"),
+        "{shown}"
+    );
+    assert!(shown.contains("never fatal"), "{shown}");
+
+    // Nothing left to say about Node or the browser afterwards.
+    let after = next_steps(&c, &host, true);
+    assert!(
+        !after.contains("npm") && !after.contains("view_app"),
+        "{after}"
+    );
+}
+
+/// What is already here and good enough is kept; an npm that is too old is not.
+#[test]
+fn what_is_already_here_is_kept_unless_too_old() {
+    let host = debian();
+    let steps = plan(&server_choices(&[], &host), &host, None).unwrap();
+    let cmds = commands(&steps);
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| c.contains("nodejs") || c.contains("chromium")),
+        "{cmds:#?}"
+    );
+    let check = steps.iter().find_map(|s| match s {
+        Step::CheckBrowser { browser, .. } => Some(browser.clone()),
+        _ => None,
+    });
+    // The browser already here is still checked, by its path.
+    assert_eq!(check, Some(Some("/usr/bin/chromium".into())));
+
+    let mut old = debian();
+    old.npm = Some("9.2.0".into());
+    let steps = plan(&server_choices(&[], &old), &old, None).unwrap();
+    assert!(
+        commands(&steps)
+            .iter()
+            .any(|c| c.ends_with("apt-get install -y nodejs"))
+    );
+    assert!(
+        steps
+            .iter()
+            .any(|s| matches!(s, Step::Note(n) if n.contains("npm 9.2.0 is too old")))
+    );
+}
+
+/// Ubuntu's Chromium is a snap: Google Chrome from Google's repository on
+/// x86_64, and on anything else a note and no check.
+#[test]
+fn ubuntu_gets_google_chrome_not_the_snap() {
+    let mut host = bare(debian());
+    host.ubuntu = true;
+    let steps = plan(&server_choices(&[], &host), &host, None).unwrap();
+    let cmds = commands(&steps);
+    assert!(
+        cmds.iter()
+            .any(|c| c.ends_with("apt-get install -y google-chrome-stable"))
+    );
+    assert!(
+        !cmds.iter().any(|c| c.ends_with("install -y chromium")),
+        "{cmds:#?}"
+    );
+    assert!(
+        contents(written(
+            &steps,
+            "/etc/apt/sources.list.d/google-chrome.list"
+        ))
+        .starts_with("deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.asc] ")
+    );
+    // The two repositories share their prerequisites.
+    assert_eq!(
+        cmds.iter()
+            .filter(|c| c.ends_with("ca-certificates curl"))
+            .count(),
+        1
+    );
+
+    host.arch = "aarch64".into();
+    let steps = plan(&server_choices(&[], &host), &host, None).unwrap();
+    assert!(!commands(&steps).iter().any(|c| c.contains("chrome")));
+    assert!(!steps.iter().any(|s| matches!(s, Step::CheckBrowser { .. })));
+    assert!(
+        steps
+            .iter()
+            .any(|s| matches!(s, Step::Note(n) if n.contains("view_app will be unavailable")))
+    );
+}
+
+#[test]
+fn alpine_installs_node_and_chromium_from_apk() {
+    let host = bare(alpine());
+    let cmds = commands(&plan(&server_choices(&[], &host), &host, None).unwrap());
+    assert!(
+        cmds.contains(&"apk add --no-cache nodejs npm".to_owned()),
+        "{cmds:#?}"
+    );
+    assert!(
+        cmds.contains(&"apk add --no-cache chromium".to_owned()),
+        "{cmds:#?}"
+    );
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| c.contains("apt") || c.contains("nodesource"))
+    );
+}
+
+/// `--no-node --no-browser` installs and checks nothing, and the closing notes
+/// say how to have them later.
+#[test]
+fn node_and_the_browser_can_be_left_out() {
+    let host = bare(debian());
+    let c = server_choices(&["--no-node", "--no-browser"], &host);
+    let steps = plan(&c, &host, None).unwrap();
+    let cmds = commands(&steps);
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| c.contains("nodejs") || c.contains("chromium"))
+    );
+    assert!(!steps.iter().any(|s| matches!(s, Step::CheckBrowser { .. })));
+    let after = next_steps(&c, &host, true);
+    assert!(
+        after.contains("`feldspar setup --server --node` installs it"),
+        "{after}"
+    );
+    assert!(
+        after.contains("`feldspar setup --server --browser` installs one"),
+        "{after}"
+    );
+}
+
+/// A desktop's packages are its owner's: `--dev` installs nothing, a flag
+/// installs it, and at a terminal setup asks — only about what is missing.
+#[test]
+fn development_installs_only_when_asked() {
+    let host = bare(debian());
+    let dev = resolve(&args(&["--dev"]), &host, None).unwrap();
+    assert!(!dev.node && !dev.browser);
+    let after = next_steps(&dev, &host, true);
+    assert!(after.contains("`feldspar setup --dev --node`"), "{after}");
+
+    let asked = resolve(&args(&["--dev", "--node", "--browser"]), &host, None).unwrap();
+    let steps = plan(&asked, &host, None).unwrap();
+    assert!(
+        commands(&steps)
+            .iter()
+            .any(|c| c.ends_with("install -y nodejs"))
+    );
+    // A development check runs as whoever runs setup, not a service account.
+    assert!(
+        steps
+            .iter()
+            .any(|s| matches!(s, Step::CheckBrowser { user: None, .. }))
+    );
+
+    // At a terminal: yes to Node, no to the browser.
+    let mut output = Vec::new();
+    let c = {
+        let mut p = Prompter::new(Cursor::new("\ny\nn\n"), &mut output, false);
+        resolve(&args(&["--development"]), &host, Some(&mut p)).unwrap()
+    };
+    assert!(c.node && !c.browser);
+    let asked = String::from_utf8(output).unwrap();
+    assert!(asked.contains("Install Node.js") && asked.contains("Install Chromium"));
+
+    // Nothing missing, nothing asked: the one answer is the database.
+    let mut output = Vec::new();
+    resolve(
+        &args(&["--development"]),
+        &debian(),
+        Some(&mut Prompter::new(Cursor::new("\n"), &mut output, false)),
+    )
+    .unwrap();
+    assert!(!String::from_utf8(output).unwrap().contains("Install"));
+}
+
+/// The check, carried out against stand-in browsers: one that starts, one
+/// that starts only without its sandbox, and one that does not start. None of
+/// them fails the setup.
+#[test]
+fn the_browser_check_reports_and_never_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = scratch("browser");
+    let fake = |name: &str, body: &str| {
+        let path = dir.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    };
+    let page = "echo '<html><head></head><body></body></html>'";
+    let starts = fake("starts", page);
+    let sandboxless = fake(
+        "sandboxless",
+        &format!(
+            "case \"$*\" in *--no-sandbox*) {page} ;; *) echo 'No usable sandbox!' >&2; exit 1 ;; esac"
+        ),
+    );
+    let broken = fake(
+        "broken",
+        "echo 'error while loading shared libraries: libnss3.so' >&2; exit 127",
+    );
+
+    let host = Host {
+        sudo: None,
+        ..host(Family::Other, ServiceManager::None)
+    };
+    let check = |browser: &Path| {
+        let mut out = Vec::new();
+        execute(
+            &[Step::CheckBrowser {
+                browser: Some(browser.to_owned()),
+                user: None,
+                config: "[environments.development] in feldspar.toml".into(),
+            }],
+            &host,
+            &mut out,
+        )
+        .expect("a browser check never fails setup");
+        String::from_utf8(out).unwrap()
+    };
+    assert!(check(&starts).contains("it starts\n"));
+    let out = check(&sandboxless);
+    assert!(
+        out.contains("browser_sandbox = false  to [environments.development] in feldspar.toml"),
+        "{out}"
+    );
+    let out = check(&broken);
+    assert!(
+        out.contains("it does not start") && out.contains("| error while loading shared libraries"),
+        "{out}"
+    );
+
+    // The command it ran: a profile directory of its own, removed after.
+    let argv = browser_check_argv(Path::new("/usr/bin/chromium"), Some("feldspar"), false);
+    assert_eq!(argv[..5], ["su", "-s", "/bin/sh", "feldspar", "-c"]);
+    assert!(argv[5].contains("--no-sandbox") && argv[5].contains("rm -rf \"$d\""));
     fs::remove_dir_all(&dir).ok();
 }

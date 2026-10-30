@@ -31,10 +31,21 @@
 //! Every step is safe to repeat: an account or a database that exists is left
 //! alone, and a configuration file that already has the environment is left as
 //! it is when it says the same thing, and refused (without `--force`) when it
-//! says something else — and so is the service file. Node.js and a headless browser — which the server uses
-//! to build applications and for the coding agent's `view_app` — are not
-//! installed here; the closing notes say how, and `scripts/setup-host.sh` does
-//! all of it on Debian and Ubuntu.
+//! says something else — and so is the service file.
+//!
+//! The server needs two more programs to do everything it can: **Node.js**, with
+//! an npm of 9.3 or newer (building an application and installing a module run
+//! npm), and a **headless browser**, which the coding agent's `view_app` drives.
+//! A production setup installs both, as `scripts/setup-host.sh` does: Node from
+//! NodeSource on Debian and Ubuntu (their own npm is 9.2, which cannot install a
+//! module — README §2.1), apt's `chromium` on Debian, Google Chrome's apt
+//! repository on Ubuntu (whose `chromium-browser` is a snap, which does not run
+//! under a service account), and both from apk on Alpine. Whatever is already
+//! here and good enough is kept. The browser is then started once, headless, as
+//! the account that will run it, so a browser that cannot start is found now
+//! rather than at the agent's first `view_app`. A development setup leaves the
+//! desktop's packages alone unless asked (`--node`, `--browser`, or yes at the
+//! terminal), and says what is missing.
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -61,6 +72,17 @@ pub const OPENRC_LOG: &str = "/var/log/feldspar.log";
 const DEFAULT_SERVICE_USER: &str = "feldspar";
 const DEFAULT_DATABASE: &str = "feldspar";
 const DEFAULT_PORT: &str = "3032";
+
+/// The Node.js line installed from NodeSource; the same as `setup-host.sh` and
+/// the Docker image.
+pub const NODE_MAJOR: u32 = 26;
+/// The oldest npm that can install a module, as (major, minor).
+pub const MIN_NPM: (u32, u32) = (9, 3);
+const NODE_KEYRING: &str = "/etc/apt/keyrings/nodesource.asc";
+const NODE_LIST: &str = "/etc/apt/sources.list.d/nodesource.list";
+const NODE_PIN: &str = "/etc/apt/preferences.d/nodesource";
+const CHROME_KEYRING: &str = "/etc/apt/keyrings/google-chrome.asc";
+const CHROME_LIST: &str = "/etc/apt/sources.list.d/google-chrome.list";
 
 pub const USAGE: &str = "\
 usage: feldspar setup [--server | --dev] [options]
@@ -94,6 +116,15 @@ Instance:
   --user NAME            the production service account (default feldspar)
   --binary PATH          the executable the service runs (default: this one)
   --no-start             production: enable the service, do not start it
+
+Node.js and a headless browser (installed for production when missing, left
+alone for development unless asked):
+  --node / --no-node     install Node.js with npm 9.3+ (NodeSource on Debian
+                         and Ubuntu, apk on Alpine)
+  --browser / --no-browser
+                         install a headless Chromium for the coding agent's
+                         view_app, and check it starts as the account that
+                         runs the server
 
   --force                replace an existing, different [environments.NAME]
   -y, --yes              do not ask for confirmation before acting
@@ -177,6 +208,10 @@ pub struct SetupArgs {
     pub service_user: Option<String>,
     pub binary: Option<PathBuf>,
     pub no_start: bool,
+    /// `--node` / `--no-node`: whether to install Node.js when it is missing.
+    pub node: Option<bool>,
+    /// `--browser` / `--no-browser`: whether to install a headless browser.
+    pub browser: Option<bool>,
     pub force: bool,
     pub dry_run: bool,
     pub help: bool,
@@ -243,6 +278,10 @@ impl SetupArgs {
                 "--user" => parsed.service_user = Some(value("--user")?),
                 "--binary" => parsed.binary = Some(PathBuf::from(value("--binary")?)),
                 "--no-start" => parsed.no_start = true,
+                "--node" => parsed.node = Some(true),
+                "--no-node" => parsed.node = Some(false),
+                "--browser" => parsed.browser = Some(true),
+                "--no-browser" => parsed.browser = Some(false),
                 "--force" => parsed.force = true,
                 "-y" | "--yes" => parsed.yes = true,
                 "-n" | "--dry-run" => parsed.dry_run = true,
@@ -343,7 +382,14 @@ pub struct Host {
     pub login: String,
     /// A PostgreSQL is already listening on [`POSTGRES_SOCKET_DIR`].
     pub postgres_running: bool,
-    pub npm: bool,
+    /// What `npm --version` says, when there is an npm on `PATH`.
+    pub npm: Option<String>,
+    /// The browser the server would find on `PATH` (not a snap), when there is one.
+    pub browser: Option<PathBuf>,
+    /// Ubuntu or a derivative, whose apt `chromium-browser` is a snap.
+    pub ubuntu: bool,
+    /// The machine, as Rust names it (`x86_64`, `aarch64`).
+    pub arch: String,
     /// The service file setup would write ([`SYSTEMD_UNIT`] or
     /// [`OPENRC_SCRIPT`]), as it is now — an operator may have edited it.
     pub service_file: Option<String>,
@@ -353,6 +399,7 @@ impl Host {
     pub fn detect() -> Host {
         let release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
         let (family, os_name) = parse_os_release(&release);
+        let ubuntu = ubuntu_like(&release);
         // SAFETY: `geteuid` reads the process's credentials and cannot fail.
         let root = unsafe { libc::geteuid() } == 0;
         let sudo = if root {
@@ -397,9 +444,52 @@ impl Host {
             postgres_running: Path::new(POSTGRES_SOCKET_DIR)
                 .join(".s.PGSQL.5432")
                 .exists(),
-            npm: which("npm").is_some(),
+            npm: which("npm").and_then(|npm| {
+                let out = Command::new(npm)
+                    .arg("--version")
+                    .stderr(Stdio::null())
+                    .output()
+                    .ok()?;
+                out.status
+                    .success()
+                    .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+            }),
+            browser: sc_server::detect_browser(None).ok(),
+            ubuntu,
+            arch: std::env::consts::ARCH.to_owned(),
         }
     }
+
+    /// The npm here is one the server can install a module with.
+    pub fn npm_ok(&self) -> bool {
+        self.npm.as_deref().is_some_and(npm_new_enough)
+    }
+}
+
+/// Whether an npm version is [`MIN_NPM`] or newer. npm before 9.3.0 cannot
+/// install a module: it dies with `Invalid comparator: file:/…` on the
+/// `file:` overrides every module's package.json carries (README §2.1).
+pub fn npm_new_enough(version: &str) -> bool {
+    let mut parts = version.trim().trim_start_matches('v').split('.');
+    let mut number = || parts.next().and_then(|p| p.parse::<u32>().ok());
+    match (number(), number()) {
+        (Some(major), Some(minor)) => (major, minor) >= MIN_NPM,
+        _ => false,
+    }
+}
+
+/// Ubuntu, or a distribution built on it (`ID_LIKE=ubuntu`): where apt's
+/// Chromium is a snap.
+pub fn ubuntu_like(os_release: &str) -> bool {
+    os_release.lines().any(|l| {
+        let value = |key: &str| {
+            l.strip_prefix(key)
+                .and_then(|v| v.strip_prefix('='))
+                .map(|v| v.trim().trim_matches('"').to_owned())
+        };
+        value("ID").is_some_and(|v| v == "ubuntu")
+            || value("ID_LIKE").is_some_and(|v| v.split_whitespace().any(|w| w == "ubuntu"))
+    })
 }
 
 /// The family and display name out of an `/etc/os-release`.
@@ -452,6 +542,10 @@ pub struct Choices {
     /// The executable a production service runs.
     pub binary: PathBuf,
     pub start: bool,
+    /// Install Node.js when the npm here is missing or too old.
+    pub node: bool,
+    /// Install a headless browser when there is none, and check that it starts.
+    pub browser: bool,
     pub force: bool,
 }
 
@@ -706,7 +800,7 @@ pub fn resolve(
     let mut domain = args.domain.clone();
     let mut bind = args.bind.clone();
     if mode == Mode::Production
-        && let Some(p) = prompt
+        && let Some(p) = prompt.as_deref_mut()
     {
         if domain.is_none() {
             let answer = p.ask(
@@ -730,6 +824,32 @@ pub fn resolve(
             "--domain is a bare domain like example.com, not `{d}`"
         )));
     }
+
+    // Node.js and a browser: a server gets them, as setup-host.sh gives them; a
+    // desktop's packages are its owner's, so there they are installed only when
+    // asked — and asked about only when one is missing and setup knows how.
+    let mut install = |flag: Option<bool>, missing: bool, question: &str| -> Result<bool> {
+        Ok(match (flag, mode, prompt.as_deref_mut()) {
+            (Some(yes), _, _) => yes,
+            (None, Mode::Production, _) => true,
+            (None, Mode::Development, Some(p)) if missing && host.family != Family::Other => {
+                p.confirm(question)?
+            }
+            (None, Mode::Development, _) => false,
+        })
+    };
+    let node = install(
+        args.node,
+        !host.npm_ok(),
+        "\nBuilding an application runs npm, and there is no npm 9.3 or newer here. \
+         Install Node.js (as root)?",
+    )?;
+    let browser = install(
+        args.browser,
+        host.browser.is_none(),
+        "\nThe coding agent looks at what it built through a headless browser, and \
+         there is none here. Install Chromium (as root)?",
+    )?;
 
     let environment = args
         .environment
@@ -772,6 +892,8 @@ pub fn resolve(
         service_user,
         binary,
         start: !args.no_start,
+        node,
+        browser,
         force: args.force,
     })
 }
@@ -824,6 +946,17 @@ pub enum Step {
         owner: Option<String>,
         root: bool,
     },
+    /// Start the browser once, headless, as `user` (as whoever runs setup when
+    /// `None`), the way the server will. Reported, never fatal: a browser that
+    /// does not start leaves `view_app` unavailable and everything else working.
+    /// `browser` is `None` when it is installed by an earlier step, and is then
+    /// found on `PATH` as the server finds it.
+    CheckBrowser {
+        browser: Option<PathBuf>,
+        user: Option<String>,
+        /// Where `browser_sandbox = false` would go, for the advice.
+        config: String,
+    },
 }
 
 fn run(argv: &[&str], root: bool) -> Step {
@@ -831,6 +964,191 @@ fn run(argv: &[&str], root: bool) -> Step {
         argv: argv.iter().map(|s| (*s).to_owned()).collect(),
         root,
         unless: None,
+    }
+}
+
+/// `step`, unless the plan already has it: an `apt-get update` or a package
+/// that two of the installs below both need.
+fn once(steps: &mut Vec<Step>, step: Step) {
+    if !steps.contains(&step) {
+        steps.push(step);
+    }
+}
+
+fn apt_install(packages: &[&str]) -> Step {
+    let mut argv = vec![
+        "env",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "install",
+        "-y",
+    ];
+    argv.extend_from_slice(packages);
+    run(&argv, true)
+}
+
+/// A root-owned apt source or pin.
+fn apt_file(path: &str, contents: String) -> Step {
+    Step::Write {
+        path: path.into(),
+        contents,
+        mode: 0o644,
+        owner: None,
+        root: true,
+    }
+}
+
+/// A third-party apt repository: its key, as an ASCII-armoured `.asc` (which
+/// apt reads as it is — no gpg to install), and its source line.
+fn apt_repository(steps: &mut Vec<Step>, key_url: &str, keyring: &str, list: &str, line: String) {
+    once(steps, run(&["apt-get", "update"], true));
+    once(steps, apt_install(&["ca-certificates", "curl"]));
+    once(
+        steps,
+        run(&["install", "-d", "-m", "0755", "/etc/apt/keyrings"], true),
+    );
+    steps.push(run(&["curl", "-fsSL", key_url, "-o", keyring], true));
+    steps.push(run(&["chmod", "0644", keyring], true));
+    steps.push(apt_file(list, line));
+}
+
+/// Node.js with an npm that can install a module, unless there is one.
+fn node_steps(steps: &mut Vec<Step>, host: &Host) {
+    if host.npm_ok() {
+        steps.push(Step::Note(format!(
+            "npm {} is already here and new enough; leaving Node.js alone",
+            host.npm.as_deref().unwrap_or_default()
+        )));
+        return;
+    }
+    if let Some(old) = &host.npm {
+        steps.push(Step::Note(format!(
+            "npm {old} is too old to install a module ({}.{} or newer is needed)",
+            MIN_NPM.0, MIN_NPM.1
+        )));
+    }
+    match host.family {
+        Family::Debian => {
+            // From NodeSource, not `apt install nodejs npm`: Debian 12 and 13 and
+            // Ubuntu 24.04 all package npm 9.2.0. NodeSource's `nodejs` carries
+            // its own npm and replaces the distribution's.
+            steps.push(Step::Heading(format!(
+                "installing Node.js {NODE_MAJOR}.x from NodeSource (the distribution's npm \
+                 is too old)"
+            )));
+            apt_repository(
+                steps,
+                "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key",
+                NODE_KEYRING,
+                NODE_LIST,
+                format!(
+                    "deb [signed-by={NODE_KEYRING}] https://deb.nodesource.com/node_{NODE_MAJOR}.x \
+                     nodistro main\n"
+                ),
+            );
+            // Pinned, so a distribution `nodejs` with a higher version string
+            // cannot later replace it and bring the old npm back.
+            steps.push(apt_file(
+                NODE_PIN,
+                "Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 600\n".into(),
+            ));
+            steps.push(run(&["apt-get", "update"], true));
+            steps.push(apt_install(&["nodejs"]));
+        }
+        Family::Alpine => {
+            steps.push(Step::Heading("installing Node.js and npm".into()));
+            steps.push(run(&["apk", "add", "--no-cache", "nodejs", "npm"], true));
+        }
+        Family::Other => steps.push(Step::Note(format!(
+            "setup cannot install Node.js on {}: install it, with npm {}.{} or newer",
+            host.os_name, MIN_NPM.0, MIN_NPM.1
+        ))),
+    }
+}
+
+/// A headless browser for `view_app`, unless there is one. Whether there will
+/// be one to check afterwards.
+fn browser_steps(steps: &mut Vec<Step>, c: &Choices, host: &Host) -> bool {
+    if let Some(path) = &host.browser {
+        steps.push(Step::Note(format!(
+            "a browser the server can use is already here: {}",
+            path.display()
+        )));
+        return true;
+    }
+    let unavailable = |why: String| {
+        Step::Note(format!(
+            "{why}: view_app will be unavailable until one is installed (and named with \
+             `browser` in {} when it is not on PATH)",
+            c.config_path.display()
+        ))
+    };
+    match host.family {
+        // Ubuntu's apt `chromium-browser` is a transitional package that execs
+        // the snap, and a snap does not run under a service account with
+        // ProtectHome and PrivateTmp; Google Chrome's own repository instead.
+        Family::Debian if host.ubuntu => {
+            if host.arch != "x86_64" {
+                steps.push(unavailable(format!(
+                    "no Chromium that is not a snap is known for Ubuntu on {}",
+                    host.arch
+                )));
+                return false;
+            }
+            steps.push(Step::Heading(
+                "installing Google Chrome from Google's apt repository (Ubuntu's Chromium is \
+                 a snap, which does not run under a service account)"
+                    .into(),
+            ));
+            apt_repository(
+                steps,
+                "https://dl.google.com/linux/linux_signing_key.pub",
+                CHROME_KEYRING,
+                CHROME_LIST,
+                format!(
+                    "deb [arch=amd64 signed-by={CHROME_KEYRING}] \
+                     https://dl.google.com/linux/chrome/deb/ stable main\n"
+                ),
+            );
+            steps.push(run(&["apt-get", "update"], true));
+            steps.push(apt_install(&["google-chrome-stable"]));
+        }
+        Family::Debian => {
+            steps.push(Step::Heading("installing Chromium".into()));
+            once(steps, run(&["apt-get", "update"], true));
+            steps.push(apt_install(&["chromium"]));
+        }
+        Family::Alpine => {
+            steps.push(Step::Heading("installing Chromium".into()));
+            steps.push(run(&["apk", "add", "--no-cache", "chromium"], true));
+        }
+        Family::Other => {
+            steps.push(unavailable(format!(
+                "setup cannot install a browser on {}",
+                host.os_name
+            )));
+            return false;
+        }
+    }
+    true
+}
+
+/// The command that starts `browser` headless and prints an empty page's DOM,
+/// as `user` when there is one, with a profile directory made for it and
+/// removed after.
+pub fn browser_check_argv(browser: &Path, user: Option<&str>, sandbox: bool) -> Vec<String> {
+    let script = format!(
+        "cd / && d=$(mktemp -d /tmp/feldspar-browser-XXXXXX) || exit 1; \
+         timeout 60 {} --headless --disable-gpu --no-first-run{} --user-data-dir=\"$d\" \
+         --dump-dom about:blank; s=$?; rm -rf \"$d\"; exit $s",
+        shell_line(&[browser.to_string_lossy().into_owned()]),
+        if sandbox { "" } else { " --no-sandbox" }
+    );
+    match user {
+        Some(user) => ["su", "-s", "/bin/sh", user, "-c", &script]
+            .map(str::to_owned)
+            .to_vec(),
+        None => vec!["sh".into(), "-c".into(), script],
     }
 }
 
@@ -870,6 +1188,12 @@ pub fn plan(c: &Choices, host: &Host, existing_config: Option<&str>) -> Result<V
             )));
         }
     }
+
+    // --- Node.js and a headless browser ---------------------------------------
+    if c.node {
+        node_steps(&mut steps, host);
+    }
+    let check_browser = c.browser && browser_steps(&mut steps, c, host);
 
     // --- PostgreSQL on this machine -------------------------------------------
     if let Database::LocalPostgres { role, database } = &c.database {
@@ -1002,6 +1326,26 @@ pub fn plan(c: &Choices, host: &Host, existing_config: Option<&str>) -> Result<V
                 root: production,
             });
         }
+    }
+
+    // --- The browser starts as the account that will run it ------------------
+    // After the account exists, before the service starts: a missing library or
+    // a sandbox the kernel refuses is reported now, with the browser's own error.
+    if check_browser {
+        let user = production.then(|| c.service_user.clone());
+        steps.push(Step::Heading(format!(
+            "checking that the browser starts headless as {}",
+            user.as_deref().unwrap_or(&host.login)
+        )));
+        steps.push(Step::CheckBrowser {
+            browser: host.browser.clone(),
+            user,
+            config: format!(
+                "[environments.{}] in {}",
+                c.environment,
+                c.config_path.display()
+            ),
+        });
     }
 
     // --- The service ----------------------------------------------------------
@@ -1439,6 +1783,26 @@ pub fn describe(steps: &[Step], host: &Host, out: &mut dyn Write) {
                 }
                 Ok(())
             }
+            Step::CheckBrowser { browser, user, .. } => {
+                let shown = browser.clone().unwrap_or_else(|| "BROWSER".into());
+                let argv = browser_check_argv(&shown, user.as_deref(), true);
+                let _ = writeln!(
+                    out,
+                    "    $ {}",
+                    shell_line(&with_sudo(&argv, user.is_some(), host))
+                );
+                writeln!(
+                    out,
+                    "      ({}reported, never fatal; tried again with --no-sandbox when it \
+                     fails)",
+                    if browser.is_none() {
+                        "BROWSER is the one just installed, found on PATH as the server finds \
+                         it; "
+                    } else {
+                        ""
+                    }
+                )
+            }
         };
     }
 }
@@ -1463,6 +1827,7 @@ fn shell_line(argv: &[String]) -> String {
 pub fn execute(steps: &[Step], host: &Host, out: &mut dyn Write) -> Result<()> {
     let needs_root = steps.iter().any(|s| match s {
         Step::Run { root, .. } | Step::Write { root, .. } => *root,
+        Step::CheckBrowser { user, .. } => user.is_some(),
         _ => false,
     });
     if needs_root && !host.root && host.sudo.is_none() {
@@ -1514,9 +1879,73 @@ pub fn execute(steps: &[Step], host: &Host, out: &mut dyn Write) -> Result<()> {
                 let _ = writeln!(out, "    write {}", path.display());
                 write_file(path, contents, *mode, owner.as_deref(), *root, host)?;
             }
+            Step::CheckBrowser {
+                browser,
+                user,
+                config,
+            } => check_browser(browser.as_deref(), user.as_deref(), config, host, out),
         }
     }
     Ok(())
+}
+
+/// [`Step::CheckBrowser`], carried out: what it found is written to `out`.
+fn check_browser(
+    browser: Option<&Path>,
+    user: Option<&str>,
+    config: &str,
+    host: &Host,
+    out: &mut dyn Write,
+) {
+    let browser = match browser {
+        Some(path) => path.to_owned(),
+        None => match sc_server::detect_browser(None) {
+            Ok(path) => path,
+            Err(why) => {
+                let _ = writeln!(out, "    the browser is not found: {why}");
+                return;
+            }
+        },
+    };
+    // Whether the page came back, and what the browser said on stderr.
+    let attempt = |sandbox: bool| {
+        let argv = with_sudo(
+            &browser_check_argv(&browser, user, sandbox),
+            user.is_some(),
+            host,
+        );
+        match Command::new(&argv[0])
+            .args(&argv[1..])
+            .stdin(Stdio::null())
+            .output()
+        {
+            Ok(o) => (
+                String::from_utf8_lossy(&o.stdout).contains("<html"),
+                String::from_utf8_lossy(&o.stderr).into_owned(),
+            ),
+            Err(e) => (false, format!("running {}: {e}", argv[0])),
+        }
+    };
+    let _ = writeln!(out, "    starting {}", browser.display());
+    let (ok, stderr) = attempt(true);
+    if ok {
+        let _ = writeln!(out, "    it starts");
+    } else if attempt(false).0 {
+        let _ = writeln!(
+            out,
+            "    it starts only without its sandbox on this kernel; to let the server do \
+             the same, add  browser_sandbox = false  to {config}"
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "    it does not start; view_app will fail until it does:"
+        );
+        let lines: Vec<&str> = stderr.lines().collect();
+        for line in &lines[lines.len().saturating_sub(20)..] {
+            let _ = writeln!(out, "      | {line}");
+        }
+    }
 }
 
 fn write_file(
@@ -1663,17 +2092,38 @@ pub fn next_steps(c: &Choices, host: &Host, default_is_ours: bool) -> String {
             );
         }
     }
-    if !host.npm {
-        let install = match host.family {
-            Family::Alpine => "apk add nodejs npm",
-            Family::Debian => {
-                "scripts/setup-host.sh installs it from NodeSource (Debian's own npm is too old)"
-            }
-            Family::Other => "install Node.js with npm 9.3 or newer",
+    // What was left out, and how to have it. Asked for and installed, it is
+    // not mentioned; asked for where setup cannot install it, the plan said so.
+    let again = match host.family {
+        Family::Other => None,
+        _ => Some(match c.mode {
+            Mode::Development => "feldspar setup --dev",
+            Mode::Production => "feldspar setup --server",
+        }),
+    };
+    if !c.node && !host.npm_ok() {
+        let what = match &host.npm {
+            Some(old) => format!("npm {old} is too old to install a module"),
+            None => "Node.js is not installed".to_owned(),
+        };
+        let fix = match again {
+            Some(cmd) => format!("`{cmd} --node` installs it"),
+            None => format!(
+                "install Node.js with npm {}.{} or newer",
+                MIN_NPM.0, MIN_NPM.1
+            ),
+        };
+        out +=
+            &format!("\n{what}: building an application or installing a module runs npm. {fix}.\n");
+    }
+    if !c.browser && host.browser.is_none() {
+        let fix = match again {
+            Some(cmd) => format!("`{cmd} --browser` installs one"),
+            None => "install Chromium (not a snap)".to_owned(),
         };
         out += &format!(
-            "\nNode.js is not installed: building an application or installing a module runs \
-             npm. {install}.\n"
+            "\nThere is no headless browser: the coding agent's view_app is unavailable. \
+             {fix}.\n"
         );
     }
     out

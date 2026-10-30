@@ -752,7 +752,7 @@ workflow) found what the first importer left behind. Fixture:
   production one (system account, `/etc/feldspar/feldspar.toml`, systemd unit or OpenRC
   script), over SQLite or PostgreSQL, local (installed when not running) or remote; asked at a
   terminal or given as flags, with `--server` and `--dev` as presets that ask nothing.
-- [ ] **D1.3** `feldspar setup` installs Node.js (with npm 9.3 or newer) and a headless browser,
+- [x] **D1.3** `feldspar setup` installs Node.js (with npm 9.3 or newer) and a headless browser,
   as `setup-host.sh` does, so that it can replace that script.
 - [ ] **D1.4** An end-to-end run of `feldspar setup --server` on Alpine with OpenRC. Debian and
   Ubuntu have been run under systemd, and Alpine so far only through its plan.

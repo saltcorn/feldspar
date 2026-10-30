@@ -105,8 +105,9 @@ The second line makes the machine an instance (§7, "Setting up an instance"):
 
 `--database-url` (or `--db-host`, `--db-user`, `--db-password`, `--db-name`) uses a
 PostgreSQL on another host instead, and `--dry-run` prints every command and file first.
-What `feldspar setup` does not do that `setup-host.sh` below does is install Node.js
-and a headless browser. It says how when they are missing. Continue at §2.7.
+It also installs Node.js (npm 9.3 or newer, from NodeSource on Debian and Ubuntu) and a
+headless browser for the coding agent's `view_app`, as `setup-host.sh` below does
+(`--no-node` and `--no-browser` leave them out). Continue at §2.7.
 
 **The short way: download the built binary.** There is a prebuilt, statically
 linked artifact of the latest build. It needs no Rust, no C toolchain and no
@@ -1198,6 +1199,20 @@ what that configuration needs:
   you pass `--no-start`. `bind` defaults to `0.0.0.0:80`, and `--domain` sets
   `base_domain`. The unit runs the executable `setup` was run as, unless you pass
   `--binary`.
+
+**Node.js and a headless browser.** The server runs npm to build an application or
+install a module, and the coding agent's `view_app` drives a headless Chromium. A
+production setup installs whichever is missing (`--no-node` and `--no-browser` skip
+them). Node comes from NodeSource on Debian and Ubuntu, because their own npm is 9.2 and
+cannot install a module (§2.1), and from apk on Alpine. The browser is apt's `chromium`
+on Debian, Google Chrome from Google's apt repository on Ubuntu x86_64 (Ubuntu's
+`chromium-browser` is a snap, which does not run under a service account), and apk's
+`chromium` on Alpine. An npm of 9.3 or newer, or a browser on `PATH` that is not a snap,
+is kept. The browser is then started once, headless, as the `feldspar` account. If it
+starts only without its sandbox, setup tells you to add `browser_sandbox = false`. If it
+does not start, setup prints the browser's error. Neither stops the setup. A development
+setup installs neither unless you pass `--node` or `--browser`, or answer yes at the
+terminal. It says what is missing at the end.
 
 The database is `--db sqlite|postgres|remote-postgres`. A **local PostgreSQL** is
 installed (apt, or apk plus `rc-service postgresql setup`) only when nothing is listening

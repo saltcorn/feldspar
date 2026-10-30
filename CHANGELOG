@@ -2,6 +2,48 @@
 
 Changes in reverse chronological order.
 
+## Deployment: `feldspar setup` installs Node.js and a headless browser
+
+`feldspar setup` now does what `scripts/setup-host.sh` does for Node.js and the browser,
+so `setup-host.sh` is no longer needed for them (TODO D1.3).
+
+- **Node.js** (`--node` / `--no-node`): on Debian and Ubuntu, Node `NODE_MAJOR`.x (26,
+  the same line as `setup-host.sh` and the Docker image) from NodeSource. The steps are:
+  install `ca-certificates curl`, write the key to `/etc/apt/keyrings/nodesource.asc`,
+  write the source to `sources.list.d/nodesource.list`, pin it in
+  `preferences.d/nodesource`, then install `nodejs`. On Alpine it is `apk add nodejs npm`.
+  `Host` now records what `npm --version` says. An npm of 9.3 or newer is kept, and an
+  older one is replaced, with a note saying why (`npm_new_enough`).
+- **The browser** (`--browser` / `--no-browser`): `Host` records the browser the server
+  would find (`sc_server::detect_browser`, so a snap is skipped), and an existing one is
+  kept. Otherwise setup installs apt's `chromium` on Debian, `apk add chromium` on Alpine,
+  or, on Ubuntu (`ubuntu_like`: `ID` or `ID_LIKE`), `google-chrome-stable` from Google's
+  apt repository. That only works on x86_64. On any other architecture setup prints a note
+  and skips the check.
+- **A new step, `Step::CheckBrowser`**, comes after the account exists and before the
+  service starts. It starts the browser headless (`--dump-dom about:blank`, with a
+  throwaway profile directory that is removed afterwards) as the service account, via
+  `su -s /bin/sh`, which busybox also has. If that fails, it tries again with
+  `--no-sandbox`. If the second try works, setup suggests `browser_sandbox = false` for
+  the environment. If both fail, it prints the last 20 lines of the browser's stderr.
+  The check never fails the setup. A browser installed earlier in the same run is found
+  on `PATH` at check time.
+- **Defaults.** A production setup installs both. A development setup installs neither
+  unless you pass `--node` or `--browser`. At a terminal it asks, but only about what is
+  missing and only where it knows how to install it. So `--dev` still needs no root.
+  The closing notes say what was left out, with `feldspar setup --dev --node` (or
+  `--browser`, or the `--server` form) as the fix.
+- **Tests** (`sc-cli/tests/setup.rs`):
+  - the plan on a bare Debian: order, the NodeSource files, one prerequisite install
+    shared by both repositories, and the check placed between the account and the unit;
+  - Ubuntu on x86_64 and on aarch64, Alpine, a too-old npm, and the opt-out flags;
+  - the development questions;
+  - `NODE_MAJOR` agrees with `setup-host.sh`;
+  - the check run for real against three stand-in browsers: one that starts, one that
+    starts only without its sandbox, and one that does not start.
+  - The check command was also run by hand against this machine's Google Chrome (snap
+    Chromium skipped).
+
 ## Deployment: a production Docker image, and `ssl_mode = "proxy"`
 
 `deploy/docker` is a second way to deploy, beside the systemd install (README §2.9).
