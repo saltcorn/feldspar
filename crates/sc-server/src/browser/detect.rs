@@ -70,6 +70,86 @@ pub(crate) fn detect_in(
     Err(reason)
 }
 
+/// What Chromium prints when it can neither create a user namespace nor use a
+/// setuid helper — inside a container under Docker's default seccomp profile,
+/// or on a host whose AppArmor forbids unprivileged user namespaces.
+const NO_SANDBOX: &str = "No usable sandbox";
+
+/// How long the boot waits for the browser's one page.
+const SANDBOX_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Start the browser once, sandboxed, and say whether its sandbox works.
+///
+/// `view_app` would find out at the agent's first call, as an error in the
+/// middle of a run; this finds out at boot and says what to change. Only a
+/// browser that names its sandbox as the reason is refused: one that is slow,
+/// or fails for some other reason, is left for `view_app` to report in full,
+/// because a browser this check could not judge is not one it should take away.
+/// The browser is never retried without its sandbox — that is the operator's
+/// decision (`--no-browser-sandbox`), not this check's.
+pub fn check_browser_sandbox(browser: &Path) -> Result<(), String> {
+    let profile = std::env::temp_dir().join(format!(
+        "feldspar-sandbox-check-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    let result = run_sandbox_check(browser, &profile);
+    let _ = std::fs::remove_dir_all(&profile);
+    result
+}
+
+fn run_sandbox_check(browser: &Path, profile: &Path) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    let mut child = match Command::new(browser)
+        .args(["--headless", "--disable-gpu", "--no-first-run"])
+        .arg(format!("--user-data-dir={}", profile.display()))
+        .args(["--dump-dom", "about:blank"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        // Not this check's finding: `view_app` will say the same, in context.
+        Err(_) => return Ok(()),
+    };
+    // The pipe is drained on a thread so a chatty browser cannot fill it and
+    // stall while this waits for it to exit.
+    let stderr = child.stderr.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut out = String::new();
+            let _ = pipe.read_to_string(&mut out);
+            out
+        })
+    });
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < SANDBOX_CHECK_TIMEOUT => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(());
+            }
+        }
+    };
+    let stderr = stderr.and_then(|t| t.join().ok()).unwrap_or_default();
+    if status.success() || !stderr.contains(NO_SANDBOX) {
+        return Ok(());
+    }
+    Err(format!(
+        "the browser at {} cannot start its sandbox (\"{NO_SANDBOX}\"), and it is not \
+         started without one. In a container, run it with the seccomp profile that \
+         `feldspar seccomp-profile` prints (`--security-opt seccomp=<file>`; the Docker \
+         image's compose.yml does this); on an Ubuntu host, AppArmor's restriction on \
+         unprivileged user namespaces is the usual cause",
+        browser.display()
+    ))
+}
+
 /// Why `path` is a snap, or `None`.
 fn snap(path: &Path) -> Option<&'static str> {
     let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
@@ -118,6 +198,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// A browser that says its sandbox is unusable is refused with the remedy;
+    /// one that renders, or fails for any other reason, is left to `view_app`.
+    #[test]
+    fn a_browser_without_a_sandbox_is_refused_at_boot_with_the_remedy() {
+        let dir = scratch("sandbox");
+        let refused = executable(
+            &dir,
+            "no-sandbox",
+            "#!/bin/sh\necho '[1:1:ERROR:zygote_host_impl_linux.cc] No usable sandbox! \
+             If this is a Debian system...' >&2\nexit 1\n",
+        );
+        let err = check_browser_sandbox(&refused).unwrap_err();
+        assert!(err.contains("feldspar seccomp-profile"), "{err}");
+        assert!(err.contains("cannot start its sandbox"), "{err}");
+
+        let fine = executable(&dir, "fine", "#!/bin/sh\necho '<html></html>'\n");
+        assert_eq!(check_browser_sandbox(&fine), Ok(()));
+        let other = executable(
+            &dir,
+            "other",
+            "#!/bin/sh\necho 'out of memory' >&2\nexit 1\n",
+        );
+        assert_eq!(check_browser_sandbox(&other), Ok(()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

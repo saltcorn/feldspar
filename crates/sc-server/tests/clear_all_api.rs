@@ -319,7 +319,12 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
     acme.store("account", b"the account key").await?;
     // The first-user token stays too: an installation claimed through its
     // setup link is still claimable only through it once emptied.
-    sc_config::set_config(&server.catalog, sc_config::FIRST_USER_TOKEN, json!("setup-1")).await?;
+    sc_config::set_config(
+        &server.catalog,
+        sc_config::FIRST_USER_TOKEN,
+        json!("setup-1"),
+    )
+    .await?;
 
     // Two file stores with a file each; only one will be ticked.
     let gone = temp_dir("gone");

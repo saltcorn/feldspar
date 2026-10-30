@@ -415,7 +415,11 @@ mod tests {
             .unwrap();
         let spec: Vec<FormField> = section.fields.iter().map(|def| def.field.clone()).collect();
         assert!(!loopback.field.applies(&spec, &Attrs::new()));
-        assert!(loopback.field.applies(&spec, &attrs(&[(MCP_ENABLED, json!(true))])));
+        assert!(
+            loopback
+                .field
+                .applies(&spec, &attrs(&[(MCP_ENABLED, json!(true))]))
+        );
     }
 
     /// An installation nobody has turned it on for serves no MCP — and would

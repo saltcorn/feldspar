@@ -67,6 +67,15 @@ async fn run(args: &[String]) -> Result<()> {
         Some("i18n") => i18n_command(&args[1..]).await,
         Some("cmdstan") => cmdstan_command(&args[1..]).await,
         Some("demo") => demo_command(&args[1..]).await,
+        // The profile is the file the binary was built with, so the one a
+        // container is run under always matches the image it runs.
+        Some("seccomp-profile") => {
+            print!("{}", sc_cli::SECCOMP_PROFILE);
+            Ok(())
+        }
+        // Synchronous: it runs package managers and writes files, and touches
+        // no database.
+        Some("setup") => sc_cli::setup::run_setup(&args[1..]),
         Some(other) => Err(sc_error::Error::config(format!(
             "unknown command `{other}`"
         ))),
@@ -183,11 +192,11 @@ async fn serve_command(args: &[String]) -> Result<()> {
     // server on — which is what the public origin and the cookie's `Secure`
     // attribute are about to be built from.
     let ssl = sc_config::ssl_settings(&catalog).await?;
-    if ssl.enabled() {
-        // A session cookie sent over the HTTPS this process is about to serve is
-        // a cookie that should not travel over anything else. The flag stays as
-        // a way to turn it on *without* TLS here (a TLS-terminating proxy in
-        // front), so this only ever adds.
+    if ssl.public_https() {
+        // A session cookie sent over HTTPS — this process's, or the proxy's in
+        // front of it (`ssl_mode = "proxy"`) — is a cookie that should not
+        // travel over anything else. The flag stays as a way to turn it on
+        // without either, so this only ever adds.
         config.secure_cookies = true;
     }
     // A server on this machine only, given no base domain, serves its
@@ -195,7 +204,7 @@ async fn serve_command(args: &[String]) -> Result<()> {
     // after TLS: everything below (the public origin, the mounts, the
     // certificate's names) reads the base domain.
     if config.base_domain.is_none()
-        && let Some(domain) = sc_server::implied_base_domain(&config.addr, ssl.enabled())
+        && let Some(domain) = sc_server::implied_base_domain(&config.addr, ssl.public_https())
     {
         eprintln!(
             "feldspar: no base_domain is set and this server listens on {} only, so \
@@ -209,7 +218,9 @@ async fn serve_command(args: &[String]) -> Result<()> {
     // generator: an app's `AGENTS.md` and `src/feldspar/README.md` name the URL
     // to open, and this is the only place that knows it (§13.2).
     if let Some(domain) = &config.base_domain {
-        let port = if ssl.enabled() {
+        // Behind a proxy the outside world reaches the proxy's HTTPS port, not
+        // the one bound here; `https_port` names it when it is not 443.
+        let port = if ssl.public_https() {
             config.https_port
         } else {
             config.addr.port()
@@ -388,7 +399,16 @@ async fn install_services(
     // The headless browser `view_app` drives (TODO §7b), found once: on a host
     // without one the grant is refused, so say which it is before the agents
     // are validated against it.
-    let browser = sc_server::detect_browser(config.browser.as_deref());
+    // A sandboxed browser is started once here, so a sandbox the host forbids
+    // (a container under Docker's default seccomp profile) is a line in the
+    // boot log naming the fix rather than a failure in the middle of a run.
+    let browser = sc_server::detect_browser(config.browser.as_deref()).and_then(|path| {
+        if config.browser_sandbox {
+            sc_server::check_browser_sandbox(&path).map(|()| path)
+        } else {
+            Ok(path)
+        }
+    });
     match &browser {
         Ok(path) => eprintln!(
             "feldspar: view_app will use the browser at {}",
@@ -1543,7 +1563,9 @@ async fn check_command(args: &[String]) -> Result<()> {
         Some(other) => Err(sc_error::Error::config(format!(
             "unknown check subcommand `{other}`; there are `run` and `list`"
         ))),
-        None => Err(sc_error::Error::config("check needs a subcommand: run or list")),
+        None => Err(sc_error::Error::config(
+            "check needs a subcommand: run or list",
+        )),
     }
 }
 
@@ -3070,7 +3092,9 @@ fn plural(n: usize) -> &'static str {
 /// Print the short usage summary.
 fn print_usage() {
     eprintln!("feldspar — usage:");
+    eprintln!("  feldspar setup [--server | --dev] [--help for the rest]");
     eprintln!("  feldspar serve [database flags] [server flags]");
+    eprintln!("  feldspar seccomp-profile   the seccomp profile for running the Docker image");
     eprintln!("  feldspar build-app SUBDOMAIN [database flags] [--file-store NAME=PATH]");
     eprintln!("  feldspar api add-query --app SUBDOMAIN [--api MOUNT] --name NAME");
     eprintln!(
@@ -3185,7 +3209,15 @@ fn print_usage() {
     }
     eprintln!();
     eprintln!(
-        "  build-app: builds one application and prints the bundler's output.
+        "  setup: makes this machine an instance — development (you run `feldspar serve`;
+       the configuration in your own config directory) or production (a
+       `feldspar` system account and a systemd or OpenRC service; the
+       configuration in /etc/feldspar) — over SQLite or PostgreSQL, local
+       (installed if need be) or remote. --server is production with a local
+       PostgreSQL and --dev is development with SQLite, both asking nothing;
+       otherwise what the flags leave open is asked. --dry-run prints the plan.
+
+  build-app: builds one application and prints the bundler's output.
 
   api: adds, lists and removes an application's custom SQL queries. A query is
        validated by preparing it, so one that will not prepare is refused with

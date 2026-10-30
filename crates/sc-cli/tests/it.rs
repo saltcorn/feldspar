@@ -41,16 +41,22 @@ mod config_values;
 mod core_deps;
 #[path = "demo.rs"]
 mod demo;
+#[path = "docker_image.rs"]
+mod docker_image;
 #[path = "hosted_setup.rs"]
 mod hosted_setup;
 #[path = "i18n.rs"]
 mod i18n;
+#[path = "install_script.rs"]
+mod install_script;
 #[path = "mcp_token.rs"]
 mod mcp_token;
 #[path = "repo_hygiene.rs"]
 mod repo_hygiene;
 #[path = "serve.rs"]
 mod serve;
+#[path = "setup.rs"]
+mod setup;
 #[path = "setup_host.rs"]
 mod setup_host;
 #[path = "sqlite_primary.rs"]

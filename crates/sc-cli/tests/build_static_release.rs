@@ -80,6 +80,12 @@ fn fixture(name: &str, npx_status: i32) -> Fixture {
         repo.join("scripts/setup-host.sh"),
     )
     .expect("copy setup-host.sh");
+    // And the curl-to-sh installer, which --release publishes beside it.
+    fs::copy(
+        root.join("scripts/install.sh"),
+        repo.join("scripts/install.sh"),
+    )
+    .expect("copy install.sh");
     fs::copy(root.join("Cargo.toml"), repo.join("Cargo.toml")).unwrap();
     // And the bundled modules, which the packaging step also puts in the
     // artifact.
@@ -207,8 +213,8 @@ fn release_uploads_the_tarball_and_checksum_under_version_less_names() {
     let calls = f.npx_calls();
     assert_eq!(
         calls.len(),
-        2,
-        "expected one upload each for the tarball and the checksum, got {calls:?}"
+        3,
+        "expected one upload each for the tarball, the checksum and the installer, got {calls:?}"
     );
 
     // The tarball, sent under a name that carries no version.
@@ -227,6 +233,20 @@ fn release_uploads_the_tarball_and_checksum_under_version_less_names() {
         )
     );
     assert!(calls[1].ends_with(" --remote"), "{}", calls[1]);
+    // Last, the installer that fetches it — byte for byte the checkout's.
+    assert!(
+        calls[2].starts_with("wrangler r2 object put feldspar-latest-static/install.sh -f "),
+        "{}",
+        calls[2]
+    );
+    assert_eq!(
+        fs::read(f.uploads.join("install.sh")).expect("the uploaded installer"),
+        fs::read(f.repo.join("scripts/install.sh")).unwrap(),
+    );
+    assert!(
+        stdout.contains("curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh"),
+        "a publish should print the one-line install:\n{stdout}"
+    );
 
     // What is inside it: the host installer, so the machine that downloads this
     // from the bucket needs no checkout to set itself up.
@@ -421,8 +441,8 @@ fn the_default_release_builds_and_publishes_the_static_and_the_python_artifact()
     );
     assert!(static_tarball.is_file() && python_tarball.is_file());
 
-    // Four uploads: each tarball and its checksum, under version-less names that
-    // tell the two apart.
+    // Five uploads: each tarball and its checksum, under version-less names that
+    // tell the two apart, and the one installer.
     let objects: Vec<String> = f
         .npx_calls()
         .iter()
@@ -435,6 +455,7 @@ fn the_default_release_builds_and_publishes_the_static_and_the_python_artifact()
             "feldspar-latest-static/feldspar.tar.gz.sha256",
             "feldspar-latest-static/feldspar-debian13-python.tar.gz",
             "feldspar-latest-static/feldspar-debian13-python.tar.gz.sha256",
+            "feldspar-latest-static/install.sh",
         ]
     );
     assert_eq!(

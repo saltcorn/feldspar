@@ -12,4 +12,4 @@ pub mod snapshot;
 
 pub use driver::{ChromiumDriver, DriverConfig};
 
-pub use detect::{BROWSER_NAMES, detect_browser};
+pub use detect::{BROWSER_NAMES, check_browser_sandbox, detect_browser};

@@ -79,6 +79,36 @@ manual — the two installation modes side by side, the upgrade path for each, t
 configuration file and every environment variable, the reload signal, and running
 a coding agent against the installation.
 
+**The shortest way: one line, then `feldspar setup`.** On Debian, Ubuntu or Alpine
+(x86_64):
+
+```bash
+curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh
+sudo feldspar setup --server --domain example.com   # PostgreSQL here, a system service
+```
+
+The first line installs the `feldspar` executable and nothing else: it downloads the
+static release below, checks its checksum, puts the tree at `/opt/feldspar` and links
+`feldspar` onto `PATH`. Beside it, it installs only what it needs to download and unpack
+(`curl` or `wget`, `tar`) and what the binary needs at run time (`ca-certificates`); the
+binary itself is statically linked. It asks for `sudo` when it is not run as root;
+`sh -s -- --dry-run` prints what it would do, and `--help` lists the options. Run it again
+to upgrade, then restart the service.
+
+The second line makes the machine an instance (§7, "Setting up an instance"):
+
+| | |
+| --- | --- |
+| `sudo feldspar setup --server` | production: PostgreSQL installed and run on this host, a `feldspar` system account, `/etc/feldspar/feldspar.toml`, and a systemd unit (OpenRC on Alpine), started |
+| `feldspar setup --dev` | development: a SQLite file and `~/.config/feldspar/feldspar.toml`; you start `feldspar serve` yourself |
+| `feldspar setup` | asks which, and which database — SQLite, PostgreSQL here, or PostgreSQL elsewhere |
+
+`--database-url` (or `--db-host`, `--db-user`, `--db-password`, `--db-name`) uses a
+PostgreSQL on another host instead, and `--dry-run` prints every command and file first.
+It also installs Node.js (npm 9.3 or newer, from NodeSource on Debian and Ubuntu) and a
+headless browser for the coding agent's `view_app`, as `setup-host.sh` below does
+(`--no-node` and `--no-browser` leave them out). Continue at §2.7.
+
 **The short way: download the built binary.** There is a prebuilt, statically
 linked artifact of the latest build. It needs no Rust, no C toolchain and no
 checkout: it is all of §2 with the build taken out.
@@ -509,6 +539,78 @@ feldspar build-app blog --environment production
 
 That command mounts nothing, so it is safe to run against the live deployment's
 database (§7).
+
+### 2.9 The Docker image (an alternative)
+
+`deploy/docker` holds a production image, a compose file and the seccomp profile it
+runs under. It is a second way to deploy, not a replacement for §2.1–2.8.
+
+- **What is in it.** The released `debian13-python` artifact from the bucket (the same
+  tarball §2.8 installs, the build with Python), checked against its `.sha256` and
+  unpacked at `/opt/feldspar`. It is not built from source. Chromium for `view_app`,
+  Node and npm from NodeSource, git, Python 3.13 and `tini` are installed with it.
+- **The base** is Docker Hardened Images' Debian 13 (`dhi.io/debian-base`, the `-dev`
+  variant, which has apt). Pulling it needs a free Docker account: run
+  `docker login dhi.io` once before the first build.
+- **How it runs.** As uid 10001, never root, on plain HTTP port 8080. The only writable
+  path is the `/var/lib/feldspar` volume (file stores, npm's cache, the secrets key).
+  Everything else can be read-only.
+- **TLS is the proxy's.** The image sets `FELDSPAR_SSL_MODE=proxy` (see HTTPS in §7): the
+  public URLs are `https://`, the session cookie is `Secure`, no certificate is ordered,
+  and the admin UI has no SSL / TLS tab. Put a TLS-terminating proxy in front that sends
+  the base domain **and** `*.<base domain>` to port 8080.
+
+```bash
+docker login dhi.io
+cp deploy/docker/env.example deploy/docker/.env      # set FELDSPAR_BASE_DOMAIN, POSTGRES_PASSWORD
+docker compose -f deploy/docker/compose.yml up -d --build
+```
+
+Then open the base domain and create the first user (§2.7: whoever gets there first
+becomes the admin).
+
+**The database** comes from the environment: `DATABASE_URL`, or `PGHOST`, `PGPORT`,
+`PGUSER`, `PGPASSWORD`, `PGDATABASE`. The compose file uses the `PG*` variables and its
+own `postgres:17`. To keep the password out of `docker inspect`, mount a `feldspar.toml`
+instead (for example as a Docker secret) and point `FELDSPAR_CONFIG` at it. Do not add
+`--environment` to the command line: naming an environment makes the file outrank the
+variables (§7).
+
+**Server flags** go after the image name, because the entrypoint is `feldspar serve
+--bind 0.0.0.0:8080`. The compose file passes `--base-domain` this way.
+
+**The seccomp profile.** Chromium keeps its sandbox, and the server never starts it
+without one. The sandbox needs to create a user namespace, which Docker's default
+seccomp profile forbids. `deploy/docker/seccomp.json` is Docker's default profile with
+one entry added that allows `clone`, `unshare` and `chroot`. It needs no change on the
+host, only a run flag. The compose file already uses it. With plain `docker run`, get
+the profile from the image itself:
+
+```bash
+docker run --rm --entrypoint feldspar feldspar seccomp-profile > feldspar-seccomp.json
+docker run -d -p 8080:8080 -v feldspar-data:/var/lib/feldspar \
+  --security-opt seccomp=feldspar-seccomp.json --security-opt no-new-privileges:true \
+  --cap-drop ALL --read-only --tmpfs /tmp --shm-size 512m \
+  -e DATABASE_URL=postgres://feldspar:…@db.internal/feldspar \
+  feldspar --base-domain example.com
+```
+
+Without the profile the server still starts and serves everything else. It logs
+`view_app is unavailable`, with the flag to add, and the coding agent cannot look at
+the applications it builds. On an Ubuntu 23.10+ host with AppArmor's restriction on
+unprivileged user namespaces switched on, `--security-opt apparmor=unconfined` may also
+be needed. This has not been tested.
+
+**Updating.** The bucket holds only the latest release, and Docker caches the download.
+Rebuild without that cache, then recreate the container:
+
+```bash
+docker compose -f deploy/docker/compose.yml build --pull --no-cache
+docker compose -f deploy/docker/compose.yml up -d
+```
+
+The volume and the database survive. The prototype caveat of §2.8 applies: take a
+`pg_dump` first.
 
 ---
 
@@ -1079,6 +1181,54 @@ security** (SQLite has no policies, so authorization is enforced above the
 database and the tables list says `rls_available: false`) and **`LISTEN`/
 `NOTIFY`** (so the message bus does not use the database).
 
+### Setting up an instance
+
+`feldspar setup` writes the configuration file described below, and gives the machine
+what that configuration needs:
+
+- **Development** (`--dev`, or `--development` and then pick a database): an
+  `[environments.development]` section in your own `~/.config/feldspar/feldspar.toml`
+  (mode 0600), with SQLite at `~/.local/share/feldspar/feldspar.sqlite` unless you
+  choose otherwise. You start the server with `feldspar serve`. Nothing needs root,
+  except installing a local PostgreSQL if you choose one. In that case your login
+  becomes its role, reached over the socket with no password.
+- **Production** (`--server`, or `--production`): a `feldspar` system account with
+  `/var/lib/feldspar` as its home, `/etc/feldspar/feldspar.toml` (`root:feldspar`,
+  0640), and a service: the §2.6 systemd unit on Debian and Ubuntu, or an OpenRC script
+  under `supervise-daemon` on Alpine. The service is enabled and (re)started, unless
+  you pass `--no-start`. `bind` defaults to `0.0.0.0:80`, and `--domain` sets
+  `base_domain`. The unit runs the executable `setup` was run as, unless you pass
+  `--binary`.
+
+**Node.js and a headless browser.** The server runs npm to build an application or
+install a module, and the coding agent's `view_app` drives a headless Chromium. A
+production setup installs whichever is missing (`--no-node` and `--no-browser` skip
+them). Node comes from NodeSource on Debian and Ubuntu, because their own npm is 9.2 and
+cannot install a module (§2.1), and from apk on Alpine. The browser is apt's `chromium`
+on Debian, Google Chrome from Google's apt repository on Ubuntu x86_64 (Ubuntu's
+`chromium-browser` is a snap, which does not run under a service account), and apk's
+`chromium` on Alpine. An npm of 9.3 or newer, or a browser on `PATH` that is not a snap,
+is kept. The browser is then started once, headless, as the `feldspar` account. If it
+starts only without its sandbox, setup tells you to add `browser_sandbox = false`. If it
+does not start, setup prints the browser's error. Neither stops the setup. A development
+setup installs neither unless you pass `--node` or `--browser`, or answer yes at the
+terminal. It says what is missing at the end.
+
+The database is `--db sqlite|postgres|remote-postgres`. A **local PostgreSQL** is
+installed (apt, or apk plus `rc-service postgresql setup`) only when nothing is listening
+on `/var/run/postgresql` already. Its role and database are created when they are
+missing. A **remote one** is `--database-url URL`, or `--db-host`/`--db-port`/`--db-user`/
+`--db-password`/`--db-name`, and is written into the file as given. `--sqlite PATH` names
+the SQLite file.
+
+Without `--server` or `--dev`, the choices the flags leave open are asked at the
+terminal, and the plan is shown before anything is done. Off a terminal, a missing
+choice is an error naming the flag. `--dry-run` prints every command and file. A second
+run is safe. An existing configuration file is merged into, not replaced: its other
+environments and its `default_environment` are kept. A section that already says the
+same thing is left alone, and one that says something else is refused unless you pass
+`--force`.
+
 ### Environments, and the configuration file
 
 A deployment usually has more than one database — production, staging, test — so
@@ -1250,6 +1400,7 @@ the admin UI and every application:
 | `off` (default) | plain HTTP — right for local development and for a deployment behind a TLS-terminating proxy |
 | `letsencrypt` | certificates obtained and renewed from an ACME CA. Give it a contact email; the CA directory URL is a setting, so a staging directory or a private CA is a value in a text box |
 | `custom` | paste a PEM certificate chain and private key. Refused on save if they are not valid PEM or do not match each other |
+| `proxy` | plain HTTP here, HTTPS at a TLS-terminating proxy in front. The public URLs are `https://`, the session cookie is `Secure`, and no certificate is ordered or served. **Only the host can set it**: `ssl_mode = "proxy"` in `feldspar.toml`, or `FELDSPAR_SSL_MODE=proxy` (the Docker image sets it, §2.9). It is not offered on the settings screen, and while it is pinned the screen has no SSL / TLS tab |
 
 With TLS on, the server binds **two** listeners: the `--bind` address, which answers
 plain HTTP, and HTTPS on port 443 beside it. The plain one

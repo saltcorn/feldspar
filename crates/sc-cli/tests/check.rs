@@ -66,15 +66,31 @@ async fn check_run_exits_non_zero_on_a_failing_checklist() -> sc_error::Result<(
     )
     .await?;
 
-    let (ok, stdout, stderr) = feldspar(&["check", "run", "--checklist", "No things", "--database-url", &url]);
+    let (ok, stdout, stderr) = feldspar(&[
+        "check",
+        "run",
+        "--checklist",
+        "No things",
+        "--database-url",
+        &url,
+    ]);
     assert!(ok, "{stdout}\n{stderr}");
     assert!(stdout.contains("PASS No things"), "{stdout}");
 
     let (ok, stdout, stderr) = feldspar(&["check", "run", "--database-url", &url]);
-    assert!(!ok, "a failing checklist must fail the command:\n{stdout}\n{stderr}");
+    assert!(
+        !ok,
+        "a failing checklist must fail the command:\n{stdout}\n{stderr}"
+    );
     assert!(stdout.contains("FAIL Five things"), "{stdout}");
-    assert!(stdout.contains("expected 5 rows of `things`, found 0"), "{stdout}");
-    assert!(stderr.contains("1 of 2 checklists did not pass"), "{stderr}");
+    assert!(
+        stdout.contains("expected 5 rows of `things`, found 0"),
+        "{stdout}"
+    );
+    assert!(
+        stderr.contains("1 of 2 checklists did not pass"),
+        "{stderr}"
+    );
 
     // The runs are recorded, and `check list` shows the last result.
     let (ok, stdout, stderr) = feldspar(&["check", "list", "--database-url", &url]);
@@ -83,7 +99,14 @@ async fn check_run_exits_non_zero_on_a_failing_checklist() -> sc_error::Result<(
     assert!(stdout.contains("No things\t1 step\tpassed"), "{stdout}");
 
     // A name that matches nothing is an error, not a silent pass.
-    let (ok, _, stderr) = feldspar(&["check", "run", "--checklist", "Nope", "--database-url", &url]);
+    let (ok, _, stderr) = feldspar(&[
+        "check",
+        "run",
+        "--checklist",
+        "Nope",
+        "--database-url",
+        &url,
+    ]);
     assert!(!ok);
     assert!(stderr.contains("no checklist called `Nope`"), "{stderr}");
     Ok(())

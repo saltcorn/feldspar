@@ -152,10 +152,12 @@ pub async fn set_config(catalog: &Catalog, key: &str, value: Json) -> Result<()>
         delete_config(catalog, key).await?;
         return Ok(());
     }
-    check(&field, &value)?;
+    // The pin before the declaration: a pinned value may be one the
+    // declaration does not offer (`proxy`), and sending it back is not a write.
     if pinned_unchanged(&catalog.host_config(), key, &value)? {
         return Ok(());
     }
+    check(&field, &value)?;
     write_value(catalog, key, &value).await
 }
 
@@ -176,9 +178,10 @@ pub async fn set_config_many(catalog: &Catalog, values: &Attrs) -> Result<()> {
     for (key, value) in values {
         let field = require_definition(key)?;
         if !value.is_null() {
-            check(&field, value)?;
             if pinned_unchanged(&pinned, key, value)? {
                 skip.push(key.as_str());
+            } else {
+                check(&field, value)?;
             }
         }
     }
@@ -227,6 +230,10 @@ pub async fn set_config_many(catalog: &Catalog, values: &Attrs) -> Result<()> {
 /// [`crate::ssl::HOST_KEYS`] may be pinned, and each is checked against its
 /// declaration here, so a mistyped mode in the file stops the boot with the
 /// key's name rather than being found by a browser that cannot connect.
+///
+/// One value passes here that the declaration does not list:
+/// [`MODE_PROXY`](crate::ssl::MODE_PROXY), which only a host may choose — it is
+/// kept out of the settings screen's options, so a save can never store it.
 pub fn set_host_config(catalog: &Catalog, values: Attrs) -> Result<()> {
     for (key, value) in &values {
         if !crate::ssl::HOST_KEYS.contains(&key.as_str()) {
@@ -235,6 +242,9 @@ pub fn set_host_config(catalog: &Catalog, values: Attrs) -> Result<()> {
                  are {}",
                 crate::ssl::HOST_KEYS.join(", ")
             )));
+        }
+        if key == crate::ssl::SSL_MODE && value.as_str() == Some(crate::ssl::MODE_PROXY) {
+            continue;
         }
         check(&require_definition(key)?, value)?;
     }
@@ -260,8 +270,8 @@ fn pinned_unchanged(pinned: &Attrs, key: &str, value: &Json) -> Result<bool> {
         None => Ok(false),
         Some(held) if held == value => Ok(true),
         Some(_) => Err(Error::invalid(format!(
-            "`{key}` is set in this host's feldspar.toml, so it cannot be changed here; \
-             change it in the file and restart the server"
+            "`{key}` is set in this host's feldspar.toml (or its environment), so it cannot \
+             be changed here; change it there and restart the server"
         ))),
     }
 }

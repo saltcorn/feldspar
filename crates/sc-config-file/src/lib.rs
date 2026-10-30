@@ -124,6 +124,11 @@ pub const CONFIG_PATH_VAR: &str = "FELDSPAR_CONFIG";
 /// Environment variable selecting the environment, when `--environment` is not
 /// passed. Selecting one this way is as explicit as the flag.
 pub const ENVIRONMENT_VAR: &str = "FELDSPAR_ENV";
+/// Environment variable pinning `ssl_mode` over the selected environment's
+/// (and over `_fd_config`): how a container image, which cannot know what file
+/// will be mounted into it, says that TLS is the proxy's business —
+/// `FELDSPAR_SSL_MODE=proxy`. Empty is unset.
+pub const SSL_MODE_VAR: &str = "FELDSPAR_SSL_MODE";
 /// The environment used when the file names no `default_environment` and the
 /// command line selects none.
 pub const DEFAULT_ENVIRONMENT: &str = "production";
@@ -644,6 +649,18 @@ pub fn search_paths() -> Vec<PathBuf> {
         paths.push(dir.join(APP_DIR).join(FILE_NAME));
     }
     paths
+}
+
+/// The per-user configuration file — the first of [`search_paths`], and where
+/// `feldspar setup --dev` writes one.
+pub fn user_config_file() -> Option<PathBuf> {
+    user_config_dir().map(|dir| dir.join(APP_DIR).join(FILE_NAME))
+}
+
+/// The system-wide configuration file — the last of [`search_paths`], and where
+/// `feldspar setup --server` writes one for the service account.
+pub fn system_config_file() -> Option<PathBuf> {
+    system_config_dir().map(|dir| dir.join(APP_DIR).join(FILE_NAME))
 }
 
 /// [`search_paths`], rendered for an error message.

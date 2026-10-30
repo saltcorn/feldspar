@@ -461,7 +461,10 @@ async fn call_tool(
     let arguments = params.get("arguments").cloned().unwrap_or(Json::Null);
 
     if sc_check::tools::is_tool(name) {
-        return json_rpc_result(id, tool_result(checklist_tool(state, catalog, caller, name, &arguments).await));
+        return json_rpc_result(
+            id,
+            tool_result(checklist_tool(state, catalog, caller, name, &arguments).await),
+        );
     }
 
     let tools = tool_set(state, caller);
