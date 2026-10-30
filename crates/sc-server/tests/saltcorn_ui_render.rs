@@ -59,13 +59,6 @@ const V1_BACKUP: &[u8] = include_bytes!("fixtures/saltcorn-v1-BooksDB.zip");
 /// BooksDB with a v1 library and a legacy page; see `fixtures/README.md`.
 const V1_LIBRARY_BACKUP: &[u8] = include_bytes!("fixtures/saltcorn-v1-BooksDB-library.zip");
 
-/// `TrimPages`, as this server's trigger: v1's `modify_row` of
-/// `{ pages: Math.round(pages*0.9) }`, on the row the action column is on —
-/// which a `none` trigger's body is given as its `payload`.
-const TRIM_PAGES: &str = "const [book] = await db.Books.where({ id: payload.id }).rows();\n\
-     await db.Books.where({ id: payload.id }).update({ pages: Math.round(book.pages * 0.9) });\n\
-     return { notify: `Trimmed ${book.title}` };";
-
 /// The built bundle's directory, if there is one.
 pub(crate) fn bundle_dir() -> Option<PathBuf> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -243,27 +236,11 @@ impl Server {
 }
 
 pub(crate) async fn setup(tag: &str, bundle: PathBuf) -> sc_error::Result<Server> {
-    setup_with(tag, bundle, true).await
+    setup_from(tag, bundle, V1_BACKUP).await
 }
 
-/// [`setup`], choosing whether to write `TrimPages` as this server's trigger.
-/// Without it the application declares a trigger the restore refused, which is
-/// what a real import of BooksDB leaves behind.
-async fn setup_with(
-    tag: &str,
-    bundle: PathBuf,
-    write_trim_pages: bool,
-) -> sc_error::Result<Server> {
-    setup_from(tag, bundle, V1_BACKUP, write_trim_pages).await
-}
-
-/// [`setup_with`], restoring `archive` rather than the plain BooksDB backup.
-async fn setup_from(
-    tag: &str,
-    bundle: PathBuf,
-    archive: &[u8],
-    write_trim_pages: bool,
-) -> sc_error::Result<Server> {
+/// [`setup`], restoring `archive` rather than the plain BooksDB backup.
+async fn setup_from(tag: &str, bundle: PathBuf, archive: &[u8]) -> sc_error::Result<Server> {
     let db = TestDb::new().await?;
     db.client()
         .await?
@@ -377,29 +354,9 @@ async fn setup_from(
     assert_eq!(status, StatusCode::OK, "{report}");
 
     // --- The trigger List Books' action column runs. BooksDB's `TrimPages` is a
-    // v1 `modify_row`, an action this server does not have, so the restore
-    // leaves it out; this is the same trigger written as this server writes one,
-    // so the view names a trigger its application declares (§12.3).
-    if write_trim_pages {
-        let (status, created) = client
-            .send(
-                "POST",
-                "/api/triggers",
-                Some(json!({
-                    "name": "TrimPages",
-                    "description": "",
-                    "when": "none",
-                    "channel": Value::Null,
-                    "only_if": Value::Null,
-                    "action": "run_js_code",
-                    "configuration": { "code": TRIM_PAGES },
-                    "min_role": Value::Null,
-                    "enabled": true,
-                })),
-            )
-            .await;
-        assert_eq!(status, StatusCode::CREATED, "{created}");
-    }
+    // v1 `modify_row`, which the restore translates into a `run_js_code` body
+    // doing what v1's did (TODO F10.9), so the view names a trigger its
+    // application declares (§12.3) and this server has.
 
     // --- The application the restore made of the backup, its views and its page
     // (Phase 8) — with this test's own menu, and the two patterns BooksDB has no
@@ -931,9 +888,60 @@ async fn an_action_that_is_not_the_applications_is_refused_by_name() -> sc_error
     Ok(())
 }
 
-/// Found by running the definition of done by hand (12.4): BooksDB restored as it
-/// comes — its `TrimPages` refused, because `modify_row` is not an action here,
-/// and nobody writing it again — still mounts and serves. The application declares
+/// A v1 list button that runs one of v1's own actions directly — `toast`,
+/// configured on the column, with no trigger — pressed through the view's
+/// `run_action` route (TODO F10.9). The import made it a trigger and the column
+/// names that, so the page gets v1's own answer, read from the row it is on.
+#[tokio::test]
+async fn a_v1_button_running_a_built_in_action_answers_as_v1s_did() -> sc_error::Result<()> {
+    let Some(bundle) = bundle_dir() else {
+        eprintln!(
+            "skipping: the Saltcorn UI bundle is not built (npm ci && npm run build in ui/saltcorn-ui)"
+        );
+        return Ok(());
+    };
+    let mut column_index = 0;
+    let archive = crate::backup_api::with_pack(V1_BACKUP, |pack| {
+        let list = pack["views"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|v| v["name"] == json!("List Books"))
+            .unwrap();
+        let columns = list["configuration"]["columns"].as_array_mut().unwrap();
+        column_index = columns.len();
+        columns.push(json!({
+            "type": "Action", "rndid": "70a571", "action_name": "toast",
+            "action_label": "Hi", "minRole": 100,
+            "configuration": { "notify_type": "Warning", "text": "{{title}}: {{pages}} pages" } }));
+    });
+    let mut server = setup_from("built-in-button", bundle, &archive).await?;
+    let client = &mut server.client;
+    let csrf = client.cookies.get(CSRF_COOKIE).cloned().unwrap();
+    let ran = client
+        .app_post(
+            "/view/List%20Books/run_action",
+            "application/json",
+            json!({ "rndid": "70a571", "id": "1", "column_index": column_index })
+                .to_string()
+                .into_bytes(),
+            &[
+                ("CSRF-Token", csrf.as_str()),
+                ("X-Requested-With", "XMLHttpRequest"),
+            ],
+        )
+        .await;
+    assert_eq!(ran.status, StatusCode::OK, "{}", ran.body);
+    let answer: Value = serde_json::from_str(&ran.body).unwrap();
+    assert_eq!(answer["success"], json!("ok"), "{answer}");
+    assert_eq!(answer["notify"], json!("Moby Dick: 500 pages"), "{answer}");
+    assert_eq!(answer["notify_type"], json!("warning"), "{answer}");
+    Ok(())
+}
+
+/// Found by running the definition of done by hand (12.4): BooksDB restored with
+/// its `TrimPages` refused — here because it is made a v1 `notify_user`, which has
+/// nothing to become — and nobody writing it again, still mounts and serves. The application declares
 /// the trigger (the import puts every v1 trigger in its subset, so List Books can
 /// be saved), and an application with no API exposes no trigger, so the missing
 /// one is found when the action column runs it, not on the mount.
@@ -946,7 +954,11 @@ async fn a_restored_backup_serves_although_a_trigger_it_names_was_refused() -> s
         );
         return Ok(());
     };
-    let mut server = setup_with("refused-trigger", bundle, false).await?;
+    let archive = crate::backup_api::with_pack(V1_BACKUP, |pack| {
+        pack["triggers"][0]["action"] = json!("notify_user");
+        pack["triggers"][0]["configuration"] = json!({ "user_spec": "*", "title": "hi" });
+    });
+    let mut server = setup_from("refused-trigger", bundle, &archive).await?;
     let report = server.restore_report.clone();
     let lines = |key: &str| -> Vec<String> {
         report[key]
@@ -959,7 +971,7 @@ async fn a_restored_backup_serves_although_a_trigger_it_names_was_refused() -> s
     assert!(
         lines("warnings")
             .iter()
-            .any(|l| l.starts_with("trigger `TrimPages`") && l.contains("modify_row")),
+            .any(|l| l.starts_with("trigger `TrimPages`") && l.contains("notify_user")),
         "{report}"
     );
     assert!(
@@ -2111,7 +2123,7 @@ const V1_TABLE_IDS: [(u64, &str); 4] = [
 ///   triggers (§12), so v1's groups of them, and their config forms,
 ///   descriptions and constraints, are not here.
 /// - **Triggers.** The application's triggers are this server's: BooksDB's
-///   `TrimPages` rewritten as `run_js_code`, and its `AddBook` workflow
+///   `TrimPages` translated into `run_js_code`, and its `AddBook` workflow
 ///   imported as a workflow. v1 also leaves a table's trigger off a page, and
 ///   nothing here is a table trigger. The trigger group and `triggerActions` go
 ///   from both sides; the test checks ours name the application's triggers.
@@ -2670,7 +2682,7 @@ async fn an_imported_library_and_legacy_page_render_on_the_subdomain() -> sc_err
         );
         return Ok(());
     };
-    let mut server = setup_from("v1-library", bundle, V1_LIBRARY_BACKUP, true).await?;
+    let mut server = setup_from("v1-library", bundle, V1_LIBRARY_BACKUP).await?;
     let report = server.restore_report.to_string();
     assert!(
         report.contains("2 library items into application `booksdb`"),

@@ -728,6 +728,16 @@ workflow) found what the first importer left behind. Fixture:
   A restored agent whose trait still fails (a trigger that was not imported) keeps its other
   traits, the failing one dropped with a warning.
 
+- [x] **F10.9** Every one of v1's 31 built-in actions has a deliberate outcome on import:
+  translated (mostly into a `run_js_code` body in v1's scope, `send_email` into this one's
+  templates), or refused with the reason. Same-named actions (`delete_rows`, `send_email`,
+  `run_js_code`) are translated too, because their settings differ. Multi-step triggers
+  run their steps, a view's or page's button that names a built-in action becomes a trigger,
+  and workflow steps use the same converter.
+- [ ] **F10.10** What F10.9 refuses: `send_email` with a view as its body (needs
+  view-to-email rendering), a confirmation field, `notify_user` (needs notifications),
+  `emit_event`, and server-side `sleep` / `loop_rows`' interval (no timers in a code body).
+
 ## S1 — Saltcorn UI view runtime: remaining hardening from security review #36
 
 `{{= }}` no longer evaluates row data (see the CHANGELOG). What the review also recommended:

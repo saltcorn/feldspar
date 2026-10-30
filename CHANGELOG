@@ -2,6 +2,50 @@
 
 Changes in reverse chronological order.
 
+## Saltcorn 1 import: every built-in action is translated or refused with a reason
+
+Before this change, a v1 backup's triggers kept their action names and settings unchanged.
+Of the 31 actions in v1's base plugin, 28 were refused on restore as unknown (`modify_row`, `toast`,
+`navigate` …). The other three restored but did not work. `delete_rows` and `send_email`
+have the same names here with different settings. `run_js_code` bodies relied on v1's scope
+(`table`, fields by bare name), and a `none` trigger here binds no `row` (TODO F10.9).
+
+- **`backup/v1/actions.rs`** (new): one converter for all 31 actions, plus v1's multi-step triggers. Most become a
+  `run_js_code` body that does what v1's `run` did, written against v1's `Table`, with the
+  row's fields in scope by name. The row is read from wherever it comes from: a table
+  event's `row`, a button's `payload`, or a workflow's `context`. `send_email` becomes this
+  system's `send_email`, with templates. Browser actions answer v1's own objects, which
+  Saltcorn UI's `common_done` handles. `emit_event`, `notify_user`,
+  `find_or_create_dm_room`, `convert_session_to_user`, `train_model_instance`,
+  `install_progressive_web_app`, server `sleep` and a view-bodied `send_email` are refused
+  with the reason.
+- **Multi-step triggers** become a body that runs the steps, with v1's `only_if`, goto,
+  halt, clear and `set_fields`. A built-in step becomes its own trigger.
+- **Buttons.** An action column or action segment, at any depth, in a view, a page or a
+  library item (and a multi-step column's step) that names a built-in action directly becomes
+  a `none` trigger, `<view> · <action> <n>`. Container click actions and List's row-click
+  action are not affected, because v1 only lets those name triggers.
+  It gets the view's table, and its role is the stricter of the view's and the button's.
+  The button is rewritten to name it.
+- **Workflows.** A built-in action in a workflow step goes through the same converter, over
+  the context. `webhook`'s `response_var` and `insert_any_row`'s `id_variable` become
+  workflow variables.
+- A refused trigger or button stays declared by the application, so the view that names it
+  still saves. When an action answers the page with JavaScript, the application's CSP gains
+  `'unsafe-eval'`, and the report says so. v1's `Startup` event now maps to `startup`.
+- **Tests:**
+  - unit tests in `actions.rs` and `v1.rs`, including
+    `every_kind_of_button_running_a_built_in_action_becomes_a_trigger`;
+  - `backup_api::v1s_built_in_actions_are_translated_and_run` restores BooksDB with 16
+    extra triggers and a button, and runs each in the real engine: toast, navigate, modify_row, loop_rows,
+    a multi-step trigger, insert/delete/duplicate, v1-style `run_js_code` with `Actions`,
+    `run_js_code_in_field`, `set_user_language`, download, and a made button trigger;
+  - `saltcorn_ui_render::a_v1_button_running_a_built_in_action_answers_as_v1s_did` presses
+    a `toast` button through the view's `run_action` route;
+  - BooksDB's `TrimPages` is now imported, so the render tests no longer write a stand-in.
+    The refused-trigger test makes its trigger a `notify_user` instead.
+- Documented in `docs/tutorial-triggers.md` ("What a Saltcorn 1 backup's actions become").
+
 ## Deployment: `feldspar setup` installs Node.js and a headless browser
 
 `feldspar setup` now does what `scripts/setup-host.sh` does for Node.js and the browser,
