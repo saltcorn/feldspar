@@ -284,7 +284,7 @@ Containers and emulators always use the host's page size, so the build asserts i
 
 ## R1 — The artifact
 
-- [ ] R1.1 `static-build.Dockerfile`: the Python variant builds on bookworm (D2), not trixie. Drop
+- [x] R1.1 `static-build.Dockerfile`: the Python variant builds on bookworm (D2), not trixie. Drop
       the `python3-dev` layer. Download the pinned PBS 3.13 `install_only_stripped` tarball for
       the target (D7) and check its SHA-256. Unpack it at `${PREFIX}/python` *inside the build
       container*, so build and run paths agree. Build with
@@ -292,32 +292,41 @@ Containers and emulators always use the host's page size, so the build asserts i
       `-C link-arg=-Wl,-rpath,$ORIGIN/../python/lib`. **Check first** that the PBS release ships
       a shared `libpython3.13.so` on Linux GNU. If it does not, link its PIC
       `libpython3.13.a` with `-rdynamic` and drop `python/lib` from the runtime picture.
-- [ ] R1.2 The `.glibc` copies (D3): copy `ld-linux-x86-64.so.2`, `libc.so.6`, `libm.so.6`,
+      *Done:* PBS `20261026` / CPython 3.13.18 ships `lib/libpython3.13.so.1.0`, so it is the
+      shared link. The bundling is `scripts/lib/python-bundle.sh`, which also rewrites PBS's
+      `/install` placeholder in `sysconfig` to `${PREFIX}/python`. The Docker build and its
+      smoke run have not been run yet: the machine this was written on has no docker.
+- [x] R1.2 The `.glibc` copies (D3): copy `ld-linux-x86-64.so.2`, `libc.so.6`, `libm.so.6`,
       `libgcc_s.so.1`, `libnss_compat.so.2` and `libnss_db.so.2` from the build image to
       `${PREFIX}/glibc` (aarch64: its own loader name). Make `bin/feldspar.glibc` and
       `python/bin/python3.glibc` with `patchelf --set-interpreter ${PREFIX}/glibc/ld-linux-… 
       --force-rpath --set-rpath ${PREFIX}/glibc:${PREFIX}/python/lib`. Check with `readelf` in
       the script that each copy has the expected `PT_INTERP` and `DT_RPATH`, the way
       `assert_python_linkage` checks linkage today.
-- [ ] R1.3 `build-static.sh`: the variants become `linux` (new) and `static` (kept until R3.3).
+      *Done:* the library set comes from `ldd` on the binary, the interpreter and libpython,
+      not a fixed list. PBS's libpython also needs `libpthread`, `libdl`, `libutil` and
+      `librt`. `libnss_db` is bundled only if the build image has it (a warning otherwise).
+- [x] R1.3 `build-static.sh`: the variants become `linux` (new) and `static` (kept until R3.3).
       `assert_python_linkage` asks for `libpython3.13.so` resolved from `$ORIGIN`, not from the
       host. Remove the generated libpython install step (`build-static.sh:769-790`).
-- [ ] R1.4 `sc-python`: start the interpreter with `PyConfig.home = <exe>/../python` when that
+- [x] R1.4 `sc-python`: start the interpreter with `PyConfig.home = <exe>/../python` when that
       directory exists (§3), without setting `PYTHONHOME` in the environment. Test: a test binary
       with a fake `python/` beside it gets that home. A plain `cargo test` build without one
       starts as today.
-- [ ] R1.5 `sc-python`: `--python-bin` defaults to the bundled interpreter when it exists (§3).
+- [x] R1.5 `sc-python`: `--python-bin` defaults to the bundled interpreter when it exists (§3).
       The `--help` text (`sc-cli/src/main.rs:3477`) and `docs/tutorial-python.md` say so. Test:
       the default resolves to the bundled path when present and to `python3` otherwise.
-- [ ] R1.6 An existing venv whose `pyvenv.cfg` `home` is not the bundled interpreter but has the
+- [x] R1.6 An existing venv whose `pyvenv.cfg` `home` is not the bundled interpreter but has the
       same minor version (D4: Debian's 3.13 on an upgraded host) is repointed with
       `<bundled python3> -m venv --upgrade <dir>`. That keeps its site-packages, so the venv no
       longer depends on the host's `python3` (which an operator may then remove). A different
       minor version still gets `abi_refusal`'s sentence. Test with a fake `pyvenv.cfg`.
-- [ ] R1.7 A self-check that starts the embedded interpreter without a database: an existing
+- [x] R1.7 A self-check that starts the embedded interpreter without a database: an existing
       `feldspar check` mode if one fits, else a small subcommand. It imports `ssl`, `sqlite3`,
       `ctypes` and `zoneinfo`, opens a verified HTTPS connection, and prints the interpreter's
       version and home. The smoke test (R2.4) and operators both use it.
+      *Done:* `feldspar python check [--url URL | --offline]`. `feldspar check` is checklists
+      and needs a database, so it did not fit.
 
 ## R2 — Installing on every distribution
 

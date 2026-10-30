@@ -67,6 +67,7 @@ async fn run(args: &[String]) -> Result<()> {
         Some("agent") => agent_command(&args[1..]).await,
         Some("i18n") => i18n_command(&args[1..]).await,
         Some("cmdstan") => cmdstan_command(&args[1..]).await,
+        Some("python") => python_command(&args[1..]).await,
         Some("demo") => demo_command(&args[1..]).await,
         // The profile is the file the binary was built with, so the one a
         // container is run under always matches the image it runs.
@@ -2881,6 +2882,24 @@ async fn cmdstan_command(args: &[String]) -> Result<()> {
     }
 }
 
+/// `feldspar python check` (TODO-portable-release R1.7): start the embedded
+/// interpreter with no database, print what it found, and exit non-zero when a
+/// check failed. A build without the `python` feature says so and fails.
+async fn python_command(args: &[String]) -> Result<()> {
+    use sc_cli::python::{PythonArgs, format_check, verdict};
+
+    let PythonArgs::Check { url, env } = PythonArgs::parse(args)?;
+    let pip = env.interpreter();
+    let runtime = sc_python::PythonRuntime::new().with_env(env);
+    // On a blocking thread: the HTTPS request waits on the network with the
+    // interpreter's thread, and this command has nothing else to do meanwhile.
+    let found = tokio::task::spawn_blocking(move || runtime.self_check(url.as_deref()))
+        .await
+        .map_err(|e| sc_error::Error::msg(format!("the Python self-check panicked: {e}")))??;
+    print!("{}", format_check(&found, &pip));
+    verdict(&found)
+}
+
 /// The trees a command reads: the bare paths when there are any, else the
 /// domains'.
 ///
@@ -3301,6 +3320,9 @@ fn print_usage() {
     eprintln!("  feldspar demo analytics [--replace] [database flags]");
     eprintln!("  feldspar cmdstan status [--cmdstan DIR]");
     eprintln!("  feldspar cmdstan install [--version V] [--dir D] [--jobs J]");
+    eprintln!(
+        "  feldspar python check [--url URL | --offline] [--python-dir PATH] [--python-bin PATH]"
+    );
     eprintln!();
     eprintln!("  database (or the DATABASE_URL / PG* environment variables):");
     eprintln!("    --database-url URL   full connection string (takes precedence)");
@@ -3480,10 +3502,11 @@ fn print_usage() {
     --python-dir PATH        the virtual environment Python modules install into
                              (default: the platform's data directory, e.g.
                              ~/.local/share/feldspar/python)
-    --python-bin PATH        the interpreter pip runs under (default python3).
-                             It must be the same major.minor version as the one
-                             this server was built against, or the environment
-                             is refused rather than segfaulted on"
+    --python-bin PATH        the interpreter pip runs under (default: the release's
+                             bundled python/bin/python3 beside bin/feldspar, else
+                             python3 on PATH). It must be the same major.minor
+                             version as the one this server was built against, or
+                             the environment is refused rather than segfaulted on"
     );
     eprintln!(
         "    --model-max-rows N       rows one model dataset may select (default 200000)

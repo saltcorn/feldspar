@@ -70,6 +70,10 @@ const SALTCORN: &str = include_str!("py/saltcorn.py");
 /// author actually writes.
 const PLUGIN: &str = include_str!("py/plugin.py");
 
+/// `feldspar python check`'s questions (TODO-portable-release R1.7), compiled
+/// in like the rest and imported only when that command runs.
+const SELF_CHECK: &str = include_str!("py/selfcheck.py");
+
 /// The name the package is imported under, which is also what a body's
 /// `import saltcorn` reaches.
 const PACKAGE: &str = "saltcorn";
@@ -171,7 +175,7 @@ pub(crate) fn ensure(env: &PythonEnv) -> Result<String> {
         // added: this is what makes `__sc` a **built-in** module rather than
         // something on a path.
         pyo3::append_to_inittab!(sc_module);
-        Python::initialize();
+        initialize()?;
         Python::attach(|py| boot(py, env)).map_err(|e| e.to_string())
     });
     match outcome {
@@ -180,6 +184,125 @@ pub(crate) fn ensure(env: &PythonEnv) -> Result<String> {
             "this server could not start its Python interpreter: {e}"
         ))),
     }
+}
+
+/// Start CPython: at the release tree's bundled home where this binary has one
+/// beside it, exactly as PyO3 starts it otherwise.
+///
+/// Without a home, CPython looks for its standard library beside the `python3`
+/// it finds on the `PATH` — on a host with no Python that is nowhere, and the
+/// interpreter dies with "No module named encodings"; on a host with a
+/// different Python it is that one's. So the release, which brings its own
+/// CPython (TODO-portable-release §3), names the home explicitly. A developer
+/// build and `cargo test` have no bundled tree and keep today's start.
+fn initialize() -> std::result::Result<(), String> {
+    match crate::env::bundled_python_home() {
+        Some(home) => initialize_at(&home),
+        None => {
+            Python::initialize();
+            Ok(())
+        }
+    }
+}
+
+/// `Py_InitializeFromConfig` with `PyConfig.home` set — **not** `PYTHONHOME`
+/// in the environment, which every child this server starts would inherit:
+/// npm, Chromium, the coding agent's shell and any *other* Python those run.
+///
+/// The rest of the configuration is what `Py_InitializeEx(0)` — PyO3's own
+/// start — amounts to: no signal handlers (the server owns SIGINT and SIGTERM)
+/// and no command line to parse. The one choice made beyond it is to leave the
+/// C locale alone: coercing it would set `LC_CTYPE` in the process environment,
+/// which is the inheritance problem again.
+///
+/// Afterwards the GIL is released, which is the state PyO3's
+/// [`Python::initialize`] leaves the interpreter in — and is then a no-op,
+/// since it starts nothing that is already started.
+fn initialize_at(home: &std::path::Path) -> std::result::Result<(), String> {
+    use pyo3::ffi;
+    use std::mem::MaybeUninit;
+
+    let home_c = path_cstring(home)?;
+    let program = crate::env::bundled_python_bin_in(home)
+        .map(|bin| path_cstring(&bin))
+        .transpose()?;
+    // Safety: everything below runs once per process (`START`), before any
+    // other use of the C API in it. The configuration structs are initialised
+    // by CPython's own `*_Init*Config` before a field is touched, the strings
+    // handed over are NUL-terminated and outlive the calls that copy them, and
+    // the configuration is cleared on every path after `PyConfig_Init*`.
+    unsafe {
+        if ffi::Py_IsInitialized() != 0 {
+            return Ok(());
+        }
+        let mut pre = MaybeUninit::<ffi::PyPreConfig>::uninit();
+        ffi::PyPreConfig_InitPythonConfig(pre.as_mut_ptr());
+        let pre = pre.as_mut_ptr();
+        (*pre).parse_argv = 0;
+        (*pre).coerce_c_locale = 0;
+        (*pre).coerce_c_locale_warn = 0;
+        status(ffi::Py_PreInitialize(pre))?;
+
+        let mut config = MaybeUninit::<ffi::PyConfig>::uninit();
+        ffi::PyConfig_InitPythonConfig(config.as_mut_ptr());
+        let config = config.as_mut_ptr();
+        (*config).parse_argv = 0;
+        (*config).install_signal_handlers = 0;
+        let started = (|| {
+            status(ffi::PyConfig_SetBytesString(
+                config,
+                &raw mut (*config).home,
+                home_c.as_ptr(),
+            ))?;
+            // So `sys.executable` is the bundled interpreter rather than
+            // whatever `python3` is on the `PATH`: a body that runs
+            // `sys.executable` gets the CPython it is running on.
+            if let Some(program) = &program {
+                status(ffi::PyConfig_SetBytesString(
+                    config,
+                    &raw mut (*config).program_name,
+                    program.as_ptr(),
+                ))?;
+            }
+            status(ffi::Py_InitializeFromConfig(config))
+        })();
+        ffi::PyConfig_Clear(config);
+        started.map_err(|e| format!("starting CPython at {}: {e}", home.display()))?;
+        ffi::PyEval_SaveThread();
+    }
+    Python::initialize();
+    Ok(())
+}
+
+/// A `PyStatus` as a `Result`, with CPython's own words for the failure.
+///
+/// # Safety
+///
+/// `status` came from the C API, so its strings are null or NUL-terminated and
+/// static.
+unsafe fn status(status: pyo3::ffi::PyStatus) -> std::result::Result<(), String> {
+    // Safety: the caller's.
+    unsafe {
+        if pyo3::ffi::PyStatus_Exception(status) == 0 {
+            return Ok(());
+        }
+        let text = |p: *const std::os::raw::c_char| {
+            (!p.is_null()).then(|| std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned())
+        };
+        Err(match (text(status.func), text(status.err_msg)) {
+            (Some(func), Some(msg)) => format!("{func}: {msg}"),
+            (None, Some(msg)) => msg,
+            _ => format!("CPython exited with status {}", status.exitcode),
+        })
+    }
+}
+
+fn path_cstring(path: &std::path::Path) -> std::result::Result<std::ffi::CString, String> {
+    #[cfg(unix)]
+    let bytes = std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()).to_vec();
+    #[cfg(not(unix))]
+    let bytes = path.to_string_lossy().into_owned().into_bytes();
+    std::ffi::CString::new(bytes).map_err(|_| format!("{} has a NUL byte", path.display()))
 }
 
 /// Whether the interpreter has been started — the difference between §7's
@@ -233,6 +356,49 @@ fn boot(py: Python<'_>, env: &PythonEnv) -> PyResult<String> {
     let micro: u32 = info.getattr("micro")?.extract()?;
     isolate_path(py, env, major, minor)?;
     Ok(format!("{major}.{minor}.{micro}"))
+}
+
+/// Start the interpreter and answer `feldspar python check`'s questions.
+///
+/// Outside the import gate and outside a run: this is the operator asking
+/// about the install, and `ssl`, `ctypes` and the network are exactly what the
+/// gate keeps from a body.
+pub(crate) fn self_check(env: &PythonEnv, url: Option<&str>) -> Result<crate::SelfCheck> {
+    ensure(env)?;
+    let answer: String = Python::attach(|py| -> PyResult<String> {
+        let module = embedded(py, SELF_CHECK, c"<saltcorn self-check>", c"__sc_selfcheck")?;
+        module.getattr("run")?.call1((url,))?.extract()
+    })
+    .map_err(|e| Error::msg(format!("the Python self-check did not run: {e}")))?;
+    let json: Json = serde_json::from_str(&answer)
+        .map_err(|e| Error::msg(format!("the Python self-check answered {answer}: {e}")))?;
+    let text = |key: &str| {
+        json.get(key)
+            .and_then(Json::as_str)
+            .unwrap_or("")
+            .to_owned()
+    };
+    let checks = json
+        .get("checks")
+        .and_then(Json::as_array)
+        .map(|checks| {
+            checks
+                .iter()
+                .map(|c| crate::SelfCheckItem {
+                    name: c.get(0).and_then(Json::as_str).unwrap_or("").to_owned(),
+                    ok: c.get(1).and_then(Json::as_bool).unwrap_or(false),
+                    detail: c.get(2).and_then(Json::as_str).unwrap_or("").to_owned(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(crate::SelfCheck {
+        version: text("version"),
+        home: text("home"),
+        executable: text("executable"),
+        bundled: crate::env::bundled_python_home().is_some(),
+        checks,
+    })
 }
 
 /// One of this crate's own Python modules, compiled from the source in the

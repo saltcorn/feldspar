@@ -8,6 +8,11 @@
 //! `npx`. The `npx` stub records its argv and keeps a copy of every file it was
 //! asked to upload, so the assertions are about what would actually have landed
 //! in the bucket: the object names, and the contents of the checksum file.
+//!
+//! The `linux` variant's bundle step runs for real (`scripts/lib/python-bundle.sh`)
+//! over a fake python-build-standalone tarball, with `curl`, `ldd` and
+//! `patchelf` stubbed: what is under test is the tree it assembles and the
+//! commands it would have run, not CPython or the dynamic linker.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -86,6 +91,13 @@ fn fixture(name: &str, npx_status: i32) -> Fixture {
         repo.join("scripts/install.sh"),
     )
     .expect("copy install.sh");
+    // And the bundle step the linux variant runs.
+    fs::create_dir_all(repo.join("scripts/lib")).unwrap();
+    fs::copy(
+        root.join("scripts/lib/python-bundle.sh"),
+        repo.join("scripts/lib/python-bundle.sh"),
+    )
+    .expect("copy python-bundle.sh");
     fs::copy(root.join("Cargo.toml"), repo.join("Cargo.toml")).unwrap();
     // And the bundled modules, which the packaging step also puts in the
     // artifact.
@@ -99,14 +111,18 @@ fn fixture(name: &str, npx_status: i32) -> Fixture {
     fs::create_dir_all(&uploads).unwrap();
 
     // `cargo build`, minus the compiler: leave an executable where the real build
-    // would have left one.
+    // would have left one, and note the flags and the PyO3 configuration it was
+    // given.
     write_executable(
         &bin.join("cargo"),
         &format!(
             "#!/bin/sh\nset -eu\nout=\"${{CARGO_TARGET_DIR:-$PWD/target}}/{TARGET}/release\"\n\
+             printf 'RUSTFLAGS=%s\\n' \"${{RUSTFLAGS:-}}\" >> '{log}'\n\
+             if [ -n \"${{PYO3_CONFIG_FILE:-}}\" ]; then cat \"$PYO3_CONFIG_FILE\" >> '{log}'; fi\n\
              mkdir -p \"$out\"\n\
              printf '#!/bin/sh\\necho feldspar usage\\n' > \"$out/feldspar\"\n\
-             chmod +x \"$out/feldspar\"\n"
+             chmod +x \"$out/feldspar\"\n",
+            log = dir.join("cargo.log").display(),
         ),
     );
     write_executable(
@@ -139,6 +155,103 @@ fn fixture(name: &str, npx_status: i32) -> Fixture {
 }
 
 impl Fixture {
+    /// Stand in for python-build-standalone and the tools the bundle step runs:
+    /// a `curl` that answers every download with a small tarball shaped like
+    /// PBS's (`python/` with a libpython, an interpreter, `sysconfig` holding
+    /// the `/install` placeholder, and a Tcl library to trim), an `ldd` that
+    /// names a fake system glibc, and a `patchelf` that records its argv.
+    ///
+    /// `pin` writes that tarball's SHA-256 into the throwaway checkout's copy of
+    /// the script, as a release bump would; without it the pin is the real
+    /// one, which the fake does not match.
+    fn fake_python_build_standalone(&self, pin: bool) {
+        let pbs = self.dir.join("pbs/python");
+        fs::create_dir_all(pbs.join("bin")).unwrap();
+        fs::create_dir_all(pbs.join("lib/python3.13")).unwrap();
+        write_executable(&pbs.join("bin/python3.13"), "#!/bin/sh\n");
+        std::os::unix::fs::symlink("python3.13", pbs.join("bin/python3")).unwrap();
+        fs::write(pbs.join("lib/libpython3.13.so.1.0"), "ELF?").unwrap();
+        std::os::unix::fs::symlink("libpython3.13.so.1.0", pbs.join("lib/libpython3.13.so"))
+            .unwrap();
+        fs::write(pbs.join("lib/libtcl9.0.so"), "tcl").unwrap();
+        fs::write(
+            pbs.join("lib/python3.13/_sysconfigdata__linux_x86_64-linux-gnu.py"),
+            "build_time_vars = {\"LIBDIR\": \"/install/lib\", \"CFLAGS\": \"-I/install/include \
+             -L/install/lib\", \"INSTALL\": \"/usr/bin/install -c\", \"prefix\": \"/install\"}\n",
+        )
+        .unwrap();
+        let tarball = self.dir.join("pbs.tar.gz");
+        let packed = Command::new("tar")
+            .arg("-czf")
+            .arg(&tarball)
+            .arg("-C")
+            .arg(self.dir.join("pbs"))
+            .arg("python")
+            .status()
+            .unwrap();
+        assert!(packed.success());
+
+        let log = self.dir.join("tools.log");
+        write_executable(
+            &self.bin.join("curl"),
+            &format!(
+                "#!/bin/sh\nset -eu\nout=\"\"\nwhile [ $# -gt 0 ]; do\n\
+                 case \"$1\" in -o) out=\"$2\"; shift 2 ;; -*) shift ;; *) echo \"curl $1\" >> '{log}'; shift ;; esac\n\
+                 done\ncp '{tarball}' \"$out\"\n",
+                log = log.display(),
+                tarball = tarball.display(),
+            ),
+        );
+        let syslib = self.dir.join("syslib");
+        fs::create_dir_all(&syslib).unwrap();
+        for lib in ["libc.so.6", "ld-linux-x86-64.so.2", "libnss_compat.so.2"] {
+            fs::write(syslib.join(lib), lib).unwrap();
+        }
+        write_executable(
+            &self.bin.join("ldd"),
+            &format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = --version ]; then echo 'ldd (Debian GLIBC 2.36-9) 2.36'; exit 0; fi\n\
+                 case \"$1\" in */bin/feldspar) \
+                 printf '\\tlibpython3.13.so.1.0 => %s/../python/lib/libpython3.13.so.1.0 (0x1)\\n' \"$(dirname \"$1\")\" ;; esac\n\
+                 printf '\\tlinux-vdso.so.1 (0x0)\\n'\n\
+                 printf '\\tlibc.so.6 => {syslib}/libc.so.6 (0x2)\\n'\n\
+                 printf '\\t{syslib}/ld-linux-x86-64.so.2 (0x3)\\n'\n",
+                syslib = syslib.display(),
+            ),
+        );
+        write_executable(
+            &self.bin.join("patchelf"),
+            &format!(
+                "#!/bin/sh\nprintf 'patchelf %s\\n' \"$*\" >> '{log}'\n",
+                log = log.display()
+            ),
+        );
+
+        if pin {
+            let sha = Command::new("sha256sum").arg(&tarball).output().unwrap();
+            let sha = String::from_utf8_lossy(&sha.stdout)
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .to_owned();
+            let script = self.repo.join("scripts/build-static.sh");
+            let text = fs::read_to_string(&script).unwrap();
+            let pinned: Vec<&str> = text
+                .lines()
+                .filter(|l| l.starts_with("readonly PBS_SHA256_X86_64="))
+                .collect();
+            assert_eq!(pinned.len(), 1, "one x86_64 pin in the script");
+            let text = text.replace(pinned[0], &format!("readonly PBS_SHA256_X86_64=\"{sha}\""));
+            fs::write(&script, text).unwrap();
+        }
+    }
+
+    /// What the `curl` and `patchelf` stubs recorded.
+    fn tool_calls(&self) -> String {
+        fs::read_to_string(self.dir.join("tools.log")).unwrap_or_default()
+    }
+
     /// Run the script with `--release` and whatever extra options a test wants.
     fn release(&self, extra: &[&str]) -> (std::process::Output, String, String) {
         let path = format!(
@@ -421,11 +534,9 @@ fn member(tarball: &Path, path: &str) -> String {
 }
 
 #[test]
-fn the_default_release_builds_and_publishes_the_static_and_the_python_artifact() {
+fn the_default_release_builds_and_publishes_the_static_and_the_linux_artifact() {
     let f = fixture("both", 0);
-    // The native Python build checks the interpreter it will link against; this
-    // one answers as Debian 13's does, whatever the test machine has.
-    write_executable(&f.bin.join("python3"), "#!/bin/sh\necho 3.13\n");
+    f.fake_python_build_standalone(true);
     let (output, stdout, stderr) = f.release(&["--variant", "both"]);
     assert!(
         output.status.success(),
@@ -433,16 +544,17 @@ fn the_default_release_builds_and_publishes_the_static_and_the_python_artifact()
     );
 
     let static_tarball = f.tarball();
-    let python_tarball = PathBuf::from(
+    let linux_tarball = PathBuf::from(
         static_tarball
             .display()
             .to_string()
-            .replace(".tar.gz", "-debian13-python.tar.gz"),
+            .replace(".tar.gz", "-python.tar.gz"),
     );
-    assert!(static_tarball.is_file() && python_tarball.is_file());
+    assert!(static_tarball.is_file() && linux_tarball.is_file());
 
     // Five uploads: each tarball and its checksum, under version-less names that
-    // tell the two apart, and the one installer.
+    // tell the two apart — the linux one under the name the Debian 13 build had,
+    // which existing hosts fetch (TODO-portable-release D5) — and the installer.
     let objects: Vec<String> = f
         .npx_calls()
         .iter()
@@ -460,7 +572,7 @@ fn the_default_release_builds_and_publishes_the_static_and_the_python_artifact()
     );
     assert_eq!(
         fs::read(f.uploads.join("feldspar-debian13-python.tar.gz")).unwrap(),
-        fs::read(&python_tarball).unwrap(),
+        fs::read(&linux_tarball).unwrap(),
     );
     let published =
         fs::read_to_string(f.uploads.join("feldspar-debian13-python.tar.gz.sha256")).unwrap();
@@ -475,18 +587,84 @@ fn the_default_release_builds_and_publishes_the_static_and_the_python_artifact()
         "{stdout}"
     );
 
-    // Each artifact says which it is, for setup-host.sh to read...
+    // Each artifact says which it is, for setup-host.sh to read.
     assert_eq!(member(&static_tarball, "VARIANT"), "static\n");
-    assert_eq!(member(&python_tarball, "VARIANT"), "debian13-python\n");
-    // ...and only the Python one's install.sh sees to the library it links.
-    let install = member(&python_tarball, "install.sh");
+    assert_eq!(member(&linux_tarball, "VARIANT"), "linux\n");
+
+    // The pinned CPython was fetched for this target...
+    let tools = f.tool_calls();
     assert!(
-        install.contains("libpython3.13.so.1.0")
-            && install.contains("apt-get install -y libpython3.13"),
-        "{install}"
+        tools.contains(
+            "curl https://github.com/astral-sh/python-build-standalone/releases/download/\
+             20261026/cpython-3.13.18+20261026-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+        ),
+        "{tools}"
     );
-    assert!(!member(&static_tarball, "install.sh").contains("libpython"));
-    assert!(member(&python_tarball, "README").contains("Debian 13"));
+    // ...linked through a RUNPATH beside the binary, against that copy...
+    let cargo = fs::read_to_string(f.dir.join("cargo.log")).unwrap();
+    assert!(
+        cargo.contains("-C link-arg=-Wl,-rpath,$ORIGIN/../python/lib"),
+        "{cargo}"
+    );
+    assert!(cargo.contains("lib_name=python3.13"), "{cargo}");
+    assert!(cargo.contains("/python/lib\n"), "{cargo}");
+    // ...trimmed, with its sysconfig naming where it will be installed...
+    let sysconfig = member(
+        &linux_tarball,
+        "python/lib/python3.13/_sysconfigdata__linux_x86_64-linux-gnu.py",
+    );
+    assert!(
+        sysconfig.contains("\"LIBDIR\": \"/opt/feldspar/python/lib\"")
+            && sysconfig.contains("-I/opt/feldspar/python/include -L/opt/feldspar/python/lib")
+            && sysconfig.contains("\"prefix\": \"/opt/feldspar/python\"")
+            && sysconfig.contains("/usr/bin/install -c"),
+        "{sysconfig}"
+    );
+    let listing = Command::new("tar")
+        .arg("-tzf")
+        .arg(&linux_tarball)
+        .output()
+        .unwrap();
+    let listing = String::from_utf8_lossy(&listing.stdout);
+    for path in [
+        "/bin/feldspar",
+        "/bin/feldspar.glibc",
+        "/python/bin/python3.glibc",
+        "/python/lib/libpython3.13.so.1.0",
+        "/glibc/libc.so.6",
+        "/glibc/ld-linux-x86-64.so.2",
+        "/glibc/libnss_compat.so.2",
+    ] {
+        assert!(
+            listing.lines().any(|l| l.ends_with(path)),
+            "no {path} in:\n{listing}"
+        );
+    }
+    assert!(
+        !listing.contains("libtcl"),
+        "Tcl/Tk was not trimmed:\n{listing}"
+    );
+    assert!(!static_tarball_lists(&static_tarball, "/python/"));
+    // ...and both copies point at the bundled loader, through a DT_RPATH.
+    let patched = tools.matches(
+        "patchelf --set-interpreter /opt/feldspar/glibc/ld-linux-x86-64.so.2 \
+         --force-rpath --set-rpath /opt/feldspar/glibc:/opt/feldspar/python/lib ",
+    );
+    assert_eq!(patched.count(), 2, "{tools}");
+    assert!(
+        stderr.contains("libnss_db.so.2 is not on this machine"),
+        "{stderr}"
+    );
+
+    // install.sh swaps the runtime trees in rather than writing over a mapped
+    // libpython, and asks the host for no Python package at all.
+    let install = member(&linux_tarball, "install.sh");
+    assert!(install.contains("for tree in python glibc"), "{install}");
+    assert!(!install.contains("apt-get"), "{install}");
+    assert!(!member(&static_tarball, "install.sh").contains("for tree in"));
+    let readme = member(&linux_tarball, "README");
+    assert!(readme.contains("glibc 2.36 or newer"), "{readme}");
+    assert!(readme.contains("feldspar python check"), "{readme}");
 
     // The download URL the operations manual gives is the one published.
     let ops = fs::read_to_string(workspace_root().join("docs/OPERATIONS.md")).unwrap();
@@ -497,14 +675,29 @@ fn the_default_release_builds_and_publishes_the_static_and_the_python_artifact()
     fs::remove_dir_all(&f.dir).ok();
 }
 
+fn static_tarball_lists(tarball: &Path, fragment: &str) -> bool {
+    let listing = Command::new("tar")
+        .arg("-tzf")
+        .arg(tarball)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&listing.stdout).contains(fragment)
+}
+
 #[test]
-fn a_native_python_build_against_the_wrong_python_is_refused_before_the_build() {
-    let f = fixture("wrong-python", 0);
-    write_executable(&f.bin.join("python3"), "#!/bin/sh\necho 3.11\n");
+fn a_python_download_that_does_not_match_the_pin_is_refused_before_the_build() {
+    let f = fixture("wrong-pbs", 0);
+    // The real pin, which the fake tarball does not match.
+    f.fake_python_build_standalone(false);
+    // `python` is the variant's old name, and still means `linux`.
     let (output, _stdout, stderr) = f.release(&["--variant", "python"]);
     assert!(!output.status.success());
-    assert!(stderr.contains("links libpython 3.13"), "{stderr}");
+    assert!(stderr.contains("not the pinned"), "{stderr}");
     assert!(f.npx_calls().is_empty());
-    assert!(!f.dir.join("dist").exists(), "the build ran anyway");
+    assert!(
+        !f.dir.join("cargo.log").exists(),
+        "cargo ran after a bad download"
+    );
+    assert!(!f.dir.join("dist").exists(), "a tarball was written anyway");
     fs::remove_dir_all(&f.dir).ok();
 }

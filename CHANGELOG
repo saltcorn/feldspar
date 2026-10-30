@@ -2,6 +2,76 @@
 
 Changes in reverse chronological order.
 
+## Portable release R1: one Linux artifact with its own CPython
+
+The Python-capable release was built on Debian 13 and linked the host's `libpython3.13`, so it
+ran on Debian 13 only. This is milestone R1 of `TODO-portable-release.md`: the artifact itself,
+with CPython bundled. Installing it on every distribution (the libc choice, package tables, the
+tree swap) is R2.
+
+- **`--variant linux`** in `scripts/build-static.sh` replaces `debian13-python` (`python` is
+  still accepted and means `linux`). It builds on Debian 12 (glibc 2.36), not 13, against
+  python-build-standalone CPython **3.13.18** (release `20261026`), pinned by tag and per-arch
+  SHA-256 in the script. The download is checked before anything is built. The binary links
+  `libpython3.13.so.1.0` through a RUNPATH of `$ORIGIN/../python/lib`, so it uses the copy in
+  the tarball, never the host's. The tarball adds `python/` (Tcl/Tk, IDLE and man pages
+  removed) and `glibc/` (the build image's loader, libc and the rest of the binary's library
+  closure, found with `ldd`, plus `libnss_compat`/`libnss_db`). It also adds
+  `bin/feldspar.glibc` and `python/bin/python3.glibc`, patched with `patchelf` to use the
+  bundled loader and a DT_RPATH of `/opt/feldspar/glibc:/opt/feldspar/python/lib`, for musl
+  hosts. `VARIANT` says `linux`. It is still published as `feldspar-debian13-python.tar.gz`
+  (D5), so existing hosts and the container image keep fetching it.
+- **`scripts/lib/python-bundle.sh`** (new) does the bundling for the Dockerfile and for
+  `--native`: `fetch` (download, check the SHA-256, unpack, trim, and rewrite PBS's `/install`
+  placeholder in `sysconfig`, `python3-config`, the Makefile and the `.pc` files to the
+  install path, so pip can build C extensions) and `glibc` (strip, copy the glibc closure,
+  make the `.glibc` copies). `static-build.Dockerfile` unpacks PBS at `${PREFIX}/python` inside
+  the container and builds with `PYO3_PYTHON` set to it. Native builds use a
+  `PYO3_CONFIG_FILE` instead, and need `curl` and `patchelf`.
+- **Checks**: `assert_python_linkage` now requires the RUNPATH and `python/lib/libpython3.13.so.1.0`
+  in the tree. The new `assert_glibc_copies` reads each `.glibc` copy's `PT_INTERP` and
+  `DT_RPATH` with `readelf`, and checks that every `NEEDED` entry of every ELF file in the tree
+  is in `glibc/` or `python/lib`. The smoke run mounts the tree at the prefix and runs
+  `feldspar python check --offline`: the normal binary on `debian:12-slim` and `debian:13-slim`,
+  the `.glibc` one on `alpine:3`. The generated `install.sh` no longer installs `libpython3.13`
+  with apt. Instead it swaps `python/` and `glibc/` in by rename, so a running server's mapped
+  libpython is never overwritten in place.
+- **`sc-python` starts CPython at the bundled home.** When `<exe>/../python` exists (symlinks
+  resolved), the interpreter is started with `PyConfig.home` set to it and `program_name` set to
+  its `bin/python3`, via `Py_InitializeFromConfig`. No signal handlers are installed and the C
+  locale is not coerced. `PYTHONHOME` is never put in the environment, so child processes do
+  not inherit it. Without that directory (developer builds, `cargo test`) it starts exactly as
+  before. This needs the non-limited API, so the workspace `pyo3` dependency drops
+  `abi3-py311`. The binary already linked one versioned `libpython`.
+- **`--python-bin` defaults to the bundled `python/bin/python3`** when it exists, else
+  `python3` as before (`sc_python::default_python_bin`). The `--help` text and
+  `docs/tutorial-python.md` say so.
+- **An existing venv is moved onto the bundled interpreter.** If its `pyvenv.cfg` has the same
+  minor version as the embedded interpreter but a different `home` (Debian's `python3.13` on an
+  upgraded host), the next install or uninstall first runs `<bundled python3> -m venv --upgrade
+  <dir>`. `site-packages` is kept. Nothing is moved for a different minor version (still
+  `abi_refusal`) or when `--python-bin` names another interpreter.
+- **`feldspar python check [--url URL | --offline]`** (new) starts the embedded interpreter
+  with no database. It prints the version, home, `sys.executable` and the interpreter pip runs.
+  It then checks that `ssl`, `sqlite3`, `ctypes` and `zoneinfo` import and that a verified
+  HTTPS request works (default `https://pypi.org/simple/`), and exits non-zero if any check
+  fails (`sc_python::PythonRuntime::self_check`, `crates/sc-python/src/py/selfcheck.py`).
+- Docs: the `abi3` claims in README, OPERATIONS and TECHNICAL_DESIGN are corrected.
+- Tests: `sc-python` unit tests cover finding the home (including through a symlink), that a
+  test binary has none, and moving a venv with a stand-in interpreter (moved once; a 3.12 venv
+  and an operator's own `--python-bin` are left alone). `tests/python_self_check.rs` runs the
+  self-check offline, and `without_python.rs` checks it is refused in a build without Python.
+  `sc-cli` tests cover the command's arguments and output. `build_static_release.rs` builds the
+  `linux` variant natively over a fake PBS tarball with `curl`/`ldd`/`patchelf` stubbed, and
+  checks the URL, RUSTFLAGS, PyO3 config, rewritten `sysconfig`, tree layout, `patchelf`
+  arguments, `install.sh`, README and uploads. A second test checks that a download that does
+  not match the pin stops the build before cargo runs. Checked by hand: a fake release tree
+  (this binary plus `python/` pointing at the system stdlib) starts at that home, and an empty
+  `python/` fails with CPython's own message.
+- **Not run here**: the Docker build and its smoke run. This machine has no docker, so the real
+  bookworm build, `patchelf` on the real binary, and Alpine running `feldspar.glibc` are
+  unverified.
+
 ## Trigger docs: a trigger that fails raises the `error` event
 
 The `error` event for a failed trigger (below) was only in the design document, so app builders

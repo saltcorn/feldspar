@@ -115,7 +115,7 @@ def compile_body(source, filename):
     body = tree.body or [empty]
     extra = {}
     # `type_params` is a required field from 3.12 on and does not exist in 3.11,
-    # and the floor of this runtime is 3.11 (`abi3-py311`), so both are live.
+    # and a developer build may link a 3.11 (`PYO3_PYTHON`), so both are live.
     if sys.version_info >= (3, 12):
         extra["type_params"] = []
     wrapper = ast.FunctionDef(

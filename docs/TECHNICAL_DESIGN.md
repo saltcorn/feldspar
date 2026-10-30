@@ -349,7 +349,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-check` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-browser` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
 | `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-repomap` `sc-types` |
 | `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-help` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
+| `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:
 
@@ -13509,10 +13509,10 @@ ships one such build beside the static artifact: `--variant python` (built by de
 the static one) produces `feldspar-debian13-python.tar.gz`. It is built on Debian 13 with no
 `+crt-static`, links `libpython3.13.so.1.0`, and runs on Debian 13 only. Its `install.sh` installs
 `libpython3.13`, and `setup-host.sh` adds `python3` and `python3-venv` when `/opt/feldspar/VARIANT`
-says `debian13-python` (docs/OPERATIONS.md §2.1). The floor is CPython
-**3.11**, `abi3`, and `abi3` delivers what it promises: one build serves every CPython from 3.11
-up, the only obstacle being the version-specific soname in `DT_NEEDED`, which an operator
-satisfies by having the matching `libpython` present. The cost of the dependency is small — 7
+says `debian13-python` (docs/OPERATIONS.md §2.1). The floor is CPython **3.11**. The build is
+not `abi3`: an embedding binary links one versioned `libpython` (`DT_NEEDED`) whatever API it
+compiles against, and the limited API has no `PyConfig`, which is how a binary that bundles its
+CPython names the interpreter's home (TODO-portable-release R1.4). The cost of the dependency is small — 7
 crates, 3 seconds of build, half a megabyte of binary, and ~10 ms to initialise an interpreter
 that is never initialised unless something asks for it.
 

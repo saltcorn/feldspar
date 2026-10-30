@@ -35,34 +35,39 @@
 # addons (`.node` files loaded through `deno_napi`) will not load. Nothing in the
 # server needs one; an application that ships one does.
 #
-# The second artifact: Debian 13 with Python
-# ------------------------------------------
+# The second artifact: every Linux, with Python
+# ---------------------------------------------
 # The same `dlopen` limit is why the static binary has no Python. PyO3 embeds
-# CPython by linking `libpython`; under `+crt-static` that link fails outright
-# (Debian's `libpython3.x.a` is not position-independent), and even a binary that
-# linked could not load CPython's own `lib-dynload` extensions or any compiled
-# wheel. So Python needs a dynamically linked binary, and that is the second
-# variant this script builds:
+# CPython by linking `libpython`; under `+crt-static` that link fails outright,
+# and even a binary that linked could not load CPython's own `lib-dynload`
+# extensions or any compiled wheel. So Python needs a dynamically linked binary,
+# and that is the second variant this script builds (TODO-portable-release.md):
 #
-#   debian13-python   no `+crt-static`, `--features python`, built on Debian 13
-#                     (trixie) against `libpython3.13`. V8 and every Rust crate
-#                     are still linked in; what comes from the host is glibc and
-#                     `libpython3.13.so.1.0`. It runs on Debian 13 with the
-#                     `libpython3.13` package installed — which its install.sh
-#                     sees to — and is not meant for anything else.
+#   linux   no `+crt-static`, `--features python`, built on Debian 12 (glibc
+#           2.36) against a **bundled** CPython 3.13 — python-build-standalone,
+#           pinned below by release and SHA-256 — that ships in the tarball as
+#           `python/`. The binary finds it through `$ORIGIN/../python/lib`, so
+#           the host needs nothing Python-related, and pip runs that same
+#           interpreter. What comes from the host is glibc ≥ 2.36, which every
+#           supported distribution but Alpine has. For Alpine (and older glibc)
+#           the tarball also carries bookworm's glibc in `glibc/` and `.glibc`
+#           copies of the two executables, whose loader and DT_RPATH point
+#           there (`scripts/lib/python-bundle.sh`).
 #
-# `--variant static|python|both` picks; both is the default, and `--release`
-# publishes each one that was built.
+# `--variant static|linux|both` picks (`python` is the old name for `linux`);
+# both is the default, and `--release` publishes each one that was built.
 #
 # What it produces
 # ----------------
-#   dist/feldspar-<version>-<target>.tar.gz                   the static artifact
-#   dist/feldspar-<version>-<target>-debian13-python.tar.gz   the Python one
+#   dist/feldspar-<version>-<target>.tar.gz          the static artifact
+#   dist/feldspar-<version>-<target>-python.tar.gz   the linux one
 #   ...and a .sha256 beside each
 #
 # unpacking to the **install prefix** (`/opt/feldspar` by default):
 #
 #   /opt/feldspar/bin/feldspar        the binary
+#   /opt/feldspar/python/             (linux) the bundled CPython it links
+#   /opt/feldspar/glibc/              (linux) glibc for bin/*.glibc, for musl hosts
 #   /opt/feldspar/ui/admin/dist       the admin SPA it serves
 #   /opt/feldspar/ui/ide/dist         the file-store IDE it serves
 #   /opt/feldspar/ui/saltcorn-ui/dist Saltcorn UI's view runtime and assets
@@ -93,8 +98,8 @@
 #   scripts/build-static.sh --no-ui                  # no Node toolchain needed
 #   scripts/build-static.sh --deploy root@vm         # ...and install it there over ssh
 #   scripts/build-static.sh --release                # ...and publish it to the R2 bucket
-#   scripts/build-static.sh --variant python         # only the Debian 13 + Python one
-#   scripts/build-static.sh --deploy vm --deploy-variant python
+#   scripts/build-static.sh --variant linux          # only the one with Python
+#   scripts/build-static.sh --deploy vm --deploy-variant linux
 #
 set -euo pipefail
 
@@ -131,18 +136,26 @@ R2_OBJECT="feldspar.tar.gz"
 # Which artifacts to build (`--variant`), and which of them `--deploy` installs.
 VARIANT_ARG="both"
 DEPLOY_VARIANT=""
-# The Python variant, which is one Debian release and one CPython: the suite it
-# is built on fixes both the glibc it needs and the `libpython` soname it asks
-# for, and the three names below have to agree with that suite.
+# The name the Python-capable artifact is published under. It was the Debian 13
+# build's, and existing hosts, docs/OPERATIONS.md and the container image fetch
+# it, so the `linux` artifact takes it over (TODO-portable-release D5) until
+# R3.1 adds names that carry the OS and architecture.
 readonly PYTHON_VARIANT="debian13-python"
-readonly PYTHON_SUITE="trixie"
-readonly PYTHON_VERSION="3.13"
-readonly PYTHON_LIB="libpython3.13.so.1.0"
-readonly PYTHON_PACKAGE="libpython3.13"
-# The packages a Python-capable host wants beyond the library: an interpreter of
-# the same minor version for `pip` (--python-bin) and the venv module Debian
-# splits out of it. setup-host.sh installs these when it sees this variant.
-readonly PYTHON_HOST_PACKAGES="${PYTHON_PACKAGE} python3 python3-venv"
+# The base every build runs on: its glibc (2.36) is the oldest a `linux` binary
+# asks of its host (D2).
+readonly BUILD_SUITE="bookworm"
+readonly BUILD_GLIBC="2.36"
+# The bundled CPython: python-build-standalone, pinned by release tag and the
+# SHA-256 of each architecture's `install_only_stripped` tarball (D7). Taking a
+# CPython security release is a change to these lines. The minor version stays
+# 3.13 (D4): environments made by Debian 13's python3.13 keep working, and a
+# new minor version is a release of its own.
+readonly PBS_RELEASE="20261026"
+readonly PBS_PYTHON="3.13.18"
+readonly PBS_SHA256_X86_64="df15fe60d3ff55bf9dcf25824b5572756bb8816ff93865a273d3301d7066a8b7"
+readonly PBS_SHA256_AARCH64="578d9da1983463ffb0c8c98ab0da2f18177f44069328eb0af847860c1eb05c3e"
+readonly PYTHON_VERSION="${PBS_PYTHON%.*}"
+readonly PYTHON_LIB="libpython${PYTHON_VERSION}.so.1.0"
 # What that bucket is served as, and what the README tells an operator to
 # download. Printed after a publish so that what was uploaded and what people
 # fetch are visibly the same thing. A --bucket somewhere else has no such URL and
@@ -165,9 +178,11 @@ Usage: scripts/build-static.sh [options]
 Artifacts
       --variant V       Which artifacts to build (default both):
                           static  statically linked, no Python, runs anywhere
-                          python  dynamically linked on Debian 13 (${PYTHON_SUITE})
-                                  with Python support; needs ${PYTHON_PACKAGE}
-                                  on the host, and runs on Debian 13 only
+                          linux   dynamically linked on Debian 12 (${BUILD_SUITE}),
+                                  with Python ${PBS_PYTHON} bundled: runs on any
+                                  glibc >= ${BUILD_GLIBC} distribution, and on
+                                  Alpine with the bundled glibc
+                                  (python is the old name for this one)
                           both    one of each
                         A static binary cannot embed CPython, which is why the
                         Python-capable server is a second artifact.
@@ -190,10 +205,10 @@ Build environment
       --native          Build with this machine's toolchain — the default when
                         docker/buildx is not available. Needs: rustup target
                         ${TARGET}, clang/libclang, cmake, a C compiler, libz.a
-                        (zlib1g-dev) and, unless --no-ui, node + npm. The python
-                        variant also needs python${PYTHON_VERSION} with python3-dev,
-                        and should only be built natively on Debian 13: it links
-                        this machine's glibc and libpython.
+                        (zlib1g-dev) and, unless --no-ui, node + npm. The linux
+                        variant also needs curl and patchelf, and bundles this
+                        machine's glibc: built natively anywhere newer than
+                        Debian 12, it needs that newer glibc on every host.
       --rust-version V  Rust image tag for --docker (default ${RUST_VERSION}).
       --node-version V  Node version fetched by --docker (default ${NODE_VERSION}).
   -j, --jobs N          Cargo parallelism. Lower it if the linker runs the machine
@@ -209,7 +224,7 @@ Packaging
                         you point at a bundle yourself.
       --no-strip        Keep debug symbols (the binary is ~2x larger).
       --no-verify       Skip the post-build checks (linkage, and a smoke run in
-                        Debian and Alpine containers — Debian 13 for python).
+                        Debian and Alpine containers).
 
 Deployment
       --deploy [USER@]HOST
@@ -228,8 +243,8 @@ Deployment
       --remote-tmp DIR  Directory on the remote to copy and unpack into
                         (default ${REMOTE_TMP}). Removed again afterwards.
       --deploy-variant V
-                        Which built artifact --deploy installs: static or python
-                        (default static when it was built, python otherwise).
+                        Which built artifact --deploy installs: static or linux
+                        (default static when it was built, linux otherwise).
 
 Publishing
       --release         After packaging, upload each tarball and its .sha256 to the
@@ -330,10 +345,13 @@ fi
 
 [[ "${PREFIX}" = /* ]] || { echo "error: --prefix must be absolute, got ${PREFIX}" >&2; exit 2; }
 
+# `python` is what the Python-capable variant was called when it was Debian 13's
+# alone; it is accepted, and means `linux`.
 case "${VARIANT_ARG}" in
-    both)          VARIANTS=(static python) ;;
-    static|python) VARIANTS=("${VARIANT_ARG}") ;;
-    *) echo "error: --variant must be static, python or both, got ${VARIANT_ARG}" >&2; exit 2 ;;
+    both)          VARIANTS=(static linux) ;;
+    static)        VARIANTS=(static) ;;
+    linux|python)  VARIANTS=(linux) ;;
+    *) echo "error: --variant must be static, linux or both, got ${VARIANT_ARG}" >&2; exit 2 ;;
 esac
 has_variant() { [[ " ${VARIANTS[*]} " == *" $1 "* ]]; }
 
@@ -350,8 +368,9 @@ if [[ -n "${DEPLOY_HOST}" ]]; then
         DEPLOY_VARIANT="${VARIANTS[0]}"
     fi
     case "${DEPLOY_VARIANT}" in
-        static|python) ;;
-        *) echo "error: --deploy-variant must be static or python, got ${DEPLOY_VARIANT}" >&2; exit 2 ;;
+        static|linux) ;;
+        python) DEPLOY_VARIANT="linux" ;;
+        *) echo "error: --deploy-variant must be static or linux, got ${DEPLOY_VARIANT}" >&2; exit 2 ;;
     esac
     has_variant "${DEPLOY_VARIANT}" ||
         { echo "error: --deploy-variant ${DEPLOY_VARIANT} is not being built (--variant ${VARIANT_ARG})" >&2; exit 2; }
@@ -383,26 +402,28 @@ if [[ "${MODE}" == "auto" ]]; then
     fi
 fi
 
-# A native Python build links *this* machine's libpython and glibc, so the
-# artifact is only what its name says when this machine is Debian 13 with
-# CPython 3.13. The interpreter's version is checked (a 3.11 here would produce a
-# binary asking for libpython3.11 under a debian13 name); the distribution is a
-# warning, since a container or a derivative can be the right one without
-# saying so in /etc/os-release.
-if [[ "${MODE}" == "native" ]] && has_variant python; then
-    command -v python3 >/dev/null ||
-        { echo "error: the python variant needs python3 (and python3-dev) here, or --docker" >&2; exit 1; }
-    found_python="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
-    if [[ "${found_python}" != "${PYTHON_VERSION}" ]]; then
-        cat >&2 <<EOF
-error: the python variant links libpython ${PYTHON_VERSION}, and this machine's python3
-       is ${found_python:-unusable}. Build it with --docker (a Debian 13 container),
-       or pass --variant static.
-EOF
-        exit 1
-    fi
-    if ! grep -qs '^VERSION_ID="13"' /etc/os-release; then
-        echo "warning: this is not Debian 13; a native python build links this machine's glibc" >&2
+# The bundled CPython for this target: its download and the SHA-256 it must have.
+case "${TARGET}" in
+    x86_64-*)  PBS_SHA256="${PBS_SHA256_X86_64}" ;;
+    aarch64-*) PBS_SHA256="${PBS_SHA256_AARCH64}" ;;
+esac
+readonly PBS_SHA256
+readonly PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/cpython-${PBS_PYTHON}+${PBS_RELEASE}-${TARGET}-install_only_stripped.tar.gz"
+readonly PYTHON_BUNDLE="${REPO_ROOT}/scripts/lib/python-bundle.sh"
+
+# A native linux build links and bundles *this* machine's glibc, so the floor it
+# puts on every host is this machine's glibc, not bookworm's. Still a correct
+# artifact for hosts at least that new, so a warning; the tools it cannot work
+# without are errors, before the build rather than after it.
+if [[ "${MODE}" == "native" ]] && has_variant linux; then
+    for tool in curl patchelf ldd sha256sum; do
+        command -v "${tool}" >/dev/null ||
+            { echo "error: the linux variant needs ${tool} here (or --docker)" >&2; exit 1; }
+    done
+    found_glibc="$(ldd --version 2>/dev/null | sed -n '1s/.* \([0-9][0-9.]*\)$/\1/p')"
+    if [[ -n "${found_glibc}" && "${found_glibc}" != "${BUILD_GLIBC}" ]]; then
+        echo "warning: this machine has glibc ${found_glibc}; a native linux build needs" \
+             "that on every host, where the --docker build needs ${BUILD_GLIBC}" >&2
     fi
 fi
 
@@ -450,8 +471,8 @@ select_variant() {
             NAME="${BASE_NAME}"
             OBJECT="${R2_OBJECT}"
             ;;
-        python)
-            NAME="${BASE_NAME}-${PYTHON_VARIANT}"
+        linux)
+            NAME="${BASE_NAME}-python"
             OBJECT="${R2_OBJECT%.tar.gz}-${PYTHON_VARIANT}.tar.gz"
             ;;
     esac
@@ -518,21 +539,18 @@ MSG
         aarch64-*) platform="linux/arm64" ;;
     esac
 
-    local docker_variant="static" suite="bookworm"
-    if [[ "${VARIANT}" == python ]]; then
-        docker_variant="${PYTHON_VARIANT}"
-        suite="${PYTHON_SUITE}"
-    fi
-
-    log "building the ${VARIANT} artifact in docker (${platform}, ${suite}); the first build compiles ~1000 crates and V8's bindings"
+    log "building the ${VARIANT} artifact in docker (${platform}, ${BUILD_SUITE}); the first build compiles ~1000 crates and V8's bindings"
     DOCKER_BUILDKIT=1 docker build \
         --platform "${platform}" \
         --file "${REPO_ROOT}/scripts/static-build.Dockerfile" \
         --target export \
         --output "type=local,dest=${STAGE}" \
         --build-arg "RUST_VERSION=${RUST_VERSION}" \
-        --build-arg "DEBIAN_SUITE=${suite}" \
-        --build-arg "VARIANT=${docker_variant}" \
+        --build-arg "DEBIAN_SUITE=${BUILD_SUITE}" \
+        --build-arg "VARIANT=${VARIANT}" \
+        --build-arg "PBS_URL=${PBS_URL}" \
+        --build-arg "PBS_SHA256=${PBS_SHA256}" \
+        --build-arg "STRIP=${STRIP}" \
         --build-arg "NODE_VERSION=${NODE_VERSION}" \
         --build-arg "TARGET=${TARGET}" \
         --build-arg "PREFIX=${PREFIX}" \
@@ -569,15 +587,35 @@ build_native() {
         )
         built="${REPO_ROOT}/target/${TARGET}/release/feldspar"
     else
+        # The bundled CPython first, straight into the tree that ships: a
+        # download that does not match the pin stops the build before it starts.
+        # Its `sysconfig` names ${PREFIX}/python, where it will be installed,
+        # which is not where it is here — so PyO3 is configured by a file that
+        # names this copy, rather than by asking the interpreter.
+        sh "${PYTHON_BUNDLE}" fetch "${PBS_URL}" "${PBS_SHA256}" "${STAGE}" "${PREFIX}/python"
+        local pyo3_config="${STAGE_ROOT}/pyo3-config.txt"
+        cat > "${pyo3_config}" <<EOF
+implementation=CPython
+version=${PYTHON_VERSION}
+shared=true
+abi3=false
+lib_name=python${PYTHON_VERSION}
+lib_dir=${STAGE}/python/lib
+executable=${STAGE}/python/bin/python3
+pointer_width=64
+build_flags=
+suppress_build_script_link_lines=false
+EOF
         # Its own target directory: different RUSTFLAGS and features, so sharing
         # the static build's would rebuild the whole tree on every switch.
-        local target_dir="${REPO_ROOT}/target/${PYTHON_VARIANT}"
+        local target_dir="${REPO_ROOT}/target/linux-python"
         (
             cd "${REPO_ROOT}"
             SC_BUNDLE_PREFIX="${PREFIX}" \
             SC_BUILD_ADMIN="${BUILD_UI}" \
             CARGO_TARGET_DIR="${target_dir}" \
-            PYO3_PYTHON=python3 \
+            PYO3_CONFIG_FILE="${pyo3_config}" \
+            RUSTFLAGS="-C link-arg=-Wl,-rpath,\$ORIGIN/../python/lib${RUSTFLAGS:+ ${RUSTFLAGS}}" \
                 cargo build --release --target "${TARGET}" -p sc-cli --features python \
                     ${JOBS:+--jobs "${JOBS}"}
         )
@@ -586,6 +624,11 @@ build_native() {
 
     mkdir -p "${STAGE}/bin"
     cp "${built}" "${STAGE}/bin/feldspar"
+    if [[ "${VARIANT}" == linux ]]; then
+        # Stripped (or not) by the bundle step, because the `.glibc` copy it
+        # makes has to be a copy of the binary that ships.
+        sh "${PYTHON_BUNDLE}" glibc "${STAGE}" "${PREFIX}" "${STRIP}"
+    fi
     stage_plugins
     if [[ ${BUILD_UI} -eq 1 ]]; then
         # Every bundle `crates/sc-cli/build.rs` builds (its `BUNDLES`), because the
@@ -637,7 +680,10 @@ build_variant() {
     [[ -f "${BINARY}" ]] || { echo "error: the build produced no binary at ${BINARY}" >&2; exit 1; }
     chmod +x "${BINARY}"
 
-    if [[ ${STRIP} -eq 1 ]]; then
+    # The linux variant was stripped where its `.glibc` copy was made, in the
+    # container or by the bundle step above; stripping only one of the pair here
+    # would ship two different binaries.
+    if [[ ${STRIP} -eq 1 && "${VARIANT}" != linux ]]; then
         # A statically linked V8 carries a lot of symbol table. Stripping is what
         # takes the artifact from ~200 MB to something worth copying to a VM. Best
         # effort: a missing cross `strip` is not a reason to fail a good build.
@@ -675,39 +721,106 @@ assert_static() {
     log "linkage: ${described%%,*} — $(du -h "${BINARY}" | cut -f1)"
 }
 
-# The Python variant's linkage, which is the opposite claim: dynamic, and asking
-# for exactly the libpython the artifact's name promises. A binary that asked for
-# libpython3.11 would install cleanly on Debian 13 and fail at the dynamic
-# linker, so the soname is read out of the binary rather than trusted.
+# `readelf -d FILE`'s entries of one tag (NEEDED, RPATH, RUNPATH), one per line.
+dynamic_entries() {
+    readelf -d "$1" | sed -n "s/.*(${2}).*\[\(.*\)\].*/\1/p"
+}
+
+# The linux variant's linkage, which is the opposite claim to the static one:
+# dynamic, asking for exactly the libpython the tree carries, and finding it in
+# the tree — through `$ORIGIN/../python/lib`, never through the host's library
+# path, where a different CPython's libpython may be (TODO-portable-release §1).
 assert_python_linkage() {
-    local described needed
+    command -v readelf >/dev/null ||
+        { echo "error: checking the linux artifact needs readelf (binutils), or --no-verify" >&2; exit 1; }
+    local described needed runpath
     described="$(file -b "${BINARY}")"
     case "${described}" in
         *"dynamically linked"*) ;;
         *)
-            echo "error: the python binary is not dynamically linked:" >&2
+            echo "error: the linux binary is not dynamically linked:" >&2
             echo "  ${described}" >&2
             exit 1
             ;;
     esac
-    if command -v readelf >/dev/null; then
-        needed="$(readelf -d "${BINARY}" | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p')"
-    else
-        needed="$(objdump -p "${BINARY}" | awk '$1 == "NEEDED" { print $2 }')"
-    fi
+    needed="$(dynamic_entries "${BINARY}" NEEDED)"
     if ! grep -qx "${PYTHON_LIB}" <<<"${needed}"; then
-        echo "error: the python binary does not link ${PYTHON_LIB}; it needs:" >&2
+        echo "error: the linux binary does not link ${PYTHON_LIB}; it needs:" >&2
         printf '  %s\n' ${needed} >&2
         exit 1
     fi
-    log "linkage: dynamic, needs $(tr '\n' ' ' <<<"${needed}")— $(du -h "${BINARY}" | cut -f1)"
+    runpath="$(dynamic_entries "${BINARY}" RUNPATH; dynamic_entries "${BINARY}" RPATH)"
+    if ! tr ':' '\n' <<<"${runpath}" | grep -qx '$ORIGIN/../python/lib'; then
+        echo "error: the linux binary does not look for ${PYTHON_LIB} beside itself" \
+             "(\$ORIGIN/../python/lib); its search path is: ${runpath:-none}" >&2
+        exit 1
+    fi
+    [[ -f "${STAGE}/python/lib/${PYTHON_LIB}" ]] ||
+        { echo "error: the tree has no python/lib/${PYTHON_LIB} for the binary to find" >&2; exit 1; }
+    log "linkage: dynamic, needs $(tr '\n' ' ' <<<"${needed}")from \$ORIGIN/../python/lib — $(du -h "${BINARY}" | cut -f1)"
+}
+
+# The `.glibc` copies (D3): each one's loader is the bundled one, at its
+# installed path, and its search path is a DT_RPATH — which glibc applies to
+# everything the process loads, NSS modules and `ctypes` included, where a
+# RUNPATH would reach only the executable's own NEEDED. And every library the
+# tree's ELF files ask for is in the tree, so a host with no glibc of its own
+# has nothing left to provide.
+assert_glibc_copies() {
+    local loader
+    case "${TARGET}" in
+        x86_64-*)  loader="ld-linux-x86-64.so.2" ;;
+        aarch64-*) loader="ld-linux-aarch64.so.1" ;;
+    esac
+    local want_interp="${PREFIX}/glibc/${loader}"
+    local want_rpath="${PREFIX}/glibc:${PREFIX}/python/lib"
+    [[ -f "${STAGE}/glibc/${loader}" && -f "${STAGE}/glibc/libc.so.6" ]] ||
+        { echo "error: the tree's glibc/ has no ${loader} and libc.so.6" >&2; exit 1; }
+    local copy interp rpath runpath
+    for copy in "${STAGE}/bin/feldspar.glibc" "${STAGE}/python/bin/python3.glibc"; do
+        [[ -f "${copy}" ]] || { echo "error: ${copy#"${STAGE}/"} is missing" >&2; exit 1; }
+        interp="$(readelf -l "${copy}" | sed -n 's/.*Requesting program interpreter: \(.*\)\]/\1/p')"
+        rpath="$(dynamic_entries "${copy}" RPATH)"
+        runpath="$(dynamic_entries "${copy}" RUNPATH)"
+        if [[ "${interp}" != "${want_interp}" || "${rpath}" != "${want_rpath}" || -n "${runpath}" ]]; then
+            cat >&2 <<EOF
+error: ${copy#"${STAGE}/"} is not set up to run on the bundled glibc:
+  loader   ${interp:-none}   (want ${want_interp})
+  RPATH    ${rpath:-none}   (want ${want_rpath})
+  RUNPATH  ${runpath:-none}   (want none)
+EOF
+            exit 1
+        fi
+    done
+    local elf name missing=()
+    while IFS= read -r elf; do
+        while IFS= read -r name; do
+            case "${name}" in '$ORIGIN'*|libpython3.so) continue ;; esac
+            [[ -e "${STAGE}/glibc/${name}" || -e "${STAGE}/python/lib/${name}" ]] ||
+                missing+=("${elf#"${STAGE}/"} needs ${name}")
+        done < <(dynamic_entries "${elf}" NEEDED)
+    done < <(find "${STAGE}/bin" "${STAGE}/python/bin" "${STAGE}/python/lib" "${STAGE}/glibc" \
+                 -type f \( -name '*.so*' -o -perm -u+x \) -exec sh -c \
+                 'head -c4 "$1" | grep -q "ELF" && echo "$1"' _ {} \;)
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "error: the bundled glibc is incomplete:" >&2
+        printf '  %s\n' "${missing[@]}" >&2
+        exit 1
+    fi
+    log "glibc copies: loader ${want_interp}, RPATH ${want_rpath}; $(find "${STAGE}/glibc" -type f | wc -l) libraries in glibc/"
 }
 
 # The claim in this script's header, executed: the binary starts and prints its
-# usage on a glibc distribution and on a musl one — or, for the Python variant,
-# on Debian 13 once the one package its install.sh adds is there (which needs the
-# network for apt). Skipped when the target is not this machine's architecture
-# (nothing here would run it) or docker is absent.
+# usage on a glibc distribution and on a musl one. Skipped when the target is
+# not this machine's architecture (nothing here would run it) or docker is
+# absent.
+#
+# The linux tree is mounted at the prefix it was built for, because the
+# `.glibc` copies name their loader there; the normal binary runs on Debian 12
+# (the oldest glibc it promises) and 13, the `.glibc` one on Alpine, and each
+# runs `feldspar python check --offline` — the embedded interpreter starts at
+# its bundled home and loads its extension modules. R2.4 widens this to every
+# distribution and the HTTPS check.
 smoke_test_distros() {
     command -v docker >/dev/null || { log "skipping distro smoke test (no docker)"; return 0; }
     local host_arch="$(uname -m)"
@@ -720,18 +833,21 @@ smoke_test_distros() {
     # rather than streamed: it is a page of text per image, and it is only worth
     # reading when the run fails.
     local image output
-    if [[ "${VARIANT}" == python ]]; then
-        image="debian:13-slim"
-        log "smoke test on ${image} with ${PYTHON_PACKAGE}"
-        if ! output="$(docker run --rm \
-                -v "${BINARY}:/usr/local/bin/feldspar:ro" \
-                "${image}" sh -c "apt-get update -qq >/dev/null && \
-                    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ${PYTHON_PACKAGE} >/dev/null && \
-                    /usr/local/bin/feldspar" 2>&1)"; then
-            echo "error: the binary does not run on ${image}:" >&2
-            printf '%s\n' "${output}" >&2
-            exit 1
-        fi
+    if [[ "${VARIANT}" == linux ]]; then
+        local exe run
+        for image in debian:12-slim debian:13-slim alpine:3; do
+            exe="${PREFIX}/bin/feldspar"
+            [[ "${image}" == alpine:* ]] && exe="${PREFIX}/bin/feldspar.glibc"
+            run="${exe} >/dev/null 2>&1 && ${exe} python check --offline"
+            log "smoke test on ${image} (${exe##*/})"
+            if ! output="$(docker run --rm --network none \
+                    -v "${STAGE}:${PREFIX}:ro" \
+                    "${image}" sh -c "${run}" 2>&1)"; then
+                echo "error: the binary does not run on ${image}:" >&2
+                printf '%s\n' "${output}" >&2
+                exit 1
+            fi
+        done
         return 0
     fi
     for image in debian:12-slim alpine:3.20; do
@@ -747,8 +863,9 @@ smoke_test_distros() {
 }
 
 verify_variant() {
-    if [[ "${VARIANT}" == python ]]; then
+    if [[ "${VARIANT}" == linux ]]; then
         assert_python_linkage
+        assert_glibc_copies
     else
         assert_static
     fi
@@ -773,35 +890,35 @@ cp "${SETUP_HOST}" "${STAGE}/setup-host.sh"
 chmod +x "${STAGE}/setup-host.sh"
 
 # Which artifact this is, installed beside the binary: setup-host.sh reads it to
-# decide whether the host needs the Python packages, and an operator reads it to
-# find out which of the two downloads a host is running.
-if [[ "${VARIANT}" == python ]]; then
-    echo "${PYTHON_VARIANT}" > "${STAGE}/VARIANT"
-else
-    echo "static" > "${STAGE}/VARIANT"
-fi
+# decide which packages the host needs (none for Python: `linux` brings its own),
+# and an operator reads it to find out which of the two downloads a host is
+# running.
+echo "${VARIANT}" > "${STAGE}/VARIANT"
 
-# The Python variant's one run-time library, which install.sh adds when it is
-# missing: without it the binary fails at the dynamic linker, and --deploy (which
-# starts the service and runs the binary right after install.sh) would leave a
-# host with a server that cannot start.
-python_install_step=""
-if [[ "${VARIANT}" == python ]]; then
-    python_install_step="
-# This build links ${PYTHON_LIB} (Debian 13's ${PYTHON_PACKAGE}); without it the
-# binary does not start at all, so it is installed here rather than left to
-# setup-host.sh, which an upgrade does not run.
-if ! { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q '${PYTHON_LIB}'; then
-    if command -v apt-get >/dev/null 2>&1; then
-        echo \"installing ${PYTHON_PACKAGE}, which this build of feldspar links\"
-        apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y ${PYTHON_PACKAGE}
-    else
-        echo \"install: this build needs ${PYTHON_LIB} (Debian 13's ${PYTHON_PACKAGE}), and there is no apt-get to install it\" >&2
-        exit 1
+# The linux variant's bundled CPython and glibc. Each is replaced as a whole
+# tree, by rename, and never written over in place: a running server has
+# libpython (and on a musl host, libc) mapped, and overwriting a mapped library
+# can crash it. Unlinking is safe — the running process keeps the old inodes
+# until it restarts. TODO-portable-release R2.6 moves the whole prefix to this.
+runtime_trees_step=""
+if [[ "${VARIANT}" == linux ]]; then
+    runtime_trees_step='
+# The bundled CPython and glibc, swapped in whole (see build-static.sh): a
+# running server has them mapped, so they are renamed into place, never copied
+# over.
+for tree in python glibc; do
+    [ -d "${SRC}/${tree}" ] || continue
+    rm -rf "${PREFIX}/${tree}.new"
+    mkdir -p "${PREFIX}"
+    cp -R "${SRC}/${tree}" "${PREFIX}/${tree}.new"
+    if [ -e "${PREFIX}/${tree}" ]; then
+        rm -rf "${PREFIX}/${tree}.old"
+        mv "${PREFIX}/${tree}" "${PREFIX}/${tree}.old"
     fi
-fi
-"
+    mv "${PREFIX}/${tree}.new" "${PREFIX}/${tree}"
+    rm -rf "${PREFIX}/${tree}.old"
+done
+'
 fi
 
 cat > "${STAGE}/install.sh" <<EOF
@@ -820,7 +937,7 @@ if [ "\$(id -u)" -ne 0 ] && [ ! -w "\$(dirname "\${PREFIX}")" ]; then
     echo "install: \${PREFIX} needs root (re-run with sudo)" >&2
     exit 1
 fi
-${python_install_step}
+${runtime_trees_step}
 # Contents, not directories: \`cp -r bin \${PREFIX}/\` would put the binary in
 # \${PREFIX}/bin/bin the second time this is run, which is the upgrade path.
 mkdir -p "\${PREFIX}/bin"
@@ -860,25 +977,30 @@ chmod +x "${STAGE}/install.sh"
 
 # The parts of the README that differ between the two artifacts.
 local readme_title readme_linkage readme_needs readme_limits
-if [[ "${VARIANT}" == python ]]; then
-    readme_title="${TARGET}, Debian 13 with Python"
-    readme_linkage="This binary is dynamically linked against Debian 13's glibc and
-${PYTHON_LIB} (the ${PYTHON_PACKAGE} package), so that it can run Python
-trigger bodies and install Python modules. It runs on Debian 13 and nothing else;
-install.sh installs ${PYTHON_PACKAGE} if it is missing. For any other
-distribution, or a server that needs no Python, use the static artifact
-(${R2_PUBLIC_BASE}/${R2_OBJECT})."
-    readme_needs="  ${PYTHON_PACKAGE}, to start at all (install.sh sees to it), and python3
-  with python3-venv to install Python modules (setup-host.sh installs both).
-  The python3 that pip runs under must be the ${PYTHON_VERSION} this binary links;
-  on Debian 13 it is."
+if [[ "${VARIANT}" == linux ]]; then
+    readme_title="${TARGET}, with Python"
+    readme_linkage="This binary is dynamically linked, built on Debian 12, and carries its own
+CPython ${PBS_PYTHON} (python-build-standalone, ${PBS_RELEASE}) in python/, which it
+finds beside itself: it runs Python trigger bodies and installs Python modules
+with nothing Python-related on the host, and pip runs that same interpreter.
+
+From the host it needs glibc ${BUILD_GLIBC} or newer, which Debian 12+, Ubuntu
+24.04+, Fedora, RHEL 10, Arch and openSUSE all have. For a musl host (Alpine)
+the tarball also carries Debian 12's glibc in glibc/, and bin/feldspar.glibc
+and python/bin/python3.glibc: the same programs, set to run on it.
+\`${PREFIX}/bin/feldspar python check\` says which interpreter started and
+whether it can import ssl, sqlite3, ctypes and zoneinfo and reach PyPI."
+    readme_needs="  Nothing for Python: the interpreter, its standard library and pip are in
+  python/. A Python environment made by Debian 13's python3.13 keeps its
+  installed modules, and is moved onto the bundled interpreter at the next
+  module install."
     readme_limits="Limits"
 else
     readme_title="${TARGET}"
     readme_linkage="This binary is statically linked: it has no shared-library dependencies and no
 interpreter, so it runs on glibc distributions (Debian, Ubuntu, RHEL) and on musl
 ones (Alpine) without anything installed alongside it. It has no Python support:
-that is the Debian 13 artifact,
+that is the other artifact,
 ${R2_PUBLIC_BASE}/${R2_OBJECT%.tar.gz}-${PYTHON_VARIANT}.tar.gz"
     readme_needs="  Nothing to run the server: this binary has no library dependencies, and none of
   the build-time toolchain (libclang, cmake, a C compiler) is needed here."
@@ -920,6 +1042,13 @@ Run
 
 What is in the tarball
   bin/feldspar          the server and management CLI
+$(if [[ "${VARIANT}" == linux ]]; then
+cat <<INNER
+  bin/feldspar.glibc    the same, set to run on glibc/ (for a musl host)
+  python/               CPython ${PBS_PYTHON}: what bin/feldspar embeds and pip runs
+  glibc/                Debian 12's glibc, used only by the .glibc copies
+INNER
+fi)
   setup-host.sh         the host setup, run once from ${PREFIX} after install.sh.
                         Debian and Ubuntu; --dry-run prints what it would do.
   plugins/              the modules this release ships with — an RSS table
@@ -1017,7 +1146,7 @@ publish_to_r2() {
     if [[ "${R2_BUCKET}" == "${DEFAULT_R2_BUCKET}" ]]; then
         cat <<EOF
 
-It is now what a new host downloads$( [[ "${VARIANT}" == python ]] && echo " for Debian 13 with Python"):
+It is now what a new host downloads$( [[ "${VARIANT}" == linux ]] && echo " for a server with Python"):
 
   curl -fLO ${R2_PUBLIC_BASE}/${OBJECT}
   curl -fLO ${R2_PUBLIC_BASE}/${OBJECT}.sha256
@@ -1159,8 +1288,8 @@ EOF
 else
     for v in "${VARIANTS[@]}"; do
         select_variant "${v}"
-        if [[ "${v}" == python ]]; then
-            echo; echo "The Debian 13 + Python artifact goes on a Debian 13 VM with:"
+        if [[ "${v}" == linux ]]; then
+            echo; echo "The artifact with Python goes on any glibc >= ${BUILD_GLIBC} VM with:"
         else
             echo; echo "The static artifact goes on any VM with:"
         fi
@@ -1176,6 +1305,6 @@ EOF
 or have this script do it next time:
 
   scripts/build-static.sh --deploy vm                            # the static one
-  scripts/build-static.sh --deploy vm --deploy-variant python    # Debian 13 + Python
+  scripts/build-static.sh --deploy vm --deploy-variant linux     # with Python
 EOF
 fi

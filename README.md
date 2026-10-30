@@ -735,9 +735,9 @@ static binary with no shared-library dependencies by design. So a Python-capable
 is a separate, dynamically-linked build: either this one, or the prebuilt
 **Debian 13 + Python artifact** (`feldspar-debian13-python.tar.gz`, built by the same
 `scripts/build-static.sh` and published beside the static one), which links Debian 13's
-`libpython3.13` and runs on Debian 13 only. Installing it: docs/OPERATIONS.md §2.1. One such
-build serves every CPython from **3.11** up (`abi3`), as long as the matching
-`libpython` is present on the host.
+`libpython3.13` and runs on Debian 13 only. Installing it: docs/OPERATIONS.md §2.1. Such a
+build links the one CPython it was built against (3.11 or newer), so that `libpython` must be
+present on the host.
 
 At run time such a server wants two more things, both only when Python is actually used:
 a `python3` on its `PATH` with `pip` available (that is what *installs* a Python module,
@@ -1658,9 +1658,8 @@ A `200` here means the process booted and is accepting requests.
 - **The server will not start: `error while loading shared libraries: libpython3.x.so`.**
   This binary was built with the `python` feature and the host has no matching
   `libpython`. Install it (Debian: `python3-dev`, or the `libpython3.x` runtime package),
-  or run a binary built without the feature. `abi3` means any CPython 3.11+ will do, but
-  the *soname* is version-specific, so it must be the one the build linked against or a
-  symlink to a compatible one.
+  or run a binary built without the feature. The *soname* is version-specific, so it must
+  be the one the build linked against.
 - **Login/session doesn't stick behind HTTPS.** Add `--secure-cookies` so the
   cookies are sent over TLS. Conversely, do **not** use `--secure-cookies` for
   plain-HTTP local development, or the browser will drop the cookies.

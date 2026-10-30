@@ -9215,6 +9215,7 @@ dependencies = [
  "sc-mcp",
  "sc-migrate",
  "sc-module",
+ "sc-python",
  "sc-query",
  "sc-server",
  "sc-stan",

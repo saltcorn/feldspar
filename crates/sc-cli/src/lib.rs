@@ -7,7 +7,7 @@
 //! domains they read ([`i18n`]), the `cmdstan` commands' arguments and status
 //! report ([`cmdstan`]), parsing the `api` commands' flags
 //! ([`api`]), the `get-cfg`/`set-cfg` commands' arguments ([`config`]), the
-//! `mcp-token` commands ([`mcp_token`]), the `module` commands ([`module`]), the `add-user`/`modify-user`
+//! `mcp-token` commands ([`mcp_token`]), the `module` commands ([`module`]), `python check` ([`python`]), the `add-user`/`modify-user`
 //! commands' arguments and password prompt ([`users`]), the `backup`/`restore`
 //! password ([`backup_password`]), `feldspar setup` ([`setup`]), resolving an application's project
 //! directory for `app list` ([`app`]) and
@@ -29,6 +29,7 @@ pub mod eval;
 pub mod i18n;
 pub mod mcp_token;
 pub mod module;
+pub mod python;
 pub mod setup;
 pub mod users;
 
