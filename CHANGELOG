@@ -4,7 +4,7 @@ Changes in reverse chronological order.
 
 ## Migrations: database changes the bootstrap cannot make run once, on the first start
 
-A new crate, `sc-migrate`, holds an ordered registry of migrations (`MIGRATIONS`, empty for now)
+A new crate, `sc-migrate`, holds an ordered registry of migrations (`MIGRATIONS`)
 and the runner that applies them (TECHNICAL_DESIGN §5.3, TODO M1).
 
 - **A migration** has a date-prefixed id (`2026-11-02-agent-traits`) and a body that is either
@@ -63,8 +63,10 @@ every new application**:
   delegating the code. The builder agent is told its data comes through custom queries, and to
   report a missing *query* rather than reach for a table.
 - `_fd_applications` has a nullable `api_tables` column, added at startup (`NULL` reads as none).
-  `TABLES_RENAME.sql` adds it on Postgres and fills it with `tables` for existing apps, so running
-  systems keep the row APIs they had.
+  The first migration in `sc-migrate`, `2026-10-30-app-api-tables` (a Rust body, both backends),
+  adds it to an existing database and fills it with `tables`, so running systems keep the row APIs
+  they had; a new database is recorded without it running, so its apps start with none. Tested on
+  SQLite and Postgres with `run_one` in `crates/sc-migrate/tests/migrate.rs`.
 
 **JavaScript and Python custom queries act as their caller by default.** A handle the body did
 not narrow or widen now sends `authority: "default"` (`sc_api::code_host::Authority::Default`, also

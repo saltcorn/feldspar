@@ -12,8 +12,8 @@ use sc_db_postgres::PgDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
 use sc_migrate::{
-    Body, BoxFuture, Event, Migration, MigrationCtx, Report, Value, check_registry, run_one,
-    run_with,
+    Body, BoxFuture, Event, MIGRATIONS, Migration, MigrationCtx, Report, Value, check_registry,
+    run_one, run_with,
 };
 use sc_query::Statement;
 use sc_test_harness::TestDb;
@@ -278,6 +278,49 @@ async fn run_one_runs_just_that(driver: Arc<dyn DatabaseDriver>) {
     assert!(err.contains("already been applied"), "{err}");
 }
 
+/// `2026-10-30-app-api-tables`: an application from before `api_tables` keeps
+/// the row API of every table it is connected to.
+async fn existing_apps_keep_their_row_apis(driver: Arc<dyn DatabaseDriver>) {
+    let mut tx = driver.begin().await.unwrap();
+    tx.batch(
+        r#"CREATE TABLE "_fd_applications" (name text PRIMARY KEY, tables jsonb NOT NULL);
+           INSERT INTO "_fd_applications" (name, tables) VALUES ('blog', '["posts","notes"]');
+           INSERT INTO "_fd_applications" (name, tables) VALUES ('empty', '[]')"#,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    run_one(driver.as_ref(), MIGRATIONS, "2026-10-30-app-api-tables")
+        .await
+        .unwrap();
+
+    let api = |name: &str| {
+        format!(r#"SELECT "api_tables" FROM "_fd_applications" WHERE name = '{name}'"#)
+    };
+    assert_eq!(
+        scalar(driver.as_ref(), &api("blog")).await,
+        Value::Json(serde_json::json!(["posts", "notes"]))
+    );
+    assert_eq!(
+        scalar(driver.as_ref(), &api("empty")).await,
+        Value::Json(serde_json::json!([]))
+    );
+}
+
+/// The same migration on a database that has no applications table yet does
+/// nothing, and is still recorded.
+async fn no_applications_table_is_nothing_to_do(driver: Arc<dyn DatabaseDriver>) {
+    run_one(driver.as_ref(), MIGRATIONS, "2026-10-30-app-api-tables")
+        .await
+        .unwrap();
+    assert!(!table_exists(driver.as_ref(), "_fd_applications").await);
+    assert_eq!(
+        recorded(driver.as_ref()).await,
+        vec!["2026-10-30-app-api-tables"]
+    );
+}
+
 // --- backends -----------------------------------------------------------------
 
 /// A SQLite file of its own (a file rather than memory, so that the pool's
@@ -345,6 +388,8 @@ on_both!(
     failure_leaves_neither_change_nor_record,
     concurrent_runners_apply_once,
     run_one_runs_just_that,
+    existing_apps_keep_their_row_apis,
+    no_applications_table_is_nothing_to_do,
 );
 
 #[test]

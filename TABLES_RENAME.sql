@@ -977,16 +977,3 @@ BEGIN
   END IF;
 END $$;
 
--- Applications gain `api_tables`: the connected tables whose generic row API
--- (REST list/read/create/update/delete, GraphQL type) they serve. New
--- applications serve none; existing ones keep serving every connected table,
--- as they did before. Idempotent: only rows that have no value yet are filled.
--- (On SQLite the column is added at startup and reads as none; re-tick the
--- tables in each application's form.)
-ALTER TABLE IF EXISTS "_fd_applications" ADD COLUMN IF NOT EXISTS "api_tables" jsonb;
-DO $$
-BEGIN
-  IF to_regclass('"_fd_applications"') IS NOT NULL THEN
-    UPDATE "_fd_applications" SET "api_tables" = "tables" WHERE "api_tables" IS NULL;
-  END IF;
-END $$;
