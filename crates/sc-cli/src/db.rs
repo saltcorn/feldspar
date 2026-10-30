@@ -384,6 +384,18 @@ impl DbConfig {
         }
     }
 
+    /// The TLS settings this host pins over `_fd_config`: the selected
+    /// environment's ([`Serving::host_config`]), with `ssl_mode` taken from
+    /// [`FELDSPAR_SSL_MODE`](config_file::SSL_MODE_VAR) when that is set. The
+    /// variable outranks the file for the reason `DATABASE_URL` does: it is what
+    /// a container image sets, and the image cannot see the file a user mounts.
+    pub fn host_config(&self) -> sc_types::Attrs {
+        with_ssl_mode(
+            self.serving().host_config(),
+            env_var(config_file::SSL_MODE_VAR),
+        )
+    }
+
     /// Connect to the database, returning a pooled driver. A URL (from the flag,
     /// `DATABASE_URL` or the selected environment) is used wholesale; otherwise
     /// the individual parts — falling back to the `PG*` environment variables,
@@ -532,6 +544,14 @@ impl DbConfig {
     }
 }
 
+/// `pinned` with `ssl_mode` replaced by `mode`, when there is one.
+fn with_ssl_mode(mut pinned: sc_types::Attrs, mode: Option<String>) -> sc_types::Attrs {
+    if let Some(mode) = mode {
+        pinned.insert(sc_config::SSL_MODE.to_owned(), mode.into());
+    }
+    pinned
+}
+
 /// Read an environment variable, treating empty as absent.
 fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
@@ -601,6 +621,36 @@ mod tests {
                 .all(|key| sc_config::HOST_KEYS.contains(&key.as_str()))
         );
         assert!(Serving { section: None }.host_config().is_empty());
+    }
+
+    /// `FELDSPAR_SSL_MODE` replaces the file's mode and keeps the rest of its
+    /// pins; unset, the file's pins stand as they are.
+    #[test]
+    fn the_ssl_mode_variable_outranks_the_file_s_mode() {
+        let section = Environment {
+            ssl_mode: Some("letsencrypt".to_owned()),
+            acme_contact_email: Some("ops@example.com".to_owned()),
+            ..Environment::default()
+        };
+        let file = Serving {
+            section: Some(&section),
+        }
+        .host_config();
+        assert_eq!(with_ssl_mode(file.clone(), None), file);
+        assert_eq!(
+            serde_json::Value::Object(with_ssl_mode(file, Some("proxy".to_owned()))),
+            serde_json::json!({
+                "ssl_mode": "proxy",
+                "acme_contact_email": "ops@example.com",
+            })
+        );
+        assert_eq!(
+            serde_json::Value::Object(with_ssl_mode(
+                sc_types::Attrs::new(),
+                Some("proxy".to_owned())
+            )),
+            serde_json::json!({ "ssl_mode": "proxy" })
+        );
     }
 
     /// The file's `llm_provider` becomes a checked host provider: its key and

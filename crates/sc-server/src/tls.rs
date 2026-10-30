@@ -179,7 +179,9 @@ impl TlsSettings {
     ) -> Result<TlsSettings> {
         settings.check()?;
         match settings.mode {
-            SslMode::Off => Ok(TlsSettings::Off),
+            // The proxy in front holds the certificates; this process speaks
+            // plain HTTP to it.
+            SslMode::Off | SslMode::Proxy => Ok(TlsSettings::Off),
             SslMode::Custom => {
                 check_certificate(&settings.certificate, &settings.private_key)?;
                 Ok(TlsSettings::Custom {
@@ -1076,6 +1078,18 @@ mod tests {
     fn tls_off_is_the_default_and_serves_nothing_extra() {
         let plan =
             TlsSettings::from_ssl(&settings(SslMode::Off), 443, TlsNames::default(), None).unwrap();
+        assert!(!plan.enabled());
+        assert_eq!(plan.port(), None);
+        assert!(!plan.redirect_http());
+    }
+
+    /// Behind a proxy there is nothing to certify and no CA to ask, even with
+    /// domains known and an ACME cache at hand.
+    #[test]
+    fn proxy_mode_serves_plain_http_and_starts_no_acme() {
+        let names = TlsNames::new(Some("example.com".to_owned()), Vec::new(), Vec::new());
+        let plan = TlsSettings::from_ssl(&settings(SslMode::Proxy), 443, names, None).unwrap();
+        assert!(matches!(plan, TlsSettings::Off));
         assert!(!plan.enabled());
         assert_eq!(plan.port(), None);
         assert!(!plan.redirect_http());

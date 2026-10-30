@@ -238,7 +238,9 @@ Publishing
                         the download URLs never change:
                           ${R2_PUBLIC_BASE}/${R2_OBJECT}
                           ${R2_PUBLIC_BASE}/feldspar-${PYTHON_VARIANT}.tar.gz
-                        (and a .sha256 beside each).
+                        (and a .sha256 beside each), and then
+                        scripts/install.sh as ${R2_PUBLIC_BASE}/install.sh,
+                        the curl-to-sh installer that downloads the first.
                         Runs
                         \`npx wrangler r2 object put --remote\`, so it needs npx on
                         PATH and a wrangler login with access to the bucket.
@@ -366,6 +368,8 @@ if [[ ${RELEASE} -eq 1 ]]; then
     [[ -n "${R2_BUCKET}" ]] || { echo "error: --bucket must not be empty" >&2; exit 2; }
     command -v npx >/dev/null ||
         { echo "error: --release needs npx (node), which is not on PATH" >&2; exit 1; }
+    [[ -f "${REPO_ROOT}/scripts/install.sh" ]] ||
+        { echo "error: scripts/install.sh is missing; --release publishes it" >&2; exit 1; }
 fi
 
 # A container build needs both docker and its buildx plugin; `docker build` alone
@@ -1009,11 +1013,31 @@ EOF
     fi
 }
 
+# The curl-to-sh installer, beside the artifact it downloads. Uploaded after the
+# tarballs rather than before: it fetches the version-less object, so for the
+# moment between the two uploads a new installer would be fetching an old
+# release, which is the less surprising of the two orders to land half-way.
+publish_installer() {
+    log "uploading r2://${R2_BUCKET}/install.sh"
+    (cd "${REPO_ROOT}" && npx wrangler r2 object put \
+        "${R2_BUCKET}/install.sh" -f "${REPO_ROOT}/scripts/install.sh" \
+        --content-type "text/x-shellscript" --remote)
+    if [[ "${R2_BUCKET}" == "${DEFAULT_R2_BUCKET}" ]]; then
+        cat <<EOF
+
+The installer is published too; on a new host:
+
+  curl -fsSL ${R2_PUBLIC_BASE}/install.sh | sh
+EOF
+    fi
+}
+
 if [[ ${RELEASE} -eq 1 ]]; then
     for v in "${VARIANTS[@]}"; do
         select_variant "${v}"
         publish_to_r2
     done
+    publish_installer
 fi
 
 # ---------------------------------------------------------------------------

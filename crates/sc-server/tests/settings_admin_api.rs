@@ -918,3 +918,54 @@ async fn a_verbosity_that_is_not_a_level_is_refused() -> sc_error::Result<()> {
     assert_eq!(stored_config(&catalog, LOG_VERBOSITY).await?, None);
     Ok(())
 }
+
+/// With `ssl_mode = "proxy"` pinned the screen is not handed a TLS section at
+/// all — no tab of settings that do nothing — while the other sections, and a
+/// save of them, work as before and leave the stored TLS rows alone.
+#[tokio::test]
+async fn a_proxy_pinned_host_has_no_tls_section() -> sc_error::Result<()> {
+    let (mut client, catalog, _db) = setup().await?;
+    sc_config::set_config(&catalog, ACME_CONTACT_EMAIL, json!("ops@example.com")).await?;
+    sc_config::set_host_config(
+        &catalog,
+        json!({ SSL_MODE: sc_config::MODE_PROXY })
+            .as_object()
+            .unwrap()
+            .clone(),
+    )?;
+
+    let (status, body) = client.send("GET", "/api/settings", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let names: Vec<&str> = body["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&sc_config::SSL_SECTION), "{names:?}");
+    assert!(names.contains(&"email"), "{names:?}");
+
+    let (status, saved) = client
+        .send(
+            "POST",
+            "/api/settings",
+            Some(json!({ "values": { SMTP_PORT: 2525 } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert!(
+        saved["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["name"] != json!(sc_config::SSL_SECTION)),
+        "{saved}"
+    );
+    assert_eq!(stored_config(&catalog, SMTP_PORT).await?, Some(json!(2525)));
+    assert_eq!(
+        stored_config(&catalog, ACME_CONTACT_EMAIL).await?,
+        Some(json!("ops@example.com"))
+    );
+    assert_eq!(ssl_settings(&catalog).await?.mode, SslMode::Proxy);
+    Ok(())
+}

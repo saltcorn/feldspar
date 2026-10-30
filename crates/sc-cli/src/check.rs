@@ -89,7 +89,9 @@ fn status_mark(status: RunStatus) -> &'static str {
 /// checks nothing because a name was mistyped should not go green.
 pub fn verdict(runs: &[ChecklistRun]) -> Result<()> {
     if runs.is_empty() {
-        return Err(Error::config("no enabled checklist matched, so nothing was checked"));
+        return Err(Error::config(
+            "no enabled checklist matched, so nothing was checked",
+        ));
     }
     let bad: Vec<&ChecklistRun> = runs
         .iter()

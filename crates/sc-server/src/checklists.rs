@@ -145,10 +145,8 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
 
     handler!("reorderChecklistSteps", |ctx, catalog, registry, apps| {
         let checklist = id(&ctx, "id")?;
-        let order = sc_check::model::parse_ids(
-            ctx.body.get("order").unwrap_or(&Json::Null),
-            "order",
-        )?;
+        let order =
+            sc_check::model::parse_ids(ctx.body.get("order").unwrap_or(&Json::Null), "order")?;
         edit::request_change(
             &catalog,
             &registry,
@@ -301,8 +299,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
     });
 
     handler!("listChecklistUsers", |ctx, catalog, registry, apps| {
-        let mut select =
-            Select::from(Source::table(USERS_TABLE)).columns(vec![Projection::all()]);
+        let mut select = Select::from(Source::table(USERS_TABLE)).columns(vec![Projection::all()]);
         select.order = vec![OrderBy::asc(Expr::col(COL_EMAIL))];
         let rows = catalog
             .primary()
@@ -399,9 +396,16 @@ pub(crate) fn after_build_log(runs: &[sc_check::ChecklistRun]) -> String {
         runs.len()
     );
     for run in runs {
-        log.push_str(&format!("  {}: {}", run.checklist_name, run.status.as_str()));
+        log.push_str(&format!(
+            "  {}: {}",
+            run.checklist_name,
+            run.status.as_str()
+        ));
         if let Some(step) = run.steps.iter().find(|s| {
-            matches!(s.outcome, sc_check::Outcome::Fail | sc_check::Outcome::Error)
+            matches!(
+                s.outcome,
+                sc_check::Outcome::Fail | sc_check::Outcome::Error
+            )
         }) {
             log.push_str(&format!(" — {}: {}", step.type_, step.message));
         } else if let Some(message) = &run.message {

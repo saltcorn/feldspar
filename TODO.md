@@ -742,6 +742,21 @@ workflow) found what the first importer left behind. Fixture:
   `serve`) that creating the first user requires; the admin UI takes it from
   `?first_user_token=`, and Clear all keeps it.
 
+## D1 — Installing from one line
+
+- [x] **D1.1** `scripts/install.sh`, the curl-to-sh installer: Debian, Ubuntu and Alpine on
+  x86_64; installs the static release at `/opt/feldspar`, `feldspar` on `PATH`, and only
+  `ca-certificates`, a downloader and `tar` beside it. `build-static.sh --release` publishes it
+  to the bucket as `install.sh`.
+- [x] **D1.2** `feldspar setup`: a development instance (user config, `feldspar serve` by hand) or a
+  production one (system account, `/etc/feldspar/feldspar.toml`, systemd unit or OpenRC
+  script), over SQLite or PostgreSQL, local (installed when not running) or remote; asked at a
+  terminal or given as flags, with `--server` and `--dev` as presets that ask nothing.
+- [ ] **D1.3** `feldspar setup` installs Node.js (with npm 9.3 or newer) and a headless browser,
+  as `setup-host.sh` does, so that it can replace that script.
+- [ ] **D1.4** An end-to-end run of `feldspar setup --server` on Alpine with OpenRC. Debian and
+  Ubuntu have been run under systemd, and Alpine so far only through its plan.
+
 ---
 
 ## Open questions

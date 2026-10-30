@@ -51,15 +51,14 @@ pub use acme::{ACME_CACHE_TABLE, AcmeCache, bootstrap_acme_cache};
 pub use authentication::{
     DEFAULT_SESSION_TTL_HOURS, FIRST_USER_TOKEN, MAX_SESSION_TTL_HOURS, OAUTH_PRESETS,
     OAUTH_PROVIDERS, OAuthPreset, OAuthProvider, SESSION_TTL_HOURS, SHARED_SESSION_COOKIE,
-    authentication_section, first_user_token, oauth_preset,
-    oauth_provider, oauth_provider_records, oauth_provider_spec, oauth_providers,
-    save_oauth_provider_records, session_ttl_hours, session_ttl_hours_from, shared_session_cookie,
-    shared_session_cookie_from,
+    authentication_section, first_user_token, oauth_preset, oauth_provider, oauth_provider_records,
+    oauth_provider_spec, oauth_providers, save_oauth_provider_records, session_ttl_hours,
+    session_ttl_hours_from, shared_session_cookie, shared_session_cookie_from,
 };
 pub use defs::{
     BACKUP_INCLUDE, BACKUP_SCHEDULE_STATUS, BACKUP_SCHEDULES, ConfigDef, ConfigSection,
     DEFAULT_LLM_PROVIDER, STARTUP_HISTORY, STARTUP_HISTORY_DAYS, config_sections, config_spec,
-    definition, internal_defs, known_keys,
+    definition, hidden_sections, internal_defs, known_keys,
 };
 pub use development::{
     ADMIN_SUBDOMAIN, DevelopmentSettings, LOG_SQL, LOG_VERBOSITY, MCP_ENABLED, MCP_LOOPBACK_ONLY,
@@ -84,9 +83,9 @@ pub use maps::{
 };
 pub use ssl::{
     ACME_CONTACT_EMAIL, ACME_DIRECTORY_URL, HOST_KEYS, LETSENCRYPT_PRODUCTION, LETSENCRYPT_STAGING,
-    MODE_CUSTOM, MODE_LETSENCRYPT, MODE_OFF, REDIRECT_HTTP_TO_HTTPS, SSL_CERTIFICATE,
-    SSL_EXTRA_DOMAINS, SSL_MODE, SSL_PRIVATE_KEY, SslMode, SslSettings, host_serving_keys,
-    parse_domains, ssl_keys, ssl_settings, ssl_settings_from,
+    MODE_CUSTOM, MODE_LETSENCRYPT, MODE_OFF, MODE_PROXY, REDIRECT_HTTP_TO_HTTPS, SSL_CERTIFICATE,
+    SSL_EXTRA_DOMAINS, SSL_MODE, SSL_PRIVATE_KEY, SSL_SECTION, SslMode, SslSettings,
+    host_serving_keys, parse_domains, proxy_pinned, ssl_keys, ssl_settings, ssl_settings_from,
 };
 pub use store::{
     CONFIG_TABLE, all_config, bootstrap_config, config_value, delete_config, host_config_keys,

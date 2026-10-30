@@ -12,6 +12,18 @@
 //! - **custom** — a certificate chain and private key the admin pastes in. No
 //!   ACME traffic occurs.
 //!
+//! And a fourth that only the host can choose:
+//!
+//! - **proxy** — plain HTTP here, HTTPS in front: a TLS-terminating proxy (the
+//!   Docker image's deployment, or nginx before a systemd install) owns the
+//!   certificates. Nothing is served over TLS and no ACME traffic occurs, but the
+//!   deployment's public URLs are `https://` and its session cookie is `Secure`.
+//!   It is not among the settings screen's options: it describes how the machine
+//!   is wired, which the admin of the instance cannot see or change, so it is
+//!   only accepted as a host pin (`ssl_mode = "proxy"` in `feldspar.toml`, or
+//!   `FELDSPAR_SSL_MODE=proxy`), and the settings screen hides the section
+//!   while it is pinned.
+//!
 //! The keys live here, next to the type that reads them, so adding one cannot
 //! leave the declaration and the reader disagreeing about its name or its type.
 //!
@@ -63,6 +75,9 @@ pub const MODE_OFF: &str = "off";
 pub const MODE_LETSENCRYPT: &str = "letsencrypt";
 /// `ssl_mode = "custom"`: serve the admin-supplied certificate.
 pub const MODE_CUSTOM: &str = "custom";
+/// `ssl_mode = "proxy"`: plain HTTP behind a TLS-terminating proxy. A host pin
+/// only — see the module docs.
+pub const MODE_PROXY: &str = "proxy";
 
 /// Let's Encrypt's production directory — the default CA, not the only one.
 pub const LETSENCRYPT_PRODUCTION: &str = "https://acme-v02.api.letsencrypt.org/directory";
@@ -99,10 +114,19 @@ pub fn host_serving_keys() -> Vec<&'static str> {
     keys
 }
 
+/// The name of the TLS section of the settings screen.
+pub const SSL_SECTION: &str = "ssl";
+
+/// Whether this host pins `ssl_mode` to [`MODE_PROXY`]: TLS is the business of
+/// the proxy in front, and the settings screen has no TLS section to show.
+pub fn proxy_pinned(catalog: &Catalog) -> bool {
+    catalog.host_config().get(SSL_MODE).and_then(Json::as_str) == Some(MODE_PROXY)
+}
+
 /// The TLS settings, as one section of the settings screen.
 pub fn ssl_section() -> ConfigSection {
     ConfigSection {
-        name: "ssl",
+        name: SSL_SECTION,
         label: "SSL / TLS certificates",
         description: "How this server obtains the certificates it serves HTTPS with — for the \
                       admin UI and for every application. Changes take effect when the server \
@@ -169,6 +193,8 @@ pub enum SslMode {
     LetsEncrypt,
     /// An admin-supplied certificate.
     Custom,
+    /// Plain HTTP here, HTTPS at a proxy in front. Pinned by the host only.
+    Proxy,
 }
 
 impl SslMode {
@@ -180,8 +206,10 @@ impl SslMode {
             MODE_OFF => Ok(SslMode::Off),
             MODE_LETSENCRYPT => Ok(SslMode::LetsEncrypt),
             MODE_CUSTOM => Ok(SslMode::Custom),
+            MODE_PROXY => Ok(SslMode::Proxy),
             other => Err(Error::invalid(format!(
-                "unknown `{SSL_MODE}` `{other}`; expected {MODE_OFF}, {MODE_LETSENCRYPT} or {MODE_CUSTOM}"
+                "unknown `{SSL_MODE}` `{other}`; expected {MODE_OFF}, {MODE_LETSENCRYPT}, \
+                 {MODE_CUSTOM} or {MODE_PROXY}"
             ))),
         }
     }
@@ -192,6 +220,7 @@ impl SslMode {
             SslMode::Off => MODE_OFF,
             SslMode::LetsEncrypt => MODE_LETSENCRYPT,
             SslMode::Custom => MODE_CUSTOM,
+            SslMode::Proxy => MODE_PROXY,
         }
     }
 }
@@ -230,8 +259,15 @@ impl Default for SslSettings {
 }
 
 impl SslSettings {
-    /// Whether TLS is served at all.
+    /// Whether this process serves TLS itself.
     pub fn enabled(&self) -> bool {
+        matches!(self.mode, SslMode::LetsEncrypt | SslMode::Custom)
+    }
+
+    /// Whether the deployment is reached over HTTPS — served here, or by the
+    /// proxy in front ([`SslMode::Proxy`]). What the public URLs' scheme and the
+    /// session cookie's `Secure` attribute follow.
+    pub fn public_https(&self) -> bool {
         self.mode != SslMode::Off
     }
 
@@ -245,7 +281,7 @@ impl SslSettings {
     /// makes a valid PEM.
     pub fn check(&self) -> Result<()> {
         match self.mode {
-            SslMode::Off => Ok(()),
+            SslMode::Off | SslMode::Proxy => Ok(()),
             SslMode::Custom => {
                 if self.certificate.trim().is_empty() {
                     return Err(Error::invalid(format!(
@@ -393,6 +429,28 @@ mod tests {
         .unwrap();
         let err = keyless.check().unwrap_err().to_string();
         assert!(err.contains(SSL_PRIVATE_KEY), "{err}");
+    }
+
+    /// Proxy mode serves no TLS here but is HTTPS to the outside, and the admin
+    /// cannot pick it: it is not among the settings screen's options.
+    #[test]
+    fn proxy_mode_is_https_in_public_and_plain_http_here() {
+        let proxy = ssl_settings_from(&attrs(&[(SSL_MODE, json!(MODE_PROXY))])).unwrap();
+        assert_eq!(proxy.mode, SslMode::Proxy);
+        assert!(!proxy.enabled());
+        assert!(proxy.public_https());
+        proxy.check().unwrap();
+        assert_eq!(SslMode::parse(MODE_PROXY).unwrap().as_str(), MODE_PROXY);
+
+        let mode = ssl_section()
+            .fields
+            .into_iter()
+            .find(|def| def.key() == SSL_MODE)
+            .unwrap();
+        let sc_types::OptionsSource::Static(options) = &mode.field.options_source else {
+            panic!("the mode is a fixed list of options");
+        };
+        assert!(!options.contains(&json!(MODE_PROXY)), "{options:?}");
     }
 
     #[test]

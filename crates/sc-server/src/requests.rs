@@ -191,7 +191,11 @@ impl AppRequester for AppRequests {
             (preview.owner, pass)
         });
         let result = self
-            .send(&request, session.as_deref(), pass.as_ref().map(|(_, p)| p.as_str()))
+            .send(
+                &request,
+                session.as_deref(),
+                pass.as_ref().map(|(_, p)| p.as_str()),
+            )
             .await;
         if let Some((owner, pass)) = &pass {
             self.apps

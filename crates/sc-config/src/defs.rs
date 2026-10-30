@@ -116,6 +116,16 @@ pub fn config_sections() -> &'static [ConfigSection] {
     })
 }
 
+/// The sections the settings screen is not shown on this host: the TLS section
+/// while the host pins `ssl_mode = "proxy"` ([`crate::ssl::proxy_pinned`]).
+pub fn hidden_sections(catalog: &sc_catalog::Catalog) -> Vec<&'static str> {
+    if crate::ssl::proxy_pinned(catalog) {
+        vec![crate::ssl::SSL_SECTION]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Keys that are stored configuration but belong to **no settings form**.
 ///
 /// A key has to be declared to be stored at all ([`crate::store`] refuses an
