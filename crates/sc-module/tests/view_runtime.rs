@@ -344,7 +344,9 @@ async fn a_reinterpolated_value_only_names_fields_and_is_escaped() {
     assert!(html.contains("[&lt;b&gt;Ann&lt;/b&gt;]"), "{html}");
     let mut request = ViewRequest::default();
     request.query.insert("bio".into(), "{{! raw }}".into());
-    request.query.insert("raw".into(), "<script>x()</script>".into());
+    request
+        .query
+        .insert("raw".into(), "<script>x()</script>".into());
     request.query.insert("name".into(), "Ann".into());
     let html = runtime
         .render_page(&Page::new(app, "Bio"), ViewContext::bare(&views, &request))
@@ -352,7 +354,10 @@ async fn a_reinterpolated_value_only_names_fields_and_is_escaped() {
         .unwrap();
     let html = html.body.as_str().unwrap();
     assert!(!html.contains("<script>x()"), "{html}");
-    assert!(html.contains("[&lt;script&gt;x()&lt;/script&gt;]"), "{html}");
+    assert!(
+        html.contains("[&lt;script&gt;x()&lt;/script&gt;]"),
+        "{html}"
+    );
 
     // Code is refused, not run.
     for code in [

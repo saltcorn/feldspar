@@ -204,9 +204,9 @@ impl StepDraft {
     /// Read one from the JSON the admin API and the tools take:
     /// `{type, params, label, as}`.
     pub fn from_json(value: &Json) -> Result<StepDraft> {
-        let obj = value
-            .as_object()
-            .ok_or_else(|| Error::invalid("a step should be an object: {type, params, label, as}"))?;
+        let obj = value.as_object().ok_or_else(|| {
+            Error::invalid("a step should be an object: {type, params, label, as}")
+        })?;
         for key in obj.keys() {
             if !["type", "params", "label", "as"].contains(&key.as_str()) {
                 return Err(Error::invalid(format!(
@@ -358,12 +358,9 @@ impl ProposalChange {
 
     /// Rebuild one from its stored `kind`, `step` and `change` columns.
     pub fn from_parts(kind: &str, step: Option<Uuid>, change: &Json) -> Result<ProposalChange> {
-        let need_step = || {
-            step.ok_or_else(|| Error::invalid(format!("a `{kind}` proposal names its step")))
-        };
-        let draft = || {
-            StepDraft::from_json(change.get("step").unwrap_or(&Json::Null))
-        };
+        let need_step =
+            || step.ok_or_else(|| Error::invalid(format!("a `{kind}` proposal names its step")));
+        let draft = || StepDraft::from_json(change.get("step").unwrap_or(&Json::Null));
         match kind {
             "edit" => Ok(ProposalChange::Edit {
                 step: need_step()?,
@@ -390,7 +387,9 @@ impl ProposalChange {
                     }
                 },
             }),
-            other => Err(Error::invalid(format!("`{other}` is not a kind of proposal"))),
+            other => Err(Error::invalid(format!(
+                "`{other}` is not a kind of proposal"
+            ))),
         }
     }
 }
@@ -565,12 +564,22 @@ impl StepResult {
 
     /// Read a stored one back.
     pub fn from_json(value: &Json) -> Result<StepResult> {
-        let text = |key: &str| value.get(key).and_then(Json::as_str).unwrap_or("").to_owned();
+        let text = |key: &str| {
+            value
+                .get(key)
+                .and_then(Json::as_str)
+                .unwrap_or("")
+                .to_owned()
+        };
         let list = |key: &str| -> Vec<String> {
             value
                 .get(key)
                 .and_then(Json::as_array)
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
                 .unwrap_or_default()
         };
         Ok(StepResult {
@@ -580,7 +589,10 @@ impl StepResult {
             type_: text("type"),
             label: text("label"),
             outcome: Outcome::parse(&text("outcome"))?,
-            skip: value.get("skip").and_then(Json::as_str).and_then(SkipReason::parse),
+            skip: value
+                .get("skip")
+                .and_then(Json::as_str)
+                .and_then(SkipReason::parse),
             message: text("message"),
             duration_ms: value.get("duration_ms").and_then(Json::as_u64).unwrap_or(0),
             captured: value.get("captured").filter(|v| !v.is_null()).cloned(),
@@ -732,12 +744,18 @@ mod tests {
         use Outcome::*;
         assert_eq!(RunStatus::of(&[result(Pass, None)]), RunStatus::Passed);
         assert_eq!(
-            RunStatus::of(&[result(Pass, None), result(Skipped, Some(SkipReason::Unavailable))]),
+            RunStatus::of(&[
+                result(Pass, None),
+                result(Skipped, Some(SkipReason::Unavailable))
+            ]),
             RunStatus::Incomplete
         );
         // A manual step is listed, not counted against the run.
         assert_eq!(
-            RunStatus::of(&[result(Pass, None), result(Skipped, Some(SkipReason::Manual))]),
+            RunStatus::of(&[
+                result(Pass, None),
+                result(Skipped, Some(SkipReason::Manual))
+            ]),
             RunStatus::Passed
         );
         assert_eq!(
@@ -748,7 +766,10 @@ mod tests {
             RunStatus::Failed
         );
         assert_eq!(
-            RunStatus::of(&[result(Error, None), result(Skipped, Some(SkipReason::Unavailable))]),
+            RunStatus::of(&[
+                result(Error, None),
+                result(Skipped, Some(SkipReason::Unavailable))
+            ]),
             RunStatus::Error
         );
     }

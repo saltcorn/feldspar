@@ -30,9 +30,9 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use sc_action::TriggerDispatcher;
 use sc_agent::AppRequester;
-use sc_browser::{BrowserAction, BrowserDriver, BrowserRequest, BrowserTarget, PreviewTarget};
 use sc_app::{AppId, Application};
 use sc_auth::User;
+use sc_browser::{BrowserAction, BrowserDriver, BrowserRequest, BrowserTarget, PreviewTarget};
 use sc_catalog::Catalog;
 use sc_error::{Error, Repr, Result};
 use sc_expr::JsEvaluator;
@@ -465,10 +465,7 @@ async fn run_step(
     };
     let outcome = match tokio::time::timeout(timeout, step_type.run(&mut cx, &params)).await {
         Ok(outcome) => outcome,
-        Err(_) => StepOutcome::fail(format!(
-            "took longer than {} seconds",
-            timeout.as_secs()
-        )),
+        Err(_) => StepOutcome::fail(format!("took longer than {} seconds", timeout.as_secs())),
     };
     (outcome, cx.observed)
 }

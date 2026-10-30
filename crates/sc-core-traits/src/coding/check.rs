@@ -350,7 +350,10 @@ async fn mount_preview(
                 ),
                 Some(preview),
             ),
-            Err(e) => (format!("preview: this build could not be mounted: {e}"), None),
+            Err(e) => (
+                format!("preview: this build could not be mounted: {e}"),
+                None,
+            ),
         },
     )
 }

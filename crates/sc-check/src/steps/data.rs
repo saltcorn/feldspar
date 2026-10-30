@@ -204,8 +204,10 @@ impl StepType for Insert {
                 table: table.name.clone(),
                 key: key.clone(),
             });
-            Ok(StepOutcome::pass(format!("inserted row {key} into `{}`", table.name))
-                .with_value(written))
+            Ok(
+                StepOutcome::pass(format!("inserted row {key} into `{}`", table.name))
+                    .with_value(written),
+            )
         }
         .await;
         outcome.unwrap_or_else(StepOutcome::from)
@@ -256,11 +258,10 @@ impl StepType for Update {
             )
             .await
             {
-                Ok(row) => Ok(StepOutcome::pass(format!(
-                    "updated row {id} of `{}`",
-                    table.name
-                ))
-                .with_value(row)),
+                Ok(row) => Ok(
+                    StepOutcome::pass(format!("updated row {id} of `{}`", table.name))
+                        .with_value(row),
+                ),
                 Err(e) if is_denial(&e) => Ok(StepOutcome::fail(format!(
                     "updating row {id} of `{}` was refused: {e}",
                     table.name
@@ -369,7 +370,8 @@ impl StepType for ExpectRows {
     async fn run(&self, cx: &mut StepContext<'_>, params: &Json) -> StepOutcome {
         let outcome: Result<StepOutcome> = async {
             let table = table(cx, params)?;
-            let filter = sc_api::filter::api_where(&table, params.get("where").filter(|w| !w.is_null()))?;
+            let filter =
+                sc_api::filter::api_where(&table, params.get("where").filter(|w| !w.is_null()))?;
             let found = match read(cx, &table, filter, MAX_ROWS).await {
                 Ok(found) => found,
                 Err(e) if is_denial(&e) => {
@@ -818,7 +820,10 @@ impl StepType for ExpectSent {
         let found: Vec<Json> = all
             .iter()
             .filter(|s| s.kind == kind)
-            .filter(|s| to.as_ref().is_none_or(|t| s.to.iter().any(|r| contains(r, t))))
+            .filter(|s| {
+                to.as_ref()
+                    .is_none_or(|t| s.to.iter().any(|r| contains(r, t)))
+            })
             .filter(|s| subject.as_ref().is_none_or(|t| contains(&s.subject, t)))
             .filter(|s| {
                 body.as_ref().is_none_or(|t| match &s.body {

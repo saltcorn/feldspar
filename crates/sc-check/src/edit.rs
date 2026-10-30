@@ -210,7 +210,10 @@ pub async fn create_checklist(
     if name.is_empty() {
         return Err(Error::invalid("a checklist needs a name"));
     }
-    if store::load_checklist_by_name(catalog, &name).await?.is_some() {
+    if store::load_checklist_by_name(catalog, &name)
+        .await?
+        .is_some()
+    {
         return Err(Error::invalid(format!(
             "there is already a checklist called `{name}`; checklists are named uniquely"
         )));
@@ -377,10 +380,7 @@ pub async fn remove_step(
         return Err(if old.accepted {
             refusal("delete an accepted step", ChecklistGrant::Full)
         } else {
-            refusal(
-                "delete a step another run wrote",
-                ChecklistGrant::Full,
-            )
+            refusal("delete a step another run wrote", ChecklistGrant::Full)
         });
     }
     let tombstone = Step {
@@ -492,7 +492,11 @@ pub async fn request_change(
     // Checked whether it applies or waits: a proposal a person accepts must be
     // one that could have been made.
     match &change {
-        ProposalChange::Edit { step, draft } | ProposalChange::InsertBefore { before: step, draft } => {
+        ProposalChange::Edit { step, draft }
+        | ProposalChange::InsertBefore {
+            before: step,
+            draft,
+        } => {
             let target = current(catalog, *step).await?;
             if target.checklist != list.id {
                 return Err(Error::invalid(format!(
@@ -578,7 +582,15 @@ pub async fn accept_proposal(
     let as_proposed = AcceptedAs {
         author: proposal.author.clone(),
     };
-    apply_accepted(catalog, registry, &checklist, proposal.change, &as_proposed, editor).await?;
+    apply_accepted(
+        catalog,
+        registry,
+        &checklist,
+        proposal.change,
+        &as_proposed,
+        editor,
+    )
+    .await?;
     store::delete_proposal(catalog, id).await
 }
 
@@ -671,7 +683,9 @@ async fn position_before(catalog: &Catalog, anchor: &Step) -> Result<f64> {
         .iter()
         .map(|s| s.position)
         .filter(|p| *p < anchor.position)
-        .fold(None, |best: Option<f64>, p| Some(best.map_or(p, |b| b.max(p))));
+        .fold(None, |best: Option<f64>, p| {
+            Some(best.map_or(p, |b| b.max(p)))
+        });
     Ok(match previous {
         Some(p) => (p + anchor.position) / 2.0,
         None => anchor.position - 1.0,

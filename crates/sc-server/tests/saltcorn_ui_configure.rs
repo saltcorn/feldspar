@@ -183,8 +183,10 @@ async fn setup(bundle: PathBuf) -> sc_error::Result<Server> {
     let agents = install_agents(&catalog).await?;
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
     let dispatcher = install_triggers(&catalog, default_js_evaluator(), &agents, &models).await?;
+    // Unique per setup: the tests in this file run in parallel, and each one
+    // removes its root when it is dropped.
     let root =
-        std::env::temp_dir().join(format!("sc-saltcorn-ui-configure-{}", std::process::id()));
+        std::env::temp_dir().join(format!("sc-saltcorn-ui-configure-{}", uuid::Uuid::new_v4()));
     let _ = std::fs::remove_dir_all(&root);
     let registries = crate::module_registries().read().await;
     let modules = ModuleServices::install(

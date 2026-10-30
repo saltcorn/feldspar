@@ -35,8 +35,7 @@ you add a service that holds the catalog in a new way. To reproduce a leak, run 
 
 ## Status
 
-The system is in prototype status. Do not add any code to handle backwards compatibility with 
-previously created applications.
+The system is now used in production. Any code changes you make must not break compatibility with running applications when those are upgraded to a new version of feldspar.
 
 If the database needs a change the bootstrap cannot make (a rename, a type or nullability change,
 rewriting stored data), add a migration to `crates/sc-migrate`, with a test that runs it with

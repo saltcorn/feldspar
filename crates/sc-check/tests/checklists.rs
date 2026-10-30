@@ -67,12 +67,18 @@ impl Action for Confirm {
         Vec::new()
     }
     async fn run(&self, ctx: &mut ActionContext<'_>) -> Result<Json> {
-        let to = ctx.event.payload["email"].as_str().unwrap_or_default().to_owned();
+        let to = ctx.event.payload["email"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
         let mut email = Email::new(Mailbox {
             name: None,
             address: "shop@example.com".to_owned(),
         });
-        email.to.push(Mailbox { name: None, address: to });
+        email.to.push(Mailbox {
+            name: None,
+            address: to,
+        });
         email.subject = "Your order is confirmed".to_owned();
         email.text = Some("Thank you for your order.".to_owned());
         ctx.mailer()?.send(&email).await?;
@@ -216,12 +222,14 @@ async fn a_data_checklist_inserts_runs_a_trigger_asserts_and_cleans_up() -> Resu
                 .param("table", "orders")
                 .param("where", json!({ "customer": "Test customer {{ run.id }}" }))
                 .param("count", 1),
-            StepDraft::new("core.manual")
-                .param("instruction", "The order email looks right"),
+            StepDraft::new("core.manual").param("instruction", "The order email looks right"),
         ],
     )
     .await?;
-    assert!(checklist.mutates, "data.insert writes, so the checklist mutates");
+    assert!(
+        checklist.mutates,
+        "data.insert writes, so the checklist mutates"
+    );
 
     let run = run_checklist(&env.env(), &checklist, "manual").await?;
     assert_eq!(run.status, RunStatus::Passed, "{:#?}", run.steps);
@@ -235,7 +243,9 @@ async fn a_data_checklist_inserts_runs_a_trigger_asserts_and_cleans_up() -> Resu
     assert_eq!(env.count("audit").await, 1);
 
     // The run is recorded with the step versions it ran.
-    let stored = store::load_run(&env.catalog, run.id).await?.expect("stored");
+    let stored = store::load_run(&env.catalog, run.id)
+        .await?
+        .expect("stored");
     assert_eq!(stored.status, RunStatus::Passed);
     let current: Vec<_> = store::current_steps(&env.catalog, checklist.id)
         .await?
@@ -260,7 +270,10 @@ async fn mail_sent_during_a_run_is_kept_on_the_run_and_not_sent() -> Result<()> 
         vec![
             StepDraft::new("data.run_trigger")
                 .param("trigger", "confirm_order")
-                .param("payload", json!({ "email": "customer-{{ run.id }}@example.com" })),
+                .param(
+                    "payload",
+                    json!({ "email": "customer-{{ run.id }}@example.com" }),
+                ),
             StepDraft::new("data.expect_sent")
                 .param("kind", "email")
                 .param("to", "customer-{{ run.id }}@example.com")
@@ -279,13 +292,23 @@ async fn mail_sent_during_a_run_is_kept_on_the_run_and_not_sent() -> Result<()> 
     assert_eq!(run.status, RunStatus::Passed, "{:#?}", run.steps);
     assert!(env.mailer.sent().is_empty(), "a run must not send mail");
     assert_eq!(run.outbox.len(), 1);
-    assert_eq!(run.outbox[0].to, vec![format!("customer-{}@example.com", run.id)]);
-    let stored = store::load_run(&env.catalog, run.id).await?.expect("stored");
+    assert_eq!(
+        run.outbox[0].to,
+        vec![format!("customer-{}@example.com", run.id)]
+    );
+    let stored = store::load_run(&env.catalog, run.id)
+        .await?
+        .expect("stored");
     assert_eq!(stored.outbox, run.outbox);
 
     // Outside a run the same trigger sends.
     env.triggers
-        .run_trigger(&env.catalog, "confirm_order", json!({ "email": "real@example.com" }), None)
+        .run_trigger(
+            &env.catalog,
+            "confirm_order",
+            json!({ "email": "real@example.com" }),
+            None,
+        )
         .await?;
     assert_eq!(env.mailer.only()?.to[0].address, "real@example.com");
 
@@ -374,7 +397,11 @@ async fn an_agent_appends_freely_and_proposes_everything_else() -> Result<()> {
         &env.registry,
         &me,
         checklist.id,
-        vec![StepDraft::new("data.expect_rows").param("table", "audit").param("count", 0)],
+        vec![
+            StepDraft::new("data.expect_rows")
+                .param("table", "audit")
+                .param("count", 0),
+        ],
     )
     .await?;
     assert!(!appended[0].accepted);
@@ -388,7 +415,10 @@ async fn an_agent_appends_freely_and_proposes_everything_else() -> Result<()> {
         checklist.id,
         ProposalChange::Edit {
             step: appended[0].id,
-            draft: StepDraft::new("data.expect_rows").param("table", "audit").param("count", 0).label("No audit rows"),
+            draft: StepDraft::new("data.expect_rows")
+                .param("table", "audit")
+                .param("count", 0)
+                .label("No audit rows"),
         },
         "",
     )
@@ -421,7 +451,9 @@ async fn an_agent_appends_freely_and_proposes_everything_else() -> Result<()> {
             &env.registry,
             &me,
             accepted.id,
-            StepDraft::new("data.expect_rows").param("table", "orders").param("count", 5),
+            StepDraft::new("data.expect_rows")
+                .param("table", "orders")
+                .param("count", 5),
         )
         .await
         .is_err()
@@ -449,7 +481,10 @@ async fn an_agent_appends_freely_and_proposes_everything_else() -> Result<()> {
         panic!("an agent's edit of an accepted step is a proposal");
     };
     let steps = store::current_steps(&env.catalog, checklist.id).await?;
-    assert_eq!(steps[0].id, accepted.id, "the old step is still the current one");
+    assert_eq!(
+        steps[0].id, accepted.id,
+        "the old step is still the current one"
+    );
     let run = run_checklist(&env.env(), &checklist, "agent:run-1").await?;
     assert_eq!(run.steps[0].step, accepted.id);
     assert_eq!(run.status, RunStatus::Passed);
@@ -466,7 +501,11 @@ async fn an_agent_appends_freely_and_proposes_everything_else() -> Result<()> {
     assert_eq!(steps[0].draft.label, "One order");
     assert!(steps[0].accepted);
     assert_eq!(steps[0].author.to_text(), "agent:run-1");
-    assert!(store::proposals_of(&env.catalog, checklist.id).await?.is_empty());
+    assert!(
+        store::proposals_of(&env.catalog, checklist.id)
+            .await?
+            .is_empty()
+    );
     // The history is kept: the old version points at the new one.
     let old = store::require_step(&env.catalog, accepted.id).await?;
     assert_eq!(old.superseded_by, Some(steps[0].id));
@@ -521,7 +560,11 @@ async fn an_agent_may_only_run_a_checklist_as_a_check_user() -> Result<()> {
     .unwrap_err()
     .to_string();
     assert!(err.contains("check user"), "{err}");
-    assert!(store::proposals_of(&env.catalog, checklist.id).await?.is_empty());
+    assert!(
+        store::proposals_of(&env.catalog, checklist.id)
+            .await?
+            .is_empty()
+    );
     // A person may point a checklist at anybody.
     let mut by_hand = ChecklistInput::new("As the admin");
     by_hand.run_as = Some(env.admin.id);
@@ -542,14 +585,8 @@ async fn a_mutating_checklist_is_refused_on_production() -> Result<()> {
     };
     let mut writes = ChecklistInput::new("Writes");
     writes.run_as = Some(env.member.id);
-    let checklist = edit::create_checklist(
-        &env.catalog,
-        &env.registry,
-        &env.human(),
-        writes,
-        insert(),
-    )
-    .await?;
+    let checklist =
+        edit::create_checklist(&env.catalog, &env.registry, &env.human(), writes, insert()).await?;
     let run = run_checklist(&env.env(), &checklist, "manual").await?;
     assert_eq!(run.status, RunStatus::Error);
     assert!(run.steps.is_empty());
@@ -687,7 +724,11 @@ async fn browser_steps_on_a_host_without_chromium_make_the_run_incomplete() -> R
     for step in &run.steps {
         assert_eq!(step.outcome, Outcome::Skipped, "{step:?}");
         assert_eq!(step.skip, Some(SkipReason::Unavailable));
-        assert!(step.message.contains("no headless browser"), "{}", step.message);
+        assert!(
+            step.message.contains("no headless browser"),
+            "{}",
+            step.message
+        );
         assert_eq!(step.screenshot, None);
     }
 
@@ -722,7 +763,10 @@ async fn browser_steps_on_a_host_without_chromium_make_the_run_incomplete() -> R
         .map(|t| t.name())
         .collect();
     assert!(offered.contains(&"http.request"), "{offered:?}");
-    assert!(!offered.iter().any(|n| n.starts_with("browser.")), "{offered:?}");
+    assert!(
+        !offered.iter().any(|n| n.starts_with("browser.")),
+        "{offered:?}"
+    );
     assert!(
         env.registry
             .offered(Some(&web))
@@ -741,6 +785,10 @@ async fn browser_steps_on_a_host_without_chromium_make_the_run_incomplete() -> R
     .await?;
     let run = run_checklist(&env.env(), &checklist, "cli").await?;
     assert_eq!(run.status, RunStatus::Error, "{:#?}", run.steps);
-    assert!(run.steps[0].message.contains("serves no UI"), "{}", run.steps[0].message);
+    assert!(
+        run.steps[0].message.contains("serves no UI"),
+        "{}",
+        run.steps[0].message
+    );
     Ok(())
 }

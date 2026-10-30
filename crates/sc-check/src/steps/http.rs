@@ -103,7 +103,11 @@ async fn send(cx: &mut StepContext<'_>, params: &Json) -> Result<Json> {
 /// The response a step asserts on: the one it sends when it has a `path`, or
 /// the last one this run received.
 async fn response(cx: &mut StepContext<'_>, params: &Json) -> Result<Json> {
-    if params.get("path").and_then(Json::as_str).is_some_and(|p| !p.trim().is_empty()) {
+    if params
+        .get("path")
+        .and_then(Json::as_str)
+        .is_some_and(|p| !p.trim().is_empty())
+    {
         return send(cx, params).await;
     }
     cx.last_response().cloned().ok_or_else(|| {
@@ -276,7 +280,10 @@ impl StepType for ExpectJson {
                 "there is no response to check: put an http.request before this step",
             );
         };
-        let path = params.get("json_path").and_then(Json::as_str).unwrap_or("$");
+        let path = params
+            .get("json_path")
+            .and_then(Json::as_str)
+            .unwrap_or("$");
         let op = params.get("op").and_then(Json::as_str).unwrap_or("equals");
         let expected = params.get("value").cloned().unwrap_or(Json::Null);
         let found = match lookup(&response["body"], path) {
@@ -318,8 +325,10 @@ impl StepType for ExpectJson {
         if ok {
             StepOutcome::pass(format!("{what} {op} {expected}")).with_value(actual.clone())
         } else {
-            StepOutcome::fail(format!("{what} is {actual}, which does not {op} {expected}"))
-                .with_value(actual.clone())
+            StepOutcome::fail(format!(
+                "{what} is {actual}, which does not {op} {expected}"
+            ))
+            .with_value(actual.clone())
         }
     }
 }

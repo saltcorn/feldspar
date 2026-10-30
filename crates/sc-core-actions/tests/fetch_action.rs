@@ -547,7 +547,10 @@ async fn a_fetch_inside_a_checklist_run_is_kept_and_not_sent() -> Result<()> {
     assert_eq!(sent[0].kind, sc_catalog::outbox::SentKind::Webhook);
     assert_eq!(sent[0].to, vec![url]);
     assert_eq!(sent[0].subject, "POST");
-    assert_eq!(sent[0].body, json!({ "id": 7, "title": "A Book", "pages": 100 }));
+    assert_eq!(
+        sent[0].body,
+        json!({ "id": 7, "title": "A Book", "pages": 100 })
+    );
     // Nobody connected.
     assert!(
         tokio::time::timeout(Duration::from_millis(200), listener.accept())

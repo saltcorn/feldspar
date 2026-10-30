@@ -92,8 +92,9 @@ impl FetchHost for CodeFetchHost {
         // On behalf of a checklist run: kept, not made, and answered with an
         // empty `200` — there is nothing to answer with.
         if let Some(outbox) = &self.outbox {
-            let body = parse_body(&request)?
-                .map_or(Json::Null, |b| Json::String(String::from_utf8_lossy(&b).into_owned()));
+            let body = parse_body(&request)?.map_or(Json::Null, |b| {
+                Json::String(String::from_utf8_lossy(&b).into_owned())
+            });
             outbox.capture(sc_catalog::outbox::Sent::new(
                 sc_catalog::outbox::SentKind::Webhook,
                 vec![url.to_string()],

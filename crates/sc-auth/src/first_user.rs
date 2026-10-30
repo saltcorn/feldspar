@@ -43,7 +43,11 @@ pub fn first_user_token_matches(expected: &[String], supplied: Option<&str>) -> 
     // Every token is compared, not just up to the first that matches.
     expected.iter().fold(false, |found, expected| {
         let a = Sha256::digest(expected.as_bytes());
-        found | (a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0)
+        found
+            | (a.iter()
+                .zip(b.iter())
+                .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+                == 0)
     })
 }
 
@@ -138,7 +142,13 @@ mod tests {
         assert!(first_user_token_matches(&expected, Some("abc123")));
         // What a pasted link may carry around it.
         assert!(first_user_token_matches(&expected, Some(" abc123\n")));
-        for wrong in [None, Some(""), Some("abc12"), Some("abc1234"), Some("ABC123")] {
+        for wrong in [
+            None,
+            Some(""),
+            Some("abc12"),
+            Some("abc1234"),
+            Some("ABC123"),
+        ] {
             assert!(!first_user_token_matches(&expected, wrong), "{wrong:?}");
         }
     }

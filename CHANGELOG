@@ -23,6 +23,21 @@ an application could read said the mail was not accepted.
   message.
 - §10.2 of the design notes the new event.
 
+## Test suite fixes after the migrations and onboarding commits
+
+- `ui/admin/src/onboarding/effects.ts`: the application the onboarding creates now sends
+  `api_tables: []`, as the application form does. Without it the admin UI failed `tsc`, so
+  `sc-cli`'s build script, and with it `cargo test --workspace`, failed.
+- `docs/TECHNICAL_DESIGN.md`: §2's crate table and diagram now include `sc-migrate` (and the
+  `sc-server` and `sc-cli` edges to it). §9.2's ER diagram now draws `_fd_migrations`. The
+  `repo_hygiene` tests check both.
+- `sc-core-traits/tests/admin_copilot_triggers.rs` inserted its row through the removed
+  `insert_row` trait. It now uses `edit_table_rows` with `allow_insert`.
+- `sc-server/tests/saltcorn_ui_configure.rs`: each setup now gets its own scratch root (a UUID,
+  not the PID). The file's two tests run in parallel and each deletes its root when dropped,
+  so one could delete `module-host.mjs` while the other was still using it.
+- `cargo fmt` over the files that had drifted.
+
 ## First-run onboarding: "How do you want to build?" (TODO O1.1)
 
 The first admin to sign in now gets a sequence of modal dialogs that sets up what their answer

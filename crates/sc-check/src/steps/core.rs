@@ -47,9 +47,7 @@ impl StepType for Wait {
     async fn run(&self, _cx: &mut StepContext<'_>, params: &Json) -> StepOutcome {
         let ms = params.get("ms").and_then(Json::as_u64).unwrap_or(1000);
         if ms > MAX_WAIT_MS {
-            return StepOutcome::error(format!(
-                "`ms` is {ms}; a wait is at most {MAX_WAIT_MS} ms"
-            ));
+            return StepOutcome::error(format!("`ms` is {ms}; a wait is at most {MAX_WAIT_MS} ms"));
         }
         tokio::time::sleep(Duration::from_millis(ms)).await;
         StepOutcome::pass(format!("waited {ms} ms"))
@@ -94,9 +92,6 @@ impl StepType for Manual {
             .get("instruction")
             .and_then(Json::as_str)
             .unwrap_or("");
-        StepOutcome::skipped(
-            SkipReason::Manual,
-            format!("manual: {instruction}"),
-        )
+        StepOutcome::skipped(SkipReason::Manual, format!("manual: {instruction}"))
     }
 }

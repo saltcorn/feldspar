@@ -42,22 +42,22 @@ pub mod store;
 pub mod tools;
 pub mod vars;
 
+pub use declared::{DeclaredStep, StepAsks, StepDecl, StepWorker};
 pub use edit::{Change, ChecklistGrant, ChecklistInput, Editor};
 pub use model::{
     Author, Checklist, ChecklistRun, Outcome, Proposal, ProposalChange, RunStatus, SkipReason,
     Step, StepDraft, StepResult,
 };
-pub use declared::{DeclaredStep, StepAsks, StepDecl, StepWorker};
 pub use registry::{
     Capabilities, FrameworkScope, Needs, StepContext, StepOutcome, StepRegistry, StepType,
     install_step_types,
 };
-pub use schedule::{RUN_CHECKLISTS_ACTION, RunChecklists, TRIGGER_SCHEDULE};
-pub use starter::{Starter, create_starter, starters};
 pub use runner::{
     CHECK_AFTER_BUILD, CheckEnv, TARGET_LIVE, TRIGGER_BUILD, checks_after_build, run_checklist,
     run_checklists,
 };
+pub use schedule::{RUN_CHECKLISTS_ACTION, RunChecklists, TRIGGER_SCHEDULE};
+pub use starter::{Starter, create_starter, starters};
 pub use store::{
     CHECKLISTS_TABLE, ChecklistScope, PROPOSALS_TABLE, RUNS_TABLE, STEPS_TABLE,
     bootstrap_checklists,

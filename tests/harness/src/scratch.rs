@@ -70,7 +70,10 @@ mod tests {
     #[test]
     fn the_pid_follows_the_prefix_and_nothing_else_matches() {
         assert_eq!(owning_pid("sc-module-123", "sc-module"), Some(123));
-        assert_eq!(owning_pid("sc-module-123-tag-ThreadId(4)", "sc-module"), Some(123));
+        assert_eq!(
+            owning_pid("sc-module-123-tag-ThreadId(4)", "sc-module"),
+            Some(123)
+        );
         // A longer prefix is someone else's.
         assert_eq!(owning_pid("sc-module-routes-123", "sc-module"), None);
         assert_eq!(owning_pid("sc-modules-123", "sc-module"), None);

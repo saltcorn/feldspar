@@ -88,6 +88,7 @@ export const onboardingEffects: OnboardingFx = {
       framework: { name: framework, config },
       extra_frameworks: [],
       tables: [],
+      api_tables: [],
       file_stores: [],
       triggers: [],
       streams: [],

@@ -123,8 +123,16 @@ impl Action for RunChecklists {
         let triggers = ctx.triggers().and_then(|t| t.shared());
         let env = CheckEnv::new(ctx.catalog, &registry)
             .with_triggers(triggers.as_ref())
-            .with_requests(self.view.requests().map(|r| r.as_ref() as &dyn sc_agent::AppRequester))
-            .with_browser(self.view.browser().map(|b| b.as_ref() as &dyn sc_agent::BrowserDriver));
+            .with_requests(
+                self.view
+                    .requests()
+                    .map(|r| r.as_ref() as &dyn sc_agent::AppRequester),
+            )
+            .with_browser(
+                self.view
+                    .browser()
+                    .map(|b| b.as_ref() as &dyn sc_agent::BrowserDriver),
+            );
         let mut runs = Vec::new();
         for checklist in &checklists {
             runs.push(run_checklist(&env, checklist, TRIGGER_SCHEDULE).await?);

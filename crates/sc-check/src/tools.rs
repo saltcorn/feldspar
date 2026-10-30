@@ -257,12 +257,11 @@ fn drafts(value: Option<&Json>) -> Result<Vec<StepDraft>> {
 
 async fn describe_step_types(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
     let obj = args_of(args, &["application"])?;
-    let application = match application_id(cx, sc_api::mcp::optional_string(&obj, "application")?)
-        .await?
-    {
-        None => None,
-        Some(id) => sc_app::load_application(cx.env.catalog, sc_app::AppId(id)).await?,
-    };
+    let application =
+        match application_id(cx, sc_api::mcp::optional_string(&obj, "application")?).await? {
+            None => None,
+            Some(id) => sc_app::load_application(cx.env.catalog, sc_app::AppId(id)).await?,
+        };
     let types: Vec<Json> = if application.is_some() {
         cx.env
             .registry
@@ -298,7 +297,8 @@ async fn describe_checklists(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
         out["last_run"] = last.as_ref().map_or(Json::Null, ChecklistRun::to_json);
         return Ok(out);
     }
-    let scope = match application_id(cx, sc_api::mcp::optional_string(&obj, "application")?).await? {
+    let scope = match application_id(cx, sc_api::mcp::optional_string(&obj, "application")?).await?
+    {
         Some(app) => ChecklistScope::Application(app),
         None => ChecklistScope::All,
     };
@@ -327,14 +327,8 @@ async fn save_checklist(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
         application_id(cx, sc_api::mcp::optional_string(&obj, "application")?).await?;
     input.run_as = user_id(cx, sc_api::mcp::optional_string(&obj, "run_as")?.as_deref()).await?;
     let steps = drafts(obj.get("steps"))?;
-    let checklist = edit::create_checklist(
-        cx.env.catalog,
-        cx.env.registry,
-        &cx.editor,
-        input,
-        steps,
-    )
-    .await?;
+    let checklist =
+        edit::create_checklist(cx.env.catalog, cx.env.registry, &cx.editor, input, steps).await?;
     let steps = store::current_steps(cx.env.catalog, checklist.id).await?;
     let mut out = checklist.to_json();
     out["steps"] = json!(steps.iter().map(|s| s.to_json()).collect::<Vec<_>>());
@@ -365,7 +359,15 @@ async fn append_steps(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
 async fn propose_step_change(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
     let obj = args_of(
         args,
-        &["checklist", "change", "step", "new_step", "order", "run_as", "reason"],
+        &[
+            "checklist",
+            "change",
+            "step",
+            "new_step",
+            "order",
+            "run_as",
+            "reason",
+        ],
     )?;
     let catalog = cx.env.catalog;
     let checklist = store::find_checklist(catalog, &required(&obj, "checklist")?).await?;
@@ -438,13 +440,12 @@ async fn run(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
             vec![run_checklist(&cx.env, &checklist, &trigger).await?]
         }
         None => {
-            let scope =
-                match application_id(cx, sc_api::mcp::optional_string(&obj, "application")?)
-                    .await?
-                {
-                    Some(app) => ChecklistScope::Application(app),
-                    None => ChecklistScope::All,
-                };
+            let scope = match application_id(cx, sc_api::mcp::optional_string(&obj, "application")?)
+                .await?
+            {
+                Some(app) => ChecklistScope::Application(app),
+                None => ChecklistScope::All,
+            };
             run_checklists(&cx.env, scope, &trigger).await?
         }
     };

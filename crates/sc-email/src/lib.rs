@@ -547,7 +547,11 @@ impl Withholding {
             .unwrap_or_default();
         outbox.capture(sc_catalog::outbox::Sent::new(
             sc_catalog::outbox::SentKind::Email,
-            email.recipients().iter().map(|m| m.address.clone()).collect(),
+            email
+                .recipients()
+                .iter()
+                .map(|m| m.address.clone())
+                .collect(),
             email.subject.clone(),
             serde_json::Value::String(body),
         ));

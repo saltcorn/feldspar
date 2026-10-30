@@ -15,9 +15,10 @@ use std::sync::Arc;
 
 use sc_catalog::Catalog;
 use sc_config::{
-    ACME_CONTACT_EMAIL, FIRST_USER_TOKEN, MODE_CUSTOM, MODE_LETSENCRYPT, REDIRECT_HTTP_TO_HTTPS, SMTP_PORT,
-    SSL_CERTIFICATE, SSL_MODE, SSL_PRIVATE_KEY, SslMode, all_config, bootstrap, config_value,
-    delete_config, first_user_tokens_with, set_config, set_config_many, ssl_settings, stored_config, stray_config_keys,
+    ACME_CONTACT_EMAIL, FIRST_USER_TOKEN, MODE_CUSTOM, MODE_LETSENCRYPT, REDIRECT_HTTP_TO_HTTPS,
+    SMTP_PORT, SSL_CERTIFICATE, SSL_MODE, SSL_PRIVATE_KEY, SslMode, all_config, bootstrap,
+    config_value, delete_config, first_user_tokens_with, set_config, set_config_many, ssl_settings,
+    stored_config, stray_config_keys,
 };
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -200,12 +201,19 @@ async fn first_user_tokens_come_from_the_environment_and_the_table() -> Result<(
     let env = |v: &str| Some(v.to_owned());
 
     assert!(first_user_tokens_with(&catalog, None).await?.is_empty());
-    assert!(first_user_tokens_with(&catalog, env("  ")).await?.is_empty());
+    assert!(
+        first_user_tokens_with(&catalog, env("  "))
+            .await?
+            .is_empty()
+    );
     assert_eq!(first_user_tokens_with(&catalog, env(" e1 ")).await?, ["e1"]);
 
     set_config(&catalog, FIRST_USER_TOKEN, json!("c1")).await?;
     assert_eq!(first_user_tokens_with(&catalog, None).await?, ["c1"]);
-    assert_eq!(first_user_tokens_with(&catalog, env("e1")).await?, ["e1", "c1"]);
+    assert_eq!(
+        first_user_tokens_with(&catalog, env("e1")).await?,
+        ["e1", "c1"]
+    );
     assert_eq!(first_user_tokens_with(&catalog, env("c1")).await?, ["c1"]);
 
     set_config(&catalog, FIRST_USER_TOKEN, json!("")).await?;

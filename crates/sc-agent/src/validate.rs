@@ -190,8 +190,9 @@ pub async fn validate_agent(
             // `coding` and from `admin_copilot`) offer one tool, which the
             // model is shown once and the first of them answers.
             let shared = trait_.shared_tools().contains(&tool.name.as_str());
-            if let Some((other_spec, other, other_shared)) =
-                tool_names.iter().find(|(spec, _, _)| spec.name == tool.name)
+            if let Some((other_spec, other, other_shared)) = tool_names
+                .iter()
+                .find(|(spec, _, _)| spec.name == tool.name)
             {
                 if shared && *other_shared && *other_spec == tool {
                     continue;

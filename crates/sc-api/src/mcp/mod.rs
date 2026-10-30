@@ -843,7 +843,10 @@ mod tests {
 
         // A checklists grant that was said is kept, and a bad one refused.
         said.insert(CHECKLISTS_GRANT.to_owned(), Json::from("full"));
-        assert_eq!(token_flags_from_submitted(&said)[CHECKLISTS_GRANT], Json::from("full"));
+        assert_eq!(
+            token_flags_from_submitted(&said)[CHECKLISTS_GRANT],
+            Json::from("full")
+        );
         said.insert(CHECKLISTS_GRANT.to_owned(), Json::from("all"));
         assert!(validate_token_flags(&said).is_err());
     }

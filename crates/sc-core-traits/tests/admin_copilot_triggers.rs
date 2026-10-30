@@ -101,8 +101,8 @@ async fn a_trigger_the_agent_wrote_fires_on_the_next_insert() -> Result<()> {
     // the row layer, the table's events fire, and the trigger the agent wrote a
     // moment ago writes the row.
     env.call(
-        "insert_row",
-        &config(&[("table", json!("books"))]),
+        "edit_table_rows",
+        &config(&[("table", json!("books")), ("allow_insert", json!(true))]),
         json!({ "title": "Solaris", "pages": 204 }),
         &RunCaller::system(),
     )

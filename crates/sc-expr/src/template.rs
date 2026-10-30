@@ -704,7 +704,10 @@ mod tests {
         );
         // One token alone keeps its JSON type; anything around it does not.
         let sole = Template::parse("{{ order.id }}").unwrap();
-        assert_eq!(sole.sole_path(&scope).unwrap().unwrap(), serde_json::json!(42));
+        assert_eq!(
+            sole.sole_path(&scope).unwrap().unwrap(),
+            serde_json::json!(42)
+        );
         assert!(t.sole_path(&scope).is_none());
         // A missing name or member is named, with what is there.
         let msg = Template::parse("{{ order.total }}")

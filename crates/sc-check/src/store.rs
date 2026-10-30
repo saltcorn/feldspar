@@ -183,7 +183,13 @@ pub(crate) async fn write_checklist(catalog: &Catalog, checklist: &Checklist) ->
 
 /// The checklist with this id.
 pub async fn load_checklist(catalog: &Catalog, id: Uuid) -> Result<Option<Checklist>> {
-    first(catalog, CHECKLISTS_TABLE, Expr::col("id").eq(Expr::lit(id)), checklist_from_row).await
+    first(
+        catalog,
+        CHECKLISTS_TABLE,
+        Expr::col("id").eq(Expr::lit(id)),
+        checklist_from_row,
+    )
+    .await
 }
 
 /// The checklist called `name`.
@@ -314,10 +320,7 @@ pub(crate) async fn insert_step(catalog: &Catalog, step: &Step) -> Result<()> {
             Value::Text(step.draft.type_.clone()),
             Value::Json(Json::Object(step.draft.params.clone())),
             Value::Text(step.draft.label.clone()),
-            step.draft
-                .capture
-                .clone()
-                .map_or(Value::Null, Value::Text),
+            step.draft.capture.clone().map_or(Value::Null, Value::Text),
             Value::Text(step.author.to_text()),
             Value::Bool(step.accepted),
             opt_uuid(step.superseded_by),
@@ -340,15 +343,23 @@ pub(crate) async fn supersede(catalog: &Catalog, old: Uuid, new: Uuid) -> Result
 
 /// Mark a step version seen by a person.
 pub(crate) async fn set_accepted(catalog: &Catalog, id: Uuid) -> Result<()> {
-    let update =
-        sc_query::Update::new(STEPS_TABLE, vec![Assignment::new("accepted", Expr::lit(true))])
-            .filter(Expr::col("id").eq(Expr::lit(id)));
+    let update = sc_query::Update::new(
+        STEPS_TABLE,
+        vec![Assignment::new("accepted", Expr::lit(true))],
+    )
+    .filter(Expr::col("id").eq(Expr::lit(id)));
     run(catalog, Statement::from(update)).await
 }
 
 /// One step version.
 pub async fn load_step(catalog: &Catalog, id: Uuid) -> Result<Option<Step>> {
-    first(catalog, STEPS_TABLE, Expr::col("id").eq(Expr::lit(id)), step_from_row).await
+    first(
+        catalog,
+        STEPS_TABLE,
+        Expr::col("id").eq(Expr::lit(id)),
+        step_from_row,
+    )
+    .await
 }
 
 /// One step version, or a not-found.
@@ -528,7 +539,9 @@ pub(crate) async fn insert_run(catalog: &Catalog, run: &ChecklistRun) -> Result<
                     .map(|id| Json::String(id.to_string()))
                     .collect(),
             )),
-            Value::Json(Json::Array(run.steps.iter().map(StepResult::to_json).collect())),
+            Value::Json(Json::Array(
+                run.steps.iter().map(StepResult::to_json).collect(),
+            )),
             Value::Json(Json::from(run.cleanup_errors.clone())),
             run.message.clone().map_or(Value::Null, Value::Text),
             Value::Json(Json::Array(run.outbox.iter().map(Sent::to_json).collect())),
@@ -539,7 +552,13 @@ pub(crate) async fn insert_run(catalog: &Catalog, run: &ChecklistRun) -> Result<
 
 /// One run.
 pub async fn load_run(catalog: &Catalog, id: Uuid) -> Result<Option<ChecklistRun>> {
-    first(catalog, RUNS_TABLE, Expr::col("id").eq(Expr::lit(id)), run_from_row).await
+    first(
+        catalog,
+        RUNS_TABLE,
+        Expr::col("id").eq(Expr::lit(id)),
+        run_from_row,
+    )
+    .await
 }
 
 /// The checklist's runs, newest first, at most `limit`.
@@ -548,7 +567,11 @@ pub async fn runs_of(catalog: &Catalog, checklist: Uuid, limit: u64) -> Result<V
         .filter(Expr::col("checklist").eq(Expr::lit(checklist)))
         .limit(limit);
     select.order = vec![OrderBy::desc(Expr::col("started_at"))];
-    rows(catalog, select).await?.iter().map(run_from_row).collect()
+    rows(catalog, select)
+        .await?
+        .iter()
+        .map(run_from_row)
+        .collect()
 }
 
 /// The checklist's newest run.
@@ -662,7 +685,12 @@ fn bad(table: &str, column: &str, expected: &str, got: Option<&Value>) -> Error 
     }
 }
 
-async fn insert(catalog: &Catalog, table: &str, columns: &[&str], values: Vec<Value>) -> Result<()> {
+async fn insert(
+    catalog: &Catalog,
+    table: &str,
+    columns: &[&str],
+    values: Vec<Value>,
+) -> Result<()> {
     let insert = Insert::row(
         table,
         columns.iter().map(|c| (*c).to_owned()).collect(),

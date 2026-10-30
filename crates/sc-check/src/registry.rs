@@ -27,9 +27,11 @@ use std::time::{Duration, Instant};
 
 use sc_action::TriggerDispatcher;
 use sc_agent::AppRequester;
-use sc_browser::{BrowserAction, BrowserDriver, BrowserReport, BrowserRequest, BrowserTarget, PreviewTarget};
 use sc_app::Application;
 use sc_auth::User;
+use sc_browser::{
+    BrowserAction, BrowserDriver, BrowserReport, BrowserRequest, BrowserTarget, PreviewTarget,
+};
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_expr::JsEvaluator;
@@ -392,7 +394,10 @@ impl<'a> StepContext<'a> {
     /// The console errors and failed requests this step's browser calls have
     /// seen so far.
     pub fn seen(&self) -> (&[String], &[String]) {
-        (&self.observed.console_errors, &self.observed.failed_requests)
+        (
+            &self.observed.console_errors,
+            &self.observed.failed_requests,
+        )
     }
 
     /// Keep `jpeg` with the step's result.

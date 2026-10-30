@@ -69,7 +69,11 @@ impl BrowserDriver for Browser {
         Ok(BrowserReport {
             url: format!(
                 "http://{}/",
-                request.target.preview.as_ref().map_or("", |p| p.host.as_str())
+                request
+                    .target
+                    .preview
+                    .as_ref()
+                    .map_or("", |p| p.host.as_str())
             ),
             screenshot: Some(vec![0xff, 0xd8, 0xff]),
             ..BrowserReport::default()

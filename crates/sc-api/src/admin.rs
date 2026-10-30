@@ -83,12 +83,16 @@ pub fn admin_endpoints() -> EndpointSet {
     // The first-run onboarding is done — finished or skipped — so it is not
     // shown again, to this admin or any other.
     set.register(
-        Endpoint::new("finishOnboarding", Method::Post, api().lit("onboarding/finish"))
-            .output(TypeSchema::struct_of([StructField::new(
-                "done",
-                TypeSchema::bool(),
-            )]))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            "finishOnboarding",
+            Method::Post,
+            api().lit("onboarding/finish"),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "done",
+            TypeSchema::bool(),
+        )]))
+        .auth(AuthRequirement::admin()),
     );
 
     // Create the very first (admin) user. Only valid while no user exists, and
