@@ -126,6 +126,12 @@ pub async fn commit(
     let mut add = vec!["-c", NO_HOOKS, "add", "--all", "--"];
     add.extend(paths.iter().map(String::as_str));
     git(top, &add).await?;
+    // Asked of git directly rather than read off a failed commit's wording:
+    // the paths may be unchanged (the feature's edits undone, or already
+    // committed), and then there is nothing to commit.
+    if !has_staged_changes(top, &paths).await? {
+        return Ok(None);
+    }
     // Only these paths: whatever else is staged stays staged, uncommitted.
     let mut args: Vec<&str> = vec!["-c", NO_HOOKS];
     let identity = git(top, &["config", "user.email"]).await.is_ok();
@@ -139,22 +145,38 @@ pub async fn commit(
     }
     args.extend(["commit", "--quiet", "--no-verify", "-m", message, "--"]);
     args.extend(paths.iter().map(String::as_str));
-    match git(top, &args).await {
-        Ok(_) => {}
-        Err(e)
-            if e.to_string().contains("nothing to commit")
-                || e.to_string().contains("no changes added to commit") =>
-        {
-            return Ok(None);
-        }
-        Err(e) => return Err(e),
-    }
+    git(top, &args).await?;
     let hash = git(top, &["rev-parse", "--short", "HEAD"]).await?;
     Ok(Some(hash.trim().to_owned()))
 }
 
+/// Whether the index differs from `HEAD` at any of `paths` — what a commit of
+/// those paths would record. In a repository with no commit yet, the index is
+/// compared with the empty tree, so anything staged counts.
+async fn has_staged_changes(dir: &Path, paths: &[String]) -> Result<bool> {
+    let mut args = vec!["diff", "--cached", "--quiet", "--"];
+    args.extend(paths.iter().map(String::as_str));
+    let output = run_git(dir, &args).await?;
+    // `--quiet` exits 1 when there are differences and 0 when there are none;
+    // anything else is git failing.
+    match output.status.code() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => Err(git_failure(&args, &output)),
+    }
+}
+
 /// A git command's stdout in `dir`, or its failure with git's own words.
 async fn git(dir: &Path, args: &[&str]) -> Result<String> {
+    let output = run_git(dir, args).await?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+    Err(git_failure(args, &output))
+}
+
+/// Run git in `dir` with no prompt and a time limit, whatever its exit status.
+async fn run_git(dir: &Path, args: &[&str]) -> Result<std::process::Output> {
     let run = tokio::process::Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -164,14 +186,15 @@ async fn git(dir: &Path, args: &[&str]) -> Result<String> {
         .stdin(Stdio::null())
         .kill_on_drop(true)
         .output();
-    let output = tokio::time::timeout(GIT_TIMEOUT, run)
+    tokio::time::timeout(GIT_TIMEOUT, run)
         .await
         .map_err(|_| Error::invalid(format!("`git {}` timed out", args.join(" "))))?
-        .map_err(|e| Error::invalid(format!("git could not be run: {e}")))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    if output.status.success() {
-        return Ok(stdout);
-    }
+        .map_err(|e| Error::invalid(format!("git could not be run: {e}")))
+}
+
+/// A git command that exited unsuccessfully, with git's own words.
+fn git_failure(args: &[&str], output: &std::process::Output) -> Error {
+    let stdout = String::from_utf8_lossy(&output.stdout);
     // The sub-command, past any `-c key=value` settings.
     let mut words = args.iter().copied();
     let command = std::iter::from_fn(|| match words.next()? {
@@ -180,11 +203,11 @@ async fn git(dir: &Path, args: &[&str]) -> Result<String> {
     })
     .find(|w| !w.is_empty())
     .unwrap_or_default();
-    Err(Error::invalid(format!(
+    Error::invalid(format!(
         "`git {command}` failed: {} {}",
         stdout.trim(),
         String::from_utf8_lossy(&output.stderr).trim()
-    )))
+    ))
 }
 
 #[cfg(test)]
@@ -198,5 +221,47 @@ mod tests {
             "Add the tasks page"
         );
         assert_eq!(clean_message("  \n", "Tasks page"), "Tasks page");
+    }
+
+    #[tokio::test]
+    async fn staged_changes_are_asked_of_git_not_read_off_a_message() {
+        let dir = std::env::temp_dir().join(format!("sc-commit-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "--quiet"]).await.unwrap();
+        let ident = [
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@localhost",
+            "-c",
+            NO_HOOKS,
+        ];
+        let a = dir.join("a.txt").to_string_lossy().into_owned();
+        let paths = vec![a.clone()];
+
+        // No commit yet and nothing staged; then a new file staged.
+        assert!(!has_staged_changes(&dir, &paths).await.unwrap());
+        std::fs::write(&a, "one").unwrap();
+        git(&dir, &["add", "--all", "--", &a]).await.unwrap();
+        assert!(has_staged_changes(&dir, &paths).await.unwrap());
+
+        let mut commit = ident.to_vec();
+        commit.extend(["commit", "--quiet", "-m", "first"]);
+        git(&dir, &commit).await.unwrap();
+        // Committed: nothing left. Rewritten to the same text: still nothing.
+        assert!(!has_staged_changes(&dir, &paths).await.unwrap());
+        std::fs::write(&a, "one").unwrap();
+        git(&dir, &["add", "--all", "--", &a]).await.unwrap();
+        assert!(!has_staged_changes(&dir, &paths).await.unwrap());
+        // A deletion staged is a change.
+        std::fs::remove_file(&a).unwrap();
+        git(&dir, &["add", "--all", "--", &a]).await.unwrap();
+        assert!(has_staged_changes(&dir, &paths).await.unwrap());
+
+        // git failing (here: no such directory) is an error, not "no changes".
+        let missing = dir.join("missing");
+        assert!(has_staged_changes(&missing, &paths).await.is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

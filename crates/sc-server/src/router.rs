@@ -3137,8 +3137,21 @@ pub(crate) async fn apply_session(
                 // withdraw. That is what makes `becomeUser` a swap — the admin
                 // session that authorised it does not survive behind the session
                 // it turned into.
-                if let Some(previous) = &session_token {
-                    let _ = state.sessions.logout(previous).await;
+                //
+                // A failed logout is logged rather than failing the sign-in: the
+                // new session already exists and the cookie stops naming the old
+                // one, so the old token is one no browser presents any more, and
+                // it expires with its lifetime. Refusing here would instead leave
+                // the caller holding the old session *and* a new one nobody
+                // withdrew.
+                if let Some(previous) = &session_token
+                    && let Err(e) = state.sessions.logout(previous).await
+                {
+                    log_failure(
+                        "could not end the session a sign-in replaced; it stays valid \
+                         until it expires",
+                        &e,
+                    );
                 }
                 // A guest who signs in or signs up in the same browser stops
                 // being a guest (TODO-payments P1.6): the guest session ends, its
@@ -3165,8 +3178,13 @@ pub(crate) async fn apply_session(
             }
         },
         SessionAction::End => {
-            if let Some(token) = &session_token {
-                let _ = state.sessions.logout(token).await;
+            if let Some(token) = &session_token
+                && let Err(e) = state.sessions.logout(token).await
+            {
+                log_failure(
+                    "could not end the session at logout; it stays valid until it expires",
+                    &e,
+                );
             }
             cookies(jar.remove(session_cookie_removal(domain.as_deref())))
         }

@@ -198,7 +198,7 @@ impl InstallJobs {
         let key = key.to_owned();
         tokio::spawn(async move {
             let outcome = match install.await {
-                Ok(outcome) => outcome.map_err(|e| public_datasets::plain(&e)),
+                Ok(outcome) => outcome.map_err(|e| e.message_and_causes()),
                 Err(joined) => Err(if joined.is_panic() {
                     "the install stopped unexpectedly (a panic in the server); see the server log"
                         .to_owned()

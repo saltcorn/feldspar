@@ -122,7 +122,7 @@ pub type AfterCommit = Box<dyn FnOnce() + Send + 'static>;
 struct Pending {
     callbacks: Vec<AfterCommit>,
     /// `(savepoint name, callbacks.len() when it was taken)`, innermost last.
-    savepoints: Vec<(String, usize)>,
+    savepoints: Vec<(&'static str, usize)>,
     /// How the transaction finished, once it has: `Some(true)` committed.
     outcome: Option<bool>,
 }
@@ -307,22 +307,26 @@ impl SharedTx {
 
     /// `SAVEPOINT name`, remembering which after-commit callbacks were added
     /// before it, so [`rollback_to_savepoint`](SharedTx::rollback_to_savepoint)
-    /// drops exactly the ones added after. `name` is structural, never user
-    /// data.
-    pub async fn savepoint(&self, name: &str) -> Result<()> {
-        self.batch(&format!("SAVEPOINT {name}")).await?;
+    /// drops exactly the ones added after.
+    ///
+    /// `name` is formatted into the SQL, so it is a `&'static str`: a name
+    /// written in the source, which request data cannot reach.
+    pub async fn savepoint(&self, name: &'static str) -> Result<()> {
+        self.batch(&format!("SAVEPOINT {}", savepoint_name(name)?))
+            .await?;
         let mut pending = lock(&self.pending);
         let mark = pending.callbacks.len();
-        pending.savepoints.push((name.to_owned(), mark));
+        pending.savepoints.push((name, mark));
         Ok(())
     }
 
     /// `RELEASE SAVEPOINT name`: what was added since it stays, now part of
     /// the enclosing transaction (or savepoint).
-    pub async fn release_savepoint(&self, name: &str) -> Result<()> {
-        self.batch(&format!("RELEASE SAVEPOINT {name}")).await?;
+    pub async fn release_savepoint(&self, name: &'static str) -> Result<()> {
+        self.batch(&format!("RELEASE SAVEPOINT {}", savepoint_name(name)?))
+            .await?;
         let mut pending = lock(&self.pending);
-        if let Some(at) = pending.savepoints.iter().rposition(|(n, _)| n == name) {
+        if let Some(at) = pending.savepoints.iter().rposition(|(n, _)| *n == name) {
             // Releasing a savepoint releases every one taken after it too.
             pending.savepoints.truncate(at);
         }
@@ -332,13 +336,14 @@ impl SharedTx {
     /// `ROLLBACK TO SAVEPOINT name`: the writes since it are undone, so the
     /// callbacks announcing them are dropped. The savepoint itself stays, as
     /// it does in SQL.
-    pub async fn rollback_to_savepoint(&self, name: &str) -> Result<()> {
-        self.batch(&format!("ROLLBACK TO SAVEPOINT {name}")).await?;
+    pub async fn rollback_to_savepoint(&self, name: &'static str) -> Result<()> {
+        self.batch(&format!("ROLLBACK TO SAVEPOINT {}", savepoint_name(name)?))
+            .await?;
         // A `SET LOCAL` made since the savepoint is undone with it, so which
         // caller's GUCs are in force is no longer known.
         self.inner.lock().await.applied = Applied::Unknown;
         let mut pending = lock(&self.pending);
-        if let Some(at) = pending.savepoints.iter().rposition(|(n, _)| n == name) {
+        if let Some(at) = pending.savepoints.iter().rposition(|(n, _)| *n == name) {
             let mark = pending.savepoints[at].1;
             pending.savepoints.truncate(at + 1);
             pending.callbacks.truncate(mark);
@@ -455,4 +460,34 @@ fn lock(pending: &SyncMutex<Pending>) -> MutexGuard<'_, Pending> {
 
 fn finished() -> Error {
     Error::database("this transaction has already been committed or rolled back")
+}
+
+/// `name` if it is a plain SQL identifier (`[A-Za-z_][A-Za-z0-9_]*`), so that
+/// a typo in a source constant is refused rather than sent as SQL.
+fn savepoint_name(name: &'static str) -> Result<&'static str> {
+    let mut chars = name.chars();
+    let plain = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    match plain {
+        true => Ok(name),
+        false => Err(Error::invalid(format!(
+            "`{name}` is not a savepoint name: use letters, digits and `_`"
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::savepoint_name;
+
+    #[test]
+    fn a_savepoint_name_is_a_plain_identifier() {
+        assert!(savepoint_name("sc_csv_row").is_ok());
+        assert!(savepoint_name("_a1").is_ok());
+        for bad in ["", "1a", "a b", "a;DROP TABLE users", "\"a\""] {
+            assert!(savepoint_name(bad).is_err(), "{bad}");
+        }
+    }
 }

@@ -2,6 +2,51 @@
 
 Changes in reverse chronological order.
 
+## Code quality Q0: quick wins
+
+The first milestone of `TODO-code-quality.md`. Nothing changes on the wire, in stored data or in
+the schema.
+
+**Every admin endpoint is checked to have a handler.** The admin endpoint table
+(`sc_api::admin_endpoints()`, the Analytics UI's endpoints included) and the handler registry are
+joined by name only, so an endpoint whose handler was missing or misspelled answered `501` at
+request time. A test now builds the registry the router serves (`admin_handlers` plus
+`builderStatus`) and fails naming every `HandlerRef::Named` endpoint with no handler. Test:
+`handlers::coverage_tests::every_named_admin_endpoint_has_a_handler`.
+
+**A failed logout is logged.** When a sign-in (or `becomeUser`) replaces the session the request
+came with, or a logout ends it, a failure to end the old session in the store was ignored. It is
+now written to the server log ("… it stays valid until it expires"). The swap itself still
+succeeds: the new session exists and the cookie no longer names the old one, and failing the
+request would leave the caller with both sessions. A public dataset whose import fails no longer
+says "its tables were not kept" when dropping the half-imported tables failed too; the error
+now names both failures and says to drop the tables by hand.
+
+**`Error::message()` and `Error::message_and_causes()`** in sc-error: the error's own text without
+the kind prefix `Display` adds ("invalid: ", "not found: ", …), and the same followed by its
+causes. They replace four local helpers, two of which stripped the prefix off the rendered string
+(`public_datasets::plain`, removed from sc-api's public API; sc-analytics' `plain`; geo import's
+`plain_database_error`; the admin handlers' `plain_sentence`). Errors that were not `invalid`
+lose their kind prefix in those messages too. Test: `tests::message_is_the_text_without_the_kind_prefix`.
+
+**A per-feature commit asks git whether anything is staged** (`git diff --cached --quiet`) instead
+of reading "nothing to commit" off a failed commit's output, which depended on git's wording and
+locale. Test: `coding::commit::tests::staged_changes_are_asked_of_git_not_read_off_a_message`.
+
+**Savepoint names are `&'static str`.** `SharedTx::savepoint`, `release_savepoint` and
+`rollback_to_savepoint` format the name into SQL; they now take a `&'static str`, so request data
+cannot reach them, and refuse a name that is not a plain identifier. Test:
+`tx::tests::a_savepoint_name_is_a_plain_identifier`.
+
+## Code quality review and TODO-code-quality.md
+
+A general review of crate structure, indirection and how the type system could enforce security,
+written up in `docs/CODE_QUALITY_REVIEW_2026-10.md`. The work items are in a new
+`TODO-code-quality.md` (milestones Q0–Q6): quick wins, a `Role` newtype and one `Principal` /
+`Authority`, proof-carrying admin extractors, an `sc-access` crate with scoped capability handles,
+trust-boundary newtypes (`StorePath`, `TrustedHost`, `PublicAddr`, `Secret`, `SafeHtml`), then
+structural cleanup and test hygiene. No code changed.
+
 ## Change stream over a table with no row API compiles; refused file operations are logged; authority docs
 
 From a report on upgrading 24 apps to apps with no default row API and caller-authority queries.

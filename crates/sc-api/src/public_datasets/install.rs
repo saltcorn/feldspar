@@ -138,10 +138,12 @@ pub async fn install(
             done: i as u64,
             total: urls.len() as u64,
         });
-        let bytes = fetch
-            .fetch(url)
-            .await
-            .map_err(|e| Error::invalid(format!("{url} could not be downloaded: {}", plain(&e))))?;
+        let bytes = fetch.fetch(url).await.map_err(|e| {
+            Error::invalid(format!(
+                "{url} could not be downloaded: {}",
+                e.message_and_causes()
+            ))
+        })?;
         files.insert(url, bytes);
     }
 
@@ -156,12 +158,22 @@ pub async fn install(
     let written = match fill(catalog, &plans, &files, progress, context).await {
         Ok(written) => written,
         Err(e) => {
-            drop_tables(catalog, entry).await;
-            return Err(Error::invalid(format!(
-                "`{}` could not be imported, so its tables were not kept: {}",
-                entry.title,
-                plain(&e)
-            )));
+            // The import failed either way; what the sentence must not do is
+            // say the half-filled tables are gone when the drop failed too.
+            return Err(Error::invalid(match drop_tables(catalog, entry).await {
+                Ok(()) => format!(
+                    "`{}` could not be imported, so its tables were not kept: {}",
+                    entry.title,
+                    e.message_and_causes()
+                ),
+                Err(cleanup) => format!(
+                    "`{}` could not be imported: {}; and its partly imported tables could \
+                     not be dropped, so drop them by hand: {}",
+                    entry.title,
+                    e.message_and_causes(),
+                    cleanup.message_and_causes()
+                ),
+            }));
         }
     };
 
@@ -359,7 +371,7 @@ async fn fill(
                 return Err(Error::invalid(format!(
                     "`{}`: {}",
                     plan.table.name,
-                    plain(&e)
+                    e.message_and_causes()
                 )));
             }
         }
@@ -542,7 +554,7 @@ async fn dataset_for(catalog: &Catalog, entry: &PublicDataset) -> Result<(Datase
 }
 
 /// Drop whatever of `entry`'s tables exist, those referenced last.
-async fn drop_tables(catalog: &Catalog, entry: &PublicDataset) {
+async fn drop_tables(catalog: &Catalog, entry: &PublicDataset) -> Result<()> {
     let operations: Vec<_> = entry
         .tables
         .iter()
@@ -552,18 +564,15 @@ async fn drop_tables(catalog: &Catalog, entry: &PublicDataset) {
             table: t.name.clone(),
         })
         .collect();
-    let _ = schema_edit::apply(catalog, &operations, &schema_edit::ApplyOptions::default()).await;
-}
-
-/// An error's sentence without the kind it starts with, for nesting in
-/// another: "row 3: `pop`: …" rather than "invalid: row 3: invalid: …".
-pub fn plain(e: &Error) -> String {
-    let text = e.causes();
-    text.strip_prefix("invalid: ").unwrap_or(&text).to_owned()
+    if operations.is_empty() {
+        return Ok(());
+    }
+    schema_edit::apply(catalog, &operations, &schema_edit::ApplyOptions::default()).await?;
+    Ok(())
 }
 
 fn at_row(n: u64, e: Error) -> Error {
-    Error::invalid(format!("row {n}: {}", plain(&e)))
+    Error::invalid(format!("row {n}: {}", e.message_and_causes()))
 }
 
 fn file_name(url: &str) -> &str {

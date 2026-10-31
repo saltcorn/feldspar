@@ -483,11 +483,9 @@ async fn convert(
 
 /// A database error as the sentence inside it, without the statement.
 fn plain_database_error(e: &Error) -> String {
-    let text = e.causes();
+    let text = e.message_and_causes();
     let text = text.split("\n  sql:").next().unwrap_or(&text);
-    text.trim_start_matches("database error: ")
-        .trim_start_matches("query failed: ")
-        .to_owned()
+    text.trim_start_matches("query failed: ").to_owned()
 }
 
 // --- the import ----------------------------------------------------------------

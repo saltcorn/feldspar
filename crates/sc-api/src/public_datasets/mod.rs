@@ -35,7 +35,7 @@ use sc_error::{Error, Result};
 use sc_types::{BasicType, GeometryKind};
 use serde::{Deserialize, Serialize};
 
-pub use install::{Fetch, Installed, Progress, ProgressStage, install, plain};
+pub use install::{Fetch, Installed, Progress, ProgressStage, install};
 
 /// The catalogue, as written.
 const CATALOGUE: &str = include_str!("catalogue.toml");

@@ -477,6 +477,42 @@ impl Error {
     pub fn causes(&self) -> String {
         format_causes(self)
     }
+
+    /// This error's own message as it was written, without the kind's prefix
+    /// that [`Display`](fmt::Display) puts in front ("invalid: ", "not found: ",
+    /// …): `Error::invalid("row 3")` is `"row 3"`. A [`Repr::Context`] is its
+    /// context and a [`Repr::Http`] its reply's message. The wrapped cause is
+    /// not included — see [`message_and_causes`](Error::message_and_causes).
+    pub fn message(&self) -> &str {
+        match &self.repr {
+            Repr::NotFound(m)
+            | Repr::Invalid(m)
+            | Repr::Config(m)
+            | Repr::Database(m)
+            | Repr::Query(m)
+            | Repr::Auth(m)
+            | Repr::File(m)
+            | Repr::Serde(m)
+            | Repr::Internal(m) => m,
+            Repr::Http(reply) => &reply.message,
+            Repr::Context { context, .. } => context,
+        }
+    }
+
+    /// [`message`](Error::message) followed by the causes it wraps, on one
+    /// line and with no code locations, like [`causes`](Error::causes) but
+    /// without this error's kind prefix — for a sentence nested in another:
+    /// "row 3: `pop`: …" rather than "invalid: row 3: invalid: …".
+    pub fn message_and_causes(&self) -> String {
+        let mut out = self.message().to_owned();
+        let mut source = std::error::Error::source(self);
+        while let Some(cause) = source {
+            out.push_str(": ");
+            out.push_str(&cause.to_string());
+            source = cause.source();
+        }
+        out
+    }
 }
 
 impl From<std::io::Error> for Error {
@@ -942,5 +978,28 @@ mod tests {
         // ...while a wrapped foreign error defaults to System.
         let io = std::io::Error::other("disk");
         assert_eq!(Error::from(io).kind(), ErrorKind::System);
+    }
+
+    #[test]
+    fn message_is_the_text_without_the_kind_prefix() {
+        assert_eq!(Error::invalid("row 3").to_string(), "invalid: row 3");
+        assert_eq!(Error::invalid("row 3").message(), "row 3");
+        assert_eq!(Error::not_found("table `t`").message(), "table `t`");
+        assert_eq!(Error::database("down").message(), "down");
+        assert_eq!(Error::http(403, "no", None).message(), "no");
+
+        // A context is its own sentence; the causes come with
+        // `message_and_causes`, rendered as they display.
+        let wrapped: Result<()> = Err(Error::invalid("`pop` is not a number"));
+        let err = wrapped.context("row 3").unwrap_err();
+        assert_eq!(err.message(), "row 3");
+        assert_eq!(
+            err.message_and_causes(),
+            "row 3: invalid: `pop` is not a number"
+        );
+        assert_eq!(
+            Error::invalid("`pop` is not a number").message_and_causes(),
+            "`pop` is not a number"
+        );
     }
 }

@@ -11887,13 +11887,13 @@ fn required_query(ctx: &crate::handler::HandlerCtx, name: &str) -> Result<String
 }
 
 /// An error as the sentence it was written as, without its kind's prefix — for
-/// an answer that carries a refusal as a field rather than as a failure.
+/// an answer that carries a refusal as a field rather than as a failure. A
+/// fault (a [`System`](sc_error::ErrorKind::System) error) keeps its whole
+/// chain, for whoever reports it.
 fn plain_sentence(e: &Error) -> String {
-    match e.repr() {
-        sc_error::Repr::Invalid(m) | sc_error::Repr::NotFound(m) | sc_error::Repr::Config(m) => {
-            m.clone()
-        }
-        _ => sc_error::format_chain(e),
+    match e.kind() {
+        sc_error::ErrorKind::Application => e.message_and_causes(),
+        sc_error::ErrorKind::System => sc_error::format_chain(e),
     }
 }
 
@@ -12899,3 +12899,7 @@ async fn code_library_answer(catalog: &Catalog, library: &sc_catalog::CodeLibrar
         .find(|l| l["id"] == json!(library.id))
         .unwrap_or_else(|| sc_app::code_library_json(library, None, None)))
 }
+
+#[cfg(test)]
+#[path = "handlers_coverage_tests.rs"]
+mod coverage_tests;

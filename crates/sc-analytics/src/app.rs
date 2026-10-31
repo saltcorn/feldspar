@@ -188,10 +188,18 @@ impl AnalyticsConfig {
         let workspaces = strings(CFG_WORKSPACES, "workspace names or ids")?;
         let mut workspace_kinds = Vec::new();
         for name in strings(CFG_WORKSPACE_KINDS, "kinds of workspace")? {
-            let kind = WorkspaceKind::parse(&name)
-                .map_err(|e| refuse(format!("`{CFG_WORKSPACE_KINDS}`: {}", plain(&e))))?;
-            kind.check_available()
-                .map_err(|e| refuse(format!("`{CFG_WORKSPACE_KINDS}`: {}", plain(&e))))?;
+            let kind = WorkspaceKind::parse(&name).map_err(|e| {
+                refuse(format!(
+                    "`{CFG_WORKSPACE_KINDS}`: {}",
+                    e.message_and_causes()
+                ))
+            })?;
+            kind.check_available().map_err(|e| {
+                refuse(format!(
+                    "`{CFG_WORKSPACE_KINDS}`: {}",
+                    e.message_and_causes()
+                ))
+            })?;
             if !workspace_kinds.contains(&kind) {
                 workspace_kinds.push(kind);
             }
@@ -217,14 +225,6 @@ impl AnalyticsConfig {
             }
             _ => Ok(config),
         }
-    }
-}
-
-/// The message of an error, without the kind's prefix.
-fn plain(e: &Error) -> String {
-    match e.repr() {
-        sc_error::Repr::Invalid(m) => m.clone(),
-        _ => e.to_string(),
     }
 }
 
@@ -277,7 +277,9 @@ pub async fn resolve_workspaces(catalog: &Catalog, refs: &[String]) -> Result<Ve
                 ws.name
             )));
         }
-        ws.kind.check_available().map_err(|e| refuse(plain(&e)))?;
+        ws.kind
+            .check_available()
+            .map_err(|e| refuse(e.message_and_causes()))?;
         if !out.iter().any(|w| w.id == ws.id) {
             out.push(ws);
         }
