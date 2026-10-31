@@ -122,9 +122,27 @@ On **x86_64**:
 | Alpine | Alpine 3 | yes | no: Alpine runs OpenRC, not systemd. Install with `install.sh` and run the server under your own service |
 
 A derivative is recognised by the `ID_LIKE` of its `/etc/os-release`, not by
-name. Windows runs the Linux artifact under WSL2. aarch64 and macOS builds are
-TODO-portable-release R4; until then the curl installer refuses any
-architecture but x86_64.
+name.
+
+Other platforms, and what the curl installer tells each one:
+
+| Platform | Release | What to do |
+|---|---|---|
+| Linux, x86_64 | yes: `feldspar-linux-x86_64.tar.gz` | the table above |
+| Windows | the Linux artifact, under WSL2 | `wsl --install -d Debian`, then the same `curl … \| sh` inside it |
+| Linux, aarch64 (Graviton, Ampere, Raspberry Pi 4/5 on a 64-bit OS) | not yet published | build one on an aarch64 machine with `scripts/build-static.sh` (§2.3), which supports the target |
+| macOS, Apple silicon | not yet published | build from source (README §4.2) |
+| macOS, Intel | no | build from source (README §4.2) |
+| 32-bit ARM (armv6, armv7) | no: V8 has no prebuilt build for it, and its memory limits are tight for V8, CPython and Chromium | install the 64-bit OS |
+| FreeBSD, OpenBSD, NetBSD | no: V8 has no prebuilt build for them | a Linux VM (bhyve, vmm) |
+
+The installer checks this first, before it needs root or reads
+`/etc/os-release`, and exits with that advice. It never falls back to a build
+from source: where V8 has no prebuilt build a source build fails too, and where
+it has one there is a binary. `--force` gets past an unrecognised Linux
+distribution, not past a platform with no release, since there is nothing to
+download. aarch64 Linux and macOS releases are planned (TODO-portable-release
+R5).
 
 How far each family has been tried: the build's smoke test is written to
 install the tarball in a container image of each (Debian 12 and 13, Ubuntu 24.04 and the latest,
@@ -705,7 +723,10 @@ is checked before the build starts) and a wrangler login with access to the
 bucket. `--bucket NAME` uploads somewhere else; such a bucket is not served at
 that hostname and is deliberately given no public URL in the output. The publish
 ends by printing the download commands for each artifact, so what was uploaded and what
-operators are told to fetch are visibly the same artifact.
+operators are told to fetch are visibly the same artifact. The upload itself (the
+bucket, the checksums, the wrangler calls, the installer last) is
+`scripts/lib/release.sh`, which the build script sources so that every platform's
+build publishes the same way.
 
 ### 3.5 What a restart costs
 

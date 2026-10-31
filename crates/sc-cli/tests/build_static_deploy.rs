@@ -106,6 +106,12 @@ fn fixture(name: &str) -> Fixture {
         repo.join("scripts/lib/install-tree.sh"),
     )
     .expect("copy install-tree.sh");
+    // And the release library the script sources, whether or not it publishes.
+    fs::copy(
+        root.join("scripts/lib/release.sh"),
+        repo.join("scripts/lib/release.sh"),
+    )
+    .expect("copy release.sh");
     fs::copy(root.join("Cargo.toml"), repo.join("Cargo.toml")).unwrap();
     // And the bundled modules, which the packaging step also puts in the
     // artifact. One entry is enough to exercise the copy; the real catalog is

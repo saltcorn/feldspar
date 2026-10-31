@@ -92,10 +92,10 @@ fn fixture(name: &str, npx_status: i32) -> Fixture {
         repo.join("scripts/install.sh"),
     )
     .expect("copy install.sh");
-    // And the bundle step the linux variant runs, and the tree installer every
-    // artifact ships as its install.sh.
+    // And the bundle step the linux variant runs, the tree installer every
+    // artifact ships as its install.sh, and the upload half of --release.
     fs::create_dir_all(repo.join("scripts/lib")).unwrap();
-    for lib in ["python-bundle.sh", "install-tree.sh"] {
+    for lib in ["python-bundle.sh", "install-tree.sh", "release.sh"] {
         fs::copy(
             root.join("scripts/lib").join(lib),
             repo.join("scripts/lib").join(lib),
@@ -628,10 +628,11 @@ fn the_default_release_builds_and_publishes_the_static_and_the_linux_artifact() 
             "{stdout}"
         );
     }
-    // The curl installer that was published fetches the new name.
+    // The curl installer that was published fetches the new name, with the
+    // architecture filled in (`install_script` checks it resolves to x86_64).
     let installer = fs::read_to_string(f.uploads.join("install.sh")).unwrap();
     assert!(
-        installer.contains("OBJECT=\"feldspar-linux-x86_64.tar.gz\""),
+        installer.contains("OBJECT=\"feldspar-linux-${ARCH}.tar.gz\""),
         "{installer}"
     );
 
@@ -838,4 +839,127 @@ fn an_aarch64_release_publishes_only_its_own_name() {
     assert!(!g.dir.join("cargo.log").exists(), "cargo ran anyway");
     fs::remove_dir_all(&f.dir).ok();
     fs::remove_dir_all(&g.dir).ok();
+}
+
+/// `scripts/lib/release.sh` on its own, sourced by a script that is not
+/// build-static.sh — as the macOS build will (TODO-portable-release D15, R5):
+/// the checksum, an upload under two names with a `.sha256` naming each, the
+/// installer last, and the preflight's refusals.
+#[test]
+fn the_release_library_publishes_for_any_build_script() {
+    let dir = scratch("lib");
+    let repo = dir.join("repo");
+    fs::create_dir_all(repo.join("scripts/lib")).unwrap();
+    fs::copy(
+        workspace_root().join("scripts/lib/release.sh"),
+        repo.join("scripts/lib/release.sh"),
+    )
+    .unwrap();
+    fs::write(repo.join("scripts/install.sh"), "#!/bin/sh\n").unwrap();
+    let dist = dir.join("dist");
+    fs::create_dir_all(&dist).unwrap();
+    fs::write(dist.join("feldspar-0.1.0-macos.tar.gz"), "a tarball").unwrap();
+
+    let bin = dir.join("bin");
+    let log = dir.join("npx.log");
+    let uploads = dir.join("uploads");
+    fs::create_dir_all(&uploads).unwrap();
+    // Records each `wrangler r2 object put BUCKET/KEY -f FILE` and keeps FILE.
+    write_executable(
+        &bin.join("npx"),
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\nkey=\"${{5#*/}}\"\ncp \"$7\" '{up}'/\"$key\"\n",
+            log = log.display(),
+            up = uploads.display()
+        ),
+    );
+    // By absolute path: a test PATH without npx has no bash on it either.
+    let bash = Command::new("sh")
+        .args(["-c", "command -v bash"])
+        .output()
+        .unwrap();
+    let bash = String::from_utf8_lossy(&bash.stdout).trim().to_owned();
+    let run = |body: &str, path: &str| {
+        Command::new(&bash)
+            .arg("-c")
+            .arg(format!(
+                "set -euo pipefail\nREPO_ROOT='{repo}'\nlog() {{ echo \"==> $*\"; }}\n\
+                 source \"$REPO_ROOT/scripts/lib/release.sh\"\nR2_BUCKET=\"${{BUCKET-$DEFAULT_R2_BUCKET}}\"\n{body}",
+                repo = repo.display()
+            ))
+            .env("PATH", path)
+            .output()
+            .unwrap()
+    };
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let tarball = dist.join("feldspar-0.1.0-macos.tar.gz");
+    let out = run(
+        &format!(
+            "release_preflight\nrelease_checksum '{t}'\nrelease_warn_if_dirty abc123-dirty\n\
+             release_upload '{t}' '{d}' feldspar-macos-arm64.tar.gz feldspar-other.tar.gz\n\
+             release_upload_installer",
+            t = tarball.display(),
+            d = dir.display()
+        ),
+        &path,
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("warning: publishing a build from a dirty checkout (abc123-dirty)"));
+    assert!(
+        stdout.contains("curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh")
+    );
+
+    // The checksum beside the tarball names it by its own name...
+    let local = fs::read_to_string(dist.join("feldspar-0.1.0-macos.tar.gz.sha256")).unwrap();
+    let digest = local.split_whitespace().next().unwrap().to_owned();
+    assert_eq!(local, format!("{digest}  feldspar-0.1.0-macos.tar.gz\n"));
+    // ...and each published one by its published name; the installer goes last.
+    let keys: Vec<String> = fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| l.split_whitespace().nth(4).unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "feldspar-latest-static/feldspar-macos-arm64.tar.gz",
+            "feldspar-latest-static/feldspar-macos-arm64.tar.gz.sha256",
+            "feldspar-latest-static/feldspar-other.tar.gz",
+            "feldspar-latest-static/feldspar-other.tar.gz.sha256",
+            "feldspar-latest-static/install.sh",
+        ]
+    );
+    for object in ["feldspar-macos-arm64.tar.gz", "feldspar-other.tar.gz"] {
+        assert_eq!(
+            fs::read_to_string(uploads.join(object)).unwrap(),
+            "a tarball"
+        );
+        assert_eq!(
+            fs::read_to_string(uploads.join(format!("{object}.sha256"))).unwrap(),
+            format!("{digest}  {object}\n")
+        );
+    }
+
+    // The preflight refuses an empty bucket, and a PATH without npx.
+    let out = Command::new("bash")
+        .arg("-c")
+        .arg(format!(
+            "REPO_ROOT='{}'; source \"$REPO_ROOT/scripts/lib/release.sh\"; R2_BUCKET=''; release_preflight",
+            repo.display()
+        ))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--bucket must not be empty"));
+    let no_npx = dir.join("empty-path");
+    fs::create_dir_all(&no_npx).unwrap();
+    let out = run("release_preflight", no_npx.to_str().unwrap());
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("needs npx"));
+    fs::remove_dir_all(&dir).ok();
 }

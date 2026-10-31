@@ -118,6 +118,10 @@
 set -euo pipefail
 
 readonly REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# The upload half of --release, shared with the other platforms' build scripts:
+# the bucket, checksums and the uploads (TODO-portable-release D15).
+# shellcheck source=lib/release.sh
+source "${REPO_ROOT}/scripts/lib/release.sh"
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -141,12 +145,7 @@ DEPLOY_HOST=""
 REMOTE_TMP="/tmp"
 SSH_OPTS=()
 RELEASE=0
-# The bucket the published artifact lives in. The objects inside it are named
-# without a version — `feldspar-linux-x86_64.tar.gz` — because they are the
-# *latest* build: whatever fetches them wants the current one and has no version
-# to ask for. They do carry the OS and architecture (TODO-portable-release D13),
-# so that each build machine publishes only its own names.
-readonly DEFAULT_R2_BUCKET="feldspar-latest-static"
+# The bucket the published artifact lives in (scripts/lib/release.sh).
 R2_BUCKET="${DEFAULT_R2_BUCKET}"
 # The static artifact's name, from before names carried a platform. It has
 # always been the x86_64 build, so only an x86_64 build publishes it.
@@ -174,12 +173,6 @@ readonly PBS_SHA256_X86_64="df15fe60d3ff55bf9dcf25824b5572756bb8816ff93865a273d3
 readonly PBS_SHA256_AARCH64="578d9da1983463ffb0c8c98ab0da2f18177f44069328eb0af847860c1eb05c3e"
 readonly PYTHON_VERSION="${PBS_PYTHON%.*}"
 readonly PYTHON_LIB="libpython${PYTHON_VERSION}.so.1.0"
-# What that bucket is served as, and what the README tells an operator to
-# download. Printed after a publish so that what was uploaded and what people
-# fetch are visibly the same thing. A --bucket somewhere else has no such URL and
-# is not given one.
-readonly R2_PUBLIC_BASE="https://feldspar-latest-static.saltcorn.com"
-
 # The targets that have a prebuilt V8 archive and a glibc to link statically.
 readonly SUPPORTED_TARGETS=(
     "x86_64-unknown-linux-gnu"
@@ -416,23 +409,17 @@ elif [[ -n "${DEPLOY_VARIANT}" ]]; then
     echo "error: --deploy-variant without --deploy" >&2; exit 2
 fi
 
-# Likewise for --release: an absent npx, or a wrangler that cannot see the bucket,
-# is worth finding out now and not after the compile. The bucket listing is a
-# warning rather than an error — it costs a network round trip that can fail for
-# reasons that have nothing to do with the upload — but a missing npx cannot work
-# at all.
+# Likewise for --release: an empty bucket, an absent npx, a missing installer
+# (scripts/lib/release.sh) or a name this build must not publish is worth
+# finding out now and not after the compile.
 if [[ ${RELEASE} -eq 1 ]]; then
-    [[ -n "${R2_BUCKET}" ]] || { echo "error: --bucket must not be empty" >&2; exit 2; }
+    release_preflight
     if has_variant static && [[ "${TARGET_ARCH}" != x86_64 ]]; then
         echo "error: the static artifact is published for x86_64 only: its name," \
              "${R2_OBJECT}, has no architecture in it and would replace the x86_64" \
              "one. Release ${TARGET_ARCH} with --variant linux." >&2
         exit 2
     fi
-    command -v npx >/dev/null ||
-        { echo "error: --release needs npx (node), which is not on PATH" >&2; exit 1; }
-    [[ -f "${REPO_ROOT}/scripts/install.sh" ]] ||
-        { echo "error: scripts/install.sh is missing; --release publishes it" >&2; exit 1; }
 fi
 
 # A container build needs both docker and its buildx plugin; `docker build` alone
@@ -1124,7 +1111,7 @@ mkdir -p "${OUTPUT_DIR}"
 # unpacked as root would otherwise belong to the build account's uid.
 tar -czf "${TARBALL}" -C "${STAGE}" --owner=0 --group=0 --numeric-owner \
     --transform "s,^\.,${NAME}," .
-(cd "${OUTPUT_DIR}" && sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
+release_checksum "${TARBALL}"
 
 log "wrote ${TARBALL} ($(du -h "${TARBALL}" | cut -f1))"
 }
@@ -1147,33 +1134,11 @@ done
 
 # Copy the artifact to the R2 bucket under each of its fixed, version-less
 # names, so that an installer can always fetch the same URL and get the newest
-# build.
+# build; then say what a host runs to install it.
 publish_to_r2() {
-    if [[ "${GIT_DESC}" == *-dirty ]]; then
-        log "warning: publishing a build from a dirty checkout (${GIT_DESC})"
-    fi
-
-    local object published_sha
-    for object in "${OBJECTS[@]}"; do
-        # The checksum file written next to the tarball names the versioned file
-        # it was computed over, which is not the name it has in the bucket — a
-        # `sha256sum -c` after downloading would look for a file that is not
-        # there. Each published copy therefore names its published object.
-        published_sha="${STAGE}/${object}.sha256"
-        printf '%s  %s\n' \
-            "$(cut -d' ' -f1 < "${TARBALL}.sha256")" "${object}" > "${published_sha}"
-
-        log "uploading $(du -h "${TARBALL}" | cut -f1) to r2://${R2_BUCKET}/${object}"
-        (cd "${REPO_ROOT}" && npx wrangler r2 object put \
-            "${R2_BUCKET}/${object}" -f "${TARBALL}" --remote)
-
-        log "uploading r2://${R2_BUCKET}/${object}.sha256"
-        (cd "${REPO_ROOT}" && npx wrangler r2 object put \
-            "${R2_BUCKET}/${object}.sha256" -f "${published_sha}" --remote)
-
-        log "published ${NAME}.tar.gz as ${R2_BUCKET}/${object}"
-    done
-    if [[ "${R2_BUCKET}" == "${DEFAULT_R2_BUCKET}" ]]; then
+    release_warn_if_dirty "${GIT_DESC}"
+    release_upload "${TARBALL}" "${STAGE}" "${OBJECTS[@]}"
+    if release_is_public; then
         cat <<EOF
 
 It is now what a new host downloads$( [[ "${VARIANT}" == linux ]] && echo " for a server with Python, on any supported distribution"):
@@ -1192,31 +1157,12 @@ EOF
     fi
 }
 
-# The curl-to-sh installer, beside the artifact it downloads. Uploaded after the
-# tarballs rather than before: it fetches the version-less object, so for the
-# moment between the two uploads a new installer would be fetching an old
-# release, which is the less surprising of the two orders to land half-way.
-publish_installer() {
-    log "uploading r2://${R2_BUCKET}/install.sh"
-    (cd "${REPO_ROOT}" && npx wrangler r2 object put \
-        "${R2_BUCKET}/install.sh" -f "${REPO_ROOT}/scripts/install.sh" \
-        --content-type "text/x-shellscript" --remote)
-    if [[ "${R2_BUCKET}" == "${DEFAULT_R2_BUCKET}" ]]; then
-        cat <<EOF
-
-The installer is published too; on a new host:
-
-  curl -fsSL ${R2_PUBLIC_BASE}/install.sh | sh
-EOF
-    fi
-}
-
 if [[ ${RELEASE} -eq 1 ]]; then
     for v in "${VARIANTS[@]}"; do
         select_variant "${v}"
         publish_to_r2
     done
-    publish_installer
+    release_upload_installer
 fi
 
 # ---------------------------------------------------------------------------

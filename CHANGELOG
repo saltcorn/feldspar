@@ -2,6 +2,48 @@
 
 Changes in reverse chronological order.
 
+## Portable release R4: the curl installer picks the tarball by platform; `release.sh`
+
+R4 of `TODO-portable-release.md` now holds only the platform work that needs neither an aarch64 nor
+a Mac build machine, so R1–R4 can go to production as one release. The aarch64 Linux and macOS
+builds (CI jobs, 16 KB pages, `build-macos.sh`) move to a new milestone, R5, to be done after that release.
+
+- **R4.1, `scripts/install.sh` (D13, D16).** The platform is checked first, from `uname -s` and
+  `uname -m`, before the installer needs root or reads `/etc/os-release`. Linux on `x86_64`
+  (or `amd64`) fetches `feldspar-linux-x86_64.tar.gz`, as before; the name is now built from the
+  architecture, ready for R5. Every other platform gets a message saying what to do, and the
+  installer exits non-zero without downloading anything: aarch64 Linux and Apple-silicon macOS
+  (no release published yet; how to build one), Intel Macs (build from source), 32-bit ARM
+  (install the 64-bit OS), Windows under Git Bash, MSYS or Cygwin (`wsl --install -d Debian`,
+  then the same one-liner), the BSDs (a Linux VM), and anything else (the supported list).
+  **`--force` no longer gets past an unknown architecture**, only an unknown Linux distribution:
+  on another architecture there is nothing to download.
+- **R4.2, `scripts/lib/release.sh` (D15).** The upload half of `--release` moved out of
+  `build-static.sh` into a library it sources, for the macOS build script (R5) to source too:
+  the bucket and its public URL, the preflight (empty `--bucket`, npx, `scripts/install.sh`),
+  the checksum beside a tarball, the dirty-checkout warning, the upload of a tarball under each
+  of its names with a `.sha256` naming each, and the installer upload. `build-static.sh` keeps
+  which names a variant is published under, the refusal to release the static artifact from
+  aarch64, the "what a new host runs" text and all the post-build checks, which are about ELF
+  and Linux. **No change in behaviour:** every run of the stubbed `build_static_release`
+  fixture printed the same output and made the same `npx wrangler` calls before and after
+  (normalised for time, temp paths and digests). The one difference is precedence: the shared
+  preflight now runs before the static-on-aarch64 refusal, so when both apply, the empty
+  `--bucket` is reported first.
+- **R4.3, documentation.** `docs/OPERATIONS.md` §1.1 has a platform table (what has a release,
+  what is planned, what is not supported and why), and README §2 says what the installer does on a
+  platform with no release.
+- **Tests.** `install_script::the_platform_picks_the_tarball_or_says_what_to_do` runs the installer
+  with `uname` stubbed for Linux x86_64, amd64, aarch64, arm64, armv7l, armv6l and riscv64, Darwin
+  arm64 and x86_64, FreeBSD, OpenBSD, MINGW64, Cygwin and SunOS, and checks the URL or the message.
+  `build_static_release` now expects the published installer's object name to be built from
+  `${ARCH}`.
+  `build_static_release::the_release_library_publishes_for_any_build_script` sources
+  `release.sh` from a bare script, as the macOS build will, and checks the checksum files, the
+  upload order (each tarball name, its `.sha256`, the installer last) and the preflight's
+  refusals. The `build_static_*` fixtures copy `release.sh`, and `docker_image` reads the public
+  URL from it.
+
 ## Portable release R3: one Linux artifact, published under its platform's name
 
 Milestone R3 of `TODO-portable-release.md`, apart from what has to wait: R3.3 (stop building

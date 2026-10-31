@@ -36,8 +36,11 @@
 #
 # Debian, Ubuntu, Fedora, RHEL (Alma, Rocky), openSUSE, Arch and Alpine on
 # x86_64, and what /etc/os-release says derives from them (ID_LIKE): Mint, MX,
-# CachyOS, Manjaro, EndeavourOS. Anything else is refused by name rather than
-# half-installed; `--force` tries anyway, without the package manager.
+# CachyOS, Manjaro, EndeavourOS. Another Linux distribution is refused by name
+# rather than half-installed; `--force` tries anyway, without the package
+# manager. A platform with no release (another architecture, macOS, Windows
+# outside WSL2, the BSDs) is told what to do instead, and `--force` does not
+# change that: there is nothing to download.
 #
 # Plain POSIX sh, not bash: Alpine's /bin/sh is busybox ash, and bash is one of
 # the things it does not have. Everything after `sh -s --` is an option of this
@@ -79,8 +82,8 @@ Usage: curl -fsSL ${BASE_URL}/install.sh | sh -s -- [options]
       --no-packages     Do not install ca-certificates, curl/wget, tar, gzip,
                         find or awk with the package manager; fail instead if
                         one is missing.
-      --force           Install on a distribution or architecture this script
-                        does not recognise.
+      --force           Install on a Linux distribution this script does not
+                        recognise.
   -n, --dry-run         Print what would be done, do nothing.
   -h, --help            This message.
 
@@ -109,6 +112,60 @@ BASE_URL="${BASE_URL%/}"
 log()  { printf '\033[1m==>\033[0m %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Is there a release for this platform?
+# ---------------------------------------------------------------------------
+
+# Checked first, before sudo or /etc/os-release, so that a Mac, a BSD or Git
+# Bash on Windows hears what to do instead of failing at something else. There
+# is no source-build fallback (TODO-portable-release D16): where there is no
+# binary, a source build fails too, at V8, or needs more than a curl | sh
+# should turn into. `--force` does not get past this: there is nothing to
+# download.
+SUPPORTED="Linux on x86_64 (Debian, Ubuntu, Fedora, RHEL, openSUSE, Arch, Alpine);
+  Windows through WSL2"
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+case "${OS}" in
+    Linux)
+        case "${ARCH}" in
+            x86_64|amd64) ARCH="x86_64" ;;
+            # Built by the same script, but not published yet
+            # (TODO-portable-release R5).
+            aarch64|arm64)
+                die "there is no aarch64 Linux release yet; only x86_64 is published.
+  An aarch64 machine can build its own with scripts/build-static.sh from a
+  checkout (docs/OPERATIONS.md §2.3)." ;;
+            armv*|armhf|arm)
+                die "this is 32-bit ARM (${ARCH}), which has no release: V8 has no
+  prebuilt build for it. Every Raspberry Pi from the 3 onward runs a 64-bit OS;
+  install that, and run this again once aarch64 releases are published." ;;
+            *)
+                die "there is no release for Linux on ${ARCH}. Supported:
+  ${SUPPORTED}" ;;
+        esac
+        ;;
+    Darwin)
+        case "${ARCH}" in
+            arm64|aarch64)
+                die "there is no macOS release yet. Build feldspar from source on the
+  Mac: README.md §4.2." ;;
+            *)
+                die "there is no release for Intel Macs. Build feldspar from source:
+  README.md §4.2." ;;
+        esac
+        ;;
+    MINGW*|MSYS*|CYGWIN*)
+        die "this is Windows (${OS}), which runs the Linux release under WSL2. In
+  PowerShell: wsl --install -d Debian, then run this same curl ... | sh inside it." ;;
+    FreeBSD|OpenBSD|NetBSD|DragonFly)
+        die "there is no release for ${OS}: V8 has no prebuilt build for it. Run
+  feldspar in a Linux VM (bhyve on FreeBSD, vmm on OpenBSD)." ;;
+    *)
+        die "there is no release for ${OS} on ${ARCH}. Supported:
+  ${SUPPORTED}" ;;
+esac
 
 # Everything that changes the machine goes through here, so that --dry-run is
 # the same code path with the doing taken out.
@@ -141,10 +198,10 @@ if [ -z "${VARIANT}" ]; then
 fi
 case "${VARIANT}" in
     static) OBJECT="feldspar.tar.gz" ;;
-    # Its name carries the platform (TODO-portable-release D13). x86_64 is the
-    # one this script installs (below); the release also publishes the same
-    # tarball as feldspar-debian13-python.tar.gz, for older installers.
-    linux|python|debian13-python) VARIANT="linux"; OBJECT="feldspar-linux-x86_64.tar.gz" ;;
+    # Its name carries the platform (TODO-portable-release D13), ${ARCH} as
+    # checked above; the release also publishes the x86_64 tarball as
+    # feldspar-debian13-python.tar.gz, for older installers.
+    linux|python|debian13-python) VARIANT="linux"; OBJECT="feldspar-linux-${ARCH}.tar.gz" ;;
     *) die "--variant must be static or linux, got ${VARIANT}" ;;
 esac
 
@@ -183,15 +240,6 @@ if [ -z "${FAMILY}" ]; then
   ca-certificates, tar, gzip, find, awk and curl or wget must already be here)."
     SKIP_PACKAGES=1
 fi
-
-ARCH="$(uname -m)"
-case "${ARCH}" in
-    x86_64|amd64) ;;
-    *)
-        [ "${FORCE}" -eq 1 ] ||
-            die "the release is built for x86_64, and this machine is ${ARCH}"
-        ;;
-esac
 
 # What the linux artifact will run on here — the tarball's install.sh decides,
 # by the same tests and by starting the binary; this is the forecast, for the

@@ -49,7 +49,7 @@ fn the_image_installs_the_published_python_artifact_at_its_prefix() {
     let build = read("scripts/build-static.sh");
     let setup = read("scripts/setup-host.sh");
 
-    let url = shell_value(&build, "R2_PUBLIC_BASE");
+    let url = shell_value(&read("scripts/lib/release.sh"), "R2_PUBLIC_BASE");
     let object = shell_value(&build, "R2_OBJECT").replace(
         ".tar.gz",
         &format!("-{}.tar.gz", shell_value(&build, "PYTHON_VARIANT")),

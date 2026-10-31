@@ -482,3 +482,64 @@ fn a_file_url_release_installs_with_wget_alone() {
     );
     fs::remove_dir_all(&dir).ok();
 }
+
+/// R4.1 (D16): the platform decides the download, and a platform with no
+/// release is told what to do instead, before anything else runs. `uname` is
+/// stubbed for each case; `--force` does not get past a missing release.
+#[test]
+fn the_platform_picks_the_tarball_or_says_what_to_do() {
+    if as_root() {
+        eprintln!("skipped: needs a non-root run");
+        return;
+    }
+    let tools: Vec<&str> = BASE_TOOLS.iter().copied().chain(["curl", "ldd"]).collect();
+    let run = |os: &str, arch: &str, extra: &[&str]| {
+        let dir = scratch("platform");
+        // Builds the PATH of links, then swaps in the stubbed uname.
+        dry_run_as(&dir, "ID=debian\n", &tools, &["--help"]);
+        let uname = dir.join("tools/uname");
+        fs::remove_file(&uname).unwrap();
+        write_executable(
+            &uname,
+            &format!("#!/bin/sh\ncase \"$1\" in -s) echo {os} ;; -m) echo {arch} ;; esac\n"),
+        );
+        let out = dry_run_as(&dir, "ID=debian\n", &tools, extra);
+        fs::remove_dir_all(&dir).ok();
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    for arch in ["x86_64", "amd64"] {
+        let (ok, stdout, stderr) = run("Linux", arch, &["--variant", "linux"]);
+        assert!(ok, "{arch}: {stdout}{stderr}");
+        assert!(
+            stdout.contains("/feldspar-linux-x86_64.tar.gz -> "),
+            "{arch}: {stdout}"
+        );
+    }
+
+    let refused = [
+        ("Linux", "aarch64", "no aarch64 Linux release yet"),
+        ("Linux", "arm64", "no aarch64 Linux release yet"),
+        ("Linux", "armv7l", "64-bit OS"),
+        ("Linux", "armv6l", "64-bit OS"),
+        ("Linux", "riscv64", "no release for Linux on riscv64"),
+        ("Darwin", "arm64", "no macOS release yet"),
+        ("Darwin", "x86_64", "no release for Intel Macs"),
+        ("FreeBSD", "amd64", "Linux VM"),
+        ("OpenBSD", "amd64", "Linux VM"),
+        ("MINGW64_NT-10.0-22631", "x86_64", "wsl --install -d Debian"),
+        ("CYGWIN_NT-10.0", "x86_64", "wsl --install -d Debian"),
+        ("SunOS", "i86pc", "no release for SunOS on i86pc"),
+    ];
+    for (os, arch, message) in refused {
+        let (ok, stdout, stderr) = run(os, arch, &["--variant", "linux", "--force"]);
+        assert!(!ok, "{os} {arch} was not refused: {stdout}");
+        assert!(stderr.contains(message), "{os} {arch}: {stderr}");
+        // Refused before anything was planned, let alone downloaded.
+        assert!(!stdout.contains("downloading"), "{os} {arch}: {stdout}");
+    }
+}

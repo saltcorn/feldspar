@@ -96,7 +96,9 @@ artifact, which has no Python. It asks for `sudo` when it is not run as root;
 `sh -s -- --dry-run` prints what it would do, and `--help` lists the options. Run it again
 to upgrade: it swaps the new tree in by rename, stops running feldspar units for the swap
 and starts them again, and keeps the previous tree as `/opt/feldspar.old`
-(docs/OPERATIONS.md §3.2).
+(docs/OPERATIONS.md §3.2). On Windows it runs inside WSL2. On a platform with no release
+(aarch64 and macOS for now, 32-bit ARM, the BSDs) it says what to do instead and exits
+(docs/OPERATIONS.md §1.1).
 
 The second line makes the machine an instance (§7, "Setting up an instance"):
 
