@@ -208,6 +208,11 @@ export function McpServers() {
                         <T text="private network" />
                       </Badge>
                     )}
+                    {server.offer_to_terminal && (
+                      <Badge bg="azure-lt" className="ms-2">
+                        <T text="Claude Code" />
+                      </Badge>
+                    )}
                     {server.description && <div className="text-muted small">{server.description}</div>}
                   </td>
                   <td className="text-break small">{server.url}</td>
@@ -367,6 +372,17 @@ export function McpServers() {
                 />
                 <Form.Text muted>
                   <T text="Off, a server on localhost or a private network (or one whose name resolves there) is refused, as for an agent's web fetches." />
+                </Form.Text>
+              </Form.Group>
+              <Form.Group className="mb-3" controlId="mcpOfferToTerminal">
+                <Form.Check
+                  type="checkbox"
+                  label={t("Offer to Claude Code in the IDE")}
+                  checked={editing.offerToTerminal}
+                  onChange={(e) => setEditing({ ...editing, offerToTerminal: e.target.checked })}
+                />
+                <Form.Text muted>
+                  <T text="Claude Code sessions in the IDE can use this server's tools. They reach it through this server, which adds the headers, so the sessions never see them. Streamable HTTP only." />
                 </Form.Text>
               </Form.Group>
               {formTest && <TestOutcome result={formTest} onClose={() => setFormTest(null)} />}

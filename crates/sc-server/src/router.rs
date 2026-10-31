@@ -56,7 +56,8 @@ use crate::security::{
     upgrade_origin_allowed, upgrade_origin_refused,
 };
 use crate::terminal::{
-    TERMINAL_ROUTE, TerminalQuery, TerminalSlots, terminal_slots, terminal_upgrade,
+    SessionTokens, TERMINAL_ROUTE, TerminalHost, TerminalQuery, TerminalSlots, loopback_origin,
+    terminal_slots, terminal_upgrade,
 };
 
 /// A WebSocket upgrade, **if this request is one** — the extractor the fallback
@@ -174,6 +175,12 @@ pub(crate) struct AppState {
     terminal_slots: TerminalSlots,
     /// The Claude Code the IDE's terminal runs ([`ServerConfig::claude_cli`]).
     claude_cli: Arc<std::path::PathBuf>,
+    /// The MCP credentials of the open terminals, which the MCP route accepts
+    /// beside the token table (§12.1).
+    pub(crate) terminal_tokens: SessionTokens,
+    /// The loopback URL a terminal's Claude Code uses to reach this server
+    /// (`http://127.0.0.1:<port>`), or the reason there is none.
+    terminal_origin: Arc<std::result::Result<String, String>>,
     /// The tier-2 MCP tools: one per endpoint tagged
     /// [`Endpoint::mcp`](sc_api::Endpoint::mcp), built once here because
     /// dispatching one needs the handler registry (§13.6).
@@ -300,6 +307,8 @@ pub fn build_router_with_apps(
         language_server: Arc::new(config.language_server.clone()),
         terminal_slots: terminal_slots(),
         claude_cli: Arc::new(config.claude_cli.clone()),
+        terminal_tokens: SessionTokens::default(),
+        terminal_origin: Arc::new(loopback_origin(config.addr)),
         mcp_endpoint_tools,
         max_request_body: config.max_request_body,
         max_upload_bytes: config.max_upload_bytes,
@@ -383,6 +392,13 @@ pub fn build_router_with_apps(
         // what makes it safe to exempt from the CSRF middleware below, and is
         // the whole of the confused-deputy story rather than belt-and-braces.
         .route(MCP_ROUTE, axum::routing::post(crate::mcp::mcp))
+        // The installation's MCP servers, forwarded for the IDE's Claude Code
+        // sessions (§12.1): an open terminal's session token and nothing else,
+        // so it is exempt from the CSRF check as `/mcp` is.
+        .route(
+            crate::mcp_proxy::MCP_PROXY_ROUTE,
+            axum::routing::any(crate::mcp_proxy::mcp_proxy),
+        )
         // A build host's agent (`TODO-build-hosts.md`): by its bearer token and
         // nothing else, so it is exempt from the CSRF check as `/mcp` is.
         .route(
@@ -1072,11 +1088,19 @@ async fn ide_terminal(
     if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
         return rejection;
     }
+    let Some(user) = user else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
     terminal_upgrade(
         ws,
-        state.apps.catalog(),
-        &state.terminal_slots,
-        Arc::clone(&state.claude_cli),
+        TerminalHost {
+            catalog: state.apps.catalog(),
+            slots: &state.terminal_slots,
+            tokens: &state.terminal_tokens,
+            origin: &state.terminal_origin,
+            program: Arc::clone(&state.claude_cli),
+        },
+        user.id,
         store,
         query,
     )

@@ -5571,7 +5571,8 @@ shape:
   in the right project.
 - **Command**: `claude --continue --mcp-config <file> --strict-mcp-config
   --append-system-prompt <prompt>`. `--continue` resumes the latest conversation in that
-  directory, so a reload costs nothing but a redraw. The prompt is the framework's builder-agent
+  directory, so a reload costs nothing but a redraw. It is passed only when the CLI has one saved
+  there: with none, an interactive `--continue` exits instead of starting one. The prompt is the framework's builder-agent
   prompt (§13.3), which carries conventions such as "`src/feldspar/` is generated". The MCP
   config is a temporary file outside the store, deleted with the session. **Nothing is written
   into the store**, so a git-backed store gets no `.mcp.json` to ignore or accidentally commit.
@@ -5588,7 +5589,16 @@ shape:
   A session that survives a closed tab with its scrollback, as tmux gives the add-on, is a later
   step if `--continue` turns out not to be enough.
 
-Two things about the server side came out differently from the plan:
+Three things about the server side came out differently from the plan:
+
+- **The MCP URL is loopback, or there is none.** A session token is accepted from loopback only,
+  so the config names `http://127.0.0.1:<port>/mcp`, on the plain-HTTP listener. HTTPS on
+  `127.0.0.1` would fail, since the certificate names a domain. So when plain HTTP redirects to
+  HTTPS, the redirect still serves `/mcp` and the proxy to a request from this machine with a
+  session token; it redirects everything else. Nothing crosses the network unencrypted. Only a
+  server that listens on one non-loopback address starts its sessions without MCP, and the
+  terminal's first line says why. An Anthropic provider's base URL is passed with its
+  key, because a key for a gateway is no use against Anthropic's own address.
 
 - **`pty-process`, not `portable-pty`.** `portable-pty`'s value is a Windows half this route does
   not use. `pty-process` is Unix only, its one dependency (`rustix`) is already in the tree, and

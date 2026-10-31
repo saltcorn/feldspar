@@ -48,6 +48,7 @@ mod agent_memory;
 mod logging;
 mod lsp;
 mod mcp;
+mod mcp_proxy;
 mod mcp_servers;
 mod models;
 mod module_routes;
@@ -179,6 +180,7 @@ pub use live::LiveServices;
 pub use logging::log_requests;
 pub use lsp::{LSP_ROUTE, MAX_LANGUAGE_SERVERS};
 pub use mcp::{MCP_PROTOCOL_VERSION, MCP_ROUTE, MCP_SERVER_NAME};
+pub use mcp_proxy::MCP_PROXY_ROUTE;
 pub use models::{
     CatalogDatasetSource, ModelServices, StanSettings, install_model_host, install_models,
     install_models_with,

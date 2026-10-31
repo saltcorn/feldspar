@@ -18,6 +18,7 @@ describe("the MCP server form", () => {
       headers: [{ name: "Authorization", value: "••••••••" }],
       allow_private_network: false,
       timeout_secs: 0,
+      offer_to_terminal: true,
     });
     form.headers.push({ name: "  ", value: "dropped" });
     expect(bodyFromForm(form)).toEqual({
@@ -28,8 +29,11 @@ describe("the MCP server form", () => {
       headers: [{ name: "Authorization", value: "••••••••" }],
       allow_private_network: false,
       timeout_secs: 0,
+      offer_to_terminal: true,
     });
     expect(bodyFromForm({ ...emptyForm(), timeoutSecs: "30" }).timeout_secs).toBe(30);
+    // Not offered to the IDE's terminal unless ticked.
+    expect(bodyFromForm(emptyForm()).offer_to_terminal).toBe(false);
     // A blank Authorization row is dropped only if its name is blank.
     expect(bodyFromForm(emptyForm()).headers).toEqual([{ name: "Authorization", value: "" }]);
   });

@@ -29,6 +29,18 @@
 //! disk, the executable not being installed and the bound being reached all
 //! upgrade the socket and close it with a sentence the terminal prints.
 //!
+//! ## Wired to this server
+//!
+//! The program is started as Claude Code: `--continue` when the directory has a
+//! conversation, so a reload resumes it; an MCP config naming this server's `/mcp`, and the proxy of
+//! each MCP server offered to the terminal ([`crate::mcp_proxy`]), with a
+//! **session token** ([`SessionTokens`]), in a file outside the store that goes
+//! with the session; `--strict-mcp-config`, so the session sees those and
+//! nothing an operator configured elsewhere; and, in an application's directory, its
+//! framework's builder-agent prompt. Its login lives in the installation's data
+//! directory (`CLAUDE_CONFIG_DIR`), and an Anthropic provider's key, when there
+//! is one, is passed so nothing is asked.
+//!
 //! ## What is ours and what is not
 //!
 //! The pseudo-terminal itself — opening one, making it the child's controlling
@@ -37,15 +49,21 @@
 //! environment, and ending everything the program started when the socket
 //! closes ([`pty::Session::kill`]). Off Unix the route refuses with a reason.
 
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code};
+use chrono::{DateTime, Utc};
 use futures::{SinkExt, StreamExt};
+use sc_app::Application;
 use sc_catalog::Catalog;
 use serde::Deserialize;
+use serde_json::json;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use uuid::Uuid;
 
 use crate::lsp::{fit_close_reason, refuse};
 
@@ -80,6 +98,13 @@ const INHERITED_ENV: [&str; 9] = [
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ", "TMPDIR",
 ];
 
+/// What a session token starts with, so the MCP route can tell one from a
+/// table token without looking either up.
+const SESSION_TOKEN_PREFIX: &str = "fdterm_";
+
+/// What the session's MCP config calls this server.
+const MCP_SERVER_KEY: &str = "feldspar";
+
 /// The bound on concurrent terminals, as the router holds it.
 pub(crate) type TerminalSlots = Arc<Semaphore>;
 
@@ -87,6 +112,129 @@ pub(crate) type TerminalSlots = Arc<Semaphore>;
 pub(crate) fn terminal_slots() -> TerminalSlots {
     Arc::new(Semaphore::new(MAX_TERMINALS))
 }
+
+/// The MCP credentials of the terminals that are open: token → whose session.
+///
+/// In memory and nowhere else (design §12.1, "MCP credential"): a token is
+/// issued when a terminal starts and removed when it ends, so a restart or a
+/// crash cannot leave one valid, and nothing about it is in the token table.
+#[derive(Clone, Default)]
+pub(crate) struct SessionTokens(Arc<Mutex<HashMap<String, SessionGrant>>>);
+
+/// Who a session token speaks for.
+#[derive(Debug, Clone)]
+pub(crate) struct SessionGrant {
+    /// The admin who opened the terminal.
+    pub(crate) user_id: Uuid,
+    /// The session, which is also what the MCP route's changesets are keyed by.
+    pub(crate) session: Uuid,
+    /// When the terminal opened.
+    pub(crate) opened: DateTime<Utc>,
+}
+
+impl SessionTokens {
+    /// A fresh token for a terminal `user_id` opens, valid until the returned
+    /// value is dropped.
+    fn issue(&self, user_id: Uuid) -> SessionToken {
+        let secret = format!(
+            "{SESSION_TOKEN_PREFIX}{}{}",
+            Uuid::new_v4().simple(),
+            Uuid::new_v4().simple()
+        );
+        let grant = SessionGrant {
+            user_id,
+            session: Uuid::new_v4(),
+            opened: Utc::now(),
+        };
+        self.lock().insert(secret.clone(), grant);
+        SessionToken {
+            tokens: self.clone(),
+            secret,
+        }
+    }
+
+    /// The session `presented` belongs to, while its terminal is open.
+    pub(crate) fn grant(&self, presented: &str) -> Option<SessionGrant> {
+        if !presented.starts_with(SESSION_TOKEN_PREFIX) {
+            return None;
+        }
+        self.lock().get(presented).cloned()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, SessionGrant>> {
+        // A panic while holding the map cannot leave it half-written: every
+        // change is one insert or one remove.
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// A session token, valid for as long as this value lives.
+struct SessionToken {
+    tokens: SessionTokens,
+    secret: String,
+}
+
+impl Drop for SessionToken {
+    fn drop(&mut self) {
+        self.tokens.lock().remove(&self.secret);
+    }
+}
+
+/// The URL a terminal's Claude Code uses to reach this server, such as
+/// `http://127.0.0.1:3032`, or the reason there is none.
+///
+/// It must be a loopback URL, because session tokens are only accepted from
+/// this machine. The plain-HTTP listener is always the one named: with TLS on,
+/// it serves a terminal's MCP traffic even when it redirects everything else
+/// to HTTPS ([`is_terminal_mcp`]), since HTTPS on `127.0.0.1` would fail on a
+/// certificate made out to a domain name. What rules a URL out is a server
+/// that listens on one specific non-loopback address, such as `192.168.1.5`,
+/// which 127.0.0.1 does not reach.
+pub(crate) fn loopback_origin(addr: SocketAddr) -> Result<String, String> {
+    if addr.port() == 0 {
+        return Err("this server's port is not known".to_owned());
+    }
+    let host = match addr.ip() {
+        IpAddr::V4(ip) if ip.is_loopback() || ip.is_unspecified() => {
+            IpAddr::V4(Ipv4Addr::LOCALHOST)
+        }
+        IpAddr::V6(ip) if ip.is_loopback() || ip.is_unspecified() => {
+            IpAddr::V6(Ipv6Addr::LOCALHOST)
+        }
+        other => {
+            return Err(format!(
+                "this server listens on {other} only, which a program on it cannot \
+                 reach as loopback"
+            ));
+        }
+    };
+    Ok(format!("http://{}", SocketAddr::new(host, addr.port())))
+}
+
+/// Whether `request` is a terminal's MCP traffic: to `/mcp` or the proxy, from
+/// this machine, with a session token.
+///
+/// A server that redirects plain HTTP to HTTPS serves these on the plain
+/// listener instead of redirecting them, because that listener is where
+/// [`loopback_origin`] points the sessions. Nothing crosses the network
+/// unencrypted: the peer is this machine. Whether the token is one an open
+/// terminal holds is the routes' own check; this only sorts the request.
+pub(crate) fn is_terminal_mcp(request: &axum::extract::Request) -> bool {
+    let path = request.uri().path();
+    let route = path == crate::mcp::MCP_ROUTE || path.starts_with(MCP_PROXY_PREFIX);
+    route
+        && crate::mcp::is_loopback(
+            request
+                .extensions()
+                .get::<axum::extract::ConnectInfo<SocketAddr>>()
+                .copied(),
+        )
+        && crate::security::bearer_token(request.headers())
+            .is_some_and(|token| token.starts_with(SESSION_TOKEN_PREFIX))
+}
+
+/// The proxy route's path up to its server name.
+const MCP_PROXY_PREFIX: &str = "/ide/mcp-proxy/";
 
 /// The route's query string.
 #[derive(Debug, Default, Deserialize)]
@@ -137,7 +285,14 @@ fn control_message(text: &str) -> Option<Control> {
     frame.pause.map(Control::Pause)
 }
 
-/// Why this store cannot have a terminal, or the directory to start one in.
+/// Where a terminal starts: the directory, and the application it is for.
+#[derive(Debug)]
+pub(crate) struct TerminalPlace {
+    pub(crate) dir: PathBuf,
+    pub(crate) app: Option<Application>,
+}
+
+/// Why this store cannot have a terminal, or where to start one.
 ///
 /// The whole policy, apart from the executable and the bound: split out for the
 /// reason [`crate::lsp::language_server_root`] is.
@@ -145,7 +300,7 @@ pub(crate) async fn terminal_dir(
     catalog: Option<&Arc<Catalog>>,
     store: &str,
     app: Option<&str>,
-) -> Result<PathBuf, String> {
+) -> Result<TerminalPlace, String> {
     let Some(catalog) = catalog else {
         return Err("this server has no catalog, so it has no file stores".to_owned());
     };
@@ -160,9 +315,12 @@ pub(crate) async fn terminal_dir(
         .file_store(store)
         .map_err(|e| format!("file store {store}: {e}"))?
         .ok_or_else(|| format!("the file store {store} is not connected"))?;
-    let dir = match app.map(str::trim).filter(|a| !a.is_empty()) {
-        None => String::new(),
-        Some(app) => app_source_dir(catalog, store, app).await?,
+    let (dir, app) = match app.map(str::trim).filter(|a| !a.is_empty()) {
+        None => (String::new(), None),
+        Some(app) => {
+            let (dir, app) = app_source_dir(catalog, store, app).await?;
+            (dir, Some(app))
+        }
     };
     let root = handle
         .local_path(&dir)
@@ -176,28 +334,33 @@ pub(crate) async fn terminal_dir(
         };
         return Err(format!("{shown} is not there yet"));
     }
-    Ok(root)
+    Ok(TerminalPlace { dir: root, app })
 }
 
-/// The directory, inside `store`, that application `app`'s source is in.
+/// The directory, inside `store`, that application `app`'s source is in, and
+/// the application.
 ///
 /// The application must be built from *this* store: the IDE has this store open,
 /// and a terminal started in a directory the file tree does not show would edit
 /// files the admin cannot see.
-async fn app_source_dir(catalog: &Catalog, store: &str, app: &str) -> Result<String, String> {
+async fn app_source_dir(
+    catalog: &Catalog,
+    store: &str,
+    app: &str,
+) -> Result<(String, Application), String> {
     let apps = sc_app::list_applications(catalog)
         .await
         .map_err(|e| format!("could not read the applications: {e}"))?;
     let found = apps
-        .iter()
+        .into_iter()
         .find(|a| a.name == app)
         .ok_or_else(|| format!("there is no application named {app}"))?;
-    let (source_store, dir) =
-        sc_app::app_source_location(found).map_err(|_| format!("{app} has no source directory"))?;
+    let (source_store, dir) = sc_app::app_source_location(&found)
+        .map_err(|_| format!("{app} has no source directory"))?;
     if source_store != store {
         return Err(format!("{app}'s source is in {source_store}, not {store}"));
     }
-    Ok(dir)
+    Ok((dir, found))
 }
 
 /// The executable `program` names, if it is installed.
@@ -230,20 +393,37 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
-/// Serve one terminal socket for `store`.
+/// What the route needs from the server to start a terminal.
+pub(crate) struct TerminalHost<'a> {
+    pub(crate) catalog: Option<&'a Arc<Catalog>>,
+    pub(crate) slots: &'a TerminalSlots,
+    pub(crate) tokens: &'a SessionTokens,
+    /// The loopback URL a terminal's Claude Code uses to reach this server
+    /// (`http://127.0.0.1:<port>`), or the reason there is none.
+    pub(crate) origin: &'a Result<String, String>,
+    pub(crate) program: Arc<PathBuf>,
+}
+
+/// Serve one terminal socket for `store`, opened by the admin `user_id`.
 ///
 /// The caller has already established that the request is an admin's.
 pub(crate) async fn terminal_upgrade(
     ws: WebSocketUpgrade,
-    catalog: Option<&Arc<Catalog>>,
-    slots: &TerminalSlots,
-    program: Arc<PathBuf>,
+    host: TerminalHost<'_>,
+    user_id: Uuid,
     store: String,
     query: TerminalQuery,
 ) -> axum::response::Response {
+    let TerminalHost {
+        catalog,
+        slots,
+        tokens,
+        origin,
+        program,
+    } = host;
     let refusal = match terminal_dir(catalog, &store, query.app.as_deref()).await {
         Err(reason) => reason,
-        Ok(dir) => match locate_program(&program) {
+        Ok(place) => match locate_program(&program) {
             None => format!(
                 "{} is not installed on this server",
                 program.file_name().map_or_else(
@@ -253,7 +433,27 @@ pub(crate) async fn terminal_upgrade(
             ),
             Some(exe) => match Arc::clone(slots).try_acquire_owned() {
                 Ok(permit) => {
-                    return ws.on_upgrade(move |socket| bridge(socket, exe, dir, store, permit));
+                    let token = tokens.issue(user_id);
+                    let wiring = Wiring {
+                        origin: origin.clone(),
+                        offered: match catalog {
+                            Some(catalog) => offered_servers(catalog).await,
+                            None => Vec::new(),
+                        },
+                        prompt: place.app.as_ref().and_then(builder_prompt),
+                        api_key: match catalog {
+                            Some(catalog) => anthropic_provider(catalog).await,
+                            None => None,
+                        },
+                        config_dir: sc_files::data_dir().ok().map(|d| d.join("claude")),
+                    };
+                    match Launch::prepare(exe, place.dir, wiring, token) {
+                        Ok(launch) => {
+                            return ws
+                                .on_upgrade(move |socket| bridge(socket, launch, store, permit));
+                        }
+                        Err(e) => format!("could not prepare the session: {e}"),
+                    }
                 }
                 Err(_) => format!(
                     "the server is already running its maximum of {MAX_TERMINALS} terminals"
@@ -276,25 +476,257 @@ fn program_env() -> Vec<(String, String)> {
     env
 }
 
-/// Run `program` in `dir` on a pseudo-terminal, bridged to `socket` until either
-/// end stops. `permit` is held for as long as the process lives.
-#[cfg(unix)]
-async fn bridge(
-    socket: WebSocket,
+/// The builder-agent prompt of `app`'s framework (§13.3), which carries what
+/// the CLI would otherwise get wrong, such as which directory is generated.
+fn builder_prompt(app: &Application) -> Option<String> {
+    sc_app::framework_builder_agent(&app.framework, app).map(|agent| agent.system_prompt)
+}
+
+/// The first Anthropic provider with a key: `(key, base URL if not the default)`.
+async fn anthropic_provider(catalog: &Catalog) -> Option<(String, Option<String>)> {
+    let providers = sc_llm::list_llm_providers(catalog).await.ok()?;
+    providers
+        .iter()
+        .filter(|p| p.backend == sc_llm::ANTHROPIC_BACKEND)
+        .find_map(|p| {
+            let key = p.setting(sc_llm::CFG_API_KEY)?.trim();
+            let base = p
+                .setting(sc_llm::CFG_BASE_URL)
+                .map(str::trim)
+                .filter(|u| !u.is_empty())
+                .map(str::to_owned);
+            (!key.is_empty()).then(|| (key.to_owned(), base))
+        })
+}
+
+/// The MCP servers offered to the terminal (`offer_to_terminal`), or none when
+/// they cannot be read: a session without them is still a session.
+async fn offered_servers(catalog: &Catalog) -> Vec<sc_mcp::McpServerDef> {
+    if !matches!(catalog.get(sc_mcp::MCP_SERVERS_TABLE), Ok(Some(_))) {
+        return Vec::new();
+    }
+    match sc_mcp::list_mcp_servers(catalog).await {
+        Ok(servers) => servers
+            .into_iter()
+            .filter(sc_mcp::McpServerDef::offered_to_terminal)
+            .collect(),
+        Err(e) => {
+            eprintln!("feldspar: terminal: could not read the MCP servers: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// What connects a session to this installation, gathered before it starts.
+struct Wiring {
+    /// This server over loopback, or why the session goes without MCP.
+    origin: Result<String, String>,
+    /// The MCP servers offered to the terminal.
+    offered: Vec<sc_mcp::McpServerDef>,
+    /// The framework's builder-agent prompt, in an application's directory.
+    prompt: Option<String>,
+    /// An Anthropic provider's key and base URL.
+    api_key: Option<(String, Option<String>)>,
+    /// Where the CLI keeps its login: the installation's, not the Unix user's.
+    config_dir: Option<PathBuf>,
+}
+
+/// A program ready to start: what to run, where, with what, and what has to go
+/// when it ends.
+struct Launch {
     program: PathBuf,
     dir: PathBuf,
+    args: Vec<std::ffi::OsString>,
+    env: Vec<(String, String)>,
+    /// Said in the terminal before the program starts.
+    notices: Vec<String>,
+    /// Removed from the session map when the launch is dropped.
+    _token: SessionToken,
+    /// Deleted when the launch is dropped.
+    _mcp_config: Option<TempFile>,
+}
+
+impl Launch {
+    /// The launch line of design §12.1. The MCP config, which holds the
+    /// session's token, is written here to a private file outside the store.
+    fn prepare(
+        program: PathBuf,
+        dir: PathBuf,
+        wiring: Wiring,
+        token: SessionToken,
+    ) -> std::io::Result<Launch> {
+        let mut args: Vec<std::ffi::OsString> = Vec::new();
+        // Only when there is one: in a directory with no conversation yet, an
+        // interactive `--continue` says so and exits.
+        if wiring
+            .config_dir
+            .as_deref()
+            .is_some_and(|config| has_conversation(config, &dir))
+        {
+            args.push("--continue".into());
+        }
+        let mut notices = Vec::new();
+        let mcp_config = match &wiring.origin {
+            Ok(origin) => {
+                let entry = |url: String| {
+                    json!({
+                        "type": "http",
+                        "url": url,
+                        "headers": { "Authorization": format!("Bearer {}", token.secret) },
+                    })
+                };
+                let mut servers = serde_json::Map::new();
+                servers.insert(
+                    MCP_SERVER_KEY.to_owned(),
+                    entry(format!("{origin}{}", crate::mcp::MCP_ROUTE)),
+                );
+                for server in &wiring.offered {
+                    if server.name == MCP_SERVER_KEY {
+                        notices.push(format!(
+                            "The MCP server `{MCP_SERVER_KEY}` is left out: this server's own \
+                             tools have that name."
+                        ));
+                    } else if server.transport != sc_mcp::McpTransport::StreamableHttp {
+                        notices.push(format!(
+                            "The MCP server `{}` is left out: it uses SSE, which the terminal \
+                             cannot reach through this server yet.",
+                            server.name
+                        ));
+                    } else {
+                        servers.insert(
+                            server.name.clone(),
+                            entry(crate::mcp_proxy::proxy_url(origin, &server.name)),
+                        );
+                    }
+                }
+                let config = json!({ "mcpServers": servers });
+                let file = TempFile::private(
+                    &format!("feldspar-terminal-{}.json", Uuid::new_v4().simple()),
+                    config.to_string().as_bytes(),
+                )?;
+                args.push("--mcp-config".into());
+                args.push(file.path.clone().into_os_string());
+                Some(file)
+            }
+            Err(why) => {
+                notices.push(format!(
+                    "Claude Code is not connected to this server: {why}."
+                ));
+                None
+            }
+        };
+        // Whatever the operator's own account has configured stays out: the
+        // session sees this server and nothing else.
+        args.push("--strict-mcp-config".into());
+        if let Some(prompt) = wiring.prompt {
+            args.push("--append-system-prompt".into());
+            args.push(prompt.into());
+        }
+
+        let mut env = program_env();
+        if let Some(dir) = wiring.config_dir {
+            env.push(("CLAUDE_CONFIG_DIR".to_owned(), dir.display().to_string()));
+        }
+        if let Some((key, base)) = wiring.api_key {
+            env.push(("ANTHROPIC_API_KEY".to_owned(), key));
+            if let Some(base) = base {
+                env.push(("ANTHROPIC_BASE_URL".to_owned(), base));
+            }
+        }
+        Ok(Launch {
+            program,
+            dir,
+            args,
+            env,
+            notices,
+            _token: token,
+            _mcp_config: mcp_config,
+        })
+    }
+}
+
+/// Whether Claude Code, keeping its state in `config_dir`, has a conversation
+/// saved for `dir`.
+///
+/// It keeps them as `projects/<dir>/<session>.jsonl`, the directory's real path
+/// with every character but a letter or a digit written as `-`. That layout is
+/// the CLI's, not a promise: should it change, this answers no, and a session
+/// starts a new conversation rather than failing.
+fn has_conversation(config_dir: &Path, dir: &Path) -> bool {
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let key: String = dir
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    std::fs::read_dir(config_dir.join("projects").join(key)).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
+    })
+}
+
+/// A file only this user can read, in the system's temporary directory,
+/// deleted when dropped.
+struct TempFile {
+    path: PathBuf,
+}
+
+impl TempFile {
+    fn private(name: &str, contents: &[u8]) -> std::io::Result<TempFile> {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(name);
+        let mut options = std::fs::OpenOptions::new();
+        // `create_new`: never through a file or link someone else put there.
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut handle = options.open(&path)?;
+        // Owned before it is written, so a failed write still deletes it.
+        let file = TempFile { path };
+        handle.write_all(contents)?;
+        Ok(file)
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Run the launch on a pseudo-terminal, bridged to `socket` until either end
+/// stops. `permit` is held for as long as the process lives, and the launch's
+/// session token and MCP config for as long as the bridge runs.
+#[cfg(unix)]
+async fn bridge(
+    mut socket: WebSocket,
+    launch: Launch,
     store: String,
     permit: OwnedSemaphorePermit,
 ) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let mut session = match pty::spawn(&program, &dir, &program_env(), DEFAULT_SIZE) {
+    for notice in &launch.notices {
+        let line = format!("{notice}\r\n");
+        let _ = socket.send(Message::Binary(line.into_bytes().into())).await;
+    }
+    let mut session = match pty::spawn(
+        &launch.program,
+        &launch.args,
+        &launch.dir,
+        &launch.env,
+        DEFAULT_SIZE,
+    ) {
         Ok(session) => session,
         Err(e) => {
             eprintln!("feldspar: terminal for {store}: {e}");
             refuse(
                 socket,
-                format!("could not start {}: {e}", program.display()),
+                format!("could not start {}: {e}", launch.program.display()),
             )
             .await;
             return;
@@ -390,17 +822,13 @@ async fn bridge(
     // including whatever the program started.
     session.kill().await;
     drop(permit);
+    // The token stops opening MCP, and the config file holding it goes.
+    drop(launch);
 }
 
 /// No pseudo-terminal off Unix.
 #[cfg(not(unix))]
-async fn bridge(
-    socket: WebSocket,
-    _program: PathBuf,
-    _dir: PathBuf,
-    _store: String,
-    _permit: OwnedSemaphorePermit,
-) {
+async fn bridge(socket: WebSocket, _launch: Launch, _store: String, _permit: OwnedSemaphorePermit) {
     refuse(socket, "the IDE terminal needs a Unix server".to_owned()).await;
 }
 
@@ -408,6 +836,7 @@ async fn bridge(
 mod pty {
     //! A program on a pseudo-terminal, and how it is ended.
 
+    use std::ffi::OsString;
     use std::path::Path;
 
     use tokio::process::Child;
@@ -420,13 +849,15 @@ mod pty {
         pub(super) child: Child,
     }
 
-    /// Start `program` in `dir` with exactly `env`, on a new terminal of `size`.
+    /// Start `program` with `args` in `dir` with exactly `env`, on a new
+    /// terminal of `size`.
     ///
     /// The program leads a new session with the terminal as its controlling one,
     /// which is what turns Ctrl-C into `SIGINT` and lets [`Session::kill`] find
     /// what it started.
     pub(super) fn spawn(
         program: &Path,
+        args: &[OsString],
         dir: &Path,
         env: &[(String, String)],
         size: TerminalSize,
@@ -436,6 +867,7 @@ mod pty {
         // `spawn` takes the terminal's other end and drops the parent's copies,
         // so reading `pty` ends once the child and its descendants let go.
         let child = pty_process::Command::new(program)
+            .args(args)
             .current_dir(dir)
             .env_clear()
             .envs(env.iter().map(|(k, v)| (k, v)))
@@ -607,6 +1039,186 @@ mod tests {
         let stat = "4242 (node (worker) x) S 4100 4242 4100 34817 4242 4194560";
         assert_eq!(pty::parse_stat(stat), Some((4100, 4100)));
         assert_eq!(pty::parse_stat("garbage"), None);
+    }
+
+    #[test]
+    fn mcp_is_reached_over_loopback_or_not_at_all() {
+        let url = |addr: &str| loopback_origin(addr.parse().unwrap());
+        assert_eq!(url("0.0.0.0:3032"), Ok("http://127.0.0.1:3032".to_owned()));
+        assert_eq!(
+            url("127.0.0.1:3032"),
+            Ok("http://127.0.0.1:3032".to_owned())
+        );
+        assert_eq!(url("[::]:3032"), Ok("http://[::1]:3032".to_owned()));
+        assert!(url("192.168.1.5:3032").unwrap_err().contains("192.168.1.5"));
+        assert!(url("0.0.0.0:0").is_err(), "an unknown port");
+    }
+
+    #[test]
+    fn a_session_token_lasts_as_long_as_its_session() {
+        let tokens = SessionTokens::default();
+        let user = Uuid::new_v4();
+        let token = tokens.issue(user);
+        assert!(token.secret.starts_with(SESSION_TOKEN_PREFIX));
+        assert_eq!(tokens.grant(&token.secret).map(|g| g.user_id), Some(user));
+        assert!(tokens.grant("fdterm_guessed").is_none());
+        assert!(tokens.grant("fd_some_table_token").is_none());
+        let secret = token.secret.clone();
+        drop(token);
+        assert!(tokens.grant(&secret).is_none());
+    }
+
+    fn wiring(origin: Result<String, String>) -> Wiring {
+        Wiring {
+            origin,
+            offered: vec![
+                sc_mcp::McpServerDef::new("crm", "https://crm.example.com/mcp")
+                    .header("X-Api-Key", "crm-secret")
+                    .offer_to_terminal(true),
+                sc_mcp::McpServerDef::new("tickets", "https://tickets.example.com/sse")
+                    .transport(sc_mcp::McpTransport::Sse)
+                    .offer_to_terminal(true),
+            ],
+            prompt: Some("You build the shop.".to_owned()),
+            api_key: Some(("sk-ant-test".to_owned(), None)),
+            config_dir: Some(PathBuf::from("/data/claude")),
+        }
+    }
+
+    #[test]
+    fn the_launch_line_wires_the_session_to_this_server() {
+        let tokens = SessionTokens::default();
+        let launch = Launch::prepare(
+            PathBuf::from("/usr/bin/claude"),
+            PathBuf::from("/store/shop"),
+            wiring(Ok("http://127.0.0.1:3032".to_owned())),
+            tokens.issue(Uuid::new_v4()),
+        )
+        .unwrap();
+        let args: Vec<String> = launch
+            .args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.contains(&"--continue".to_owned()),
+            "nothing to continue yet"
+        );
+        let config_at = args.iter().position(|a| a == "--mcp-config").unwrap() + 1;
+        let config_path = PathBuf::from(&args[config_at]);
+        assert!(!config_path.starts_with("/store"), "outside the store");
+        assert!(args.contains(&"--strict-mcp-config".to_owned()));
+        let prompt_at = args
+            .iter()
+            .position(|a| a == "--append-system-prompt")
+            .unwrap()
+            + 1;
+        assert_eq!(args[prompt_at], "You build the shop.");
+
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        let server = &config["mcpServers"][MCP_SERVER_KEY];
+        assert_eq!(server["url"], "http://127.0.0.1:3032/mcp");
+        let secret = server["headers"]["Authorization"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("Bearer ")
+            .unwrap()
+            .to_owned();
+        assert!(tokens.grant(&secret).is_some());
+        // An offered server through the proxy, with the session's token and
+        // never its own header; an SSE one left out, with a reason.
+        let crm = &config["mcpServers"]["crm"];
+        assert_eq!(crm["url"], "http://127.0.0.1:3032/ide/mcp-proxy/crm");
+        assert_eq!(crm["headers"]["Authorization"], format!("Bearer {secret}"));
+        assert!(!config.to_string().contains("crm-secret"));
+        assert!(config["mcpServers"].get("tickets").is_none());
+        assert!(
+            launch
+                .notices
+                .iter()
+                .any(|n| n.contains("`tickets`") && n.contains("SSE")),
+            "{:?}",
+            launch.notices
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&config_path)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "only this user reads the token");
+        }
+
+        let env: HashMap<_, _> = launch.env.iter().cloned().collect();
+        assert_eq!(env["CLAUDE_CONFIG_DIR"], "/data/claude");
+        assert_eq!(env["ANTHROPIC_API_KEY"], "sk-ant-test");
+        assert!(!env.contains_key("ANTHROPIC_BASE_URL"));
+        assert!(!env.contains_key("DATABASE_URL"));
+
+        // The session ends: the token stops working and the file goes.
+        drop(launch);
+        assert!(tokens.grant(&secret).is_none());
+        assert!(!config_path.exists());
+    }
+
+    /// `--continue` only where the CLI has a conversation saved for the
+    /// directory: with none, an interactive `--continue` exits.
+    #[test]
+    fn a_session_continues_only_where_there_is_a_conversation() {
+        let root = std::env::temp_dir().join(format!("sc-continue-{}", Uuid::new_v4().simple()));
+        let config = root.join("claude");
+        let dir = root.join("my_store.v2");
+        std::fs::create_dir_all(&dir).unwrap();
+        let continues = |config_dir: &Path| {
+            let mut wiring = wiring(Err("no MCP here".to_owned()));
+            wiring.config_dir = Some(config_dir.to_path_buf());
+            Launch::prepare(
+                PathBuf::from("/usr/bin/claude"),
+                dir.clone(),
+                wiring,
+                SessionTokens::default().issue(Uuid::new_v4()),
+            )
+            .unwrap()
+            .args
+            .iter()
+            .any(|a| a == "--continue")
+        };
+        assert!(!continues(&config));
+
+        let key: String = dir
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        assert!(key.ends_with("-my-store-v2"), "{key}");
+        let saved = config.join("projects").join(&key);
+        std::fs::create_dir_all(&saved).unwrap();
+        assert!(!continues(&config), "an empty folder is no conversation");
+        std::fs::write(saved.join("4f1c.jsonl"), "{}\n").unwrap();
+        assert!(continues(&config));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn without_a_loopback_route_the_session_says_why_and_has_no_mcp() {
+        let launch = Launch::prepare(
+            PathBuf::from("/usr/bin/claude"),
+            PathBuf::from("/store"),
+            wiring(Err("this server listens on 10.0.0.5 only".to_owned())),
+            SessionTokens::default().issue(Uuid::new_v4()),
+        )
+        .unwrap();
+        assert!(!launch.args.iter().any(|a| a == "--mcp-config"));
+        assert!(launch.args.iter().any(|a| a == "--strict-mcp-config"));
+        assert!(
+            launch.notices[0].contains("10.0.0.5"),
+            "{:?}",
+            launch.notices
+        );
     }
 
     #[tokio::test]

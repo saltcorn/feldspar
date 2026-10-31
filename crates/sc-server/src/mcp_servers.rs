@@ -62,7 +62,10 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
             async move {
                 let existing = require_by_id(&catalog, ctx.path_param("id")?).await?;
                 let mut def = server_from_body(existing.id, &ctx.body, &existing.headers)?;
+                // The stored attributes, with the one the form sets as it says.
+                let offer = def.offered_to_terminal();
                 def.attributes = existing.attributes.clone();
+                let def = def.offer_to_terminal(offer);
                 // A rename breaks the agents naming it, as a delete would.
                 if def.name.trim() != existing.name {
                     let users = agents_using(&catalog, &existing.name).await?;
@@ -185,6 +188,7 @@ fn with_headers(def: &McpServerDef) -> Json {
             .collect::<Vec<_>>(),
         "allow_private_network": def.allow_private_network,
         "timeout_secs": def.timeout_secs,
+        "offer_to_terminal": def.offered_to_terminal(),
     })
 }
 
@@ -217,7 +221,7 @@ pub(crate) fn server_from_body(
             return Err(Error::invalid(format!("header `{name}` is given twice")));
         }
     }
-    Ok(McpServerDef {
+    let def = McpServerDef {
         id,
         name: text("name").trim().to_owned(),
         description: text("description"),
@@ -230,7 +234,12 @@ pub(crate) fn server_from_body(
             .unwrap_or(false),
         timeout_secs: obj.get("timeout_secs").and_then(Json::as_u64).unwrap_or(0),
         attributes: Map::new(),
-    })
+    };
+    Ok(def.offer_to_terminal(
+        obj.get("offer_to_terminal")
+            .and_then(Json::as_bool)
+            .unwrap_or(false),
+    ))
 }
 
 /// A test's or a listing's answer: what was found, or the refusal.

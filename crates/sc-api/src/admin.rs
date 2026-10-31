@@ -5892,6 +5892,12 @@ fn mcp_server_fields() -> Vec<StructField> {
         StructField::new("allow_private_network", TypeSchema::bool()),
         // Seconds one call may take; 0 is the default (60).
         StructField::new("timeout_secs", TypeSchema::int()),
+        // Offered to the IDE's Claude Code sessions, through the server's proxy
+        // (§12.1). Absent is off.
+        StructField::new(
+            "offer_to_terminal",
+            TypeSchema::optional(TypeSchema::bool()),
+        ),
     ]
 }
 

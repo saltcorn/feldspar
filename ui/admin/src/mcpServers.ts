@@ -24,6 +24,8 @@ export type McpServerForm = {
   headers: HeaderRow[];
   allowPrivateNetwork: boolean;
   timeoutSecs: string;
+  /** Offered to Claude Code in the IDE's terminal, through the server's proxy. */
+  offerToTerminal: boolean;
 };
 
 /** A blank form, with one empty header row to type a credential into. */
@@ -37,6 +39,7 @@ export function emptyForm(): McpServerForm {
     headers: [{ name: "Authorization", value: "" }],
     allowPrivateNetwork: false,
     timeoutSecs: "",
+    offerToTerminal: false,
   };
 }
 
@@ -51,6 +54,7 @@ export function formFromServer(server: McpServerItem): McpServerForm {
     headers: server.headers.map((h) => ({ ...h })),
     allowPrivateNetwork: server.allow_private_network,
     timeoutSecs: server.timeout_secs ? String(server.timeout_secs) : "",
+    offerToTerminal: server.offer_to_terminal ?? false,
   };
 }
 
@@ -68,6 +72,7 @@ export function bodyFromForm(form: McpServerForm) {
       .map((h) => ({ name: h.name.trim(), value: h.value })),
     allow_private_network: form.allowPrivateNetwork,
     timeout_secs: Number.isFinite(timeout) && timeout > 0 ? timeout : 0,
+    offer_to_terminal: form.offerToTerminal,
   };
 }
 

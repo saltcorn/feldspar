@@ -31,6 +31,16 @@
 //!    to say so in a checkbox rather than in a reverse proxy.
 //! 4. **A bearer credential**, and *only* a bearer credential.
 //!
+//! ## A terminal's session token
+//!
+//! One credential is checked before all of that: the session token of an open
+//! IDE terminal (§12.1), which lives in memory beside the terminal rather than
+//! in the token table. It is accepted **whatever `mcp_enabled` says**, because
+//! that switch governs external clients and this one is the server's own child,
+//! and **from loopback only, whatever `mcp_loopback_only` says**, for the same
+//! reason. A token that is not one leaves the four gates exactly as they were:
+//! with the switch off, the token table is still never read.
+//!
 //! ## Bearer only, and that is the CSRF answer
 //!
 //! **A session cookie on this route is ignored, not accepted**, and that is the
@@ -93,6 +103,7 @@ use serde_json::{Value as Json, json};
 
 use crate::handler::{HandlerCtx, HandlerRegistry};
 use crate::router::AppState;
+use crate::terminal::SessionGrant;
 
 /// The route the server listens for MCP on.
 pub const MCP_ROUTE: &str = "/mcp";
@@ -139,7 +150,7 @@ const UNAUTHORIZED: i64 = -32001;
 /// Generous for the largest thing that legitimately arrives — an `edit_schema`
 /// batch describing a dozen connected tables — and small enough that a request
 /// cannot ask this process to allocate arbitrarily.
-const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// Serve one MCP request.
 ///
@@ -175,6 +186,32 @@ pub(crate) async fn mcp(State(state): State<AppState>, request: Request) -> Resp
     let Some(catalog) = state.apps.catalog().cloned() else {
         return not_found();
     };
+    // An open terminal's session token (module docs): only the in-memory map
+    // is consulted here, never the token table.
+    if let Some(grant) = crate::security::bearer_token(&headers)
+        .and_then(|presented| state.terminal_tokens.grant(&presented))
+    {
+        if headers.contains_key(header::ORIGIN) {
+            return refused(
+                "this endpoint does not serve browser requests: it arrived with an \
+                 `Origin` header, and nothing that legitimately speaks MCP is a page",
+            );
+        }
+        if !is_loopback(peer) {
+            return refused(
+                "a terminal's session token is accepted only from the server's own machine",
+            );
+        }
+        return match terminal_caller(&catalog, &grant).await {
+            Ok(caller) => dispatch_rpc(&state, &catalog, &caller, &body).await,
+            Err(e) => json_rpc_error(
+                StatusCode::UNAUTHORIZED,
+                Json::Null,
+                UNAUTHORIZED,
+                e.to_string(),
+            ),
+        };
+    }
     let settings = match mcp_settings(&catalog).await {
         Ok(settings) => settings,
         Err(e) => {
@@ -240,6 +277,48 @@ pub(crate) async fn mcp(State(state): State<AppState>, request: Request) -> Resp
     };
 
     dispatch_rpc(&state, &catalog, &caller, &body).await
+}
+
+/// The caller an open terminal's session token stands for: the admin who opened
+/// it, with every flag, as a token minted with "allow all" would have.
+///
+/// The user is read per request, as a table token's is, so an admin who is
+/// demoted or disabled while the terminal is open loses MCP at once.
+pub(crate) async fn terminal_caller(catalog: &Catalog, grant: &SessionGrant) -> Result<ApiCaller> {
+    let Some(user) = sc_auth::load_user(catalog, grant.user_id).await? else {
+        return Err(Error::auth(
+            "the admin who opened this terminal no longer exists",
+        ));
+    };
+    if user.is_disabled() {
+        return Err(Error::auth(
+            "the admin who opened this terminal is disabled",
+        ));
+    }
+    if user.role > sc_auth::ROLE_ADMIN {
+        return Err(Error::auth(
+            "the user who opened this terminal is no longer an administrator",
+        ));
+    }
+    let label = match user.extra.get("email") {
+        Some(sc_query::Value::Text(email)) => format!("Claude Code terminal ({email})"),
+        _ => "Claude Code terminal".to_owned(),
+    };
+    let mut grants = sc_types::Attrs::new();
+    grants.insert(sc_api::mcp::ALLOW_ALL.to_owned(), Json::Bool(true));
+    Ok(ApiCaller {
+        token: sc_auth::ApiToken {
+            id: grant.session,
+            user_id: grant.user_id,
+            label,
+            grants,
+            created_at: grant.opened,
+            expires_at: None,
+            last_used_at: None,
+            revoked_at: None,
+        },
+        user,
+    })
 }
 
 /// Parse one JSON-RPC message and answer it.
@@ -747,7 +826,7 @@ impl sc_catalog::AdminHost for AdminHandlers {
 }
 
 /// Whether the peer is on this machine. An unknown peer is not.
-fn is_loopback(peer: Option<ConnectInfo<SocketAddr>>) -> bool {
+pub(crate) fn is_loopback(peer: Option<ConnectInfo<SocketAddr>>) -> bool {
     peer.is_some_and(|ConnectInfo(addr)| addr.ip().is_loopback())
 }
 

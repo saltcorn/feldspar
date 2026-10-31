@@ -42,23 +42,23 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## CT3 — Wiring Claude Code to this server
 
-- [ ] CT3.1 Session tokens: an in-memory map from token to (user, session), filled by the
+- [x] CT3.1 Session tokens: an in-memory map from token to (user, session), filled by the
       terminal route and emptied when its socket closes. The MCP route checks it before the token
       table, accepts a session token only from loopback, and accepts it even when `mcp_enabled`
       is off (the token table is still not read in that case).
-- [ ] CT3.2 Launch line: `--continue`, `--mcp-config` (a temporary file outside the store,
+- [x] CT3.2 Launch line: `--continue`, `--mcp-config` (a temporary file outside the store,
       deleted with the session), `--strict-mcp-config`, and `--append-system-prompt` with the
       framework's builder-agent prompt. `CLAUDE_CONFIG_DIR=<data dir>/claude`; the Anthropic
       provider's key as `ANTHROPIC_API_KEY` when one is configured.
-- [ ] CT3.3 Tests: a session token opens MCP while the socket lives and not after; it is refused
+- [x] CT3.3 Tests: a session token opens MCP while the socket lives and not after; it is refused
       from a non-loopback peer; it works with `mcp_enabled` off while a table token does not;
       nothing is written into the store; the launch line and environment are what the design says.
-- [ ] CT3.4 The installation's MCP servers: an `offer_to_terminal` attribute on `_fd_mcp_servers`
+- [x] CT3.4 The installation's MCP servers: an `offer_to_terminal` attribute on `_fd_mcp_servers`
       (a checkbox on the MCP server form, off by default), and `/ide/mcp-proxy/{server}`, which
       takes only a live session token and forwards to the server's URL with its stored headers,
       through `sc-mcp`'s guard and timeout. The session's MCP config gets one entry per offered
       streamable-HTTP server. SSE servers are left out, and the terminal says which ones and why.
-- [ ] CT3.5 Tests (with a stub MCP server): a call through the proxy arrives with the stored
+- [x] CT3.5 Tests (with a stub MCP server): a call through the proxy arrives with the stored
       headers; the config file contains no header value; a server that is not offered, or a
       table token, or a closed session's token is refused; a private-network URL is refused
       unless the definition allows it; an SSE server is left out with a reason.
