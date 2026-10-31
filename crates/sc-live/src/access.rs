@@ -42,25 +42,24 @@
 //!   subscription passed is enough; on a `row` topic the caller needs
 //!   **update** access to the row, looked up the way read access is; a `user`
 //!   topic — and a stream of row changes, which only a write makes — never.
-
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC};
 use sc_stream::TopicSpec;
+use sc_types::Role;
 use uuid::Uuid;
 
 /// Who is asking: the role they hold and, when signed in, who they are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caller {
     /// Their role — the public role for an anonymous caller.
-    pub role: u8,
+    pub role: Role,
     /// Their user id, or `None` for an anonymous caller.
     pub user: Option<Uuid>,
 }
 
 impl Caller {
     /// A caller with this role and user.
-    pub fn new(role: Option<u8>, user: Option<Uuid>) -> Caller {
+    pub fn new(role: Option<Role>, user: Option<Uuid>) -> Caller {
         Caller {
-            role: caller_role(role),
+            role: role.unwrap_or(Role::PUBLIC),
             user,
         }
     }
@@ -84,7 +83,7 @@ pub struct StreamFacts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredStream {
     /// Its `min_role`; `None` is admin-only.
-    pub min_role: Option<u8>,
+    pub min_role: Option<Role>,
     /// How its elements are split into topics.
     pub topics: TopicSpec,
 }
@@ -136,11 +135,6 @@ pub struct Grant {
     pub topic: Option<String>,
 }
 
-/// The role a caller holds: their own, or the public role for nobody.
-pub fn caller_role(role: Option<u8>) -> u8 {
-    role.unwrap_or(ROLE_PUBLIC)
-}
-
 /// The stream-level rules alone: exposed, stored, and the caller meets its
 /// floor. What every subscription passes before anything about its topic is
 /// looked up — so a caller below the floor never causes a row to be read.
@@ -149,9 +143,9 @@ pub fn may_open(facts: &StreamFacts, caller: &Caller) -> Result<StoredStream, De
         return Err(Denied);
     }
     let stored = facts.stored.as_ref().ok_or(Denied)?;
-    let floor = stored.min_role.unwrap_or(ROLE_ADMIN);
+    let floor = stored.min_role.unwrap_or(Role::ADMIN);
     // A lower number is more privilege: admin is 1, public is 100.
-    if caller.role > floor {
+    if floor.outranks(caller.role) {
         return Err(Denied);
     }
     Ok(stored.clone())
@@ -249,10 +243,10 @@ pub fn may_publish(topics: &TopicSpec, facts: PublishFacts) -> bool {
 mod tests {
     use super::*;
 
-    const EDITOR: u8 = 80;
-    const MEMBER: u8 = 90;
+    const EDITOR: Role = Role::of(80);
+    const MEMBER: Role = Role::of(90);
 
-    fn facts(exposed: bool, stored: Option<(Option<u8>, TopicSpec)>) -> StreamFacts {
+    fn facts(exposed: bool, stored: Option<(Option<Role>, TopicSpec)>) -> StreamFacts {
         StreamFacts {
             exposed,
             stored: stored.map(|(min_role, topics)| StoredStream { min_role, topics }),
@@ -269,7 +263,7 @@ mod tests {
         Uuid::from_u128(0xa11ce)
     }
 
-    fn signed_in(role: u8) -> Caller {
+    fn signed_in(role: Role) -> Caller {
         Caller {
             role,
             user: Some(alice()),
@@ -325,7 +319,7 @@ mod tests {
             (
                 "exposed, admin",
                 facts(true, Some((Some(MEMBER), single.clone()))),
-                signed_in(ROLE_ADMIN),
+                signed_in(Role::ADMIN),
                 true,
             ),
             (
@@ -342,7 +336,7 @@ mod tests {
             ),
             (
                 "anonymous, public floor",
-                facts(true, Some((Some(ROLE_PUBLIC), single.clone()))),
+                facts(true, Some((Some(Role::PUBLIC), single.clone()))),
                 anonymous(),
                 true,
             ),
@@ -355,19 +349,19 @@ mod tests {
             (
                 "no min_role, admin",
                 facts(true, Some((None, single.clone()))),
-                signed_in(ROLE_ADMIN),
+                signed_in(Role::ADMIN),
                 true,
             ),
             (
                 "not exposed, would be allowed",
-                facts(false, Some((Some(ROLE_PUBLIC), single.clone()))),
-                signed_in(ROLE_ADMIN),
+                facts(false, Some((Some(Role::PUBLIC), single.clone()))),
+                signed_in(Role::ADMIN),
                 false,
             ),
             (
                 "exposed, but no such stream",
                 facts(true, None),
-                signed_in(ROLE_ADMIN),
+                signed_in(Role::ADMIN),
                 false,
             ),
             (
@@ -384,17 +378,17 @@ mod tests {
             ),
             (
                 "per-element, anonymous at a public floor",
-                facts(true, Some((Some(ROLE_PUBLIC), cards()))),
+                facts(true, Some((Some(Role::PUBLIC), cards()))),
                 anonymous(),
                 true,
             ),
             (
                 "per-element, table outside the app",
                 with_row(
-                    facts(true, Some((Some(ROLE_PUBLIC), cards()))),
+                    facts(true, Some((Some(Role::PUBLIC), cards()))),
                     RowFact::TableNotExposed,
                 ),
-                signed_in(ROLE_ADMIN),
+                signed_in(Role::ADMIN),
                 false,
             ),
         ];
@@ -418,7 +412,7 @@ mod tests {
         );
         // Anonymous has no topic, and is told the stream is not there — the
         // same answer whether or not they named one.
-        let public_job = facts(true, Some((Some(ROLE_PUBLIC), TopicSpec::User)));
+        let public_job = facts(true, Some((Some(Role::PUBLIC), TopicSpec::User)));
         assert_eq!(decide(&public_job, &anonymous(), None), Err(None));
         assert_eq!(decide(&public_job, &anonymous(), Some("x")), Err(None));
         // Naming a topic — anybody's, your own included — is a malformed frame.
@@ -428,7 +422,7 @@ mod tests {
         );
         assert_eq!(decide(&job, &signed_in(MEMBER), Some("bob")), Err(Some(())));
         // The floor still applies first.
-        assert_eq!(decide(&job, &signed_in(ROLE_PUBLIC), None), Err(None));
+        assert_eq!(decide(&job, &signed_in(Role::PUBLIC), None), Err(None));
     }
 
     #[test]
@@ -464,7 +458,7 @@ mod tests {
         assert_eq!(
             decide(
                 &with_row(presence, RowFact::Readable),
-                &signed_in(ROLE_PUBLIC),
+                &signed_in(Role::PUBLIC),
                 Some("7")
             ),
             Err(None)
@@ -488,7 +482,10 @@ mod tests {
         assert_eq!(decide(&live, &signed_in(MEMBER), None), Ok(None));
         // A topic is malformed — but only once access passed…
         assert_eq!(decide(&live, &signed_in(MEMBER), Some("7")), Err(Some(())));
-        assert_eq!(decide(&live, &signed_in(ROLE_PUBLIC), Some("7")), Err(None));
+        assert_eq!(
+            decide(&live, &signed_in(Role::PUBLIC), Some("7")),
+            Err(None)
+        );
         // …and a table outside the app is absent, topic or not.
         let outside = with_row(live, RowFact::TableNotExposed);
         assert_eq!(decide(&outside, &signed_in(MEMBER), None), Err(None));
@@ -498,15 +495,15 @@ mod tests {
     #[test]
     fn every_refusal_of_access_is_the_same_refusal() {
         let cases = [
-            (facts(false, None), signed_in(ROLE_ADMIN), None),
-            (facts(true, None), signed_in(ROLE_ADMIN), None),
+            (facts(false, None), signed_in(Role::ADMIN), None),
+            (facts(true, None), signed_in(Role::ADMIN), None),
             (
                 facts(true, Some((Some(EDITOR), TopicSpec::Single))),
                 signed_in(MEMBER),
                 None,
             ),
             (
-                facts(true, Some((Some(ROLE_PUBLIC), TopicSpec::User))),
+                facts(true, Some((Some(Role::PUBLIC), TopicSpec::User))),
                 anonymous(),
                 None,
             ),

@@ -8,10 +8,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{ActionContext, Event, EventKind, Trigger, validate_trigger};
-use sc_auth::{Role, create_user, list_role_grants, load_user, save_role};
+use sc_auth::{RoleDef, create_user, list_role_grants, load_user, save_role};
 use sc_catalog::Catalog;
 use sc_core_actions::builtin_actions;
 use sc_db::DatabaseDriver;
@@ -37,8 +38,8 @@ async fn setup(db: &TestDb) -> Result<Catalog> {
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
     sc_auth::bootstrap(&catalog).await?;
-    save_role(&catalog, &Role::new(70, "Trial")).await?;
-    save_role(&catalog, &Role::new(80, "Member")).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(70), "Trial")).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Member")).await?;
     Ok(catalog)
 }
 
@@ -81,7 +82,7 @@ async fn run(catalog: &Catalog, event: &Event, cfg: &Attrs) -> Result<Json> {
 async fn a_trial_granted_on_sign_up_is_not_granted_again_after_it_expires() -> Result<()> {
     let db = TestDb::new().await?;
     let catalog = setup(&db).await?;
-    let user = create_user(&catalog, "new@example.com", "pw", 80).await?;
+    let user = create_user(&catalog, "new@example.com", "pw", Role::of(80)).await?;
     let registry = builtin_actions()?;
     let trigger = Trigger::new("trial-on-signup", EventKind::Insert, "grant_role")
         .on("users")
@@ -91,7 +92,10 @@ async fn a_trial_granted_on_sign_up_is_not_granted_again_after_it_expires() -> R
     let first = run(&catalog, &signed_up(&user), &trial()).await?;
     assert_eq!(first["granted"], json!(true), "{first}");
     assert_eq!(first["role"], json!(70));
-    assert_eq!(load_user(&catalog, user.id).await?.unwrap().role, 70);
+    assert_eq!(
+        load_user(&catalog, user.id).await?.unwrap().role,
+        Role::of(70)
+    );
     let grants = list_role_grants(&catalog, user.id).await?;
     assert_eq!(grants.len(), 1);
     assert_eq!(grants[0].source, "grant_role");
@@ -113,18 +117,27 @@ async fn a_trial_granted_on_sign_up_is_not_granted_again_after_it_expires() -> R
         )
         .await
         .map_err(|e| Error::database(e.to_string()))?;
-    assert_eq!(load_user(&catalog, user.id).await?.unwrap().role, 80);
+    assert_eq!(
+        load_user(&catalog, user.id).await?.unwrap().role,
+        Role::of(80)
+    );
     // …and is still not granted again.
     let after = run(&catalog, &signed_up(&user), &trial()).await?;
     assert_eq!(after["granted"], json!(false), "{after}");
-    assert_eq!(load_user(&catalog, user.id).await?.unwrap().role, 80);
+    assert_eq!(
+        load_user(&catalog, user.id).await?.unwrap().role,
+        Role::of(80)
+    );
     assert_eq!(list_role_grants(&catalog, user.id).await?.len(), 1);
 
     // The key is per user: somebody else signing up gets a trial of their own.
-    let other = create_user(&catalog, "other@example.com", "pw", 80).await?;
+    let other = create_user(&catalog, "other@example.com", "pw", Role::of(80)).await?;
     let theirs = run(&catalog, &signed_up(&other), &trial()).await?;
     assert_eq!(theirs["granted"], json!(true), "{theirs}");
-    assert_eq!(load_user(&catalog, user.id).await?.unwrap().role, 80);
+    assert_eq!(
+        load_user(&catalog, user.id).await?.unwrap().role,
+        Role::of(80)
+    );
 
     // Without `once`, a second run extends the grant rather than adding one.
     let comp = config(&[
@@ -136,7 +149,10 @@ async fn a_trial_granted_on_sign_up_is_not_granted_again_after_it_expires() -> R
     run(&catalog, &signed_up(&user), &comp).await?;
     run(&catalog, &signed_up(&user), &comp).await?;
     assert_eq!(list_role_grants(&catalog, user.id).await?.len(), 2);
-    assert_eq!(load_user(&catalog, user.id).await?.unwrap().role, 70);
+    assert_eq!(
+        load_user(&catalog, user.id).await?.unwrap().role,
+        Role::of(70)
+    );
     Ok(())
 }
 

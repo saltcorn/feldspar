@@ -9,10 +9,11 @@
 //! because the database refuses it; and a role users still hold cannot be
 //! deleted out from under them.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_auth::{
-    ROLES_TABLE, Role, bootstrap, create_first_user, create_user, delete_role, list_roles,
+    ROLES_TABLE, RoleDef, bootstrap, create_first_user, create_user, delete_role, list_roles,
     load_role, save_role,
 };
 use sc_catalog::Catalog;
@@ -47,19 +48,19 @@ async fn bootstrap_seeds_exactly_the_two_builtin_roles() -> Result<()> {
     let cat = catalog(&db).await?;
 
     let roles = list_roles(&cat).await?;
-    let numbers: Vec<u8> = roles.iter().map(|r| r.role).collect();
+    let numbers: Vec<u8> = roles.iter().map(|r| r.role.get()).collect();
     assert_eq!(numbers, vec![1, 100], "only the two the system depends on");
-    assert_eq!(load_role(&cat, 1).await?.unwrap().name, "Admin");
-    assert_eq!(load_role(&cat, 100).await?.unwrap().name, "Public");
+    assert_eq!(load_role(&cat, Role::ADMIN).await?.unwrap().name, "Admin");
+    assert_eq!(load_role(&cat, Role::PUBLIC).await?.unwrap().name, "Public");
     assert!(roles.iter().all(|r| r.is_builtin()));
 
     // Bootstrapping again does not duplicate or overwrite — an admin who renamed
     // Admin to Owner keeps that across reboots.
-    let mut owner = load_role(&cat, 1).await?.unwrap();
+    let mut owner = load_role(&cat, Role::ADMIN).await?.unwrap();
     owner.name = "Owner".to_owned();
     save_role(&cat, &owner).await?;
     bootstrap(&cat).await?;
-    assert_eq!(load_role(&cat, 1).await?.unwrap().name, "Owner");
+    assert_eq!(load_role(&cat, Role::ADMIN).await?.unwrap().name, "Owner");
     assert_eq!(list_roles(&cat).await?.len(), 2);
     Ok(())
 }
@@ -69,13 +70,15 @@ async fn a_role_round_trips_including_its_settings() -> Result<()> {
     let db = TestDb::new().await?;
     let cat = catalog(&db).await?;
 
-    let mut staff = Role::new(40, "Staff").description("On the payroll");
+    let mut staff = RoleDef::new(Role::of(40), "Staff").description("On the payroll");
     staff
         .attributes
         .insert("landing".into(), "/dashboard".into());
     save_role(&cat, &staff).await?;
 
-    let loaded = load_role(&cat, 40).await?.expect("saved role loads back");
+    let loaded = load_role(&cat, Role::of(40))
+        .await?
+        .expect("saved role loads back");
     assert_eq!(loaded, staff);
     assert_eq!(
         loaded.attributes.get("landing").and_then(|v| v.as_str()),
@@ -83,7 +86,7 @@ async fn a_role_round_trips_including_its_settings() -> Result<()> {
     );
 
     // The number is the key everything holds, so a second role cannot claim it.
-    let clash = Role::new(40, "Different");
+    let clash = RoleDef::new(Role::of(40), "Different");
     let err = save_role(&cat, &clash).await.unwrap_err();
     assert!(matches!(err.repr(), Repr::Invalid(_)), "{err}");
     Ok(())
@@ -97,16 +100,16 @@ async fn a_user_cannot_hold_a_role_that_does_not_exist() -> Result<()> {
 
     // Role 40 is not there yet: the create is refused, and the message is the
     // legible one, not a raw constraint violation.
-    let err = create_user(&cat, "editor@example.com", "editor-pw", 40)
+    let err = create_user(&cat, "editor@example.com", "editor-pw", Role::of(40))
         .await
         .unwrap_err();
     assert!(matches!(err.repr(), Repr::Invalid(_)), "{err}");
     assert!(err.to_string().contains("role 40"), "{err}");
 
     // Create the role, and now the same user is accepted.
-    save_role(&cat, &Role::new(40, "Editor")).await?;
-    let user = create_user(&cat, "editor@example.com", "editor-pw", 40).await?;
-    assert_eq!(user.role, 40);
+    save_role(&cat, &RoleDef::new(Role::of(40), "Editor")).await?;
+    let user = create_user(&cat, "editor@example.com", "editor-pw", Role::of(40)).await?;
+    assert_eq!(user.role, Role::of(40));
     Ok(())
 }
 
@@ -115,24 +118,27 @@ async fn a_role_still_held_cannot_be_deleted() -> Result<()> {
     let db = TestDb::new().await?;
     let cat = catalog(&db).await?;
     create_first_user(&cat, "admin@example.com", "admin-pw").await?;
-    save_role(&cat, &Role::new(40, "Editor")).await?;
-    create_user(&cat, "editor@example.com", "editor-pw", 40).await?;
+    save_role(&cat, &RoleDef::new(Role::of(40), "Editor")).await?;
+    create_user(&cat, "editor@example.com", "editor-pw", Role::of(40)).await?;
 
     // Held by one user: refused, and the message says so rather than surfacing
     // the foreign key. Nothing cascades — a user's role is not the system's to
     // silently reassign.
-    let err = delete_role(&cat, 40).await.unwrap_err();
+    let err = delete_role(&cat, Role::of(40)).await.unwrap_err();
     assert!(matches!(err.repr(), Repr::Invalid(_)), "{err}");
     assert!(err.to_string().contains("held by"), "{err}");
-    assert!(load_role(&cat, 40).await?.is_some(), "not deleted");
+    assert!(
+        load_role(&cat, Role::of(40)).await?.is_some(),
+        "not deleted"
+    );
 
     // A built-in role is refused even when nobody holds it.
-    let err = delete_role(&cat, 1).await.unwrap_err();
+    let err = delete_role(&cat, Role::ADMIN).await.unwrap_err();
     assert!(matches!(err.repr(), Repr::Invalid(_)), "{err}");
 
     // Deleting a role that does not exist is not an error — it says nothing was
     // there.
-    assert!(!delete_role(&cat, 55).await?);
+    assert!(!delete_role(&cat, Role::of(55)).await?);
     Ok(())
 }
 

@@ -12,6 +12,7 @@
 //! are dropped too, so it lists `users` alone again afterwards.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -238,12 +239,12 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
         json!({ "amount": "5" }),
     )
     .await;
-    sc_auth::save_role(&server.catalog, &sc_auth::Role::new(60, "Pro")).await?;
+    sc_auth::save_role(&server.catalog, &sc_auth::RoleDef::new(Role::of(60), "Pro")).await?;
     sc_auth::grant_role(
         &server.catalog,
         sc_auth::NewRoleGrant {
             user_id: admin.id,
-            role: 60,
+            role: Role::of(60),
             source: "test".into(),
             source_ref: "one".into(),
             starts_at: None,
@@ -428,7 +429,7 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
     let roles = sc_auth::list_roles(&server.catalog).await?;
     assert_eq!(
         roles.iter().map(|r| r.role).collect::<Vec<_>>(),
-        vec![sc_auth::ROLE_ADMIN, sc_auth::ROLE_PUBLIC],
+        vec![Role::ADMIN, Role::PUBLIC],
         "only the two built-in roles, seeded again"
     );
 

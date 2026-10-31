@@ -6,12 +6,13 @@
 //! `role_gate`); this file is the consolidated Phase 5 definition-of-done for the
 //! users-and-auth story.
 
+use sc_types::Role;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use chrono::Duration;
 use sc_auth::{
-    CACHE_CAPACITY, COL_EMAIL, ROLE_ADMIN, SessionStore, any_user_exists, authenticate, bootstrap,
+    CACHE_CAPACITY, COL_EMAIL, SessionStore, any_user_exists, authenticate, bootstrap,
     create_first_user,
 };
 use sc_catalog::Catalog;
@@ -81,7 +82,7 @@ async fn phase5_auth_acceptance_walk() -> sc_error::Result<()> {
         .await?
         .expect("valid credentials authenticate");
     assert_eq!(user.id, admin.id);
-    assert_eq!(user.role, ROLE_ADMIN);
+    assert_eq!(user.role, Role::ADMIN);
     assert_eq!(
         user.get(COL_EMAIL),
         Some(&Value::Text("admin@example.com".into()))

@@ -26,6 +26,7 @@
 //!
 //! Both need the built Saltcorn UI bundle, and skip without it.
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
@@ -381,14 +382,14 @@ async fn setup_from(tag: &str, bundle: PathBuf, archive: &[u8]) -> sc_error::Res
     assert_eq!(sc_viewpattern::list_views(&catalog, app.id).await?.len(), 7);
 
     let feed = View::new(app.id, "Feed Books", "Feed", "Books")
-        .min_role(1)
+        .min_role(Role::ADMIN)
         .configuration(object(json!({
             "show_view": "Show Books", "order_field": "title", "descending": false,
             "cols_sm": 1, "cols_md": 1, "cols_lg": 1, "cols_xl": 1,
         })));
     sc_viewpattern::save_view(&catalog, &feed).await?;
     let lsl = View::new(app.id, "Books and details", "ListShowList", "Books")
-        .min_role(1)
+        .min_role(Role::ADMIN)
         .configuration(object(json!({
             "list_view": "List Books", "show_view": "Show Books", "list_width": 4, "subtables": {},
         })));
@@ -841,7 +842,7 @@ async fn an_action_that_is_not_the_applications_is_refused_by_name() -> sc_error
     // application does not declare.
     for action in ["run_js_code", "ReturnBook"] {
         let view = View::new(app.id, "Runs something", "List", "Books")
-            .min_role(1)
+            .min_role(Role::ADMIN)
             .configuration(object(json!({
                 "columns": [{ "type": "Action", "action_name": action, "rndid": "abc123" }],
             })));
@@ -1488,7 +1489,7 @@ async fn signing_in_lands_on_the_view_asked_for_and_signing_out_leaves() -> sc_e
     let account = sc_auth::load_user_by_email(&catalog, reader)
         .await?
         .expect("the account");
-    assert_eq!(account.role, 80);
+    assert_eq!(account.role, Role::of(80));
     // Signed in, and still not allowed: a role-80 user is told so, by name.
     let forbidden = browser.app_get("/view/List%20Books", &[]).await;
     assert_eq!(
@@ -1566,8 +1567,8 @@ async fn two_viewers_see_their_own_rows_through_one_view() -> sc_error::Result<(
 
     // Role 80 is v1's `user`, restored with the backup.
     let (alice, bob) = ("alice@example.com", "bob@example.com");
-    create_user(&catalog, alice, "alice-pass", 80).await?;
-    create_user(&catalog, bob, "bob-pass", 80).await?;
+    create_user(&catalog, alice, "alice-pass", Role::of(80)).await?;
+    create_user(&catalog, bob, "bob-pass", Role::of(80)).await?;
     let books = rows_of(client, "Books").await;
     assert!(books.len() >= 2, "{books:?}");
     let mut titles = Vec::new();
@@ -1605,7 +1606,7 @@ async fn two_viewers_see_their_own_rows_through_one_view() -> sc_error::Result<(
         .retain(|b| b["contents"]["type"] == "field" && own_column(&b["contents"]));
     let app = booksdb(&catalog).await;
     let view = View::new(app.id, "My Books", "List", "Books")
-        .min_role(80)
+        .min_role(Role::of(80))
         .configuration(object(configuration));
     sc_viewpattern::save_view(&catalog, &view).await?;
     build_and_mount(&server.apps, app).await?;
@@ -2594,7 +2595,7 @@ async fn a_pages_action_buttons_run_and_its_properties_shape_the_document() -> s
     assert_eq!(row_count(client, "Authors").await, authors + 2);
 
     // The page's role: an admin-only page refuses a stranger and a member.
-    sc_viewpattern::save_page(&catalog, &actions.clone().min_role(1)).await?;
+    sc_viewpattern::save_page(&catalog, &actions.clone().min_role(Role::ADMIN)).await?;
     build_and_mount(&server.apps, booksdb(&catalog).await).await?;
     let mut stranger = visitor(&server.client);
     stranger.app_get("/auth/login", &[]).await;
@@ -2602,7 +2603,7 @@ async fn a_pages_action_buttons_run_and_its_properties_shape_the_document() -> s
     let refused =
         post_page_action(&mut stranger, "/page/Actions/action/a1b2c3", Some(&token)).await;
     assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.body);
-    create_user(&catalog, "member@example.com", PASSWORD, 80).await?;
+    create_user(&catalog, "member@example.com", PASSWORD, Role::of(80)).await?;
     let mut member = sign_in(&server.client, "member@example.com", PASSWORD).await;
     let token = member.cookies.get(CSRF_COOKIE).cloned().unwrap();
     let refused = post_page_action(&mut member, "/page/Actions/action/a1b2c3", Some(&token)).await;
@@ -2612,7 +2613,7 @@ async fn a_pages_action_buttons_run_and_its_properties_shape_the_document() -> s
     // refused to them although it is found, and a trigger runs at the member's
     // own role, so one whose `min_role` is admin-only is refused too. A trigger
     // open to members runs for them.
-    sc_viewpattern::save_page(&catalog, &actions.clone().min_role(80)).await?;
+    sc_viewpattern::save_page(&catalog, &actions.clone().min_role(Role::of(80))).await?;
     build_and_mount(&server.apps, booksdb(&catalog).await).await?;
     let shown = member.app_get("/page/Actions", &[]).await;
     assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);

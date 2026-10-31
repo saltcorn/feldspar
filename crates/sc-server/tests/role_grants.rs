@@ -12,6 +12,7 @@
 //!   a time-limited one by hand, and revoke it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,8 +25,8 @@ use sc_app::{
     ApiConfig, Application, CodeFramework, FrameworkRef, app_source_from_config, build_application,
 };
 use sc_auth::{
-    CACHE_CAPACITY, NewRoleGrant, ROLE_ADMIN, Role, SessionStore, create_user, find_role_grant,
-    grant_role, save_role,
+    CACHE_CAPACITY, NewRoleGrant, RoleDef, SessionStore, create_user, find_role_grant, grant_role,
+    save_role,
 };
 use sc_catalog::{Catalog, FileStoreId, TableId};
 use sc_db::DatabaseDriver;
@@ -266,7 +267,7 @@ async fn past_the_ttl() {
 }
 
 /// Set `posts`' access through the admin API.
-async fn set_access(admin: &mut Client, min_role_read: u8, formula: &str, rls: bool) {
+async fn set_access(admin: &mut Client, min_role_read: Role, formula: &str, rls: bool) {
     let (status, body) = admin
         .send(
             "PUT",
@@ -286,12 +287,14 @@ async fn set_access(admin: &mut Client, min_role_read: u8, formula: &str, rls: b
 }
 
 async fn people(catalog: &Catalog) -> sc_error::Result<uuid::Uuid> {
-    create_user(catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
-    save_role(catalog, &Role::new(60, "Pro")).await?;
-    save_role(catalog, &Role::new(80, "Member")).await?;
-    Ok(create_user(catalog, "reader@example.com", "reader-pw", 80)
-        .await?
-        .id)
+    create_user(catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
+    save_role(catalog, &RoleDef::new(Role::of(60), "Pro")).await?;
+    save_role(catalog, &RoleDef::new(Role::of(80), "Member")).await?;
+    Ok(
+        create_user(catalog, "reader@example.com", "reader-pw", Role::of(80))
+            .await?
+            .id,
+    )
 }
 
 #[tokio::test]
@@ -306,7 +309,7 @@ async fn a_grant_opens_a_table_within_the_ttl_and_its_end_closes_it_with_no_writ
         admin.login("admin@example.com", "admin-pw").await,
         StatusCode::OK
     );
-    set_access(&mut admin, 60, "", false).await;
+    set_access(&mut admin, Role::of(60), "", false).await;
 
     let mut reader = Client::new(router.clone(), APP_HOST);
     assert_eq!(
@@ -363,7 +366,7 @@ async fn a_grant_opens_a_table_within_the_ttl_and_its_end_closes_it_with_no_writ
         &catalog,
         NewRoleGrant {
             user_id: reader_id,
-            role: 60,
+            role: Role::of(60),
             source: "test".into(),
             source_ref: "sub_1".into(),
             starts_at: None,
@@ -386,7 +389,7 @@ async fn a_grant_opens_a_table_within_the_ttl_and_its_end_closes_it_with_no_writ
     );
 
     // Somebody else's grant is not this user's to revoke through their path.
-    let other = create_user(&catalog, "other@example.com", "pw", 80).await?;
+    let other = create_user(&catalog, "other@example.com", "pw", Role::of(80)).await?;
     let (status, _) = admin
         .send(
             "POST",
@@ -420,7 +423,7 @@ async fn formulas_and_row_level_security_see_the_effective_role() -> sc_error::R
 
     let grant = |source_ref: &str| NewRoleGrant {
         user_id: reader_id,
-        role: 60,
+        role: Role::of(60),
         source: "test".into(),
         source_ref: source_ref.into(),
         starts_at: None,
@@ -428,7 +431,7 @@ async fn formulas_and_row_level_security_see_the_effective_role() -> sc_error::R
         note: None,
     };
     for rls in [false, true] {
-        set_access(&mut admin, 1, "_read && user.role <= 60", rls).await;
+        set_access(&mut admin, Role::ADMIN, "_read && user.role <= 60", rls).await;
         let (status, rows) = reader.send("GET", "/api/posts", None).await;
         assert_eq!(status, StatusCode::OK, "rls {rls}: {rows}");
         assert_eq!(rows, json!([]), "rls {rls}: role 80 reads nothing");

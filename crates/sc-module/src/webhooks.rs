@@ -38,10 +38,10 @@
 use base64::Engine;
 use sc_action::TriggerDispatcher;
 use sc_api::code_host::{TableHost, TriggerRunHost, schema_snapshot};
-use sc_auth::ROLE_ADMIN;
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_expr::{CodeHosts, TriggerHost};
+use sc_types::Role;
 use serde_json::{Map, Value as Json, json};
 
 use crate::files::{ModuleFiles, file_areas};
@@ -168,14 +168,14 @@ pub async fn run_webhook(
     let areas = file_areas(&loaded.table_declarations());
     let user = webhook_user(module, webhook);
     let scoped = ScopedTables {
-        inner: TableHost::new(catalog).caused_by(ROLE_ADMIN, Some(user.clone())),
+        inner: TableHost::new(catalog).caused_by(Role::ADMIN, Some(user.clone())),
         catalog,
         module,
         tables: &tables,
         kind: "webhook",
     };
     let triggers =
-        dispatcher.map(|d| TriggerRunHost::new(d, catalog).caused_by(ROLE_ADMIN, Some(user)));
+        dispatcher.map(|d| TriggerRunHost::new(d, catalog).caused_by(Role::ADMIN, Some(user)));
     let files = ModuleFiles::new(catalog, module, &areas);
     let roles = crate::roles::ModuleRoles::new(catalog, module, loaded.module.permissions.roles);
     let credits = crate::credits::ModuleCredits::new(catalog, module);

@@ -30,6 +30,7 @@
 //! [`FileScope::connect`] returns the two together and nothing in this crate
 //! reads a store without it.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_agent::{RunCaller, TraitCheck, TraitContext};
@@ -207,7 +208,7 @@ impl FileScope {
     /// The two travel together because every access check needs both, and a
     /// caller that forgot the floor would be applying the per-file rules while
     /// ignoring the store-wide one.
-    pub async fn connect(&self, catalog: &Catalog) -> Result<(Arc<dyn FileStore>, Option<u8>)> {
+    pub async fn connect(&self, catalog: &Catalog) -> Result<(Arc<dyn FileStore>, Option<Role>)> {
         let store = catalog.require_file_store(&self.store)?;
         let floor = load_file_store_by_name(catalog, &self.store)
             .await

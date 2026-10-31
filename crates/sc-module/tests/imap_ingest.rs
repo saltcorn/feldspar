@@ -45,6 +45,7 @@ pub(crate) mod deno {
         ModuleSource, ServiceSupervisor, save_module,
     };
     use sc_test_harness::TestDb;
+    use sc_types::Role;
     use sc_types::{Attrs, SECRET_SENTINEL};
     use serde_json::{Value as Json, json};
 
@@ -324,17 +325,17 @@ pub(crate) mod deno {
         // Users: staff (40) may read the shared mailbox, bob (80) may not, ann
         // (80) has a personal account of her own.
         for (role, name) in [(40, "Staff"), (80, "User")] {
-            sc_auth::save_role(&cat, &sc_auth::Role::new(role, name))
+            sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(role), name))
                 .await
                 .unwrap();
         }
-        let staff = sc_auth::create_user(&cat, "staff@example.com", "pw-staff-1", 40)
+        let staff = sc_auth::create_user(&cat, "staff@example.com", "pw-staff-1", Role::of(40))
             .await
             .unwrap();
-        let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", 80)
+        let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", Role::of(80))
             .await
             .unwrap();
-        let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", 80)
+        let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", Role::of(80))
             .await
             .unwrap();
 

@@ -34,6 +34,7 @@
 //!   are distinguished rather than collapsed. Sending the whole object back would
 //!   mean a model that forgot one field silently reset it.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 
 use sc_action::{
@@ -301,7 +302,10 @@ fn trigger_json(
     // Absent means admin-only, which is a different fact from "set to 1" only in
     // how it got there — so it is reported as the number it behaves as, with the
     // word, because a model reading `null` would tell the admin "anyone".
-    out.insert("min_role".to_owned(), json!(trigger.min_role.unwrap_or(1)));
+    out.insert(
+        "min_role".to_owned(),
+        json!(trigger.min_role.unwrap_or(Role::ADMIN)),
+    );
     out.insert("enabled".to_owned(), json!(trigger.is_enabled()));
     for key in [ATTR_MINUTE, ATTR_HOUR, ATTR_DAY_OF_WEEK] {
         if let Some(value) = trigger.attributes.get(key) {

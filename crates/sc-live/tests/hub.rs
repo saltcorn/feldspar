@@ -15,10 +15,11 @@
 //! - **a session end closes exactly that session's connections**, through the
 //!   session store's listener hook.
 
+use sc_types::Role;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sc_auth::{ROLE_ADMIN, SessionListener, SessionStore, User};
+use sc_auth::{SessionListener, SessionStore, User};
 use sc_live::{ConnectionInfo, Delivery, ErrorCode, LiveHub, LiveLimits};
 use sc_stream::testing::ScriptedProvider;
 use sc_stream::{
@@ -204,8 +205,8 @@ async fn a_sign_out_closes_that_sessions_connections_and_no_others() {
     let listener: Arc<dyn SessionListener> = hub.clone();
     store.add_listener(Arc::downgrade(&listener));
 
-    let alice = User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap();
-    let bob = User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap();
+    let alice = User::new(Uuid::new_v4(), Role::ADMIN);
+    let bob = User::new(Uuid::new_v4(), Role::ADMIN);
     let alice_token = store.login(alice.clone()).await.unwrap();
     let bob_token = store.login(bob.clone()).await.unwrap();
 

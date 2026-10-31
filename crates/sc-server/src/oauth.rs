@@ -943,6 +943,7 @@ fn html_escape(text: &str) -> String {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use sc_types::Role;
     use serde_json::json;
 
     #[test]
@@ -1022,7 +1023,7 @@ mod tests {
         assert!(flows.take("s").is_some());
         assert!(flows.take("s").is_none());
         let token = flows.complete(Completion {
-            outcome: Outcome::SignIn(User::new(uuid::Uuid::new_v4(), 1).unwrap()),
+            outcome: Outcome::SignIn(User::new(uuid::Uuid::new_v4(), Role::ADMIN)),
             host: "h".into(),
             return_to: "/".into(),
             binding: "b".into(),

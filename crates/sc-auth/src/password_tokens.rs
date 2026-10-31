@@ -44,12 +44,14 @@ use argon2::password_hash::rand_core::{OsRng, RngCore};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{Duration, Utc};
+use sc_catalog::Authority;
 use sc_catalog::{Catalog, DataField, SharedTx, Table};
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::{
     Assignment, BinOp, Delete, Expr, Insert, Projection, Select, Source, Statement, Update, Value,
 };
+use sc_types::Role;
 use sc_types::{BasicType, TypeRef};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -58,9 +60,7 @@ use crate::create::{NewUser, insert_user};
 use crate::lookup::{load_user, load_user_by_email};
 use crate::password::hash_password;
 use crate::user::User;
-use crate::users::{
-    COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_PASSWORD_HASH, ROLE_PUBLIC, USERS_TABLE,
-};
+use crate::users::{COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_PASSWORD_HASH, USERS_TABLE};
 
 /// Name of the password token table in the primary database.
 pub const PASSWORD_TOKENS_TABLE: &str = "_fd_password_tokens";
@@ -260,7 +260,12 @@ async fn spend_in(
                 )),
         )
     };
-    let spent = tx.run(None, &Statement::from(delete)).await?;
+    let spent = tx
+        .run(
+            Authority::system("password token: spend"),
+            &Statement::from(delete),
+        )
+        .await?;
     let Some(user_id) = spent.first().map(|row| match row.get(COL_USER) {
         Some(Value::Uuid(id)) => Ok(*id),
         other => Err(Error::invalid(format!(
@@ -285,12 +290,23 @@ async fn spend_in(
         filter: Some(Expr::col(COL_ID).eq(Expr::lit(user_id))),
         returning: vec![Projection::expr(Expr::col(COL_ID))],
     };
-    if tx.run(None, &Statement::from(update)).await?.is_empty() {
+    if tx
+        .run(
+            Authority::system("password token: spend"),
+            &Statement::from(update),
+        )
+        .await?
+        .is_empty()
+    {
         return Ok(None);
     }
     let others =
         Delete::from(PASSWORD_TOKENS_TABLE).filter(Expr::col(COL_USER).eq(Expr::lit(user_id)));
-    tx.run(None, &Statement::from(others)).await?;
+    tx.run(
+        Authority::system("password token: spend"),
+        &Statement::from(others),
+    )
+    .await?;
     Ok(Some(user_id))
 }
 
@@ -377,7 +393,7 @@ pub enum InviteOutcome {
 pub async fn invite_user(
     catalog: &Catalog,
     new: NewUser,
-    inviter_role: u8,
+    inviter_role: Role,
 ) -> Result<InviteOutcome> {
     check_invite_role(new.role, inviter_role)?;
     let email = new.email.trim().to_owned();
@@ -403,14 +419,14 @@ pub async fn invite_user(
 
 /// Refuse an invitation to a role at least as powerful as the inviter's, or to
 /// the public role.
-fn check_invite_role(role: u8, inviter_role: u8) -> Result<()> {
-    if role <= inviter_role {
+fn check_invite_role(role: Role, inviter_role: Role) -> Result<()> {
+    if role.meets(inviter_role) {
         return Err(Error::auth(format!(
             "an invitation may only be to a role less powerful than your own: \
              role {role} is not greater than your role {inviter_role}"
         )));
     }
-    if role >= ROLE_PUBLIC {
+    if role.is_public() {
         return Err(Error::invalid(format!(
             "role {role} is the public role, which a signed-in account cannot hold"
         )));
@@ -449,14 +465,23 @@ mod tests {
 
     #[test]
     fn an_invitation_is_only_to_a_less_powerful_signed_in_role() {
-        assert!(check_invite_role(80, 40).is_ok());
-        assert!(check_invite_role(40, 40).is_err(), "not the inviter's own");
-        assert!(check_invite_role(1, 40).is_err(), "not more powerful");
+        assert!(check_invite_role(Role::of(80), Role::of(40)).is_ok());
         assert!(
-            check_invite_role(2, 1).is_ok(),
+            check_invite_role(Role::of(40), Role::of(40)).is_err(),
+            "not the inviter's own"
+        );
+        assert!(
+            check_invite_role(Role::ADMIN, Role::of(40)).is_err(),
+            "not more powerful"
+        );
+        assert!(
+            check_invite_role(Role::of(2), Role::ADMIN).is_ok(),
             "an admin may invite anyone"
         );
-        assert!(check_invite_role(100, 40).is_err(), "not the public role");
+        assert!(
+            check_invite_role(Role::PUBLIC, Role::of(40)).is_err(),
+            "not the public role"
+        );
     }
 
     #[test]

@@ -50,12 +50,13 @@ use sc_query::{
     Assignment, BinOp, Delete, Expr, Insert, OrderBy, Projection, Select, Source, Statement, UnOp,
     Update, Value,
 };
+use sc_types::Role;
 use sc_types::{BasicType, TypeRef};
 use serde::Serialize;
 use uuid::Uuid;
 
 use crate::roles::{COL_NAME as COL_ROLE_NAME, ROLES_TABLE, load_role};
-use crate::users::{COL_EMAIL, COL_ID as COL_USER_ID_TARGET, ROLE_ADMIN, ROLE_PUBLIC, USERS_TABLE};
+use crate::users::{COL_EMAIL, COL_ID as COL_USER_ID_TARGET, USERS_TABLE};
 
 /// The grants, an ordinary table in the primary database.
 pub const ROLE_GRANTS_TABLE: &str = "role_grants";
@@ -98,7 +99,7 @@ pub struct RoleGrant {
     /// The user it is for.
     pub user_id: Uuid,
     /// The role it gives.
-    pub role: u8,
+    pub role: Role,
     /// Who made it.
     pub source: String,
     /// The source's reference.
@@ -130,7 +131,7 @@ pub struct NewRoleGrant {
     /// The user it is for.
     pub user_id: Uuid,
     /// The role it gives.
-    pub role: u8,
+    pub role: Role,
     /// Who makes it.
     pub source: String,
     /// The source's reference for it.
@@ -147,7 +148,7 @@ pub struct NewRoleGrant {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EffectiveRole {
     /// The most privileged of the base role and the grants in force.
-    pub role: u8,
+    pub role: Role,
     /// The soonest a grant that could matter starts or ends — when a cached
     /// copy of this answer stops being true. `None`: not until something is
     /// written.
@@ -235,7 +236,7 @@ pub async fn bootstrap_role_grants(catalog: &Catalog) -> Result<Table> {
                 "Roles users hold for a while, beside their base role: subscriptions, trials \
                  and grants made by hand. Written by Feldspar; each user reads their own.",
             )
-            .access(ROLE_ADMIN, ROLE_ADMIN);
+            .access(Role::ADMIN, Role::ADMIN);
         meta.set_ownership_formula(Some(ROLE_GRANTS_OWNERSHIP));
         save_table_meta_row(catalog, &meta).await?;
         catalog.reload().await?;
@@ -249,7 +250,7 @@ pub async fn bootstrap_role_grants(catalog: &Catalog) -> Result<Table> {
 ///
 /// An installation without the table — a test catalog that never bootstrapped
 /// it — answers the base role.
-pub async fn effective_role(catalog: &Catalog, user: Uuid, base: u8) -> Result<EffectiveRole> {
+pub async fn effective_role(catalog: &Catalog, user: Uuid, base: Role) -> Result<EffectiveRole> {
     if catalog.get(ROLE_GRANTS_TABLE)?.is_none() {
         return Ok(EffectiveRole {
             role: base,
@@ -280,17 +281,17 @@ pub async fn effective_role(catalog: &Catalog, user: Uuid, base: u8) -> Result<E
 }
 
 /// The pure part of [`effective_role`]: given the unrevoked, unexpired grants.
-fn resolve(base: u8, grants: &[RoleGrant], now: DateTime<Utc>) -> EffectiveRole {
+fn resolve(base: Role, grants: &[RoleGrant], now: DateTime<Utc>) -> EffectiveRole {
     let role = grants
         .iter()
         .filter(|g| g.in_force_at(now))
         .map(|g| g.role)
-        .fold(base, u8::min);
+        .fold(base, Role::most_privileged);
     // A grant no more privileged than the base cannot change anything by
     // starting or ending, so only the others' moments count.
     let changes_at = grants
         .iter()
-        .filter(|g| g.role < base)
+        .filter(|g| g.role.outranks(base))
         .filter_map(|g| {
             if g.starts_at > now {
                 Some(g.starts_at)
@@ -422,7 +423,7 @@ pub(crate) async fn delete_grants_for_user(catalog: &Catalog, user: Uuid) -> Res
 /// Before deleting `role`: refuse while a grant of it is in force (or still to
 /// start), and delete the ones that have ended — history that would otherwise
 /// keep a role nobody holds from ever being deleted.
-pub(crate) async fn clear_ended_grants_of_role(catalog: &Catalog, role: u8) -> Result<()> {
+pub(crate) async fn clear_ended_grants_of_role(catalog: &Catalog, role: Role) -> Result<()> {
     if catalog.get(ROLE_GRANTS_TABLE)?.is_none() {
         return Ok(());
     }
@@ -451,7 +452,7 @@ pub(crate) async fn clear_ended_grants_of_role(catalog: &Catalog, role: u8) -> R
 /// public role (everybody's already), an empty source or reference, or an end
 /// before its start.
 async fn check_new(catalog: &Catalog, new: &NewRoleGrant) -> Result<()> {
-    if new.role >= ROLE_PUBLIC || new.role < ROLE_ADMIN {
+    if new.role.is_public() {
         return Err(Error::invalid(format!(
             "role {} cannot be granted: grants run from 1 to 99, and the public role is \
              everybody's already",
@@ -621,7 +622,7 @@ fn grant_from_row(row: &Row) -> Result<RoleGrant> {
         _ => Err(bad(column)),
     };
     let role = match row.get(COL_GRANT_ROLE) {
-        Some(Value::Int(i)) => u8::try_from(*i).map_err(|_| bad(COL_GRANT_ROLE))?,
+        Some(Value::Int(i)) => Role::try_from(*i).map_err(|_| bad(COL_GRANT_ROLE))?,
         _ => return Err(bad(COL_GRANT_ROLE)),
     };
     Ok(RoleGrant {
@@ -656,7 +657,7 @@ mod tests {
 
     use super::*;
 
-    fn grant(role: u8, starts: i64, ends: Option<i64>) -> RoleGrant {
+    fn grant(role: Role, starts: i64, ends: Option<i64>) -> RoleGrant {
         let now = Utc::now();
         RoleGrant {
             id: Uuid::new_v4(),
@@ -676,23 +677,23 @@ mod tests {
     fn the_most_privileged_grant_in_force_wins_and_never_lowers_the_base() {
         let now = Utc::now();
         // A grant less privileged than the base changes nothing.
-        let r = resolve(40, &[grant(70, -10, Some(100))], now);
-        assert_eq!(r.role, 40);
+        let r = resolve(Role::of(40), &[grant(Role::of(70), -10, Some(100))], now);
+        assert_eq!(r.role, Role::of(40));
         assert_eq!(r.changes_at, None);
         // Two grants in force: the more privileged one, until it ends.
-        let g60 = grant(60, -10, Some(100));
-        let g50 = grant(50, -10, Some(50));
-        let r = resolve(80, &[g60.clone(), g50.clone()], now);
-        assert_eq!(r.role, 50);
+        let g60 = grant(Role::of(60), -10, Some(100));
+        let g50 = grant(Role::of(50), -10, Some(50));
+        let r = resolve(Role::of(80), &[g60.clone(), g50.clone()], now);
+        assert_eq!(r.role, Role::of(50));
         assert_eq!(r.changes_at, g50.expires_at);
         // A grant still to start does not count yet, but its start is a change.
-        let later = grant(30, 20, None);
-        let r = resolve(80, std::slice::from_ref(&later), now);
-        assert_eq!(r.role, 80);
+        let later = grant(Role::of(30), 20, None);
+        let r = resolve(Role::of(80), std::slice::from_ref(&later), now);
+        assert_eq!(r.role, Role::of(80));
         assert_eq!(r.changes_at, Some(later.starts_at));
         // A grant until revoked has no end to wait for.
-        let r = resolve(80, &[grant(60, -10, None)], now);
-        assert_eq!((r.role, r.changes_at), (60, None));
+        let r = resolve(Role::of(80), &[grant(Role::of(60), -10, None)], now);
+        assert_eq!((r.role, r.changes_at), (Role::of(60), None));
     }
 
     #[test]

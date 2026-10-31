@@ -59,13 +59,13 @@
 //! costs a write nothing — and hands each **committed** write to the service
 //! as a `service_event` call, in order, from a task of its own.
 
+use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use sc_action::TriggerDispatcher;
 use sc_api::code_host::{DEFAULT_MAX_ROWS, HostLimits, TableHost, TriggerRunHost, schema_snapshot};
-use sc_auth::ROLE_ADMIN;
 use sc_catalog::{Catalog, DataFieldKind, TableEvents, TableWrite, WriteOp};
 use sc_error::{Error, Result};
 use sc_expr::{CodeHost, CodeHosts, TriggerHost};
@@ -325,7 +325,7 @@ async fn supervise(
     service: String,
     tables: Arc<TableScope>,
     areas: Arc<Vec<FileArea>>,
-    roles: Option<u8>,
+    roles: Option<Role>,
     mut stop: oneshot::Receiver<()>,
 ) {
     let backoff = shared.backoff;
@@ -377,7 +377,7 @@ async fn run_once(
     service: &str,
     tables: &TableScope,
     areas: &[FileArea],
-    roles: Option<u8>,
+    roles: Option<Role>,
     stop: &mut oneshot::Receiver<()>,
 ) -> Ended {
     let ended = serve_once(shared, module, service, tables, areas, roles, stop).await;
@@ -394,14 +394,14 @@ async fn serve_once(
     service: &str,
     tables: &TableScope,
     areas: &[FileArea],
-    roles: Option<u8>,
+    roles: Option<Role>,
     stop: &mut oneshot::Receiver<()>,
 ) -> Ended {
     let catalog = &*shared.catalog;
     let user = module_user(module, service);
     let scoped = ScopedTables {
         inner: TableHost::new(catalog)
-            .caused_by(ROLE_ADMIN, Some(user.clone()))
+            .caused_by(Role::ADMIN, Some(user.clone()))
             // A service asks for as long as it runs; the row cap still holds
             // on every read.
             .with_limits(HostLimits {
@@ -416,7 +416,7 @@ async fn serve_once(
     let dispatcher = shared.dispatcher.read().ok().and_then(|d| d.clone());
     let triggers = dispatcher.as_deref().map(|d| {
         TriggerRunHost::new(d, catalog)
-            .caused_by(ROLE_ADMIN, Some(user.clone()))
+            .caused_by(Role::ADMIN, Some(user.clone()))
             .with_max_runs(u32::MAX)
     });
     let (events, received) = mpsc::unbounded_channel::<Json>();

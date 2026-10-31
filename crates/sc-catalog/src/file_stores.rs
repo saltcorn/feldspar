@@ -28,6 +28,7 @@ use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_files::{FileStoreDef, FileStoreDefId, connect_from_def, validate_file_store_config};
 use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Value};
+use sc_types::Role;
 use sc_types::{Attrs, BasicType, FormField, TypeRef};
 use serde_json::Value as Json;
 
@@ -569,13 +570,11 @@ fn file_store_from_row(row: &Row) -> Result<FileStoreDef> {
     // change who can reach the store.
     let min_role = match row.get(COL_MIN_ROLE) {
         Some(Value::Null) | None => None,
-        Some(Value::Int(i)) => Some(u8::try_from(*i).ok().filter(|r| (1..=100).contains(r)).ok_or_else(
-            || {
-                Error::invalid(format!(
-                    "{FILE_STORES_TABLE}.{COL_MIN_ROLE} should be a role between 1 and 100, got {i}"
-                ))
-            },
-        )?),
+        Some(Value::Int(i)) => Some(Role::try_from(*i).map_err(|_| {
+            Error::invalid(format!(
+                "{FILE_STORES_TABLE}.{COL_MIN_ROLE} should be a role between 1 and 100, got {i}"
+            ))
+        })?),
         other => return Err(bad_column(COL_MIN_ROLE, "an integer role", other)),
     };
 
@@ -740,7 +739,7 @@ mod tests {
             .unwrap();
         assert_eq!(values[idx], Value::Null);
 
-        let restricted = FileStoreDef::local("apps", "/srv/apps").min_role(40);
+        let restricted = FileStoreDef::local("apps", "/srv/apps").min_role(Role::of(40));
         assert_eq!(store_values(&restricted)[idx], Value::Int(40));
     }
 }

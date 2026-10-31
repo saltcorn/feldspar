@@ -12,12 +12,14 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{
     EventKind, MAX_DEPTH, Trigger, TriggerDispatcher, bootstrap_triggers, save_trigger,
 };
-use sc_catalog::{CallerContext, Catalog};
+use sc_catalog::{Catalog, Principal};
 use sc_core_actions::builtin_actions;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -40,10 +42,10 @@ struct World {
 
 impl World {
     /// Run `name` as the admin's Run button does, with a caller at `role`.
-    async fn run(&self, name: &str, payload: Json, role: u8) -> Result<Json> {
-        let caller = CallerContext::new(role, Some(json!({ "email": "ada@example.com" })));
+    async fn run(&self, name: &str, payload: Json, role: Role) -> Result<Json> {
+        let caller = Principal::new(role, Some(json!({ "email": "ada@example.com" })));
         self.dispatcher
-            .run_trigger(&self.catalog, name, payload, Some(&caller))
+            .run_trigger(&self.catalog, name, payload, Authority::Caller(&caller))
             .await
     }
 
@@ -67,7 +69,7 @@ fn triggers() -> Vec<Trigger> {
         // The child. It writes a row and reports what it saw — the payload it was
         // handed and the user the *parent's* event carried.
         Trigger::new("write_note", EventKind::None, "run_js_code")
-            .min_role(1)
+            .min_role(Role::ADMIN)
             .config(
                 "code",
                 r#"await db.notes.insert({ what: payload.what, who: user && user.email });
@@ -164,7 +166,7 @@ async fn setup() -> Result<World> {
 async fn a_body_runs_another_trigger_which_really_writes() -> Result<()> {
     let world = setup().await?;
     let result = world
-        .run("chase", json!({ "what": "chase the invoice" }), 1)
+        .run("chase", json!({ "what": "chase the invoice" }), Role::ADMIN)
         .await?;
 
     // What comes back is what the child's action returned — the same value its
@@ -198,7 +200,7 @@ async fn the_targets_floor_decides_a_delegated_run_and_not_the_default_one() -> 
 
     // `write_note` is admin-only. Delegated, a caller at role 40 is refused —
     // and it is a *catchable* error, so the body's fallback ran.
-    let refused = world.run("chase_as_user", Json::Null, 40).await?;
+    let refused = world.run("chase_as_user", Json::Null, Role::of(40)).await?;
     let message = refused["refused"].as_str().expect("a refusal");
     assert!(message.contains("write_note"), "{message}");
     assert!(message.contains("role 1"), "{message}");
@@ -206,7 +208,7 @@ async fn the_targets_floor_decides_a_delegated_run_and_not_the_default_one() -> 
 
     // The same body, the same trigger, an admin caller: delegation is the floor,
     // and the floor is met.
-    let ran = world.run("chase_as_user", Json::Null, 1).await?;
+    let ran = world.run("chase_as_user", Json::Null, Role::ADMIN).await?;
     assert_eq!(ran["ran"]["wrote"], json!("delegated"));
 
     // And without `asUser()` the floor is not consulted at all: a trigger is
@@ -214,7 +216,7 @@ async fn the_targets_floor_decides_a_delegated_run_and_not_the_default_one() -> 
     // an admin-only trigger — which is what `chase` does here at role 100.
     let world = setup().await?;
     let result = world
-        .run("chase", json!({ "what": "by the server" }), 100)
+        .run("chase", json!({ "what": "by the server" }), Role::PUBLIC)
         .await?;
     assert_eq!(result["first"]["wrote"], json!("by the server"));
     Ok(())
@@ -227,7 +229,9 @@ async fn a_declining_only_if_is_null_and_not_a_failure() -> Result<()> {
     // not run — which is not a failure, and reads as `null` in the body exactly
     // as it does at every other caller of `run_trigger`.
     assert_eq!(
-        world.run("run_the_decliner", Json::Null, 1).await?,
+        world
+            .run("run_the_decliner", Json::Null, Role::ADMIN)
+            .await?,
         json!({ "declined": null })
     );
     Ok(())
@@ -237,7 +241,7 @@ async fn a_declining_only_if_is_null_and_not_a_failure() -> Result<()> {
 async fn a_body_that_runs_itself_stops_at_the_cascade_bound() -> Result<()> {
     let world = setup().await?;
     let error = world
-        .run("recurse", Json::Null, 1)
+        .run("recurse", Json::Null, Role::ADMIN)
         .await
         .expect_err("the chain is bounded");
     let message = error.to_string();
@@ -257,7 +261,7 @@ async fn a_body_that_runs_itself_stops_at_the_cascade_bound() -> Result<()> {
 #[tokio::test]
 async fn a_failing_child_is_catchable_and_the_parent_carries_on() -> Result<()> {
     let world = setup().await?;
-    let result = world.run("survives", Json::Null, 1).await?;
+    let result = world.run("survives", Json::Null, Role::ADMIN).await?;
     let caught = result["caught"].as_str().expect("the child's failure");
     assert!(caught.contains("the endpoint said no"), "{caught}");
     // The parent finished: its own write is there, and it returned normally.
@@ -270,14 +274,16 @@ async fn a_disabled_trigger_and_a_typo_are_different_answers() -> Result<()> {
     let world = setup().await?;
 
     // Disabled means disabled however it is asked — including from a code body.
-    let disabled = world.run("run_the_disabled", Json::Null, 1).await?;
+    let disabled = world
+        .run("run_the_disabled", Json::Null, Role::ADMIN)
+        .await?;
     let message = disabled.as_str().expect("a message");
     assert!(message.contains("switched_off"), "{message}");
     assert!(message.contains("disabled"), "{message}");
 
     // A name that does not exist is refused where the typo is, naming what does:
     // the list travelled into the run when it started.
-    let typo = world.run("run_a_typo", Json::Null, 1).await?;
+    let typo = world.run("run_a_typo", Json::Null, Role::ADMIN).await?;
     let message = typo.as_str().expect("a message");
     assert!(
         message.contains("no trigger named `switched_of`"),

@@ -20,13 +20,14 @@
 //! reaches them is what each subscriber is sent, `{op, key, row}`, and the
 //! stream's own element — with `old` — is read off its broadcast channel.
 
+use sc_types::Role;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use sc_api::rows;
-use sc_auth::{ROLE_ADMIN, User};
+use sc_auth::User;
 use sc_catalog::{Catalog, DataField, LIVE_EVENTS, TableEvents, WriteOp};
 use sc_db::{
     DatabaseDriver, DbCapabilities, DescribedColumn, PhysicalTable, RowStream, SchemaChange,
@@ -182,7 +183,7 @@ fn anonymous() -> ConnectionInfo {
 
 /// An admin, who reads every row, and so is sent every change.
 fn admin() -> Option<User> {
-    Some(User::new(Uuid::from_u128(0xad), ROLE_ADMIN).expect("a role in range"))
+    Some(User::new(Uuid::from_u128(0xad), Role::ADMIN))
 }
 
 /// A subscription's filter and row access: every row of `catalog`'s tables.

@@ -4,6 +4,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -51,8 +52,8 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
     cat.reload().await?;
 
     let settings = |formula: &str| schema_edit::TableSettings {
-        min_role_read: Some(1),
-        min_role_write: Some(1),
+        min_role_read: Some(Role::ADMIN),
+        min_role_write: Some(Role::ADMIN),
         ownership_formula: Some(formula.into()),
         sync_enabled: Some(true),
         ..Default::default()
@@ -73,9 +74,9 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
     )
     .await?;
 
-    sc_auth::save_role(&cat, &sc_auth::Role::new(80, "User")).await?;
-    let ann = create_user(&cat, "ann@example.com", "ann-password", 80).await?;
-    let bob = create_user(&cat, "bob@example.com", "bob-password", 80).await?;
+    sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(80), "User")).await?;
+    let ann = create_user(&cat, "ann@example.com", "ann-password", Role::of(80)).await?;
+    let bob = create_user(&cat, "bob@example.com", "bob-password", Role::of(80)).await?;
     let api = RestProvider::project("/api", &[cat.require("notes")?, cat.require("secrets")?])
         .with_application(APP);
     Ok(Fixture {

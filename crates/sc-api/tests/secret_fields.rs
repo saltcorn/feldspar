@@ -8,6 +8,8 @@
 //! that sends the sentinel back keeps the stored value, and a secret can be no
 //! key, no unique column, no filter and no ordering.
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::code_host::TableHost;
@@ -75,7 +77,7 @@ async fn add_field(catalog: &Catalog, field: FieldSpec) -> Result<()> {
 }
 
 fn admin() -> Result<User> {
-    User::new(uuid::Uuid::new_v4(), sc_auth::ROLE_ADMIN)
+    Ok(User::new(uuid::Uuid::new_v4(), Role::ADMIN))
 }
 
 /// What the column itself holds, read past the row layer.
@@ -202,7 +204,7 @@ async fn the_column_holds_an_envelope_and_every_client_surface_the_sentinel() ->
     never_plaintext("a live change", &live);
 
     // A CSV export, which the data editor offers.
-    let csv = sc_api::csv::export_table(&catalog, &table, None).await?;
+    let csv = sc_api::csv::export_table(&catalog, &table, Authority::system("test")).await?;
     assert!(
         csv.contains(SECRET_SENTINEL) && !csv.contains(PLAINTEXT),
         "{csv}"
@@ -243,7 +245,7 @@ async fn server_side_code_reads_the_plaintext_and_a_view_does_not() -> Result<()
 
     // A view, rendered for somebody looking: the sentinel.
     let view = TableHost::new(&catalog)
-        .caused_by(sc_auth::ROLE_ADMIN, None)
+        .caused_by(Role::ADMIN, None)
         .viewer_only()
         .call(plan)
         .await?;

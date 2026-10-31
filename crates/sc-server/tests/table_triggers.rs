@@ -213,7 +213,7 @@ async fn an_insert_writes_the_audit_row_its_trigger_configures() -> sc_error::Re
                 "what": "\"insert\"",
                 "title": "row.title",
                 "pages": "row.pages",
-                // The caller only reaches here because a `CallerContext` travels
+                // The caller only reaches here because a `Principal` travels
                 // with every write, not only with the RLS ones.
                 "who": "user.email",
             }),

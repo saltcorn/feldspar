@@ -51,7 +51,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use sc_catalog::{
-    CallerContext, Catalog, Changeset, ChangesetSource, DataFieldKind, SharedTx, Table, changeset,
+    Authority, Catalog, Changeset, ChangesetSource, DataFieldKind, SharedTx, Table, changeset,
 };
 use sc_error::{Error, Result};
 use sc_query::Expr;
@@ -93,7 +93,7 @@ pub struct ImportOutcome {
 pub async fn export_table(
     catalog: &Catalog,
     table: &Table,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<String> {
     let columns: Vec<&str> = stored_columns(table);
     let mut rows = rows::list_rows_ctx(catalog, table, context).await?;
@@ -156,7 +156,7 @@ pub async fn import_table(
     catalog: &Catalog,
     table: &Table,
     document: &str,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<ImportOutcome> {
     // One changeset for the whole file (§14.12), in the session and the
     // application of the request that brought it.
@@ -166,10 +166,13 @@ pub async fn import_table(
             .session(around.as_ref().and_then(|c| c.session.clone()))
             .in_application(around.as_ref().and_then(|c| c.application())),
     );
-    let context = context.map(|c| c.clone().in_changeset(Some(changeset.clone())));
+    let principal = context
+        .principal()
+        .map(|c| c.clone().in_changeset(Some(changeset.clone())));
+    let context = principal.as_ref().map_or(context, Authority::Caller);
     changeset::scope(
         changeset,
-        import_in_changeset(catalog, table, document, context.as_ref()),
+        import_in_changeset(catalog, table, document, context),
     )
     .await
 }
@@ -179,7 +182,7 @@ async fn import_in_changeset(
     catalog: &Catalog,
     table: &Table,
     document: &str,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<ImportOutcome> {
     // `flexible`: a row with a cell too few is a row with a blank at the end,
     // and a trailing comma is a cell too many. Both are things spreadsheets
@@ -320,7 +323,7 @@ async fn write_row(
     table: &Table,
     pk: Option<&str>,
     mut body: Map<String, Json>,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     summaries: &mut SummaryLookups,
     keys_seen: &mut HashSet<String>,
     executor: &rows::Executor,
@@ -380,7 +383,7 @@ pub async fn create_table_from_csv(
     name: &str,
     database: &str,
     document: &str,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<(Table, ImportOutcome)> {
     let columns = plan_columns(document)?;
     let fields: Vec<schema_edit::FieldSpec> = columns
@@ -605,7 +608,7 @@ async fn write_by_key(
     table: &Table,
     key: &str,
     body: Map<String, Json>,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     executor: &rows::Executor,
 ) -> Result<Written> {
     if row_exists(catalog, table, key, context, executor).await? {
@@ -628,7 +631,7 @@ async fn row_exists(
     catalog: &Catalog,
     table: &Table,
     key: &str,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     executor: &rows::Executor,
 ) -> Result<bool> {
     let pk = rows::single_pk(table)?;
@@ -702,7 +705,7 @@ impl SummaryLookups {
         catalog: &Catalog,
         table: &Table,
         body: &mut Map<String, Json>,
-        context: Option<&CallerContext>,
+        context: Authority<'_>,
         executor: &rows::Executor,
     ) -> Result<()> {
         for field in &table.fields {
@@ -774,7 +777,7 @@ async fn summary_key(
     summary: &str,
     target_field: &str,
     text: &str,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     executor: &rows::Executor,
 ) -> Result<Option<Json>> {
     let Ok(value) = rows::column_value(target, summary, &Json::String(text.to_owned())) else {

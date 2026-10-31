@@ -16,6 +16,7 @@
 //!   over either is a JSON `413`, not axum's plain text.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -30,7 +31,7 @@ use sc_api::{CustomQuery, Method, QueryLanguage, set_custom_queries};
 use sc_app::{
     ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StaticDir, UploadSlot,
 };
-use sc_auth::{Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
@@ -46,7 +47,7 @@ use tower::ServiceExt;
 const BASE_DOMAIN: &str = "example.com";
 const APP_HOST: &str = "drop.example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 80;
+const ROLE_MEMBER: Role = Role::of(80);
 const MB: usize = 1024 * 1024;
 
 /// A scratch directory removed when the guard drops.
@@ -322,7 +323,7 @@ async fn setup(tmp: &TempDir, config: ServerConfig) -> sc_error::Result<Server> 
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
     for who in ["alice", "bob"] {
         create_user(
             &catalog,
@@ -332,7 +333,7 @@ async fn setup(tmp: &TempDir, config: ServerConfig) -> sc_error::Result<Server> 
         )
         .await?;
     }
-    create_user(&catalog, "admin@example.com", PASSWORD, sc_auth::ROLE_ADMIN).await?;
+    create_user(&catalog, "admin@example.com", PASSWORD, Role::ADMIN).await?;
 
     let files_dir = tmp.path().join("files");
     std::fs::create_dir_all(&files_dir).map_err(sc_error::Error::from)?;
@@ -345,7 +346,7 @@ async fn setup(tmp: &TempDir, config: ServerConfig) -> sc_error::Result<Server> 
         .set_meta(
             "drops",
             &FileMeta {
-                min_role: Some(sc_auth::ROLE_ADMIN),
+                min_role: Some(Role::ADMIN),
                 ..FileMeta::default()
             },
         )

@@ -25,6 +25,7 @@
 //!   the real host, and the Analytics workspace reports on the two tables.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -212,7 +213,7 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<Server> {
             r#"await db.posts.insert({ id: 1, title: "Hello" });
                await db.posts.insert({ id: 2, title: "World" });"#,
             Attrs::new(),
-            None,
+            Authority::system("test"),
             None,
             None,
         )
@@ -264,7 +265,7 @@ impl Server {
                 "test",
                 code,
                 Attrs::new(),
-                None,
+                Authority::system("test"),
                 None,
                 None,
             )

@@ -1,5 +1,6 @@
 //! `update_rows` — assign formula values to every row a predicate selects.
 
+use sc_catalog::Authority;
 use sc_error::Result;
 use sc_expr::{Formula, Operation};
 use sc_types::{BasicType, FormField};
@@ -104,7 +105,7 @@ impl Action for UpdateRows {
                 &table,
                 &id,
                 &Json::Object(body),
-                Some(&authority),
+                Authority::Caller(&authority),
                 scope.executor(),
             )
             .await?;

@@ -17,6 +17,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -28,7 +30,7 @@ use sc_action::{EventKind, Trigger, TriggerDispatcher, save_trigger};
 use sc_agent::testing::{FakeProvider, Reply};
 use sc_agent::{Agent, ProviderConnector};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, TriggerRef};
-use sc_auth::{ROLE_ADMIN, Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, TableId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -58,8 +60,8 @@ const PASSWORD: &str = "correct-horse";
 
 /// The role floor `visit_logged` is exposed at: an editor may call it, a reader
 /// may not.
-const ROLE_EDITOR: u8 = 80;
-const ROLE_READER: u8 = 100;
+const ROLE_EDITOR: Role = Role::of(80);
+const ROLE_READER: Role = Role::PUBLIC;
 
 /// A cookie-carrying client addressing one host — the app's subdomain, or the
 /// admin (no app host).
@@ -166,7 +168,7 @@ impl Client {
 /// A trigger with no intrinsic event, writing an audit row from the payload and
 /// the caller. `none` is the kind an API call is *for*: it runs because something
 /// asked it to.
-fn audit_trigger(name: &str, min_role: Option<u8>) -> Trigger {
+fn audit_trigger(name: &str, min_role: Option<Role>) -> Trigger {
     let mut trigger = Trigger::new(name, EventKind::None, "insert_row")
         .config("table", "audit")
         .config(
@@ -279,8 +281,8 @@ async fn setup() -> sc_error::Result<Server> {
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     // A user's role has to be one the server defines; `public` (100) is built in.
-    save_role(&catalog, &Role::new(ROLE_EDITOR, "Editor")).await?;
-    create_user(&catalog, ADMIN, PASSWORD, ROLE_ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_EDITOR, "Editor")).await?;
+    create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
     create_user(&catalog, EDITOR, PASSWORD, ROLE_EDITOR).await?;
     create_user(&catalog, READER, PASSWORD, ROLE_READER).await?;
 
@@ -536,14 +538,14 @@ async fn a_trigger_the_app_does_not_expose_is_not_there_at_all() -> sc_error::Re
 
     // Which is not the same as the trigger being missing: the server has it, and
     // it runs when the server itself asks.
-    let caller = sc_catalog::CallerContext::new(ROLE_ADMIN, Some(json!({ "email": ADMIN })));
+    let caller = sc_catalog::Principal::new(Role::ADMIN, Some(json!({ "email": ADMIN })));
     let result = server
         .dispatcher
         .run_trigger(
             &server.catalog,
             "internal_only",
             json!({ "what": "internal" }),
-            Some(&caller),
+            Authority::Caller(&caller),
         )
         .await?;
     assert_eq!(result["title"], json!("internal"));
@@ -581,7 +583,7 @@ async fn changing_a_triggers_role_re_projects_the_mounted_app() -> sc_error::Res
         .clone();
     let id = stored["id"].as_str().unwrap().to_owned();
     let mut body = stored.clone();
-    body["min_role"] = json!(ROLE_ADMIN);
+    body["min_role"] = json!(Role::ADMIN);
     let (status, updated) = admin
         .send("PUT", &format!("/api/triggers/{id}"), Some(body))
         .await;

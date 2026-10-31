@@ -10,6 +10,8 @@
 //! after `fit_model` and under a caller's authority. The Python handle is
 //! `sc-python`'s `python_models.rs`.
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::io::Read as _;
 use std::sync::Arc;
@@ -1208,8 +1210,8 @@ async fn a_callers_write_back_is_held_to_the_callers_own_rights() -> Result<()> 
         .await;
 
     // Caused by a role-40 user.
-    let caller = sc_catalog::CallerContext::new(
-        40,
+    let caller = sc_catalog::Principal::new(
+        Role::of(40),
         Some(json!({
             "id": "6b1c2d64-3f3a-4a52-9a8b-0f4d2b7f1a11",
             "role": 40,
@@ -1222,7 +1224,7 @@ async fn a_callers_write_back_is_held_to_the_callers_own_rights() -> Result<()> 
             &server.catalog,
             "write_back",
             json!({ "as_user": true }),
-            Some(&caller),
+            Authority::Caller(&caller),
         )
         .await?;
     let why = refused["refused"]
@@ -1247,7 +1249,7 @@ async fn a_callers_write_back_is_held_to_the_callers_own_rights() -> Result<()> 
             &server.catalog,
             "write_back",
             json!({ "as_user": false }),
-            Some(&caller),
+            Authority::Caller(&caller),
         )
         .await?;
     assert_eq!(written, json!({ "written": 3 }));

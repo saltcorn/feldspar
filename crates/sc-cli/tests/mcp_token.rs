@@ -6,6 +6,7 @@
 //! terminal is one it then refuses; and that `app list --json` names the
 //! directory a build would run in.
 
+use sc_types::Role;
 use std::process::{Command, Stdio};
 
 use sc_app::{Application, FrameworkRef, save_application};
@@ -35,12 +36,12 @@ async fn a_token_minted_from_the_cli_authenticates_until_it_is_revoked() -> sc_e
     let db = TestDb::new().await?;
     let url = db.url();
     let catalog = connect_catalog(&DbConfig::from_url(&url)).await?;
-    sc_auth::create_user(&catalog, ADMIN, "a-long-password", sc_auth::ROLE_ADMIN).await?;
+    sc_auth::create_user(&catalog, ADMIN, "a-long-password", Role::ADMIN).await?;
     sc_auth::create_user(
         &catalog,
         "staff@example.com",
         "a-long-password",
-        sc_auth::ROLE_PUBLIC,
+        Role::PUBLIC,
     )
     .await?;
 

@@ -16,6 +16,8 @@
 //! field says it is one, and until then the row endpoints that address a single
 //! row refuse — which is what the field list's red banner is warning about.
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -41,10 +43,10 @@ use sc_app::{
     require_scaffoldable, save_application, scaffold_app, update_app_client,
 };
 use sc_auth::{
-    COL_EMAIL, NewApiToken, NewUser, ROLE_ADMIN, ROLE_PUBLIC, Role, USERS_TABLE, User, UserUpdate,
-    any_user_exists, authenticate_admin, create_first_user, create_user_with, delete_role,
-    delete_user, list_api_tokens, list_roles, load_user, mint_api_token, random_password,
-    revoke_api_token, save_role, set_user_disabled, set_user_password, update_user,
+    COL_EMAIL, NewApiToken, NewUser, RoleDef, USERS_TABLE, User, UserUpdate, any_user_exists,
+    authenticate_admin, create_first_user, create_user_with, delete_role, delete_user,
+    list_api_tokens, list_roles, load_user, mint_api_token, random_password, revoke_api_token,
+    save_role, set_user_disabled, set_user_password, update_user,
 };
 use sc_catalog::{
     ATTR_OWNERSHIP_FORMULA, Attrs, Catalog, ConstraintKind, DataField, DataFieldKind,
@@ -169,7 +171,7 @@ pub fn admin_handlers_with(
                 // Asked only of an admin: nobody else is shown the dialogs, and
                 // a signed-out caller has no business learning the answer.
                 let onboarding_pending = match &ctx.user {
-                    Some(user) if user.role == 1 => {
+                    Some(user) if user.role.is_admin() => {
                         sc_config::config_value(&catalog, sc_config::ONBOARDING_DONE).await?
                             != json!(true)
                     }
@@ -359,7 +361,7 @@ pub fn admin_handlers_with(
                     &name,
                     &optional_str(obj, "database"),
                     &document,
-                    Some(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
                 )
                 .await?;
                 let rls = catalog.primary().capabilities().row_level_security;
@@ -392,7 +394,7 @@ pub fn admin_handlers_with(
                     &file_name,
                     &bytes,
                     Some(layer.trim()).filter(|l| !l.is_empty()),
-                    Some(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
                 )
                 .await?;
                 let rls = catalog.primary().capabilities().row_level_security;
@@ -702,7 +704,7 @@ pub fn admin_handlers_with(
             async move {
                 let obj = require_object(&ctx.body)?;
                 let number = role_field(obj, "role")?;
-                let mut role = Role::new(number, non_empty_str_field(obj, "name")?.trim());
+                let mut role = RoleDef::new(number, non_empty_str_field(obj, "name")?.trim());
                 role.description = str_field(obj, "description")?.trim().to_owned();
                 save_role(&catalog, &role).await?;
                 Ok(HandlerResponse::ok(role_json(&role)).with_status(201))
@@ -716,13 +718,9 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let raw = ctx.path_param("role")?;
-                let number = raw
-                    .parse::<u8>()
-                    .ok()
-                    .filter(|r| (ROLE_ADMIN..=ROLE_PUBLIC).contains(r))
-                    .ok_or_else(|| {
-                        Error::invalid(format!("`{raw}` is not a role between 1 and 100"))
-                    })?;
+                let number = raw.parse::<u8>().ok().and_then(Role::new).ok_or_else(|| {
+                    Error::invalid(format!("`{raw}` is not a role between 1 and 100"))
+                })?;
                 let deleted = delete_role(&catalog, number).await?;
                 Ok(HandlerResponse::ok(json!({ "deleted": deleted })))
             }
@@ -1037,7 +1035,7 @@ pub fn admin_handlers_with(
                     &catalog,
                     &table,
                     &query,
-                    Some(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
                 )
                 .await?;
                 // The data editor is a client like any other: it may write a
@@ -1063,7 +1061,7 @@ pub fn admin_handlers_with(
                     &catalog,
                     &table,
                     filter,
-                    Some(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
                 )
                 .await?;
                 Ok(HandlerResponse::ok(json!({ "count": count })))
@@ -1081,7 +1079,7 @@ pub fn admin_handlers_with(
                     &catalog,
                     &table,
                     &ctx.body,
-                    Some(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
@@ -1104,7 +1102,7 @@ pub fn admin_handlers_with(
                     &table,
                     id,
                     &ctx.body,
-                    Some(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
@@ -1124,8 +1122,13 @@ pub fn admin_handlers_with(
                 let id = ctx.path_param("id")?;
                 // The row layer hands back the row it removed; the admin API
                 // acknowledges, as it does for every other delete it serves.
-                rows::delete_row_ctx(&catalog, &table, id, Some(&admin_caller(ctx.user.as_ref())))
-                    .await?;
+                rows::delete_row_ctx(
+                    &catalog,
+                    &table,
+                    id,
+                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
+                )
+                .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
                 Ok(HandlerResponse::ok(json!({ "deleted": true })))
             }
@@ -1141,7 +1144,7 @@ pub fn admin_handlers_with(
                 let deleted = rows::delete_all_rows_ctx(
                     &catalog,
                     &table,
-                    Some(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
                 )
                 .await?;
                 if deleted > 0 {
@@ -1321,7 +1324,7 @@ pub fn admin_handlers_with(
                 let document = csv_rows::export_table(
                     &catalog,
                     &table,
-                    Some(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
                 )
                 .await?;
                 // The browser saves the file, so the server says what to call
@@ -1350,7 +1353,7 @@ pub fn admin_handlers_with(
                     &catalog,
                     &table,
                     &document,
-                    Some(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
                 )
                 .await?;
                 // An import is row by row, so any row that went in counts.
@@ -3105,7 +3108,12 @@ pub fn admin_handlers_with(
                 // "test this now" button exists to prevent.
                 let caller = admin_caller(ctx.user.as_ref());
                 let result = dispatcher
-                    .run_trigger(&catalog, &trigger.name, ctx.body.clone(), Some(&caller))
+                    .run_trigger(
+                        &catalog,
+                        &trigger.name,
+                        ctx.body.clone(),
+                        Authority::Caller(&caller),
+                    )
                     .await?;
                 Ok(HandlerResponse::ok(json!({ "result": result })))
             }
@@ -3140,7 +3148,7 @@ pub fn admin_handlers_with(
                         &trigger.name,
                         ctx.body.clone(),
                         row.clone(),
-                        Some(&caller),
+                        Authority::Caller(&caller),
                     )
                     .await;
                 // The failure is the answer here, not an error status: an admin
@@ -3431,7 +3439,7 @@ pub fn admin_handlers_with(
                 // a form exposed to a role is exactly the thing that must not be
                 // reachable by way of a surface that forgot to ask.
                 if let Some(form) = sc_workflow::run_pending_form(&run)? {
-                    sc_workflow::check_may_resume(&form, caller_role(&ctx))?;
+                    sc_workflow::check_may_resume(&form, sc_auth::role_of(ctx.user.as_ref()))?;
                 }
                 let values = match &ctx.body {
                     Json::Null => sc_types::Attrs::new(),
@@ -6051,7 +6059,7 @@ pub fn admin_handlers_with(
                 let roles: Vec<(u8, String)> = sc_auth::list_roles(&catalog)
                     .await?
                     .into_iter()
-                    .map(|r| (r.role, r.name))
+                    .map(|r| (r.role.get(), r.name))
                     .collect();
                 let references = set.page_references(&app, name, &roles);
                 Ok(HandlerResponse::ok(json!({
@@ -7123,7 +7131,7 @@ pub fn admin_handlers_with(
                     return Err(Error::not_found(format!("no user with id {id}")));
                 }
                 let role = int_field(obj, "role")?;
-                let role = u8::try_from(role)
+                let role = Role::try_from(role)
                     .map_err(|_| Error::invalid(format!("role {role} is not in 1..=99")))?;
                 let expires_at = match obj.get("expires_in_days") {
                     None | Some(Json::Null) => None,
@@ -7230,7 +7238,7 @@ pub fn admin_handlers_with(
                         note: (!note.trim().is_empty()).then(|| note.trim().to_owned()),
                         rollover: None,
                     },
-                    Some(&caller),
+                    Authority::Caller(&caller),
                 )
                 .await?;
                 Ok(HandlerResponse::ok(user_credits(&catalog, id).await?))
@@ -7247,7 +7255,13 @@ pub fn admin_handlers_with(
                 let obj = require_object(&ctx.body)?;
                 let threshold = credit_amount(obj.get("threshold"), "threshold")?;
                 let caller = admin_caller(ctx.user.as_ref());
-                sc_auth::set_low_balance_threshold(&catalog, id, threshold, Some(&caller)).await?;
+                sc_auth::set_low_balance_threshold(
+                    &catalog,
+                    id,
+                    threshold,
+                    Authority::Caller(&caller),
+                )
+                .await?;
                 Ok(HandlerResponse::ok(user_credits(&catalog, id).await?))
             }
         }
@@ -7953,7 +7967,7 @@ pub(crate) fn table_settings_from_body(
         history_enabled: Some(optional_bool(obj, "history_enabled")?),
         // Absent is the admin's, the default (§14.12).
         history_min_role: Some(match obj.get("history_min_role") {
-            None | Some(Json::Null) => ROLE_ADMIN,
+            None | Some(Json::Null) => Role::ADMIN,
             Some(_) => role_field(obj, "history_min_role")?,
         }),
         // Absent keeps history forever, the default.
@@ -8232,12 +8246,12 @@ fn object_member(obj: &Map<String, Json>, key: &str) -> Result<Attrs> {
 }
 
 /// A view's or page's `min_role`, absent meaning public.
-fn min_role_member(obj: &Map<String, Json>) -> Result<u8> {
+fn min_role_member(obj: &Map<String, Json>) -> Result<Role> {
     match obj.get("min_role") {
-        None | Some(Json::Null) => Ok(ROLE_PUBLIC),
+        None | Some(Json::Null) => Ok(Role::PUBLIC),
         Some(value) => value
             .as_u64()
-            .and_then(|r| u8::try_from(r).ok())
+            .and_then(|r| Role::try_from(r).ok())
             .ok_or_else(|| Error::invalid("`min_role` must be a role number from 1 to 100")),
     }
 }
@@ -8732,19 +8746,19 @@ pub(crate) fn application_from_body(id: AppId, body: &Json) -> Result<Applicatio
     };
     // Absent is "let everybody in, as they are": the defaults a new application
     // has. The ranges and the formula are checked on save.
-    let app_role = |key: &str, default: u8| -> Result<u8> {
+    let app_role = |key: &str, default: Role| -> Result<Role> {
         match obj.get(key) {
             None | Some(Json::Null) => Ok(default),
             Some(value) => value
                 .as_u64()
-                .and_then(|r| u8::try_from(r).ok())
+                .and_then(|r| Role::try_from(r).ok())
                 .ok_or_else(|| {
                     Error::invalid(format!("`{key}` should be a role number, 1 to 100"))
                 }),
         }
     };
-    let min_role = app_role("min_role", sc_auth::ROLE_PUBLIC)?;
-    let max_role = app_role("max_role", sc_auth::ROLE_ADMIN)?;
+    let min_role = app_role("min_role", Role::PUBLIC)?;
+    let max_role = app_role("max_role", Role::ADMIN)?;
     let access_if = match obj.get("access_if") {
         None | Some(Json::Null) => String::new(),
         Some(Json::String(formula)) => formula.trim().to_owned(),
@@ -9151,7 +9165,7 @@ fn object_field(obj: &Map<String, Json>, key: &str) -> Result<sc_types::Attrs> {
 async fn resolve_store(
     catalog: &Catalog,
     name: &str,
-) -> Result<(Arc<dyn sc_files::FileStore>, Option<u8>)> {
+) -> Result<(Arc<dyn sc_files::FileStore>, Option<Role>)> {
     let store = catalog.require_file_store(name)?;
     let floor = load_file_store_by_name(catalog, name)
         .await
@@ -9161,25 +9175,16 @@ async fn resolve_store(
     Ok((store, floor))
 }
 
-/// The role of the caller, defaulting to public when unauthenticated.
-///
-/// **Currently always `1` in practice**, because every file endpoint is
-/// `AuthRequirement::admin()` and an admin clears every rule. The check is wired
-/// in regardless: it is correct by construction, it costs nothing, and it starts
-/// doing real work the moment a non-admin role can reach a store — which is what
-/// an application's file access will need. Enforcement living only in the future
-/// caller would be the same mistake as the rule living only in a doc comment.
-fn caller_role(ctx: &crate::handler::HandlerCtx) -> u8 {
-    ctx.user
-        .as_ref()
-        .map_or(sc_files::ROLE_PUBLIC, |user| user.role)
-}
-
 /// The caller as a file rule sees them: their role, and the id the owner rule
-/// (§2.1) compares with. Admin in practice, for the reason [`caller_role`] gives.
+/// (§2.1) compares with.
+///
+/// **Admin in practice**, because every file endpoint is `AuthRequirement::admin()`
+/// and an admin clears every rule. The check is wired in regardless: it is correct
+/// by construction, costs nothing, and starts doing real work the moment a
+/// non-admin role can reach a store.
 fn file_caller(ctx: &crate::handler::HandlerCtx) -> sc_files::FileCaller {
     sc_files::FileCaller::new(
-        caller_role(ctx),
+        sc_auth::role_of(ctx.user.as_ref()),
         ctx.user.as_ref().map(|u| u.id.to_string()),
     )
 }
@@ -9190,7 +9195,7 @@ fn file_caller(ctx: &crate::handler::HandlerCtx) -> sc_files::FileCaller {
 /// actually applies — they differ whenever a parent directory or the store
 /// itself is more restrictive, and showing only the former would let an admin
 /// believe a file is reachable when its folder has locked it.
-fn file_meta_json(path: &str, meta: &FileMeta, effective: Option<u8>) -> Json {
+fn file_meta_json(path: &str, meta: &FileMeta, effective: Option<Role>) -> Json {
     json!({
         "path": path,
         "min_role": meta.min_role,
@@ -9205,16 +9210,15 @@ fn file_meta_json(path: &str, meta: &FileMeta, effective: Option<u8>) -> Json {
 
 /// An optional role field of a body: absent or null means unrestricted, and a
 /// value outside the 1–100 scale is rejected rather than clamped.
-fn optional_role(obj: &Map<String, Json>, key: &str) -> Result<Option<u8>> {
+fn optional_role(obj: &Map<String, Json>, key: &str) -> Result<Option<Role>> {
     match obj.get(key) {
         None | Some(Json::Null) => Ok(None),
         Some(value) => {
             let raw = value
                 .as_i64()
                 .ok_or_else(|| Error::invalid(format!("field `{key}` must be a number or null")))?;
-            u8::try_from(raw)
+            Role::try_from(raw)
                 .ok()
-                .filter(|r| (1..=100).contains(r))
                 .ok_or_else(|| {
                     Error::invalid(format!(
                         "field `{key}` must be a role between 1 and 100, got {raw}"
@@ -9395,16 +9399,11 @@ pub(crate) fn file_store_from_body(id: FileStoreDefId, body: &Json) -> Result<Fi
             let raw = value
                 .as_i64()
                 .ok_or_else(|| Error::invalid("field `min_role` must be a number or null"))?;
-            Some(
-                u8::try_from(raw)
-                    .ok()
-                    .filter(|r| (1..=100).contains(r))
-                    .ok_or_else(|| {
-                        Error::invalid(format!(
-                            "field `min_role` must be a role between 1 and 100, got {raw}"
-                        ))
-                    })?,
-            )
+            Some(Role::try_from(raw).ok().ok_or_else(|| {
+                Error::invalid(format!(
+                    "field `min_role` must be a role between 1 and 100, got {raw}"
+                ))
+            })?)
         }
     };
 
@@ -10289,7 +10288,7 @@ pub(crate) fn agent_from_body(id: sc_agent::AgentId, body: &Json) -> Result<sc_a
         let raw = min_role
             .as_i64()
             .ok_or_else(|| Error::invalid("field `min_role` must be a number"))?;
-        agent = agent.min_role(u8::try_from(raw).map_err(|_| {
+        agent = agent.min_role(Role::try_from(raw).map_err(|_| {
             Error::invalid(format!(
                 "`min_role` must be a role between 1 and 100, got {raw}"
             ))
@@ -10823,7 +10822,7 @@ pub(crate) fn trigger_from_body(id: TriggerId, body: &Json) -> Result<Trigger> {
         let raw = min_role
             .as_i64()
             .ok_or_else(|| Error::invalid("field `min_role` must be a number"))?;
-        trigger = trigger.min_role(u8::try_from(raw).map_err(|_| {
+        trigger = trigger.min_role(Role::try_from(raw).map_err(|_| {
             Error::invalid(format!(
                 "`min_role` must be a role between 1 and 100, got {raw}"
             ))
@@ -11105,9 +11104,9 @@ fn parse_user_id(raw: &str) -> Result<uuid::Uuid> {
 }
 
 /// The `role` of a user body, narrowed to the `1..=100` byte.
-fn user_role_field(obj: &Map<String, Json>) -> Result<u8> {
+fn user_role_field(obj: &Map<String, Json>) -> Result<Role> {
     let role = int_field(obj, "role")?;
-    u8::try_from(role).map_err(|_| Error::invalid(format!("role {role} is not in 1..=100")))
+    Role::try_from(role).map_err(|_| Error::invalid(format!("role {role} is not in 1..=100")))
 }
 
 /// The `language` of a user body: a BCP-47 tag, canonicalised, or `None` for
@@ -11848,7 +11847,7 @@ pub(crate) fn stream_from_body(body: &Map<String, Json>) -> Result<sc_stream::St
         Some(value) => Some(
             value
                 .as_u64()
-                .and_then(|n| u8::try_from(n).ok())
+                .and_then(|n| Role::try_from(n).ok())
                 .ok_or_else(|| Error::invalid("`min_role` must be a role between 1 and 100"))?,
         ),
     };
@@ -12490,7 +12489,7 @@ async fn owner_label(catalog: &Catalog, id: &str) -> Json {
 /// is no directory floor common to them all: each one's ancestors are walked.
 async fn with_meta(
     store: &dyn FileStore,
-    floor: Option<u8>,
+    floor: Option<Role>,
     entries: Vec<Entry>,
 ) -> Result<Vec<VisibleEntry>> {
     let mut out = Vec::with_capacity(entries.len());
@@ -12682,19 +12681,19 @@ fn provided_json(catalog: &Catalog, table: &Table, locale: &Locale) -> Json {
 async fn random_row(
     catalog: &Catalog,
     table: Option<&str>,
-    caller: &sc_catalog::CallerContext,
+    caller: &sc_catalog::Principal,
 ) -> Result<Option<Json>> {
     let Some(name) = table else {
         return Ok(None);
     };
     let table = catalog.require(name)?;
-    let count = rows::count_rows_where(catalog, &table, None, Some(caller)).await?;
+    let count = rows::count_rows_where(catalog, &table, None, Authority::Caller(caller)).await?;
     if count <= 0 {
         return Ok(None);
     }
     let offset = (uuid::Uuid::new_v4().as_u128() % count as u128) as u64;
     let query = rows::RowQuery::new().limit(1).offset(offset);
-    let read = rows::list_rows_query(catalog, &table, &query, Some(caller)).await?;
+    let read = rows::list_rows_query(catalog, &table, &query, Authority::Caller(caller)).await?;
     Ok(match read {
         Json::Array(rows) => rows.into_iter().next(),
         _ => None,
@@ -12719,8 +12718,8 @@ fn provided_configuration(table: &Table) -> sc_types::Attrs {
 /// event a write raises has to report (§10.2). The role is explicit rather than
 /// the user's own for the reason it always was: this endpoint is admin-only, and
 /// the row editor must work on a FORCE'd table.
-fn admin_caller(user: Option<&sc_auth::User>) -> sc_catalog::CallerContext {
-    sc_api::caller_context_at(ROLE_ADMIN, user)
+fn admin_caller(user: Option<&sc_auth::User>) -> sc_catalog::Principal {
+    sc_api::principal_at(Role::ADMIN, user)
 }
 
 /// A user's LLM credits as the admin user page shows them: the balance, every
@@ -12759,16 +12758,13 @@ fn credit_amount(value: Option<&Json>, key: &str) -> Result<Option<rust_decimal:
 /// Rejects rather than clamps, for the reason the storage layer does: the
 /// nearest legal role is still a decision about who reaches the data, and it is
 /// not one the server gets to make on the admin's behalf.
-fn role_field(obj: &Map<String, Json>, key: &str) -> Result<u8> {
+fn role_field(obj: &Map<String, Json>, key: &str) -> Result<Role> {
     let raw = int_field(obj, key)?;
-    u8::try_from(raw)
-        .ok()
-        .filter(|r| (ROLE_ADMIN..=ROLE_PUBLIC).contains(r))
-        .ok_or_else(|| {
-            Error::invalid(format!(
-                "field `{key}` must be a role between 1 and 100, got {raw}"
-            ))
-        })
+    Role::try_from(raw).map_err(|_| {
+        Error::invalid(format!(
+            "field `{key}` must be a role between 1 and 100, got {raw}"
+        ))
+    })
 }
 
 /// One role on the wire (§7.1, §9).
@@ -12776,7 +12772,7 @@ fn role_field(obj: &Map<String, Json>, key: &str) -> Result<u8> {
 /// `builtin` travels with the role so the UI can decline to offer a delete it
 /// would only be refused for — admin and public are what "administer" and
 /// "anonymous caller" mean, and neither is an installation's to remove.
-pub(crate) fn role_json(role: &Role) -> Json {
+pub(crate) fn role_json(role: &RoleDef) -> Json {
     json!({
         "role": role.role,
         "name": role.name,

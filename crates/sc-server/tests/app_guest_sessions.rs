@@ -18,6 +18,7 @@
 //!   event names it so a trigger moves the guest's rows to the account (P1.6).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -169,8 +170,8 @@ async fn create_basket(catalog: &Catalog, name: &str, rls: bool) -> sc_error::Re
             settings: TableSettings {
                 // Admin-only floors: only the ownership formula lets a guest
                 // or a buyer in at all.
-                min_role_read: Some(1),
-                min_role_write: Some(1),
+                min_role_read: Some(Role::ADMIN),
+                min_role_write: Some(Role::ADMIN),
                 ownership_formula: Some(
                     "user ? owner_email === user.email : session_id === session.id".into(),
                 ),
@@ -222,8 +223,8 @@ async fn setup() -> sc_error::Result<Server> {
     let dispatcher = install_triggers(&catalog, evaluator.clone(), &agents, &models).await?;
     create_basket(&catalog, "baskets", false).await?;
     create_basket(&catalog, "rls_baskets", true).await?;
-    sc_auth::save_role(&catalog, &sc_auth::Role::new(80, "User")).await?;
-    create_user(&catalog, "ada@example.com", "ada-password", 80).await?;
+    sc_auth::save_role(&catalog, &sc_auth::RoleDef::new(Role::of(80), "User")).await?;
+    create_user(&catalog, "ada@example.com", "ada-password", Role::of(80)).await?;
     // P1.6: the application's own trigger, moving a guest's basket to the
     // account that signed in from the same browser.
     let adopt = Trigger::new("adopt_basket", EventKind::Login, "update_rows")

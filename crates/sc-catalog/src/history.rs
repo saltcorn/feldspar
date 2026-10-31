@@ -12,6 +12,7 @@
 use chrono::{DateTime, Utc};
 use sc_error::{Error, Result};
 use sc_query::{Statement, Value};
+use sc_types::Role;
 use serde_json::{Map, Value as Json};
 use uuid::Uuid;
 
@@ -20,9 +21,6 @@ use crate::change_log::{ATTR_HISTORY, CHANGES_TABLE};
 use crate::changeset::CHANGESETS_TABLE;
 use crate::field::Attrs;
 use crate::table::Table;
-
-/// The administrator's role, who may always read history.
-const ROLE_ADMIN: u8 = 1;
 
 /// A changeset as the log keeps it, without the session key, which is for
 /// finding a session's changesets (the Undo action) and is never shown.
@@ -145,22 +143,22 @@ pub struct RowAsOf {
 
 /// The role a table's history is open to (`attributes.history.min_role`): the
 /// admin unless it says otherwise.
-pub fn history_min_role(attributes: &Attrs) -> u8 {
+pub fn history_min_role(attributes: &Attrs) -> Role {
     attributes
         .get(ATTR_HISTORY)
         .and_then(|h| h.get("min_role"))
         .and_then(Json::as_u64)
-        .and_then(|r| u8::try_from(r).ok())
-        .unwrap_or(ROLE_ADMIN)
+        .and_then(|r| Role::try_from(r).ok())
+        .unwrap_or(Role::ADMIN)
 }
 
 /// Set who may read a table's history. Only while history is on (switching it
 /// off forgets this too); the admin's role removes the key.
-pub fn set_history_min_role(attributes: &mut Attrs, role: u8) {
+pub fn set_history_min_role(attributes: &mut Attrs, role: Role) {
     let Some(Json::Object(settings)) = attributes.get_mut(ATTR_HISTORY) else {
         return;
     };
-    if role == ROLE_ADMIN {
+    if role.is_admin() {
         settings.remove("min_role");
     } else {
         settings.insert("min_role".into(), Json::from(role));
@@ -664,17 +662,17 @@ mod tests {
     #[test]
     fn history_is_the_admins_unless_opened_and_switching_off_forgets() {
         let mut attrs = Attrs::new();
-        assert_eq!(history_min_role(&attrs), 1);
+        assert_eq!(history_min_role(&attrs), Role::ADMIN);
         // Nothing to open while history is off.
-        set_history_min_role(&mut attrs, 40);
+        set_history_min_role(&mut attrs, Role::of(40));
         assert!(attrs.is_empty());
         set_history_enabled(&mut attrs, true);
-        set_history_min_role(&mut attrs, 40);
-        assert_eq!(history_min_role(&attrs), 40);
-        set_history_min_role(&mut attrs, 1);
+        set_history_min_role(&mut attrs, Role::of(40));
+        assert_eq!(history_min_role(&attrs), Role::of(40));
+        set_history_min_role(&mut attrs, Role::ADMIN);
         assert_eq!(attrs[ATTR_HISTORY], serde_json::json!({ "enabled": true }));
-        set_history_min_role(&mut attrs, 40);
+        set_history_min_role(&mut attrs, Role::of(40));
         set_history_enabled(&mut attrs, false);
-        assert_eq!(history_min_role(&attrs), 1);
+        assert_eq!(history_min_role(&attrs), Role::ADMIN);
     }
 }

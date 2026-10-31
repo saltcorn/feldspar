@@ -8,6 +8,7 @@
 //! which kind of provider backs the table so that identity stays serialisable
 //! and comparable (technical design §8.2).
 
+use sc_types::Role;
 use std::collections::BTreeSet;
 
 use sc_db::PhysicalTable;
@@ -94,9 +95,9 @@ impl TableSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessRules {
     /// Least-privileged role that may read rows.
-    pub min_role_read: u8,
+    pub min_role_read: Role,
     /// Least-privileged role that may create/update/delete rows.
-    pub min_role_write: u8,
+    pub min_role_write: Role,
 }
 
 impl Default for AccessRules {
@@ -105,8 +106,8 @@ impl Default for AccessRules {
     /// applies until `_fd_tables` overlays arrive (post-MVP).
     fn default() -> Self {
         AccessRules {
-            min_role_read: 1,
-            min_role_write: 1,
+            min_role_read: Role::ADMIN,
+            min_role_write: Role::ADMIN,
         }
     }
 }

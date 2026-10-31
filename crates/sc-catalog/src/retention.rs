@@ -22,7 +22,7 @@ use sc_error::Result;
 use sc_query::{Statement, Value};
 use serde_json::Value as Json;
 
-use crate::caller::CallerContext;
+use crate::caller::Authority;
 use crate::catalog::Catalog;
 use crate::change_log::{ATTR_HISTORY, CHANGES_TABLE};
 use crate::changeset::CHANGESETS_TABLE;
@@ -39,10 +39,6 @@ pub const SYNC_KEEP_DAYS: i64 = 30;
 /// is written with its first entry, so an empty one is one whose entries have
 /// all gone; the margin keeps the job clear of a write that is joining it.
 const EMPTY_CHANGESET_GRACE_DAYS: i64 = 1;
-
-/// The administrator's role, under which the job asks whether a row still
-/// references a file: row-level security must not hide a row from it.
-const ROLE_ADMIN: u8 = 1;
 
 /// What one run removed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -284,8 +280,9 @@ async fn file_referenced(
         ),
         vec![Value::Text(path.to_owned())],
     );
-    let context = CallerContext::new(ROLE_ADMIN, None);
-    if !crate::rls::run_in_context_read_only(catalog, &context, &row)
+    // Row-level security must not hide a row from the question.
+    let system = Authority::system("retention: is the file still referenced");
+    if !crate::rls::run_in_context_read_only(catalog, &system.as_principal(), &row)
         .await?
         .is_empty()
     {

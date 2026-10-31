@@ -2,6 +2,7 @@
 //! every pull and upload.
 
 use sc_auth::User;
+use sc_catalog::Authority;
 use sc_catalog::{Catalog, SYNC_CLIENTS_TABLE, Table};
 use sc_error::{Error, Result};
 use sc_query::{Expr, Value};
@@ -82,11 +83,15 @@ pub(super) async fn check_device(
         limit: Some(1),
         ..RowQuery::new()
     };
-    let Some(device) = rows::list_row_values(cat, devices, &query, None)
-        .await?
-        .into_iter()
-        .next()
-    else {
+    let Some(device) = rows::list_row_values(
+        cat,
+        devices,
+        &query,
+        Authority::system("sync: look up the caller's device"),
+    )
+    .await?
+    .into_iter()
+    .next() else {
         return Err(Error::not_found(
             "unknown device: register it with `sync/register` first",
         ));

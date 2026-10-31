@@ -46,13 +46,7 @@
 
 use crate::store::{FileMeta, FileStore};
 use sc_error::{Error, Result};
-
-/// The least-restrictive role: everyone, including anonymous callers. Matches the
-/// `sc-auth` scale where `100` is public.
-pub const ROLE_PUBLIC: u8 = 100;
-
-/// The most-restrictive role: admin authority, which every rule is cleared by.
-pub const ROLE_ADMIN: u8 = 1;
+use sc_types::Role;
 
 /// Who is asking: the role every floor is checked against, and the user id the
 /// owner rule compares with.
@@ -65,20 +59,20 @@ pub const ROLE_ADMIN: u8 = 1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileCaller {
     /// The caller's role (`1` admin … `100` public).
-    pub role: u8,
+    pub role: Role,
     /// The caller's user id, if they are signed in.
     pub user_id: Option<String>,
 }
 
 impl FileCaller {
     /// A caller at `role`, signed in as `user_id` when there is one.
-    pub fn new(role: u8, user_id: Option<String>) -> FileCaller {
+    pub fn new(role: Role, user_id: Option<String>) -> FileCaller {
         FileCaller { role, user_id }
     }
 
     /// A caller with no account, checked at `role` alone — anonymous at
-    /// [`ROLE_PUBLIC`], or a system run at whatever role it was given.
-    pub fn role(role: u8) -> FileCaller {
+    /// [`Role::PUBLIC`], or a system run at whatever role it was given.
+    pub fn role(role: Role) -> FileCaller {
         FileCaller {
             role,
             user_id: None,
@@ -87,12 +81,12 @@ impl FileCaller {
 
     /// Nobody: the public role and no account.
     pub fn anonymous() -> FileCaller {
-        FileCaller::role(ROLE_PUBLIC)
+        FileCaller::role(Role::PUBLIC)
     }
 
     /// Whether this caller has admin authority, which clears every rule.
     pub fn is_admin(&self) -> bool {
-        self.role <= ROLE_ADMIN
+        self.role.is_admin()
     }
 
     /// Whether this caller is the recorded owner of the entry `meta` describes.
@@ -104,19 +98,19 @@ impl FileCaller {
     }
 
     /// Whether the role alone clears `floor`.
-    fn clears(&self, floor: Option<u8>) -> bool {
-        floor.is_none_or(|required| self.role <= required)
+    fn clears(&self, floor: Option<Role>) -> bool {
+        floor.is_none_or(|required| self.role.meets(required))
     }
 }
 
-/// Combine two optional rules, keeping the more restrictive (smaller) one.
+/// Combine two optional rules, keeping the more restrictive one (the more privileged role).
 ///
 /// `None` means "this level says nothing", which must leave the inherited floor
 /// untouched rather than reset it to public — otherwise a directory with no rule
 /// of its own would silently undo its parent's.
-fn tighten(current: Option<u8>, rule: Option<u8>) -> Option<u8> {
+fn tighten(current: Option<Role>, rule: Option<Role>) -> Option<Role> {
     match (current, rule) {
-        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), Some(b)) => Some(a.most_privileged(b)),
         (Some(a), None) => Some(a),
         (None, Some(b)) => Some(b),
         (None, None) => None,
@@ -155,9 +149,9 @@ fn ancestors(path: &str) -> Vec<String> {
 /// caller's concern, not the access rule's.
 pub async fn effective_min_role(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
+    store_min_role: Option<Role>,
     path: &str,
-) -> Result<Option<u8>> {
+) -> Result<Option<Role>> {
     let mut floor = store_min_role;
     for ancestor in ancestors(path) {
         // A missing component simply has no rule of its own. Reading metadata for
@@ -183,7 +177,7 @@ pub async fn effective_min_role(
 /// of files the caller may not see.
 pub async fn check_access(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
+    store_min_role: Option<Role>,
     path: &str,
     caller: &FileCaller,
 ) -> Result<()> {
@@ -223,7 +217,7 @@ pub async fn check_access(
 /// server's operating-system user.
 pub async fn check_write(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
+    store_min_role: Option<Role>,
     path: &str,
     caller: &FileCaller,
 ) -> Result<()> {
@@ -375,7 +369,7 @@ fn denied(store: &dyn FileStore, path: &str) -> Error {
 /// unreadable folder still looks like a missing one.
 pub async fn list_visible(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
+    store_min_role: Option<Role>,
     dir: &str,
     caller: &FileCaller,
 ) -> Result<Vec<VisibleEntry>> {
@@ -409,7 +403,7 @@ pub async fn list_visible(
 /// per file.
 pub async fn filter_visible(
     store: &dyn FileStore,
-    dir_floor: Option<u8>,
+    dir_floor: Option<Role>,
     entries: Vec<crate::Entry>,
     caller: &FileCaller,
 ) -> Result<Vec<crate::Entry>> {
@@ -430,7 +424,7 @@ pub struct VisibleEntry {
     pub meta: FileMeta,
     /// The rule that actually reaches it: this entry's own tightened by the
     /// directory's (which already includes the store's).
-    pub effective_min_role: Option<u8>,
+    pub effective_min_role: Option<Role>,
 }
 
 /// [`filter_visible`], keeping the metadata rather than discarding it.
@@ -441,7 +435,7 @@ pub struct VisibleEntry {
 /// same rule, one `get_meta` per entry.
 pub async fn visible_entries(
     store: &dyn FileStore,
-    dir_floor: Option<u8>,
+    dir_floor: Option<Role>,
     entries: Vec<crate::Entry>,
     caller: &FileCaller,
 ) -> Result<Vec<VisibleEntry>> {
@@ -480,13 +474,19 @@ mod tests {
     #[test]
     fn tightening_keeps_the_most_restrictive_rule() {
         // Lower is more restrictive, so a nested rule can only narrow access.
-        assert_eq!(tighten(Some(40), Some(20)), Some(20));
-        assert_eq!(tighten(Some(20), Some(40)), Some(20));
+        assert_eq!(
+            tighten(Some(Role::of(40)), Some(Role::of(20))),
+            Some(Role::of(20))
+        );
+        assert_eq!(
+            tighten(Some(Role::of(20)), Some(Role::of(40))),
+            Some(Role::of(20))
+        );
         // A level with no rule leaves the inherited floor alone — it must not
         // reset it to public, or a folder's restriction would be undone by any
         // unmarked child.
-        assert_eq!(tighten(Some(20), None), Some(20));
-        assert_eq!(tighten(None, Some(20)), Some(20));
+        assert_eq!(tighten(Some(Role::of(20)), None), Some(Role::of(20)));
+        assert_eq!(tighten(None, Some(Role::of(20))), Some(Role::of(20)));
         assert_eq!(tighten(None, None), None);
     }
 }

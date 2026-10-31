@@ -14,6 +14,7 @@
 //! and `modules_no_node.rs` is the test that says so with the `PATH` stripped.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -542,7 +543,12 @@ async fn a_modules_action_becomes_available_to_a_trigger_with_no_restart() -> sc
     // Running it reaches the module, with the trigger's configuration.
     let result = server
         .dispatcher
-        .run_trigger(&server.catalog, "echo a book", json!({ "id": 1 }), None)
+        .run_trigger(
+            &server.catalog,
+            "echo a book",
+            json!({ "id": 1 }),
+            Authority::system("test"),
+        )
         .await?;
     assert_eq!(result["greeting"], json!("hello"));
 
@@ -556,7 +562,12 @@ async fn a_modules_action_becomes_available_to_a_trigger_with_no_restart() -> sc
     assert!(server.modules.modules().modules().is_empty());
     let err = server
         .dispatcher
-        .run_trigger(&server.catalog, "echo a book", json!({ "id": 2 }), None)
+        .run_trigger(
+            &server.catalog,
+            "echo a book",
+            json!({ "id": 2 }),
+            Authority::system("test"),
+        )
         .await
         .unwrap_err();
     assert!(err.to_string().contains("echo_row"), "{err}");
@@ -678,7 +689,7 @@ async fn a_runaway_module_does_not_delay_a_code_body() -> sc_error::Result<()> {
     let runaway = tokio::spawn(async move {
         let started = std::time::Instant::now();
         let err = dispatcher
-            .run_trigger(&catalog, "spin", json!({}), None)
+            .run_trigger(&catalog, "spin", json!({}), Authority::system("test"))
             .await
             .unwrap_err();
         (started.elapsed(), err.to_string())
@@ -691,7 +702,12 @@ async fn a_runaway_module_does_not_delay_a_code_body() -> sc_error::Result<()> {
     for n in 0..5 {
         let value = server
             .dispatcher
-            .run_trigger(&server.catalog, "compute", json!({ "n": n }), None)
+            .run_trigger(
+                &server.catalog,
+                "compute",
+                json!({ "n": n }),
+                Authority::system("test"),
+            )
             .await?;
         assert_eq!(value, json!(n * 2));
     }
@@ -716,7 +732,12 @@ async fn a_runaway_module_does_not_delay_a_code_body() -> sc_error::Result<()> {
     assert_eq!(
         server
             .dispatcher
-            .run_trigger(&server.catalog, "compute", json!({ "n": 21 }), None)
+            .run_trigger(
+                &server.catalog,
+                "compute",
+                json!({ "n": 21 }),
+                Authority::system("test")
+            )
             .await?,
         json!(42)
     );

@@ -28,6 +28,7 @@
 //!   `GET /api/notes` has it in `body_text`, and has no `body`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,7 +40,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use futures::{SinkExt, StreamExt};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
-use sc_auth::{ROLE_ADMIN, Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, FieldMeta, TableId, save_field_meta};
 use sc_db::{ColumnGenerator, DatabaseDriver};
 use sc_db_sqlite::SqliteDriver;
@@ -62,7 +63,7 @@ const BOB: &str = "bob@example.com";
 const CAROL: &str = "carol@example.com";
 const DAVE: &str = "dave@example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 40;
+const ROLE_MEMBER: Role = Role::of(40);
 
 /// The owner, or anybody it is shared with — and for anything but a read, only
 /// a share that may edit.
@@ -302,8 +303,8 @@ async fn setup() -> Result<Server> {
         &FieldMeta::new("notes", "body").rich_type(sc_types::COLLAB_DOC),
     )
     .await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
-    create_user(&catalog, ADMIN, PASSWORD, ROLE_ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
+    create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
     let mut users = HashMap::new();
     for email in [ALICE, BOB, CAROL, DAVE] {
         let user = create_user(&catalog, email, PASSWORD, ROLE_MEMBER).await?;
@@ -397,7 +398,7 @@ async fn setup() -> Result<Server> {
             "/api/tables/notes",
             Some(json!({
                 "label": "", "description": "",
-                "min_role_read": ROLE_ADMIN, "min_role_write": ROLE_ADMIN,
+                "min_role_read": Role::ADMIN, "min_role_write": Role::ADMIN,
                 "ownership_formula": NOTES_RULE, "rls_enabled": false, "sync_enabled": false,
             })),
         )

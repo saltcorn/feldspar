@@ -9,6 +9,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::rows::Executor;
@@ -57,8 +58,8 @@ async fn create_notes(catalog: &Catalog, ownership: &str) -> Result<()> {
             name: "notes".into(),
             database: String::new(),
             settings: TableSettings {
-                min_role_read: Some(1),
-                min_role_write: Some(1),
+                min_role_read: Some(Role::ADMIN),
+                min_role_write: Some(Role::ADMIN),
                 ownership_formula: Some(ownership.into()),
                 ..TableSettings::default()
             },
@@ -82,7 +83,7 @@ async fn create_notes(catalog: &Catalog, ownership: &str) -> Result<()> {
 }
 
 fn writer(email: &str) -> User {
-    let mut user = User::new(uuid::Uuid::new_v4(), 40).unwrap();
+    let mut user = User::new(uuid::Uuid::new_v4(), Role::of(40));
     user.extra.insert("email".into(), Value::Text(email.into()));
     user
 }
@@ -108,7 +109,7 @@ async fn a_left_out_field_takes_its_default_from_the_user_and_the_row() -> Resul
         &catalog,
         &notes,
         &json!({ "title": "Hello World" }),
-        40,
+        Role::of(40),
         Some(&ada),
         evaluator.as_ref(),
         &[],
@@ -123,7 +124,7 @@ async fn a_left_out_field_takes_its_default_from_the_user_and_the_row() -> Resul
         &catalog,
         &notes,
         &json!({ "title": "Second", "owner": "ada@example.com", "slug": null }),
-        40,
+        Role::of(40),
         Some(&ada),
         evaluator.as_ref(),
         &[],
@@ -137,7 +138,7 @@ async fn a_left_out_field_takes_its_default_from_the_user_and_the_row() -> Resul
         &catalog,
         &notes,
         &json!({ "title": "Third", "owner": "bob@example.com" }),
-        40,
+        Role::of(40),
         Some(&ada),
         evaluator.as_ref(),
         &[],
@@ -251,7 +252,7 @@ async fn a_nullable_field_takes_its_default_when_it_gives_one() -> Result<()> {
         &catalog,
         &notes,
         &json!({ "title": "Mine", "owner": "ada@example.com" }),
-        40,
+        Role::of(40),
         Some(&ada),
         evaluator.as_ref(),
         &[],
@@ -295,8 +296,8 @@ async fn create_tasks(catalog: &Catalog, formula: &str, rls: bool) -> Result<()>
             name: "tasks".into(),
             database: String::new(),
             settings: TableSettings {
-                min_role_read: Some(1),
-                min_role_write: Some(1),
+                min_role_read: Some(Role::ADMIN),
+                min_role_write: Some(Role::ADMIN),
                 ownership_formula: Some(formula.into()),
                 rls_enabled: Some(rls),
                 ..TableSettings::default()
@@ -339,7 +340,7 @@ async fn a_field_the_insert_leaves_out_is_null_to_the_ownership_formula() -> Res
                     catalog,
                     tasks,
                     &body,
-                    40,
+                    Role::of(40),
                     Some(ada),
                     evaluator.as_ref(),
                     &[],

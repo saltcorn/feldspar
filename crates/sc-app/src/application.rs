@@ -16,11 +16,10 @@
 //! and the human-facing key that must be unique is its
 //! [`subdomain`](Application::subdomain), which is what routing dispatches on.
 
-use std::collections::BTreeMap;
-
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC};
 use sc_catalog::{Attrs, FileStoreId, TableId};
+use sc_types::Role;
 use serde_json::Value as Json;
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use crate::exposed_agents::AgentExposure;
@@ -593,12 +592,12 @@ pub struct Application {
     /// The least privileged role that may use the application at all
     /// ([`crate::admit`]): a caller whose role number is higher is refused
     /// everything — sign-in included. `100` (public) lets everybody in.
-    pub min_role: u8,
+    pub min_role: Role,
     /// The most privileged role a caller holds **while using this
     /// application**: an admin (role 1) on an application with `max_role` 20
     /// is served as role 20 — by its endpoints, its ownership formulas, RLS and
     /// its code queries alike. `1` caps nobody.
-    pub max_role: u8,
+    pub max_role: Role,
     /// A formula over `user` (and anything else a formula may read, such as
     /// the time) that must hold for a caller to use the application at all —
     /// `user.department === "Finance"`. Empty means no condition. Evaluated
@@ -687,8 +686,8 @@ impl Application {
             uploads: Vec::new(),
             agents: Vec::new(),
             csp: CspPolicy::strict(),
-            min_role: ROLE_PUBLIC,
-            max_role: ROLE_ADMIN,
+            min_role: Role::PUBLIC,
+            max_role: Role::ADMIN,
             access_if: String::new(),
             attributes: Attrs::new(),
         }
@@ -777,13 +776,13 @@ impl Application {
     }
 
     /// Set the least privileged role that may use the application.
-    pub fn min_role(mut self, role: u8) -> Application {
+    pub fn min_role(mut self, role: Role) -> Application {
         self.min_role = role;
         self
     }
 
     /// Set the most privileged role a caller holds while using the application.
-    pub fn max_role(mut self, role: u8) -> Application {
+    pub fn max_role(mut self, role: Role) -> Application {
         self.max_role = role;
         self
     }

@@ -23,6 +23,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::common;
+use sc_types::Role;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -113,7 +114,7 @@ fn librarian(extra: &[(&str, Json)]) -> Agent {
     }
     Agent::new("librarian", "main")
         .system_prompt("You answer questions about the library.")
-        .min_role(80)
+        .min_role(Role::of(80))
         .with_trait(EnabledTrait::new("subagent").configuration(cfg))
 }
 
@@ -121,7 +122,7 @@ fn librarian(extra: &[(&str, Json)]) -> Agent {
 fn researcher() -> Agent {
     Agent::new("researcher", "main")
         .system_prompt("You look things up in the library's data.")
-        .min_role(80)
+        .min_role(Role::of(80))
         .with_trait(
             EnabledTrait::new("query_table")
                 .config(CFG_TABLE, "books")
@@ -459,7 +460,7 @@ async fn a_delegation_that_would_loop_is_refused_with_the_path() -> Result<()> {
     // saved plain, the parent against it, and the specialist then edited to point
     // back. That is also how an admin would arrive here, and the reason the cycle
     // cannot be refused on save.
-    let plain = Agent::new("researcher", "main").min_role(80);
+    let plain = Agent::new("researcher", "main").min_role(Role::of(80));
     save_all(
         &env.catalog,
         &env.registry,
@@ -541,14 +542,14 @@ async fn a_chain_deeper_than_the_configured_bound_is_refused() -> Result<()> {
     // Three distinct agents is not a cycle, so only a number stops it. With the
     // bound at 1, the first delegation is allowed and the second is not.
     let env = Env::new().await?;
-    let middle = Agent::new("researcher", "main").min_role(80).with_trait(
-        EnabledTrait::new("subagent").configuration(config(&[
+    let middle = Agent::new("researcher", "main")
+        .min_role(Role::of(80))
+        .with_trait(EnabledTrait::new("subagent").configuration(config(&[
             (CFG_AGENT, json!("assistant")),
             (CFG_MAX_DEPTH, json!(1)),
-        ])),
-    );
+        ])));
     let bottom = Agent::new("assistant", "main")
-        .min_role(80)
+        .min_role(Role::of(80))
         .system_prompt("You help.");
     let top = librarian(&[(CFG_MAX_DEPTH, json!(1))]);
     save_all(&env.catalog, &env.registry, &[bottom, middle, top.clone()]).await?;

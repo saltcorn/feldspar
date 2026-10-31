@@ -26,6 +26,7 @@
 //!   mounted, so each test also exercises the live re-projection.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -36,7 +37,7 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use sc_app::{
     ApiConfig, Application, CodeFramework, FrameworkRef, app_source_from_config, build_application,
 };
-use sc_auth::{ROLE_ADMIN, Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, DataFieldKind, FieldMeta, FileStoreId, TableId, save_field_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -289,10 +290,10 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<(Router, Arc<Catalog>, TestDb)
         apps,
     )?;
 
-    save_role(&catalog, &Role::new(80, "Member")).await?;
-    create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
-    create_user(&catalog, ALICE, "alice-pw", 80).await?;
-    create_user(&catalog, BOB, "bob-pw", 80).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Member")).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
+    create_user(&catalog, ALICE, "alice-pw", Role::of(80)).await?;
+    create_user(&catalog, BOB, "bob-pw", Role::of(80)).await?;
     Ok((router, catalog, db))
 }
 

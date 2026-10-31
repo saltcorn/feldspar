@@ -973,6 +973,7 @@ impl Framework for CodeFramework {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sc_types::Role;
 
     #[test]
     fn the_code_framework_declares_the_settings_section_13_3_names() {
@@ -1231,7 +1232,7 @@ mod tests {
         full.body = RequestBody::Form(vec![("title".to_owned(), "Dune".to_owned())]);
         full.headers
             .insert("x-requested-with".to_owned(), "XMLHttpRequest".to_owned());
-        full.user = Some(sc_auth::User::new(uuid::Uuid::new_v4(), 1).unwrap());
+        full.user = Some(sc_auth::User::new(uuid::Uuid::new_v4(), Role::ADMIN));
         full.base_url = "https://blog.example.com".to_owned();
 
         let plain = fw.serve(&AppRequest::get("/posts/42"));

@@ -17,12 +17,13 @@
 //!   is visible on another within the freshness TTL, and immediately when the
 //!   cache is off.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use chrono::Duration;
 use sc_auth::{
-    CACHE_CAPACITY, COL_ID, ROLE_ADMIN, SESSIONS_TABLE, SessionStore, USERS_TABLE, bootstrap,
-    create_session, create_user,
+    CACHE_CAPACITY, COL_ID, SESSIONS_TABLE, SessionStore, USERS_TABLE, bootstrap, create_session,
+    create_user,
 };
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
@@ -88,7 +89,7 @@ async fn session_rows(catalog: &Catalog) -> Result<usize> {
 #[tokio::test]
 async fn a_session_started_on_one_node_is_live_on_another() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", ROLE_ADMIN).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::ADMIN).await?;
 
     // Two stores over one database — two processes, as far as the data is
     // concerned. Uncached, so this is the table's behaviour and not a cache's.
@@ -116,7 +117,7 @@ async fn a_session_started_on_one_node_is_live_on_another() -> Result<()> {
 #[tokio::test]
 async fn a_cached_session_goes_stale_and_then_notices_the_logout() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", ROLE_ADMIN).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::ADMIN).await?;
 
     // Node A caches for a beat; node B does not cache at all.
     let node_a = SessionStore::database_with(
@@ -156,7 +157,7 @@ async fn a_cached_session_goes_stale_and_then_notices_the_logout() -> Result<()>
 #[tokio::test]
 async fn invalidate_drops_the_cached_copy_and_nothing_else() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", ROLE_ADMIN).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::ADMIN).await?;
     let store = SessionStore::database(f.catalog.clone());
 
     let token = store.login(user).await?;
@@ -209,7 +210,7 @@ async fn the_session_table_is_unlogged() -> Result<()> {
 #[tokio::test]
 async fn the_stored_row_is_not_the_cookie() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", ROLE_ADMIN).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::ADMIN).await?;
     let store = uncached(&f.catalog);
     let token = store.login(user).await?;
 
@@ -242,8 +243,8 @@ async fn the_stored_row_is_not_the_cookie() -> Result<()> {
 #[tokio::test]
 async fn a_deleted_users_session_stops_resolving_and_never_blocked_the_delete() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", ROLE_ADMIN).await?;
-    let other = create_user(&f.catalog, "b@example.com", "pw", ROLE_ADMIN).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::ADMIN).await?;
+    let other = create_user(&f.catalog, "b@example.com", "pw", Role::ADMIN).await?;
     let store = uncached(&f.catalog);
 
     let token = store.login(user.clone()).await?;
@@ -273,7 +274,7 @@ async fn a_deleted_users_session_stops_resolving_and_never_blocked_the_delete() 
 #[tokio::test]
 async fn expired_sessions_lapse_and_are_swept() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", ROLE_ADMIN).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::ADMIN).await?;
     let store = uncached(&f.catalog);
 
     // The live one first: `login` sweeps on its way through (rate-limited to one
@@ -305,7 +306,7 @@ async fn expired_sessions_lapse_and_are_swept() -> Result<()> {
 #[tokio::test]
 async fn a_role_change_reaches_a_live_session() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", ROLE_ADMIN).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::ADMIN).await?;
     let store = uncached(&f.catalog);
     let token = store.login(user.clone()).await?;
 
@@ -325,7 +326,8 @@ async fn a_role_change_reaches_a_live_session() -> Result<()> {
 
     let seen = store.user_for(&token).await?.expect("still signed in");
     assert_eq!(
-        seen.role, 100,
+        seen.role,
+        Role::PUBLIC,
         "the session names the user; it does not carry a copy of them"
     );
     Ok(())

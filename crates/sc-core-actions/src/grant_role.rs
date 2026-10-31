@@ -35,6 +35,7 @@ use sc_action::{
     event_formula_value, optional_formula, required_formula,
 };
 use sc_error::{Error, Result};
+use sc_types::Role;
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value as Json, json};
 
@@ -174,7 +175,7 @@ impl Action for GrantRole {
 }
 
 /// The configured role: one that can be granted, never the admin's.
-fn role(config: &Attrs) -> Result<u8> {
+fn role(config: &Attrs) -> Result<Role> {
     let role = config
         .get(CFG_ROLE)
         .and_then(|v| match v {
@@ -182,15 +183,15 @@ fn role(config: &Attrs) -> Result<u8> {
             Json::String(s) => s.trim().parse().ok(),
             _ => None,
         })
-        .and_then(|r| u8::try_from(r).ok())
+        .and_then(|r| Role::try_from(r).ok())
         .ok_or_else(|| Error::invalid(format!("`{CFG_ROLE}` is a role number")))?;
-    if role <= sc_auth::ROLE_ADMIN {
+    if role.is_admin() {
         return Err(Error::invalid(
             "grant_role does not grant the admin role; an admin does that by hand, on the user \
              page",
         ));
     }
-    if role >= sc_auth::ROLE_PUBLIC {
+    if role.is_public() {
         return Err(Error::invalid(format!(
             "role {role} cannot be granted: the public role is everybody's already"
         )));
@@ -264,8 +265,14 @@ mod tests {
 
     #[test]
     fn the_role_is_grantable_and_never_the_admins() {
-        assert_eq!(role(&config(&[(CFG_ROLE, json!(70))])).unwrap(), 70);
-        assert_eq!(role(&config(&[(CFG_ROLE, json!("70"))])).unwrap(), 70);
+        assert_eq!(
+            role(&config(&[(CFG_ROLE, json!(70))])).unwrap(),
+            Role::of(70)
+        );
+        assert_eq!(
+            role(&config(&[(CFG_ROLE, json!("70"))])).unwrap(),
+            Role::of(70)
+        );
         for bad in [json!(1), json!(100), json!(0), json!("pro"), Json::Null] {
             assert!(role(&config(&[(CFG_ROLE, bad.clone())])).is_err(), "{bad}");
         }

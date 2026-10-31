@@ -29,6 +29,7 @@
 //! log and no `Referer`. The page at `/set-password` is the application's own; it
 //! reads the fragment and calls `set-password`.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_auth::{
@@ -57,7 +58,7 @@ pub const CFG_INVITE_MIN_ROLE: &str = "invite_min_role";
 
 /// What [`CFG_INVITE_MIN_ROLE`] defaults to: admins only, until somebody says
 /// who else.
-pub const DEFAULT_INVITE_MIN_ROLE: u8 = sc_auth::ROLE_ADMIN;
+pub const DEFAULT_INVITE_MIN_ROLE: Role = Role::ADMIN;
 
 /// The path the emailed link opens in the application.
 pub const SET_PASSWORD_PAGE: &str = "/set-password";
@@ -95,7 +96,7 @@ const INVITE_KEYS: [&str; 9] = [
 /// A role outside `1..=99` is `None` rather than a default: the configuration
 /// was checked on save ([`check_invite_config`]), so one out of range now was
 /// never accepted, and failing closed projects nothing.
-pub fn rest_invite_min_role(config: &sc_types::Attrs) -> Option<u8> {
+pub fn rest_invite_min_role(config: &sc_types::Attrs) -> Option<Role> {
     if !config
         .get(CFG_ALLOW_INVITE)
         .and_then(Json::as_bool)
@@ -107,7 +108,7 @@ pub fn rest_invite_min_role(config: &sc_types::Attrs) -> Option<u8> {
         None => Some(DEFAULT_INVITE_MIN_ROLE),
         Some(role) => role
             .as_u64()
-            .and_then(|r| u8::try_from(r).ok())
+            .and_then(|r| Role::try_from(r).ok())
             .filter(|r| invite_min_role_allowed(*r)),
     }
 }
@@ -117,7 +118,7 @@ pub(crate) fn check_invite_config(config: &sc_types::Attrs) -> Result<()> {
     if let Some(role) = config.get(CFG_INVITE_MIN_ROLE).filter(|r| !r.is_null())
         && !role
             .as_u64()
-            .and_then(|r| u8::try_from(r).ok())
+            .and_then(|r| Role::try_from(r).ok())
             .is_some_and(invite_min_role_allowed)
     {
         return Err(Error::invalid(format!(
@@ -128,8 +129,8 @@ pub(crate) fn check_invite_config(config: &sc_types::Attrs) -> Result<()> {
     Ok(())
 }
 
-fn invite_min_role_allowed(role: u8) -> bool {
-    (sc_auth::ROLE_ADMIN..sc_auth::ROLE_PUBLIC).contains(&role)
+fn invite_min_role_allowed(role: Role) -> bool {
+    !role.is_public()
 }
 
 /// The shape of an invitation, as a generated client types it.
@@ -217,7 +218,7 @@ pub(crate) async fn invite(
     let role = obj
         .get("role")
         .and_then(Json::as_u64)
-        .and_then(|r| u8::try_from(r).ok())
+        .and_then(|r| Role::try_from(r).ok())
         .ok_or_else(|| Error::invalid("`role` must be the new account's role number"))?;
     let language = optional_text(obj, "language")?;
     let extra = user_fields(cat, obj.get("fields"), inviter.role)?;
@@ -424,7 +425,7 @@ fn invite_template(obj: &Map<String, Json>) -> Result<Template> {
 fn user_fields(
     cat: &Catalog,
     fields: Option<&Json>,
-    inviter_role: u8,
+    inviter_role: Role,
 ) -> Result<std::collections::BTreeMap<String, Value>> {
     let mut out = std::collections::BTreeMap::new();
     let Some(fields) = fields.filter(|f| !f.is_null()) else {
@@ -440,9 +441,7 @@ fn user_fields(
                 "`fields`: `{column}` is set by the invitation itself, not as a field"
             )));
         }
-        if inviter_role > sc_auth::ROLE_ADMIN
-            && crate::user_rows::is_admin_only_write(&users, column)
-        {
+        if !inviter_role.is_admin() && crate::user_rows::is_admin_only_write(&users, column) {
             return Err(Error::auth(format!(
                 "`fields`: `{column}` of an account is set by an admin only"
             )));
@@ -533,11 +532,11 @@ mod tests {
         config.insert(CFG_ALLOW_INVITE.into(), json!(true));
         assert_eq!(
             rest_invite_min_role(&config),
-            Some(1),
+            Some(Role::ADMIN),
             "admins only by default"
         );
         config.insert(CFG_INVITE_MIN_ROLE.into(), json!(40));
-        assert_eq!(rest_invite_min_role(&config), Some(40));
+        assert_eq!(rest_invite_min_role(&config), Some(Role::of(40)));
         assert!(check_invite_config(&config).is_ok());
         config.insert(CFG_INVITE_MIN_ROLE.into(), json!(100));
         assert!(check_invite_config(&config).is_err());

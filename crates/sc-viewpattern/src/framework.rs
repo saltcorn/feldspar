@@ -41,6 +41,7 @@
 //! surfaces a call carries are built from the request's user, exactly as a code
 //! body's are built from its event's caller (§11).
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -89,7 +90,7 @@ pub const CFG_ALLOW_SIGNUP: &str = "allow_signup";
 pub const CFG_NEW_USER_ROLE: &str = "new_user_role";
 
 /// The role [`CFG_NEW_USER_ROLE`] defaults to — v1's `user` role.
-const DEFAULT_NEW_USER_ROLE: u8 = 80;
+const DEFAULT_NEW_USER_ROLE: Role = Role::of(80);
 
 /// The `getConfig` keys the view runtime answers that are **not** settings: the
 /// application knows them (`base_url`), or the server decides them
@@ -101,12 +102,6 @@ pub const DERIVED_CONFIG_KEYS: [&str; 2] = ["base_url", "enable_dynamic_updates"
 /// The version tag in `/static_assets/<tag>/…`. The server's version, so an
 /// upgrade is a new URL and a year-long cache is safe.
 pub const ASSET_VERSION_TAG: &str = env!("CARGO_PKG_VERSION");
-
-/// The public role, which an anonymous viewer has.
-const ROLE_PUBLIC: u8 = 100;
-
-/// The admin role, which sign-up may never give.
-const ROLE_ADMIN: u8 = 1;
 
 /// The view sets every Saltcorn UI application renders from, one per
 /// application, shared by the mount, the renders and every writer.
@@ -215,7 +210,8 @@ pub fn check_saltcorn_ui_config(config: &Attrs) -> Result<()> {
     if let Some(role) = config.get(CFG_NEW_USER_ROLE).filter(|r| !r.is_null())
         && !role
             .as_u64()
-            .is_some_and(|r| (u64::from(ROLE_ADMIN) + 1..=u64::from(ROLE_PUBLIC)).contains(&r))
+            .and_then(|r| Role::try_from(r).ok())
+            .is_some_and(|r| !r.is_admin())
     {
         return Err(Error::invalid(format!(
             "framework `{SALTCORN_UI_FRAMEWORK}`: `{CFG_NEW_USER_ROLE}` must be a role from 2 to \
@@ -442,7 +438,7 @@ impl SaltcornUiFramework {
     /// there are (DoD step 5).
     async fn index(&self, req: &AppRequest, cat: &Catalog) -> Result<AppResponse> {
         let set = view_sets().get(cat, self.app.id).await?;
-        let role = role_of(req);
+        let role = sc_auth::role_of(req.user.as_ref());
         if let Some(page) = self.home_page(cat, &set, role).await? {
             return self.render_page(req, cat, &set, page).await;
         }
@@ -499,7 +495,7 @@ impl SaltcornUiFramework {
         &self,
         cat: &Catalog,
         set: &'s ViewSet,
-        role: u8,
+        role: Role,
     ) -> Result<Option<&'s Page>> {
         let configured = self
             .app
@@ -532,7 +528,7 @@ impl SaltcornUiFramework {
                 .as_array()
                 .is_some_and(|roles| {
                     roles.iter().any(|r| {
-                        r.as_u64() == Some(u64::from(role))
+                        r.as_u64() == Some(u64::from(role.get()))
                             || r.as_str().is_some_and(|s| {
                                 s == role.to_string() || Some(s) == role_name.as_deref()
                             })
@@ -778,7 +774,7 @@ impl SaltcornUiFramework {
             cat,
             &table,
             id,
-            role_of(req),
+            sc_auth::role_of(req.user.as_ref()),
             req.user.as_ref(),
             self.evaluator.as_ref(),
             &[],
@@ -920,14 +916,14 @@ impl SaltcornUiFramework {
 
     /// The role a new account gets. The settings are checked on save to be a
     /// role from 2 to 100 ([`check_saltcorn_ui_config`]).
-    fn new_user_role(&self) -> u8 {
+    fn new_user_role(&self) -> Role {
         self.app
             .framework
             .config
             .get(CFG_NEW_USER_ROLE)
             .and_then(Json::as_u64)
-            .and_then(|r| u8::try_from(r).ok())
-            .filter(|r| (ROLE_ADMIN + 1..=ROLE_PUBLIC).contains(r))
+            .and_then(|r| Role::try_from(r).ok())
+            .filter(|r| !r.is_admin())
             .unwrap_or(DEFAULT_NEW_USER_ROLE)
     }
 
@@ -1272,8 +1268,8 @@ impl SaltcornUiFramework {
     /// Nobody, navigating, is sent to sign in with the way back; nobody asking
     /// by ajax or posting gets the 401 (a redirect to a form is no answer to
     /// either). Somebody signed in is told their role may not, naming what.
-    fn refused(&self, req: &AppRequest, what: &str, min_role: u8) -> Option<AppResponse> {
-        if role_of(req) <= min_role {
+    fn refused(&self, req: &AppRequest, what: &str, min_role: Role) -> Option<AppResponse> {
+        if sc_auth::role_of(req.user.as_ref()).meets(min_role) {
             return None;
         }
         Some(match req.user {
@@ -1428,7 +1424,7 @@ impl<'a> ViewerHosts<'a> {
         triggers: Option<&'a TriggerDispatcher>,
         declared: &'a [TriggerRef],
     ) -> ViewerHosts<'a> {
-        let caller = sc_api::caller_context(user);
+        let caller = sc_api::principal_of(user);
         ViewerHosts {
             // The viewer's authority is the ceiling (7.2): a read a pattern
             // leaves unmarked is the viewer's, not the admin's it would be in a
@@ -1730,7 +1726,7 @@ pub async fn serve_store_file(
         .await?
         .and_then(|def| def.min_role);
     let caller = sc_files::FileCaller::new(
-        user.map_or(ROLE_PUBLIC, |u| u.role),
+        user.map_or(Role::PUBLIC, |u| u.role),
         user.map(|u| u.id.to_string()),
     );
     if sc_files::check_access(store.as_ref(), floor, &path, &caller)
@@ -1742,10 +1738,6 @@ pub async fn serve_store_file(
     Ok(AppResponse::serve_file(sc_files::ServeFile::new(
         store, path,
     )))
-}
-
-fn role_of(req: &AppRequest) -> u8 {
-    req.user.as_ref().map_or(ROLE_PUBLIC, |u| u.role)
 }
 
 fn is_xhr(req: &AppRequest) -> bool {

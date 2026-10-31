@@ -2162,6 +2162,7 @@ fn role(obj: &Map<String, Json>, key: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sc_types::Role;
 
     /// A bcrypt hash as v1's bcryptjs writes one (the OpenBSD vector for `U*U`).
     const V1_HASH: &str = "$2a$05$CCCCCCCCCCCCCCCCCCCCC.E5YPO9kmyuRGyh0XouQYb4YMJKvyOeW";
@@ -2726,7 +2727,7 @@ mod tests {
         assert_eq!(list.name, "BookList");
         assert_eq!(list.viewpattern, "List");
         assert_eq!(list.table_name.as_deref(), Some("Books"));
-        assert_eq!(list.min_role, 80);
+        assert_eq!(list.min_role, Role::of(80));
         assert_eq!(
             Json::Object(list.configuration.clone()),
             pack["views"][0]["configuration"]
@@ -2745,7 +2746,7 @@ mod tests {
             .expect("the parser reads it");
         assert_eq!(page.name, "Home");
         assert_eq!(page.title, "Welcome");
-        assert_eq!(page.min_role, 100);
+        assert_eq!(page.min_role, Role::PUBLIC);
         assert_eq!(page.layout, pack["pages"][0]["layout"]);
         assert_eq!(page.attributes["root_page_for_roles"], json!([100]));
         assert_eq!(page.attributes["no_menu"], json!(false));

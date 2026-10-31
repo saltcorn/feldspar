@@ -21,7 +21,7 @@
 //! An action's writes are the *admin's*, not the caller's: a trigger is
 //! server-side configuration, and an audit row a user may not insert is the
 //! archetype of what a trigger exists to write. So every write runs as a caller
-//! at [`ROLE_ADMIN`] (which clears every policy's role floor, exactly as the
+//! at [`Role::ADMIN`] (which clears every policy's role floor, exactly as the
 //! admin API's own row editor does), still carrying the event's user so a policy
 //! that reads `user` sees who caused it.
 //!
@@ -39,12 +39,14 @@
 //! site, and the same line in each of the three — an action does not get to have
 //! an opinion about whether it is part of a larger unit of work.
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sc_action::{ActionContext, EventBindings, config_str, required_formula};
-use sc_auth::{ROLE_ADMIN, USERS_TABLE};
-use sc_catalog::{CallerContext, Catalog, Table, prefetch_bindings};
+use sc_auth::USERS_TABLE;
+use sc_catalog::{Catalog, Principal, Table, prefetch_bindings};
 use sc_error::{Error, Result};
 use sc_expr::{
     Ambient, Env, Formula, JsEvaluator, Operation, SchemaShape, TranslateError, UserEnv, translate,
@@ -246,8 +248,8 @@ impl<'a> Scope<'a> {
         &self.executor
     }
 
-    pub(crate) fn authority(&self) -> CallerContext {
-        CallerContext::new(ROLE_ADMIN, self.user_json.cloned())
+    pub(crate) fn authority(&self) -> Principal {
+        Principal::new(Role::ADMIN, self.user_json.cloned())
             .chained(self.chain.clone())
             .in_current_origin()
     }
@@ -279,7 +281,7 @@ impl<'a> Scope<'a> {
             self.catalog,
             table,
             filter,
-            Some(&self.authority()),
+            Authority::Caller(&self.authority()),
             &self.executor,
         )
         .await?;

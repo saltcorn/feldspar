@@ -4,13 +4,14 @@
 //! DB-backed tests arrive in the second half of the Phase 6 server subphase.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::{AuthRequirement, Endpoint, EndpointSet, Method, PathSpec};
-use sc_auth::{ROLE_ADMIN, SessionStore, User};
+use sc_auth::{SessionStore, User};
 use sc_server::{
     CONTENT_SECURITY_POLICY, CSRF_COOKIE, CSRF_HEADER, HandlerRegistry, HandlerResponse,
     SECURE_CSRF_COOKIE, SESSION_COOKIE, ServerConfig, build_router,
@@ -68,10 +69,10 @@ fn test_registry() -> HandlerRegistry {
         Ok(HandlerResponse::ok(json!({ "ok": true })))
     });
     reg.register("login", |_ctx| async {
-        let admin = User::new(Uuid::new_v4(), ROLE_ADMIN)?;
+        let admin = User::new(Uuid::new_v4(), Role::ADMIN);
         Ok(HandlerResponse::start_session(
             admin,
-            json!({ "role": ROLE_ADMIN }),
+            json!({ "role": Role::ADMIN }),
         ))
     });
     reg.register("logout", |_ctx| async {
@@ -395,7 +396,7 @@ async fn admin_route_requires_authentication() {
 async fn insufficient_role_is_forbidden() {
     let (router, sessions) = test_router();
     // Seed a session for a non-admin user (role 40) directly in the store.
-    let editor = User::new(Uuid::new_v4(), 40).unwrap();
+    let editor = User::new(Uuid::new_v4(), Role::of(40));
     let token = sessions.login(editor).await.unwrap();
 
     let request = Request::get("/api/secret")

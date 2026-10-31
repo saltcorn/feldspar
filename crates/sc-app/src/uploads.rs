@@ -17,6 +17,7 @@ use sc_catalog::{Catalog, DataField};
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::{Assignment, BinOp, Delete, Expr, Insert, Select, Source, Statement, Update, Value};
+use sc_types::Role;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
@@ -28,7 +29,7 @@ pub const UPLOAD_SEGMENT: &str = "_upload";
 
 /// The role a slot admits unless it says otherwise: the administrator, as a
 /// custom query's default is (§13.4).
-pub const DEFAULT_SLOT_MIN_ROLE: u8 = 1;
+pub const DEFAULT_SLOT_MIN_ROLE: Role = Role::ADMIN;
 
 /// A named upload slot of an application (§2.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +44,7 @@ pub struct UploadSlot {
     pub folder: String,
     /// The least privileged role that may start an upload (`1` = admin … `100`
     /// = public).
-    pub min_role: u8,
+    pub min_role: Role,
     /// The largest file one upload may be. `0` is the server's own ceiling
     /// (`--max-upload-bytes`), which caps a larger value too.
     pub max_bytes: u64,
@@ -75,7 +76,7 @@ impl UploadSlot {
     }
 
     /// Set who may start an upload.
-    pub fn min_role(mut self, min_role: u8) -> UploadSlot {
+    pub fn min_role(mut self, min_role: Role) -> UploadSlot {
         self.min_role = min_role;
         self
     }
@@ -160,7 +161,7 @@ impl UploadSlot {
             None | Some(Json::Null) => DEFAULT_SLOT_MIN_ROLE,
             Some(v) => v
                 .as_u64()
-                .and_then(|n| u8::try_from(n).ok())
+                .and_then(|n| Role::try_from(n).ok())
                 .ok_or_else(|| {
                     Error::invalid(format!(
                         "an upload slot's `min_role` should be a role number, 1 to 100, got {v}"
@@ -333,13 +334,6 @@ pub fn validate_upload_slots(app: &Application) -> Result<()> {
             return Err(Error::invalid(format!(
                 "upload slot `{name}`'s folder `{}` must be a folder inside the store",
                 slot.folder
-            )));
-        }
-        if !(1..=100).contains(&slot.min_role) {
-            return Err(Error::invalid(format!(
-                "upload slot `{name}`'s minimum role should be 1 (admin) to 100 (public), \
-                 got {}",
-                slot.min_role
             )));
         }
         if let Some(hook) = &slot.hook {
@@ -645,7 +639,7 @@ mod tests {
     #[test]
     fn a_slot_round_trips_through_json_with_its_defaults() {
         let slot = UploadSlot::new("drop", "files", "/drops/")
-            .min_role(80)
+            .min_role(Role::of(80))
             .max_bytes(1 << 30)
             .mime_allow(["video/mp4"])
             .hook("beforeDrop");
@@ -654,7 +648,7 @@ mod tests {
 
         let bare = UploadSlot::from_json(&json!({ "name": "a", "store": "files" })).unwrap();
         assert_eq!(bare, UploadSlot::new("a", "files", ""));
-        assert_eq!(bare.min_role, 1, "admin unless stated");
+        assert_eq!(bare.min_role, Role::ADMIN, "admin unless stated");
 
         let err = UploadSlot::from_json(&json!({ "name": "a", "store": "s", "max_byte": 3 }))
             .unwrap_err()
@@ -707,7 +701,6 @@ mod tests {
             .to_string();
         assert!(err.contains("identifier"), "{err}");
         assert!(ok(UploadSlot::new("drop", "files", "../up")).is_err());
-        assert!(ok(UploadSlot::new("drop", "files", "").min_role(0)).is_err());
         let err = ok(UploadSlot::new("drop", "files", "").hook("nothing"))
             .unwrap_err()
             .to_string();

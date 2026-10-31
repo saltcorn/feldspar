@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use sc_app::{AppId, Application};
-use sc_auth::Role;
+use sc_auth::RoleDef;
 use sc_error::{Error, Result};
 use serde_json::{Value as Json, json};
 
@@ -44,7 +44,7 @@ impl ViewSnapshot {
     pub fn build(
         application: &Application,
         set: &ViewSet,
-        roles: &[Role],
+        roles: &[RoleDef],
         base_url: &str,
     ) -> Result<ViewSnapshot> {
         ViewSnapshot::build_with_trigger_actions(application, set, roles, base_url, &|_| None)
@@ -61,7 +61,7 @@ impl ViewSnapshot {
     pub fn build_with_trigger_actions(
         application: &Application,
         set: &ViewSet,
-        roles: &[Role],
+        roles: &[RoleDef],
         base_url: &str,
         action_of: &dyn Fn(&str) -> Option<String>,
     ) -> Result<ViewSnapshot> {
@@ -187,6 +187,7 @@ fn library_json(item: &LibraryItem) -> Json {
 mod tests {
     use super::*;
     use sc_app::FrameworkRef;
+    use sc_types::Role;
 
     fn app() -> Application {
         let mut framework = FrameworkRef::new(crate::SALTCORN_UI_FRAMEWORK);
@@ -201,8 +202,8 @@ mod tests {
             .with_table(sc_catalog::TableId("books".into()))
     }
 
-    fn role(role: u8, name: &str) -> Role {
-        Role {
+    fn role(role: Role, name: &str) -> RoleDef {
+        RoleDef {
             id: uuid::Uuid::new_v4(),
             role,
             name: name.into(),
@@ -218,7 +219,7 @@ mod tests {
         let set = ViewSet {
             application: app.id,
             generation: 7,
-            views: vec![View::new(app.id, "List Books", "List", "books").min_role(1)],
+            views: vec![View::new(app.id, "List Books", "List", "books").min_role(Role::ADMIN)],
             pages: vec![Page::new(app.id, "BooksOverview").title("Books")],
             library: vec![
                 LibraryItem::new(app.id, "Book header")
@@ -229,7 +230,7 @@ mod tests {
         let snapshot = ViewSnapshot::build(
             &app,
             &set,
-            &[role(1, "admin"), role(100, "public")],
+            &[role(Role::ADMIN, "admin"), role(Role::PUBLIC, "public")],
             "https://books.example",
         )
         .unwrap();

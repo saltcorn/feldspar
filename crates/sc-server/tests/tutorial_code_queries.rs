@@ -9,6 +9,7 @@
 //! choosing (F1.4), and the 500 with no stack that a mistake becomes for an
 //! anonymous caller — but not for an admin.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use axum::Router;
@@ -16,7 +17,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::{CustomQuery, Method, QueryLanguage, set_custom_queries};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, TableId, TableMeta, bootstrap_table_meta, save_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -146,15 +147,15 @@ fn tutorial_queries() -> Vec<CustomQuery> {
     vec![
         CustomQuery::new("shareBook", Method::Post, "/books/share", share)
             .language(QueryLanguage::Javascript)
-            .min_role(80)
+            .min_role(Role::of(80))
             .rate_limit(limit),
         CustomQuery::new("openShare", Method::Get, "/shares/open", open)
             .language(QueryLanguage::Javascript)
-            .min_role(ROLE_PUBLIC)
+            .min_role(Role::PUBLIC)
             .returns(returns),
         CustomQuery::new("unlockBook", Method::Get, "/books/unlock", unlock)
             .language(QueryLanguage::Javascript)
-            .min_role(ROLE_PUBLIC)
+            .min_role(Role::PUBLIC)
             .params([
                 sc_api::CustomParam::new("token", sc_api::ValueType::Text),
                 sc_api::CustomParam::new("password", sc_api::ValueType::Text),
@@ -192,14 +193,18 @@ async fn setup() -> sc_error::Result<(Router, TestDb)> {
     // `feldspar role add Reader --level 80`, and an account holding it.
     save_role(
         &catalog,
-        &Role::new(80, "Reader").description("Signed-in readers"),
+        &RoleDef::new(Role::of(80), "Reader").description("Signed-in readers"),
     )
     .await?;
-    create_user(&catalog, READER, PASSWORD, 80).await?;
-    create_user(&catalog, ADMIN, PASSWORD, ROLE_ADMIN).await?;
+    create_user(&catalog, READER, PASSWORD, Role::of(80)).await?;
+    create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
     // Step 11: books' minimum read role `Reader (80)`, so `shareBook`, which reads
     // as its caller, can see the book being shared.
-    save_table_meta(&catalog, &TableMeta::new("books").access(80, ROLE_ADMIN)).await?;
+    save_table_meta(
+        &catalog,
+        &TableMeta::new("books").access(Role::of(80), Role::ADMIN),
+    )
+    .await?;
 
     let mut api = ApiConfig::new("rest", "/api");
     set_custom_queries(&mut api.config, &tutorial_queries())?;

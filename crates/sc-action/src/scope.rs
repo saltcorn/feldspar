@@ -579,6 +579,7 @@ pub async fn render_event_template(
 mod tests {
     use super::*;
     use crate::event::EventKind;
+    use sc_types::Role;
     use serde_json::json;
 
     #[test]
@@ -636,7 +637,7 @@ mod tests {
         let update = insert
             .clone()
             .old_row(json!({ "id": 1, "title": "was" }))
-            .caller(1, Some(json!({ "email": "a@b.c" })));
+            .caller(Role::ADMIN, Some(json!({ "email": "a@b.c" })));
         let bindings = EventBindings::of(&update);
         assert_eq!(
             bindings.ambient[&Ambient::Old]
@@ -651,7 +652,8 @@ mod tests {
 
         // An event with no row: neither object is in scope at all, so a formula
         // naming `row` gets `unknown identifier` instead of a silent null.
-        let login = Event::new(EventKind::Login).caller(1, Some(json!({ "email": "a@b.c" })));
+        let login =
+            Event::new(EventKind::Login).caller(Role::ADMIN, Some(json!({ "email": "a@b.c" })));
         let bindings = EventBindings::of(&login);
         assert!(!bindings.ambient.contains_key(&Ambient::Row));
         assert!(!bindings.ambient.contains_key(&Ambient::Old));
@@ -742,7 +744,7 @@ mod tests {
         let event = Event::new(EventKind::Insert)
             .on("books")
             .row(json!({ "id": 1 }))
-            .caller(1, Some(json!({ "id": 2 })));
+            .caller(Role::ADMIN, Some(json!({ "id": 2 })));
         // The hook is told which object each field came from, which is how a
         // caller picks the table to type it against.
         let bindings = EventBindings::with_values(&event, |ambient, name, _| {

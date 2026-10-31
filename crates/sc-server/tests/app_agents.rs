@@ -15,6 +15,7 @@
 //! 5. **A client that goes away stops the agent**, and the run says `aborted`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,7 +29,7 @@ use futures::StreamExt;
 use sc_agent::testing::{FakeProvider, Reply};
 use sc_agent::{Agent, EnabledTrait, RunState};
 use sc_app::{AgentExposure, ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, DataField};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
@@ -48,7 +49,7 @@ const APP_HOST: &str = "shop.example.com";
 /// A second application exposing the same agents.
 const OTHER_HOST: &str = "library.example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 80;
+const ROLE_MEMBER: Role = Role::of(80);
 
 // --- providers ----------------------------------------------------------------
 
@@ -216,7 +217,7 @@ impl sc_agent::AgentTrait for Interview {
 fn greeter() -> Agent {
     Agent::new("greeter", "house")
         .system_prompt("You greet people.")
-        .min_role(100)
+        .min_role(Role::PUBLIC)
 }
 
 fn shop(tools: sc_app::ToolDetail) -> Application {
@@ -240,7 +241,7 @@ async fn serve(provider: Arc<dyn LlmProvider>, tools: sc_app::ToolDetail) -> Res
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
     for who in ["alice", "bob"] {
         create_user(
             &catalog,

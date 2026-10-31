@@ -126,14 +126,6 @@ pub async fn validate_agent(
         }
     }
 
-    if let Some(role) = agent.min_role
-        && !(1..=100).contains(&role)
-    {
-        return Err(problem(format!(
-            "`min_role` must be a role between 1 and 100, got {role}"
-        )));
-    }
-
     // Each enabled trait: the name resolves, the values are of the declared
     // shapes, and then the trait's own check — which is the only one that can
     // know whether the table it names still exists.

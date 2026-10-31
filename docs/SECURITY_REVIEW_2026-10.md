@@ -1198,3 +1198,51 @@ earlier fixes:
 2. #42 (admin socket revocation) and #41 (pre-hijack).
 3. #39 (module-file ownership) and #40 (invite columns).
 4. The noted Medium gaps.
+
+## System-authority inventory (TODO-code-quality Q1.7)
+
+Every place the server acts with admin authority that no signed-in admin gave it. Keep this list
+current: a new entry is a decision someone should be able to review. Find them with
+`grep -rn 'Authority::system(' crates` (excluding tests), plus the admin principals listed after
+the table.
+
+`Authority::System` (`sc-catalog/src/caller.rs`) is the admin role with no user. On a
+row-level-security table it sets `sc.role` to the admin's, so a system job sees every row. The
+old `Option<&CallerContext>` with `None` silently failed closed on such a table, and that is how
+"is this file still referenced?" could miss rows a policy hid from it.
+
+| Crate / file | Reason (the `Authority::system` label) |
+|---|---|
+| sc-action `scheduler.rs` | scheduled trigger (the event has no caller) |
+| sc-api `ownership.rs` | ownership check: read the existing row; read the row a formula decides |
+| sc-api `rows.rs` | file cleanup: is the file still referenced; live document: persist merged state |
+| sc-api `rows.rs` | row layer without a caller: list / create / update / delete rows, read field. Callers: backup restore, checklist cleanup (sc-check `runner.rs`), OAuth token storage (sc-server `oauth.rs`), sync device rows (sc-api `sync/`), live document load (sc-live `docroom.rs`), table rename (sc-server `table_rename.rs`) |
+| sc-api `schema_edit.rs` | schema edit: check existing rows (an admin's schema batch) |
+| sc-api `sync/device.rs` | sync: look up the caller's device (filtered by the caller's id) |
+| sc-app `server_render.rs` | prerender: build static pages; refresh a static page (an admin-started build) |
+| sc-auth `credits.rs` | credits ledger (internal table) |
+| sc-auth `password_tokens.rs` | password token: spend (internal table) |
+| sc-catalog `retention.rs` | retention: is the file still referenced |
+| sc-catalog `sync.rs` | sync: read the change log; read the change-log watermark |
+| sc-config `store.rs` | write configuration |
+| sc-live `docroom.rs` | live document: persist merged state (after the join's access check) |
+| sc-llm `storage.rs` | LLM usage and conversation storage |
+| sc-module `credits.rs` | module credits: grant / revoke / set low-balance threshold (the module's declared permission) |
+| sc-server `backup/write.rs` | backup: count rows |
+| sc-viewpattern `library.rs`, `store.rs` | apply library updates; write view-pattern definitions |
+| sc-workflow `driver.rs` | workflow: record run state |
+
+**Admin principals.** These run as role 1 but carry a user, for attribution, or are their own
+caller type. They are not yet `Authority::System`:
+
+- **Admin in the event user's name.** A code body's `asAdmin()` handles: sc-api
+  `code_host/mod.rs` (`caller`) and sc-core-actions `rows_scope.rs` (`authority`). They write as
+  admin, but the change log and events name the user who caused the run.
+- **An admin's own request at an explicit role.** `sc_api::principal_at(Role::ADMIN, user)` in
+  sc-server `handlers.rs` (admin row endpoints), sc-server `public_datasets.rs`, sc-viewpattern
+  `configure.rs`, sc-api `undo.rs`. A signed-in admin is the caller here, so these are `Caller`.
+- **`sc_dataset::Caller::admin()`**: model fits read their training rows (sc-model `source.rs`,
+  sc-analytics `model_outputs.rs`). The dataset caller is not yet a `Principal` (Q1.8).
+- **`sc_agent::RunCaller::system()`**: trigger-started agent runs (sc-core-traits `run_agent.rs`,
+  sc-server `chat.rs`, sc-cli `eval.rs`). The run is marked triggered, so the server's own tools
+  are withheld.

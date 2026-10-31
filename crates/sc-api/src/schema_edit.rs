@@ -54,6 +54,8 @@
 //! *and* an edit, and a batch that half-applied for want of a grant is the state
 //! the transaction exists to avoid.
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sc_catalog::{
@@ -343,9 +345,9 @@ pub struct TableSettings {
     /// The description.
     pub description: Option<String>,
     /// Least-privileged role that may read rows.
-    pub min_role_read: Option<u8>,
+    pub min_role_read: Option<Role>,
     /// Least-privileged role that may write rows.
-    pub min_role_write: Option<u8>,
+    pub min_role_write: Option<Role>,
     /// The ownership formula source; `Some("")` clears it.
     pub ownership_formula: Option<String>,
     /// Whether the database enforces the formula with policies.
@@ -356,7 +358,7 @@ pub struct TableSettings {
     pub history_enabled: Option<bool>,
     /// The least-privileged role that may read the table's history; the
     /// admin's by default (§14.12 "Reading"). Kept only while history is on.
-    pub history_min_role: Option<u8>,
+    pub history_min_role: Option<Role>,
     /// How many days the table's history keeps an entry; `0` keeps it
     /// forever, the default (§14.12). Kept only while history is on.
     pub history_keep_days: Option<u32>,
@@ -1277,10 +1279,10 @@ impl Plan {
         }
         let mut access = meta.access.clone();
         if let Some(role) = settings.min_role_read {
-            access.min_role_read = check_role(role, "min_role_read")?;
+            access.min_role_read = role;
         }
         if let Some(role) = settings.min_role_write {
-            access.min_role_write = check_role(role, "min_role_write")?;
+            access.min_role_write = role;
         }
         let access_moved = access != meta.access;
         meta.access = access;
@@ -1343,11 +1345,6 @@ impl Plan {
             self.change_log_dirty.insert(table.to_owned());
         }
         if let Some(role) = settings.history_min_role {
-            if !(1..=100).contains(&role) {
-                return Err(Error::invalid(format!(
-                    "`history_min_role` must be a role from 1 to 100, not {role}"
-                )));
-            }
             sc_catalog::history::set_history_min_role(&mut meta.attributes, role);
         }
         if let Some(days) = settings.history_keep_days {
@@ -1905,7 +1902,7 @@ impl Plan {
                     catalog,
                     &live,
                     Some(Expr::unary(UnOp::IsNull, Expr::col(field.as_str()))),
-                    None,
+                    Authority::system("schema edit: check existing rows"),
                 )
                 .await?;
                 if nulls > 0 {
@@ -3390,19 +3387,6 @@ pub(crate) fn check_identifier(name: &str, what: &str) -> Result<()> {
     Ok(())
 }
 
-/// A role on the `1..=100` scale. Rejected rather than clamped, for the reason
-/// the storage layer rejects: the nearest legal role is still a decision about
-/// who reaches the data.
-fn check_role(role: u8, key: &str) -> Result<u8> {
-    if (1..=100).contains(&role) {
-        Ok(role)
-    } else {
-        Err(Error::invalid(format!(
-            "`{key}` must be a role between 1 and 100, got {role}"
-        )))
-    }
-}
-
 /// Refuse what a [`Secret`](DataFieldKind::Secret) field cannot be: a key, unique, a
 /// type other than text, or filled in by a default. Each value is encrypted
 /// with a fresh nonce, so two equal secrets are two different column values,
@@ -3566,7 +3550,7 @@ mod tests {
     #[test]
     fn omitted_settings_leave_what_they_do_not_name() {
         let settings = TableSettings {
-            min_role_read: Some(40),
+            min_role_read: Some(Role::of(40)),
             ..TableSettings::default()
         };
         assert!(settings.touches_access());

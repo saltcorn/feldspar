@@ -23,7 +23,7 @@
 //! raises no table event. What remains, deliberately:
 //!
 //! - **A role floor, defaulting to admin.** [`CustomQuery::min_role`] is
-//!   required to be *stated*, and an unstated one is [`ROLE_ADMIN`]. The same
+//!   required to be *stated*, and an unstated one is [`Role::ADMIN`]. The same
 //!   rule a trigger's exposure is under (§10.2): an access nobody has thought
 //!   about must not be the one that turns out to be public.
 //! - **The caller context.** Every custom query runs inside the same
@@ -40,10 +40,10 @@
 //! coerced to the type the admin declared. There is no path by which anything a
 //! caller sent becomes part of the statement's text.
 
-use sc_auth::ROLE_ADMIN;
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_query::{Statement, Value, rewrite_named_params};
+use sc_types::Role;
 use sc_types::{Attrs, BasicType, json_to_value};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
@@ -252,7 +252,7 @@ pub struct CustomQuery {
     /// The role floor for calling it. **Admin unless stated** — see the module
     /// documentation.
     #[serde(default = "admin_role")]
-    pub min_role: u8,
+    pub min_role: Role,
     /// The result columns, as the database described them. Server-written; an
     /// empty list means "not described yet" and types the response as opaque
     /// JSON rather than lying about a shape.
@@ -305,8 +305,8 @@ pub struct EffectiveRateLimit {
     pub per_user: Option<sc_ratelimit::Rate>,
 }
 
-fn admin_role() -> u8 {
-    ROLE_ADMIN
+fn admin_role() -> Role {
+    Role::ADMIN
 }
 
 impl CustomQuery {
@@ -325,7 +325,7 @@ impl CustomQuery {
             language: QueryLanguage::Sql,
             code: code.into(),
             params: Vec::new(),
-            min_role: ROLE_ADMIN,
+            min_role: Role::ADMIN,
             columns: Vec::new(),
             body_type: BodyType::Json,
             response_type: ResponseType::Json,
@@ -341,7 +341,7 @@ impl CustomQuery {
     }
 
     /// Set the role floor.
-    pub fn min_role(mut self, min_role: u8) -> CustomQuery {
+    pub fn min_role(mut self, min_role: Role) -> CustomQuery {
         self.min_role = min_role;
         self
     }
@@ -401,7 +401,7 @@ impl CustomQuery {
                 per_ip: parse(&stated.per_ip),
                 per_user: parse(&stated.per_user),
             },
-            None if self.is_code() && self.min_role == sc_auth::ROLE_PUBLIC => EffectiveRateLimit {
+            None if self.is_code() && self.min_role.is_public() => EffectiveRateLimit {
                 per_ip: sc_ratelimit::Rate::parse(DEFAULT_PUBLIC_RATE).ok(),
                 per_user: None,
             },
@@ -545,12 +545,6 @@ fn validate_custom_query(q: &CustomQuery, tables: &[String]) -> Result<()> {
                 )));
             }
         }
-    }
-    if !(1..=100).contains(&q.min_role) {
-        return Err(Error::invalid(format!(
-            "custom query `{}` has a role floor of {}; roles run 1..=100",
-            q.name, q.min_role
-        )));
     }
 
     let path = normalize_path(&q.path);
@@ -1278,7 +1272,7 @@ mod tests {
             "code": "SELECT 1 AS n"
         });
         let q: CustomQuery = serde_json::from_value(stored).unwrap();
-        assert_eq!(q.min_role, ROLE_ADMIN);
+        assert_eq!(q.min_role, Role::ADMIN);
         assert!(q.read_only());
     }
 
@@ -1317,7 +1311,7 @@ mod tests {
         let ep = custom_endpoint("/api", &q);
         assert_eq!(ep.method, Method::Get);
         assert_eq!(ep.path.pattern(), "/api/reports/top-authors");
-        assert_eq!(ep.auth, AuthRequirement::MinRole(ROLE_ADMIN));
+        assert_eq!(ep.auth, AuthRequirement::MinRole(Role::ADMIN));
         assert_eq!(ep.handler, HandlerRef::Custom("topAuthors".into()));
         assert!(ep.input.is_empty());
         assert_eq!(ep.query.len(), 1);
@@ -1569,7 +1563,7 @@ mod tests {
     #[test]
     fn a_public_code_query_is_rate_limited_by_default_and_a_stated_limit_replaces_it() {
         use sc_ratelimit::Rate;
-        let public = js_query().min_role(sc_auth::ROLE_PUBLIC);
+        let public = js_query().min_role(Role::PUBLIC);
         assert_eq!(
             public.effective_rate_limit().per_ip,
             Some(Rate::per_minute(60))
@@ -1581,9 +1575,7 @@ mod tests {
             EffectiveRateLimit::default()
         );
         assert_eq!(
-            query()
-                .min_role(sc_auth::ROLE_PUBLIC)
-                .effective_rate_limit(),
+            query().min_role(Role::PUBLIC).effective_rate_limit(),
             EffectiveRateLimit::default()
         );
         // A stated limit is the whole limit; `{}` is none.

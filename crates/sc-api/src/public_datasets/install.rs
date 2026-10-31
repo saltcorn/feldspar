@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
-use sc_catalog::{CallerContext, Catalog, DataFieldKind, FieldId, SharedTx, TableId};
+use sc_catalog::{Authority, Catalog, DataFieldKind, FieldId, SharedTx, TableId};
 use sc_dataset::{DatasetDef, DatasetId};
 use sc_error::{Error, Result};
 use sc_types::BasicType;
@@ -81,7 +81,7 @@ pub async fn install(
     key: &str,
     fetch: &dyn Fetch,
     progress: &(dyn Fn(Progress) + Send + Sync),
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<Installed> {
     let entry = find(key)?;
     let present: Vec<&str> = entry
@@ -343,7 +343,7 @@ async fn fill(
     plans: &[TablePlan<'_>],
     files: &HashMap<&str, Vec<u8>>,
     progress: &(dyn Fn(Progress) + Send + Sync),
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<u64> {
     let first = catalog.require(&plans[0].table.name)?;
     let driver = catalog.driver_for(&first)?;
@@ -387,7 +387,7 @@ async fn fill_table(
     files: &HashMap<&str, Vec<u8>>,
     keys: &HashMap<String, HashSet<String>>,
     progress: &(dyn Fn(Progress) + Send + Sync),
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     executor: &rows::Executor,
 ) -> Result<(u64, HashSet<String>)> {
     let table = catalog.require(&plan.table.name)?;

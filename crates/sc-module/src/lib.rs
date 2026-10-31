@@ -118,8 +118,8 @@ pub use permissions::{
 };
 pub use roles::ModuleRoles;
 pub use routes::{
-    MatchedRoute, ROUTES_PREFIX, RouteCaller, RouteRequest, allowed_methods, match_route,
-    route_module, route_path, run_route,
+    MatchedRoute, ROUTES_PREFIX, RouteRequest, allowed_methods, match_route, route_module,
+    route_path, run_route,
 };
 pub use services::{Backoff, SERVICE_EVENTS, ServiceState, ServiceStatus, ServiceSupervisor};
 pub use spec::config_fields_to_form_fields;

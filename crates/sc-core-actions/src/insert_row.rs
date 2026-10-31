@@ -1,5 +1,6 @@
 //! `insert_row` — insert a row whose fields are computed from the event.
 
+use sc_catalog::Authority;
 use std::collections::BTreeMap;
 
 use sc_error::Result;
@@ -71,7 +72,7 @@ impl Action for InsertRow {
             ctx.catalog,
             &table,
             &Json::Object(body),
-            Some(&scope.authority()),
+            Authority::Caller(&scope.authority()),
             scope.executor(),
         )
         .await

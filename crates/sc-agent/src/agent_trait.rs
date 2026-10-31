@@ -23,6 +23,7 @@
 //! trigger carries the trigger's authority instead, and that difference is set at
 //! exactly one place: where the run is created.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -517,7 +518,7 @@ pub struct TraitCheck<'a> {
 /// cannot exist.
 ///
 /// The two fields are what a trait hands to the row layer:
-/// `sc_api::caller_context_at(caller.role, caller.user.as_ref())` is the whole
+/// `sc_api::principal_at(caller.role, caller.user.as_ref())` is the whole
 /// conversion, and it is spelled at the call site rather than here because
 /// `sc-api` is above this crate.
 #[derive(Debug, Clone, PartialEq)]
@@ -526,7 +527,7 @@ pub struct RunCaller {
     pub user: Option<User>,
     /// The role every tool's access is checked at — the user's own, admin for
     /// a system run, public for an anonymous one.
-    pub role: u8,
+    pub role: Role,
     /// Whether a trigger started this run ([`RunCaller::triggered`]): it reads
     /// and writes rows with the trigger's authority, but is never offered the
     /// tools that act as the server itself — the shell, module installs, the
@@ -577,7 +578,7 @@ impl RunCaller {
     pub fn system() -> RunCaller {
         RunCaller {
             user: None,
-            role: 1,
+            role: Role::ADMIN,
             triggered: false,
             exposed: false,
             chain: Vec::new(),
@@ -610,7 +611,7 @@ impl RunCaller {
     pub fn anonymous() -> RunCaller {
         RunCaller {
             user: None,
-            role: 100,
+            role: Role::PUBLIC,
             triggered: false,
             exposed: true,
             chain: Vec::new(),
@@ -679,8 +680,8 @@ impl RunCaller {
     ///
     /// Roles descend: 1 is admin and 100 is public, so *meeting* a floor is
     /// having a number no larger than it.
-    pub fn meets_role(&self, min_role: Option<u8>) -> bool {
-        self.role <= min_role.unwrap_or(1)
+    pub fn meets_role(&self, min_role: Option<Role>) -> bool {
+        self.role.meets(min_role.unwrap_or(Role::ADMIN))
     }
 }
 
@@ -1064,21 +1065,21 @@ mod tests {
     #[test]
     fn a_system_run_is_admin_with_no_user() {
         let caller = RunCaller::system();
-        assert_eq!(caller.role, 1);
+        assert_eq!(caller.role, Role::ADMIN);
         assert!(caller.user.is_none());
         // A trigger's authority reaches everything a role floor could ask for.
         assert!(caller.meets_role(None));
-        assert!(caller.meets_role(Some(80)));
+        assert!(caller.meets_role(Some(Role::of(80))));
     }
 
     #[test]
     fn an_anonymous_run_is_public_with_no_user() {
         let caller = RunCaller::anonymous();
-        assert_eq!(caller.role, 100);
+        assert_eq!(caller.role, Role::PUBLIC);
         assert!(caller.user.is_none());
         // Only a floor of public is met: anything signed in is out of reach.
-        assert!(caller.meets_role(Some(100)));
-        assert!(!caller.meets_role(Some(80)));
+        assert!(caller.meets_role(Some(Role::PUBLIC)));
+        assert!(!caller.meets_role(Some(Role::of(80))));
         assert!(!caller.meets_role(None));
         // A visitor is somebody, and not a system run.
         assert!(caller.is_anonymous() && caller.untrusted_origin());
@@ -1089,23 +1090,23 @@ mod tests {
 
     #[test]
     fn an_exposed_run_is_its_user_from_an_untrusted_origin() {
-        let admin = User::new(Uuid::new_v4(), 1).unwrap();
+        let admin = User::new(Uuid::new_v4(), Role::ADMIN);
         let caller = RunCaller::exposed(admin.clone());
-        assert_eq!(caller.role, 1);
+        assert_eq!(caller.role, Role::ADMIN);
         assert!(caller.untrusted_origin() && !caller.is_anonymous());
         assert!(!RunCaller::user(admin).untrusted_origin());
     }
 
     #[test]
     fn a_user_run_carries_that_users_role() {
-        let user = User::new(Uuid::new_v4(), 40).unwrap();
+        let user = User::new(Uuid::new_v4(), Role::of(40));
         let caller = RunCaller::user(user);
-        assert_eq!(caller.role, 40);
+        assert_eq!(caller.role, Role::of(40));
         assert!(caller.user.is_some());
         // 40 meets a floor of 80 (roles descend) but not an admin-only agent's.
-        assert!(caller.meets_role(Some(80)));
-        assert!(caller.meets_role(Some(40)));
-        assert!(!caller.meets_role(Some(10)));
+        assert!(caller.meets_role(Some(Role::of(80))));
+        assert!(caller.meets_role(Some(Role::of(40))));
+        assert!(!caller.meets_role(Some(Role::of(10))));
         assert!(!caller.meets_role(None));
     }
 

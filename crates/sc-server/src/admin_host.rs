@@ -127,9 +127,10 @@ pub fn hostname(host: &str) -> String {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use sc_types::Role;
 
     fn user() -> User {
-        User::new(uuid::Uuid::new_v4(), 1).unwrap()
+        User::new(uuid::Uuid::new_v4(), Role::ADMIN)
     }
 
     #[test]

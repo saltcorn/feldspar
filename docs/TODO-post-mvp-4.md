@@ -431,7 +431,7 @@ question.
     handle at every match.
   - `emit` takes `&Catalog` so the dispatcher does not hold one — the catalog holds the
     dispatcher, and a handle in each direction would be a cycle that never drops.
-- [x] **The caller travels with every write.** `CallerContext` (role + user + **chain**) is built
+- [x] **The caller travels with every write.** `Principal` (role + user + **chain**) is built
   for *every* row write, not only for RLS tables, so an event knows who caused it; RLS keeps
   using it for its GUCs, unchanged. Three consequences:
   - It moved out of `rls.rs` into `caller.rs`, because it is no longer about RLS: it answers

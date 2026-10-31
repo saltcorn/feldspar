@@ -5,6 +5,8 @@
 //! application trigger reacts to — what an auto top-up hangs off.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -14,7 +16,7 @@ use axum::http::{Request, StatusCode, header};
 use rust_decimal::Decimal;
 use sc_action::{EventKind, Trigger, save_trigger};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{CreditDebit, ROLE_ADMIN, Role, SessionStore, create_user, save_role};
+use sc_auth::{CreditDebit, RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, TableId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -185,10 +187,10 @@ async fn setup() -> sc_error::Result<(Router, Arc<Catalog>, TestDb)> {
 async fn an_admin_grants_credits_each_user_reads_their_own_and_running_low_fires_a_trigger()
 -> sc_error::Result<()> {
     let (router, catalog, _db) = setup().await?;
-    create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
-    save_role(&catalog, &Role::new(80, "Member")).await?;
-    let ada = create_user(&catalog, "ada@example.com", "ada-pw", 80).await?;
-    create_user(&catalog, "bob@example.com", "bob-pw", 80).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Member")).await?;
+    let ada = create_user(&catalog, "ada@example.com", "ada-pw", Role::of(80)).await?;
+    create_user(&catalog, "bob@example.com", "bob-pw", Role::of(80)).await?;
 
     // The admin grants credits by hand, exactly, and sets a threshold.
     let mut admin = Client::new(router.clone(), BASE_DOMAIN);
@@ -250,9 +252,10 @@ async fn an_admin_grants_credits_each_user_reads_their_own_and_running_low_fires
         key: key.to_owned(),
         ..CreditDebit::default()
     };
-    let debited = sc_auth::debit_credits(&catalog, debit(6, "run:1"), None).await?;
+    let debited =
+        sc_auth::debit_credits(&catalog, debit(6, "run:1"), Authority::system("test")).await?;
     assert!(debited.low_balance);
-    sc_auth::debit_credits(&catalog, debit(1, "run:2"), None).await?;
+    sc_auth::debit_credits(&catalog, debit(1, "run:2"), Authority::system("test")).await?;
     let notices = _db
         .client()
         .await?

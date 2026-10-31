@@ -9,6 +9,7 @@
 //! shown either, and neither is a file the caller may not read.
 
 use crate::common;
+use sc_types::Role;
 
 use std::io::Cursor;
 
@@ -74,7 +75,7 @@ fn coding() -> sc_types::Attrs {
 
 /// One call of `view_image_apps_web` as a caller of `role`: its text and the
 /// images it attached.
-async fn look(env: &Env, args: Json, role: u8) -> (Result<String>, Vec<ImagePart>) {
+async fn look(env: &Env, args: Json, role: Role) -> (Result<String>, Vec<ImagePart>) {
     let coding_trait = env.registry.require("coding").unwrap().clone();
     let caller = RunCaller {
         role,
@@ -106,7 +107,7 @@ async fn look(env: &Env, args: Json, role: u8) -> (Result<String>, Vec<ImagePart
     (result, ctx.images)
 }
 
-async fn fixture(media_floor: Option<u8>) -> Result<(Env, Vec<u8>)> {
+async fn fixture(media_floor: Option<Role>) -> Result<(Env, Vec<u8>)> {
     let env = Env::new().await?;
     let apps = env.with_file_store("apps", None).await?;
     let logo = png(30, 10);
@@ -124,7 +125,7 @@ async fn an_image_in_the_code_and_one_the_application_serves_are_both_shown() ->
     let (env, logo) = fixture(None).await?;
 
     // The code's own, by path, sent as it is.
-    let (text, images) = look(&env, json!({"path": "public/logo.png"}), 1).await;
+    let (text, images) = look(&env, json!({"path": "public/logo.png"}), Role::ADMIN).await;
     let text = text?;
     assert!(text.starts_with("view_image public/logo.png\n"), "{text}");
     assert!(text.contains("30×10 PNG"), "{text}");
@@ -135,7 +136,7 @@ async fn an_image_in_the_code_and_one_the_application_serves_are_both_shown() ->
 
     // The application's, by the URL `list_assets` gives, scaled to what a model
     // takes and said to be.
-    let (text, images) = look(&env, json!({"url": "/img/hero.png"}), 1).await;
+    let (text, images) = look(&env, json!({"url": "/img/hero.png"}), Role::ADMIN).await;
     let text = text?;
     assert!(
         text.starts_with("view_image /img/hero.png (`images/hero.png` in store `media`)"),
@@ -153,7 +154,7 @@ async fn an_image_in_the_code_and_one_the_application_serves_are_both_shown() ->
     let (text, _) = look(
         &env,
         json!({"url": "https://blog.example.com/img/hero.png?v=3"}),
-        1,
+        Role::ADMIN,
     )
     .await;
     assert!(text?.contains("in store `media`"));
@@ -165,7 +166,7 @@ async fn an_image_in_the_code_and_one_the_application_serves_are_both_shown() ->
         "/img/%2e%2e/secret.png",
         "/secret.png",
     ] {
-        let (err, images) = look(&env, json!({"url": url}), 1).await;
+        let (err, images) = look(&env, json!({"url": url}), Role::ADMIN).await;
         let err = err.unwrap_err().to_string();
         assert!(err.contains("list_assets_apps_web"), "{url}: {err}");
         assert!(images.is_empty());
@@ -175,13 +176,13 @@ async fn an_image_in_the_code_and_one_the_application_serves_are_both_shown() ->
     let (err, _) = look(
         &env,
         json!({"path": "public/logo.png", "url": "/img/hero.png"}),
-        1,
+        Role::ADMIN,
     )
     .await;
     assert!(err.unwrap_err().to_string().contains("exactly one"));
 
     // Text is not an image; and `read_file` on the image points here.
-    let (err, _) = look(&env, json!({"path": "src/App.tsx"}), 1).await;
+    let (err, _) = look(&env, json!({"path": "src/App.tsx"}), Role::ADMIN).await;
     let err = err.unwrap_err().to_string();
     assert!(err.contains("not a PNG, JPEG, GIF or WebP"), "{err}");
     let caller = RunCaller::system();
@@ -204,11 +205,11 @@ async fn an_image_in_the_code_and_one_the_application_serves_are_both_shown() ->
 /// shown to them, as the router does not serve it to them.
 #[tokio::test]
 async fn an_image_closed_to_the_caller_is_not_shown() -> Result<()> {
-    let (env, _) = fixture(Some(1)).await?;
-    let (err, images) = look(&env, json!({"url": "/img/hero.png"}), 40).await;
+    let (env, _) = fixture(Some(Role::ADMIN)).await?;
+    let (err, images) = look(&env, json!({"url": "/img/hero.png"}), Role::of(40)).await;
     assert!(err.is_err());
     assert!(images.is_empty());
-    let (ok, images) = look(&env, json!({"url": "/img/hero.png"}), 1).await;
+    let (ok, images) = look(&env, json!({"url": "/img/hero.png"}), Role::ADMIN).await;
     ok?;
     assert_eq!(images.len(), 1);
     Ok(())

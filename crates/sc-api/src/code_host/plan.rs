@@ -22,6 +22,7 @@
 //! every literal a body wrote becomes an `Expr::Lit` the query layer
 //! parameterises on render.
 
+use sc_types::Role;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
@@ -223,7 +224,7 @@ pub enum Authority {
     /// `authority` at all means.
     #[default]
     Default,
-    /// The trigger's: `ROLE_ADMIN`, carrying the event's user. A trigger's
+    /// The trigger's: `Role::ADMIN`, carrying the event's user. A trigger's
     /// default, because a trigger is server-side configuration and the audit
     /// row a caller may not insert is the archetype of what a trigger exists to
     /// write.
@@ -483,7 +484,7 @@ pub(crate) struct Aggregate {
 }
 
 /// Resolve a `select` plan against the catalog.
-pub(crate) fn read(cat: &Catalog, plan: &Plan, limits: &HostLimits, role: u8) -> Result<Read> {
+pub(crate) fn read(cat: &Catalog, plan: &Plan, limits: &HostLimits, role: Role) -> Result<Read> {
     let table = cat.require(&plan.table)?;
     let low = Lowering::new(cat, &table, role)?;
     let mut filter = low.filter(plan.filter.as_ref())?;
@@ -747,7 +748,7 @@ pub(crate) fn aggregate(
     cat: &Catalog,
     plan: &Plan,
     limits: &HostLimits,
-    role: u8,
+    role: Role,
 ) -> Result<Aggregate> {
     let table = cat.require(&plan.table)?;
     let low = Lowering::new(cat, &table, role)?;
@@ -897,7 +898,7 @@ pub(crate) fn insert(cat: &Catalog, plan: &Plan, limits: &HostLimits) -> Result<
 }
 
 /// Resolve an `update` or `delete` plan against the catalog.
-pub(crate) fn write(cat: &Catalog, plan: &Plan, limits: &HostLimits, role: u8) -> Result<Write> {
+pub(crate) fn write(cat: &Catalog, plan: &Plan, limits: &HostLimits, role: Role) -> Result<Write> {
     let op = match plan.op {
         Op::Update => "update",
         _ => "delete",
@@ -1184,12 +1185,12 @@ struct Lowering<'a> {
     /// a filter or an ordering naming one is refused saying why.
     calc_plan: crate::calc_read::CalcPlan,
     user_env: UserEnv,
-    role: u8,
+    role: Role,
     in_caller_context: Cell<bool>,
 }
 
 impl<'a> Lowering<'a> {
-    fn new(catalog: &'a Catalog, table: &Table, role: u8) -> Result<Lowering<'a>> {
+    fn new(catalog: &'a Catalog, table: &Table, role: Role) -> Result<Lowering<'a>> {
         Ok(Lowering {
             catalog,
             fields: table

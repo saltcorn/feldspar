@@ -74,6 +74,7 @@
 //! formula gives `staff` the newer houses only, and every count, box and test
 //! in both applications is of those rows, against the admin's 200.
 
+use sc_types::Role;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -2992,7 +2993,7 @@ impl Client {
 
     /// A table's read access: `min_role_read`, and the ownership formula that
     /// grants rows below it.
-    async fn table_readable(&mut self, table: &str, min_role_read: u8, formula: &str) {
+    async fn table_readable(&mut self, table: &str, min_role_read: Role, formula: &str) {
         self.ok(
             "PUT",
             &format!("/api/tables/{table}"),
@@ -3147,7 +3148,7 @@ async fn the_try_it_of_milestone_a9() -> sc_error::Result<()> {
         why.to_string().contains("you may not read `houses`"),
         "{why}"
     );
-    admin.table_readable("houses", 40, "").await;
+    admin.table_readable("houses", Role::of(40), "").await;
 
     // 2. Sam, a `staff` user, at the application's address. The page is the
     //    Analytics UI's; the shell is the dashboard alone.
@@ -3279,7 +3280,9 @@ async fn the_try_it_of_milestone_a9() -> sc_error::Result<()> {
 
     // 3. The self-serve application: `houses` and `neighbourhoods`, the
     //    Dataset editor on, the Data explorer.
-    admin.table_readable("neighbourhoods", 40, "").await;
+    admin
+        .table_readable("neighbourhoods", Role::of(40), "")
+        .await;
     let serve_app = admin
         .ok(
             "POST",
@@ -3444,7 +3447,7 @@ async fn the_try_it_of_milestone_a9() -> sc_error::Result<()> {
     //    and an ownership formula granting the rest. Sam's plots and tests in
     //    both applications include those rows only; the admin's all of them.
     admin
-        .table_readable("houses", 1, "user && year_built >= 1990")
+        .table_readable("houses", Role::ADMIN, "user && year_built >= 1990")
         .await;
     let theirs: Vec<&House> = all.iter().filter(newer).collect();
     assert!(

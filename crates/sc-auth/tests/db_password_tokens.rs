@@ -8,11 +8,12 @@
 //! - an invitation is to a less powerful role only, is resent to a pending
 //!   account, and never to an active one.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use chrono::Duration;
 use sc_auth::{
-    InviteOutcome, NewUser, PASSWORD_TOKENS_TABLE, PasswordTokenPurpose, Role, SESSIONS_TABLE,
+    InviteOutcome, NewUser, PASSWORD_TOKENS_TABLE, PasswordTokenPurpose, RoleDef, SESSIONS_TABLE,
     authenticate, bootstrap, claim_unproven_account, create_session, create_user, invite_user,
     issue_password_token, load_user, password_token_issued_within, redeem_password_token,
     save_role, set_user_disabled, sign_up_user, user_has_password,
@@ -45,15 +46,15 @@ async fn fixture() -> Result<Fixture> {
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
     bootstrap(&catalog).await?;
-    save_role(&catalog, &Role::new(40, "Therapist")).await?;
-    save_role(&catalog, &Role::new(80, "Patient")).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(40), "Therapist")).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Patient")).await?;
     Ok(Fixture { catalog, _db: db })
 }
 
 fn patient(email: &str) -> NewUser {
     NewUser {
         email: email.to_owned(),
-        role: 80,
+        role: Role::of(80),
         ..NewUser::default()
     }
 }
@@ -72,11 +73,11 @@ async fn count(catalog: &Catalog, table: &str) -> Result<usize> {
 async fn an_invited_account_chooses_its_password_with_its_token_once() -> Result<()> {
     let f = fixture().await?;
     let InviteOutcome::Created { user, token } =
-        invite_user(&f.catalog, patient(" pat@example.com "), 40).await?
+        invite_user(&f.catalog, patient(" pat@example.com "), Role::of(40)).await?
     else {
         panic!("a new address is a new account");
     };
-    assert_eq!(user.role, 80);
+    assert_eq!(user.role, Role::of(80));
     assert!(!user_has_password(&f.catalog, user.id).await?);
     assert!(
         authenticate(&f.catalog, "pat@example.com", "")
@@ -101,7 +102,7 @@ async fn an_invited_account_chooses_its_password_with_its_token_once() -> Result
     assert!(redeem_password_token(&f.catalog, &token, "").await.is_err());
     // Resending is a second live token; spending either ends both.
     let InviteOutcome::Resent { token: second, .. } =
-        invite_user(&f.catalog, patient("pat@example.com"), 40).await?
+        invite_user(&f.catalog, patient("pat@example.com"), Role::of(40)).await?
     else {
         panic!("a pending account is resent");
     };
@@ -126,7 +127,7 @@ async fn an_invited_account_chooses_its_password_with_its_token_once() -> Result
 
     // Now it is active, and an invitation is not a way to reset it.
     assert!(matches!(
-        invite_user(&f.catalog, patient("pat@example.com"), 40).await?,
+        invite_user(&f.catalog, patient("pat@example.com"), Role::of(40)).await?,
         InviteOutcome::AlreadyActive
     ));
     Ok(())
@@ -135,7 +136,7 @@ async fn an_invited_account_chooses_its_password_with_its_token_once() -> Result
 #[tokio::test]
 async fn a_reset_ends_the_users_sessions_and_a_bad_token_is_just_none() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "pat@example.com", "old-pw", 80).await?;
+    let user = create_user(&f.catalog, "pat@example.com", "old-pw", Role::of(80)).await?;
     create_session(&f.catalog, user.id, Duration::hours(1)).await?;
     assert_eq!(count(&f.catalog, SESSIONS_TABLE).await?, 1);
 
@@ -207,15 +208,19 @@ async fn an_invitation_is_only_to_less_power() -> Result<()> {
     let f = fixture().await?;
     // Not to the inviter's own role, nor a more powerful one.
     let mut peer = patient("peer@example.com");
-    peer.role = 40;
-    assert!(invite_user(&f.catalog, peer.clone(), 40).await.is_err());
+    peer.role = Role::of(40);
+    assert!(
+        invite_user(&f.catalog, peer.clone(), Role::of(40))
+            .await
+            .is_err()
+    );
     // A pending account at the therapist's level cannot be resent by a
     // therapist, though an admin made it.
-    let InviteOutcome::Created { .. } = invite_user(&f.catalog, peer, 1).await? else {
+    let InviteOutcome::Created { .. } = invite_user(&f.catalog, peer, Role::ADMIN).await? else {
         panic!("an admin may invite a therapist");
     };
     assert!(
-        invite_user(&f.catalog, patient("peer@example.com"), 40)
+        invite_user(&f.catalog, patient("peer@example.com"), Role::of(40))
             .await
             .is_err()
     );
@@ -229,13 +234,13 @@ async fn an_invitation_is_only_to_less_power() -> Result<()> {
 #[tokio::test]
 async fn a_signup_is_unproven_until_a_link_is_redeemed_and_is_claimed_whole() -> Result<()> {
     let f = fixture().await?;
-    let made = create_user(&f.catalog, "made@example.com", "made-pw", 80).await?;
+    let made = create_user(&f.catalog, "made@example.com", "made-pw", Role::of(80)).await?;
     assert!(
         !made.email_unproven(),
         "an account somebody else made is not unproven"
     );
 
-    let signed = sign_up_user(&f.catalog, "signed@example.com", "signed-pw", 80).await?;
+    let signed = sign_up_user(&f.catalog, "signed@example.com", "signed-pw", Role::of(80)).await?;
     assert!(signed.email_unproven());
     assert!(
         load_user(&f.catalog, signed.id)
@@ -255,7 +260,7 @@ async fn a_signup_is_unproven_until_a_link_is_redeemed_and_is_claimed_whole() ->
             .email_unproven()
     );
 
-    let squat = sign_up_user(&f.catalog, "squat@example.com", "squat-pw", 80).await?;
+    let squat = sign_up_user(&f.catalog, "squat@example.com", "squat-pw", Role::of(80)).await?;
     create_session(&f.catalog, squat.id, Duration::hours(1)).await?;
     issue_password_token(&f.catalog, squat.id, PasswordTokenPurpose::Reset).await?;
     let claimed = claim_unproven_account(&f.catalog, squat.clone()).await?;
@@ -285,7 +290,7 @@ async fn a_signup_is_unproven_until_a_link_is_redeemed_and_is_claimed_whole() ->
 async fn a_failed_redemption_leaves_the_token_and_the_password_as_they_were() -> Result<()> {
     let f = fixture().await?;
     let InviteOutcome::Created { user, token } =
-        invite_user(&f.catalog, patient("pat@example.com"), 40).await?
+        invite_user(&f.catalog, patient("pat@example.com"), Role::of(40)).await?
     else {
         panic!("a new address is a new account");
     };

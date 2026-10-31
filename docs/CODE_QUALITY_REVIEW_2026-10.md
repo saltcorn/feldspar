@@ -24,7 +24,7 @@ tests), sc-api (58k), sc-app (31k), sc-model (29k), sc-core-traits (27k) and sc-
 
 | # | Finding | Payoff |
 |---|---------|--------|
-| 1 | Authority is data (`role: u8`, `Option<&CallerContext>`, `&Catalog`), not a type — the root of most security-review findings | High (security) |
+| 1 | Authority is data (`role: u8`, `Option<&Principal>`, `&Catalog`), not a type — the root of most security-review findings | High (security) |
 | 2 | Admin checks are manual call sequences per handler; the type forgets a check was made | High (security) |
 | 3 | Trust-boundary values (paths, hosts, addresses, secrets, HTML) are plain strings, validated in several places | High (security) |
 | 4 | `Catalog` is a late-bound service locator (≈10 host slots, two `Arc<dyn Any>`) | High |
@@ -256,10 +256,10 @@ The common cause: **authority is data, not a type.**
 - There are about 12 caller representations: `sc_dataset::access::Caller`,
   `sc_live::access::Caller`, `sc_files::FileCaller`, `sc_agent::RunCaller`, sc-server's
   `AnonymousCaller` / `LiveCaller` / `GuestCaller` / `AppCaller`, `sc_module::RouteCaller`,
-  `sc_api::write_as::Caller`, `sc_auth::ApiCaller`, `sc_catalog::CallerContext`. `caller_role` is
+  `sc_api::write_as::Caller`, `sc_auth::ApiCaller`, `sc_catalog::Principal`. `caller_role` is
   written 4 times.
 - Checked and unchecked operations take the same arguments. `DatabaseDriver::query` takes any
-  `Statement` with no caller; `SharedTx::run(caller: Option<&CallerContext>, …)` treats `None` as
+  `Statement` with no caller; `SharedTx::run(caller: Option<&Principal>, …)` treats `None` as
   "nobody, plus whatever changeset the task-local holds" (`sc-catalog/src/tx.rs:230-240`), and 64
   signatures take that `Option`. The guarded `*_as` row functions live in sc-api; the unguarded
   ones are reachable from any crate holding a `&Catalog`.
@@ -286,7 +286,7 @@ and storage stay `u8`. Mechanical, compatible, removes the inverted-`<=` footgun
 ### 4.2 One principal, an explicit authority
 
 ```rust
-pub struct Principal {          // replaces CallerContext and the per-crate Caller structs
+pub struct Principal {          // replaces Principal and the per-crate Caller structs
     role: Role,
     user: Option<AuthenticatedUser>,
     chain: Vec<TriggerName>,    // explicit, not a task-local
@@ -301,9 +301,9 @@ pub enum Authority<'a> {
 }
 ```
 
-- Replaces `Option<&CallerContext>` everywhere; `None` no longer means an implicit authority.
+- Replaces `Option<&Principal>` everywhere; `None` no longer means an implicit authority.
 - Every admin-authority action becomes a named, listable `Authority::system(..)` call. Today
-  `Caller::admin()`, `CallerContext::new(ROLE_ADMIN, …)` and 152 `ROLE_ADMIN` uses are scattered.
+  `Caller::admin()`, `Principal::new(ROLE_ADMIN, …)` and 152 `ROLE_ADMIN` uses are scattered.
 - Chain, app, session and changeset travel in the value, not in task-locals, so a `spawn` cannot
   drop them. Closes #32's class by construction.
 - Per-crate needs (live's `{role, user_id}`, dataset's table subset) become views or wrappers

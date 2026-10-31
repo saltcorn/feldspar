@@ -258,7 +258,7 @@ async fn views_render(cx: &mut StepContext<'_>, params: &Json) -> sc_error::Resu
     let (visible, hidden): (Vec<_>, Vec<_>) = views
         .into_iter()
         .filter(|v| !skip.contains(&v.name))
-        .partition(|v| role <= v.min_role);
+        .partition(|v| role.meets(v.min_role));
     if visible.is_empty() {
         return Ok(StepOutcome::pass(format!(
             "`{}` has no view this user may see{}",

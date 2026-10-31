@@ -3,6 +3,7 @@
 //! makes the command exit non-zero and say which step failed; a passing one
 //! exits zero.
 
+use sc_types::Role;
 use std::process::Command;
 
 use sc_check::{ChecklistInput, Editor, StepDraft, StepRegistry, edit};
@@ -33,7 +34,7 @@ async fn check_run_exits_non_zero_on_a_failing_checklist() -> sc_error::Result<(
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     let catalog = connect_catalog(&DbConfig::from_url(&url)).await?;
     catalog.reload().await?;
-    let admin = sc_auth::create_user(&catalog, "admin@example.com", "pw", 1).await?;
+    let admin = sc_auth::create_user(&catalog, "admin@example.com", "pw", Role::ADMIN).await?;
     let registry = StepRegistry::builtin();
     let human = Editor::Human(admin.id);
     let mut as_admin = ChecklistInput::new("No things");

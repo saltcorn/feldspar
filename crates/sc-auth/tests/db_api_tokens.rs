@@ -12,13 +12,14 @@
 //! - **The table is logged**, which is the one thing `_fd_sessions` is not, and
 //!   the difference between a lost session and a support call.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 use sc_auth::{
-    API_TOKENS_TABLE, COL_TOKEN_ID, NewApiToken, ROLE_ADMIN, ROLE_PUBLIC, TOKEN_PREFIX, User,
-    UserUpdate, authenticate_api_token, bootstrap, create_user, delete_user, list_api_tokens,
-    mint_api_token, revoke_api_token, set_user_disabled, update_user,
+    API_TOKENS_TABLE, COL_TOKEN_ID, NewApiToken, TOKEN_PREFIX, User, UserUpdate,
+    authenticate_api_token, bootstrap, create_user, delete_user, list_api_tokens, mint_api_token,
+    revoke_api_token, set_user_disabled, update_user,
 };
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
@@ -59,7 +60,7 @@ async fn fixture() -> Result<Fixture> {
 
 /// An admin to mint for.
 async fn admin(catalog: &Catalog, email: &str) -> Result<User> {
-    create_user(catalog, email, "pw", ROLE_ADMIN).await
+    create_user(catalog, email, "pw", Role::ADMIN).await
 }
 
 /// The six flags as a token stores them.
@@ -110,7 +111,7 @@ async fn a_minted_token_authenticates_and_its_plaintext_is_not_in_the_table() ->
 
     let caller = authenticate_api_token(&f.catalog, &minted.secret).await?;
     assert_eq!(caller.user.id, user.id);
-    assert_eq!(caller.user.role, ROLE_ADMIN);
+    assert_eq!(caller.user.role, Role::ADMIN);
     assert_eq!(caller.token.id, minted.token.id);
     // The grants arrive back as they were minted: this crate stores them and
     // does not interpret them (§13.6 — the vocabulary is `sc-api::mcp`'s).
@@ -235,7 +236,7 @@ async fn a_token_is_no_stronger_than_the_account_it_names() -> Result<()> {
         &f.catalog,
         demoted.id,
         UserUpdate {
-            role: Some(ROLE_PUBLIC),
+            role: Some(Role::PUBLIC),
             ..UserUpdate::default()
         },
     )

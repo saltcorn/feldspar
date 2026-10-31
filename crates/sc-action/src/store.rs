@@ -19,6 +19,7 @@ use sc_catalog::{Catalog, DataField, Table};
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Value};
+use sc_types::Role;
 use sc_types::{Attrs, BasicType, TypeRef};
 use serde_json::Value as Json;
 
@@ -339,17 +340,12 @@ fn trigger_from_row(row: &Row) -> Result<Trigger> {
     // the trigger. (`file_stores` makes the same argument for `min_role`.)
     let min_role = match row.get(COL_MIN_ROLE) {
         Some(Value::Null) | None => None,
-        Some(Value::Int(i)) => Some(
-            u8::try_from(*i)
-                .ok()
-                .filter(|r| (1..=100).contains(r))
-                .ok_or_else(|| {
-                    Error::invalid(format!(
-                        "{TRIGGERS_TABLE}.{COL_MIN_ROLE} should be a role between 1 and 100, \
+        Some(Value::Int(i)) => Some(Role::try_from(*i).ok().ok_or_else(|| {
+            Error::invalid(format!(
+                "{TRIGGERS_TABLE}.{COL_MIN_ROLE} should be a role between 1 and 100, \
                          got {i}"
-                    ))
-                })?,
-        ),
+            ))
+        })?),
         other => return Err(bad_column(COL_MIN_ROLE, "an integer role", other)),
     };
 

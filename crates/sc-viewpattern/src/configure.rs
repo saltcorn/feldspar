@@ -19,6 +19,7 @@
 //! builder's own calls — its options, and the previews and lookups its canvas
 //! makes (§10) — are made here too, as the admin, over the same snapshot.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::TriggerDispatcher;
@@ -70,7 +71,7 @@ impl<'a> Configurer<'a> {
         // links are relative to it, and a request's own base URL reaches
         // `req.get_base_url()` directly (see the framework's `snapshot`).
         let snapshot = application_snapshot(catalog, app, &set, "", triggers).await?;
-        let caller = sc_api::caller_context_at(sc_auth::ROLE_ADMIN, user);
+        let caller = sc_api::principal_at(Role::ADMIN, user);
         Ok(Configurer {
             runtime,
             catalog,

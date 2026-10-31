@@ -15,6 +15,7 @@
 //! visible: what an agent is offered.
 
 use crate::common;
+use sc_types::Role;
 
 use common::{Env, as_user, config};
 use sc_agent::RunCaller;
@@ -270,7 +271,7 @@ async fn who_may_call_a_query_is_the_access_grant_and_admin_only_without_it() ->
 
     let result = call(&env, &all_grants(), TOOL_SAVE_QUERY, public).await?;
     assert_eq!(result["query"]["min_role"], json!(100));
-    assert_eq!(stored(&env).await?[0].min_role, 100);
+    assert_eq!(stored(&env).await?[0].min_role, Role::PUBLIC);
 
     // …and an edit that does not name it leaves it where it was, rather than
     // resetting a widened floor to admin behind the admin's back.
@@ -285,7 +286,7 @@ async fn who_may_call_a_query_is_the_access_grant_and_admin_only_without_it() ->
         }),
     )
     .await?;
-    assert_eq!(stored(&env).await?[0].min_role, 100);
+    assert_eq!(stored(&env).await?[0].min_role, Role::PUBLIC);
     Ok(())
 }
 
@@ -362,7 +363,7 @@ async fn public_is_a_synonym_for_role_100_both_ways() -> Result<()> {
     let result = call(&env, &all_grants(), TOOL_SAVE_QUERY, public).await?;
     assert_eq!(result["query"]["min_role"], json!(100));
     assert_eq!(result["query"]["public"], json!(true));
-    assert_eq!(stored(&env).await?[0].min_role, 100);
+    assert_eq!(stored(&env).await?[0].min_role, Role::PUBLIC);
 
     let described = call(&env, &default_grants(), TOOL_DESCRIBE_APPS, json!({})).await?;
     let query = &described["applications"][0]["apis"][0]["queries"][0];
@@ -828,7 +829,7 @@ async fn upload_slots_are_an_edit_and_are_validated_like_the_form() -> Result<()
         .unwrap();
     assert_eq!(stored.uploads.len(), 1);
     assert_eq!(stored.uploads[0].folder, "drops");
-    assert_eq!(stored.uploads[0].min_role, 80);
+    assert_eq!(stored.uploads[0].min_role, Role::of(80));
     assert_eq!(stored.uploads[0].mime_allow, vec!["video/mp4".to_owned()]);
 
     let described = call(&env, &default_grants(), TOOL_DESCRIBE_APPS, json!({})).await?;

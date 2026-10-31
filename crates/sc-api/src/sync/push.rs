@@ -26,13 +26,13 @@
 //!   keeps the pair in `_fd_sync_keys`: later changes naming `-17`, as their key
 //!   or in a foreign key, are translated, in this upload or any later one.
 
+use sc_catalog::Authority;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use sc_auth::User;
 use sc_catalog::{
-    CallerContext, Catalog, Changeset, ChangesetSource, DataFieldKind, SYNC_KEYS_TABLE, SharedTx,
-    Table,
+    Catalog, Changeset, ChangesetSource, DataFieldKind, Principal, SYNC_KEYS_TABLE, SharedTx, Table,
 };
 use sc_error::{Error, Repr, Result};
 use sc_expr::JsEvaluator;
@@ -105,7 +105,7 @@ pub(crate) async fn push(
     let request = PushRequest::parse(body)?;
     let devices = devices_table(cat)?;
     check_device(cat, &devices, request.client_id, application, user).await?;
-    let context = ownership::caller_context(Some(user));
+    let context = ownership::principal_of(Some(user));
     let device = Device {
         id: request.client_id,
         application,
@@ -270,7 +270,7 @@ struct Device<'a> {
     table: &'a Table,
     user: &'a User,
     evaluator: Option<&'a Arc<dyn JsEvaluator>>,
-    context: &'a CallerContext,
+    context: &'a Principal,
     exposed: &'a [String],
 }
 
@@ -324,7 +324,7 @@ impl Device<'_> {
         );
         let claimed = tx
             .run(
-                Some(self.context),
+                Authority::Caller(self.context),
                 &Statement::raw(sql, vec![Value::Int(mutation), Value::Uuid(self.id)]),
             )
             .await?;
@@ -497,7 +497,7 @@ impl Device<'_> {
     async fn made_key(&self, tx: &SharedTx, mutation: i64, table: &str) -> Result<Option<String>> {
         let rows = tx
             .run(
-                Some(self.context),
+                Authority::Caller(self.context),
                 &Statement::raw(
                     format!(
                         "SELECT row_key FROM \"{SYNC_KEYS_TABLE}\" \
@@ -532,7 +532,7 @@ impl Device<'_> {
             keys = cat.primary().dialect().quote_ident(SYNC_KEYS_TABLE),
         );
         tx.run(
-            Some(self.context),
+            Authority::Caller(self.context),
             &Statement::raw(
                 sql,
                 vec![

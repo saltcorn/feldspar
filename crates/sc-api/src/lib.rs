@@ -86,7 +86,7 @@ pub use graphql::{
     generate_graphql_client, graphql_config_spec,
 };
 pub use ownership::{
-    RowImage, caller_context, caller_context_at, delete_row_as, insert_row_as, read_row_values_as,
+    RowImage, delete_row_as, insert_row_as, principal_at, principal_of, read_row_values_as,
     read_rows_as, row_deletable_as, row_insertable_as, row_readable_as, row_updatable_as,
     update_row_as,
 };

@@ -9,10 +9,11 @@
 //! database alone — and then presents it over HTTP.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{Role, SessionStore, save_role};
+use sc_auth::{RoleDef, SessionStore, save_role};
 use sc_catalog::{Catalog, PublicOrigin, TableId};
 use sc_cli::auth::{self, SessionFormat, Target, UserSelector};
 use sc_db::DatabaseDriver;
@@ -25,7 +26,7 @@ const ADMIN: &str = "admin@example.com";
 const EDITOR: &str = "editor@example.com";
 const PASSWORD: &str = "correct horse battery staple";
 /// A role this installation invented, to be found by name.
-const EDITOR_ROLE: u8 = 40;
+const EDITOR_ROLE: Role = Role::of(40);
 
 /// A server on a real port, serving one application on its subdomain.
 struct Running {
@@ -61,8 +62,8 @@ async fn start() -> sc_error::Result<Running> {
     db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
-    sc_auth::create_user(&catalog, ADMIN, PASSWORD, sc_auth::ROLE_ADMIN).await?;
-    save_role(&catalog, &Role::new(EDITOR_ROLE, "Editor")).await?;
+    sc_auth::create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(EDITOR_ROLE, "Editor")).await?;
     sc_auth::create_user(&catalog, EDITOR, PASSWORD, EDITOR_ROLE).await?;
 
     // A valid `code` configuration: it is never built here (the mount below
@@ -267,7 +268,7 @@ async fn a_role_nobody_holds_and_a_role_that_is_not_a_role_say_so() -> sc_error:
 
     // A role that exists but has no users: the error names it and its number,
     // because the fix is to give somebody the role rather than to guess.
-    save_role(&server.catalog, &Role::new(60, "Nobody")).await?;
+    save_role(&server.catalog, &RoleDef::new(Role::of(60), "Nobody")).await?;
     let err = auth::resolve_user(&server.catalog, &UserSelector::Role("Nobody".to_owned()))
         .await
         .expect_err("no user holds it");
@@ -333,7 +334,7 @@ async fn a_session_is_minted_with_no_server_running() -> sc_error::Result<()> {
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
     db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
-    sc_auth::create_user(&catalog, ADMIN, PASSWORD, sc_auth::ROLE_ADMIN).await?;
+    sc_auth::create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
 
     let target = Target {
         // Port 1 on the loopback: nothing is listening, and nothing can be.

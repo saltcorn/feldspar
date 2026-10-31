@@ -934,8 +934,9 @@ fn tool_result_event(outcome: &sc_agent::ToolOutcome) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sc_types::Role;
 
-    fn agent_at(min_role: Option<u8>) -> Agent {
+    fn agent_at(min_role: Option<Role>) -> Agent {
         let agent = Agent::new("librarian", "anthropic");
         match min_role {
             Some(role) => agent.min_role(role),
@@ -1023,21 +1024,21 @@ mod tests {
     /// caller the route let through — which is the point of making it here.
     #[test]
     fn an_agent_above_the_callers_role_is_refused() {
-        let staff = RunCaller::user(sc_auth::User::new(Uuid::new_v4(), 40).expect("a user"));
+        let staff = RunCaller::user(sc_auth::User::new(Uuid::new_v4(), Role::of(40)));
         // Roles descend: 40 meets a floor of 80, and does not meet 10 or
         // admin-only.
-        assert!(may_chat(&staff, &agent_at(Some(80))).is_ok());
-        assert!(may_chat(&staff, &agent_at(Some(40))).is_ok());
-        let err = may_chat(&staff, &agent_at(Some(10))).expect_err("10 is above 40");
+        assert!(may_chat(&staff, &agent_at(Some(Role::of(80)))).is_ok());
+        assert!(may_chat(&staff, &agent_at(Some(Role::of(40)))).is_ok());
+        let err = may_chat(&staff, &agent_at(Some(Role::of(10)))).expect_err("10 is above 40");
         assert!(err.to_string().contains("librarian"), "{err}");
         assert!(may_chat(&staff, &agent_at(None)).is_err());
     }
 
     #[test]
     fn an_admin_meets_every_floor() {
-        let admin = RunCaller::user(sc_auth::User::new(Uuid::new_v4(), 1).expect("a user"));
+        let admin = RunCaller::user(sc_auth::User::new(Uuid::new_v4(), Role::ADMIN));
         assert!(may_chat(&admin, &agent_at(None)).is_ok());
-        assert!(may_chat(&admin, &agent_at(Some(100))).is_ok());
+        assert!(may_chat(&admin, &agent_at(Some(Role::PUBLIC))).is_ok());
     }
 
     #[test]

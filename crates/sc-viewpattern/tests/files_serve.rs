@@ -6,6 +6,7 @@
 //! [`ServeFile`](sc_files::ServeFile) for the router's file builder, or a 404 —
 //! through [`serve_store_file`], the function the framework's route calls.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -40,7 +41,7 @@ async fn an_owned_file_is_served_to_its_owner_and_not_found_to_anyone_else() -> 
         .set_meta(
             "private",
             &FileMeta {
-                min_role: Some(1),
+                min_role: Some(Role::ADMIN),
                 ..Default::default()
             },
         )
@@ -48,8 +49,8 @@ async fn an_owned_file_is_served_to_its_owner_and_not_found_to_anyone_else() -> 
     store
         .write("private/ada.png", Bytes::from_static(b"png"))
         .await?;
-    let ada = User::new(uuid::Uuid::new_v4(), 80)?;
-    let bob = User::new(uuid::Uuid::new_v4(), 80)?;
+    let ada = User::new(uuid::Uuid::new_v4(), Role::of(80));
+    let bob = User::new(uuid::Uuid::new_v4(), Role::of(80));
     sc_files::record_owner(store.as_ref(), "private/ada.png", &ada.id.to_string()).await;
 
     let app = Application::new("Books", "books", FrameworkRef::new("saltcorn-ui"))
@@ -106,7 +107,7 @@ async fn a_public_stores_git_dir_dotfiles_and_escaping_links_are_not_served() ->
 
     let app = Application::new("Site", "site", FrameworkRef::new("saltcorn-ui"))
         .with_file_store(FileStoreId("site".to_owned()));
-    let ada = User::new(uuid::Uuid::new_v4(), 80)?;
+    let ada = User::new(uuid::Uuid::new_v4(), Role::of(80));
 
     let served = serve_store_file(&app, &catalog, None, &["site", "a.txt"]).await?;
     assert!(served.file.is_some(), "a public file is served");

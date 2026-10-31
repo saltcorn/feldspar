@@ -29,6 +29,7 @@
 //! comes from an ownership formula is refused by name rather than handed a
 //! withheld row one column at a time.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 
 use sc_catalog::{Catalog, DataFieldKind, Table};
@@ -139,7 +140,7 @@ pub(crate) fn parse(
     cat: &Catalog,
     table: &Table,
     req: &ApiRequest,
-    role: u8,
+    role: Role,
     row_cap: u64,
 ) -> Result<ListQuery> {
     // The filters, the ordering and the bounds are the shared vocabulary
@@ -326,7 +327,7 @@ fn resolve(
     table: &Table,
     items: &[Item<'_>],
     prefix: Option<&str>,
-    role: u8,
+    role: Role,
     plan: &mut Plan,
 ) -> Result<Vec<Node>> {
     let mut nodes = Vec::with_capacity(items.len());

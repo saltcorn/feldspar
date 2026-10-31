@@ -432,6 +432,7 @@ impl CodeSurfaces {
 mod tests {
     use super::*;
     use sc_action::EventKind;
+    use sc_types::Role;
     use serde_json::json;
 
     #[test]
@@ -470,7 +471,7 @@ mod tests {
             .on("books")
             .row(json!({ "id": 1, "title": "now" }))
             .old_row(json!({ "id": 1, "title": "was" }))
-            .caller(1, Some(json!({ "email": "a@b.c" })));
+            .caller(Role::ADMIN, Some(json!({ "email": "a@b.c" })));
         let bound = bindings(&update, None, None);
         assert_eq!(
             bound.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -510,7 +511,8 @@ mod tests {
 
     #[test]
     fn a_custom_querys_body_sees_the_request_and_the_caller_and_no_payload() {
-        let called = Event::new(EventKind::None).caller(80, Some(json!({ "email": "a@b.c" })));
+        let called =
+            Event::new(EventKind::None).caller(Role::of(80), Some(json!({ "email": "a@b.c" })));
         let request: Attrs = [
             ("body".to_owned(), json!({ "title": "Dune" })),
             ("query".to_owned(), json!({ "since": 1965 })),

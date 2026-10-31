@@ -23,6 +23,7 @@
 //! §1.2).
 
 use sc_types::Attrs;
+use sc_types::Role;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -158,7 +159,7 @@ pub struct FileStoreDef {
     /// is more restrictive — the same scale as
     /// [`FileMeta::min_role`](crate::FileMeta), which this sits above: a store's
     /// floor applies before any per-file rule.
-    pub min_role: Option<u8>,
+    pub min_role: Option<Role>,
     /// Sparse per-store values (§9).
     pub attributes: Attrs,
 }
@@ -203,7 +204,7 @@ impl FileStoreDef {
     }
 
     /// Set the minimum role, returning `self` for chaining.
-    pub fn min_role(mut self, role: u8) -> Self {
+    pub fn min_role(mut self, role: Role) -> Self {
         self.min_role = Some(role);
         self
     }
@@ -264,9 +265,9 @@ mod tests {
     fn builders_chain() {
         let def = FileStoreDef::local("docs", "/srv/docs")
             .description("Shared documents")
-            .min_role(40);
+            .min_role(Role::of(40));
         assert_eq!(def.description, "Shared documents");
-        assert_eq!(def.min_role, Some(40));
+        assert_eq!(def.min_role, Some(Role::of(40)));
         assert_eq!(def.setting(CFG_PATH), Some("/srv/docs"));
     }
 }

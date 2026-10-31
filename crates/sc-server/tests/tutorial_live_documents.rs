@@ -18,6 +18,7 @@
 //! and `yjs` are available (it says so and stops short when they are not).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -30,7 +31,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use futures::{SinkExt, StreamExt};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
-use sc_auth::{ROLE_ADMIN, Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, FileStoreId, TableId};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
@@ -52,7 +53,7 @@ const COLLEAGUE: &str = "colleague@example.com";
 const READER: &str = "reader@example.com";
 const OUTSIDER: &str = "outsider@example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 40;
+const ROLE_MEMBER: Role = Role::of(40);
 
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -195,8 +196,8 @@ async fn assumed() -> Result<Tutorial> {
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;
     catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", dir.0.join("apps"))?))?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
-    create_user(&catalog, ADMIN, PASSWORD, ROLE_ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
+    create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
     for email in [MEMBER, COLLEAGUE, READER, OUTSIDER] {
         create_user(&catalog, email, PASSWORD, ROLE_MEMBER).await?;
     }
@@ -492,7 +493,7 @@ async fn part_five_a_collaborative_notes_app() -> Result<()> {
             "/api/tables/notes",
             Some(json!({
                 "label": "", "description": "",
-                "min_role_read": ROLE_ADMIN, "min_role_write": ROLE_ADMIN,
+                "min_role_read": Role::ADMIN, "min_role_write": Role::ADMIN,
                 "ownership_formula": rule.trim(), "rls_enabled": false, "sync_enabled": false,
             })),
         )

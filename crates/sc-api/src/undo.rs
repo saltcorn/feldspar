@@ -19,13 +19,15 @@
 //!
 //! Effects outside the database (an email a trigger sent) are not undone.
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use sc_auth::{ROLE_ADMIN, User};
+use sc_auth::User;
 use sc_catalog::history::{self, AsOf, HistoryEntry};
 use sc_catalog::{
-    CallerContext, Catalog, Changeset, ChangesetSource, DataFieldKind, SharedTx, Table, changeset,
+    Catalog, Changeset, ChangesetSource, DataFieldKind, Principal, SharedTx, Table, changeset,
 };
 use sc_error::{Error, Result};
 use sc_expr::JsEvaluator;
@@ -34,7 +36,7 @@ use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
 
 use crate::history::{HistoryReader, not_found, redacted};
-use crate::ownership::{caller_context_at, caller_role};
+use crate::ownership::principal_at;
 use crate::rows::{self, Executor};
 use crate::write_as::{self, Caller, Denied};
 
@@ -45,7 +47,7 @@ pub struct Reverser<'a> {
     /// The catalog.
     pub catalog: &'a Catalog,
     /// The caller's role (public when nobody is signed in).
-    pub role: u8,
+    pub role: Role,
     /// The caller, when signed in.
     pub user: Option<&'a User>,
     /// For a write rule that needs JavaScript.
@@ -185,14 +187,14 @@ impl<'a> Reverser<'a> {
     ) -> Reverser<'a> {
         Reverser {
             catalog,
-            role: caller_role(user),
+            role: sc_auth::role_of(user),
             user,
             evaluator,
         }
     }
 
     fn is_admin(&self) -> bool {
-        self.role <= ROLE_ADMIN
+        self.role.is_admin()
     }
 
     fn reader(&self) -> HistoryReader<'a> {
@@ -236,15 +238,15 @@ impl<'a> Reverser<'a> {
 
     /// The caller, as the writes carry it. Built inside the changeset's scope,
     /// which is where it picks the changeset up.
-    fn context(&self) -> CallerContext {
-        caller_context_at(self.role, self.user)
+    fn context(&self) -> Principal {
+        principal_at(self.role, self.user)
     }
 
     /// For the reads the checks make: whether a row is there, and what it
     /// holds. At the admin's role so a policy cannot make a row look gone; the
     /// write that follows is the caller's and is checked as theirs.
-    fn checking(&self) -> CallerContext {
-        caller_context_at(ROLE_ADMIN, self.user)
+    fn checking(&self) -> Principal {
+        principal_at(Role::ADMIN, self.user)
     }
 
     /// `POST {table}/deleted/{key}/restore`: insert the deleted row's image
@@ -602,7 +604,7 @@ impl<'a> Reverser<'a> {
             .map_err(refused)
     }
 
-    fn caller<'c>(&self, context: &'c CallerContext, executor: &'c Executor) -> Caller<'c>
+    fn caller<'c>(&self, context: &'c Principal, executor: &'c Executor) -> Caller<'c>
     where
         'a: 'c,
     {
@@ -645,7 +647,9 @@ impl<'a> Reverser<'a> {
                         column = sc_catalog::as_text_sql(&format!("t.{}", quote(&target_field.0))),
                     );
                     let stmt = Statement::raw(sql, vec![Value::Text(text.clone())]);
-                    !tx.run(Some(&self.checking()), &stmt).await?.is_empty()
+                    !tx.run(Authority::Caller(&self.checking()), &stmt)
+                        .await?
+                        .is_empty()
                 }
                 None => false,
             };
@@ -692,7 +696,7 @@ fn json_text(value: &Json) -> String {
 async fn current_row(
     catalog: &Catalog,
     tx: &SharedTx,
-    context: &CallerContext,
+    context: &Principal,
     table: &Table,
     key: &str,
 ) -> Result<Option<Map<String, Json>>> {
@@ -708,7 +712,7 @@ async fn current_row(
     };
     let found = tx
         .run(
-            Some(context),
+            Authority::Caller(context),
             &Statement::raw(sql, vec![Value::Text(key.to_owned())]),
         )
         .await?;

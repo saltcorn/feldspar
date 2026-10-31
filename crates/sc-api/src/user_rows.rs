@@ -37,12 +37,12 @@
 //! whether a caller may write the table at all; this narrows, it never grants.
 
 use sc_auth::{
-    COL_DISABLED, COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_PASSWORD_HASH, COL_ROLE, ROLE_ADMIN,
-    USERS_TABLE,
+    COL_DISABLED, COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_PASSWORD_HASH, COL_ROLE, USERS_TABLE,
 };
-use sc_catalog::{CallerContext, DataField, Table};
+use sc_catalog::{Authority, DataField, Principal, Table};
 use sc_error::{Error, Result};
 use sc_query::{BinOp, Expr, Projection, Value};
+use sc_types::Role;
 use serde_json::{Map, Value as Json};
 
 /// The field attribute that makes an admin-added column of the users table one
@@ -127,15 +127,12 @@ pub fn api_row(table: &Table, row: &Json) -> Json {
 
 /// The caller the role rule applies to, or `None` when it does not (not the
 /// users table, a system write, or an admin).
-fn restricted_caller<'a>(
-    table: &Table,
-    context: Option<&'a CallerContext>,
-) -> Option<&'a CallerContext> {
-    context.filter(|c| is_users(table) && c.role != ROLE_ADMIN)
+fn restricted_caller<'a>(table: &Table, context: Option<&'a Principal>) -> Option<&'a Principal> {
+    context.filter(|c| is_users(table) && !c.role.is_admin())
 }
 
 /// The caller's own user id, as the context carries it.
-fn caller_id(context: &CallerContext) -> Option<&str> {
+fn caller_id(context: &Principal) -> Option<&str> {
     context.user.as_ref()?.get(COL_ID)?.as_str()
 }
 
@@ -152,12 +149,12 @@ fn reject_password_hash(table: &Table, obj: &Map<String, Json>) -> Result<()> {
 }
 
 /// The role a write body names, if it names one.
-fn written_role(table: &Table, obj: &Map<String, Json>) -> Result<Option<i64>> {
+fn written_role(table: &Table, obj: &Map<String, Json>) -> Result<Option<Role>> {
     let Some(json) = obj.get(COL_ROLE) else {
         return Ok(None);
     };
     match crate::rows::column_value(table, COL_ROLE, json)? {
-        Value::Int(role) => Ok(Some(role)),
+        Value::Int(role) => Ok(Some(Role::try_from(role)?)),
         Value::Null => Ok(None),
         other => Err(Error::invalid(format!(
             "`{COL_ROLE}` must be a role number, not {}",
@@ -197,7 +194,7 @@ fn reject_admin_only(table: &Table, obj: &Map<String, Json>, update: Option<&str
     }
 }
 
-fn too_powerful(role: i64, caller_role: u8) -> Error {
+fn too_powerful(role: Role, caller_role: Role) -> Error {
     Error::auth(format!(
         "you cannot give an account role {role}: a role you assign must be less \
          powerful than your own (a number greater than {caller_role})"
@@ -209,17 +206,17 @@ fn too_powerful(role: i64, caller_role: u8) -> Error {
 pub(crate) fn check_insert(
     table: &Table,
     obj: &Map<String, Json>,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<()> {
-    if context.is_some() {
+    if context.principal().is_some() {
         reject_password_hash(table, obj)?;
     }
-    let Some(caller) = restricted_caller(table, context) else {
+    let Some(caller) = restricted_caller(table, context.principal()) else {
         return Ok(());
     };
     reject_admin_only(table, obj, None)?;
     match written_role(table, obj)? {
-        Some(role) if role > i64::from(caller.role) => Ok(()),
+        Some(role) if caller.role.outranks(role) => Ok(()),
         Some(role) => Err(too_powerful(role, caller.role)),
         None => Err(Error::invalid(format!(
             "a new account needs a `{COL_ROLE}` less powerful than your own"
@@ -235,12 +232,12 @@ pub(crate) fn update_guard(
     table: &Table,
     id: &str,
     obj: &Map<String, Json>,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<Option<Expr>> {
-    if context.is_some() {
+    if context.principal().is_some() {
         reject_password_hash(table, obj)?;
     }
-    let Some(caller) = restricted_caller(table, context) else {
+    let Some(caller) = restricted_caller(table, context.principal()) else {
         return Ok(None);
     };
     reject_admin_only(table, obj, Some(id))?;
@@ -248,8 +245,8 @@ pub(crate) fn update_guard(
         let own_row = caller_id(caller).is_some_and(|me| me.eq_ignore_ascii_case(id.trim()));
         // Keeping your own role is not handing anybody anything.
         let allowed = match own_row {
-            true => role >= i64::from(caller.role),
-            false => role > i64::from(caller.role),
+            true => caller.role.meets(role),
+            false => caller.role.outranks(role),
         };
         if !allowed {
             return Err(too_powerful(role, caller.role));
@@ -260,15 +257,15 @@ pub(crate) fn update_guard(
 
 /// The predicate that confines a delete of a user to the rows the caller may
 /// remove — their own, and less powerful accounts'.
-pub(crate) fn delete_guard(table: &Table, context: Option<&CallerContext>) -> Result<Option<Expr>> {
-    match restricted_caller(table, context) {
+pub(crate) fn delete_guard(table: &Table, context: Authority<'_>) -> Result<Option<Expr>> {
+    match restricted_caller(table, context.principal()) {
         Some(caller) => reachable(table, caller).map(Some),
         None => Ok(None),
     }
 }
 
 /// `role > caller.role OR id = caller.id`.
-fn reachable(table: &Table, caller: &CallerContext) -> Result<Expr> {
+fn reachable(table: &Table, caller: &Principal) -> Result<Expr> {
     let weaker = Expr::binary(
         BinOp::Gt,
         Expr::col(COL_ROLE),
@@ -334,8 +331,8 @@ mod tests {
 
     const ME: &str = "6f1c1f0e-1d7b-4c47-9a35-7a3f3c1f2b10";
 
-    fn therapist() -> CallerContext {
-        CallerContext::new(40, Some(json!({ "id": ME, "role": 40 })))
+    fn therapist() -> Principal {
+        Principal::new(Role::of(40), Some(json!({ "id": ME, "role": 40 })))
     }
 
     fn obj(v: Json) -> Map<String, Json> {
@@ -360,18 +357,46 @@ mod tests {
     fn an_insert_may_only_hand_out_less_power() {
         let t = users();
         let ctx = therapist();
-        assert!(check_insert(&t, &obj(json!({"email": "p@x", "role": 80})), Some(&ctx)).is_ok());
-        assert!(check_insert(&t, &obj(json!({"email": "p@x", "role": 40})), Some(&ctx)).is_err());
-        assert!(check_insert(&t, &obj(json!({"email": "p@x", "role": 1})), Some(&ctx)).is_err());
-        assert!(check_insert(&t, &obj(json!({"email": "p@x"})), Some(&ctx)).is_err());
+        assert!(
+            check_insert(
+                &t,
+                &obj(json!({"email": "p@x", "role": 80})),
+                Authority::Caller(&ctx)
+            )
+            .is_ok()
+        );
+        assert!(
+            check_insert(
+                &t,
+                &obj(json!({"email": "p@x", "role": 40})),
+                Authority::Caller(&ctx)
+            )
+            .is_err()
+        );
+        assert!(
+            check_insert(
+                &t,
+                &obj(json!({"email": "p@x", "role": 1})),
+                Authority::Caller(&ctx)
+            )
+            .is_err()
+        );
+        assert!(check_insert(&t, &obj(json!({"email": "p@x"})), Authority::Caller(&ctx)).is_err());
         let hash = obj(json!({"email": "p@x", "role": 80, "password_hash": "x"}));
-        assert!(check_insert(&t, &hash, Some(&ctx)).is_err());
+        assert!(check_insert(&t, &hash, Authority::Caller(&ctx)).is_err());
         // An admin is not held to the role rule, but still cannot write a hash.
-        let admin = CallerContext::new(ROLE_ADMIN, None);
-        assert!(check_insert(&t, &obj(json!({"email": "a@x", "role": 1})), Some(&admin)).is_ok());
-        assert!(check_insert(&t, &hash, Some(&admin)).is_err());
+        let admin = Principal::new(Role::ADMIN, None);
+        assert!(
+            check_insert(
+                &t,
+                &obj(json!({"email": "a@x", "role": 1})),
+                Authority::Caller(&admin)
+            )
+            .is_ok()
+        );
+        assert!(check_insert(&t, &hash, Authority::Caller(&admin)).is_err());
         // A system write has no caller to hold to anything.
-        assert!(check_insert(&t, &hash, None).is_ok());
+        assert!(check_insert(&t, &hash, Authority::system("test")).is_ok());
     }
 
     #[test]
@@ -380,16 +405,25 @@ mod tests {
         let ctx = therapist();
         let other = "0b5d9a52-54d4-4bde-8b2a-6d0f6f7a1a11";
         let keep = obj(json!({"role": 40}));
-        assert!(update_guard(&t, ME, &keep, Some(&ctx)).is_ok());
-        assert!(update_guard(&t, other, &keep, Some(&ctx)).is_err());
-        assert!(update_guard(&t, ME, &obj(json!({"role": 1})), Some(&ctx)).is_err());
-        let guard = update_guard(&t, other, &obj(json!({"bio": "e"})), Some(&ctx))
-            .unwrap()
-            .expect("a restricted caller is confined");
+        assert!(update_guard(&t, ME, &keep, Authority::Caller(&ctx)).is_ok());
+        assert!(update_guard(&t, other, &keep, Authority::Caller(&ctx)).is_err());
+        assert!(update_guard(&t, ME, &obj(json!({"role": 1})), Authority::Caller(&ctx)).is_err());
+        let guard = update_guard(
+            &t,
+            other,
+            &obj(json!({"bio": "e"})),
+            Authority::Caller(&ctx),
+        )
+        .unwrap()
+        .expect("a restricted caller is confined");
         let sql = format!("{guard:?}");
         assert!(sql.contains("role") && sql.contains("id"), "{sql}");
-        assert!(delete_guard(&t, Some(&ctx)).unwrap().is_some());
-        assert!(delete_guard(&t, None).unwrap().is_none());
+        assert!(delete_guard(&t, Authority::Caller(&ctx)).unwrap().is_some());
+        assert!(
+            delete_guard(&t, Authority::system("test"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// Security review 2026-10 #8: below admin, nobody rewrites an account's
@@ -407,23 +441,39 @@ mod tests {
             json!({"org_id": 7}),
         ] {
             for row in [ME, other] {
-                let err = update_guard(&t, row, &obj(body.clone()), Some(&ctx)).unwrap_err();
+                let err =
+                    update_guard(&t, row, &obj(body.clone()), Authority::Caller(&ctx)).unwrap_err();
                 assert!(err.to_string().contains("admin only"), "{body}: {err}");
             }
         }
         // Sending the row's own id back changes nothing, and is allowed.
-        assert!(update_guard(&t, ME, &obj(json!({"id": ME, "bio": "x"})), Some(&ctx)).is_ok());
+        assert!(
+            update_guard(
+                &t,
+                ME,
+                &obj(json!({"id": ME, "bio": "x"})),
+                Authority::Caller(&ctx)
+            )
+            .is_ok()
+        );
         // An ordinary admin-added column is still the user's to edit.
-        assert!(update_guard(&t, ME, &obj(json!({"bio": "hi"})), Some(&ctx)).is_ok());
+        assert!(update_guard(&t, ME, &obj(json!({"bio": "hi"})), Authority::Caller(&ctx)).is_ok());
         // An insert names its email, but not a flagged column.
-        assert!(check_insert(&t, &obj(json!({"email": "p@x", "role": 80})), Some(&ctx)).is_ok());
+        assert!(
+            check_insert(
+                &t,
+                &obj(json!({"email": "p@x", "role": 80})),
+                Authority::Caller(&ctx)
+            )
+            .is_ok()
+        );
         let org = obj(json!({"email": "p@x", "role": 80, "org_id": 7}));
-        assert!(check_insert(&t, &org, Some(&ctx)).is_err());
+        assert!(check_insert(&t, &org, Authority::Caller(&ctx)).is_err());
         // An admin, and a system write, are not held to it.
-        let admin = CallerContext::new(ROLE_ADMIN, None);
+        let admin = Principal::new(Role::ADMIN, None);
         let all = obj(json!({"email": "e@x", "disabled": true, "org_id": 7}));
-        assert!(update_guard(&t, other, &all, Some(&admin)).is_ok());
-        assert!(update_guard(&t, other, &all, None).is_ok());
-        assert!(check_insert(&t, &org, Some(&admin)).is_ok());
+        assert!(update_guard(&t, other, &all, Authority::Caller(&admin)).is_ok());
+        assert!(update_guard(&t, other, &all, Authority::system("test")).is_ok());
+        assert!(check_insert(&t, &org, Authority::Caller(&admin)).is_ok());
     }
 }

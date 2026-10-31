@@ -16,6 +16,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -367,15 +369,25 @@ async fn a_none_trigger_runs_by_name_with_its_payload() -> sc_error::Result<()> 
     // answer — the whole contract of a trigger with no intrinsic occurrence.
     let result = server
         .dispatcher
-        .run_trigger(&server.catalog, "double", json!({ "n": 21 }), None)
+        .run_trigger(
+            &server.catalog,
+            "double",
+            json!({ "n": 21 }),
+            Authority::system("test"),
+        )
         .await?;
     assert_eq!(result, json!({ "doubled": 42, "who": Value::Null }));
 
     // The caller travels here too, when one is given.
-    let caller = sc_catalog::CallerContext::new(1, Some(json!({ "email": ADMIN })));
+    let caller = sc_catalog::Principal::new(Role::ADMIN, Some(json!({ "email": ADMIN })));
     let result = server
         .dispatcher
-        .run_trigger(&server.catalog, "double", json!({ "n": 1 }), Some(&caller))
+        .run_trigger(
+            &server.catalog,
+            "double",
+            json!({ "n": 1 }),
+            Authority::Caller(&caller),
+        )
         .await?;
     assert_eq!(result["who"], json!({ "email": ADMIN }));
 
@@ -383,7 +395,12 @@ async fn a_none_trigger_runs_by_name_with_its_payload() -> sc_error::Result<()> 
     // answers, because they call for different fixes.
     let err = server
         .dispatcher
-        .run_trigger(&server.catalog, "nope", Value::Null, None)
+        .run_trigger(
+            &server.catalog,
+            "nope",
+            Value::Null,
+            Authority::system("test"),
+        )
         .await
         .unwrap_err();
     assert!(err.to_string().contains("no trigger named"), "{err}");
@@ -398,7 +415,12 @@ async fn a_none_trigger_runs_by_name_with_its_payload() -> sc_error::Result<()> 
     server.add_trigger(off).await?;
     let err = server
         .dispatcher
-        .run_trigger(&server.catalog, "double", json!({ "n": 1 }), None)
+        .run_trigger(
+            &server.catalog,
+            "double",
+            json!({ "n": 1 }),
+            Authority::system("test"),
+        )
         .await
         .unwrap_err();
     assert!(err.to_string().contains("disabled"), "{err}");

@@ -8,6 +8,7 @@
 //! SPA drives (`sc-server`).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -191,7 +192,7 @@ async fn a_metadata_table_is_listed_configured_and_edited_but_never_reshaped()
     assert_eq!(status, StatusCode::OK, "{updated}");
     assert_eq!(updated["label"], json!("File stores"));
     assert_eq!(updated["min_role_read"], json!(40));
-    assert_eq!(catalog.require(STORES)?.access.min_role_read, 40);
+    assert_eq!(catalog.require(STORES)?.access.min_role_read, Role::of(40));
     // …except row-level security, which would be forced on the server too.
     let (status, refused) = client
         .send(
@@ -261,7 +262,11 @@ async fn a_metadata_table_is_listed_configured_and_edited_but_never_reshaped()
     assert!(!names(&tables).contains(&STORES.to_owned()));
     let stores = catalog.require(STORES)?;
     assert!(stores.is_hidden());
-    assert_eq!(stores.access.min_role_read, 1, "its settings go with it");
+    assert_eq!(
+        stores.access.min_role_read,
+        Role::ADMIN,
+        "its settings go with it"
+    );
     assert_eq!(sc_catalog::list_file_stores(&catalog).await?.len(), 1);
     Ok(())
 }
@@ -281,7 +286,7 @@ async fn editing_a_row_the_catalog_is_built_from_takes_effect_at_once() -> sc_er
         )
         .await;
     assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(catalog.require("books")?.access.min_role_read, 1);
+    assert_eq!(catalog.require("books")?.access.min_role_read, Role::ADMIN);
 
     // A settings row for `books`, written as a plain row of `_fd_tables`.
     let id = "00000000-0000-4000-8000-000000000002";
@@ -297,7 +302,7 @@ async fn editing_a_row_the_catalog_is_built_from_takes_effect_at_once() -> sc_er
         .await;
     assert!(status.is_success(), "{status} {row}");
     let books = catalog.require("books")?;
-    assert_eq!(books.access.min_role_read, 40);
+    assert_eq!(books.access.min_role_read, Role::of(40));
     assert_eq!(books.label, "Books");
 
     // Edited…
@@ -309,13 +314,13 @@ async fn editing_a_row_the_catalog_is_built_from_takes_effect_at_once() -> sc_er
         )
         .await;
     assert!(status.is_success(), "{status} {row}");
-    assert_eq!(catalog.require("books")?.access.min_role_read, 10);
+    assert_eq!(catalog.require("books")?.access.min_role_read, Role::of(10));
 
     // …and deleted: `books` is back to the admin-only default.
     let (status, _) = client
         .send("DELETE", &format!("/api/tables/_fd_tables/rows/{id}"), None)
         .await;
     assert!(status.is_success());
-    assert_eq!(catalog.require("books")?.access.min_role_read, 1);
+    assert_eq!(catalog.require("books")?.access.min_role_read, Role::ADMIN);
     Ok(())
 }

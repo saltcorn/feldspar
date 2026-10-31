@@ -18,6 +18,7 @@
 //!   neither a line in the header nor a row in the result.
 
 use crate::common;
+use sc_types::Role;
 
 use std::sync::Arc;
 
@@ -58,7 +59,7 @@ fn coding(application: &str) -> sc_types::Attrs {
 }
 
 /// The tool's result for one call, as `caller`.
-async fn list(env: &Env, config: &sc_types::Attrs, args: Json, role: u8) -> Result<Json> {
+async fn list(env: &Env, config: &sc_types::Attrs, args: Json, role: Role) -> Result<Json> {
     let caller = RunCaller {
         role,
         ..RunCaller::system()
@@ -103,7 +104,7 @@ async fn the_session_header_names_the_mounts_and_the_tool_lists_them() -> Result
     .await?;
 
     // --- the tool -------------------------------------------------------------
-    let listed = list(&env, &coding("blog"), json!({}), 1).await?;
+    let listed = list(&env, &coding("blog"), json!({}), Role::ADMIN).await?;
     let urls: Vec<&str> = listed["assets"]
         .as_array()
         .expect("assets")
@@ -129,7 +130,13 @@ async fn the_session_header_names_the_mounts_and_the_tool_lists_them() -> Result
     assert_eq!(icon["content_type"], json!("image/svg+xml"));
 
     // A glob over names, as `find_files` matches one.
-    let svgs = list(&env, &coding("blog"), json!({"pattern": "*.svg"}), 1).await?;
+    let svgs = list(
+        &env,
+        &coding("blog"),
+        json!({"pattern": "*.svg"}),
+        Role::ADMIN,
+    )
+    .await?;
     assert_eq!(svgs["assets"].as_array().unwrap().len(), 1, "{svgs}");
 
     // --- the header -----------------------------------------------------------
@@ -159,7 +166,7 @@ async fn an_application_with_no_static_directories_says_so_and_adds_no_header() 
     env.put(&apps, "web/src/App.tsx", "export function App() {}\n")?;
     save_application(&env.catalog, &blog(Vec::new())).await?;
 
-    let listed = list(&env, &coding("blog"), json!({}), 1).await?;
+    let listed = list(&env, &coding("blog"), json!({}), Role::ADMIN).await?;
     assert_eq!(listed["assets"], json!([]), "{listed}");
     // Not a bare empty list: a model told only `[]` will guess a URL anyway.
     assert!(
@@ -189,7 +196,7 @@ async fn a_store_closed_to_the_caller_is_neither_listed_nor_announced() -> Resul
     let apps = env.with_file_store("apps", None).await?;
     env.put(&apps, "web/src/App.tsx", "export function App() {}\n")?;
     // The images store admits nobody below role 1.
-    let media = env.with_file_store("media", Some(1)).await?;
+    let media = env.with_file_store("media", Some(Role::ADMIN)).await?;
     env.put(&media, "images/hero.png", "\u{89}PNG hero")?;
 
     save_application(
@@ -202,9 +209,9 @@ async fn a_store_closed_to_the_caller_is_neither_listed_nor_announced() -> Resul
     )
     .await?;
 
-    let closed = list(&env, &coding("blog"), json!({}), 40).await?;
+    let closed = list(&env, &coding("blog"), json!({}), Role::of(40)).await?;
     assert_eq!(closed["assets"], json!([]), "{closed}");
-    let open = list(&env, &coding("blog"), json!({}), 1).await?;
+    let open = list(&env, &coding("blog"), json!({}), Role::ADMIN).await?;
     assert_eq!(open["assets"].as_array().unwrap().len(), 1, "{open}");
     Ok(())
 }
@@ -232,7 +239,7 @@ async fn without_an_application_the_tool_is_not_in_the_spec_list() -> Result<()>
     );
     // Called anyway — a resumed transcript can carry the call — it names the
     // setting an administrator would have to fill in.
-    let err = list(&env, &bare, json!({}), 1)
+    let err = list(&env, &bare, json!({}), Role::ADMIN)
         .await
         .unwrap_err()
         .to_string();

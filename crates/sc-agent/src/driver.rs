@@ -14,6 +14,8 @@
 //! the person, a triggered run carries the trigger's authority, and a `Runner`
 //! that never said which cannot be built.
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -845,7 +847,7 @@ impl<'a> Runner<'a> {
         let Some(meter) = self.meter else {
             return Ok(None);
         };
-        if self.caller.role <= sc_auth::ROLE_ADMIN {
+        if self.caller.role.is_admin() {
             return Ok(None);
         }
         match &self.caller.user {
@@ -950,7 +952,7 @@ impl<'a> Runner<'a> {
                     .map(sc_auth::credits),
                 note: None,
             },
-            Some(&caller_context(&self.caller)),
+            Authority::Caller(&principal_of(&self.caller)),
         )
         .await?;
         sc_log::log_verbose!(
@@ -1704,7 +1706,7 @@ impl<'a> Runner<'a> {
             return Err(Error::auth(format!(
                 "agent `{parent}`: you may not use `{target}`; \
                  it needs role {} or better",
-                sub.min_role.unwrap_or(1)
+                sub.min_role.unwrap_or(Role::ADMIN)
             )));
         }
 
@@ -1902,7 +1904,7 @@ pub fn stable_prefix(
 
 /// The caller the events a credit debit raises report: the run's user, at the
 /// run's role.
-fn caller_context(caller: &RunCaller) -> sc_catalog::CallerContext {
+fn principal_of(caller: &RunCaller) -> sc_catalog::Principal {
     let user = caller.user.as_ref().map(|u| {
         let mut fields: serde_json::Map<String, Json> = u
             .extra
@@ -1913,7 +1915,7 @@ fn caller_context(caller: &RunCaller) -> sc_catalog::CallerContext {
         fields.insert("role".to_owned(), Json::from(u.role));
         Json::Object(fields)
     });
-    sc_catalog::CallerContext::new(caller.role, user).in_current_origin()
+    sc_catalog::Principal::new(caller.role, user).in_current_origin()
 }
 
 fn conclusion_label(conclusion: &Conclusion) -> String {

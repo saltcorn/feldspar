@@ -15,13 +15,15 @@
 //! - a grant that **rolls over** an earlier bucket (P7.1) carries what is left
 //!   of it up to a cap, once, and empties it.
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 use rust_decimal::Decimal;
 use sc_auth::{
     CREDIT_ACCOUNTS_TABLE, CREDIT_BUCKETS_TABLE, CREDIT_ENTRIES_TABLE, CreditDebit, CreditRollover,
-    ENTRY_LOW_BALANCE, ENTRY_ROLLOVER, NewCreditGrant, ROLE_ADMIN, Role, bootstrap, create_user,
+    ENTRY_LOW_BALANCE, ENTRY_ROLLOVER, NewCreditGrant, RoleDef, bootstrap, create_user,
     credit_balance, debit_credits, delete_user, grant_credits, list_credit_buckets,
     list_credit_entries, revoke_credits, save_role, set_low_balance_threshold,
 };
@@ -53,7 +55,7 @@ async fn fixture() -> Result<Fixture> {
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
     bootstrap(&catalog).await?;
-    save_role(&catalog, &Role::new(80, "Member")).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Member")).await?;
     Ok(Fixture { catalog, _db: db })
 }
 
@@ -94,7 +96,7 @@ async fn the_tables_are_ordinary_owner_readable_ones_made_by_the_first_grant() -
     ] {
         assert!(f.catalog.get(name)?.is_none(), "{name}: not bootstrapped");
     }
-    let user = create_user(&f.catalog, "first@example.com", "pw", 80).await?;
+    let user = create_user(&f.catalog, "first@example.com", "pw", Role::of(80)).await?;
     assert_eq!(credit_balance(&f.catalog, user.id).await?.balance, d(0));
     assert!(list_credit_buckets(&f.catalog, user.id).await?.is_empty());
     assert!(
@@ -102,12 +104,24 @@ async fn the_tables_are_ordinary_owner_readable_ones_made_by_the_first_grant() -
             .await?
             .is_empty()
     );
-    let revoked = sc_auth::revoke_credits(&f.catalog, "admin", "nothing", None, None).await?;
+    let revoked = sc_auth::revoke_credits(
+        &f.catalog,
+        "admin",
+        "nothing",
+        None,
+        Authority::system("test"),
+    )
+    .await?;
     assert!(!revoked.found, "nothing to take back, and nothing created");
     assert!(f.catalog.get(CREDIT_BUCKETS_TABLE)?.is_none());
 
     // The first grant makes them.
-    grant_credits(&f.catalog, grant(user.id, 5, "first"), None).await?;
+    grant_credits(
+        &f.catalog,
+        grant(user.id, 5, "first"),
+        Authority::system("test"),
+    )
+    .await?;
     assert_eq!(credit_balance(&f.catalog, user.id).await?.balance, d(5));
     for name in [
         CREDIT_BUCKETS_TABLE,
@@ -116,7 +130,7 @@ async fn the_tables_are_ordinary_owner_readable_ones_made_by_the_first_grant() -
     ] {
         let table = f.catalog.require(name)?;
         assert!(!table.is_system(), "{name}: an application reads it");
-        assert_eq!(table.access.min_role_write, ROLE_ADMIN, "{name}");
+        assert_eq!(table.access.min_role_write, Role::ADMIN, "{name}");
         assert_eq!(
             table.ownership.as_ref().map(|f| f.source()),
             Some(sc_auth::CREDITS_OWNERSHIP),
@@ -134,12 +148,22 @@ async fn the_tables_are_ordinary_owner_readable_ones_made_by_the_first_grant() -
 #[tokio::test]
 async fn a_replayed_grant_does_nothing() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", 80).await?;
-    let first = grant_credits(&f.catalog, grant(user.id, 100, "invoice:in_1"), None).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::of(80)).await?;
+    let first = grant_credits(
+        &f.catalog,
+        grant(user.id, 100, "invoice:in_1"),
+        Authority::system("test"),
+    )
+    .await?;
     assert!(!first.replayed);
     assert_eq!(first.balance, d(100));
 
-    let again = grant_credits(&f.catalog, grant(user.id, 100, "invoice:in_1"), None).await?;
+    let again = grant_credits(
+        &f.catalog,
+        grant(user.id, 100, "invoice:in_1"),
+        Authority::system("test"),
+    )
+    .await?;
     assert!(again.replayed, "the same key is the same grant");
     assert_eq!(again.bucket.id, first.bucket.id);
     assert_eq!(credit_balance(&f.catalog, user.id).await?.balance, d(100));
@@ -151,12 +175,21 @@ async fn a_replayed_grant_does_nothing() -> Result<()> {
         source: "admin".into(),
         ..grant(user.id, 5, "invoice:in_1")
     };
-    assert!(!grant_credits(&f.catalog, other, None).await?.replayed);
+    assert!(
+        !grant_credits(&f.catalog, other, Authority::system("test"))
+            .await?
+            .replayed
+    );
     assert_eq!(credit_balance(&f.catalog, user.id).await?.balance, d(105));
 
     // And a key used for one user is refused for another, not handed over.
-    let someone = create_user(&f.catalog, "b@example.com", "pw", 80).await?;
-    let stolen = grant_credits(&f.catalog, grant(someone.id, 100, "invoice:in_1"), None).await;
+    let someone = create_user(&f.catalog, "b@example.com", "pw", Role::of(80)).await?;
+    let stolen = grant_credits(
+        &f.catalog,
+        grant(someone.id, 100, "invoice:in_1"),
+        Authority::system("test"),
+    )
+    .await;
     assert!(stolen.is_err(), "{stolen:?}");
     assert_eq!(credit_balance(&f.catalog, someone.id).await?.balance, d(0));
     Ok(())
@@ -165,15 +198,20 @@ async fn a_replayed_grant_does_nothing() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_debits_never_overdraw() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "c@example.com", "pw", 80).await?;
-    grant_credits(&f.catalog, grant(user.id, 10, "a"), None).await?;
+    let user = create_user(&f.catalog, "c@example.com", "pw", Role::of(80)).await?;
+    grant_credits(
+        &f.catalog,
+        grant(user.id, 10, "a"),
+        Authority::system("test"),
+    )
+    .await?;
     grant_credits(
         &f.catalog,
         NewCreditGrant {
             expires_at: Some(Utc::now() + Duration::days(1)),
             ..grant(user.id, 5, "b")
         },
-        None,
+        Authority::system("test"),
     )
     .await?;
 
@@ -184,7 +222,12 @@ async fn concurrent_debits_never_overdraw() -> Result<()> {
             let catalog = f.catalog.clone();
             let user = user.id;
             tokio::spawn(async move {
-                debit_credits(&catalog, debit(user, half, &format!("run:{i}")), None).await
+                debit_credits(
+                    &catalog,
+                    debit(user, half, &format!("run:{i}")),
+                    Authority::system("test"),
+                )
+                .await
             })
         })
         .collect();
@@ -217,11 +260,26 @@ async fn concurrent_debits_never_overdraw() -> Result<()> {
 #[tokio::test]
 async fn a_step_already_charged_is_not_charged_again() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "r@example.com", "pw", 80).await?;
-    grant_credits(&f.catalog, grant(user.id, 10, "g"), None).await?;
-    let first = debit_credits(&f.catalog, debit(user.id, d(3), "run-1:1"), None).await?;
+    let user = create_user(&f.catalog, "r@example.com", "pw", Role::of(80)).await?;
+    grant_credits(
+        &f.catalog,
+        grant(user.id, 10, "g"),
+        Authority::system("test"),
+    )
+    .await?;
+    let first = debit_credits(
+        &f.catalog,
+        debit(user.id, d(3), "run-1:1"),
+        Authority::system("test"),
+    )
+    .await?;
     assert_eq!(first.balance, d(7));
-    let again = debit_credits(&f.catalog, debit(user.id, d(3), "run-1:1"), None).await?;
+    let again = debit_credits(
+        &f.catalog,
+        debit(user.id, d(3), "run-1:1"),
+        Authority::system("test"),
+    )
+    .await?;
     assert!(again.replayed);
     assert_eq!(again.balance, d(7));
     Ok(())
@@ -231,15 +289,20 @@ async fn a_step_already_charged_is_not_charged_again() -> Result<()> {
 async fn the_soonest_expiring_bucket_is_spent_first_and_an_expired_one_does_not_count() -> Result<()>
 {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "e@example.com", "pw", 80).await?;
-    let forever = grant_credits(&f.catalog, grant(user.id, 10, "forever"), None).await?;
+    let user = create_user(&f.catalog, "e@example.com", "pw", Role::of(80)).await?;
+    let forever = grant_credits(
+        &f.catalog,
+        grant(user.id, 10, "forever"),
+        Authority::system("test"),
+    )
+    .await?;
     let month = grant_credits(
         &f.catalog,
         NewCreditGrant {
             expires_at: Some(Utc::now() + Duration::days(30)),
             ..grant(user.id, 10, "month")
         },
-        None,
+        Authority::system("test"),
     )
     .await?;
     let soon = grant_credits(
@@ -248,11 +311,16 @@ async fn the_soonest_expiring_bucket_is_spent_first_and_an_expired_one_does_not_
             expires_at: Some(Utc::now() + Duration::milliseconds(1500)),
             ..grant(user.id, 4, "soon")
         },
-        None,
+        Authority::system("test"),
     )
     .await?;
 
-    debit_credits(&f.catalog, debit(user.id, d(6), "run:1"), None).await?;
+    debit_credits(
+        &f.catalog,
+        debit(user.id, d(6), "run:1"),
+        Authority::system("test"),
+    )
+    .await?;
     let remaining = |id: Uuid, buckets: &[sc_auth::CreditBucket]| {
         buckets.iter().find(|b| b.id == id).unwrap().remaining
     };
@@ -273,7 +341,7 @@ async fn the_soonest_expiring_bucket_is_spent_first_and_an_expired_one_does_not_
             expires_at: Some(Utc::now() + Duration::milliseconds(800)),
             ..grant(user.id, 3, "brief")
         },
-        None,
+        Authority::system("test"),
     )
     .await?;
     assert_eq!(credit_balance(&f.catalog, user.id).await?.balance, d(21));
@@ -285,17 +353,32 @@ async fn the_soonest_expiring_bucket_is_spent_first_and_an_expired_one_does_not_
 #[tokio::test]
 async fn debt_is_repaid_by_the_next_grant() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "d@example.com", "pw", 80).await?;
+    let user = create_user(&f.catalog, "d@example.com", "pw", Role::of(80)).await?;
     // No credits at all: the call has happened, so the debit is debt.
-    let debited = debit_credits(&f.catalog, debit(user.id, d(4), "run:1"), None).await?;
+    let debited = debit_credits(
+        &f.catalog,
+        debit(user.id, d(4), "run:1"),
+        Authority::system("test"),
+    )
+    .await?;
     assert_eq!(debited.balance, d(-4));
 
-    let small = grant_credits(&f.catalog, grant(user.id, 3, "g1"), None).await?;
+    let small = grant_credits(
+        &f.catalog,
+        grant(user.id, 3, "g1"),
+        Authority::system("test"),
+    )
+    .await?;
     assert_eq!(small.repaid, d(3));
     assert_eq!(small.bucket.remaining, d(0));
     assert_eq!(small.balance, d(-1));
 
-    let big = grant_credits(&f.catalog, grant(user.id, 10, "g2"), None).await?;
+    let big = grant_credits(
+        &f.catalog,
+        grant(user.id, 10, "g2"),
+        Authority::system("test"),
+    )
+    .await?;
     assert_eq!(big.repaid, d(1));
     assert_eq!(big.bucket.amount, d(10));
     assert_eq!(big.bucket.remaining, d(9));
@@ -307,24 +390,41 @@ async fn debt_is_repaid_by_the_next_grant() -> Result<()> {
 #[tokio::test]
 async fn crossing_the_threshold_writes_one_low_balance_entry() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "l@example.com", "pw", 80).await?;
-    grant_credits(&f.catalog, grant(user.id, 10, "g"), None).await?;
-    set_low_balance_threshold(&f.catalog, user.id, Some(d(5)), None).await?;
+    let user = create_user(&f.catalog, "l@example.com", "pw", Role::of(80)).await?;
+    grant_credits(
+        &f.catalog,
+        grant(user.id, 10, "g"),
+        Authority::system("test"),
+    )
+    .await?;
+    set_low_balance_threshold(&f.catalog, user.id, Some(d(5)), Authority::system("test")).await?;
 
     assert!(
-        !debit_credits(&f.catalog, debit(user.id, d(4), "s1"), None)
-            .await?
-            .low_balance
+        !debit_credits(
+            &f.catalog,
+            debit(user.id, d(4), "s1"),
+            Authority::system("test")
+        )
+        .await?
+        .low_balance
     );
     assert!(
-        debit_credits(&f.catalog, debit(user.id, d(2), "s2"), None)
-            .await?
-            .low_balance
+        debit_credits(
+            &f.catalog,
+            debit(user.id, d(2), "s2"),
+            Authority::system("test")
+        )
+        .await?
+        .low_balance
     );
     assert!(
-        !debit_credits(&f.catalog, debit(user.id, d(1), "s3"), None)
-            .await?
-            .low_balance,
+        !debit_credits(
+            &f.catalog,
+            debit(user.id, d(1), "s3"),
+            Authority::system("test")
+        )
+        .await?
+        .low_balance,
         "already below: no second notice"
     );
     let notices = list_credit_entries(&f.catalog, user.id, 20)
@@ -335,11 +435,20 @@ async fn crossing_the_threshold_writes_one_low_balance_entry() -> Result<()> {
     assert_eq!(notices, 1);
 
     // A top-up lifts it back over, and the next fall is a new notice.
-    grant_credits(&f.catalog, grant(user.id, 10, "top-up"), None).await?;
+    grant_credits(
+        &f.catalog,
+        grant(user.id, 10, "top-up"),
+        Authority::system("test"),
+    )
+    .await?;
     assert!(
-        debit_credits(&f.catalog, debit(user.id, d(10), "s4"), None)
-            .await?
-            .low_balance
+        debit_credits(
+            &f.catalog,
+            debit(user.id, d(10), "s4"),
+            Authority::system("test")
+        )
+        .await?
+        .low_balance
     );
     Ok(())
 }
@@ -347,38 +456,68 @@ async fn crossing_the_threshold_writes_one_low_balance_entry() -> Result<()> {
 #[tokio::test]
 async fn nonsense_is_refused_and_deleting_the_user_deletes_their_credits() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "x@example.com", "pw", 80).await?;
+    let user = create_user(&f.catalog, "x@example.com", "pw", Role::of(80)).await?;
     assert!(
-        grant_credits(&f.catalog, grant(user.id, 0, "zero"), None)
-            .await
-            .is_err()
+        grant_credits(
+            &f.catalog,
+            grant(user.id, 0, "zero"),
+            Authority::system("test")
+        )
+        .await
+        .is_err()
     );
     assert!(
-        grant_credits(&f.catalog, grant(user.id, 1, " "), None)
-            .await
-            .is_err(),
+        grant_credits(
+            &f.catalog,
+            grant(user.id, 1, " "),
+            Authority::system("test")
+        )
+        .await
+        .is_err(),
         "a grant needs a key"
     );
     let expired = NewCreditGrant {
         expires_at: Some(Utc::now() - Duration::seconds(1)),
         ..grant(user.id, 1, "late")
     };
-    assert!(grant_credits(&f.catalog, expired, None).await.is_err());
     assert!(
-        debit_credits(&f.catalog, debit(user.id, d(-1), "neg"), None)
+        grant_credits(&f.catalog, expired, Authority::system("test"))
             .await
-            .is_err(),
+            .is_err()
+    );
+    assert!(
+        debit_credits(
+            &f.catalog,
+            debit(user.id, d(-1), "neg"),
+            Authority::system("test")
+        )
+        .await
+        .is_err(),
         "a debit cannot give credits"
     );
     assert!(
-        grant_credits(&f.catalog, grant(Uuid::new_v4(), 1, "nobody"), None)
-            .await
-            .is_err(),
+        grant_credits(
+            &f.catalog,
+            grant(Uuid::new_v4(), 1, "nobody"),
+            Authority::system("test")
+        )
+        .await
+        .is_err(),
         "no such user"
     );
 
-    grant_credits(&f.catalog, grant(user.id, 5, "g"), None).await?;
-    debit_credits(&f.catalog, debit(user.id, d(1), "s"), None).await?;
+    grant_credits(
+        &f.catalog,
+        grant(user.id, 5, "g"),
+        Authority::system("test"),
+    )
+    .await?;
+    debit_credits(
+        &f.catalog,
+        debit(user.id, d(1), "s"),
+        Authority::system("test"),
+    )
+    .await?;
     assert!(delete_user(&f.catalog, user.id).await?);
     assert!(list_credit_buckets(&f.catalog, user.id).await?.is_empty());
     assert!(
@@ -413,14 +552,28 @@ async fn an_allowance_rolls_over_none_all_or_capped_over_three_periods() -> Resu
         ("all", None, [70, 140, 210]),
         ("capped", Some(50), [70, 120, 120]),
     ] {
-        let user = create_user(&f.catalog, &format!("{policy}@example.com"), "pw", 80).await?;
+        let user = create_user(
+            &f.catalog,
+            &format!("{policy}@example.com"),
+            "pw",
+            Role::of(80),
+        )
+        .await?;
         for period in 1..=3u32 {
-            let granted =
-                grant_credits(&f.catalog, allowance(user.id, policy, period, cap), None).await?;
+            let granted = grant_credits(
+                &f.catalog,
+                allowance(user.id, policy, period, cap),
+                Authority::system("test"),
+            )
+            .await?;
             assert!(!granted.replayed);
             // The renewal's webhook again: nothing granted, nothing carried twice.
-            let again =
-                grant_credits(&f.catalog, allowance(user.id, policy, period, cap), None).await?;
+            let again = grant_credits(
+                &f.catalog,
+                allowance(user.id, policy, period, cap),
+                Authority::system("test"),
+            )
+            .await?;
             assert!(
                 again.replayed && again.carried.is_zero(),
                 "{policy} {period}"
@@ -428,7 +581,7 @@ async fn an_allowance_rolls_over_none_all_or_capped_over_three_periods() -> Resu
             debit_credits(
                 &f.catalog,
                 debit(user.id, d(30), &format!("spend:{policy}:{period}")),
-                None,
+                Authority::system("test"),
             )
             .await?;
             let balance = credit_balance(&f.catalog, user.id).await?.balance;
@@ -474,7 +627,7 @@ async fn an_allowance_rolls_over_none_all_or_capped_over_three_periods() -> Resu
 #[tokio::test]
 async fn a_rollover_carries_what_an_expired_bucket_held() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "late@example.com", "pw", 80).await?;
+    let user = create_user(&f.catalog, "late@example.com", "pw", Role::of(80)).await?;
     // The period, and its allowance, end just before the renewal arrives. The
     // grant and the debit have to land inside the period, which under a full
     // parallel test run can take well over a second, so the period is generous
@@ -484,16 +637,25 @@ async fn a_rollover_carries_what_an_expired_bucket_held() -> Result<()> {
         expires_at: Some(expires_at),
         ..allowance(user.id, "period", 1, None)
     };
-    grant_credits(&f.catalog, first, None).await?;
-    debit_credits(&f.catalog, debit(user.id, d(40), "s1"), None).await?;
+    grant_credits(&f.catalog, first, Authority::system("test")).await?;
+    debit_credits(
+        &f.catalog,
+        debit(user.id, d(40), "s1"),
+        Authority::system("test"),
+    )
+    .await?;
     let left = (expires_at - Utc::now() + Duration::milliseconds(200))
         .to_std()
         .unwrap_or_default();
     tokio::time::sleep(left).await;
     assert!(credit_balance(&f.catalog, user.id).await?.balance.is_zero());
 
-    let renewed =
-        grant_credits(&f.catalog, allowance(user.id, "period", 2, Some(50)), None).await?;
+    let renewed = grant_credits(
+        &f.catalog,
+        allowance(user.id, "period", 2, Some(50)),
+        Authority::system("test"),
+    )
+    .await?;
     assert_eq!(renewed.carried, d(50));
     assert_eq!(renewed.balance, d(150));
     assert_eq!(renewed.bucket.amount, d(150));
@@ -513,12 +675,20 @@ async fn a_rollover_carries_what_an_expired_bucket_held() -> Result<()> {
         }),
         ..allowance(user.id, "period", 9, None)
     };
-    assert!(grant_credits(&f.catalog, own, None).await.is_err());
-    let other = create_user(&f.catalog, "other@example.com", "pw", 80).await?;
     assert!(
-        grant_credits(&f.catalog, allowance(other.id, "period", 3, None), None)
+        grant_credits(&f.catalog, own, Authority::system("test"))
             .await
-            .is_err(),
+            .is_err()
+    );
+    let other = create_user(&f.catalog, "other@example.com", "pw", Role::of(80)).await?;
+    assert!(
+        grant_credits(
+            &f.catalog,
+            allowance(other.id, "period", 3, None),
+            Authority::system("test")
+        )
+        .await
+        .is_err(),
         "period:2 is the first user's"
     );
     Ok(())
@@ -530,22 +700,57 @@ async fn a_rollover_carries_what_an_expired_bucket_held() -> Result<()> {
 #[tokio::test]
 async fn a_revoked_grant_takes_back_what_is_left_once() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", 80).await?;
-    grant_credits(&f.catalog, grant(user.id, 100, "payment:1:pi_1"), None).await?;
-    grant_credits(&f.catalog, grant(user.id, 50, "payment:1:pi_2"), None).await?;
-    debit_credits(&f.catalog, debit(user.id, d(30), "run:1"), None).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::of(80)).await?;
+    grant_credits(
+        &f.catalog,
+        grant(user.id, 100, "payment:1:pi_1"),
+        Authority::system("test"),
+    )
+    .await?;
+    grant_credits(
+        &f.catalog,
+        grant(user.id, 50, "payment:1:pi_2"),
+        Authority::system("test"),
+    )
+    .await?;
+    debit_credits(
+        &f.catalog,
+        debit(user.id, d(30), "run:1"),
+        Authority::system("test"),
+    )
+    .await?;
     assert_eq!(credit_balance(&f.catalog, user.id).await?.balance, d(120));
 
     // Another source's key of the same name is not this one's.
-    let elsewhere = revoke_credits(&f.catalog, "other", "payment:1:pi_1", None, None).await?;
+    let elsewhere = revoke_credits(
+        &f.catalog,
+        "other",
+        "payment:1:pi_1",
+        None,
+        Authority::system("test"),
+    )
+    .await?;
     assert!(!elsewhere.found);
 
-    let taken =
-        revoke_credits(&f.catalog, "test", "payment:1:pi_1", Some("refunded"), None).await?;
+    let taken = revoke_credits(
+        &f.catalog,
+        "test",
+        "payment:1:pi_1",
+        Some("refunded"),
+        Authority::system("test"),
+    )
+    .await?;
     assert!(taken.found && !taken.replayed);
     assert_eq!(taken.revoked, d(70), "the 30 spent from it stay spent");
     assert_eq!(taken.balance, Some(d(50)));
-    let again = revoke_credits(&f.catalog, "test", "payment:1:pi_1", None, None).await?;
+    let again = revoke_credits(
+        &f.catalog,
+        "test",
+        "payment:1:pi_1",
+        None,
+        Authority::system("test"),
+    )
+    .await?;
     assert!(again.replayed);
     assert_eq!(credit_balance(&f.catalog, user.id).await?.balance, d(50));
     let entries = list_credit_entries(&f.catalog, user.id, 10).await?;

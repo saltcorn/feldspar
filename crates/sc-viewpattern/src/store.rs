@@ -9,11 +9,13 @@
 //! is an error naming the table and the column, never a silently defaulted field.
 
 use sc_app::{AppId, Application, load_application};
+use sc_catalog::Authority;
 use sc_catalog::{Catalog, SharedTx};
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Value};
 use sc_types::Attrs;
+use sc_types::Role;
 use serde_json::Value as Json;
 
 use crate::patterns::registered_patterns;
@@ -289,9 +291,14 @@ pub(crate) async fn require_application(
     })
 }
 
-/// Refuse a `min_role` that is out of range or that no role defines.
-pub(crate) async fn check_role(catalog: &Catalog, kind: &str, name: &str, role: u8) -> Result<()> {
-    if sc_auth::role_in_range(role) && sc_auth::load_role(catalog, role).await?.is_some() {
+/// Refuse a `min_role` that no role defines.
+pub(crate) async fn check_role(
+    catalog: &Catalog,
+    kind: &str,
+    name: &str,
+    role: Role,
+) -> Result<()> {
+    if sc_auth::load_role(catalog, role).await?.is_some() {
         return Ok(());
     }
     Err(Error::invalid(format!(
@@ -362,7 +369,13 @@ pub(crate) async fn write_row(
 /// [`run`], or the same statement inside `tx`.
 async fn run_on(catalog: &Catalog, tx: Option<&SharedTx>, statement: Statement) -> Result<()> {
     match tx {
-        Some(tx) => tx.run(None, &statement).await.map(|_| ()),
+        Some(tx) => tx
+            .run(
+                Authority::system("write view-pattern definitions"),
+                &statement,
+            )
+            .await
+            .map(|_| ()),
         None => run(catalog, statement).await,
     }
 }
@@ -433,16 +446,13 @@ pub(crate) fn object(row: &Row, table: &str, column: &str) -> Result<Attrs> {
     }
 }
 
-fn role(row: &Row, table: &str) -> Result<u8> {
+fn role(row: &Row, table: &str) -> Result<Role> {
     match row.get(COL_MIN_ROLE) {
-        Some(Value::Int(i)) => u8::try_from(*i)
-            .ok()
-            .filter(|r| sc_auth::role_in_range(*r))
-            .ok_or_else(|| {
-                Error::invalid(format!(
-                    "{table}.{COL_MIN_ROLE} should be a role between 1 and 100, got {i}"
-                ))
-            }),
+        Some(Value::Int(i)) => Role::try_from(*i).ok().ok_or_else(|| {
+            Error::invalid(format!(
+                "{table}.{COL_MIN_ROLE} should be a role between 1 and 100, got {i}"
+            ))
+        }),
         other => Err(bad_column(table, COL_MIN_ROLE, "an integer role", other)),
     }
 }

@@ -453,6 +453,7 @@ impl Run {
 mod tests {
     use super::*;
     use sc_auth::User;
+    use sc_types::Role;
 
     fn answered_loop() -> AgentLoop {
         let mut state = AgentLoop::new(20);
@@ -469,7 +470,7 @@ mod tests {
 
     #[test]
     fn a_chat_run_records_the_user_it_is_for() {
-        let user = User::new(Uuid::new_v4(), 40).unwrap();
+        let user = User::new(Uuid::new_v4(), Role::of(40));
         let id = user.id;
         let run = Run::new("librarian", &RunCaller::user(user), &AgentLoop::new(20));
         assert_eq!(run.kind, RunKind::Agent);

@@ -1,6 +1,7 @@
 //! Phase 5 integration test: a `users` row inserted into real Postgres reads
 //! back into a [`User`] via [`User::from_row`], with the password hash excluded.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_auth::{COL_EMAIL, COL_ID, COL_PASSWORD_HASH, COL_ROLE, USERS_TABLE, User, bootstrap};
@@ -78,7 +79,7 @@ async fn user_row_round_trips_into_user() -> sc_error::Result<()> {
 
     let user = User::from_row(&rows[0])?;
     assert_eq!(user.id, id);
-    assert_eq!(user.role, 1);
+    assert_eq!(user.role, Role::ADMIN);
     assert!(user.is_admin());
     assert_eq!(
         user.get(COL_EMAIL),

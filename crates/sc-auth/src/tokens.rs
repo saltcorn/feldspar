@@ -53,7 +53,7 @@
 //! Every refusal in [`authenticate_api_token`] has its own message, because each
 //! is a different thing for the holder to do about it, and the token's *user* is
 //! read on every lookup rather than copied into the row. So a token whose user
-//! is deleted, disabled or demoted below [`ROLE_ADMIN`] stops working at the next
+//! is deleted, disabled or demoted below [`Role::ADMIN`] stops working at the next
 //! call — the same rule, and the same argument, as the session cache's.
 
 use argon2::password_hash::rand_core::{OsRng, RngCore};
@@ -74,7 +74,6 @@ use uuid::Uuid;
 
 use crate::lookup::load_user;
 use crate::user::User;
-use crate::users::ROLE_ADMIN;
 
 /// Name of the API token table in the primary database.
 pub const API_TOKENS_TABLE: &str = "_fd_api_tokens";
@@ -478,7 +477,7 @@ async fn authenticate(catalog: &Catalog, presented: &str, reach: Reach) -> Resul
         // A routes-only token runs as whoever it names; the route checks the
         // role, exactly as it checks a session's.
         (true, Reach::ModuleRoute) => {}
-        (false, _) if user.role > ROLE_ADMIN => {
+        (false, _) if !user.role.is_admin() => {
             return Err(Error::auth(format!(
                 "the user the API token `{}` was minted for is no longer an \
                  administrator, and this token only ever had their authority",

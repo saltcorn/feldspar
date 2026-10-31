@@ -64,6 +64,7 @@
 //! rewritten here for the same reason the admin API rewrites it: the app's source
 //! tree should never disagree with the app's definition.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::mcp::{
@@ -72,7 +73,6 @@ use sc_api::mcp::{
 };
 use sc_api::schema_edit::{GRANT_ACCESS_CHANGES, GRANT_CREATE, GRANT_DROP, GRANT_EDIT, Grants};
 use sc_api::{CustomParam, CustomQuery, Method, ValueType};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC};
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
@@ -388,7 +388,7 @@ fn query_json(query: &CustomQuery) -> Json {
         "min_role": query.min_role,
         // Said, not left to be known: 100 is the public role, and "who can
         // call this?" is the question a reader of this list is asking.
-        "public": query.min_role == ROLE_PUBLIC,
+        "public": query.min_role.is_public(),
         "body_type": query.body_type.as_str(),
         "response_type": query.response_type.as_str(),
         // Server-written, never declared: the shape the database said this
@@ -880,7 +880,7 @@ fn build(
     // to be public (§13.4).
     query.min_role = match requested_role(args)? {
         Some(role) => role,
-        None => existing.map(|q| q.min_role).unwrap_or(ROLE_ADMIN),
+        None => existing.map(|q| q.min_role).unwrap_or(Role::ADMIN),
     };
     Ok(query)
 }
@@ -888,16 +888,16 @@ fn build(
 /// The role floor the arguments ask for: `min_role`, or `public: true` for
 /// 100. Both together must agree, and `public: false` says only "not 100" —
 /// so on its own it is refused rather than guessed into some other role.
-fn requested_role(args: &Map<String, Json>) -> Result<Option<u8>> {
+fn requested_role(args: &Map<String, Json>) -> Result<Option<Role>> {
     let role = optional_role(args, ARG_MIN_ROLE)?;
     let public = optional_bool(args, ARG_PUBLIC)?;
     match (role, public) {
         (role, None) => Ok(role),
-        (None, Some(true)) => Ok(Some(ROLE_PUBLIC)),
-        (Some(role), Some(public)) if (role == ROLE_PUBLIC) == public => Ok(Some(role)),
+        (None, Some(true)) => Ok(Some(Role::PUBLIC)),
+        (Some(role), Some(public)) if role.is_public() == public => Ok(Some(role)),
         (Some(role), Some(public)) => Err(Error::invalid(format!(
             "`{ARG_PUBLIC}: {public}` and `{ARG_MIN_ROLE}: {role}` disagree: public is \
-             {ARG_MIN_ROLE} {ROLE_PUBLIC}. Send one of them"
+             {ARG_MIN_ROLE} 100. Send one of them"
         ))),
         (None, Some(false)) => Err(Error::invalid(format!(
             "`{ARG_PUBLIC}: false` does not say who may call it; send `{ARG_MIN_ROLE}` \
@@ -1179,7 +1179,7 @@ mod tests {
             ]),
         )
         .unwrap();
-        assert_eq!(query.min_role, ROLE_ADMIN);
+        assert_eq!(query.min_role, Role::ADMIN);
         assert_eq!(query.method, Method::Get);
         // The path is normalised on the way in, on an edit as well as a create,
         // because both go through the same constructor.
@@ -1329,7 +1329,7 @@ mod tests {
         )
         .params([CustomParam::new("since", ValueType::Int)])
         .description("Who wrote most")
-        .min_role(40);
+        .min_role(Role::of(40));
 
         let edited = build(
             "topAuthors",
@@ -1342,7 +1342,7 @@ mod tests {
         assert_eq!(edited.method, stored.method);
         assert_eq!(edited.description, stored.description);
         assert_eq!(edited.params, stored.params);
-        assert_eq!(edited.min_role, 40);
+        assert_eq!(edited.min_role, Role::of(40));
 
         // …and `params: []` is how a query that no longer takes any says so,
         // which is a different thing from omitting it.

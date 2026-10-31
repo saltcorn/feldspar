@@ -18,12 +18,13 @@
 //! they are there), for a search that looks inside definitions rather than at
 //! their names.
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use sc_action::TriggerBody;
-use sc_auth::{ROLE_ADMIN, list_roles};
+use sc_auth::list_roles;
 use sc_catalog::{Catalog, DbId};
 use sc_error::Result;
 use serde_json::{Value as Json, json};
@@ -51,10 +52,10 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
 }
 
 /// Role numbers as the names an admin gave them.
-struct RoleNames(HashMap<u8, String>);
+struct RoleNames(HashMap<Role, String>);
 
 impl RoleNames {
-    fn name(&self, role: u8) -> String {
+    fn name(&self, role: Role) -> String {
         self.0
             .get(&role)
             .cloned()
@@ -62,7 +63,7 @@ impl RoleNames {
     }
 
     /// A floor that may be absent, with what absent means for this kind.
-    fn floor(&self, role: Option<u8>, absent: &str) -> String {
+    fn floor(&self, role: Option<Role>, absent: &str) -> String {
         role.map_or_else(|| absent.to_owned(), |r| self.name(r))
     }
 }
@@ -117,7 +118,7 @@ async fn list_entities(
             .map(|r| (r.role, r.name))
             .collect(),
     );
-    let admin = roles.name(ROLE_ADMIN);
+    let admin = roles.name(Role::ADMIN);
     let mut rows: Vec<Row> = Vec::new();
 
     // --- tables

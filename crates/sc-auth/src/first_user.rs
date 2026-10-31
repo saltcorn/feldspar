@@ -22,11 +22,12 @@
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_query::{Expr, Insert, Projection, Select, Source, Statement, Value};
+use sc_types::Role;
 use uuid::Uuid;
 
 use crate::password::hash_password;
 use crate::user::User;
-use crate::users::{COL_EMAIL, COL_ID, COL_PASSWORD_HASH, COL_ROLE, ROLE_ADMIN, USERS_TABLE};
+use crate::users::{COL_EMAIL, COL_ID, COL_PASSWORD_HASH, COL_ROLE, USERS_TABLE};
 
 /// Whether `supplied` is one of the installation's first-user tokens
 /// `expected`.
@@ -115,7 +116,7 @@ pub async fn create_first_user(catalog: &Catalog, email: &str, password: &str) -
         ],
         vec![
             Expr::lit(id),
-            Expr::lit(i64::from(ROLE_ADMIN)),
+            Expr::lit(i64::from(Role::ADMIN)),
             Expr::lit(email),
             Expr::lit(password_hash),
         ],
@@ -126,7 +127,7 @@ pub async fn create_first_user(catalog: &Catalog, email: &str, password: &str) -
         .await?;
     tx.commit().await?;
 
-    let mut user = User::new(id, ROLE_ADMIN)?;
+    let mut user = User::new(id, Role::ADMIN);
     user.extra
         .insert(COL_EMAIL.to_owned(), Value::Text(email.to_owned()));
     Ok(user)

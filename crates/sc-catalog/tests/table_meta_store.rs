@@ -9,6 +9,7 @@
 //! overlay outlives its table instead of vanishing with it, and deleting an
 //! overlay removes the configuration and nothing else.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_catalog::{
@@ -49,7 +50,7 @@ fn books_meta() -> TableMeta {
     let mut meta = TableMeta::new("books")
         .label("Books")
         .description("The library catalogue")
-        .access(80, 40);
+        .access(Role::of(80), Role::of(40));
     meta.attributes.insert("icon".into(), "book".into());
     meta
 }
@@ -80,8 +81,8 @@ async fn an_overlay_round_trips_through_its_row() -> Result<()> {
     assert_eq!(
         loaded.access,
         AccessRules {
-            min_role_read: 80,
-            min_role_write: 40,
+            min_role_read: Role::of(80),
+            min_role_write: Role::of(40),
         }
     );
     assert_eq!(
@@ -107,7 +108,7 @@ async fn saving_again_updates_in_place_rather_than_inserting() -> Result<()> {
 
     // Narrow the table back to admin-only writes — the edit the whole phase
     // exists to make possible.
-    meta.access.min_role_write = 1;
+    meta.access.min_role_write = Role::ADMIN;
     meta.label = "Library".to_owned();
     save_table_meta(&cat, &meta).await?;
 
@@ -117,8 +118,12 @@ async fn saving_again_updates_in_place_rather_than_inserting() -> Result<()> {
         1,
         "the id already existed, so this was an update"
     );
-    assert_eq!(all[0].access.min_role_write, 1);
-    assert_eq!(all[0].access.min_role_read, 80, "unchanged by the edit");
+    assert_eq!(all[0].access.min_role_write, Role::ADMIN);
+    assert_eq!(
+        all[0].access.min_role_read,
+        Role::of(80),
+        "unchanged by the edit"
+    );
     assert_eq!(all[0].label, "Library");
     Ok(())
 }
@@ -135,45 +140,27 @@ async fn a_table_cannot_have_two_overlays() -> Result<()> {
     // A *different* row (different id) claiming the same table is refused:
     // the merge joins on the name, and two rows would leave no rule saying
     // whose access applies.
-    let clash = TableMeta::new("books").access(100, 100);
+    let clash = TableMeta::new("books").access(Role::PUBLIC, Role::PUBLIC);
     let err = save_table_meta(&cat, &clash).await.unwrap_err();
     assert!(matches!(err.repr(), Repr::Invalid(_)), "{err}");
     assert!(err.to_string().contains("books"), "should name it: {err}");
 
     // The original is untouched — in particular it did not become public.
     let stored = load_table_meta_by_name(&cat, "books").await?.unwrap();
-    assert_eq!(stored.access.min_role_read, 80);
+    assert_eq!(stored.access.min_role_read, Role::of(80));
     Ok(())
 }
 
-#[tokio::test]
-async fn a_role_off_the_scale_is_refused_rather_than_clamped() -> Result<()> {
-    let db = TestDb::new().await?;
-    let cat = catalog(&db).await?;
-    bootstrap_table_meta(&cat).await?;
-    create_books(&cat).await?;
-
+#[test]
+fn a_role_off_the_scale_cannot_be_constructed() {
     // 0 is not "more admin than admin" and 101 is not "more public than
     // public": the scale is fixed, so an out-of-range role is a mistake to
     // report, not a value to round to the nearest legal one — rounding would
-    // silently decide who can reach the data.
-    for access in [
-        AccessRules {
-            min_role_read: 0,
-            min_role_write: 1,
-        },
-        AccessRules {
-            min_role_read: 1,
-            min_role_write: 101,
-        },
-    ] {
-        let mut meta = TableMeta::new("books");
-        meta.access = access;
-        let err = save_table_meta(&cat, &meta).await.unwrap_err();
-        assert!(matches!(err.repr(), Repr::Invalid(_)), "{err}");
-    }
-    assert!(list_table_meta(&cat).await?.is_empty());
-    Ok(())
+    // silently decide who can reach the data. `Role` makes such an
+    // `AccessRules` unrepresentable; reading one back from a corrupt row is
+    // refused in `table_meta`'s unit tests.
+    assert!(Role::new(0).is_none());
+    assert!(Role::new(101).is_none());
 }
 
 #[tokio::test]
@@ -223,7 +210,7 @@ async fn an_overlay_outlives_the_table_it_overlays_and_says_so() -> Result<()> {
     let orphans = orphan_table_meta(&cat).await?;
     assert_eq!(orphans.len(), 1);
     assert_eq!(orphans[0].table_name, "books");
-    assert_eq!(orphans[0].access.min_role_read, 80);
+    assert_eq!(orphans[0].access.min_role_read, Role::of(80));
 
     // Recreating the table clears the orphan without a save.
     create_books(&cat).await?;

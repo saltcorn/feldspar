@@ -26,8 +26,10 @@
 //!   trigger behaves the same however it was asked.
 
 use sc_agent::{AgentTrait, ToolsContext, TraitCheck, TraitContext};
+use sc_catalog::Authority;
 use sc_error::{Error, Result};
 use sc_llm::ToolSpec;
+use sc_types::Role;
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value as Json, json};
 
@@ -128,7 +130,7 @@ impl AgentTrait for RunTrigger {
         if !ctx.caller.meets_role(trigger.min_role) {
             return Err(Error::auth(format!(
                 "you may not run `{name}`; it needs role {} or better",
-                trigger.min_role.unwrap_or(1)
+                trigger.min_role.unwrap_or(Role::ADMIN)
             )));
         }
 
@@ -136,10 +138,10 @@ impl AgentTrait for RunTrigger {
             Json::Null => json!({}),
             other => other.clone(),
         };
-        let caller = sc_api::caller_context_at(ctx.caller.role, ctx.caller.user.as_ref())
+        let caller = sc_api::principal_at(ctx.caller.role, ctx.caller.user.as_ref())
             .chained(ctx.caller.tool_chain());
         let result = dispatcher
-            .run_trigger(ctx.catalog, &name, payload, Some(&caller))
+            .run_trigger(ctx.catalog, &name, payload, Authority::Caller(&caller))
             .await?;
         Ok(json!({ "trigger": name, "result": result }))
     }

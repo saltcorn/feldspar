@@ -14,6 +14,7 @@
 //!   handler, because there are none left.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,7 +24,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::admin_endpoints;
 use sc_app::{ApiConfig, Application, CodeFramework, FrameworkRef, bootstrap, save_application};
-use sc_auth::{Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, FileStoreId, TableId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -342,8 +343,8 @@ async fn a_mounted_app_reprojects_when_the_schema_moves_under_it() -> sc_error::
     assert_eq!(status, StatusCode::CREATED, "{body}");
     // A reader who can see the table, so the role-floor half below has a caller
     // whose answer *changes* rather than one refused at the door either way.
-    save_role(&h.catalog, &Role::new(80, "Reader")).await?;
-    create_user(&h.catalog, "reader@example.com", "reader-pw", 80).await?;
+    save_role(&h.catalog, &RoleDef::new(Role::of(80), "Reader")).await?;
+    create_user(&h.catalog, "reader@example.com", "reader-pw", Role::of(80)).await?;
     h.client
         .send(
             "PUT",

@@ -35,6 +35,7 @@
 //! trait, because it is configured against an application rather than a store.
 
 use crate::common;
+use sc_types::Role;
 
 use common::{Env, as_user, config};
 use sc_agent::RunCaller;
@@ -435,7 +436,7 @@ async fn a_directory_the_caller_may_not_open_is_neither_listed_nor_searched() ->
         .set_meta(
             "private",
             &FileMeta {
-                min_role: Some(1),
+                min_role: Some(Role::ADMIN),
                 ..FileMeta::default()
             },
         )

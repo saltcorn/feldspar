@@ -15,6 +15,7 @@
 //!   these sessions as they do to a password's.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -505,14 +506,15 @@ async fn an_application_and_the_admin_ui_sign_in_with_an_identity_provider() -> 
     let created = load_user_by_email(&catalog, "new@example.com")
         .await?
         .unwrap();
-    assert_eq!(created.role, 100);
+    assert_eq!(created.role, Role::PUBLIC);
     let token_request = seen.lock().unwrap().token_requests.last().cloned().unwrap();
     assert_eq!(token_request["grant_type"], "authorization_code");
 
     // An account a signup made for somebody else's address (security review
     // #41): the provider's sign-in for that address claims it. Whoever signed
     // up loses their password and their session, and the address is proven.
-    let squatted = sc_auth::sign_up_user(&catalog, "victim@example.com", "squat-pw", 100).await?;
+    let squatted =
+        sc_auth::sign_up_user(&catalog, "victim@example.com", "squat-pw", Role::PUBLIC).await?;
     assert!(squatted.email_unproven());
     let mut squatter = Browser::new(router.clone(), APP_HOST);
     squatter.send("GET", "/", None).await;

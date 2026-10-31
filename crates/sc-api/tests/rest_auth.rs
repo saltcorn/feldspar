@@ -6,10 +6,11 @@
 //! what it may then read or write is decided by its **role** — not by the fact
 //! that it authenticated.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::{ApiProvider, ApiRequest, Method, RestProvider, SessionAction};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, SessionStore, User, bootstrap, create_user};
+use sc_auth::{SessionStore, User, bootstrap, create_user};
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -52,7 +53,7 @@ async fn react_app_logs_in_against_sc_auth_and_the_session_identifies_it() -> Re
     let db = TestDb::new().await?;
     let cat = catalog(&db).await?;
     let api = provider(&cat)?;
-    create_user(&cat, "editor@example.com", "correct-horse", ROLE_ADMIN).await?;
+    create_user(&cat, "editor@example.com", "correct-horse", Role::ADMIN).await?;
 
     // The app starts anonymous: it cannot read, and `whoami` tells it so.
     let anon = api
@@ -106,7 +107,7 @@ async fn react_app_logs_in_against_sc_auth_and_the_session_identifies_it() -> Re
         .await?;
     assert_eq!(ok.status, 200);
     assert_eq!(ok.body["email"], json!("editor@example.com"));
-    assert_eq!(ok.body["role"], json!(i64::from(ROLE_ADMIN)));
+    assert_eq!(ok.body["role"], json!(i64::from(Role::ADMIN)));
     // The password hash never travels back.
     assert!(ok.body.get("password").is_none());
     assert!(ok.body.get("password_hash").is_none());
@@ -163,7 +164,7 @@ async fn authenticating_is_not_authorization() -> Result<()> {
     let api = provider(&cat)?;
 
     // A real, logged-in user — at the least-privileged role.
-    create_user(&cat, "reader@example.com", "correct-horse", ROLE_PUBLIC).await?;
+    create_user(&cat, "reader@example.com", "correct-horse", Role::PUBLIC).await?;
     let login = api
         .handle(
             ApiRequest::new(Method::Post, "/api/login")
@@ -203,7 +204,7 @@ async fn authenticating_is_not_authorization() -> Result<()> {
     assert_eq!(write.status, 403);
 
     // The forbidden write never landed: an admin sees no rows.
-    let admin = User::new(uuid::Uuid::new_v4(), ROLE_ADMIN)?;
+    let admin = User::new(uuid::Uuid::new_v4(), Role::ADMIN);
     let list = api
         .handle(ApiRequest::get("/api/posts"), &cat, Some(&admin))
         .await?;

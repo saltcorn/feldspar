@@ -22,6 +22,7 @@
 //!   table-settings change gets (§13.2).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,7 +33,7 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use sc_app::{
     ApiConfig, Application, CodeFramework, FrameworkRef, app_source_from_config, build_application,
 };
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, FileStoreId, TableId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -312,12 +313,12 @@ async fn a_file_fields_bytes_are_served_at_the_stricter_of_table_and_path_rules(
     // Four roles: admin, editor (40), reader (80), visitor (100 — the public
     // built-in, but logged in, so the table check rather than authentication is
     // what refuses them).
-    create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
-    save_role(&catalog, &Role::new(40, "Editor")).await?;
-    save_role(&catalog, &Role::new(80, "Reader")).await?;
-    create_user(&catalog, "editor@example.com", "editor-pw", 40).await?;
-    create_user(&catalog, "reader@example.com", "reader-pw", 80).await?;
-    create_user(&catalog, "visitor@example.com", "visitor-pw", ROLE_PUBLIC).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(40), "Editor")).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Reader")).await?;
+    create_user(&catalog, "editor@example.com", "editor-pw", Role::of(40)).await?;
+    create_user(&catalog, "reader@example.com", "reader-pw", Role::of(80)).await?;
+    create_user(&catalog, "visitor@example.com", "visitor-pw", Role::PUBLIC).await?;
 
     // The admin opens the table: reads to 80, writes to 40.
     let mut admin = Client::new(router.clone(), BASE_DOMAIN);
@@ -464,7 +465,7 @@ async fn a_file_fields_bytes_are_served_at_the_stricter_of_table_and_path_rules(
         .set_meta(
             "docs",
             &FileMeta {
-                min_role: Some(40),
+                min_role: Some(Role::of(40)),
                 ..Default::default()
             },
         )
@@ -502,10 +503,10 @@ async fn a_file_fields_bytes_are_served_at_the_stricter_of_table_and_path_rules(
 async fn an_upload_into_a_private_folder_is_its_uploaders_alone() -> sc_error::Result<()> {
     let tmp = TempDir::new("owner");
     let (router, catalog, uploads, _db) = setup(&tmp).await?;
-    create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
-    save_role(&catalog, &Role::new(80, "Reader")).await?;
-    let ada = create_user(&catalog, "ada@example.com", "ada-pw", 80).await?;
-    create_user(&catalog, "bob@example.com", "bob-pw", 80).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Reader")).await?;
+    let ada = create_user(&catalog, "ada@example.com", "ada-pw", Role::of(80)).await?;
+    create_user(&catalog, "bob@example.com", "bob-pw", Role::of(80)).await?;
 
     // Rows are public to read and writable at 80; the folder is admin-only.
     let mut admin = Client::new(router.clone(), BASE_DOMAIN);
@@ -542,7 +543,7 @@ async fn an_upload_into_a_private_folder_is_its_uploaders_alone() -> sc_error::R
         .set_meta(
             "private",
             &FileMeta {
-                min_role: Some(1),
+                min_role: Some(Role::ADMIN),
                 ..Default::default()
             },
         )
@@ -630,7 +631,7 @@ async fn a_file_field_can_suffix_taken_names_and_remove_files_with_their_rows()
 -> sc_error::Result<()> {
     let tmp = TempDir::new("options");
     let (router, catalog, uploads, _db) = setup(&tmp).await?;
-    create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
     let mut admin = Client::new(router.clone(), BASE_DOMAIN);
     assert_eq!(
         admin.login("admin@example.com", "admin-pw").await,
@@ -751,10 +752,10 @@ async fn a_file_field_can_suffix_taken_names_and_remove_files_with_their_rows()
 async fn a_row_cannot_be_pointed_at_somebody_elses_upload() -> sc_error::Result<()> {
     let tmp = TempDir::new("attach");
     let (router, catalog, uploads, _db) = setup(&tmp).await?;
-    create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
-    save_role(&catalog, &Role::new(80, "Reader")).await?;
-    create_user(&catalog, "ada@example.com", "ada-pw", 80).await?;
-    create_user(&catalog, "bob@example.com", "bob-pw", 80).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Reader")).await?;
+    create_user(&catalog, "ada@example.com", "ada-pw", Role::of(80)).await?;
+    create_user(&catalog, "bob@example.com", "bob-pw", Role::of(80)).await?;
 
     // Readers read and write the rows, and the folder carries no rule of its
     // own: nothing but this check stands between Bob and Ada's file.
@@ -896,7 +897,7 @@ async fn a_row_cannot_be_pointed_at_somebody_elses_upload() -> sc_error::Result<
         .set_meta(
             "shots/staff",
             &FileMeta {
-                min_role: Some(1),
+                min_role: Some(Role::ADMIN),
                 ..Default::default()
             },
         )

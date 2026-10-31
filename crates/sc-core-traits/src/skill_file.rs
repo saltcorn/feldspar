@@ -18,6 +18,7 @@
 //!   a skill in a directory the person chatting could not open is refused for
 //!   them, rather than read with the server's authority.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_agent::{AgentTrait, RunCaller, SessionContext, ToolsContext, TraitCheck, TraitContext};
@@ -227,7 +228,7 @@ async fn read_as(
     scope: &FileScope,
     rel: &str,
 ) -> Result<String> {
-    let (store, floor): (Arc<dyn FileStore>, Option<u8>) = scope.connect(catalog).await?;
+    let (store, floor): (Arc<dyn FileStore>, Option<Role>) = scope.connect(catalog).await?;
     let path = scope.resolve(rel)?;
     check_access(store.as_ref(), floor, &path, &file_caller(caller)).await?;
     let bytes = store.read(&path).await?;

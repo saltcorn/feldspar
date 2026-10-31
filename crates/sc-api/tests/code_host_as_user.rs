@@ -19,6 +19,7 @@
 //! suite reports rather than a subtlety nobody re-derives.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{
@@ -88,7 +89,7 @@ async fn own_books(cat: &Catalog, formula: &str, rls: bool) -> Result<()> {
 /// uuid string, the role, and the fields a formula reads.
 fn as_reader<'a>(cat: &'a Catalog, email: &str) -> TableHost<'a> {
     TableHost::new(cat).caused_by(
-        40,
+        Role::of(40),
         Some(json!({
             "id": uuid::Uuid::new_v4().to_string(),
             "role": 40,
@@ -230,7 +231,7 @@ async fn a_delegated_read_of_an_rls_table_sees_what_the_policies_allow() -> Resu
     .await?;
     assert_eq!(titles(&rows), vec!["Emma", "Ubik"]);
 
-    // And the admin's own path still reads the whole table: `ROLE_ADMIN` clears
+    // And the admin's own path still reads the whole table: `Role::ADMIN` clears
     // the policy's role floor, as the admin API's row editor does.
     let all = ask(
         &host,

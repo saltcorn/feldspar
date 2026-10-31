@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sc_auth::User;
-use sc_catalog::{CallerContext, Catalog, Table};
+use sc_catalog::{Authority, Catalog, Principal, Table};
 use sc_error::{Error, Result};
 use sc_expr::{Formula, JsEvaluator, Operation};
 use sc_query::Value;
@@ -51,7 +51,7 @@ pub(crate) struct Caller<'a> {
     pub evaluator: Option<&'a Arc<dyn JsEvaluator>>,
     /// Who the write's event reports as its cause (§10.2), and an RLS table's
     /// policies' caller.
-    pub context: &'a CallerContext,
+    pub context: &'a Principal,
     pub executor: &'a Executor,
 }
 
@@ -67,7 +67,7 @@ fn formula<'t>(
     caller: &Caller<'_>,
 ) -> std::result::Result<Option<&'t Formula>, Denied> {
     if ownership::meets(caller.user, table.access.min_role_write)
-        || caller.context.role <= table.access.min_role_write
+        || caller.context.role.meets(table.access.min_role_write)
     {
         return Ok(None);
     }
@@ -81,7 +81,7 @@ pub(crate) async fn create(
     body: &Json,
     caller: &Caller<'_>,
 ) -> Result<std::result::Result<Json, Denied>> {
-    let context = Some(caller.context);
+    let context = Authority::Caller(caller.context);
     if table.rls_enabled {
         return Ok(Ok(rows::create_row_in(
             cat,
@@ -135,7 +135,7 @@ pub(crate) async fn update(
     body: &Json,
     caller: &Caller<'_>,
 ) -> Result<std::result::Result<Json, Denied>> {
-    let context = Some(caller.context);
+    let context = Authority::Caller(caller.context);
     if table.rls_enabled {
         return Ok(Ok(rows::update_row_guarded_in(
             cat,
@@ -207,7 +207,7 @@ pub(crate) async fn delete(
     id: &str,
     caller: &Caller<'_>,
 ) -> Result<std::result::Result<(), Denied>> {
-    let context = Some(caller.context);
+    let context = Authority::Caller(caller.context);
     let guard = if table.rls_enabled {
         None
     } else {

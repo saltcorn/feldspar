@@ -15,6 +15,8 @@
 //! registry — that is the point of the seam — and the **clock**, which is moved
 //! rather than waited on. No test here sleeps.
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -24,7 +26,7 @@ use sc_action::{
     TriggerDispatcher, TriggerId,
 };
 use sc_agent::{Run, RunState, bootstrap_runs, load_run, require_run, save_run};
-use sc_catalog::{CallerContext, Catalog, DataField};
+use sc_catalog::{Catalog, DataField, Principal};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
@@ -196,9 +198,14 @@ impl Action for Firer {
         let dispatcher = ctx
             .triggers()
             .ok_or_else(|| Error::config("no dispatcher in this context"))?;
-        let caller = CallerContext::new(1, None).chained(ctx.chain.clone());
+        let caller = Principal::new(Role::ADMIN, None).chained(ctx.chain.clone());
         dispatcher
-            .run_trigger(ctx.catalog, &self.trigger, Json::Null, Some(&caller))
+            .run_trigger(
+                ctx.catalog,
+                &self.trigger,
+                Json::Null,
+                Authority::Caller(&caller),
+            )
             .await
     }
 }

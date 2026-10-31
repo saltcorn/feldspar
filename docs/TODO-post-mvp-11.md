@@ -170,7 +170,7 @@ const del     = db.books.where({ id: 7 }).delete();                       // →
 **By default a code body's reads and writes are the admin's**, carrying the event's user.
 This is the rule `rows_scope.rs` already states for `insert_row`/`update_rows`/`delete_rows`:
 a trigger is server-side configuration, and an audit row the caller may not insert is the
-archetype of what a trigger exists to write. Concretely: a `CallerContext` at `ROLE_ADMIN`
+archetype of what a trigger exists to write. Concretely: a `Principal` at `ROLE_ADMIN`
 — which clears every RLS policy's role floor, as the admin API's own row editor does — with
 the event's user still attached, so a policy that reads `user` sees who caused it.
 
@@ -430,7 +430,7 @@ assignments. Every terminal is one plan and one round trip.
       public. **And the deadlock regression test**: a delegated read whose ownership formula
       is untranslatable (so the *formula* isolate must run inside the host call) completes.
 - [x] *Not on the list, and load-bearing*: `ownership::insert_row_as` / `update_row_as` /
-      `delete_row_as` now take the **trigger chain**, because they built their `CallerContext`
+      `delete_row_as` now take the **trigger chain**, because they built their `Principal`
       themselves and so dropped it. Without that, a delegated write restarts the cascade at
       depth 0 and `db.asUser().t.insert(…)` from a trigger on `t` never stops — the one bound
       phase 3 proved for the admin path. A request is not a firing and passes `&[]` (the REST,

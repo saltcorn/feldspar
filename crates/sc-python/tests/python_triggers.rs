@@ -14,12 +14,13 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{
     EventKind, MAX_DEPTH, Trigger, TriggerDispatcher, bootstrap_triggers, save_trigger,
 };
-use sc_catalog::{CallerContext, Catalog};
+use sc_catalog::{Catalog, Principal};
 use sc_core_actions::builtin_actions;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -43,8 +44,8 @@ struct World {
 
 impl World {
     /// Run `name` as the admin's Run button does, with a caller at `role`.
-    async fn run(&self, name: &str, payload: Json, role: u8) -> Result<Json> {
-        let caller = CallerContext::new(role, Some(json!({ "email": "ada@example.com" })));
+    async fn run(&self, name: &str, payload: Json, role: Role) -> Result<Json> {
+        let caller = Principal::new(role, Some(json!({ "email": "ada@example.com" })));
         self.dispatcher
             .run_trigger(&self.catalog, name, payload, Some(&caller))
             .await
@@ -72,7 +73,7 @@ fn triggers() -> Vec<Trigger> {
         // dispatcher. It writes a row and reports what it saw: the payload it was
         // handed and the user the *parent's* event carried.
         Trigger::new("write_note", EventKind::None, "run_js_code")
-            .min_role(1)
+            .min_role(Role::ADMIN)
             .config(
                 "code",
                 r#"await db.notes.insert({ what: payload.what, who: user && user.email });

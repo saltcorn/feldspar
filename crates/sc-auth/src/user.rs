@@ -12,6 +12,7 @@
 //! the request/session, so keeping the hash out of it avoids leaking it into
 //! logs, session state, or API responses.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 
 use sc_db::Row;
@@ -22,9 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use uuid::Uuid;
 
-use crate::users::{
-    COL_DISABLED, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE, ROLE_ADMIN, role_in_range,
-};
+use crate::users::{COL_DISABLED, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE};
 
 /// A user of the system: the two guaranteed fields plus an opaque bag of the
 /// admin-defined columns (technical design §7.1).
@@ -33,7 +32,7 @@ pub struct User {
     /// The non-deletable UUID primary key.
     pub id: Uuid,
     /// The role, `1..=100` (1 = admin, 100 = public).
-    pub role: u8,
+    pub role: Role,
     /// Every other column of the row keyed by column name — e.g. `email` and any
     /// fields the admin has added. Excludes `id`, `role`, and the password hash.
     pub extra: BTreeMap<String, Value>,
@@ -41,17 +40,12 @@ pub struct User {
 
 impl User {
     /// A user with the two guaranteed fields and no extra columns.
-    ///
-    /// Returns [`Error::invalid`] if `role` is outside `1..=100`.
-    pub fn new(id: Uuid, role: u8) -> Result<User> {
-        if !role_in_range(role) {
-            return Err(Error::invalid(format!("role {role} is not in 1..=100")));
-        }
-        Ok(User {
+    pub fn new(id: Uuid, role: Role) -> User {
+        User {
             id,
             role,
             extra: BTreeMap::new(),
-        })
+        }
     }
 
     /// Build a user from a `users`-table [`Row`].
@@ -94,7 +88,7 @@ impl User {
     }
 
     /// Build a user from the **JSON object an event carries as its caller** —
-    /// the shape `sc_api::caller_context` renders a user's fields into, which is
+    /// the shape `sc_api::principal_of` renders a user's fields into, which is
     /// also what the formula language binds `user` to.
     ///
     /// The inverse of that rendering, as far as JSON can express it: `id` is a
@@ -112,7 +106,7 @@ impl User {
     ///
     /// A caller object with no usable `id` **is** an error: acting as somebody
     /// requires knowing who, and guessing is not one of the options.
-    pub fn from_json(role: u8, fields: Option<&Json>) -> Result<Option<User>> {
+    pub fn from_json(role: Role, fields: Option<&Json>) -> Result<Option<User>> {
         let Some(fields) = fields else {
             return Ok(None);
         };
@@ -136,7 +130,7 @@ impl User {
                 )));
             }
         };
-        let mut user = User::new(id, role)?;
+        let mut user = User::new(id, role);
         user.extra = map
             .iter()
             .filter(|(name, _)| {
@@ -151,7 +145,7 @@ impl User {
 
     /// Whether this user is an administrator (`role == 1`).
     pub fn is_admin(&self) -> bool {
-        self.role == ROLE_ADMIN
+        self.role.is_admin()
     }
 
     /// Whether this account has been disabled by an administrator.
@@ -193,8 +187,8 @@ impl User {
     /// Whether this user meets a `min_role` gate. Roles run 1–100 with **lower =
     /// more privileged** (matching [`AccessRules`](sc_catalog::AccessRules)), so a
     /// user passes when `role <= min_role`.
-    pub fn meets_role(&self, min_role: u8) -> bool {
-        self.role <= min_role
+    pub fn meets_role(&self, min_role: Role) -> bool {
+        self.role.meets(min_role)
     }
 
     /// The language this user has chosen to read the product in, if they have
@@ -218,15 +212,16 @@ impl User {
     }
 }
 
-/// Narrow a raw `role` integer to the validated `1..=100` byte.
-fn role_from_i64(i: i64) -> Result<u8> {
-    let role: u8 = i
-        .try_into()
-        .map_err(|_| Error::invalid(format!("role {i} is out of range")))?;
-    if !role_in_range(role) {
-        return Err(Error::invalid(format!("role {role} is not in 1..=100")));
-    }
-    Ok(role)
+/// The role a caller holds: the signed-in user's, or [`Role::PUBLIC`] for nobody.
+///
+/// The one place an optional user becomes a role.
+pub fn role_of(user: Option<&User>) -> Role {
+    user.map_or(Role::PUBLIC, |u| u.role)
+}
+
+/// Narrow a raw `role` integer to a [`Role`].
+fn role_from_i64(i: i64) -> Result<Role> {
+    Role::try_from(i).map_err(|_| Error::invalid(format!("role {i} is not in 1..=100")))
 }
 
 #[cfg(test)]
@@ -242,25 +237,23 @@ mod tests {
     }
 
     #[test]
-    fn new_validates_role_range() {
-        assert!(User::new(Uuid::new_v4(), 0).is_err());
-        assert!(User::new(Uuid::new_v4(), 101).is_err());
-        let u = User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap();
+    fn new_builds_a_user_with_no_extra_columns() {
+        let u = User::new(Uuid::new_v4(), Role::ADMIN);
         assert!(u.is_admin());
         assert!(u.extra.is_empty());
     }
 
     #[test]
     fn meets_role_gates_on_privilege() {
-        let admin = User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap();
-        let editor = User::new(Uuid::new_v4(), 40).unwrap();
+        let admin = User::new(Uuid::new_v4(), Role::ADMIN);
+        let editor = User::new(Uuid::new_v4(), Role::of(40));
         // Admin (role 1) passes every gate; a lower-privilege user only passes
         // gates at or below its own role number.
-        assert!(admin.meets_role(ROLE_ADMIN));
-        assert!(admin.meets_role(100));
-        assert!(!editor.meets_role(ROLE_ADMIN)); // 40 <= 1 is false
-        assert!(editor.meets_role(40));
-        assert!(editor.meets_role(100));
+        assert!(admin.meets_role(Role::ADMIN));
+        assert!(admin.meets_role(Role::PUBLIC));
+        assert!(!editor.meets_role(Role::ADMIN)); // 40 <= 1 is false
+        assert!(editor.meets_role(Role::of(40)));
+        assert!(editor.meets_role(Role::PUBLIC));
     }
 
     #[test]
@@ -277,7 +270,7 @@ mod tests {
         );
         let user = User::from_row(&r).unwrap();
         assert_eq!(user.id, id);
-        assert_eq!(user.role, 1);
+        assert_eq!(user.role, Role::ADMIN);
         assert!(user.is_admin());
         // email is carried in extra; the password hash is not.
         assert_eq!(
@@ -302,13 +295,13 @@ mod tests {
         assert!(!with(Value::Bool(false)).is_disabled());
         // A column nobody has ever written is an ordinary, enabled account.
         assert!(!with(Value::Null).is_disabled());
-        assert!(!User::new(id, 40).unwrap().is_disabled());
+        assert!(!User::new(id, Role::of(40)).is_disabled());
     }
 
     #[test]
     fn from_json_reads_the_caller_an_event_carries() {
         let id = Uuid::new_v4();
-        // The object an event carries is what `caller_context` rendered: the id
+        // The object an event carries is what `principal_of` rendered: the id
         // as a uuid string, the role, and every other field of the row.
         let caller = serde_json::json!({
             "id": id.to_string(),
@@ -316,11 +309,13 @@ mod tests {
             "email": "ada@example.com",
             "quota": 3,
         });
-        let user = User::from_json(40, Some(&caller)).unwrap().unwrap();
+        let user = User::from_json(Role::of(40), Some(&caller))
+            .unwrap()
+            .unwrap();
         assert_eq!(user.id, id);
         // The event's role, not the object's — they are the same number here, and
         // where they differ the event's is the authority it was served at.
-        assert_eq!(user.role, 40);
+        assert_eq!(user.role, Role::of(40));
         assert_eq!(
             user.get(COL_EMAIL),
             Some(&Value::Text("ada@example.com".into()))
@@ -332,7 +327,7 @@ mod tests {
 
         // An event with no caller has nobody to act as, and says so by being
         // absent rather than by failing: a scheduled trigger delegates to public.
-        assert!(User::from_json(100, None).unwrap().is_none());
+        assert!(User::from_json(Role::PUBLIC, None).unwrap().is_none());
 
         // Acting as somebody requires knowing who.
         for bad in [
@@ -342,13 +337,10 @@ mod tests {
             serde_json::json!("ada"),
         ] {
             assert!(
-                User::from_json(40, Some(&bad)).is_err(),
+                User::from_json(Role::of(40), Some(&bad)).is_err(),
                 "{bad} is not a caller"
             );
         }
-        // And the role is validated as it is everywhere else.
-        let ok = serde_json::json!({ "id": id.to_string() });
-        assert!(User::from_json(0, Some(&ok)).is_err());
     }
 
     #[test]

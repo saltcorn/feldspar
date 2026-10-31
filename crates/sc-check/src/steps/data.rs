@@ -12,9 +12,11 @@
 //! deleted the row it was asking about.
 
 use sc_api::rows::{self, Executor, RowQuery};
+use sc_catalog::Authority;
 use sc_catalog::Table;
 use sc_catalog::outbox::{Sent, SentKind};
 use sc_error::{Error, Repr, Result};
+use sc_types::Role;
 use sc_types::{BasicType, FormField};
 use serde_json::{Map, Value as Json, json};
 
@@ -600,8 +602,12 @@ impl StepType for RunTrigger {
                 _ => None,
             };
             let dispatcher = cx.triggers()?;
-            let floor = dispatcher.triggers()?.require(&name)?.min_role.unwrap_or(1);
-            let result = if cx.role() > floor {
+            let floor = dispatcher
+                .triggers()?
+                .require(&name)?
+                .min_role
+                .unwrap_or(Role::ADMIN);
+            let result = if floor.outranks(cx.role()) {
                 Err(Error::auth(format!(
                     "trigger `{name}` needs role {floor} or better, and the checklist runs at \
                      role {}",
@@ -609,9 +615,9 @@ impl StepType for RunTrigger {
                 )))
             } else {
                 let payload = params.get("payload").cloned().unwrap_or(Json::Null);
-                let caller = sc_api::caller_context(cx.run_as);
+                let caller = sc_api::principal_of(cx.run_as);
                 dispatcher
-                    .run_trigger(cx.catalog, &name, payload, Some(&caller))
+                    .run_trigger(cx.catalog, &name, payload, Authority::Caller(&caller))
                     .await
             };
             Ok(match (result, expect_error) {

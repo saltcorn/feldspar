@@ -18,6 +18,7 @@
 
 use sc_api::{CustomParam, CustomQuery, Method, QueryLanguage, ValueType};
 use sc_error::{Error, Result};
+use sc_types::Role;
 
 /// `feldspar api add-query`'s arguments, parsed.
 #[derive(Debug, Clone, PartialEq)]
@@ -119,10 +120,10 @@ pub fn parse_add_query(args: &[String]) -> Result<AddQueryArgs> {
         None => Method::Get,
     };
     let min_role = match min_role {
-        Some(r) => r.parse::<u8>().map_err(|_| {
+        Some(r) => r.parse::<u8>().ok().and_then(Role::new).ok_or_else(|| {
             Error::config(format!("--min-role wants a number in 1..=100, not `{r}`"))
         })?,
-        None => sc_auth::ROLE_ADMIN,
+        None => Role::ADMIN,
     };
 
     let mut query = CustomQuery::new(name, method, path, source)
@@ -274,7 +275,7 @@ mod tests {
         assert_eq!(parsed.query.name, "topAuthors");
         assert_eq!(parsed.query.method, Method::Get);
         assert_eq!(parsed.query.path, "/reports/top-authors");
-        assert_eq!(parsed.query.min_role, sc_auth::ROLE_ADMIN);
+        assert_eq!(parsed.query.min_role, Role::ADMIN);
         assert_eq!(
             parsed.query.params,
             vec![CustomParam::new("since", ValueType::Int)]
@@ -414,7 +415,7 @@ mod tests {
         chosen.extend(args(&["--method", "post", "--min-role", "40"]));
         let parsed = parse_add_query(&chosen).unwrap();
         assert_eq!(parsed.query.method, Method::Post);
-        assert_eq!(parsed.query.min_role, 40);
+        assert_eq!(parsed.query.min_role, Role::of(40));
 
         let mut bad = base();
         bad.extend(args(&["--method", "FETCH"]));

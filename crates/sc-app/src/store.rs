@@ -23,6 +23,7 @@ use sc_catalog::{Attrs, Catalog, FileStoreId, TableId};
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Value};
+use sc_types::Role;
 use serde_json::{Value as Json, json};
 
 use crate::api::{
@@ -477,8 +478,8 @@ pub(crate) fn application_from_row(row: &Row) -> Result<Application> {
         attributes: object(json_column(row, COL_ATTRIBUTES)?, COL_ATTRIBUTES)?,
         // Read leniently for `NULL`/absent, as the triggers are: the columns
         // arrived after the table did.
-        min_role: role_column(row, COL_MIN_ROLE, sc_auth::ROLE_PUBLIC)?,
-        max_role: role_column(row, COL_MAX_ROLE, sc_auth::ROLE_ADMIN)?,
+        min_role: role_column(row, COL_MIN_ROLE, Role::PUBLIC)?,
+        max_role: role_column(row, COL_MAX_ROLE, Role::ADMIN)?,
         access_if: match row.get(COL_ACCESS_IF) {
             Some(Value::Text(t)) => t.clone(),
             Some(Value::Null) | None => String::new(),
@@ -489,12 +490,11 @@ pub(crate) fn application_from_row(row: &Row) -> Result<Application> {
 
 /// A role column: `NULL`/absent is `default`, anything outside `1..=100` is a
 /// broken row.
-fn role_column(row: &Row, column: &str, default: u8) -> Result<u8> {
+fn role_column(row: &Row, column: &str, default: Role) -> Result<Role> {
     match row.get(column) {
         Some(Value::Null) | None => Ok(default),
-        Some(Value::Int(i)) => u8::try_from(*i)
+        Some(Value::Int(i)) => Role::try_from(*i)
             .ok()
-            .filter(|r| (sc_auth::ROLE_ADMIN..=sc_auth::ROLE_PUBLIC).contains(r))
             .ok_or_else(|| bad_column(column, "a role, 1 to 100", row.get(column))),
         other => Err(bad_column(column, "a role, 1 to 100", other)),
     }

@@ -21,6 +21,7 @@
 //! user who began it, or — for a public slot — the browser whose cookie began
 //! it. Anybody else gets the 404 an unknown id gets.
 
+use sc_types::Role;
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -416,7 +417,7 @@ struct Decided {
     /// Extra attributes for the finished file.
     attributes: Map<String, Json>,
     /// A role floor for the finished file, which can only tighten its folder's.
-    min_role: Option<u8>,
+    min_role: Option<Role>,
 }
 
 /// Run the slot's hook, and read its answer: a refusal is the hook's own
@@ -488,8 +489,8 @@ async fn run_hook(
     }
     match obj.get("min_role").or_else(|| obj.get("minRole")) {
         None | Some(Json::Null) => {}
-        Some(value) => match value.as_u64().and_then(|n| u8::try_from(n).ok()) {
-            Some(role @ 1..=100) => decided.min_role = Some(role),
+        Some(value) => match value.as_u64().and_then(|n| Role::try_from(n).ok()) {
+            Some(role) => decided.min_role = Some(role),
             _ => return Err(bad(format!("a `min_role` of {value}, not 1 to 100"))),
         },
     }
@@ -728,7 +729,7 @@ async fn complete(
             .meta
             .get("min_role")
             .and_then(Json::as_u64)
-            .and_then(|n| u8::try_from(n).ok())
+            .and_then(|n| Role::try_from(n).ok())
             .or(meta.min_role),
         ..meta
     };
@@ -804,12 +805,12 @@ pub(crate) fn spawn_upload_sweep(apps: Arc<crate::apps::AppMounts>) {
 async fn prepare_temp(store: &dyn FileStore, temp_path: &str) -> sc_error::Result<()> {
     store.mkdir(TEMP_DIR).await?;
     let meta = store.get_meta(TEMP_DIR).await.unwrap_or_default();
-    if meta.min_role != Some(sc_files::ROLE_ADMIN) {
+    if meta.min_role != Some(Role::ADMIN) {
         store
             .set_meta(
                 TEMP_DIR,
                 &FileMeta {
-                    min_role: Some(sc_files::ROLE_ADMIN),
+                    min_role: Some(Role::ADMIN),
                     ..meta
                 },
             )

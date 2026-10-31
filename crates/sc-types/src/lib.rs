@@ -44,6 +44,7 @@ mod json;
 mod operation;
 mod rich;
 mod rich_types;
+mod role;
 mod type_ref;
 pub mod vector;
 
@@ -61,6 +62,7 @@ pub use rich::{RichType, RichTypeRef, registered_rich_types, rich_type, rich_typ
 pub use rich_types::{
     COLLAB_DOC, CollabDocType, IntegerType, StringType, is_collab_doc, parse_string_options,
 };
+pub use role::{Role, RoleOutOfRange};
 pub use type_ref::TypeRef;
 
 #[cfg(test)]

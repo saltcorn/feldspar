@@ -23,6 +23,7 @@
 //! the run's own schema snapshot.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::{Arc, Mutex};
 
 use sc_action::{
@@ -81,10 +82,10 @@ async fn own_books(cat: &Catalog, formula: &str) -> Result<()> {
 /// A reader at role 40 — below `books`' admin-only floors, so what this user may
 /// write is whatever the ownership formula grants and nothing else.
 async fn reader(cat: &Catalog, email: &str) -> Result<User> {
-    sc_auth::save_role(cat, &sc_auth::Role::new(40, "Reader"))
+    sc_auth::save_role(cat, &sc_auth::RoleDef::new(Role::of(40), "Reader"))
         .await
         .ok();
-    create_user(cat, email, "correct-horse-battery", 40).await
+    create_user(cat, email, "correct-horse-battery", Role::of(40)).await
 }
 
 /// Run `body` with the v1 `Table` and `Field` over this catalog, as the admin.

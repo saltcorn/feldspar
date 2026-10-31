@@ -14,6 +14,7 @@
 //! does not. Everything else here runs unconditionally.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -94,7 +95,7 @@ async fn the_server_writes_a_complete_project_against_the_apps_own_tables() -> s
     // invented: the generated documentation names them, because `feldspar auth
     // token --role NAME` takes a name and the project has no other way to know.
     sc_auth::bootstrap(&cat).await?;
-    sc_auth::save_role(&cat, &sc_auth::Role::new(40, "Editor")).await?;
+    sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(40), "Editor")).await?;
     let tmp = TempDir::new("write")?;
     cat.connect_file_store(Arc::new(LocalFileStore::new("apps", tmp.path())?))?;
     // What the boot path does with `--base-domain`: the generated documentation

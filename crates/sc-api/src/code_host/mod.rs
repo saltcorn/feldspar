@@ -114,6 +114,7 @@
 //! would fetch the whole table, hand back what survived and do it again — so it
 //! is refused naming `.rows()`, which can decide row by row.
 
+use sc_types::Role;
 mod files;
 mod history;
 mod models;
@@ -125,8 +126,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use async_trait::async_trait;
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, User};
-use sc_catalog::{CallerContext, Catalog, SharedTx, Table};
+use sc_auth::User;
+use sc_catalog::{Catalog, Principal, SharedTx, Table};
 use sc_error::{Error, Repr, Result};
 use sc_expr::{CodeHost, DEFAULT_MAX_HOST_CALLS, JsEvaluator};
 use serde_json::Value as Json;
@@ -184,7 +185,7 @@ pub struct TableHost<'a> {
     catalog: &'a Catalog,
     /// The role the event was served at — what a delegated operation is checked
     /// against, and public for an event with no caller at all.
-    role: u8,
+    role: Role,
     /// The event's caller, as the event carries it. Attached to every statement:
     /// on an RLS table it is what the policies read, and off one it is what the
     /// **event** this run raises reports as its cause. Under `asUser()` it is
@@ -224,7 +225,7 @@ impl<'a> TableHost<'a> {
     pub fn new(catalog: &'a Catalog) -> TableHost<'a> {
         TableHost {
             catalog,
-            role: ROLE_PUBLIC,
+            role: Role::PUBLIC,
             user: None,
             chain: Vec::new(),
             limits: HostLimits::default(),
@@ -264,7 +265,7 @@ impl<'a> TableHost<'a> {
     /// read. An event with no caller keeps the public role, which is what
     /// `asUser()` in a scheduled trigger honestly means.
     #[must_use]
-    pub fn caused_by(mut self, role: u8, user: Option<Json>) -> TableHost<'a> {
+    pub fn caused_by(mut self, role: Role, user: Option<Json>) -> TableHost<'a> {
         self.role = role;
         self.user = user;
         self
@@ -436,7 +437,7 @@ impl<'a> TableHost<'a> {
             // The public role with nobody in it, which the seam can already
             // express and which no lookup can improve on.
             Authority::Public => Ok(Actor::Caller {
-                role: ROLE_PUBLIC,
+                role: Role::PUBLIC,
                 user: None,
             }),
             Authority::Named(id) => {
@@ -465,7 +466,7 @@ impl<'a> TableHost<'a> {
         match authority {
             Authority::Default | Authority::Admin | Authority::User => caller(),
             Authority::Public => Ok(Actor::Caller {
-                role: ROLE_PUBLIC,
+                role: Role::PUBLIC,
                 user: None,
             }),
             Authority::Named(id) => {
@@ -525,7 +526,7 @@ impl<'a> TableHost<'a> {
                     self.catalog,
                     &read.table,
                     &read.query,
-                    Some(context),
+                    sc_catalog::Authority::Caller(context),
                     &self.executor,
                 )
                 .await?
@@ -585,7 +586,7 @@ impl<'a> TableHost<'a> {
                     &agg.table,
                     agg.projections,
                     &agg.query,
-                    Some(context),
+                    sc_catalog::Authority::Caller(context),
                 )
                 .await?
             }
@@ -660,7 +661,10 @@ impl<'a> TableHost<'a> {
             // the step. The GUCs are applied per statement there, which is what
             // keeps `asUser()` meaning to raw SQL exactly what it means to the
             // chain (§10.3, decision 6).
-            rows::Executor::Transaction(tx) => tx.run(Some(&context), &statement).await?,
+            rows::Executor::Transaction(tx) => {
+                tx.run(sc_catalog::Authority::Caller(&context), &statement)
+                    .await?
+            }
             rows::Executor::Pooled => {
                 sc_catalog::run_in_context(self.catalog, &context, &statement).await?
             }
@@ -695,7 +699,7 @@ impl<'a> TableHost<'a> {
                         self.catalog,
                         &insertion.table,
                         row,
-                        Some(context),
+                        sc_catalog::Authority::Caller(context),
                         &self.executor,
                     )
                     .await?
@@ -750,7 +754,7 @@ impl<'a> TableHost<'a> {
                     self.catalog,
                     table,
                     &write.matched.query,
-                    Some(context),
+                    sc_catalog::Authority::Caller(context),
                     &self.executor,
                 )
                 .await?
@@ -787,14 +791,20 @@ impl<'a> TableHost<'a> {
                         table,
                         &id,
                         assignments,
-                        Some(context),
+                        sc_catalog::Authority::Caller(context),
                         &self.executor,
                     )
                     .await?;
                 }
                 (Actor::Admin(context), None) => {
-                    rows::delete_row_in(self.catalog, table, &id, Some(context), &self.executor)
-                        .await?;
+                    rows::delete_row_in(
+                        self.catalog,
+                        table,
+                        &id,
+                        sc_catalog::Authority::Caller(context),
+                        &self.executor,
+                    )
+                    .await?;
                 }
                 (Actor::Caller { role, user }, Some(assignments)) => {
                     ownership::update_row_as(
@@ -858,8 +868,8 @@ impl<'a> TableHost<'a> {
 
     /// The caller every statement of this run carries: **admin, in the event's
     /// user's name**, with the trigger chain that led here.
-    fn caller(&self) -> CallerContext {
-        CallerContext::new(ROLE_ADMIN, self.user.clone())
+    fn caller(&self) -> Principal {
+        Principal::new(Role::ADMIN, self.user.clone())
             .chained(self.chain.clone())
             .in_current_origin()
     }
@@ -878,7 +888,7 @@ impl<'a> TableHost<'a> {
     /// A caller who may not read the table at all gets that answer unchanged: it
     /// is an `auth` refusal, the same one a read gets, and reading the rows
     /// instead would not help them.
-    fn delegable_aggregate(&self, table: &Table, role: u8, user: Option<&User>) -> Result<()> {
+    fn delegable_aggregate(&self, table: &Table, role: Role, user: Option<&User>) -> Result<()> {
         match ownership::aggregate_guard(self.catalog, table, &table.name, role, user) {
             Ok(_) => Ok(()),
             Err(e) => Err(match e.repr() {
@@ -909,7 +919,7 @@ impl<'a> TableHost<'a> {
     /// the thing asked, rather than a second copy of the rule to be subtly
     /// wrong. Only the wording is this surface's own: an aggregate's way out is
     /// not a stream's.
-    fn streamable(&self, table: &Table, role: u8, user: Option<&User>) -> Result<()> {
+    fn streamable(&self, table: &Table, role: Role, user: Option<&User>) -> Result<()> {
         match ownership::aggregate_guard(self.catalog, table, &table.name, role, user) {
             Ok(_) => Ok(()),
             Err(e) => Err(match e.repr() {
@@ -982,12 +992,12 @@ pub(crate) async fn load_named_user(catalog: &Catalog, id: &Json) -> Result<User
 /// §7.3's rule takes.
 enum Actor {
     /// Admin, in the event's user's name, with the chain that led here.
-    Admin(CallerContext),
+    Admin(Principal),
     /// The event's caller. `user` is `None` for an event that carries nobody — a
     /// scheduled or startup trigger — which then reads as the public role.
     Caller {
         /// The role every floor is checked against.
-        role: u8,
+        role: Role,
         /// The user an ownership formula and an RLS policy read.
         user: Option<User>,
     },
@@ -996,9 +1006,9 @@ enum Actor {
 impl Actor {
     /// The role every name in the plan is resolved at — a Ⱶ-path's hops, a
     /// Ↄ-aggregation's child table — as well as every row rule.
-    fn role(&self) -> u8 {
+    fn role(&self) -> Role {
         match self {
-            Actor::Admin(_) => ROLE_ADMIN,
+            Actor::Admin(_) => Role::ADMIN,
             Actor::Caller { role, .. } => *role,
         }
     }
@@ -1010,11 +1020,11 @@ impl Actor {
     /// context they were built from, and a delegated one is built by
     /// `ownership`'s own `*_as` functions. `db.sql()` asks, because it is the one
     /// operation that reaches the database without either of those in front of it.
-    fn context(&self, chain: &[String]) -> CallerContext {
+    fn context(&self, chain: &[String]) -> Principal {
         match self {
             Actor::Admin(context) => context.clone(),
             Actor::Caller { role, user } => {
-                ownership::caller_context_at(*role, user.as_ref()).chained(chain.to_vec())
+                ownership::principal_at(*role, user.as_ref()).chained(chain.to_vec())
             }
         }
     }

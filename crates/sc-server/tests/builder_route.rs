@@ -23,6 +23,7 @@
 //!   application's, for the builder's own documents only.
 //! - **Admin only**, and a server **without the bundle** says so.
 
+use sc_types::Role;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -405,7 +406,7 @@ async fn without_the_builder_bundle_the_routes_say_so() {
     )
     .expect("build router");
     let admin = sessions
-        .login(User::new(Uuid::new_v4(), 1).unwrap())
+        .login(User::new(Uuid::new_v4(), Role::ADMIN))
         .await
         .unwrap();
     for path in [
@@ -474,7 +475,7 @@ async fn builder_status_says_whether_the_bundle_is_built() {
         )
         .expect("build router");
         let admin = sessions
-            .login(User::new(Uuid::new_v4(), 1).unwrap())
+            .login(User::new(Uuid::new_v4(), Role::ADMIN))
             .await
             .unwrap();
         let request = Request::get("/api/builder")

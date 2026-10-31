@@ -789,10 +789,10 @@ mod tests {
     use sc_catalog::DataFieldKind;
 
     use super::*;
-    use crate::users::ROLE_ADMIN;
+    use sc_types::Role;
 
     fn admin() -> User {
-        User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap()
+        User::new(Uuid::new_v4(), Role::ADMIN)
     }
 
     #[tokio::test]

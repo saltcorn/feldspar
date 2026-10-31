@@ -13,6 +13,7 @@
 //! echo, at the terminal — and reads one line from stdin when stdin is not a
 //! terminal, so a script can pipe it in.
 
+use sc_types::Role;
 use std::io::{BufRead, IsTerminal, Write};
 
 use sc_error::{Error, Result};
@@ -161,7 +162,7 @@ pub enum RoleCommand {
     /// `role add NAME --level N [--description TEXT]`.
     Add {
         name: String,
-        level: u8,
+        level: Role,
         description: String,
     },
     /// `role delete NAME` — a name or a number, as `--role` takes one.
@@ -194,16 +195,11 @@ pub fn parse_role(args: &[String]) -> Result<RoleCommand> {
                 };
                 if arg == "--level" {
                     let raw = value("--level")?;
-                    level = Some(
-                        raw.parse::<u8>()
-                            .ok()
-                            .filter(|n| (1..=100).contains(n))
-                            .ok_or_else(|| {
-                                Error::config(format!(
-                                    "--level is a role number from 1 to 100, not `{raw}`"
-                                ))
-                            })?,
-                    );
+                    level = Some(raw.parse::<u8>().ok().and_then(Role::new).ok_or_else(|| {
+                        Error::config(format!(
+                            "--level is a role number from 1 to 100, not `{raw}`"
+                        ))
+                    })?);
                 } else if arg == "--description" {
                     description = value("--description")?;
                 } else if arg.starts_with("--") {
@@ -415,7 +411,7 @@ mod tests {
             .unwrap(),
             RoleCommand::Add {
                 name: "Editor".into(),
-                level: 40,
+                level: Role::of(40),
                 description: "Edits".into()
             }
         );

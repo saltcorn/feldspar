@@ -26,6 +26,7 @@
 //! - over HTTP the query is a 400.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -39,7 +40,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use futures::{SinkExt, StreamExt};
 use sc_api::{CustomParam, CustomQuery, Method, QueryLanguage, QueryRateLimit, ResponseType};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, DataField, FieldMeta, TableId, save_field_meta};
 use sc_db::{ColumnGenerator, DatabaseDriver};
 use sc_db_sqlite::SqliteDriver;
@@ -61,7 +62,7 @@ const APP_HOST: &str = "notes.example.com";
 const ADMIN: &str = "admin@example.com";
 const ALICE: &str = "alice@example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 40;
+const ROLE_MEMBER: Role = Role::of(40);
 
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -264,7 +265,7 @@ fn queries() -> Vec<CustomQuery> {
             .language(QueryLanguage::Javascript)
             .params([CustomParam::new("token", sc_api::ValueType::Text)])
             .response_type(ResponseType::Stream)
-            .min_role(ROLE_PUBLIC)
+            .min_role(Role::PUBLIC)
             .rate_limit(QueryRateLimit {
                 per_ip: Some("6/min".to_owned()),
                 per_user: None,
@@ -272,7 +273,7 @@ fn queries() -> Vec<CustomQuery> {
         // A JSON query: opening it is the same refusal as a misspelt one.
         CustomQuery::new("hello", Method::Get, "/hello", "return 1;")
             .language(QueryLanguage::Javascript)
-            .min_role(ROLE_PUBLIC),
+            .min_role(Role::PUBLIC),
     ]
 }
 
@@ -346,8 +347,8 @@ async fn setup() -> Result<Server> {
         &FieldMeta::new("notes", "body").rich_type(sc_types::COLLAB_DOC),
     )
     .await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
-    create_user(&catalog, ADMIN, PASSWORD, ROLE_ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
+    create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
     let alice = create_user(&catalog, ALICE, PASSWORD, ROLE_MEMBER).await?;
 
     let evaluator = sc_server::default_js_evaluator();
@@ -446,7 +447,7 @@ async fn setup() -> Result<Server> {
             "/api/tables/notes",
             Some(json!({
                 "label": "", "description": "",
-                "min_role_read": ROLE_ADMIN, "min_role_write": ROLE_ADMIN,
+                "min_role_read": Role::ADMIN, "min_role_write": Role::ADMIN,
                 "ownership_formula": "owner === user.id", "rls_enabled": false, "sync_enabled": false,
             })),
         )

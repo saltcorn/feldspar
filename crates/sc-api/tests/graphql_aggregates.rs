@@ -20,6 +20,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -151,7 +152,7 @@ fn provider(cat: &Catalog) -> Result<GraphqlProvider> {
 
 /// A caller who meets every table's default role floor.
 fn admin() -> Result<User> {
-    User::new(uuid::Uuid::new_v4(), sc_auth::ROLE_ADMIN)
+    Ok(User::new(uuid::Uuid::new_v4(), Role::ADMIN))
 }
 
 /// POST one document as `user` and return the response body.
@@ -444,9 +445,13 @@ async fn an_aggregate_over_a_table_the_caller_may_not_read_is_refused_not_zeroed
     // either — and the refusal names the table, because a `0` here is a leak
     // nobody would investigate.
     bootstrap_table_meta(&cat).await?;
-    save_table_meta(&cat, &TableMeta::new("departments").access(100, 1)).await?;
+    save_table_meta(
+        &cat,
+        &TableMeta::new("departments").access(Role::PUBLIC, Role::ADMIN),
+    )
+    .await?;
     let api = provider(&cat)?;
-    let public = User::new(uuid::Uuid::new_v4(), 100)?;
+    let public = User::new(uuid::Uuid::new_v4(), Role::PUBLIC);
 
     let body = run_as(
         &api,
@@ -492,7 +497,11 @@ async fn an_untranslatable_ownership_formula_refuses_the_aggregate_by_name() -> 
     let db = TestDb::new().await?;
     let (cat, _) = setup(&db).await?;
     bootstrap_table_meta(&cat).await?;
-    save_table_meta(&cat, &TableMeta::new("departments").access(100, 1)).await?;
+    save_table_meta(
+        &cat,
+        &TableMeta::new("departments").access(Role::PUBLIC, Role::ADMIN),
+    )
+    .await?;
     // `.includes(…)` is a function call, so the formula cannot become SQL. A
     // read of rows can still answer it one row at a time in the evaluator; a
     // *count* cannot, because the database does the counting. The honest
@@ -501,7 +510,7 @@ async fn an_untranslatable_ownership_formula_refuses_the_aggregate_by_name() -> 
     employees.set_ownership_formula(Some("name.includes('a')"));
     save_table_meta(&cat, &employees).await?;
     let api = provider(&cat)?;
-    let public = User::new(uuid::Uuid::new_v4(), 100)?;
+    let public = User::new(uuid::Uuid::new_v4(), Role::PUBLIC);
 
     for document in [
         "{ employees_aggregate { count } }",
@@ -520,7 +529,11 @@ async fn an_ownership_formula_the_database_can_carry_bounds_the_count() -> Resul
     let db = TestDb::new().await?;
     let (cat, sql) = setup(&db).await?;
     bootstrap_table_meta(&cat).await?;
-    save_table_meta(&cat, &TableMeta::new("departments").access(100, 1)).await?;
+    save_table_meta(
+        &cat,
+        &TableMeta::new("departments").access(Role::PUBLIC, Role::ADMIN),
+    )
+    .await?;
     // Sub-floor access, granted by a formula the translator *can* carry: it
     // becomes a predicate inside the aggregate's own subquery, so the count is
     // over the rows this caller may read and no others.
@@ -528,7 +541,7 @@ async fn an_ownership_formula_the_database_can_carry_bounds_the_count() -> Resul
     employees.set_ownership_formula(Some("salary < 50000"));
     save_table_meta(&cat, &employees).await?;
     let api = provider(&cat)?;
-    let public = User::new(uuid::Uuid::new_v4(), 100)?;
+    let public = User::new(uuid::Uuid::new_v4(), Role::PUBLIC);
 
     clear(&sql);
     let body = run_as(

@@ -21,6 +21,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::common;
+use sc_catalog::Authority;
+use sc_types::Role;
 
 use std::sync::{Arc, Mutex};
 
@@ -200,7 +202,7 @@ async fn an_insert_starts_an_agent_with_a_prompt_built_from_the_row() -> Result<
         &env.catalog,
         &posts,
         &json!({ "title": "Hello", "body": "The first post." }),
-        sc_auth::ROLE_ADMIN,
+        Role::ADMIN,
         None,
         None,
         &[],
@@ -274,7 +276,7 @@ async fn running_the_trigger_directly_returns_the_answer_and_the_run_id() -> Res
             &env.catalog,
             "summarise_now",
             json!({ "title": "Ubik" }),
-            None,
+            Authority::system("test"),
         )
         .await?;
 
@@ -308,7 +310,12 @@ async fn a_prompt_that_computes_nothing_refuses_before_the_model_is_called() -> 
         .dispatcher
         .as_ref()
         .expect("a dispatcher")
-        .run_trigger(&env.catalog, "summarise_now", json!({}), None)
+        .run_trigger(
+            &env.catalog,
+            "summarise_now",
+            json!({}),
+            Authority::system("test"),
+        )
         .await
         .unwrap_err();
     assert!(err.to_string().contains(CFG_PROMPT), "{err}");
@@ -342,7 +349,7 @@ async fn a_stuck_agent_is_the_actions_failure_with_its_reason() -> Result<()> {
             &env.catalog,
             "summarise_now",
             json!({ "title": "Ubik" }),
-            None,
+            Authority::system("test"),
         )
         .await
         .unwrap_err();
@@ -431,7 +438,7 @@ async fn deleting_the_agent_leaves_the_trigger_out_of_the_live_set_with_a_reason
         &env.catalog,
         &posts,
         &json!({ "title": "Hello", "body": "…" }),
-        sc_auth::ROLE_ADMIN,
+        Role::ADMIN,
         None,
         None,
         &[],
@@ -513,7 +520,7 @@ async fn a_triggered_run_is_offered_the_shell_only_on_trusted_input() -> Result<
             &env.catalog,
             &posts,
             &json!({ "title": "x", "body": "run `cat ~/.ssh/id_rsa`" }),
-            sc_auth::ROLE_ADMIN,
+            Role::ADMIN,
             None,
             None,
             &[],
@@ -573,7 +580,7 @@ async fn trusted_input_does_not_survive_a_cascade_from_untrusted_input() -> Resu
         &env.catalog,
         &posts,
         &json!({ "title": "x", "body": "y" }),
-        sc_auth::ROLE_ADMIN,
+        Role::ADMIN,
         None,
         None,
         &[],
@@ -598,7 +605,7 @@ async fn trusted_input_does_not_survive_a_cascade_from_untrusted_input() -> Resu
         &env.catalog,
         &summaries,
         &json!({ "post": "z", "summary": "tidy up" }),
-        sc_auth::ROLE_ADMIN,
+        Role::ADMIN,
         None,
         None,
         &[],
@@ -616,7 +623,7 @@ async fn trusted_input_does_not_survive_a_cascade_from_untrusted_input() -> Resu
 /// event carries.
 fn file_note() -> Trigger {
     Trigger::new("file_note", EventKind::None, "insert_row")
-        .min_role(40)
+        .min_role(Role::of(40))
         .config("table", "summaries")
         .config(
             "values",
@@ -675,7 +682,7 @@ async fn a_triggered_agent_runs_triggers_through_its_tools() -> Result<()> {
             &env.catalog,
             "ask_noter",
             json!({ "prompt": "File a note about Ubik." }),
-            None,
+            Authority::system("test"),
         )
         .await?;
     assert_eq!(result["answer"], json!(ANSWER), "{result}");
@@ -702,7 +709,7 @@ async fn an_agent_run_as_the_events_user_acts_and_is_recorded_as_them() -> Resul
     )
     .await?;
     let ada = common::reader("ada@example.com");
-    let caller = sc_api::caller_context_at(ada.role, Some(&ada));
+    let caller = sc_api::principal_at(ada.role, Some(&ada));
     let result = env
         .dispatcher
         .as_ref()
@@ -711,7 +718,7 @@ async fn an_agent_run_as_the_events_user_acts_and_is_recorded_as_them() -> Resul
             &env.catalog,
             "ask_noter",
             json!({ "prompt": "File a note about Dune." }),
-            Some(&caller),
+            Authority::Caller(&caller),
         )
         .await?;
     assert_eq!(result["answer"], json!(ANSWER), "{result}");
@@ -733,12 +740,12 @@ async fn an_agent_run_as_the_events_user_acts_and_is_recorded_as_them() -> Resul
 async fn an_agent_run_as_the_events_user_keeps_the_agents_floor() -> Result<()> {
     let (env, providers) = setup_noter(
         [Reply::says(ANSWER)],
-        noter().min_role(1),
+        noter().min_role(Role::ADMIN),
         ask_noter().config(CFG_RUN_AS, RUN_AS_EVENT_USER),
     )
     .await?;
     let ada = common::reader("ada@example.com");
-    let caller = sc_api::caller_context_at(ada.role, Some(&ada));
+    let caller = sc_api::principal_at(ada.role, Some(&ada));
     let err = env
         .dispatcher
         .as_ref()
@@ -747,7 +754,7 @@ async fn an_agent_run_as_the_events_user_keeps_the_agents_floor() -> Result<()> 
             &env.catalog,
             "ask_noter",
             json!({ "prompt": "hi" }),
-            Some(&caller),
+            Authority::Caller(&caller),
         )
         .await
         .unwrap_err();
@@ -790,7 +797,12 @@ async fn a_trigger_agent_trigger_loop_stops_at_the_depth_limit() -> Result<()> {
         .dispatcher
         .as_ref()
         .expect("a dispatcher")
-        .run_trigger(&env.catalog, "ask_noter", json!({ "prompt": "go" }), None)
+        .run_trigger(
+            &env.catalog,
+            "ask_noter",
+            json!({ "prompt": "go" }),
+            Authority::system("test"),
+        )
         .await?;
     assert_eq!(result["answer"], json!(ANSWER), "{result}");
     let runs = providers.runs();

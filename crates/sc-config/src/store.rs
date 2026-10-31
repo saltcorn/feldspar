@@ -15,6 +15,7 @@
 //! failure this whole arrangement exists to prevent. [`delete_config`] is the
 //! way out.
 
+use sc_catalog::Authority;
 use sc_catalog::{Catalog, DataField, SharedTx, Table};
 use sc_db::Row;
 use sc_error::{Error, Result};
@@ -195,7 +196,11 @@ pub async fn set_config_many(catalog: &Catalog, values: &Attrs) -> Result<()> {
             // inside one transaction it is the same write, and it needs no read.
             let delete =
                 Delete::from(CONFIG_TABLE).filter(Expr::col(COL_KEY).eq(Expr::lit(key.as_str())));
-            tx.run(None, &Statement::from(delete)).await?;
+            tx.run(
+                Authority::system("write configuration"),
+                &Statement::from(delete),
+            )
+            .await?;
             if !value.is_null() {
                 let insert = Insert::row(
                     CONFIG_TABLE,
@@ -205,7 +210,11 @@ pub async fn set_config_many(catalog: &Catalog, values: &Attrs) -> Result<()> {
                         Expr::Lit(Value::Json(value.clone())),
                     ],
                 );
-                tx.run(None, &Statement::from(insert)).await?;
+                tx.run(
+                    Authority::system("write configuration"),
+                    &Statement::from(insert),
+                )
+                .await?;
             }
         }
         Ok::<(), Error>(())

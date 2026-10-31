@@ -5,11 +5,13 @@
 //! writer that may, the document persister (`rows::write_document_in`), writes
 //! it and its text mirror as a system update.
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::{ApiProvider, RestProvider, rows};
 use sc_catalog::{
-    CallerContext, Catalog, DataField, FieldMeta, TableMeta, bootstrap_field_meta,
+    Catalog, DataField, FieldMeta, Principal, TableMeta, bootstrap_field_meta,
     bootstrap_table_meta, save_field_meta, save_table_meta,
 };
 use sc_db::{ColumnGenerator, DatabaseDriver};
@@ -61,13 +63,13 @@ async fn a_document_field_is_never_read_and_never_written_through_an_api() -> Re
     assert!(body.is_collab_doc(), "the overlay made it a document");
 
     // Written: every API path refuses it, whoever asks.
-    let admin = CallerContext::new(1, None);
+    let admin = Principal::new(Role::ADMIN, None);
     refused_as_a_document(
         rows::create_row_ctx(
             &catalog,
             &table,
             &json!({"title": "x", "body": [1, 2]}),
-            Some(&admin),
+            Authority::Caller(&admin),
         )
         .await
         .unwrap_err(),
@@ -83,9 +85,15 @@ async fn a_document_field_is_never_read_and_never_written_through_an_api() -> Re
     assert_eq!(row["title"], "Plans");
     let id = row["id"].to_string();
     refused_as_a_document(
-        rows::update_row_ctx(&catalog, &table, &id, &json!({"body": [0]}), Some(&admin))
-            .await
-            .unwrap_err(),
+        rows::update_row_ctx(
+            &catalog,
+            &table,
+            &id,
+            &json!({"body": [0]}),
+            Authority::Caller(&admin),
+        )
+        .await
+        .unwrap_err(),
     );
 
     // The persister writes it, and the mirror beside it.

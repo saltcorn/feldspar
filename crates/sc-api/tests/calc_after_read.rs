@@ -9,6 +9,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -152,7 +154,7 @@ async fn a_page_is_one_prediction_and_every_field_is_computed() -> Result<()> {
     let houses = catalog.require("houses")?;
 
     let query = rows::RowQuery::new().limit(50);
-    let page = rows::list_rows_query(&catalog, &houses, &query, None).await?;
+    let page = rows::list_rows_query(&catalog, &houses, &query, Authority::system("test")).await?;
     let page = page.as_array().unwrap();
     assert_eq!(page.len(), 50);
     // One provider call for the page, with all fifty keys in it.
@@ -177,7 +179,8 @@ async fn a_page_is_one_prediction_and_every_field_is_computed() -> Result<()> {
 
     // The typed read — what GraphQL and a code body use — is completed the
     // same way.
-    let values = rows::list_row_values(&catalog, &houses, &query, None).await?;
+    let values =
+        rows::list_row_values(&catalog, &houses, &query, Authority::system("test")).await?;
     assert_eq!(
         values[0]
             .get("estimated_price")
@@ -219,7 +222,7 @@ async fn a_field_computed_after_the_read_cannot_be_filtered_or_sorted_on() -> Re
     // REST's query string.
     let pairs = |k: &str, v: &str| vec![(k.to_owned(), v.to_owned())];
     let query = sc_api::query_string::row_query(&houses, &pairs("estimated_price", "gt.100"), 50)?;
-    let err = rows::list_rows_query(&catalog, &houses, &query, None)
+    let err = rows::list_rows_query(&catalog, &houses, &query, Authority::system("test"))
         .await
         .unwrap_err()
         .to_string();
@@ -231,7 +234,7 @@ async fn a_field_computed_after_the_read_cannot_be_filtered_or_sorted_on() -> Re
         "{err}"
     );
     let query = sc_api::query_string::row_query(&houses, &pairs("order", "premium.desc"), 50)?;
-    let err = rows::list_rows_query(&catalog, &houses, &query, None)
+    let err = rows::list_rows_query(&catalog, &houses, &query, Authority::system("test"))
         .await
         .unwrap_err()
         .to_string();
@@ -243,7 +246,7 @@ async fn a_field_computed_after_the_read_cannot_be_filtered_or_sorted_on() -> Re
     // A count over the same filter says the same, so a grid's count and its
     // rows cannot disagree about why.
     let filter = sc_api::query_string::filter_predicate(&houses, &pairs("loud", "eq.X"))?;
-    let err = rows::count_rows_where(&catalog, &houses, filter, None)
+    let err = rows::count_rows_where(&catalog, &houses, filter, Authority::system("test"))
         .await
         .unwrap_err()
         .to_string();
@@ -253,12 +256,12 @@ async fn a_field_computed_after_the_read_cannot_be_filtered_or_sorted_on() -> Re
     );
     // The field SQL computes is still fine to filter and sort on.
     let query = sc_api::query_string::row_query(&houses, &pairs("order", "double_area.desc"), 1)?;
-    let top = rows::list_rows_query(&catalog, &houses, &query, None).await?;
+    let top = rows::list_rows_query(&catalog, &houses, &query, Authority::system("test")).await?;
     assert_eq!(top[0]["id"], json!(60));
 
     // GraphQL's `where` and `order_by`.
     let api = GraphqlProvider::project("/graphql", std::slice::from_ref(&houses))?;
-    let user = User::new(uuid::Uuid::new_v4(), sc_auth::ROLE_ADMIN)?;
+    let user = User::new(uuid::Uuid::new_v4(), Role::ADMIN);
     for document in [
         "{ houses(where: { estimated_price: { gt: \"100\" } }) { id } }",
         "{ houses(order_by: { estimated_price: desc }) { id } }",

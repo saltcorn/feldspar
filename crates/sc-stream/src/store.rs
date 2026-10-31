@@ -40,6 +40,7 @@ use sc_catalog::{Catalog, DataField, Table};
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Update, Value};
+use sc_types::Role;
 use sc_types::{Attrs, BasicType, TypeRef};
 use serde_json::Value as Json;
 
@@ -315,20 +316,15 @@ fn stream_from_row(row: &Row) -> Result<Stream> {
 /// scale, and reading a corrupt one as the nearest valid role would quietly
 /// change who may observe the flow. (`_fd_triggers` makes the same argument for
 /// the same column.)
-fn min_role(row: &Row) -> Result<Option<u8>> {
+fn min_role(row: &Row) -> Result<Option<Role>> {
     match row.get(COL_MIN_ROLE) {
         Some(Value::Null) | None => Ok(None),
-        Some(Value::Int(i)) => Ok(Some(
-            u8::try_from(*i)
-                .ok()
-                .filter(|r| (1..=100).contains(r))
-                .ok_or_else(|| {
-                    Error::invalid(format!(
-                        "{STREAMS_TABLE}.{COL_MIN_ROLE} should be a role between 1 and 100, \
+        Some(Value::Int(i)) => Ok(Some(Role::try_from(*i).ok().ok_or_else(|| {
+            Error::invalid(format!(
+                "{STREAMS_TABLE}.{COL_MIN_ROLE} should be a role between 1 and 100, \
                          got {i}"
-                    ))
-                })?,
-        )),
+            ))
+        })?)),
         other => Err(bad_column(COL_MIN_ROLE, "an integer role", other)),
     }
 }
@@ -429,7 +425,7 @@ mod tests {
         Stream::with_id(StreamId(uuid::Uuid::nil()), "boiler", "mqtt")
             .description("the boiler's temperature")
             .config("topic", "house/boiler/#")
-            .min_role(40)
+            .min_role(Role::of(40))
             .enabled(false)
     }
 
@@ -470,7 +466,7 @@ mod tests {
         let read = stream_from_row(&row(stream_values(&stream))).unwrap();
         assert_eq!(read, stream);
         assert!(!read.is_enabled());
-        assert_eq!(read.min_role, Some(40));
+        assert_eq!(read.min_role, Some(Role::of(40)));
         assert_eq!(read.configuration["topic"], Json::from("house/boiler/#"));
     }
 

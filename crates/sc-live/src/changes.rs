@@ -43,13 +43,14 @@
 //! not in it, because no API returns it — and is absent for `leave`, `delete`
 //! and a stream whose payload is only the key.
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use sc_api::RowImage;
-use sc_auth::{ROLE_PUBLIC, User};
+use sc_auth::User;
 use sc_catalog::{Catalog, WriteOp};
 use sc_expr::JsEvaluator;
 use sc_stream::providers::table_changes::{KEY_KEY, KEY_OLD, KEY_OP, KEY_ROW};
@@ -303,7 +304,7 @@ impl<'e> Change<'e> {
 
 /// A caller as verdicts are shared: their id (none for anonymous), role and
 /// guest session.
-type Who = (Option<Uuid>, u8, Option<String>);
+type Who = (Option<Uuid>, Role, Option<String>);
 
 /// What is known of one caller's verdicts on the old and the new image — each
 /// asked only once its image matched a filter.
@@ -356,7 +357,7 @@ pub(crate) async fn decide(
             )
         });
         let user = subscriber.caller.get();
-        let role = user.as_ref().map_or(ROLE_PUBLIC, |user| user.role);
+        let role = user.as_ref().map_or(Role::PUBLIC, |user| user.role);
         let guest = subscriber.caller.guest_session();
         // The verdict is asked inside the caller's origin, so that an
         // ownership formula's `session.id` is their guest session's.
@@ -437,7 +438,7 @@ pub(crate) async fn decide(
 async fn verdict(
     image: &mut RowImage<'_>,
     access: &ChangeAccess,
-    role: u8,
+    role: Role,
     user: Option<&User>,
 ) -> bool {
     match image

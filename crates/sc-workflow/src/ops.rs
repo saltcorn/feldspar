@@ -28,6 +28,7 @@
 //! one place that rule is written; the API layer calls it, because *who is
 //! asking* is a question about a request and not about a run.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
@@ -45,12 +46,6 @@ use sc_types::{Attrs, validate_attrs};
 use crate::driver::{Clock, Driver};
 use crate::machine::PendingForm;
 use crate::run::{mark_aborted, record, release, run_pending_form, run_state};
-
-/// The most privileged role, mirroring `sc_auth`'s constant of the same name
-/// (and the copies `sc-action` and `sc-files` keep for the same reason): the
-/// 1–100 role scale is a domain constant, and duplicating one `u8` is cheaper
-/// than a dependency on the user store from a crate that never reads a user.
-pub const ROLE_ADMIN: u8 = 1;
 
 /// How long the lease taken for an inline drive lasts.
 ///
@@ -199,18 +194,18 @@ pub async fn retry_run(
 /// number is more privileged, so `role <= min_role` — and the same safe default:
 /// a form that says nothing about who may answer it is a form only an admin may
 /// answer.
-pub fn may_resume(form: &PendingForm, role: u8) -> bool {
-    role <= form.min_role.unwrap_or(ROLE_ADMIN)
+pub fn may_resume(form: &PendingForm, role: Role) -> bool {
+    role.meets(form.min_role.unwrap_or(Role::ADMIN))
 }
 
 /// [`may_resume`] as a refusal, for the API layer to call before it resumes.
-pub fn check_may_resume(form: &PendingForm, role: u8) -> Result<()> {
+pub fn check_may_resume(form: &PendingForm, role: Role) -> Result<()> {
     if may_resume(form, role) {
         return Ok(());
     }
     Err(Error::auth(format!(
         "answering this step needs role {} or better",
-        form.min_role.unwrap_or(ROLE_ADMIN)
+        form.min_role.unwrap_or(Role::ADMIN)
     )))
 }
 
@@ -300,9 +295,8 @@ async fn drive(
 mod tests {
     use super::*;
     use crate::workflow::FieldDecl;
-    use sc_action::ROLE_PUBLIC;
 
-    fn form(min_role: Option<u8>) -> PendingForm {
+    fn form(min_role: Option<Role>) -> PendingForm {
         PendingForm {
             fields: vec![FieldDecl::new("approved", "bool").required()],
             assign_to: "approval".to_owned(),
@@ -313,20 +307,22 @@ mod tests {
     #[test]
     fn a_form_that_says_nothing_about_who_may_answer_it_is_admin_only() {
         let form = form(None);
-        assert!(may_resume(&form, ROLE_ADMIN));
-        assert!(!may_resume(&form, 40));
-        assert!(!may_resume(&form, ROLE_PUBLIC));
-        let err = check_may_resume(&form, 40).unwrap_err().to_string();
+        assert!(may_resume(&form, Role::ADMIN));
+        assert!(!may_resume(&form, Role::of(40)));
+        assert!(!may_resume(&form, Role::PUBLIC));
+        let err = check_may_resume(&form, Role::of(40))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("role 1"), "{err}");
     }
 
     #[test]
     fn a_floor_lets_in_everybody_at_least_that_privileged() {
-        let form = form(Some(40));
+        let form = form(Some(Role::of(40)));
         // A lower role number is more privileged, which is the rule everywhere
         // else in the system and is why this is `<=` and not `>=`.
-        assert!(may_resume(&form, ROLE_ADMIN));
-        assert!(may_resume(&form, 40));
-        assert!(!may_resume(&form, 41));
+        assert!(may_resume(&form, Role::ADMIN));
+        assert!(may_resume(&form, Role::of(40)));
+        assert!(!may_resume(&form, Role::of(41)));
     }
 }

@@ -3,6 +3,7 @@
 //! nothing, to that run's own session and to no one else; it is re-mounted
 //! under the same label, unmounted when the run ends, and swept when idle.
 
+use sc_types::Role;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -170,7 +171,7 @@ impl Env {
     }
 
     async fn login(&self) -> String {
-        let user = User::new(uuid::Uuid::new_v4(), 1).unwrap();
+        let user = User::new(uuid::Uuid::new_v4(), Role::ADMIN);
         self.sessions.login(user).await.unwrap()
     }
 }

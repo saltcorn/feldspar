@@ -12,6 +12,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{
@@ -80,7 +81,7 @@ fn order_event() -> Event {
     Event::new(EventKind::None)
         .on("orders")
         .row(json!({ "id": 42, "total": 250, "note": null, "customer": 7 }))
-        .caller(1, Some(json!({ "email": "admin@example.com" })))
+        .caller(Role::ADMIN, Some(json!({ "email": "admin@example.com" })))
 }
 
 #[tokio::test]

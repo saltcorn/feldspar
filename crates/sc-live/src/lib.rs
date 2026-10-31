@@ -62,8 +62,8 @@ pub mod subscription;
 pub mod topic;
 
 pub use access::{
-    Caller, Denied, Grant, PublishFacts, Refusal, RowFact, StoredStream, StreamFacts, caller_role,
-    may_open, may_publish, may_subscribe,
+    Caller, Denied, Grant, PublishFacts, Refusal, RowFact, StoredStream, StreamFacts, may_open,
+    may_publish, may_subscribe,
 };
 pub use changes::{
     CallerCell, ChangeAccess, ChangeCounters, ChangeCounts, Delivered, Suppressed, deliver_to,

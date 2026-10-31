@@ -763,7 +763,7 @@ pub(crate) fn may(config: &Attrs, key: &str) -> bool {
 /// application exposes: any script on the application's origin can send that
 /// chat with the admin's cookie ([`RunCaller::exposed`]).
 pub(crate) fn is_admin(caller: &RunCaller) -> bool {
-    caller.role == 1 && !caller.untrusted_origin()
+    caller.role.is_admin() && !caller.untrusted_origin()
 }
 
 /// The grants that run the project's own code — its `package.json` scripts,

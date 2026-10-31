@@ -5,7 +5,7 @@
 //! policies decide every row, and the application's own checks are switched off
 //! (GOALS: "then you no longer have to check"). Two halves live here:
 //!
-//! - **Caller context** ([`CallerContext`], [`run_in_context`]): every row
+//! - **Caller context** ([`Principal`], [`run_in_context`]): every row
 //!   operation on an RLS table runs inside a transaction that first `SET LOCAL`s
 //!   the caller's role and identity as GUCs. The policies read them with
 //!   `current_setting(name, true)`; a transaction that forgets to set them sees
@@ -21,7 +21,7 @@ use sc_error::{Context, Error, Result};
 use sc_expr::{Formula, Operation, SESSION_GUC, SchemaShape, USER_GUC, UserEnv};
 use sc_query::{SqlDialect, Statement, render_policy_expr};
 
-use crate::caller::CallerContext;
+use crate::caller::Principal;
 use crate::catalog::Catalog;
 use crate::changeset::{self, CHANGESET_GUC};
 use crate::projection::SchemaProjection;
@@ -42,7 +42,7 @@ pub const ROLE_GUC: &str = "sc.role";
 /// same probe-free rule the runtime path keeps.
 pub async fn run_in_context(
     catalog: &Catalog,
-    context: &CallerContext,
+    context: &Principal,
     stmt: &Statement,
 ) -> Result<Vec<Row>> {
     run_in_context_mode(catalog, context, stmt, Access::ReadWrite).await
@@ -74,7 +74,7 @@ pub enum Access {
 /// is the confusing half of the pair.
 pub async fn set_caller_context(
     tx: &mut dyn sc_db::Transaction,
-    context: &CallerContext,
+    context: &Principal,
 ) -> Result<()> {
     // **Both**, always. A transaction that runs one statement takes the whole
     // pair from this one caller, and one that runs many ([`SharedTx`], §10.3's
@@ -135,7 +135,7 @@ pub(crate) fn takes_caller_gucs(driver: &dyn sc_db::DatabaseDriver) -> bool {
 /// [`run_in_context`] in a `READ ONLY` transaction — see [`Access::ReadOnly`].
 pub async fn run_in_context_read_only(
     catalog: &Catalog,
-    context: &CallerContext,
+    context: &Principal,
     stmt: &Statement,
 ) -> Result<Vec<Row>> {
     run_in_context_mode(catalog, context, stmt, Access::ReadOnly).await
@@ -143,7 +143,7 @@ pub async fn run_in_context_read_only(
 
 async fn run_in_context_mode(
     catalog: &Catalog,
-    context: &CallerContext,
+    context: &Principal,
     stmt: &Statement,
     access: Access,
 ) -> Result<Vec<Row>> {

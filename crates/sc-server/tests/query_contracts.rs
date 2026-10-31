@@ -14,6 +14,7 @@
 //!   sixth wrong guess into a `429`, and another share still opens.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -25,7 +26,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use sc_api::{CustomQuery, Method, QueryLanguage, QueryRateLimit};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
@@ -173,7 +174,7 @@ impl Client {
 fn js(name: &str, path: &str, code: &str) -> CustomQuery {
     CustomQuery::new(name, Method::Get, path, code)
         .language(QueryLanguage::Javascript)
-        .min_role(sc_auth::ROLE_PUBLIC)
+        .min_role(Role::PUBLIC)
 }
 
 fn shop() -> Application {
@@ -224,7 +225,7 @@ async fn setup(tmp: &TempDir, trusted_proxies: &str) -> sc_error::Result<Server>
     sc_catalog::bootstrap_file_stores(&catalog).await?;
     sc_catalog::bootstrap_code_libraries(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
-    save_role(&catalog, &Role::new(80, "Member")).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Member")).await?;
 
     let evaluator = default_js_evaluator();
     let agents = sc_server::install_agents(&catalog).await?;
@@ -386,7 +387,7 @@ async fn logins_are_throttled_per_email_whether_or_not_the_account_exists() -> s
     let tag = uuid::Uuid::new_v4().simple().to_string();
     let real = format!("real-{tag}@example.com");
     let ghost = format!("ghost-{tag}@example.com");
-    create_user(&server.catalog, &real, PASSWORD, 80).await?;
+    create_user(&server.catalog, &real, PASSWORD, Role::of(80)).await?;
 
     // Ten failures each, from ten different addresses so the per-IP limit is
     // not what stops them.
@@ -430,7 +431,7 @@ async fn logins_are_throttled_per_email_whether_or_not_the_account_exists() -> s
 
     // Another account signs in as ever.
     let other = format!("other-{tag}@example.com");
-    create_user(&server.catalog, &other, PASSWORD, 80).await?;
+    create_user(&server.catalog, &other, PASSWORD, Role::of(80)).await?;
     let mut client = Client::new(&server.router, APP_HOST, Some(&address(2, 102)));
     let (status, _, body) = client
         .post(

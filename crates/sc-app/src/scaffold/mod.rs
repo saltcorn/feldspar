@@ -260,7 +260,7 @@ fn project_relative(project: &str, path: &Option<String>) -> Result<Option<Strin
 /// documentation, and failing a build over a sentence would be the wrong trade.
 /// The generator says "the roles are listed in the admin UI" and the project is
 /// still written.
-async fn documented_roles(cat: &Catalog) -> Result<Vec<sc_auth::Role>> {
+async fn documented_roles(cat: &Catalog) -> Result<Vec<sc_auth::RoleDef>> {
     if cat.get(sc_auth::ROLES_TABLE)?.is_none() {
         return Ok(Vec::new());
     }

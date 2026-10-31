@@ -8,6 +8,7 @@
 
 #[cfg(feature = "deno-host")]
 mod deno {
+    use sc_types::Role;
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::time::Duration;
@@ -146,7 +147,8 @@ mod deno {
                 Some(sc_module::files::module_owner(&names[0]).as_str()),
                 "{path}"
             );
-            let user = sc_files::FileCaller::new(80, Some(uuid::Uuid::new_v4().to_string()));
+            let user =
+                sc_files::FileCaller::new(Role::of(80), Some(uuid::Uuid::new_v4().to_string()));
             assert!(
                 sc_files::check_write(files.as_ref(), None, path, &user)
                     .await
@@ -202,7 +204,7 @@ mod deno {
             .set_meta(
                 "shared/closed.txt",
                 &sc_files::FileMeta {
-                    min_role: Some(1),
+                    min_role: Some(Role::ADMIN),
                     ..Default::default()
                 },
             )
@@ -211,7 +213,7 @@ mod deno {
         let event = Event::new(EventKind::None)
             .payload(json!({ "open": "shared/open.txt", "closed": "shared/closed.txt" }))
             .caller(
-                80,
+                Role::of(80),
                 Some(json!({ "id": "00000000-0000-0000-0000-000000000080", "role": 80 })),
             );
         let action = registry.require("read_as_caller").unwrap();

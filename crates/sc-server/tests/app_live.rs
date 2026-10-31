@@ -23,6 +23,7 @@
 //! - **L1.9** the generated client reaches the same socket.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,7 +33,7 @@ use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode, header};
 use futures::{SinkExt, StreamExt};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
-use sc_auth::{ROLE_ADMIN, Role, SessionStore, UserUpdate, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, UserUpdate, create_user, save_role};
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -60,8 +61,8 @@ const PASSWORD: &str = "correct-horse";
 
 /// The floor the boiler is observable at: an editor may watch it, a reader may
 /// not.
-const ROLE_EDITOR: u8 = 80;
-const ROLE_READER: u8 = 100;
+const ROLE_EDITOR: Role = Role::of(80);
+const ROLE_READER: Role = Role::PUBLIC;
 
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -239,7 +240,7 @@ impl Server {
             .expect("the live socket opens from the app's own page")
     }
 
-    async fn set_role(&self, email: &str, role: u8) {
+    async fn set_role(&self, email: &str, role: Role) {
         let user = sc_auth::load_user_by_email(&self.catalog, email)
             .await
             .unwrap()
@@ -289,8 +290,8 @@ async fn setup(limits: LiveLimits) -> Result<Server> {
     db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
-    save_role(&catalog, &Role::new(ROLE_EDITOR, "Editor")).await?;
-    create_user(&catalog, ADMIN, PASSWORD, ROLE_ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_EDITOR, "Editor")).await?;
+    create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
     create_user(&catalog, EDITOR, PASSWORD, ROLE_EDITOR).await?;
     create_user(&catalog, READER, PASSWORD, ROLE_READER).await?;
 

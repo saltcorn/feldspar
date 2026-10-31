@@ -13,6 +13,7 @@
 //! trigger's own action body does not; and that the cascade chain defaults to the
 //! trigger itself.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{Action, ActionContext, ActionRegistry, Event, EventKind};
@@ -95,7 +96,7 @@ async fn an_action_sees_its_event_its_config_and_the_catalog() -> Result<()> {
         .on("books")
         .row(json!({ "id": 1, "title": "new" }))
         .old_row(json!({ "id": 1, "title": "old" }))
-        .caller(1, Some(json!({ "email": "admin@example.com" })));
+        .caller(Role::ADMIN, Some(json!({ "email": "admin@example.com" })));
     let mut config = Attrs::new();
     config.insert("message".into(), json!("hello"));
 

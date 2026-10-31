@@ -63,6 +63,7 @@
 //! [`SharedTx::rollback_to_savepoint`] — when the part of the transaction that
 //! added it is wound back.
 
+use sc_types::Role;
 use std::sync::{Arc, Mutex as SyncMutex, MutexGuard};
 
 use sc_db::{DatabaseDriver, Row, SchemaChange};
@@ -70,10 +71,10 @@ use sc_error::{Error, Result};
 use sc_query::Statement;
 use tokio::sync::Mutex;
 
-use crate::caller::CallerContext;
+use crate::caller::Authority;
 use crate::catalog::Catalog;
 use crate::field::DbId;
-use crate::rls::{clear_caller_context, map_policy_violation, set_caller_context};
+use crate::rls::{map_policy_violation, set_caller_context};
 use crate::table::Table;
 
 /// Where a shared transaction is in its life.
@@ -101,11 +102,8 @@ enum Applied {
     /// Nothing has been applied yet: the next statement must say who it is,
     /// whoever that is.
     Unknown,
-    /// Explicitly nobody — [`clear_caller_context`] — in this ambient
-    /// changeset (its GUC text).
-    Nobody(String),
     /// This `(role, user JSON, changeset GUC text)`.
-    Caller(u8, Option<String>, String),
+    Caller(Role, Option<String>, String),
 }
 
 /// Something to do once the transaction has committed
@@ -220,35 +218,25 @@ impl SharedTx {
         table.provider().is_none() && table.database == self.database
     }
 
-    /// Run `stmt` as `caller`, collecting its rows.
+    /// Run `stmt` on `authority`, collecting its rows.
     ///
     /// The caller's GUCs are applied first (and re-applied whenever they are not
     /// the ones already in force), so an RLS table's policies decide this
     /// statement by *this* writer — see the module documentation. A policy
     /// violation comes back as a [`NotFound`](Error::not_found), the same
     /// probe-free reading [`run_in_context`](crate::run_in_context) gives it.
-    pub async fn run(&self, caller: Option<&CallerContext>, stmt: &Statement) -> Result<Vec<Row>> {
+    pub async fn run(&self, authority: Authority<'_>, stmt: &Statement) -> Result<Vec<Row>> {
         let mut open = self.inner.lock().await;
         if self.caller_gucs {
-            let wanted = match caller {
-                Some(caller) => {
-                    Applied::Caller(caller.role, caller.user_json(), caller.changeset_json())
-                }
-                None => Applied::Nobody(
-                    crate::changeset::current()
-                        .map(|c| c.guc_value(None))
-                        .unwrap_or_default(),
-                ),
-            };
+            // The system runs as the admin role with no user (`Authority`).
+            let caller = authority.as_principal();
+            let wanted = Applied::Caller(caller.role, caller.user_json(), caller.changeset_json());
             if open.applied != wanted {
                 let tx = open.handle(&self.driver).await?;
-                // Absent is spelled out rather than left alone: an unset GUC and
-                // a *stale* one are the same thing to a policy, and only one of
-                // them is what this statement means.
-                match caller {
-                    Some(caller) => set_caller_context(tx, caller).await?,
-                    None => clear_caller_context(tx).await?,
-                }
+                // Every GUC is spelled out rather than left alone: an unset GUC
+                // and a *stale* one are the same thing to a policy, and only one
+                // of them is what this statement means.
+                set_caller_context(tx, &caller).await?;
                 open.applied = wanted;
             }
         }

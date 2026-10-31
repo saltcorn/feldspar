@@ -25,6 +25,7 @@
 //! refusal, a publish's stamped source and the leave.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,7 +36,7 @@ use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode, header};
 use futures::{SinkExt, StreamExt};
 use sc_app::{ApiConfig, Application, CodeFramework, FrameworkRef, StreamRef};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, Role, SessionStore, UserUpdate, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, UserUpdate, create_user, save_role};
 use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -60,7 +61,7 @@ const VISITOR: &str = "visitor@example.com";
 const COLLEAGUE: &str = "colleague@example.com";
 const PASSWORD: &str = "correct-horse";
 /// The tutorial's Member role.
-const ROLE_MEMBER: u8 = 40;
+const ROLE_MEMBER: Role = Role::of(40);
 
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -230,10 +231,10 @@ async fn assumed() -> Result<Tutorial> {
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;
     catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", &dir.0)?))?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
-    create_user(&catalog, ADMIN, PASSWORD, ROLE_ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
+    create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
     create_user(&catalog, MEMBER, PASSWORD, ROLE_MEMBER).await?;
-    create_user(&catalog, VISITOR, PASSWORD, ROLE_PUBLIC).await?;
+    create_user(&catalog, VISITOR, PASSWORD, Role::PUBLIC).await?;
     create_user(&catalog, COLLEAGUE, PASSWORD, ROLE_MEMBER).await?;
 
     let agents = sc_server::install_agents(&catalog).await?;
@@ -562,7 +563,7 @@ async fn part_one_the_live_socket() -> Result<()> {
         &tutorial.catalog,
         member_id,
         UserUpdate {
-            role: Some(ROLE_PUBLIC),
+            role: Some(Role::PUBLIC),
             ..UserUpdate::default()
         },
     )
@@ -1026,7 +1027,7 @@ async fn part_four_presence_on_the_board() -> Result<()> {
             "/api/tables/boards",
             Some(json!({
                 "label": "", "description": "",
-                "min_role_read": ROLE_ADMIN, "min_role_write": ROLE_ADMIN,
+                "min_role_read": Role::ADMIN, "min_role_write": Role::ADMIN,
                 "ownership_formula": "board_membersↃboard.some(m => m.member === user.id)",
                 "rls_enabled": false,
                 "sync_enabled": false,

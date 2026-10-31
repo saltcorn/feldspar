@@ -15,9 +15,11 @@
 //! endpoint's [`AuthRequirement`](crate::AuthRequirement) first, so every API
 //! surface goes through the same §7 layer.
 
+use std::borrow::Cow;
+
 use crate::calc_read::CalcPlan;
 use sc_catalog::{
-    CallerContext, Catalog, DataField, DataFieldKind, SharedTx, Table, TableWrite, WriteOp,
+    Authority, Catalog, DataField, DataFieldKind, Principal, SharedTx, Table, TableWrite, WriteOp,
 };
 use sc_db::Row;
 use sc_error::{Error, Repr, Result};
@@ -92,7 +94,13 @@ impl Executor {
 
 /// Every row of `table`, as a JSON array of objects.
 pub async fn list_rows(catalog: &Catalog, table: &Table) -> Result<Json> {
-    list_rows_where(catalog, table, None, None).await
+    list_rows_where(
+        catalog,
+        table,
+        None,
+        Authority::system("row layer without a caller: list rows"),
+    )
+    .await
 }
 
 /// Every row of `table`, optionally through an RLS caller context — the entry
@@ -102,7 +110,7 @@ pub async fn list_rows(catalog: &Catalog, table: &Table) -> Result<Json> {
 pub async fn list_rows_ctx(
     catalog: &Catalog,
     table: &Table,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<Json> {
     list_rows_where(catalog, table, None, context).await
 }
@@ -113,7 +121,7 @@ pub async fn update_row_ctx(
     table: &Table,
     id: &str,
     body: &Json,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<Json> {
     update_row_guarded(catalog, table, id, body, None, context).await
 }
@@ -123,7 +131,7 @@ pub async fn delete_row_ctx(
     catalog: &Catalog,
     table: &Table,
     id: &str,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<Json> {
     delete_row_guarded(catalog, table, id, None, context).await
 }
@@ -139,7 +147,7 @@ pub async fn list_rows_where(
     catalog: &Catalog,
     table: &Table,
     filter: Option<Expr>,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<Json> {
     list_rows_query(catalog, table, &RowQuery::new().where_(filter), context).await
 }
@@ -354,7 +362,7 @@ pub async fn list_rows_query(
     catalog: &Catalog,
     table: &Table,
     query: &RowQuery,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<Json> {
     let query = &*crate::vector::prepare(catalog, table, query).await?;
     let plan = CalcPlan::of(catalog, table)?;
@@ -384,7 +392,7 @@ pub async fn list_row_values(
     catalog: &Catalog,
     table: &Table,
     query: &RowQuery,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
     list_row_values_in(catalog, table, query, context, &Executor::Pooled).await
 }
@@ -396,7 +404,7 @@ pub async fn list_row_values_in(
     catalog: &Catalog,
     table: &Table,
     query: &RowQuery,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     executor: &Executor,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
     let query = &*crate::vector::prepare(catalog, table, query).await?;
@@ -437,7 +445,7 @@ pub async fn aggregate_values(
     table: &Table,
     aggregates: Vec<Projection>,
     filter: Option<Expr>,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<std::collections::BTreeMap<String, Value>> {
     let query = RowQuery::new().where_(filter);
     let grouped = aggregate_grouped(catalog, table, aggregates, &query, context).await?;
@@ -463,7 +471,7 @@ pub async fn aggregate_grouped(
     table: &Table,
     projections: Vec<Projection>,
     query: &RowQuery,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
     // A count or a sum over a filter the row read would refuse is refused the
     // same way, so a grid's count and its rows cannot disagree about why.
@@ -490,11 +498,7 @@ const ROW_COUNT_KEY: &str = "_fd_count";
 /// find out how many there are would make the page cost what the data costs.
 /// It goes through the same read path, so an RLS-enforced table counts the rows
 /// the caller may see rather than the rows that exist.
-pub async fn count_rows(
-    catalog: &Catalog,
-    table: &Table,
-    context: Option<&CallerContext>,
-) -> Result<i64> {
+pub async fn count_rows(catalog: &Catalog, table: &Table, context: Authority<'_>) -> Result<i64> {
     count_rows_where(catalog, table, None, context).await
 }
 
@@ -508,7 +512,7 @@ pub async fn count_rows_where(
     catalog: &Catalog,
     table: &Table,
     filter: Option<Expr>,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<i64> {
     let count = sc_expr::aggregate_expr(&sc_expr::AggFunc::Count, false, None, &table.name)?;
     let values = aggregate_values(
@@ -625,7 +629,7 @@ pub async fn select_values(
     catalog: &Catalog,
     table: &Table,
     filter: Option<Expr>,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
     select_values_in(catalog, table, filter, context, &Executor::Pooled).await
 }
@@ -637,7 +641,7 @@ pub async fn select_values_in(
     catalog: &Catalog,
     table: &Table,
     filter: Option<Expr>,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     executor: &Executor,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
     let plan = CalcPlan::of(catalog, table)?;
@@ -656,7 +660,13 @@ pub async fn select_values_in(
 /// Insert a row from a JSON object, returning the inserted row (with any
 /// database-generated columns filled in).
 pub async fn create_row(catalog: &Catalog, table: &Table, body: &Json) -> Result<Json> {
-    create_row_ctx(catalog, table, body, None).await
+    create_row_ctx(
+        catalog,
+        table,
+        body,
+        Authority::system("row layer without a caller: create row"),
+    )
+    .await
 }
 
 /// [`create_row`] routed through an RLS caller context (§7.3) when one is
@@ -667,7 +677,7 @@ pub async fn create_row_ctx(
     catalog: &Catalog,
     table: &Table,
     body: &Json,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<Json> {
     create_row_in(catalog, table, body, context, &Executor::Pooled).await
 }
@@ -678,10 +688,16 @@ pub async fn create_row_in(
     catalog: &Catalog,
     table: &Table,
     body: &Json,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     executor: &Executor,
 ) -> Result<Json> {
-    let body = &fill_defaults(catalog, table, body, context.and_then(|c| c.user.as_ref())).await?;
+    let body = &fill_defaults(
+        catalog,
+        table,
+        body,
+        context.principal().and_then(|c| c.user.as_ref()),
+    )
+    .await?;
     let body = &*crate::vector::embed_insert(catalog, table, body).await?;
     let obj = require_object(body)?;
     reject_calc_writes(table, obj)?;
@@ -836,7 +852,15 @@ pub async fn fill_defaults(
 /// row. The primary key addresses the row and is not reassignable through the
 /// body.
 pub async fn update_row(catalog: &Catalog, table: &Table, id: &str, body: &Json) -> Result<Json> {
-    update_row_guarded(catalog, table, id, body, None, None).await
+    update_row_guarded(
+        catalog,
+        table,
+        id,
+        body,
+        None,
+        Authority::system("row layer without a caller: update row"),
+    )
+    .await
 }
 
 /// [`update_row`] with an extra `guard` predicate ANDed into the WHERE —
@@ -850,7 +874,7 @@ pub(crate) async fn update_row_guarded(
     id: &str,
     body: &Json,
     guard: Option<Expr>,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<Json> {
     update_row_guarded_in(catalog, table, id, body, guard, context, &Executor::Pooled).await
 }
@@ -861,7 +885,7 @@ pub async fn update_row_in(
     table: &Table,
     id: &str,
     body: &Json,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     executor: &Executor,
 ) -> Result<Json> {
     update_row_guarded_in(catalog, table, id, body, None, context, executor).await
@@ -873,7 +897,7 @@ pub(crate) async fn update_row_guarded_in(
     id: &str,
     body: &Json,
     guard: Option<Expr>,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     executor: &Executor,
 ) -> Result<Json> {
     let obj = require_object(body)?;
@@ -894,7 +918,7 @@ pub(crate) async fn attach_uploaded_file(
     id: &str,
     field: &str,
     path: &str,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<Json> {
     let mut obj = Map::new();
     obj.insert(field.to_owned(), Json::String(path.to_owned()));
@@ -941,7 +965,17 @@ pub async fn write_document_in(
     if let Some((column, text)) = mirror {
         obj.insert(column.to_owned(), Json::String(text.to_owned()));
     }
-    update_row_unchecked_in(catalog, table, id, &obj, None, None, executor, true).await
+    update_row_unchecked_in(
+        catalog,
+        table,
+        id,
+        &obj,
+        None,
+        Authority::system("live document: persist merged state"),
+        executor,
+        true,
+    )
+    .await
 }
 
 /// The update itself, after the refusals that depend on who is writing.
@@ -953,7 +987,7 @@ async fn update_row_unchecked_in(
     id: &str,
     obj: &Map<String, Json>,
     guard: Option<Expr>,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     executor: &Executor,
     check_attach: bool,
 ) -> Result<Json> {
@@ -1069,7 +1103,14 @@ async fn update_row_unchecked_in(
 /// wire contract, and the GraphQL one answers with the row, because that is
 /// what `delete_X_by_pk: X` promised. Neither shape belongs here.
 pub async fn delete_row(catalog: &Catalog, table: &Table, id: &str) -> Result<Json> {
-    delete_row_guarded(catalog, table, id, None, None).await
+    delete_row_guarded(
+        catalog,
+        table,
+        id,
+        None,
+        Authority::system("row layer without a caller: delete row"),
+    )
+    .await
 }
 
 /// [`delete_row`] with an extra `guard` predicate and optional RLS `context`;
@@ -1079,7 +1120,7 @@ pub(crate) async fn delete_row_guarded(
     table: &Table,
     id: &str,
     guard: Option<Expr>,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<Json> {
     delete_row_guarded_in(catalog, table, id, guard, context, &Executor::Pooled).await
 }
@@ -1089,7 +1130,7 @@ pub async fn delete_row_in(
     catalog: &Catalog,
     table: &Table,
     id: &str,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     executor: &Executor,
 ) -> Result<Json> {
     delete_row_guarded_in(catalog, table, id, None, context, executor).await
@@ -1100,7 +1141,7 @@ pub(crate) async fn delete_row_guarded_in(
     table: &Table,
     id: &str,
     guard: Option<Expr>,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     executor: &Executor,
 ) -> Result<Json> {
     let guard = user_rows::and_guard(guard, user_rows::delete_guard(table, context)?);
@@ -1145,7 +1186,7 @@ pub(crate) async fn delete_row_guarded_in(
 pub async fn delete_all_rows_ctx(
     catalog: &Catalog,
     table: &Table,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<u64> {
     let executor = Executor::Pooled;
     let observed = catalog.observes_writes(&table.name, WriteOp::Delete);
@@ -1280,9 +1321,16 @@ async fn still_referenced(
         table,
         &RowQuery::new().where_(Some(filter)).limit(1),
     )?;
-    Ok(!run_read_in(catalog, table, &select, None, false, executor)
-        .await?
-        .is_empty())
+    Ok(!run_read_in(
+        catalog,
+        table,
+        &select,
+        Authority::system("file cleanup: is the file still referenced"),
+        false,
+        executor,
+    )
+    .await?
+    .is_empty())
 }
 
 /// Raise the event one committed write is (§10.2), if anything is listening.
@@ -1301,7 +1349,7 @@ async fn emit(
     op: WriteOp,
     row: &Json,
     old_row: Option<Json>,
-    caller: Option<&CallerContext>,
+    caller: Authority<'_>,
     executor: &Executor,
 ) {
     if !catalog.observes_writes(&table.name, op) {
@@ -1312,7 +1360,7 @@ async fn emit(
         op,
         row: row.clone(),
         old_row,
-        caller,
+        caller: caller.principal(),
         // The transaction the write was made in travels with the event, so what
         // a listening trigger writes about it lands in the same transaction and
         // shares its fate (§10.3, decision 6). `None` on the pooled path, which
@@ -1339,7 +1387,7 @@ async fn read_row_in(
     table: &Table,
     pk: &str,
     id: &str,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     executor: &Executor,
 ) -> Result<Option<Json>> {
     let filter = pk_filter(table, pk, id)?;
@@ -1379,7 +1427,14 @@ pub(crate) fn coerce_row_values(
 /// §4). A missing row is a [`NotFound`](Error::not_found), exactly as
 /// [`update_row`] reports one; an unknown column is refused by name.
 pub async fn read_field(catalog: &Catalog, table: &Table, column: &str, id: &str) -> Result<Value> {
-    read_field_ctx(catalog, table, column, id, None).await
+    read_field_ctx(
+        catalog,
+        table,
+        column,
+        id,
+        Authority::system("row layer without a caller: read field"),
+    )
+    .await
 }
 
 /// [`read_field`] routed through an RLS caller context (§7.3) when one is
@@ -1389,7 +1444,7 @@ pub(crate) async fn read_field_ctx(
     table: &Table,
     column: &str,
     id: &str,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<Value> {
     if table.field(column).is_none() {
         return Err(Error::invalid(format!(
@@ -1572,9 +1627,9 @@ async fn may_attach_file(
     table: &Table,
     column: &str,
     value: &Value,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<bool> {
-    let Some(context) = context else {
+    let Some(context) = context.principal() else {
         return Ok(true);
     };
     let Some(DataFieldKind::File { store, .. }) = table.field(column).map(|f| &f.kind) else {
@@ -1584,15 +1639,7 @@ async fn may_attach_file(
         Value::Text(path) if !path.is_empty() => path.as_str(),
         _ => return Ok(true),
     };
-    let caller = sc_files::FileCaller::new(
-        context.role,
-        context
-            .user
-            .as_ref()
-            .and_then(|user| user.get("id"))
-            .and_then(Json::as_str)
-            .map(str::to_owned),
-    );
+    let caller = context.file_caller();
     if caller.is_admin() {
         return Ok(true);
     }
@@ -1756,20 +1803,27 @@ pub fn pk_filter(table: &Table, pk: &str, id: &str) -> Result<Expr> {
 /// too (see [`RowQuery::in_caller_context`]).
 fn in_context<'a>(
     table: &Table,
-    context: Option<&'a CallerContext>,
+    context: Option<&'a Principal>,
     reaches_rls: bool,
-) -> Option<&'a CallerContext> {
+) -> Option<&'a Principal> {
     context.filter(|_| table.rls_enabled || reaches_rls)
 }
 
 /// The caller context a write runs in: [`in_context`]'s, and on a table whose
 /// changes are recorded (§14.11, §14.12) the caller's too, because the
 /// change-log trigger reads the writer's changeset from the same GUCs.
-fn write_context<'a>(
-    table: &Table,
-    context: Option<&'a CallerContext>,
-) -> Option<&'a CallerContext> {
-    in_context(table, context, false).or(context.filter(|_| table.change_log_enabled()))
+///
+/// The system writes to an RLS table as the admin role; to a table that is only
+/// change-logged it takes the provider, as it always has, and the trigger mints
+/// the write's changeset.
+fn write_context<'a>(table: &Table, context: Authority<'a>) -> Option<Cow<'a, Principal>> {
+    if context.is_system() {
+        return table.rls_enabled.then(|| context.as_principal());
+    }
+    let principal = context.principal();
+    in_context(table, principal, false)
+        .or(principal.filter(|_| table.change_log_enabled()))
+        .map(Cow::Borrowed)
 }
 
 /// Run a `SELECT`, collecting its rows — through an RLS caller-context
@@ -1779,7 +1833,7 @@ pub(crate) async fn run_read(
     catalog: &Catalog,
     table: &Table,
     select: &Select,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     reaches_rls: bool,
 ) -> Result<Vec<Row>> {
     run_read_in(
@@ -1800,7 +1854,7 @@ pub(crate) async fn run_read_in(
     catalog: &Catalog,
     table: &Table,
     select: &Select,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     reaches_rls: bool,
     executor: &Executor,
 ) -> Result<Vec<Row>> {
@@ -1812,7 +1866,10 @@ pub(crate) async fn run_read_in(
             .run(context, &Statement::Select(Box::new(select.clone())))
             .await;
     }
-    match in_context(table, context, reaches_rls) {
+    // The system reaches an RLS table's policies as the admin role (`Authority`).
+    let system = context.is_system().then(|| context.as_principal());
+    let principal = context.principal().or(system.as_deref());
+    match in_context(table, principal, reaches_rls) {
         Some(context) => {
             sc_catalog::run_in_context(
                 catalog,
@@ -1840,13 +1897,13 @@ async fn run_write_in(
     catalog: &Catalog,
     table: &Table,
     statement: Statement,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
     executor: &Executor,
 ) -> Result<Vec<Row>> {
     let outcome = match executor.serving(table) {
         Some(tx) => tx.run(context, &statement).await,
         None => match write_context(table, context) {
-            Some(context) => sc_catalog::run_in_context(catalog, context, &statement).await,
+            Some(context) => sc_catalog::run_in_context(catalog, &context, &statement).await,
             None => match catalog.provider(table)?.write(&statement).await {
                 Ok(stream) => stream.try_collect().await,
                 Err(e) => Err(e),
@@ -1917,6 +1974,7 @@ mod tests {
     use super::*;
     use sc_catalog::DbId;
     use sc_db::PhysicalTable;
+    use sc_types::Role;
 
     fn table(rls_enabled: bool) -> Table {
         let mut table = Table::from_physical(
@@ -1945,7 +2003,7 @@ mod tests {
     /// fail-closed shape §7.3 depends on.
     #[test]
     fn the_table_decides_the_caller_context_transaction_not_the_caller() {
-        let caller = CallerContext::anonymous(1);
+        let caller = Principal::anonymous(Role::ADMIN);
         assert!(in_context(&table(true), Some(&caller), false).is_some());
         assert!(in_context(&table(false), Some(&caller), false).is_none());
         assert!(in_context(&table(true), None, false).is_none());
@@ -1962,7 +2020,7 @@ mod tests {
     /// gets to ask for the transaction the table did not need.
     #[test]
     fn a_statement_reaching_a_protected_table_asks_for_the_transaction_itself() {
-        let caller = CallerContext::anonymous(1);
+        let caller = Principal::anonymous(Role::ADMIN);
         assert!(in_context(&table(false), Some(&caller), true).is_some());
         // Still fail-closed on the other half: no context is no transaction,
         // whatever the statement reaches.

@@ -16,6 +16,7 @@
 //! [`ownership`](crate::ownership)'s, and this provider reaches it through the
 //! same entry points every other reader does.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use async_graphql::dynamic::ResolverContext;
@@ -26,7 +27,6 @@ use sc_expr::JsEvaluator;
 
 use super::limits::{GraphqlLimits, StatementBudget};
 use super::names::SchemaNames;
-use crate::ownership;
 
 /// The mount an application's `File` bytes are served from when nobody says
 /// otherwise — the REST provider's own default. A GraphQL `File` field is a path
@@ -68,8 +68,8 @@ pub struct RequestContext {
 
 impl RequestContext {
     /// The caller's role — theirs, or public when nobody is logged in.
-    pub fn role(&self) -> u8 {
-        ownership::caller_role(self.user.as_ref())
+    pub fn role(&self) -> Role {
+        sc_auth::role_of(self.user.as_ref())
     }
 
     /// The caller as the ownership layer wants them.

@@ -18,6 +18,7 @@
 //!   name, a base that does not exist or leads back to the dataset, a changed
 //!   base, and operation ids that are empty or repeated.
 
+use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sc_catalog::{Catalog, DataField, Table};
@@ -330,7 +331,6 @@ pub async fn list_dataset_sharing(catalog: &Catalog) -> Result<BTreeMap<DatasetI
 
 /// Set who owns a dataset and whom it is shared with.
 pub async fn set_dataset_sharing(catalog: &Catalog, id: DatasetId, sharing: Sharing) -> Result<()> {
-    sharing.check()?;
     let update = Update::new(
         DATASETS_TABLE,
         vec![
@@ -361,7 +361,7 @@ fn sharing_from_row(row: &Row) -> Sharing {
             _ => None,
         },
         share_role: match row.get(COL_SHARE_ROLE) {
-            Some(Value::Int(n)) => u8::try_from(*n).ok(),
+            Some(Value::Int(n)) => Role::try_from(*n).ok(),
             _ => None,
         },
     }

@@ -11,6 +11,7 @@
 //! rule is enforced by code this crate calls rather than code it contains, so a
 //! test that stubbed it out would be testing nothing.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -129,7 +130,7 @@ impl Env {
     /// real database: the coding traits' whole job is what happens when bytes
     /// meet paths, and a stubbed store would confirm only that the seam was
     /// called.
-    pub async fn with_file_store(&self, name: &str, min_role: Option<u8>) -> Result<PathBuf> {
+    pub async fn with_file_store(&self, name: &str, min_role: Option<Role>) -> Result<PathBuf> {
         let dir = temp_dir(name);
         std::fs::create_dir_all(&dir).map_err(|e| Error::config(e.to_string()))?;
         let mut def = FileStoreDef::local(name, dir.to_string_lossy());
@@ -432,7 +433,7 @@ pub fn config(entries: &[(&str, Json)]) -> Attrs {
 /// A user at role 40 — below `books`' admin-only floors, so their access is
 /// whatever the ownership formula grants and nothing else.
 pub fn reader(email: &str) -> User {
-    let mut user = User::new(Uuid::new_v4(), 40).unwrap();
+    let mut user = User::new(Uuid::new_v4(), Role::of(40));
     user.extra = BTreeMap::from([("email".to_owned(), Value::Text(email.to_owned()))]);
     user
 }

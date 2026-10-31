@@ -9,11 +9,12 @@
 
 #[cfg(feature = "deno-host")]
 mod deno {
+    use sc_types::Role;
     use std::sync::Arc;
 
     use rust_decimal::Decimal;
     use sc_action::{ActionContext, ActionRegistry, Event, EventKind};
-    use sc_auth::{Role, create_user, credit_balance, list_credit_buckets, save_role};
+    use sc_auth::{RoleDef, create_user, credit_balance, list_credit_buckets, save_role};
     use sc_catalog::{Catalog, bootstrap_field_meta, bootstrap_table_meta};
     use sc_db::DatabaseDriver;
     use sc_db_postgres::PgDriver;
@@ -36,8 +37,12 @@ mod deno {
         bootstrap_table_meta(&cat).await.unwrap();
         bootstrap_field_meta(&cat).await.unwrap();
         sc_module::bootstrap_modules(&cat).await.unwrap();
-        save_role(&cat, &Role::new(80, "Member")).await.unwrap();
-        let user = create_user(&cat, "c@example.com", "pw", 80).await.unwrap();
+        save_role(&cat, &RoleDef::new(Role::of(80), "Member"))
+            .await
+            .unwrap();
+        let user = create_user(&cat, "c@example.com", "pw", Role::of(80))
+            .await
+            .unwrap();
 
         let (installer, host, names) = installed("module-credits", &["credits-module"]).await;
         let name = names[0].clone();

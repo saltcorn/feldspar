@@ -35,6 +35,7 @@
 //!   up — `pg_dump`'s arrangement, and the answer to "what if a table changes
 //!   underneath a half-written file".
 
+use sc_catalog::Authority;
 use std::io::{Seek, Write};
 
 use sc_api::rows;
@@ -87,7 +88,9 @@ pub async fn available(catalog: &Catalog) -> Result<Available> {
         if table.database != sc_catalog::DbId::primary() {
             continue;
         }
-        let count = rows::count_rows(catalog, &table, None).await.unwrap_or(0);
+        let count = rows::count_rows(catalog, &table, Authority::system("backup: count rows"))
+            .await
+            .unwrap_or(0);
         tables.push(
             Item::new(table.name.clone())
                 .labelled(table.label.clone())
@@ -119,7 +122,9 @@ pub async fn available(catalog: &Catalog) -> Result<Available> {
         .collect();
 
     let users = match catalog.get(sc_auth::USERS_TABLE)? {
-        Some(users) => rows::count_rows(catalog, &users, None).await.unwrap_or(0),
+        Some(users) => rows::count_rows(catalog, &users, Authority::system("backup: count rows"))
+            .await
+            .unwrap_or(0),
         None => 0,
     };
 

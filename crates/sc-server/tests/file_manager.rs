@@ -9,6 +9,7 @@
 //! at a fresh temp directory, connected to the catalog by name.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -305,7 +306,7 @@ async fn xattr_metadata_round_trips_through_the_connected_store() -> sc_error::R
     assert!(created.owner.is_some());
 
     let mut meta = FileMeta {
-        min_role: Some(30),
+        min_role: Some(Role::of(30)),
         ..Default::default()
     };
     meta.attributes

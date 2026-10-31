@@ -15,6 +15,8 @@
 //!   syntax error is refused with the line.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,7 +30,7 @@ use sc_api::mcp::ToolContext;
 use sc_api::schema_edit::Grants;
 use sc_api::{CustomQuery, Method, QueryLanguage};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, CodeLibrary, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
@@ -43,7 +45,7 @@ use tower::ServiceExt;
 
 const BASE_DOMAIN: &str = "example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 80;
+const ROLE_MEMBER: Role = Role::of(80);
 
 /// A scratch directory removed when the guard drops.
 struct TempDir(PathBuf, Teardown);
@@ -160,7 +162,7 @@ impl Client {
 fn js(name: &str, path: &str, code: &str) -> CustomQuery {
     CustomQuery::new(name, Method::Get, path, code)
         .language(QueryLanguage::Javascript)
-        .min_role(sc_auth::ROLE_PUBLIC)
+        .min_role(Role::PUBLIC)
 }
 
 /// The two applications' queries: the same instance helper from both, a name
@@ -220,7 +222,7 @@ async fn setup(tmp: &TempDir, tag: &str) -> sc_error::Result<Server> {
     sc_catalog::bootstrap_file_stores(&catalog).await?;
     sc_catalog::bootstrap_code_libraries(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
     let mut ids = HashMap::new();
     for who in ["alice", "bob"] {
         let user = create_user(
@@ -232,7 +234,7 @@ async fn setup(tmp: &TempDir, tag: &str) -> sc_error::Result<Server> {
         .await?;
         ids.insert(who, user.id);
     }
-    create_user(&catalog, "admin@example.com", PASSWORD, sc_auth::ROLE_ADMIN).await?;
+    create_user(&catalog, "admin@example.com", PASSWORD, Role::ADMIN).await?;
 
     // Alice's own file, readable by her alone (the owner rule, §2.1).
     let files_dir = tmp.path().join(format!("files-{tag}"));
@@ -251,7 +253,7 @@ async fn setup(tmp: &TempDir, tag: &str) -> sc_error::Result<Server> {
         .set_meta(
             "alice/notes.txt",
             &FileMeta {
-                min_role: Some(sc_auth::ROLE_ADMIN),
+                min_role: Some(Role::ADMIN),
                 owner: Some(ids["alice"].to_string()),
                 ..FileMeta::default()
             },
@@ -421,7 +423,12 @@ async fn a_trigger_sees_the_instances_libraries_and_no_applications() -> sc_erro
     // belongs to no application, gets the instance's.
     let greeting = server
         .dispatcher
-        .run_trigger(&server.catalog, "instanceGreet", Value::Null, None)
+        .run_trigger(
+            &server.catalog,
+            "instanceGreet",
+            Value::Null,
+            Authority::system("test"),
+        )
         .await?;
     assert_eq!(greeting, json!("instance"));
 
@@ -433,7 +440,12 @@ async fn a_trigger_sees_the_instances_libraries_and_no_applications() -> sc_erro
     .await?;
     let err = server
         .dispatcher
-        .run_trigger(&server.catalog, "appOnly", Value::Null, None)
+        .run_trigger(
+            &server.catalog,
+            "appOnly",
+            Value::Null,
+            Authority::system("test"),
+        )
         .await
         .unwrap_err()
         .to_string();
@@ -648,7 +660,7 @@ async fn the_mcp_tools_need_their_grants_and_refuse_a_syntax_error() -> sc_error
     let ctx = ToolContext {
         catalog: &server.catalog,
         user: None,
-        role: sc_auth::ROLE_ADMIN,
+        role: Role::ADMIN,
         triggers: Some(&server.dispatcher),
         actor: "test",
     };

@@ -2,7 +2,7 @@
 //!
 //! A role has always been an integer on the fixed `1..=100` scale (§7.1), and
 //! for a while an integer was all it was: `1` meant admin because
-//! [`ROLE_ADMIN`] said so, `100` meant public, and everything between meant
+//! [`Role::ADMIN`] said so, `100` meant public, and everything between meant
 //! whatever an installation's users made it mean. That stops working as soon as
 //! a role needs to *carry* anything — a name to show in a pick-list, and
 //! settings that apply to everyone holding it. A row can carry those; an integer
@@ -27,11 +27,12 @@ use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, Table, TableId};
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Value};
+use sc_types::Role;
 use sc_types::{Attrs, BasicType, TypeRef};
 use serde_json::Value as Json;
 use uuid::Uuid;
 
-use crate::users::{ROLE_ADMIN, ROLE_PUBLIC, USERS_TABLE, role_in_range};
+use crate::users::USERS_TABLE;
 
 /// Name of the roles table in the primary database.
 pub const ROLES_TABLE: &str = "_fd_roles";
@@ -50,23 +51,23 @@ pub const COL_ATTRIBUTES: &str = "attributes";
 
 /// One role (technical design §7.1, §9).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Role {
+pub struct RoleDef {
     /// The row's identity.
     pub id: Uuid,
     /// The role number on the `1..=100` scale — lower is more privileged.
-    pub role: u8,
+    pub role: Role,
     /// The human name shown wherever a role is chosen or displayed.
     pub name: String,
     /// A human description; empty when none was given.
     pub description: String,
-    /// Role-specific settings (§9).
+    /// RoleDef-specific settings (§9).
     pub attributes: Attrs,
 }
 
-impl Role {
+impl RoleDef {
     /// A role with the given number and name, no description and no settings.
-    pub fn new(role: u8, name: impl Into<String>) -> Role {
-        Role {
+    pub fn new(role: Role, name: impl Into<String>) -> RoleDef {
+        RoleDef {
             id: Uuid::new_v4(),
             role,
             name: name.into(),
@@ -76,20 +77,20 @@ impl Role {
     }
 
     /// Set the description.
-    pub fn description(mut self, description: impl Into<String>) -> Role {
+    pub fn description(mut self, description: impl Into<String>) -> RoleDef {
         self.description = description.into();
         self
     }
 
     /// Whether this role is one of the two the system itself depends on.
     ///
-    /// [`ROLE_ADMIN`] is what `User::is_admin` tests and what every admin
-    /// endpoint requires; [`ROLE_PUBLIC`] is the role an unauthenticated caller
+    /// [`Role::ADMIN`] is what `User::is_admin` tests and what every admin
+    /// endpoint requires; [`Role::PUBLIC`] is the role an unauthenticated caller
     /// is treated as. Neither is a policy choice an installation gets to delete
     /// — without the first nobody can administer anything, and without the
     /// second an anonymous request has no role at all.
     pub fn is_builtin(&self) -> bool {
-        self.role == ROLE_ADMIN || self.role == ROLE_PUBLIC
+        self.role.is_admin() || self.role.is_public()
     }
 }
 
@@ -153,15 +154,15 @@ pub async fn bootstrap_roles(catalog: &Catalog) -> Result<Table> {
         None => catalog.create_table(ROLES_TABLE, &roles_fields()).await?,
     };
     for (role, name, description) in [
-        (ROLE_ADMIN, "Admin", "Full access to everything."),
+        (Role::ADMIN, "Admin", "Full access to everything."),
         (
-            ROLE_PUBLIC,
+            Role::PUBLIC,
             "Public",
             "Anyone at all, including callers who are not logged in.",
         ),
     ] {
         if load_role(catalog, role).await?.is_none() {
-            save_role(catalog, &Role::new(role, name).description(description)).await?;
+            save_role(catalog, &RoleDef::new(role, name).description(description)).await?;
         }
     }
     Ok(table)
@@ -173,16 +174,10 @@ pub async fn bootstrap_roles(catalog: &Catalog) -> Result<Table> {
 /// row first, so the admin gets an error naming the conflict rather than a raw
 /// constraint violation. The database's `UNIQUE` constraints remain the
 /// authority: these checks and the write are not one transaction.
-pub async fn save_role(catalog: &Catalog, role: &Role) -> Result<()> {
+pub async fn save_role(catalog: &Catalog, role: &RoleDef) -> Result<()> {
     let name = role.name.trim();
     if name.is_empty() {
         return Err(Error::invalid("a role needs a name"));
-    }
-    if !role_in_range(role.role) {
-        return Err(Error::invalid(format!(
-            "role {} is not in 1..=100",
-            role.role
-        )));
     }
     if let Some(other) = load_role(catalog, role.role).await?
         && other.id != role.id
@@ -224,30 +219,31 @@ pub async fn save_role(catalog: &Catalog, role: &Role) -> Result<()> {
 }
 
 /// The role with this number, if it exists.
-pub async fn load_role(catalog: &Catalog, role: u8) -> Result<Option<Role>> {
+pub async fn load_role(catalog: &Catalog, role: Role) -> Result<Option<RoleDef>> {
     load_one(catalog, Expr::col(COL_ROLE).eq(Expr::lit(i64::from(role)))).await
 }
 
 /// The role with this name, if any.
-pub async fn load_role_by_name(catalog: &Catalog, name: &str) -> Result<Option<Role>> {
+pub async fn load_role_by_name(catalog: &Catalog, name: &str) -> Result<Option<RoleDef>> {
     load_one(catalog, Expr::col(COL_NAME).eq(Expr::lit(name))).await
 }
 
 /// The role with this row id, if any.
-async fn load_role_by_id(catalog: &Catalog, id: Uuid) -> Result<Option<Role>> {
+async fn load_role_by_id(catalog: &Catalog, id: Uuid) -> Result<Option<RoleDef>> {
     load_one(catalog, Expr::col(COL_ID).eq(Expr::lit(id))).await
 }
 
 /// Every role, ordered by role number — most privileged first, which is the
 /// order a pick-list wants.
-pub async fn list_roles(catalog: &Catalog) -> Result<Vec<Role>> {
+pub async fn list_roles(catalog: &Catalog) -> Result<Vec<RoleDef>> {
     let select = Select::from(Source::table(ROLES_TABLE));
-    let mut roles: Vec<Role> = rows(catalog, select)
+    let mut roles: Vec<RoleDef> = rows(catalog, select)
         .await?
         .iter()
         .map(role_from_row)
         .collect::<Result<_>>()?;
-    roles.sort_by_key(|r| r.role);
+    // By number: admin first, public last.
+    roles.sort_by_key(|r| r.role.get());
     Ok(roles)
 }
 
@@ -256,7 +252,7 @@ pub async fn list_roles(catalog: &Catalog) -> Result<Vec<Role>> {
 /// Refused in two cases, both because the deletion would leave something in a
 /// state it cannot describe:
 ///
-/// - **A built-in role** ([`Role::is_builtin`]). Deleting `Admin` would leave an
+/// - **A built-in role** ([`RoleDef::is_builtin`]). Deleting `Admin` would leave an
 ///   installation nobody can administer; deleting `Public` would leave an
 ///   anonymous request with no role to be.
 /// - **A role users still hold.** The foreign key would refuse this anyway; the
@@ -264,7 +260,7 @@ pub async fn list_roles(catalog: &Catalog) -> Result<Vec<Role>> {
 ///   constraint violation, and so the admin knows what to do about it.
 ///
 /// Nothing cascades. A user's role is not something to silently reassign.
-pub async fn delete_role(catalog: &Catalog, role: u8) -> Result<bool> {
+pub async fn delete_role(catalog: &Catalog, role: Role) -> Result<bool> {
     let Some(existing) = load_role(catalog, role).await? else {
         return Ok(false);
     };
@@ -290,7 +286,7 @@ pub async fn delete_role(catalog: &Catalog, role: u8) -> Result<bool> {
 }
 
 /// How many users hold `role`.
-async fn users_with_role(catalog: &Catalog, role: u8) -> Result<usize> {
+async fn users_with_role(catalog: &Catalog, role: Role) -> Result<usize> {
     let select = Select::from(Source::table(USERS_TABLE))
         .filter(Expr::col(crate::users::COL_ROLE).eq(Expr::lit(i64::from(role))));
     Ok(rows(catalog, select).await?.len())
@@ -305,7 +301,7 @@ fn role_columns() -> Vec<String> {
 }
 
 /// A role serialised to its row's values, in [`role_columns`] order.
-fn role_values(role: &Role) -> Vec<Value> {
+fn role_values(role: &RoleDef) -> Vec<Value> {
     vec![
         Value::Uuid(role.id),
         Value::Int(i64::from(role.role)),
@@ -315,25 +311,22 @@ fn role_values(role: &Role) -> Vec<Value> {
     ]
 }
 
-/// Rebuild a [`Role`] from its `_fd_roles` row.
+/// Rebuild a [`RoleDef`] from its `_fd_roles` row.
 ///
 /// Strict, as every `_fd_*` read is: a missing or ill-typed column is an error
 /// naming it, never a silent default. A role that fails to parse is a role whose
 /// privileges cannot be stated, and guessing is not available.
-fn role_from_row(row: &Row) -> Result<Role> {
+fn role_from_row(row: &Row) -> Result<RoleDef> {
     let id = match row.get(COL_ID) {
         Some(Value::Uuid(u)) => *u,
         other => return Err(bad_column(COL_ID, "a uuid", other)),
     };
     let role = match row.get(COL_ROLE) {
-        Some(Value::Int(i)) => u8::try_from(*i)
-            .ok()
-            .filter(|r| role_in_range(*r))
-            .ok_or_else(|| {
-                Error::invalid(format!(
-                    "{ROLES_TABLE}.{COL_ROLE} should be a role between 1 and 100, got {i}"
-                ))
-            })?,
+        Some(Value::Int(i)) => Role::try_from(*i).map_err(|_| {
+            Error::invalid(format!(
+                "{ROLES_TABLE}.{COL_ROLE} should be a role between 1 and 100, got {i}"
+            ))
+        })?,
         other => return Err(bad_column(COL_ROLE, "an integer role", other)),
     };
     let name = match row.get(COL_NAME) {
@@ -354,7 +347,7 @@ fn role_from_row(row: &Row) -> Result<Role> {
         }
         other => return Err(bad_column(COL_ATTRIBUTES, "json", other)),
     };
-    Ok(Role {
+    Ok(RoleDef {
         id,
         role,
         name,
@@ -395,7 +388,7 @@ async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
 }
 
 /// Load the single role matching `filter`, if any.
-async fn load_one(catalog: &Catalog, filter: Expr) -> Result<Option<Role>> {
+async fn load_one(catalog: &Catalog, filter: Expr) -> Result<Option<RoleDef>> {
     let select = Select::from(Source::table(ROLES_TABLE))
         .filter(filter)
         .limit(1);
@@ -470,15 +463,15 @@ mod tests {
 
     #[test]
     fn columns_and_values_stay_in_step() {
-        let role = Role::new(40, "Staff");
+        let role = RoleDef::new(Role::of(40), "Staff");
         assert_eq!(role_columns().len(), role_values(&role).len());
         assert_eq!(role_columns().len(), roles_fields().len());
     }
 
     #[test]
     fn the_two_roles_the_system_depends_on_are_builtin() {
-        assert!(Role::new(ROLE_ADMIN, "Admin").is_builtin());
-        assert!(Role::new(ROLE_PUBLIC, "Public").is_builtin());
-        assert!(!Role::new(40, "Staff").is_builtin());
+        assert!(RoleDef::new(Role::ADMIN, "Admin").is_builtin());
+        assert!(RoleDef::new(Role::PUBLIC, "Public").is_builtin());
+        assert!(!RoleDef::new(Role::of(40), "Staff").is_builtin());
     }
 }

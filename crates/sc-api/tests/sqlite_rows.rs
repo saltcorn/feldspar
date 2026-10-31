@@ -13,6 +13,8 @@
 //! Neither needs a server or a harness: a SQLite database is a file.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_catalog::{Catalog, DataField};
@@ -56,7 +58,7 @@ async fn a_csv_with_its_own_keys_imports_and_the_next_insert_does_not_collide()
         &catalog,
         &table,
         "id,title,pages\n1,Orlando,288\n2,The Waves,228\n",
-        None,
+        Authority::system("test"),
     )
     .await?;
     assert_eq!(outcome.inserted, 2, "{:?}", outcome.errors);
@@ -95,10 +97,20 @@ async fn a_second_import_of_the_same_keys_updates_them() -> sc_error::Result<()>
     let catalog = catalog_with_books().await?;
     let table = catalog.require("book")?;
 
-    sc_api::csv::import_table(&catalog, &table, "id,title,pages\n1,Orlando,288\n", None).await?;
-    let outcome =
-        sc_api::csv::import_table(&catalog, &table, "id,title,pages\n1,Orlando,300\n", None)
-            .await?;
+    sc_api::csv::import_table(
+        &catalog,
+        &table,
+        "id,title,pages\n1,Orlando,288\n",
+        Authority::system("test"),
+    )
+    .await?;
+    let outcome = sc_api::csv::import_table(
+        &catalog,
+        &table,
+        "id,title,pages\n1,Orlando,300\n",
+        Authority::system("test"),
+    )
+    .await?;
     assert_eq!(outcome.updated, 1, "{:?}", outcome.errors);
     assert_eq!(outcome.inserted, 0);
 
@@ -131,7 +143,7 @@ async fn a_caller_context_read_runs_where_there_are_no_policies() -> sc_error::R
         .try_collect()
         .await?;
 
-    let caller = sc_catalog::CallerContext::anonymous(1);
+    let caller = sc_catalog::Principal::anonymous(Role::ADMIN);
     let statement = Statement::from(Select::from(Source::table("book")));
     let rows = sc_catalog::run_in_context(&catalog, &caller, &statement).await?;
     assert_eq!(rows.len(), 1);

@@ -13,6 +13,7 @@
 //! Needs `npm`, which installs the module, and skips without it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -170,10 +171,10 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
         primary_key: true,
         ..field("id", "int")
     };
-    let tables: Vec<(&str, u8, Option<String>, Vec<FieldSpec>)> = vec![
+    let tables: Vec<(&str, Role, Option<String>, Vec<FieldSpec>)> = vec![
         (
             "products",
-            100,
+            Role::PUBLIC,
             None,
             vec![
                 id(),
@@ -184,13 +185,13 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
         ),
         (
             "product_files",
-            1,
+            Role::ADMIN,
             None,
             vec![id(), required(key("product", "products")), file("file")],
         ),
         (
             "orders",
-            1,
+            Role::ADMIN,
             Some(format!("({MINE}) && (_read || status === \"open\")")),
             vec![
                 id(),
@@ -202,7 +203,7 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
         ),
         (
             "order_lines",
-            1,
+            Role::ADMIN,
             Some(
                 "(user ? orderⱵuser_id === user.id : orderⱵsession_id === session.id) \
                  && (_read || orderⱵstatus === \"open\")"
@@ -217,7 +218,7 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
         ),
         (
             "downloads",
-            1,
+            Role::ADMIN,
             Some(
                 "_read && (user ? orderⱵuser_id === user.id : orderⱵsession_id === session.id)"
                     .to_owned(),
@@ -238,7 +239,7 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
                 database: String::new(),
                 settings: TableSettings {
                     min_role_read: Some(read),
-                    min_role_write: Some(1),
+                    min_role_write: Some(Role::ADMIN),
                     ownership_formula: ownership,
                     ..TableSettings::default()
                 },
@@ -279,7 +280,7 @@ fn triggers() -> Vec<Trigger> {
     ]
     .into_iter()
     .fold(
-        Trigger::new("checkout", EventKind::None, "pay_checkout").min_role(100),
+        Trigger::new("checkout", EventKind::None, "pay_checkout").min_role(Role::PUBLIC),
         |t, (k, v)| t.config(k, v),
     );
     vec![
@@ -566,7 +567,7 @@ async fn setup(tag: &str) -> sc_error::Result<Shop> {
 
     // Steps 2–6.
     create_tables(&catalog).await?;
-    sc_auth::save_role(&catalog, &sc_auth::Role::new(80, "User")).await?;
+    sc_auth::save_role(&catalog, &sc_auth::RoleDef::new(Role::of(80), "User")).await?;
     for trigger in triggers() {
         save_trigger(&catalog, &dispatcher.registry(), &trigger).await?;
     }
@@ -764,10 +765,21 @@ async fn the_tutorials_shop_takes_a_guests_order_to_paid_and_delivers_it() -> sc
 
     // Step 6: Ann signs up from the same browser, and her order is now her account's. Ada,
     // signing in with no guest session, moves nothing.
-    let ann_id = create_user(&shop.catalog, "ann@example.com", "ann-password", 80)
-        .await?
-        .id;
-    create_user(&shop.catalog, "ada@example.com", "ada-password", 80).await?;
+    let ann_id = create_user(
+        &shop.catalog,
+        "ann@example.com",
+        "ann-password",
+        Role::of(80),
+    )
+    .await?
+    .id;
+    create_user(
+        &shop.catalog,
+        "ada@example.com",
+        "ada-password",
+        Role::of(80),
+    )
+    .await?;
     let mut ada = Browser::new(&shop.router);
     ada.send("GET", "/", None).await;
     ada.ok(

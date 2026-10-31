@@ -18,6 +18,7 @@
 //! on the running stream instead.
 
 use sc_types::Attrs;
+use sc_types::Role;
 use serde_json::Value as Json;
 use uuid::Uuid;
 
@@ -88,7 +89,7 @@ pub struct Stream {
     /// `None` is the restrictive end, which is the trigger rule and it is here
     /// for the trigger reason: a flow nobody has thought about the access of is
     /// not public. A stream can carry a broker's whole topic tree.
-    pub min_role: Option<u8>,
+    pub min_role: Option<Role>,
     /// Sparse per-stream values (§9): [`ATTR_ENABLED`], and per-provider
     /// bookkeeping.
     pub attributes: Attrs,
@@ -127,7 +128,7 @@ impl Stream {
     }
 
     /// Set the role floor for observing this stream through an application.
-    pub fn min_role(mut self, role: u8) -> Stream {
+    pub fn min_role(mut self, role: Role) -> Stream {
         self.min_role = Some(role);
         self
     }
@@ -195,7 +196,7 @@ mod tests {
     fn a_stream_with_no_min_role_is_admin_only_rather_than_public() {
         let stream = Stream::new("boiler", "mqtt");
         assert_eq!(stream.min_role, None);
-        assert_eq!(stream.min_role(40).min_role, Some(40));
+        assert_eq!(stream.min_role(Role::of(40)).min_role, Some(Role::of(40)));
     }
 
     #[test]

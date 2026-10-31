@@ -12,6 +12,7 @@
 //! - each app is confined to its own subdomain, and the admin is still reachable.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,7 +23,7 @@ use axum::http::{Request, StatusCode, header};
 use sc_app::{
     ApiConfig, Application, CodeFramework, FrameworkRef, app_source_from_config, build_application,
 };
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, SessionStore, create_user};
+use sc_auth::{SessionStore, create_user};
 use sc_catalog::{Catalog, FileStoreId, TableId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -267,7 +268,7 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<(Router, Arc<Catalog>, TestDb)
 async fn the_built_react_app_is_served_and_its_api_round_trips() -> sc_error::Result<()> {
     let tmp = TempDir::new("story");
     let (router, catalog, _db) = setup(&tmp).await?;
-    create_user(&catalog, "editor@example.com", "correct-horse", ROLE_ADMIN).await?;
+    create_user(&catalog, "editor@example.com", "correct-horse", Role::ADMIN).await?;
 
     let mut app = Client::new(router, APP_HOST);
 
@@ -376,7 +377,13 @@ async fn a_logged_in_user_still_only_sees_what_its_role_allows() -> sc_error::Re
     let tmp = TempDir::new("authz");
     let (router, catalog, _db) = setup(&tmp).await?;
     // A real user at the least-privileged role.
-    create_user(&catalog, "reader@example.com", "correct-horse", ROLE_PUBLIC).await?;
+    create_user(
+        &catalog,
+        "reader@example.com",
+        "correct-horse",
+        Role::PUBLIC,
+    )
+    .await?;
 
     let mut app = Client::new(router, APP_HOST);
 
@@ -458,7 +465,7 @@ async fn apps_are_confined_to_their_subdomain_and_the_admin_is_still_reachable()
 async fn admin_file_and_backup_routes_are_nothing_on_an_application_host() -> sc_error::Result<()> {
     let tmp = TempDir::new("adminroutes");
     let (router, catalog, _db) = setup(&tmp).await?;
-    create_user(&catalog, "editor@example.com", "correct-horse", ROLE_ADMIN).await?;
+    create_user(&catalog, "editor@example.com", "correct-horse", Role::ADMIN).await?;
 
     // The admin signs in to the application, as any user of it might.
     let mut app = Client::new(router.clone(), APP_HOST);

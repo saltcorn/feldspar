@@ -21,6 +21,7 @@
 //!   about what is *stored*, and the sentinel reaching the row is the failure
 //!   the whole arrangement exists to prevent.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -112,7 +113,7 @@ fn boiler() -> Stream {
         .config("topic", "house/boiler/#")
         .config("username", "sensor")
         .config("password", "tok-hunter2")
-        .min_role(40)
+        .min_role(Role::of(40))
         .attribute("note", "from the tutorial")
 }
 
@@ -142,7 +143,7 @@ async fn a_stream_round_trips_through_its_row() -> Result<()> {
     // JSON configuration whole, the nullable role, the sparse attributes.
     assert_eq!(loaded.configuration["topic"], json!("house/boiler/#"));
     assert_eq!(loaded.configuration["password"], json!("tok-hunter2"));
-    assert_eq!(loaded.min_role, Some(40));
+    assert_eq!(loaded.min_role, Some(Role::of(40)));
     assert_eq!(loaded.attributes["note"], json!("from the tutorial"));
     assert!(loaded.is_enabled());
 

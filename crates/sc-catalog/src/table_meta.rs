@@ -72,6 +72,7 @@
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Value};
+use sc_types::Role;
 use sc_types::{Attrs, BasicType, TypeRef};
 use serde_json::Value as Json;
 use uuid::Uuid;
@@ -244,7 +245,7 @@ impl TableMeta {
     }
 
     /// Set both access roles.
-    pub fn access(mut self, min_role_read: u8, min_role_write: u8) -> TableMeta {
+    pub fn access(mut self, min_role_read: Role, min_role_write: Role) -> TableMeta {
         self.access = AccessRules {
             min_role_read,
             min_role_write,
@@ -484,7 +485,6 @@ pub async fn save_table_meta_row(catalog: &Catalog, meta: &TableMeta) -> Result<
         return Err(Error::invalid("a table overlay needs a table name"));
     }
     check_metadata_rules(name, meta)?;
-    validate_access(name, &meta.access)?;
 
     if let Some(other) = load_table_meta_by_name(catalog, name).await?
         && other.id != meta.id
@@ -623,22 +623,6 @@ fn check_metadata_rules(name: &str, meta: &TableMeta) -> Result<()> {
     }
 }
 
-/// Check both roles are on the `1..=100` scale, naming the table and which role
-/// is wrong.
-fn validate_access(table: &str, access: &AccessRules) -> Result<()> {
-    for (column, role) in [
-        (COL_MIN_ROLE_READ, access.min_role_read),
-        (COL_MIN_ROLE_WRITE, access.min_role_write),
-    ] {
-        if !(1..=100).contains(&role) {
-            return Err(Error::invalid(format!(
-                "table `{table}`: {column} should be a role between 1 and 100, got {role}"
-            )));
-        }
-    }
-    Ok(())
-}
-
 /// The row's columns, in the order [`meta_values`] produces them.
 fn meta_columns() -> Vec<String> {
     [
@@ -710,16 +694,13 @@ fn optional_text(row: &Row, column: &str) -> Result<String> {
 /// An out-of-range value is a corrupt row, not something to clamp — the nearest
 /// valid role would quietly change who can reach the data, which is precisely
 /// what this column decides.
-fn role(row: &Row, column: &str) -> Result<u8> {
+fn role(row: &Row, column: &str) -> Result<Role> {
     match row.get(column) {
-        Some(Value::Int(i)) => u8::try_from(*i)
-            .ok()
-            .filter(|r| (1..=100).contains(r))
-            .ok_or_else(|| {
-                Error::invalid(format!(
-                    "{TABLE_META_TABLE}.{column} should be a role between 1 and 100, got {i}"
-                ))
-            }),
+        Some(Value::Int(i)) => Role::try_from(*i).map_err(|_| {
+            Error::invalid(format!(
+                "{TABLE_META_TABLE}.{column} should be a role between 1 and 100, got {i}"
+            ))
+        }),
         other => Err(bad_column(column, "an integer role", other)),
     }
 }
@@ -862,8 +843,8 @@ mod tests {
         // Creating an overlay row must never be the thing that widens access.
         let meta = TableMeta::new("books");
         assert_eq!(meta.access, AccessRules::default());
-        assert_eq!(meta.access.min_role_read, 1);
-        assert_eq!(meta.access.min_role_write, 1);
+        assert_eq!(meta.access.min_role_read, Role::ADMIN);
+        assert_eq!(meta.access.min_role_write, Role::ADMIN);
     }
 
     #[test]
@@ -965,35 +946,17 @@ mod tests {
 
     #[test]
     fn roles_outside_the_scale_are_rejected_rather_than_clamped() {
-        assert!(validate_access("books", &AccessRules::default()).is_ok());
-        assert!(
-            validate_access(
-                "books",
-                &AccessRules {
-                    min_role_read: 100,
-                    min_role_write: 1,
-                },
+        let row = |n: i64| -> Row {
+            Row::new(
+                std::sync::Arc::new(vec![COL_MIN_ROLE_READ.to_owned()]),
+                vec![Value::Int(n)],
             )
-            .is_ok()
-        );
-        let err = validate_access(
-            "books",
-            &AccessRules {
-                min_role_read: 0,
-                min_role_write: 1,
-            },
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains(COL_MIN_ROLE_READ), "{err}");
-        assert!(
-            validate_access(
-                "books",
-                &AccessRules {
-                    min_role_read: 1,
-                    min_role_write: 101,
-                },
-            )
-            .is_err()
-        );
+            .unwrap()
+        };
+        assert_eq!(role(&row(40), COL_MIN_ROLE_READ).unwrap(), Role::of(40));
+        for n in [0, 101, -1] {
+            let err = role(&row(n), COL_MIN_ROLE_READ).unwrap_err();
+            assert!(err.to_string().contains(COL_MIN_ROLE_READ), "{err}");
+        }
     }
 }

@@ -347,7 +347,7 @@ mechanism, never the outcome — the phase's tests are §5's scenarios re-run un
   `run_in_context`. A `USING` denial is zero rows → the same not-found; a `WITH CHECK`
   violation raises `42501` ("row-level security policy"), mapped to not-found so denial is
   unprobeable. Joinfields are not refetched — the policy's own correlated subselects do that
-  in the database. The rows layer grew an `Option<&CallerContext>` on its run primitives so
+  in the database. The rows layer grew an `Option<&Principal>` on its run primitives so
   one code path serves both the pooled (non-RLS) and context (RLS) cases
 - [x] Integration tests: `crates/sc-server/tests/rls_enforcement.rs` (3) re-runs §5's owner
   scenario under RLS (same verdicts, database-enforced, admin sees all through a FORCE'd

@@ -14,6 +14,7 @@
 //! - the per-request session is gone afterwards.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -22,7 +23,7 @@ use sc_app::{
     ApiConfig, Application, CodeFramework, FrameworkRef, app_source_from_config, build_application,
     save_application,
 };
-use sc_auth::{ROLE_ADMIN, Role, SessionStore, User, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, User, create_user, save_role};
 use sc_catalog::{Catalog, FileStoreId, TableId, TableMeta, save_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -142,11 +143,11 @@ async fn setup(tag: &str) -> Result<Env> {
     write_source(&tmp.0);
     catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", &tmp.0)?))?;
 
-    save_role(&catalog, &Role::new(80, "Member")).await?;
-    let admin = create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
-    let alice = create_user(&catalog, ALICE, "alice-pw", 80).await?;
-    create_user(&catalog, BOB, "bob-pw", 80).await?;
-    let mut meta = TableMeta::new("notes").access(1, 1);
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Member")).await?;
+    let admin = create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
+    let alice = create_user(&catalog, ALICE, "alice-pw", Role::of(80)).await?;
+    create_user(&catalog, BOB, "bob-pw", Role::of(80)).await?;
+    let mut meta = TableMeta::new("notes").access(Role::ADMIN, Role::ADMIN);
     // Admin-only floors: the formula is the only way a member reads a row.
     meta.set_ownership_formula(Some("owner === user.email"));
     save_table_meta(&catalog, &meta).await?;

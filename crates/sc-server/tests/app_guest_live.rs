@@ -8,6 +8,7 @@
 //!   the next re-check, as a signed-in session's end does.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -197,8 +198,8 @@ async fn setup() -> Result<(Router, std::net::SocketAddr, TestDb)> {
             name: "baskets".into(),
             database: String::new(),
             settings: TableSettings {
-                min_role_read: Some(1),
-                min_role_write: Some(1),
+                min_role_read: Some(Role::ADMIN),
+                min_role_write: Some(Role::ADMIN),
                 ownership_formula: Some("session_id === session.id".into()),
                 ..TableSettings::default()
             },
@@ -234,7 +235,7 @@ async fn setup() -> Result<(Router, std::net::SocketAddr, TestDb)> {
         StreamConfig::default(),
     )
     .await?;
-    let mut stream = Stream::new("basket_changes", "table_changes").min_role(100);
+    let mut stream = Stream::new("basket_changes", "table_changes").min_role(Role::PUBLIC);
     stream.configuration = json!({ "table": "baskets" }).as_object().cloned().unwrap();
     save_stream(&catalog, &registry, &stream).await?;
     streams.reload(&catalog).await?;

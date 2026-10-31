@@ -1506,7 +1506,7 @@ async fn mcp_token_create_command(args: &[String]) -> Result<()> {
         .to_owned();
     // A token for a non-admin would be minted and then refused on every call —
     // unless it is a routes-only one, which runs as a user of any role.
-    if user.role > sc_auth::ROLE_ADMIN && !parsed.routes_only {
+    if !user.role.is_admin() && !parsed.routes_only {
         return Err(sc_error::Error::invalid(format!(
             "{email} is not an administrator, and an MCP token only works for one"
         )));
@@ -2451,7 +2451,7 @@ async fn role_command(args: &[String]) -> Result<()> {
             level,
             description,
         } => {
-            let role = sc_auth::Role::new(level, name.trim()).description(description.trim());
+            let role = sc_auth::RoleDef::new(level, name.trim()).description(description.trim());
             sc_auth::save_role(&catalog, &role).await?;
             eprintln!("feldspar: created role {} ({level})", name.trim());
             Ok(())

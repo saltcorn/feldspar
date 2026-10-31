@@ -17,6 +17,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -54,7 +55,7 @@ async fn setup(db: &TestDb) -> Result<Catalog> {
 fn fired(payload: Json) -> Event {
     Event::new(EventKind::None)
         .payload(payload)
-        .caller(1, Some(json!({ "email": "admin@example.com" })))
+        .caller(Role::ADMIN, Some(json!({ "email": "admin@example.com" })))
 }
 
 /// Run `run_js_code` through the registry — the path a firing trigger takes.

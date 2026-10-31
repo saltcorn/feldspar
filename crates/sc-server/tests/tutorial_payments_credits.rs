@@ -17,6 +17,8 @@
 //! Needs `npm`, which installs the module, and skips without it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -25,7 +27,7 @@ use rust_decimal::Decimal;
 use sc_action::{EventKind, Trigger, save_trigger};
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation, TableSettings};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, TriggerRef};
-use sc_catalog::{CallerContext, Catalog, TableId};
+use sc_catalog::{Catalog, Principal, TableId};
 use sc_server::MountedApp;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -90,8 +92,8 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
                 name: name.into(),
                 database: String::new(),
                 settings: TableSettings {
-                    min_role_read: Some(100),
-                    min_role_write: Some(1),
+                    min_role_read: Some(Role::PUBLIC),
+                    min_role_write: Some(Role::ADMIN),
                     ..TableSettings::default()
                 },
                 fields,
@@ -131,7 +133,7 @@ fn pack_settings() -> Vec<(&'static str, Value)> {
 /// Part 2's `subscribe` and `manage_plan`, and Steps 4–6's triggers.
 fn triggers() -> Vec<Trigger> {
     let subscribe = configured(
-        Trigger::new("subscribe", EventKind::None, "pay_checkout").min_role(80),
+        Trigger::new("subscribe", EventKind::None, "pay_checkout").min_role(Role::of(80)),
         &[
             ("account", json!("tea")),
             ("mode", json!("subscription")),
@@ -149,7 +151,7 @@ fn triggers() -> Vec<Trigger> {
     let by_payload = [("key_from", json!("payload")), ("key_field", json!("pack"))];
     let buy_credits = configured(
         configured(
-            Trigger::new("buy_credits", EventKind::None, "pay_checkout").min_role(80),
+            Trigger::new("buy_credits", EventKind::None, "pay_checkout").min_role(Role::of(80)),
             &pack_settings(),
         ),
         &[
@@ -161,7 +163,7 @@ fn triggers() -> Vec<Trigger> {
     );
     let top_up = configured(
         configured(
-            Trigger::new("top_up", EventKind::None, "pay_charge_saved").min_role(80),
+            Trigger::new("top_up", EventKind::None, "pay_charge_saved").min_role(Role::of(80)),
             &pack_settings(),
         ),
         &by_payload,
@@ -177,13 +179,13 @@ fn triggers() -> Vec<Trigger> {
     vec![
         subscribe,
         Trigger::new("manage_plan", EventKind::None, "pay_portal")
-            .min_role(80)
+            .min_role(Role::of(80))
             .config("account", "tea")
             .config("return_path", "/credits"),
         buy_credits,
         top_up,
         Trigger::new("auto_top_up_on", EventKind::None, "update_rows")
-            .min_role(80)
+            .min_role(Role::of(80))
             .config("table", "credit_accounts")
             .config("where", "user_id === user.id")
             .config("assignments", json!({ "low_balance_threshold": "\"20\"" })),
@@ -196,7 +198,7 @@ async fn setup() -> sc_error::Result<Booted> {
     let booted = boot("credits").await?;
     let catalog = &booted.catalog;
     for (role, name) in [(70, "Assistant"), (80, "User")] {
-        sc_auth::save_role(catalog, &sc_auth::Role::new(role, name)).await?;
+        sc_auth::save_role(catalog, &sc_auth::RoleDef::new(Role::of(role), name)).await?;
     }
     // Step 1: the test account, the plan with its credits; Step 4: the pack.
     sc_api::rows::create_row(
@@ -371,8 +373,8 @@ async fn tea_sommelier_grants_tops_up_and_rolls_over_as_the_tutorial_says() -> s
     assert_eq!(account.low_balance_threshold, Some(Decimal::from(20)));
 
     // The agent's model calls take her to 15, below 20: a pack is bought on her saved card, once.
-    let caller = CallerContext::new(
-        70,
+    let caller = Principal::new(
+        Role::of(70),
         Some(json!({ "id": ann_id.to_string(), "email": "ann@example.com", "role": 70 })),
     );
     let debited = sc_auth::debit_credits(
@@ -384,7 +386,7 @@ async fn tea_sommelier_grants_tops_up_and_rolls_over_as_the_tutorial_says() -> s
             agent: Some("sommelier".into()),
             ..sc_auth::CreditDebit::default()
         },
-        Some(&caller),
+        Authority::Caller(&caller),
     )
     .await?;
     assert!(debited.low_balance);
@@ -409,7 +411,7 @@ async fn tea_sommelier_grants_tops_up_and_rolls_over_as_the_tutorial_says() -> s
             key: "run:1:2".into(),
             ..sc_auth::CreditDebit::default()
         },
-        Some(&caller),
+        Authority::Caller(&caller),
     )
     .await?;
     assert_eq!(balance(catalog, ann_id).await, Decimal::from(114));

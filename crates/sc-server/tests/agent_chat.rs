@@ -24,6 +24,7 @@
 //!    `aborted`, and what the agent had already done is still in its context.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,7 +34,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use futures::{SinkExt, StreamExt};
 use sc_agent::testing::{FakeProvider, Reply};
 use sc_agent::{Agent, EnabledTrait, RunState};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, SessionStore, User};
+use sc_auth::{SessionStore, User};
 use sc_catalog::{Catalog, DataField};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -206,11 +207,11 @@ async fn serve_with(agent: Agent, providers: Arc<dyn ProviderConnector>) -> Resu
     Ok(Server {
         addr,
         admin: sessions
-            .login(User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap())
+            .login(User::new(Uuid::new_v4(), Role::ADMIN))
             .await
             .unwrap(),
         public: sessions
-            .login(User::new(Uuid::new_v4(), ROLE_PUBLIC).unwrap())
+            .login(User::new(Uuid::new_v4(), Role::PUBLIC))
             .await
             .unwrap(),
         catalog,
@@ -719,7 +720,7 @@ async fn a_server_without_agents_closes_the_socket_with_the_reason() -> Result<(
         let _ = axum::serve(listener, router).await;
     });
     let admin = sessions
-        .login(User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap())
+        .login(User::new(Uuid::new_v4(), Role::ADMIN))
         .await
         .unwrap();
 
@@ -810,7 +811,7 @@ async fn ending_the_session_closes_the_chat_socket() -> Result<()> {
     assert!(server.connect(Some(&server.admin)).await.is_err());
 
     // A second admin's socket closes when all of their sessions are ended.
-    let other = User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap();
+    let other = User::new(Uuid::new_v4(), Role::ADMIN);
     let token = server.sessions.login(other.clone()).await?;
     let mut socket = server.connect(Some(&token)).await.expect("connect");
     send(

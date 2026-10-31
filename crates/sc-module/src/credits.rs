@@ -34,6 +34,7 @@
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
+use sc_catalog::Authority;
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
@@ -84,7 +85,7 @@ impl<'a> ModuleCredits<'a> {
                 note: plan.get("note").and_then(Json::as_str).map(str::to_owned),
                 rollover: rollover(plan.get("rollover"))?,
             },
-            None,
+            Authority::system("module credits: grant"),
         )
         .await?;
         Ok(json!({
@@ -115,7 +116,14 @@ impl ModuleCredits<'_> {
             }
         };
         let note = plan.get("note").and_then(Json::as_str);
-        let revoked = sc_auth::revoke_credits(self.catalog, self.module, &key, note, None).await?;
+        let revoked = sc_auth::revoke_credits(
+            self.catalog,
+            self.module,
+            &key,
+            note,
+            Authority::system("module credits: revoke"),
+        )
+        .await?;
         Ok(json!({
             "found": revoked.found,
             "revoked": number(revoked.revoked),
@@ -142,8 +150,13 @@ impl CreditAsks for ModuleCredits<'_> {
             "threshold" => {
                 let user = user(&plan, "credits.setThreshold")?;
                 let threshold = amount(plan.get("threshold"))?;
-                let balance =
-                    sc_auth::set_low_balance_threshold(self.catalog, user, threshold, None).await?;
+                let balance = sc_auth::set_low_balance_threshold(
+                    self.catalog,
+                    user,
+                    threshold,
+                    Authority::system("module credits: set low-balance threshold"),
+                )
+                .await?;
                 Ok(balance_json(&balance))
             }
             other => Err(Error::invalid(format!(

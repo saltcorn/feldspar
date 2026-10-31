@@ -29,8 +29,8 @@ mod stream;
 pub mod xattr;
 
 pub use access::{
-    FileCaller, ROLE_ADMIN, ROLE_PUBLIC, VisibleEntry, check_access, check_write, controls_build,
-    effective_min_role, filter_visible, list_visible, record_owner, visible_entries,
+    FileCaller, VisibleEntry, check_access, check_write, controls_build, effective_min_role,
+    filter_visible, list_visible, record_owner, visible_entries,
 };
 pub use backend::{
     OperationOutcome, Relocation, backend_config_spec, backend_operations, connect_from_def,
@@ -65,6 +65,7 @@ pub use stream::{BoxAsyncRead, BoxAsyncWrite, check_range, read_to_bytes};
 mod tests {
     use super::*;
     use bytes::Bytes;
+    use sc_types::Role;
 
     /// Create a `LocalFileStore` rooted at a fresh unique temp directory.
     ///
@@ -351,7 +352,7 @@ mod tests {
     #[tokio::test]
     async fn build_inputs_are_admin_only_writes() {
         let (_base, store) = temp_store();
-        let staff = FileCaller::new(40, Some("u1".into()));
+        let staff = FileCaller::new(Role::of(40), Some("u1".into()));
         for path in [
             "web/package.json",
             "web/Package.JSON",
@@ -372,7 +373,7 @@ mod tests {
                 "{path}"
             );
             assert!(
-                check_write(&store, None, path, &FileCaller::role(ROLE_ADMIN))
+                check_write(&store, None, path, &FileCaller::role(Role::ADMIN))
                     .await
                     .is_ok(),
                 "{path}"
@@ -409,7 +410,7 @@ mod tests {
             .write("a.txt", Bytes::from_static(b"a"))
             .await
             .unwrap();
-        let staff = FileCaller::new(40, Some("u1".into()));
+        let staff = FileCaller::new(Role::of(40), Some("u1".into()));
         for path in [".git/config", ".git", ".GIT/config"] {
             assert!(
                 check_access(&store, None, path, &staff).await.is_err(),
@@ -422,7 +423,7 @@ mod tests {
             );
         }
         assert!(
-            check_access(&store, None, ".git/config", &FileCaller::role(ROLE_ADMIN))
+            check_access(&store, None, ".git/config", &FileCaller::role(Role::ADMIN))
                 .await
                 .is_ok()
         );
@@ -433,7 +434,7 @@ mod tests {
         );
         assert_eq!(
             names(
-                list_visible(&store, None, "", &FileCaller::role(ROLE_ADMIN))
+                list_visible(&store, None, "", &FileCaller::role(Role::ADMIN))
                     .await
                     .unwrap()
             ),
@@ -454,7 +455,7 @@ mod tests {
         assert_eq!(meta, FileMeta::default());
 
         let mut m = FileMeta {
-            min_role: Some(20),
+            min_role: Some(Role::of(20)),
             ..Default::default()
         };
         m.attributes.insert("mime".into(), "text/markdown".into());
@@ -652,7 +653,7 @@ mod tests {
             .set_meta(
                 "private",
                 &FileMeta {
-                    min_role: Some(1),
+                    min_role: Some(Role::ADMIN),
                     ..Default::default()
                 },
             )
@@ -665,18 +666,28 @@ mod tests {
             effective_min_role(&store, None, "private/secret.txt")
                 .await
                 .unwrap(),
-            Some(1)
+            Some(Role::ADMIN)
         );
         // An admin (role 1) clears it; a public caller (100) does not.
         assert!(
-            check_access(&store, None, "private/secret.txt", &FileCaller::role(1))
-                .await
-                .is_ok()
+            check_access(
+                &store,
+                None,
+                "private/secret.txt",
+                &FileCaller::role(Role::ADMIN)
+            )
+            .await
+            .is_ok()
         );
         assert!(
-            check_access(&store, None, "private/secret.txt", &FileCaller::role(100))
-                .await
-                .is_err()
+            check_access(
+                &store,
+                None,
+                "private/secret.txt",
+                &FileCaller::role(Role::PUBLIC)
+            )
+            .await
+            .is_err()
         );
         // An unrelated path is unaffected.
         assert!(
@@ -702,7 +713,7 @@ mod tests {
             .set_meta(
                 "dir",
                 &FileMeta {
-                    min_role: Some(20),
+                    min_role: Some(Role::of(20)),
                     ..Default::default()
                 },
             )
@@ -712,7 +723,7 @@ mod tests {
             .set_meta(
                 "dir/file.txt",
                 &FileMeta {
-                    min_role: Some(100),
+                    min_role: Some(Role::PUBLIC),
                     ..Default::default()
                 },
             )
@@ -722,24 +733,24 @@ mod tests {
             effective_min_role(&store, None, "dir/file.txt")
                 .await
                 .unwrap(),
-            Some(20),
+            Some(Role::of(20)),
             "the more restrictive rule on the path must win"
         );
 
         // The store-wide floor is simply the outermost entry on the path, and
         // composes the same way.
         assert_eq!(
-            effective_min_role(&store, Some(10), "dir/file.txt")
+            effective_min_role(&store, Some(Role::of(10)), "dir/file.txt")
                 .await
                 .unwrap(),
-            Some(10)
+            Some(Role::of(10))
         );
         // A laxer store floor does not loosen a tighter nested rule.
         assert_eq!(
-            effective_min_role(&store, Some(80), "dir/file.txt")
+            effective_min_role(&store, Some(Role::of(80)), "dir/file.txt")
                 .await
                 .unwrap(),
-            Some(20)
+            Some(Role::of(20))
         );
     }
 
@@ -758,7 +769,7 @@ mod tests {
             .set_meta(
                 "secret.txt",
                 &FileMeta {
-                    min_role: Some(1),
+                    min_role: Some(Role::ADMIN),
                     ..Default::default()
                 },
             )
@@ -777,7 +788,7 @@ mod tests {
         assert_eq!(names, ["open.txt"]);
 
         // An admin sees everything.
-        let admin = filter_visible(&store, None, all, &FileCaller::role(1))
+        let admin = filter_visible(&store, None, all, &FileCaller::role(Role::ADMIN))
             .await
             .unwrap();
         assert_eq!(admin.len(), 2);
@@ -794,7 +805,7 @@ mod tests {
             .set_meta(
                 "drops",
                 &FileMeta {
-                    min_role: Some(1),
+                    min_role: Some(Role::ADMIN),
                     ..Default::default()
                 },
             )
@@ -804,8 +815,8 @@ mod tests {
             store.write(path, Bytes::from_static(b"x")).await.unwrap();
             record_owner(&store, path, owner).await;
         }
-        let a = FileCaller::new(80, Some("user-a".into()));
-        let b = FileCaller::new(80, Some("user-b".into()));
+        let a = FileCaller::new(Role::of(80), Some("user-a".into()));
+        let b = FileCaller::new(Role::of(80), Some("user-b".into()));
         let anonymous = FileCaller::anonymous();
 
         assert!(check_access(&store, None, "drops/a.png", &a).await.is_ok());
@@ -823,7 +834,7 @@ mod tests {
         assert!(check_write(&store, None, "drops/a.png", &a).await.is_ok());
         assert!(check_write(&store, None, "drops/a.png", &b).await.is_err());
         assert!(
-            check_write(&store, None, "drops/a.png", &FileCaller::role(1))
+            check_write(&store, None, "drops/a.png", &FileCaller::role(Role::ADMIN))
                 .await
                 .is_ok()
         );
@@ -866,7 +877,7 @@ mod tests {
             names(list_visible(&store, None, "drops", &b).await.unwrap()),
             ["b.png"]
         );
-        let c = FileCaller::new(80, Some("user-c".into()));
+        let c = FileCaller::new(Role::of(80), Some("user-c".into()));
         assert!(list_visible(&store, None, "drops", &c).await.is_err());
         assert!(
             list_visible(&store, None, "drops", &anonymous)
@@ -875,7 +886,7 @@ mod tests {
         );
         assert!(list_visible(&store, None, "nowhere", &c).await.is_err());
         assert_eq!(
-            list_visible(&store, None, "drops", &FileCaller::role(1))
+            list_visible(&store, None, "drops", &FileCaller::role(Role::ADMIN))
                 .await
                 .unwrap()
                 .len(),
@@ -1076,7 +1087,7 @@ mod tests {
         let found = search_store(
             &store,
             None,
-            &FileCaller::role(1),
+            &FileCaller::role(Role::ADMIN),
             &SearchQuery::literal("todo"),
         )
         .await
@@ -1105,7 +1116,7 @@ mod tests {
 
         let mut query = SearchQuery::literal("todo");
         query.dir = "src/deep".to_owned();
-        let found = search_store(&store, None, &FileCaller::role(1), &query)
+        let found = search_store(&store, None, &FileCaller::role(Role::ADMIN), &query)
             .await
             .unwrap();
         let paths: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
@@ -1113,7 +1124,7 @@ mod tests {
 
         let mut query = SearchQuery::literal("todo");
         query.glob = Some("*.ts".to_owned());
-        let found = search_store(&store, None, &FileCaller::role(1), &query)
+        let found = search_store(&store, None, &FileCaller::role(Role::ADMIN), &query)
             .await
             .unwrap();
         let paths: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
@@ -1127,7 +1138,7 @@ mod tests {
             .set_meta(
                 "src/deep",
                 &FileMeta {
-                    min_role: Some(1),
+                    min_role: Some(Role::ADMIN),
                     ..Default::default()
                 },
             )
@@ -1150,7 +1161,7 @@ mod tests {
         // The store's own floor composes the same way: above it, nothing at all.
         let found = search_store(
             &store,
-            Some(1),
+            Some(Role::ADMIN),
             &FileCaller::anonymous(),
             &SearchQuery::literal("todo"),
         )
@@ -1170,7 +1181,7 @@ mod tests {
         }
         let mut query = SearchQuery::literal("needle");
         query.max_results = 5;
-        let found = search_store(&store, None, &FileCaller::role(1), &query)
+        let found = search_store(&store, None, &FileCaller::role(Role::ADMIN), &query)
             .await
             .unwrap();
         assert_eq!(found.hits.len(), 5);
@@ -1185,7 +1196,7 @@ mod tests {
         let found = find_files(
             &store,
             None,
-            &FileCaller::role(1),
+            &FileCaller::role(Role::ADMIN),
             "",
             "LIST",
             DEFAULT_MAX_FOUND,
@@ -1202,7 +1213,7 @@ mod tests {
         let found = find_files(
             &store,
             None,
-            &FileCaller::role(1),
+            &FileCaller::role(Role::ADMIN),
             "",
             "de",
             DEFAULT_MAX_FOUND,
@@ -1221,7 +1232,7 @@ mod tests {
         let hit = find_files(
             &store,
             None,
-            &FileCaller::role(1),
+            &FileCaller::role(Role::ADMIN),
             "",
             "readme",
             DEFAULT_MAX_FOUND,
@@ -1238,7 +1249,7 @@ mod tests {
         let found = find_files(
             &store,
             None,
-            &FileCaller::role(1),
+            &FileCaller::role(Role::ADMIN),
             "src",
             "ts",
             DEFAULT_MAX_FOUND,
@@ -1250,7 +1261,7 @@ mod tests {
         // Rooted at `src`, so `readme.md` and the dependency tree are outside it.
         assert_eq!(paths, ["src/app.ts", "src/deep/list.tsx"]);
 
-        let found = find_files(&store, None, &FileCaller::role(1), "", "ts", 1)
+        let found = find_files(&store, None, &FileCaller::role(Role::ADMIN), "", "ts", 1)
             .await
             .unwrap();
         assert_eq!(found.entries.len(), 1);
@@ -1259,7 +1270,7 @@ mod tests {
         // A blank search is not "everything": it is a caller with nothing to
         // look for, and a walk of the whole store is not the answer to it.
         assert!(
-            find_files(&store, None, &FileCaller::role(1), "", "  ", 10)
+            find_files(&store, None, &FileCaller::role(Role::ADMIN), "", "  ", 10)
                 .await
                 .is_err()
         );
@@ -1272,7 +1283,7 @@ mod tests {
             .set_meta(
                 "src/deep",
                 &FileMeta {
-                    min_role: Some(1),
+                    min_role: Some(Role::ADMIN),
                     ..Default::default()
                 },
             )

@@ -12,6 +12,7 @@
 use sc_app::load_application_by_subdomain;
 use sc_error::{Error, Result};
 use sc_llm::ToolSpec;
+use sc_types::Role;
 use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
 
@@ -56,7 +57,7 @@ pub struct ToolCall<'a> {
     /// The agent's run, under its grant.
     pub editor: Editor,
     /// The role the call is authorized at. Every tool here wants an admin.
-    pub role: u8,
+    pub role: Role,
 }
 
 const STEP_SCHEMA_NOTE: &str = "A step is {type, params, label, as}: `type` from \

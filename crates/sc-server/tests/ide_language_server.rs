@@ -23,6 +23,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![cfg(unix)]
 
+use sc_types::Role;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,7 +34,7 @@ use axum::Router;
 use axum::http::{HeaderValue, StatusCode, header};
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, SessionStore, User};
+use sc_auth::{SessionStore, User};
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -246,11 +247,11 @@ async fn serve(router: Router, sessions: &SessionStore, db: Option<TestDb>) -> S
     Server {
         addr,
         admin: sessions
-            .login(User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap())
+            .login(User::new(Uuid::new_v4(), Role::ADMIN))
             .await
             .unwrap(),
         public: sessions
-            .login(User::new(Uuid::new_v4(), ROLE_PUBLIC).unwrap())
+            .login(User::new(Uuid::new_v4(), Role::PUBLIC))
             .await
             .unwrap(),
         _db: db,

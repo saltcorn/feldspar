@@ -10,12 +10,13 @@
 //! refused while the admin is looking at the form; every one of these would
 //! otherwise be a trigger that silently never fires, or fires wrongly.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{
     Action, ActionContext, ActionRegistry, EventKind, TRIGGERS_TABLE, Trigger, Triggers,
     bootstrap_triggers, delete_trigger, list_triggers, load_trigger, load_trigger_by_name,
-    save_trigger, validate_trigger,
+    save_trigger,
 };
 use sc_catalog::{Catalog, DataField};
 use sc_db::{DatabaseDriver, SchemaChange};
@@ -89,7 +90,7 @@ async fn a_trigger_round_trips_through_its_row() -> Result<()> {
     let mut trigger = books_trigger("audit")
         .description("write an audit row")
         .only_if("pages > 100 && title !== old.title")
-        .min_role(4);
+        .min_role(Role::of(4));
     trigger.set_enabled(false);
     save_trigger(&cat, &reg, &trigger).await?;
 
@@ -220,17 +221,7 @@ async fn every_way_a_trigger_can_be_wrong_is_refused_by_name() -> Result<()> {
         );
     }
 
-    // A `min_role` outside the 1–100 scale is refused rather than clamped.
-    let bad_role = Trigger {
-        min_role: Some(200),
-        ..books_trigger("t")
-    };
-    let msg = validate_trigger(&cat, &reg, &bad_role)
-        .await
-        .err()
-        .unwrap()
-        .to_string();
-    assert!(msg.contains("between 1 and 100"), "{msg}");
+    // A `min_role` outside the 1–100 scale cannot be constructed (`Role`).
 
     // A stream trigger saves with a stream nothing here has heard of — this
     // crate cannot resolve one — and its `only_if` reads the envelope through
@@ -349,7 +340,7 @@ async fn a_workflow_bodied_trigger_round_trips_and_stays_a_workflow() -> Result<
     let trigger = Trigger::workflow("approve_orders", EventKind::Insert)
         .on("books")
         .only_if("pages > 100")
-        .min_role(40)
+        .min_role(Role::of(40))
         .description("the order approval workflow");
     save_trigger(&cat, &reg, &trigger).await?;
 
@@ -361,7 +352,7 @@ async fn a_workflow_bodied_trigger_round_trips_and_stays_a_workflow() -> Result<
     assert_eq!(loaded.action(), None);
     assert_eq!(loaded.configuration(), None);
     assert_eq!(loaded.only_if.as_deref(), Some("pages > 100"));
-    assert_eq!(loaded.min_role, Some(40));
+    assert_eq!(loaded.min_role, Some(Role::of(40)));
 
     // It is in the live set like any other trigger: validation has no action to
     // check, and everything the two bodies share is checked the same way.

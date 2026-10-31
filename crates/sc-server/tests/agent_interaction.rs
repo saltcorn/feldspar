@@ -14,6 +14,7 @@
 //!    and the chosen model answers in place of the agent's own.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,7 +28,7 @@ use futures::{SinkExt, StreamExt};
 use sc_agent::testing::{FakeProvider, Reply};
 use sc_agent::{Agent, EnabledTrait};
 use sc_app::{AgentExposure, ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{ROLE_ADMIN, Role, SessionStore, User, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, User, create_user, save_role};
 use sc_catalog::{Catalog, DataField};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
@@ -49,7 +50,7 @@ use uuid::Uuid;
 const BASE_DOMAIN: &str = "example.com";
 const APP_HOST: &str = "shelf.example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 80;
+const ROLE_MEMBER: Role = Role::of(80);
 /// The model a person may pick, under the `house` provider.
 const FAST: &str = "claude-haiku-4-5";
 
@@ -192,7 +193,7 @@ async fn serve(own: Vec<Reply>, fast: Vec<Reply>) -> Result<Server> {
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
     create_user(&catalog, "alice@example.com", PASSWORD, ROLE_MEMBER).await?;
     sc_llm::bootstrap_llm_providers(&catalog).await?;
     sc_llm::save_llm_provider(
@@ -225,7 +226,7 @@ async fn serve(own: Vec<Reply>, fast: Vec<Reply>) -> Result<Server> {
     let mut meta = sc_catalog::TableMeta::new("personas");
     meta.access = sc_catalog::AccessRules {
         min_role_read: ROLE_MEMBER,
-        min_role_write: 1,
+        min_role_write: Role::ADMIN,
     };
     sc_catalog::save_table_meta(&catalog, &meta).await?;
     for (id, name, prompt, active) in [
@@ -300,7 +301,7 @@ async fn serve(own: Vec<Reply>, fast: Vec<Reply>) -> Result<Server> {
         let _ = axum::serve(listener, admin_router).await;
     });
     let admin = sessions
-        .login(User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap())
+        .login(User::new(Uuid::new_v4(), Role::ADMIN))
         .await
         .unwrap();
     Ok(Server {

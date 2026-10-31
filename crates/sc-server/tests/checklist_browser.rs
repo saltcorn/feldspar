@@ -13,12 +13,13 @@
 //! host without one is `sc-check`'s
 //! `browser_steps_on_a_host_without_chromium_make_the_run_incomplete`.
 
+use sc_types::Role;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use sc_agent::{AppPreviewer, HostCapabilities, RunId};
 use sc_app::{Application, FrameworkRef, bootstrap, save_application};
-use sc_auth::{ROLE_ADMIN, Role, SessionStore, User, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, User, create_user, save_role};
 use sc_catalog::{Catalog, FileStoreId};
 use sc_check::{
     CheckEnv, Checklist, ChecklistInput, Editor, Outcome, RunStatus, SkipReason, StepDraft,
@@ -176,9 +177,9 @@ async fn setup(tag: &str, executable: PathBuf) -> Result<Env> {
     .unwrap();
     catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", tmp.0.join("site"))?))?;
 
-    save_role(&catalog, &Role::new(80, "Member")).await?;
-    let admin = create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
-    let member = create_user(&catalog, "member@example.com", "member-pw", 80).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Member")).await?;
+    let admin = create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
+    let member = create_user(&catalog, "member@example.com", "member-pw", Role::of(80)).await?;
     let app = shop_app();
     save_application(&catalog, &app).await?;
 

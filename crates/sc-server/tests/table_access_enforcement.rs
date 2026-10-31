@@ -20,6 +20,7 @@
 //! the latter — which is exactly the arrangement a real deployment has.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -30,7 +31,7 @@ use axum::http::{Request, StatusCode, header};
 use sc_app::{
     ApiConfig, Application, CodeFramework, FrameworkRef, app_source_from_config, build_application,
 };
-use sc_auth::{ROLE_ADMIN, Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, FileStoreId, TableId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -261,11 +262,11 @@ async fn a_tables_rules_govern_the_app_api_and_an_admin_change_takes_effect_live
 
     // Three roles. 40 and 80 have to exist before anyone can hold them —
     // `users.role` is a foreign key onto `_fd_roles` now (§7.4).
-    create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
-    save_role(&catalog, &Role::new(80, "Reader")).await?;
-    save_role(&catalog, &Role::new(40, "Editor")).await?;
-    create_user(&catalog, "reader@example.com", "reader-pw", 80).await?;
-    create_user(&catalog, "editor@example.com", "editor-pw", 40).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Reader")).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(40), "Editor")).await?;
+    create_user(&catalog, "reader@example.com", "reader-pw", Role::of(80)).await?;
+    create_user(&catalog, "editor@example.com", "editor-pw", Role::of(40)).await?;
 
     // --- default: posts is admin-only, so neither reader nor editor can read ---
     let mut reader = Client::new(router.clone(), APP_HOST);
@@ -382,9 +383,9 @@ async fn a_tables_rules_govern_the_app_api_and_an_admin_change_takes_effect_live
 async fn forgetting_a_tables_settings_re_closes_the_app_live() -> sc_error::Result<()> {
     let tmp = TempDir::new("forget");
     let (router, catalog, _db) = setup(&tmp).await?;
-    create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
-    save_role(&catalog, &Role::new(80, "Reader")).await?;
-    create_user(&catalog, "reader@example.com", "reader-pw", 80).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Reader")).await?;
+    create_user(&catalog, "reader@example.com", "reader-pw", Role::of(80)).await?;
 
     let mut admin = Client::new(router.clone(), BASE_DOMAIN);
     admin.login("admin@example.com", "admin-pw").await;
@@ -435,11 +436,17 @@ async fn forgetting_a_tables_settings_re_closes_the_app_live() -> sc_error::Resu
 async fn a_writer_who_may_not_read_gets_only_the_key_back() -> sc_error::Result<()> {
     let tmp = TempDir::new("write-only");
     let (router, catalog, _db) = setup(&tmp).await?;
-    create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
-    save_role(&catalog, &Role::new(80, "Submitter")).await?;
-    save_role(&catalog, &Role::new(40, "Staff")).await?;
-    create_user(&catalog, "submitter@example.com", "submitter-pw", 80).await?;
-    create_user(&catalog, "staff@example.com", "staff-pw", 40).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Submitter")).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(40), "Staff")).await?;
+    create_user(
+        &catalog,
+        "submitter@example.com",
+        "submitter-pw",
+        Role::of(80),
+    )
+    .await?;
+    create_user(&catalog, "staff@example.com", "staff-pw", Role::of(40)).await?;
 
     let mut admin = Client::new(router.clone(), BASE_DOMAIN);
     admin.login("admin@example.com", "admin-pw").await;

@@ -68,7 +68,7 @@ pub use dispatch::{
     fire_trigger_with,
 };
 pub use engine::{WorkflowEngine, WorkflowStarted};
-pub use event::{EVENT_KINDS, Event, EventKind, MAX_DEPTH, ROLE_PUBLIC};
+pub use event::{EVENT_KINDS, Event, EventKind, MAX_DEPTH};
 pub use observer::TriggerObserver;
 pub use registry::ActionRegistry;
 pub use schedule::{ATTR_DAY_OF_WEEK, ATTR_HOUR, ATTR_MINUTE, OFTEN_MINUTES, Schedule, day_name};

@@ -564,7 +564,7 @@ fn start_turn(
     mode: &'static str,
 ) -> tokio::sync::mpsc::UnboundedReceiver<Json> {
     let (tx, rx) = unbounded_channel::<Json>();
-    tokio::spawn(async move {
+    sc_catalog::spawn_scoped(async move {
         // Held for as long as the turn runs.
         let _slot = slot;
         if let Err(e) = drive_turn(&ctx, existing, input, mode, &tx).await {

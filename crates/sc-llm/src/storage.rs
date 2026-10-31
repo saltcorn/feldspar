@@ -24,6 +24,7 @@
 //! had one — listed, found by id and by name, with its models — and every
 //! writer refuses it. Callers never need to know which kind they hold.
 
+use sc_catalog::Authority;
 use sc_catalog::{
     Catalog, ConstraintKind, DataField, DataFieldKind, FieldId, SchemaStep, SharedTx, Table,
     TableConstraint, TableId,
@@ -835,7 +836,13 @@ fn bad_model_column(column: &str, expected: &str, got: Option<&Value>) -> Error 
 async fn in_transaction(catalog: &Catalog, statements: Vec<Statement>) -> Result<()> {
     let tx = SharedTx::begin_primary(catalog)?;
     for statement in &statements {
-        if let Err(e) = tx.run(None, statement).await {
+        if let Err(e) = tx
+            .run(
+                Authority::system("LLM usage and conversation storage"),
+                statement,
+            )
+            .await
+        {
             // The rollback's own failure would hide the reason; the statement's
             // error is the one worth reporting.
             let _ = tx.rollback().await;

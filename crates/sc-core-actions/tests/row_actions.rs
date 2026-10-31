@@ -21,12 +21,14 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{ActionContext, Event, EventKind, Trigger, validate_trigger};
 use sc_api::rows;
 use sc_catalog::{
-    CallerContext, Catalog, TableMeta, bootstrap_table_meta, enable_rls, save_table_meta,
+    Catalog, Principal, TableMeta, bootstrap_table_meta, enable_rls, save_table_meta,
 };
 use sc_core_actions::builtin_actions;
 use sc_db::DatabaseDriver;
@@ -80,7 +82,7 @@ fn book_update() -> Event {
         .on("books")
         .row(json!({ "id": 1, "title": "A Book", "status": "done", "pages": 100 }))
         .old_row(json!({ "id": 1, "title": "Draft Title", "status": "draft", "pages": 80 }))
-        .caller(1, Some(json!({ "email": "admin@example.com" })))
+        .caller(Role::ADMIN, Some(json!({ "email": "admin@example.com" })))
 }
 
 /// Run a named built-in action for `event` with `config`, through the registry —
@@ -149,7 +151,7 @@ async fn insert_row_computes_its_fields_from_the_event() -> Result<()> {
     let insert = Event::new(EventKind::Insert)
         .on("books")
         .row(json!({ "id": 2, "title": "Second", "status": "draft", "pages": 5 }))
-        .caller(1, Some(json!({ "email": "admin@example.com" })));
+        .caller(Role::ADMIN, Some(json!({ "email": "admin@example.com" })));
     let second = run(&catalog, "insert_row", &insert, &cfg, &engine).await?;
     assert_eq!(second["what"], json!("Second"));
     assert_eq!(second["was"], Json::Null);
@@ -474,8 +476,8 @@ async fn an_actions_writes_carry_admin_authority_on_an_rls_table() -> Result<()>
     enable_rls(&catalog, &secrets).await?;
 
     // The policies decide: a caller who owns nothing here sees nothing.
-    let outsider = CallerContext::new(100, Some(json!({ "email": "nobody@example.com" })));
-    let visible = rows::list_rows_ctx(&catalog, &secrets, Some(&outsider)).await?;
+    let outsider = Principal::new(Role::PUBLIC, Some(json!({ "email": "nobody@example.com" })));
+    let visible = rows::list_rows_ctx(&catalog, &secrets, Authority::Caller(&outsider)).await?;
     assert_eq!(visible.as_array().map(Vec::len), Some(0), "{visible}");
 
     // The trigger inserts a row owned by a third party — refused for any caller
@@ -510,8 +512,8 @@ async fn an_actions_writes_carry_admin_authority_on_an_rls_table() -> Result<()>
     // Read back through an admin context, because the table is `FORCE`d: a read
     // with no caller context at all sees nothing here, policies applying to the
     // table's owner too. (That is why the action sets one.)
-    let admin = CallerContext::anonymous(1);
-    let remaining = rows::list_rows_ctx(&catalog, &secrets, Some(&admin)).await?;
+    let admin = Principal::anonymous(Role::ADMIN);
+    let remaining = rows::list_rows_ctx(&catalog, &secrets, Authority::Caller(&admin)).await?;
     let ids: Vec<Json> = remaining
         .as_array()
         .cloned()

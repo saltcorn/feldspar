@@ -29,7 +29,7 @@ use sc_api::{
     CLIENT_HELPER_FILE, EndpointSet, GRAPHQL_CLIENT_FILE, GRAPHQL_SCHEMA_FILE, StreamExport,
     client_property, client_runtime, generate_app_client, generate_graphql_client, op_name,
 };
-use sc_auth::{ROLE_ADMIN, Role};
+use sc_auth::RoleDef;
 use sc_catalog::{PublicOrigin, Table};
 use sc_types::BasicType;
 
@@ -189,7 +189,7 @@ pub struct ProjectContext<'a> {
     /// find out what this server calls its roles. Not a contract — an admin may
     /// add or rename one tomorrow — which is why the generated README says when
     /// the list was taken.
-    pub roles: &'a [Role],
+    pub roles: &'a [RoleDef],
 }
 
 impl ProjectContext<'_> {
@@ -277,7 +277,7 @@ impl ProjectContext<'_> {
     fn admin_role_name(&self) -> &str {
         self.roles
             .iter()
-            .find(|r| r.role == ROLE_ADMIN)
+            .find(|r| r.role.is_admin())
             .map_or("Admin", |r| r.name.as_str())
     }
 
@@ -4957,6 +4957,7 @@ mod tests {
     use super::*;
     use sc_api::{ApiProvider, RestProvider};
     use sc_catalog::{AccessRules, DataField, DbId, TableId, TableSource};
+    use sc_types::Role;
     use sc_types::TypeRef;
 
     fn tasks() -> Table {
@@ -5069,13 +5070,13 @@ mod tests {
     /// The roles of an installation that has added one of its own: the two
     /// built-ins every database has, plus the `Editor` that makes a generated
     /// list worth generating.
-    fn roles() -> &'static [Role] {
-        static ROLES: std::sync::OnceLock<Vec<Role>> = std::sync::OnceLock::new();
+    fn roles() -> &'static [RoleDef] {
+        static ROLES: std::sync::OnceLock<Vec<RoleDef>> = std::sync::OnceLock::new();
         ROLES.get_or_init(|| {
             vec![
-                Role::new(ROLE_ADMIN, "Admin").description("Full access to everything."),
-                Role::new(40, "Editor").description("May write posts."),
-                Role::new(100, "Public")
+                RoleDef::new(Role::ADMIN, "Admin").description("Full access to everything."),
+                RoleDef::new(Role::of(40), "Editor").description("May write posts."),
+                RoleDef::new(Role::PUBLIC, "Public")
                     .description("Anyone at all, including callers who are not logged in."),
             ]
         })
@@ -6249,7 +6250,7 @@ export function Board({ id }: { id: number }) {
         assert!(!off.contains("api.signup({"), "{off}");
 
         let on_eps = RestProvider::project("/api", &tables)
-            .with_signup(Some(80))
+            .with_signup(Some(Role::of(80)))
             .endpoints()
             .clone();
         let on = readme(&on_eps);

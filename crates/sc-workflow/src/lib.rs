@@ -68,8 +68,8 @@ pub use driver::{Advanced, Clock, Driver, ManualClock, SystemClock, node_id, sta
 pub use engine::{DEFAULT_LEASE_SECONDS, DEFAULT_POLL_SECONDS, WorkflowEngineTask};
 pub use machine::{Conclusion, Decision, PendingForm, WorkflowRun};
 pub use ops::{
-    INLINE_LEASE_SECONDS, ROLE_ADMIN, cancel_run, check_may_resume, list_workflow_runs, may_resume,
-    resume_run, retry_run,
+    INLINE_LEASE_SECONDS, cancel_run, check_may_resume, list_workflow_runs, may_resume, resume_run,
+    retry_run,
 };
 pub use queue::{DEFAULT_BATCH, DatabaseQueue, WorkQueue};
 pub use run::{

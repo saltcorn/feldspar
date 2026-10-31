@@ -6,6 +6,7 @@
 //! application rather than globally, and that a view set's generation moves on a
 //! write and not on a read.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_app::{AppId, Application, FrameworkRef, save_application};
@@ -66,7 +67,7 @@ async fn application(catalog: &Catalog, name: &str, subdomain: &str) -> Result<A
 fn list_books(app: AppId) -> View {
     let mut view = View::new(app, "List Books", "List", "books")
         .description("Every book")
-        .min_role(1)
+        .min_role(Role::ADMIN)
         .configuration(
             json!({ "columns": [{ "type": "Field", "field_name": "title" }] })
                 .as_object()
@@ -104,7 +105,7 @@ async fn a_view_and_a_page_round_trip_and_delete() -> Result<()> {
 
     let mut page = Page::new(app, "BooksOverview")
         .title("Books")
-        .min_role(1)
+        .min_role(Role::ADMIN)
         .layout(json!({ "above": [{ "type": "view", "view": "Filter books" }] }));
     page.attributes
         .insert("root_page_for_roles".to_owned(), json!([1]));
@@ -149,7 +150,7 @@ async fn each_refusal_names_what_is_wrong() -> Result<()> {
     );
 
     // A role no role defines (only 1 and 100 are built in).
-    let view = list_books(app).min_role(7);
+    let view = list_books(app).min_role(Role::of(7));
     let msg = refused(save_view(&catalog, &view).await);
     assert!(msg.contains("role 7"), "{msg}");
 

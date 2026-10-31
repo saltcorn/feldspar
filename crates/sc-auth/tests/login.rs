@@ -5,9 +5,10 @@
 //! wrong credentials are rejected, a correct login mints a session token that
 //! resolves back to the user, and logout invalidates it.
 
+use sc_types::Role;
 use std::sync::Arc;
 
-use sc_auth::{COL_EMAIL, ROLE_ADMIN, SessionStore, authenticate, bootstrap, create_first_user};
+use sc_auth::{COL_EMAIL, SessionStore, authenticate, bootstrap, create_first_user};
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -55,7 +56,7 @@ async fn login_session_logout_round_trip() -> sc_error::Result<()> {
         .await?
         .expect("valid credentials authenticate");
     assert_eq!(user.id, created.id);
-    assert_eq!(user.role, ROLE_ADMIN);
+    assert_eq!(user.role, Role::ADMIN);
     assert_eq!(
         user.get(COL_EMAIL),
         Some(&Value::Text("admin@example.com".into()))

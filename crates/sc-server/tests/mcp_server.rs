@@ -30,6 +30,7 @@
 //!    which flag.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -1129,7 +1130,7 @@ async fn an_edit_schema_batch_reprojects_the_mounted_app_and_names_it() -> sc_er
         .expect("the customers listing");
     assert_eq!(
         listing.auth,
-        sc_api::AuthRequirement::MinRole(80),
+        sc_api::AuthRequirement::MinRole(Role::of(80)),
         "the re-projection read the new access rules"
     );
 
@@ -1372,7 +1373,7 @@ async fn roles_and_accounts_are_tools_behind_the_access_and_drop_grants() -> sc_
     );
     let (failed, created) = call_tool(&router, &access, "createRole", editor).await;
     assert!(!failed, "{created}");
-    assert!(sc_auth::load_role(&catalog, 40).await?.is_some());
+    assert!(sc_auth::load_role(&catalog, Role::of(40)).await?.is_some());
 
     // Deleting one is an access change *and* a deletion, and each refusal names
     // the flag that is missing.

@@ -4,10 +4,11 @@
 //! the first (admin) user → a user now exists → a second `create_first_user`
 //! call is refused → the stored password is a hash, not the plaintext.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_auth::{
-    COL_EMAIL, COL_ID, COL_PASSWORD_HASH, ROLE_ADMIN, USERS_TABLE, any_user_exists, bootstrap,
+    COL_EMAIL, COL_ID, COL_PASSWORD_HASH, USERS_TABLE, any_user_exists, bootstrap,
     create_first_user, is_valid_hash,
 };
 use sc_catalog::Catalog;
@@ -49,7 +50,7 @@ async fn create_first_user_flow() -> sc_error::Result<()> {
 
     // Create the first user: an admin.
     let user = create_first_user(&catalog, "admin@example.com", "s3cret-pw").await?;
-    assert_eq!(user.role, ROLE_ADMIN);
+    assert_eq!(user.role, Role::ADMIN);
     assert!(user.is_admin());
     assert_eq!(
         user.get(COL_EMAIL),

@@ -12,12 +12,14 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{ActionContext, Event, EventKind, Trigger, validate_trigger};
 use sc_api::{rows, schema_edit};
 use sc_catalog::{
-    CallerContext, Catalog, Changeset, ChangesetSource, bootstrap_change_log, bootstrap_field_meta,
+    Catalog, Changeset, ChangesetSource, Principal, bootstrap_change_log, bootstrap_field_meta,
     bootstrap_table_meta, changeset,
 };
 use sc_core_actions::builtin_actions;
@@ -71,8 +73,8 @@ fn admin_fields() -> Json {
     json!({ "id": ADMIN, "role": 1 })
 }
 
-fn caller() -> CallerContext {
-    CallerContext::new(1, Some(admin_fields()))
+fn caller() -> Principal {
+    Principal::new(Role::ADMIN, Some(admin_fields()))
 }
 
 /// A request in `session`: the changeset the server's middleware mints.
@@ -82,13 +84,13 @@ fn request(session: &str) -> Arc<Changeset> {
 
 async fn insert(catalog: &Catalog, table: &str, body: Json) -> Result<String> {
     let table = catalog.require(table)?;
-    let row = rows::create_row_ctx(catalog, &table, &body, Some(&caller())).await?;
+    let row = rows::create_row_ctx(catalog, &table, &body, Authority::Caller(&caller())).await?;
     Ok(row["id"].to_string())
 }
 
 async fn update(catalog: &Catalog, table: &str, id: &str, body: Json) -> Result<()> {
     let table = catalog.require(table)?;
-    rows::update_row_ctx(catalog, &table, id, &body, Some(&caller())).await?;
+    rows::update_row_ctx(catalog, &table, id, &body, Authority::Caller(&caller())).await?;
     Ok(())
 }
 
@@ -125,7 +127,14 @@ async fn run_undo_as(
     let changeset =
         Arc::new(Changeset::new(ChangesetSource::Request).session(session.map(str::to_owned)));
     let event = Event::new(EventKind::None)
-        .caller(if user.is_some() { 1 } else { 100 }, user)
+        .caller(
+            if user.is_some() {
+                Role::ADMIN
+            } else {
+                Role::PUBLIC
+            },
+            user,
+        )
         .in_changeset(Some(changeset.clone()));
     let config = config(table);
     let registry = builtin_actions()?;

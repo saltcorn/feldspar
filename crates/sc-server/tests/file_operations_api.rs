@@ -7,6 +7,7 @@
 //! outside the typed endpoint set because the endpoint model is JSON-only.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -408,7 +409,7 @@ async fn file_meta_round_trips_and_reports_the_effective_rule() -> sc_error::Res
 
     // Attributes round-trip through the xattr layer.
     let stored = store.get_meta("private/secret.txt").await?;
-    assert_eq!(stored.min_role, Some(100));
+    assert_eq!(stored.min_role, Some(Role::PUBLIC));
     assert_eq!(
         stored.attributes.get("mime").map(String::as_str),
         Some("text/plain")

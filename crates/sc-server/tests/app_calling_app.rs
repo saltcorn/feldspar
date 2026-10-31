@@ -4,6 +4,7 @@
 //! native apps — what a checkout's success URL is built from.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use axum::Router;
@@ -65,7 +66,7 @@ async fn setup() -> sc_error::Result<(Router, Arc<Catalog>, sc_app::AppId, TestD
         // What the body is told about where it was called from.
         Trigger::new("whereami", EventKind::None, "run_js_code")
             .config("code", "return { app, session };")
-            .min_role(100),
+            .min_role(Role::PUBLIC),
         // And what a write it makes passes on to the event *that* raises: the
         // insert trigger below records the application it sees.
         Trigger::new("visit", EventKind::None, "run_js_code")
@@ -73,7 +74,7 @@ async fn setup() -> sc_error::Result<(Router, Arc<Catalog>, sc_app::AppId, TestD
                 "code",
                 "await db.visits.insert({ note: payload.note }); return true;",
             )
-            .min_role(100),
+            .min_role(Role::PUBLIC),
         Trigger::new("stamp_visit", EventKind::Insert, "run_js_code")
             .on("visits")
             .config(

@@ -11,6 +11,7 @@
 //! show is answered as one that does not exist, and a change it does not allow
 //! is refused with a sentence.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -1470,12 +1471,12 @@ async fn owned_by_caller(catalog: &Catalog, access: &Access, id: DatasetId) -> R
 }
 
 /// A sharing body's `share_role`: a role, or null for nobody but the owner.
-fn share_role(body: &Json) -> Result<Option<u8>> {
+fn share_role(body: &Json) -> Result<Option<Role>> {
     match body.get("share_role") {
         None | Some(Json::Null) => Ok(None),
         Some(value) => value
             .as_u64()
-            .and_then(|r| u8::try_from(r).ok())
+            .and_then(|r| Role::try_from(r).ok())
             .map(Some)
             .ok_or_else(|| {
                 Error::invalid(format!("`share_role` is a role from 1 to 100, not {value}"))

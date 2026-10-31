@@ -3,6 +3,7 @@
 
 use sc_app::AppId;
 use sc_types::Attrs;
+use sc_types::Role;
 use serde_json::Value as Json;
 use uuid::Uuid;
 
@@ -62,7 +63,7 @@ pub struct View {
     pub configuration: Attrs,
     /// The least privileged role that may see the view (`1..=100`, lower is more
     /// privileged).
-    pub min_role: u8,
+    pub min_role: Role,
     /// v1's slug — `{label, steps}` or absent — carried as it came.
     pub slug: Option<Json>,
     /// Sparse per-view settings (§9).
@@ -86,7 +87,7 @@ impl View {
             viewpattern: viewpattern.into(),
             table_name: Some(table.into()),
             configuration: Attrs::new(),
-            min_role: sc_auth::ROLE_PUBLIC,
+            min_role: Role::PUBLIC,
             slug: None,
             attributes: Attrs::new(),
         }
@@ -105,7 +106,7 @@ impl View {
     }
 
     /// Set the minimum role.
-    pub fn min_role(mut self, role: u8) -> View {
+    pub fn min_role(mut self, role: Role) -> View {
         self.min_role = role;
         self
     }
@@ -128,7 +129,7 @@ pub struct Page {
     /// The layout, exactly as v1 shaped it.
     pub layout: Json,
     /// The least privileged role that may see the page.
-    pub min_role: u8,
+    pub min_role: Role,
     /// Sparse per-page settings (§9) — including `root_page_for_roles`, which is
     /// what makes `/` resolve.
     pub attributes: Attrs,
@@ -145,7 +146,7 @@ impl Page {
             title: String::new(),
             description: String::new(),
             layout: Json::Object(Attrs::new()),
-            min_role: sc_auth::ROLE_PUBLIC,
+            min_role: Role::PUBLIC,
             attributes: Attrs::new(),
         }
     }
@@ -163,7 +164,7 @@ impl Page {
     }
 
     /// Set the minimum role.
-    pub fn min_role(mut self, role: u8) -> Page {
+    pub fn min_role(mut self, role: Role) -> Page {
         self.min_role = role;
         self
     }

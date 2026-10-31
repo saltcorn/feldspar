@@ -34,10 +34,9 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, he
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
 use chrono::{DateTime, Utc};
-use sc_auth::ROLE_PUBLIC;
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
-use sc_module::{RouteCaller, RouteRequest, WEBHOOK_MAX_BODY, WebhookRequest};
+use sc_module::{RouteRequest, WEBHOOK_MAX_BODY, WebhookRequest};
 use serde_json::{Value as Json, json};
 
 use crate::backup::schedule::{Frequency, load_schedules, load_statuses};
@@ -189,11 +188,8 @@ async fn route_caller(
     jar: &CookieJar,
     headers: &HeaderMap,
     anonymous: bool,
-) -> std::result::Result<RouteCaller, Box<Response>> {
-    let nobody = RouteCaller {
-        role: ROLE_PUBLIC,
-        user: None,
-    };
+) -> std::result::Result<sc_catalog::Principal, Box<Response>> {
+    let nobody = sc_api::principal_of(None);
     if anonymous {
         return Ok(nobody);
     }
@@ -205,7 +201,7 @@ async fn route_caller(
             )));
         };
         return match sc_auth::authenticate_route_token(catalog, &token).await {
-            Ok(caller) => Ok(caller_of(&caller.user)),
+            Ok(caller) => Ok(sc_api::principal_of(Some(&caller.user))),
             Err(e) => Err(Box::new(json_error(
                 StatusCode::UNAUTHORIZED,
                 e.to_string(),
@@ -214,23 +210,7 @@ async fn route_caller(
     }
     Ok(session_user(state, jar)
         .await?
-        .map_or(nobody, |user| caller_of(&user)))
-}
-
-/// A signed-in user as a route's caller: the role, and the row a write's
-/// caller carries — its columns, with `id` and `role`.
-fn caller_of(user: &sc_auth::User) -> RouteCaller {
-    let mut fields: serde_json::Map<String, Json> = user
-        .extra
-        .iter()
-        .map(|(k, v)| (k.clone(), sc_types::value_to_json(v)))
-        .collect();
-    fields.insert("id".to_owned(), json!(user.id));
-    fields.insert("role".to_owned(), json!(user.role));
-    RouteCaller {
-        role: user.role,
-        user: Some(Json::Object(fields)),
-    }
+        .map_or(nobody, |user| sc_api::principal_of(Some(&user))))
 }
 
 /// Whether `request` is a `POST` to a module route that declared `noCsrf` —

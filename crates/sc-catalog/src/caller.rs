@@ -1,6 +1,6 @@
 //! Who is writing, and what led them here (§7.3, §10.2).
 //!
-//! A [`CallerContext`] travels with **every** row write, not only with the ones
+//! A [`Principal`] travels with **every** row write, not only with the ones
 //! on an RLS table. It started as the RLS half alone — the role and user an
 //! `sc.role`/`sc.user` GUC carries into a policy — and grew the rest when table
 //! events landed (Phase 4): an event has to say *who* caused the write, and the
@@ -10,20 +10,21 @@
 //!
 //! So it answers three questions about one write:
 //!
-//! - **Whose authority?** [`role`](CallerContext::role) — what the policies gate
+//! - **Whose authority?** [`role`](Principal::role) — what the policies gate
 //!   on, and what an event reports.
-//! - **Which user?** [`user`](CallerContext::user) — the fields the formula
+//! - **Which user?** [`user`](Principal::user) — the fields the formula
 //!   language binds `user` to, and the object the `sc.user` GUC carries.
-//! - **What led here?** [`chain`](CallerContext::chain) — the trigger names, if
+//! - **What led here?** [`chain`](Principal::chain) — the trigger names, if
 //!   any, whose actions caused this write. RLS ignores it; the dispatcher uses it
 //!   to bound a cascade (`Event::firing`, §10.2's `MAX_DEPTH`). A write made by a
 //!   request rather than by a trigger carries an empty chain, which is what makes
 //!   depth 0 the ordinary case.
-//! - **Which action?** [`changeset`](CallerContext::changeset) — the user-level
+//! - **Which action?** [`changeset`](Principal::changeset) — the user-level
 //!   action the write belongs to (§14.12), which the change-log trigger records
 //!   it under. A trigger's write carries the changeset of the event that fired
 //!   it, so the user's edit and its trigger's follow-up are one action.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use serde_json::{Value as Json, json};
@@ -96,7 +97,7 @@ impl CallingApp {
 /// signatures that carry only the user. So the transport runs the request
 /// **inside** an origin ([`with_origin`]), and what builds a caller context or
 /// an event reads it ([`current_origin`]) and carries it explicitly from there:
-/// on [`CallerContext`], on the event, and back into scope by the dispatcher
+/// on [`Principal`], on the event, and back into scope by the dispatcher
 /// while a trigger's action runs. Outside any request it is empty, which is
 /// what a scheduled trigger, a service and a webhook all are.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -124,11 +125,66 @@ pub async fn with_origin<F: std::future::Future>(origin: Origin, fut: F) -> F::O
 
 use crate::changeset::{self, Changeset};
 
-/// The caller one row operation runs as.
+/// The task-local context a caller's work runs inside: the request's [`Origin`],
+/// the ambient changeset and the run outbox (code-quality review §3.3).
+///
+/// `tokio::spawn` silently drops every task-local, which is how security review
+/// #32's marker came to be lost across a cascade. A [`Principal`] carries the
+/// trigger chain, origin and changeset as values, so work handed one keeps
+/// them; what still lives in task-locals is captured here and re-entered by
+/// [`spawn_scoped`], which is what work done on a caller's behalf spawns with.
+#[derive(Clone, Default)]
+pub struct TaskScope {
+    origin: Option<Origin>,
+    changeset: Option<Arc<Changeset>>,
+    outbox: Option<Arc<crate::outbox::RunOutbox>>,
+}
+
+impl TaskScope {
+    /// The scope the running task is inside.
+    pub fn current() -> TaskScope {
+        TaskScope {
+            origin: ORIGIN.try_with(Clone::clone).ok(),
+            changeset: changeset::current(),
+            outbox: crate::outbox::current(),
+        }
+    }
+
+    /// Run `fut` inside this scope.
+    pub async fn run<F: std::future::Future>(self, fut: F) -> F::Output {
+        let fut = crate::outbox::scope_if(self.outbox, changeset::scope_if(self.changeset, fut));
+        match self.origin {
+            Some(origin) => with_origin(origin, fut).await,
+            None => fut.await,
+        }
+    }
+}
+
+/// `tokio::spawn`, keeping the spawning task's [`TaskScope`]: its origin,
+/// changeset and outbox reach the spawned task.
+pub fn spawn_scoped<F>(fut: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    // Boxed first: the scope wrappers would otherwise copy a large future (an
+    // agent turn) around on the stack as it is moved into the task.
+    tokio::spawn(TaskScope::current().run(Box::pin(fut)))
+}
+
+/// Who a row operation runs as: one caller, with everything that travels with
+/// them — role, user, the trigger chain that led here, the application and guest
+/// session of the request, and the changeset the write belongs to
+/// (code-quality review §4.2). It replaced `CallerContext` and is what
+/// [`Authority::Caller`] carries; the server acting on its own authority is
+/// [`Authority::System`], not a `Principal`.
+///
+/// The user is still the JSON object the `sc.user` GUC carries; it becomes a
+/// proof-carrying `AuthenticatedUser` with TODO-code-quality Q2.2.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct CallerContext {
+pub struct Principal {
     /// The caller's role (public when anonymous).
-    pub role: u8,
+    pub role: Role,
     /// The logged-in user's fields as a JSON object, or `None` when anonymous —
     /// in which case `sc.user` is left unset and the policies'
     /// `current_setting('sc.user', true)` reads `NULL`.
@@ -146,11 +202,11 @@ pub struct CallerContext {
     pub changeset: Option<Arc<Changeset>>,
 }
 
-impl CallerContext {
+impl Principal {
     /// A context for `role` carrying `user`'s fields, in the ambient changeset
     /// ([`changeset::current`]) when the task runs inside one.
-    pub fn new(role: u8, user: Option<Json>) -> CallerContext {
-        CallerContext {
+    pub fn new(role: Role, user: Option<Json>) -> Principal {
+        Principal {
             role,
             user,
             chain: Vec::new(),
@@ -161,14 +217,14 @@ impl CallerContext {
     }
 
     /// The same, from `origin`: the application and the guest session.
-    pub fn from_origin(mut self, origin: Origin) -> CallerContext {
+    pub fn from_origin(mut self, origin: Origin) -> Principal {
         self.app = origin.app;
         self.session = origin.session;
         self
     }
 
     /// The same, from the origin this task is running inside.
-    pub fn in_current_origin(self) -> CallerContext {
+    pub fn in_current_origin(self) -> Principal {
         self.from_origin(current_origin())
     }
 
@@ -181,25 +237,25 @@ impl CallerContext {
     }
 
     /// A context for `role` with no user (anonymous).
-    pub fn anonymous(role: u8) -> CallerContext {
-        CallerContext::new(role, None)
+    pub fn anonymous(role: Role) -> Principal {
+        Principal::new(role, None)
     }
 
     /// The chain of triggers this write descends from — what
     /// `Event::firing` handed the action making it.
-    pub fn chained(mut self, chain: Vec<String>) -> CallerContext {
+    pub fn chained(mut self, chain: Vec<String>) -> Principal {
         self.chain = chain;
         self
     }
 
     /// The same, marked as made on **untrusted input** ([`UNTRUSTED_ORIGIN`]).
-    pub fn untrusted(mut self) -> CallerContext {
+    pub fn untrusted(mut self) -> Principal {
         self.chain = untrusted_chain(self.chain);
         self
     }
 
     /// Put this write in `changeset` instead of the one it was built with.
-    pub fn in_changeset(mut self, changeset: Option<Arc<Changeset>>) -> CallerContext {
+    pub fn in_changeset(mut self, changeset: Option<Arc<Changeset>>) -> Principal {
         self.changeset = changeset;
         self
     }
@@ -219,22 +275,202 @@ impl CallerContext {
     }
 }
 
+/// Why code runs on the server's own authority: a short label written in the
+/// source ("retention sweep", "model fit"). Only [`Authority::system`] makes one,
+/// so every system-authority call site is a greppable `Authority::system(`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SystemReason(&'static str);
+
+impl SystemReason {
+    /// The label.
+    pub fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+/// On whose authority a row operation runs (code-quality review §4.2).
+///
+/// It replaced `Option<&CallerContext>`, where `None` silently meant "nobody,
+/// plus whatever changeset the task holds". Now the server's own authority has
+/// to be written out, with a reason:
+///
+/// - [`System`](Authority::System): the server itself — the admin role and no
+///   user. On a row-level-security table it sets `sc.role` to the admin's, so a
+///   system job (a retention sweep, a model fit, an import an admin started)
+///   sees and writes every row; the write belongs to the ambient changeset.
+/// - [`Caller`](Authority::Caller): a [`Principal`], whose role, user, origin
+///   and changeset decide.
+///
+/// The system call sites are listed in docs/SECURITY_REVIEW_2026-10.md
+/// ("System-authority inventory"); keep that list current.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Authority<'a> {
+    /// The server's own authority.
+    System(SystemReason),
+    /// A caller's.
+    Caller(&'a Principal),
+}
+
+impl<'a> Authority<'a> {
+    /// The server's own authority, for `reason`.
+    pub const fn system(reason: &'static str) -> Authority<'static> {
+        Authority::System(SystemReason(reason))
+    }
+
+    /// `principal`'s authority.
+    pub const fn caller(principal: &'a Principal) -> Authority<'a> {
+        Authority::Caller(principal)
+    }
+
+    /// The caller, or `None` for the system.
+    pub fn principal(self) -> Option<&'a Principal> {
+        match self {
+            Authority::System(_) => None,
+            Authority::Caller(principal) => Some(principal),
+        }
+    }
+
+    /// Whether this is the server's own authority.
+    pub fn is_system(self) -> bool {
+        matches!(self, Authority::System(_))
+    }
+
+    /// The role access is checked at: the admin's for the system.
+    pub fn role(self) -> Role {
+        match self {
+            Authority::System(_) => Role::ADMIN,
+            Authority::Caller(principal) => principal.role,
+        }
+    }
+
+    /// The system's reason, or `None` for a caller.
+    pub fn reason(self) -> Option<&'static str> {
+        match self {
+            Authority::System(reason) => Some(reason.as_str()),
+            Authority::Caller(_) => None,
+        }
+    }
+
+    /// The principal the database's caller GUCs are set from: the caller, or for
+    /// the system the admin role with no user, in the ambient changeset.
+    pub fn as_principal(self) -> std::borrow::Cow<'a, Principal> {
+        match self {
+            Authority::Caller(principal) => std::borrow::Cow::Borrowed(principal),
+            Authority::System(_) => std::borrow::Cow::Owned(Principal::new(Role::ADMIN, None)),
+        }
+    }
+}
+
+impl Principal {
+    /// The signed-in user's id, as the user object carries it (`id`).
+    pub fn user_id(&self) -> Option<&str> {
+        self.user.as_ref()?.get("id")?.as_str()
+    }
+
+    /// This caller as a file rule sees them (`sc_files` sits below this crate,
+    /// so the view is built here): the role, and the user id the owner rule
+    /// compares with.
+    pub fn file_caller(&self) -> sc_files::FileCaller {
+        sc_files::FileCaller::new(self.role, self.user_id().map(str::to_owned))
+    }
+}
+
+impl<'a> From<&'a Principal> for Authority<'a> {
+    fn from(principal: &'a Principal) -> Authority<'a> {
+        Authority::Caller(principal)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Security review #32's class: context lost across a `tokio::spawn`. The
+    /// chain (with its untrusted-input marker) travels in the `Principal`; the
+    /// origin and the changeset, which are task-locals, travel by
+    /// `spawn_scoped` — and a bare `tokio::spawn` is shown dropping them.
+    #[tokio::test]
+    async fn a_triggered_chain_and_its_origin_survive_a_spawn() {
+        let origin = Origin {
+            app: None,
+            session: Some("guest-1".into()),
+        };
+        let cs = Arc::new(Changeset::new(crate::changeset::ChangesetSource::Request));
+        let caller = Principal::new(Role::of(40), None)
+            .chained(vec!["on_insert".into()])
+            .untrusted();
+        let (scoped, bare) = with_origin(
+            origin.clone(),
+            changeset::scope(cs.clone(), async move {
+                let scoped = spawn_scoped(async move {
+                    let rebuilt = Principal::new(Role::of(40), None).in_current_origin();
+                    (caller.chain.clone(), rebuilt.origin(), rebuilt.changeset)
+                });
+                let bare = tokio::spawn(async {
+                    let rebuilt = Principal::new(Role::of(40), None).in_current_origin();
+                    (rebuilt.origin(), rebuilt.changeset)
+                });
+                (scoped.await.unwrap(), bare.await.unwrap())
+            }),
+        )
+        .await;
+        let (chain, scoped_origin, scoped_changeset) = scoped;
+        assert!(
+            is_untrusted_chain(&chain),
+            "the triggered marker survives: {chain:?}"
+        );
+        assert_eq!(chain.last().map(String::as_str), Some("on_insert"));
+        assert_eq!(scoped_origin, origin);
+        assert_eq!(scoped_changeset.map(|c| c.id), Some(cs.id));
+        // What `spawn_scoped` is for: a bare spawn starts outside every scope.
+        assert_eq!(bare.0, Origin::default());
+        assert!(bare.1.is_none());
+    }
+
+    #[test]
+    fn a_file_rule_sees_the_principals_role_and_user_id() {
+        let ada = Principal::new(Role::of(40), Some(json!({ "id": "u-1", "email": "a@b.c" })));
+        assert_eq!(ada.user_id(), Some("u-1"));
+        assert_eq!(
+            ada.file_caller(),
+            sc_files::FileCaller::new(Role::of(40), Some("u-1".into()))
+        );
+        assert_eq!(
+            Principal::anonymous(Role::PUBLIC).file_caller(),
+            sc_files::FileCaller::anonymous()
+        );
+    }
+
+    #[test]
+    fn the_system_is_the_admin_with_no_user_and_says_why() {
+        let system = Authority::system("retention sweep");
+        assert!(system.is_system());
+        assert_eq!(system.reason(), Some("retention sweep"));
+        assert_eq!(system.role(), Role::ADMIN);
+        assert!(system.principal().is_none());
+        let as_principal = system.as_principal();
+        assert!(as_principal.role.is_admin() && as_principal.user.is_none());
+
+        let anonymous = Principal::anonymous(Role::PUBLIC);
+        let caller = Authority::from(&anonymous);
+        assert!(!caller.is_system());
+        assert_eq!(caller.reason(), None);
+        assert_eq!(caller.role(), Role::PUBLIC);
+        assert_eq!(caller.principal(), Some(&anonymous));
+    }
+
     #[test]
     fn a_caller_carries_its_role_its_user_and_what_led_here() {
-        let anonymous = CallerContext::anonymous(100);
-        assert_eq!(anonymous.role, 100);
+        let anonymous = Principal::anonymous(Role::PUBLIC);
+        assert_eq!(anonymous.role, Role::PUBLIC);
         assert!(anonymous.user.is_none());
         // Nothing led here: the ordinary case is a request, at depth 0.
         assert!(anonymous.chain.is_empty());
         assert_eq!(anonymous.user_json(), None);
 
         let user = json!({ "id": 1, "email": "a@b.c" });
-        let caller = CallerContext::new(1, Some(user.clone())).chained(vec!["audit".into()]);
+        let caller = Principal::new(Role::ADMIN, Some(user.clone())).chained(vec!["audit".into()]);
         assert_eq!(caller.chain, vec!["audit".to_owned()]);
         // The GUC carries the object as compact JSON — what `UserEnv::Guc`'s
         // `current_setting('sc.user', …)::jsonb ->> 'x'` reads.

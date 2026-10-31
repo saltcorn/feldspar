@@ -21,6 +21,7 @@
 //! layer under the §7.3 rule, and `preload_code`'s body has the `db` a
 //! `run_js_code` body has, at the caller's role.
 
+use sc_catalog::Authority;
 use std::collections::BTreeMap;
 
 use sc_agent::{AgentTrait, SessionContext, ToolsContext, TraitCheck, TraitContext, Turn};
@@ -347,7 +348,7 @@ async fn filter_value(source: &str, cx: &SessionContext<'_>) -> Result<Json> {
             cx.agent
         ))
     })?;
-    let caller = sc_api::caller_context_at(cx.caller.role, cx.caller.user.as_ref());
+    let caller = sc_api::principal_at(cx.caller.role, cx.caller.user.as_ref());
     // `row` is in scope in every run, and null where no row started it, so a
     // filter written for a triggered run still reads in a chat.
     let bindings = BTreeMap::from([
@@ -483,7 +484,7 @@ impl AgentTrait for PreloadCode {
             "trigger_row".to_owned(),
             cx.row.cloned().unwrap_or(Json::Null),
         );
-        let caller = sc_api::caller_context_at(cx.caller.role, cx.caller.user.as_ref())
+        let caller = sc_api::principal_at(cx.caller.role, cx.caller.user.as_ref())
             .chained(cx.caller.tool_chain());
         let result = dispatcher
             .run_code(
@@ -492,7 +493,7 @@ impl AgentTrait for PreloadCode {
                 &format!("{}/preload_code", cx.agent),
                 &code,
                 scope,
-                Some(&caller),
+                Authority::Caller(&caller),
                 None,
                 None,
             )

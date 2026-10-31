@@ -10,6 +10,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::common;
+use sc_types::Role;
 
 use std::sync::{Arc, Mutex};
 
@@ -667,7 +668,9 @@ async fn a_skill_file_is_in_the_header_and_its_files_are_readable() -> Result<()
 #[tokio::test]
 async fn a_skill_in_a_store_the_caller_cannot_open_is_refused() -> Result<()> {
     let env = Env::new().await?;
-    let dir = env.with_file_store("admin_skills", Some(1)).await?;
+    let dir = env
+        .with_file_store("admin_skills", Some(Role::ADMIN))
+        .await?;
     env.put(&dir, "SKILL.md", SKILL)?;
     let cfg = config(&[(CFG_STORE, json!("admin_skills"))]);
     assert!(

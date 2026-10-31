@@ -19,6 +19,7 @@
 //!   on a file the caller may not read is a 404.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -29,7 +30,7 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use bytes::Bytes;
 use sc_api::{BodyType, CustomParam, CustomQuery, Method, QueryLanguage, ResponseType, ValueType};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StaticDir};
-use sc_auth::{Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, DataField, FileStoreId};
 use sc_db::{ColumnGenerator, DatabaseDriver};
 use sc_db_sqlite::SqliteDriver;
@@ -47,7 +48,7 @@ use tower::ServiceExt;
 const BASE_DOMAIN: &str = "example.com";
 const APP_HOST: &str = "share.example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 80;
+const ROLE_MEMBER: Role = Role::of(80);
 const MB: usize = 1024 * 1024;
 
 /// A scratch directory removed when the guard drops.
@@ -233,7 +234,7 @@ fn queries() -> Vec<CustomQuery> {
                  media: await store.open("media/a b.png").url({ download: true }),
                };"#,
         )
-        .min_role(sc_auth::ROLE_ADMIN),
+        .min_role(Role::ADMIN),
         // F2.9: a raw body in…
         js(
             "measure",
@@ -265,7 +266,7 @@ fn queries() -> Vec<CustomQuery> {
             ),
         )
         .response_type(ResponseType::Bytes)
-        .min_role(sc_auth::ROLE_PUBLIC),
+        .min_role(Role::PUBLIC),
         // F2.10: a password-protected share, kept in a table.
         js(
             "makeShare",
@@ -275,14 +276,14 @@ fn queries() -> Vec<CustomQuery> {
                await db.shares.insert({ token: body.token, path: body.path, filename: body.filename, hash });
                return { ok: true };"#,
         )
-        .min_role(sc_auth::ROLE_ADMIN),
+        .min_role(Role::ADMIN),
         js(
             "revokeShare",
             Method::Delete,
             "/shares",
             r#"return await db.shares.where({ token: query.token }).delete();"#,
         )
-        .min_role(sc_auth::ROLE_ADMIN),
+        .min_role(Role::ADMIN),
         js(
             "shareFile",
             Method::Get,
@@ -304,7 +305,7 @@ fn queries() -> Vec<CustomQuery> {
             CustomParam::new("password", ValueType::Text).optional(),
         ])
         .response_type(ResponseType::Bytes)
-        .min_role(sc_auth::ROLE_PUBLIC),
+        .min_role(Role::PUBLIC),
         // A handle opened as the caller is checked by the owner rule when served.
         js(
             "mine",
@@ -347,7 +348,7 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<Server> {
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
     let mut users = HashMap::new();
     for who in ["alice", "bob"] {
         let user = create_user(
@@ -359,7 +360,7 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<Server> {
         .await?;
         users.insert(who, user.id.to_string());
     }
-    create_user(&catalog, "admin@example.com", PASSWORD, sc_auth::ROLE_ADMIN).await?;
+    create_user(&catalog, "admin@example.com", PASSWORD, Role::ADMIN).await?;
 
     let text = |name: &str| DataField::plain(name, TypeRef::Basic(BasicType::Text));
     catalog
@@ -389,7 +390,7 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<Server> {
         .set_meta(
             "private",
             &FileMeta {
-                min_role: Some(sc_auth::ROLE_ADMIN),
+                min_role: Some(Role::ADMIN),
                 ..FileMeta::default()
             },
         )

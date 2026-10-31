@@ -15,10 +15,11 @@
 //! - **L4.3** a seat in a room hands back the member list, the others are told
 //!   of the join, the state and the leave, and dropping the seat leaves.
 
+use sc_types::Role;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sc_auth::{ROLE_ADMIN, User};
+use sc_auth::User;
 use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, TableId, TableMeta};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
@@ -33,7 +34,7 @@ use serde_json::{Map, json};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-const MEMBER: u8 = 40;
+const MEMBER: Role = Role::of(40);
 
 /// An `internal` stream with one topic that pages may publish to.
 async fn board_presence() -> (Arc<StreamSupervisor>, Arc<RunningStream>) {
@@ -240,7 +241,7 @@ async fn updating_a_row_topic_is_the_tables_update_rule() -> Result<()> {
     let boards = catalog.require("boards")?;
     assert!(boards.ownership.is_some(), "{:?}", boards.ownership_error);
 
-    let user = |n: u128| User::new(Uuid::from_u128(n), MEMBER).unwrap();
+    let user = |n: u128| User::new(Uuid::from_u128(n), MEMBER);
     let (owner, editor, reader, stranger) = (user(1), user(2), user(3), user(4));
     let id = |u: &User| u.id.hyphenated().to_string();
     let shares = catalog.require("shares")?;
@@ -285,7 +286,7 @@ async fn updating_a_row_topic_is_the_tables_update_rule() -> Result<()> {
         .await?
     );
     // The write floor passes without the formula.
-    let admin = User::new(Uuid::from_u128(9), ROLE_ADMIN).unwrap();
+    let admin = User::new(Uuid::from_u128(9), Role::ADMIN);
     assert!(may(&admin, "1").await);
     assert!(
         !may(&admin, "2").await,

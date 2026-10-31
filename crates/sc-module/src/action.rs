@@ -18,6 +18,7 @@
 //! over (TODO "the v1 `Table` API" §3): the ask channel is served by the future
 //! awaiting the call, because that is where the hosts are borrowed.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{Action, ActionContext, Event};
@@ -53,7 +54,7 @@ pub struct ModuleAction {
     /// fields name, and what `files` in the argument object reaches.
     areas: Arc<Vec<FileArea>>,
     /// The most privileged role it may grant users (TODO-payments P3.3).
-    roles: Option<u8>,
+    roles: Option<Role>,
     /// What a direct run takes and answers, as the module declared them
     /// ([`Action::payload_type`], [`Action::returns_type`]).
     payload: Option<Json>,
@@ -119,7 +120,7 @@ impl ModuleAction {
     /// The same action, able to grant roles up to `ceiling` (TODO-payments
     /// P3.3) — the module's [`ModulePermissions::roles`](crate::ModulePermissions::roles).
     #[must_use]
-    pub fn with_role_ceiling(mut self, ceiling: Option<u8>) -> ModuleAction {
+    pub fn with_role_ceiling(mut self, ceiling: Option<Role>) -> ModuleAction {
         self.roles = ceiling;
         self
     }

@@ -21,6 +21,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::common;
+use sc_types::Role;
 
 use std::sync::Arc;
 
@@ -58,7 +59,7 @@ const SCHEMA: &str = "
 /// The trigger every test here exposes: a `none` trigger — one with no intrinsic
 /// occurrence, which runs when something asks — that files a reorder from the
 /// payload the caller sends.
-fn reorder(min_role: Option<u8>) -> Trigger {
+fn reorder(min_role: Option<Role>) -> Trigger {
     let trigger = Trigger::new("file_reorder", EventKind::None, "insert_row")
         .description("File a reorder for a book")
         .config("table", "reorders")
@@ -73,7 +74,7 @@ fn reorder(min_role: Option<u8>) -> Trigger {
 }
 
 /// An environment with the dispatcher installed and `file_reorder` saved.
-async fn setup(min_role: Option<u8>) -> Result<Env> {
+async fn setup(min_role: Option<Role>) -> Result<Env> {
     let env = Env::with_schema(SCHEMA)
         .await?
         .with_triggers(builtin_actions()?)?;
@@ -113,7 +114,7 @@ async fn the_tool_is_named_for_its_trigger_and_takes_the_event_payload() -> Resu
 
 #[tokio::test]
 async fn running_it_runs_the_trigger_the_admin_configured() -> Result<()> {
-    let env = setup(Some(40)).await?;
+    let env = setup(Some(Role::of(40))).await?;
     let result = env
         .call(
             "run_trigger",
@@ -179,7 +180,7 @@ async fn the_triggers_own_min_role_still_gates_it() -> Result<()> {
 
     // Opened to role 40, the same caller may run it — and a caller below that
     // floor still may not.
-    let env = setup(Some(40)).await?;
+    let env = setup(Some(Role::of(40))).await?;
     env.call(
         "run_trigger",
         &cfg(),
@@ -190,9 +191,9 @@ async fn the_triggers_own_min_role_still_gates_it() -> Result<()> {
     assert_eq!(env.rows("reorders").await?.len(), 1);
 
     let mut public = as_user("anon@example.com");
-    public.role = 100;
+    public.role = Role::PUBLIC;
     if let Some(user) = &mut public.user {
-        user.role = 100;
+        user.role = Role::PUBLIC;
     }
     let err = env
         .call("run_trigger", &cfg(), json!({"title": "Dune"}), &public)
@@ -294,7 +295,7 @@ async fn an_agent_answers_a_question_and_then_performs_the_action() -> Result<()
     // Phase 3's "done when": an agent given `query_table` over a real table and
     // `run_trigger` over a real trigger answers a question about the data and
     // then performs the action, with the whole exchange in its run's context.
-    let env = setup(Some(40)).await?;
+    let env = setup(Some(Role::of(40))).await?;
     // Ada is below the table's read floor, so what the agent can tell her about
     // is what her ownership grants: her own two books.
     env.own("books", "owner === user.email").await?;

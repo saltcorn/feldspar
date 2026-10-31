@@ -47,6 +47,7 @@
 //! would have raised it (W2.3). With no such page, the failure goes to the
 //! router as before.
 
+use sc_catalog::Authority;
 pub mod cache;
 pub mod images;
 
@@ -276,7 +277,7 @@ impl ServerRendered {
                 &self.run_name,
                 self.app_id,
                 request_binding(&page_req, "prerender", &self.site),
-                None,
+                Authority::system("prerender: refresh a static page"),
                 Some(trace.clone()),
             )
             .await?;
@@ -339,7 +340,7 @@ impl ServerRendered {
         self.cache.listen(cat);
         let epoch = self.cache.epoch();
         let trace = sc_expr::trace_sink();
-        let caller = sc_api::caller_context(req.user.as_ref());
+        let caller = sc_api::principal_of(req.user.as_ref());
         let answer = match run_entry(
             dispatcher,
             cat,
@@ -347,7 +348,7 @@ impl ServerRendered {
             &self.run_name,
             self.app_id,
             request_binding(req, "render", &self.site),
-            Some(&caller),
+            Authority::Caller(&caller),
             Some(trace.clone()),
         )
         .await
@@ -387,7 +388,7 @@ impl ServerRendered {
         &self,
         req: &AppRequest,
         cat: &Catalog,
-        caller: &sc_catalog::CallerContext,
+        caller: &sc_catalog::Principal,
         err: Error,
     ) -> Result<AppResponse> {
         if err.http_reply().is_some() {
@@ -405,7 +406,7 @@ impl ServerRendered {
             &self.run_name,
             self.app_id,
             binding,
-            Some(caller),
+            Authority::Caller(caller),
             None,
         )
         .await;
@@ -576,7 +577,7 @@ async fn run_entry(
     name: &str,
     app: uuid::Uuid,
     request: Json,
-    caller: Option<&sc_catalog::CallerContext>,
+    caller: sc_catalog::Authority<'_>,
     trace: Option<sc_expr::TraceSink>,
 ) -> Result<Json> {
     let mut scope = Attrs::new();
@@ -686,7 +687,7 @@ pub async fn prerender(
         &name,
         app.id.0,
         request_binding(&base, "prerender-list", &app.name),
-        None,
+        Authority::system("prerender: build static pages"),
         None,
     )
     .await
@@ -717,7 +718,7 @@ pub async fn prerender(
             &name,
             app.id.0,
             request_binding(&req, "prerender", &app.name),
-            None,
+            Authority::system("prerender: build static pages"),
             Some(trace.clone()),
         )
         .await
@@ -798,6 +799,7 @@ fn write_output(output_dir: &Path, file: &str, body: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
     use crate::FrameworkRef;
+    use sc_types::Role;
 
     fn app() -> Application {
         Application::new("Site", "site", FrameworkRef::new("astro"))
@@ -923,7 +925,7 @@ mod tests {
         assert_eq!(key.query, vec![("page".to_owned(), "2".to_owned())]);
         assert!(ServerRendered::cache_key(&AppRequest::new(Method::Post, "/blog")).is_none());
         let mut signed_in = AppRequest::get("/blog");
-        signed_in.user = Some(sc_auth::User::new(uuid::Uuid::nil(), 40).unwrap());
+        signed_in.user = Some(sc_auth::User::new(uuid::Uuid::nil(), Role::of(40)));
         assert!(ServerRendered::cache_key(&signed_in).is_none());
     }
 

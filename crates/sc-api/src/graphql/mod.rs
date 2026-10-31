@@ -280,7 +280,10 @@ impl GraphqlProvider {
         // One loader per request, holding that request's own context: a batched
         // child read is the same read as an unbatched one, by the same caller,
         // and only the shape of the statement differs.
-        let loader = DataLoader::new(loader::ChildLoader::new(rc.clone()), tokio::spawn);
+        let loader = DataLoader::new(
+            loader::ChildLoader::new(rc.clone()),
+            sc_catalog::spawn_scoped,
+        );
         let mut response = self.schema.execute(request.data(loader).data(rc)).await;
         limits::name_the_bound(&mut response.errors, self.limits);
         // The legacy `application/json` rule: 200 with the errors in the body.

@@ -24,7 +24,7 @@ mod shapefile;
 
 use std::collections::{BTreeMap, HashSet};
 
-use sc_catalog::{CallerContext, Catalog, SharedTx, Table};
+use sc_catalog::{Authority, Catalog, SharedTx, Table};
 use sc_error::{Error, Result};
 use sc_query::{Statement, Value};
 use sc_types::{BasicType, GeometryKind};
@@ -514,7 +514,7 @@ pub async fn create_table_from_geo_file(
     file_name: &str,
     bytes: &[u8],
     layer: Option<&str>,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<(Table, GeoImportOutcome)> {
     let file = read_geo_file(file_name, bytes, layer)?;
     let plan = plan(&file)?;
@@ -590,7 +590,7 @@ async fn fill(
     table: &Table,
     file: &GeoFile,
     plan: &GeoPlan,
-    context: Option<&CallerContext>,
+    context: Authority<'_>,
 ) -> Result<usize> {
     let geometries = to_wgs84(catalog, table, file, &plan.geometry).await?;
     let driver = catalog.driver_for(table)?;

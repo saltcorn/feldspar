@@ -2,6 +2,8 @@
 //! one entry per row per changeset, merged as they arrive.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{
@@ -10,7 +12,7 @@ use sc_action::{
 };
 use sc_api::{rows, schema_edit};
 use sc_catalog::{
-    CallerContext, Catalog, Changeset, ChangesetSource, SharedTx, bootstrap_change_log,
+    Catalog, Changeset, ChangesetSource, Principal, SharedTx, bootstrap_change_log,
     bootstrap_field_meta, bootstrap_table_meta, changed_keys, changeset, sync_watermark,
 };
 use sc_db::DatabaseDriver;
@@ -101,8 +103,8 @@ async fn changesets(db: &TestDb) -> Result<Vec<(String, String, Option<String>, 
 }
 
 /// Ann, a signed-in user of role 80, in the ambient changeset.
-fn ann() -> CallerContext {
-    CallerContext::new(80, Some(json!({ "id": ANN, "role": 80 })))
+fn ann() -> Principal {
+    Principal::new(Role::of(80), Some(json!({ "id": ANN, "role": 80 })))
 }
 
 fn request() -> Arc<Changeset> {
@@ -131,11 +133,24 @@ impl Action for FollowUp {
         let row = ctx.event.row.clone().unwrap_or_default();
         let id = row["id"].to_string();
         // Admin authority, the event's user: what an action's writes carry.
-        let admin = CallerContext::new(1, ctx.event.user.clone()).chained(ctx.chain.clone());
+        let admin = Principal::new(Role::ADMIN, ctx.event.user.clone()).chained(ctx.chain.clone());
         let todo = self.0.require("todo")?;
-        rows::update_row_ctx(&self.0, &todo, &id, &json!({ "done": true }), Some(&admin)).await?;
+        rows::update_row_ctx(
+            &self.0,
+            &todo,
+            &id,
+            &json!({ "done": true }),
+            Authority::Caller(&admin),
+        )
+        .await?;
         let audit = self.0.require("audit")?;
-        rows::create_row_ctx(&self.0, &audit, &json!({ "what": "done" }), Some(&admin)).await?;
+        rows::create_row_ctx(
+            &self.0,
+            &audit,
+            &json!({ "what": "done" }),
+            Authority::Caller(&admin),
+        )
+        .await?;
         Ok(Json::Null)
     }
 }
@@ -172,7 +187,7 @@ async fn a_request_and_the_triggers_it_fires_are_one_changeset() -> Result<()> {
             &todo,
             "1",
             &json!({ "title": "oat milk" }),
-            Some(&ann()),
+            Authority::Caller(&ann()),
         )
         .await
     })
@@ -219,10 +234,22 @@ async fn insert_then_update_is_one_insert_of_the_final_row() -> Result<()> {
     let todo = catalog.require("todo")?;
     let request = request();
     changeset::scope(request.clone(), async {
-        let row = rows::create_row_ctx(&catalog, &todo, &json!({ "title": "eggs" }), Some(&ann()))
-            .await?;
+        let row = rows::create_row_ctx(
+            &catalog,
+            &todo,
+            &json!({ "title": "eggs" }),
+            Authority::Caller(&ann()),
+        )
+        .await?;
         let id = row["id"].to_string();
-        rows::update_row_ctx(&catalog, &todo, &id, &json!({ "done": true }), Some(&ann())).await
+        rows::update_row_ctx(
+            &catalog,
+            &todo,
+            &id,
+            &json!({ "done": true }),
+            Authority::Caller(&ann()),
+        )
+        .await
     })
     .await?;
     assert_eq!(
@@ -345,7 +372,7 @@ async fn a_pull_between_two_transactions_of_a_changeset_misses_nothing() -> Resu
                     &todo,
                     "1",
                     &json!({ "title": title }),
-                    Some(&ann()),
+                    Authority::Caller(&ann()),
                 )
                 .await
             })

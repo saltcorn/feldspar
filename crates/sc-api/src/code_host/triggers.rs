@@ -48,12 +48,13 @@
 //! inside the body that started it rather than holding the request that fired
 //! the outermost trigger.
 
+use sc_types::Role;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use sc_action::TriggerDispatcher;
-use sc_catalog::{CallerContext, Catalog, SharedTx};
+use sc_catalog::{Catalog, Principal, SharedTx};
 use sc_error::{Error, Result};
 use sc_expr::{DEFAULT_MAX_TRIGGER_RUNS, TriggerHost};
 use serde::Deserialize;
@@ -83,7 +84,7 @@ pub struct TriggerRunHost<'a> {
     tx: Option<SharedTx>,
     /// The role the event was served at — what a delegated run is checked
     /// against, and public for an event with no caller at all.
-    role: u8,
+    role: Role,
     /// The event's caller, as the event carries it: what the trigger that runs
     /// sees as `user`, whichever authority it runs under.
     user: Option<Json>,
@@ -106,7 +107,7 @@ impl<'a> TriggerRunHost<'a> {
         TriggerRunHost {
             dispatcher,
             catalog,
-            role: sc_auth::ROLE_PUBLIC,
+            role: Role::PUBLIC,
             user: None,
             chain: Vec::new(),
             tx: None,
@@ -129,7 +130,7 @@ impl<'a> TriggerRunHost<'a> {
     /// Attach the event's caller: the role it was served at and the user's own
     /// fields, exactly as `Event::caller` carries them.
     #[must_use]
-    pub fn caused_by(mut self, role: u8, user: Option<Json>) -> TriggerRunHost<'a> {
+    pub fn caused_by(mut self, role: Role, user: Option<Json>) -> TriggerRunHost<'a> {
         self.role = role;
         self.user = user;
         self
@@ -186,13 +187,13 @@ impl<'a> TriggerRunHost<'a> {
             // admin's authority is the *trigger's*, and the run still carries
             // who caused it.
             Authority::Default | Authority::Admin | Authority::User => (
-                CallerContext::new(self.role, self.user.clone()).in_current_origin(),
+                Principal::new(self.role, self.user.clone()).in_current_origin(),
                 None,
             ),
-            Authority::Public => (CallerContext::new(sc_auth::ROLE_PUBLIC, None), None),
+            Authority::Public => (Principal::new(Role::PUBLIC, None), None),
             Authority::Named(id) => {
                 let user = super::load_named_user(self.catalog, id).await?;
-                let caller = crate::ownership::caller_context_at(user.role, Some(&user));
+                let caller = crate::ownership::principal_at(user.role, Some(&user));
                 (caller, Some(user))
             }
         };
@@ -204,8 +205,8 @@ impl<'a> TriggerRunHost<'a> {
             // is no such trigger": the second is the answer the author needs.
             let triggers = self.dispatcher.triggers()?;
             let min_role = triggers.require(name)?.min_role;
-            let floor = min_role.unwrap_or(sc_auth::ROLE_ADMIN);
-            if caller.role > floor {
+            let floor = min_role.unwrap_or(Role::ADMIN);
+            if floor.outranks(caller.role) {
                 return Err(Error::auth(format!(
                     "{} may not run `{name}`; it needs role {floor} or better",
                     match (&named, &request.authority) {
@@ -223,7 +224,7 @@ impl<'a> TriggerRunHost<'a> {
             self.catalog,
             name,
             request.payload,
-            Some(&caller),
+            sc_catalog::Authority::Caller(&caller),
             self.tx.as_ref(),
         );
         let Some(limit) = request.timeout_ms.map(Duration::from_millis) else {

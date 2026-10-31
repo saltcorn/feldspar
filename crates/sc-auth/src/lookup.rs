@@ -20,6 +20,7 @@ use sc_catalog::Catalog;
 use sc_db::Row;
 use sc_error::Result;
 use sc_query::{Expr, OrderBy, Select, Source, Statement};
+use sc_types::Role;
 use uuid::Uuid;
 
 use crate::user::User;
@@ -48,7 +49,7 @@ pub async fn load_user_by_email(catalog: &Catalog, email: &str) -> Result<Option
 }
 
 /// The first user holding `role` — lowest email — or `None` when nobody does.
-pub async fn first_user_with_role(catalog: &Catalog, role: u8) -> Result<Option<User>> {
+pub async fn first_user_with_role(catalog: &Catalog, role: Role) -> Result<Option<User>> {
     let mut select = Select::from(Source::table(USERS_TABLE))
         .filter(Expr::col(COL_ROLE).eq(Expr::lit(i64::from(role))))
         .limit(1);

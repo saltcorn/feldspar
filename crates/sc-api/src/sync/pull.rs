@@ -12,6 +12,7 @@
 //! device that loses an answer asks again from its old watermark and gets it
 //! again; that is the only repeat, and it does no harm.
 
+use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -203,8 +204,8 @@ impl PullRequest {
 
 /// Whether `role` may read `table` at all: the table's floor, or an ownership
 /// formula or row-level security that decides row by row.
-fn may_read(table: &Table, role: u8) -> bool {
-    role <= table.access.min_role_read || table.ownership.is_some() || table.rls_enabled
+fn may_read(table: &Table, role: Role) -> bool {
+    role.meets(table.access.min_role_read) || table.ownership.is_some() || table.rls_enabled
 }
 
 /// What changed in `table` since the device's last pull: the changed rows as
@@ -304,16 +305,9 @@ async fn was_held(
             }),
             ..RowQuery::new()
         };
-        let read = ownership::read_rows_as_in(
-            cat,
-            table,
-            &query,
-            sc_auth::ROLE_ADMIN,
-            None,
-            evaluator,
-            executor,
-        )
-        .await?;
+        let read =
+            ownership::read_rows_as_in(cat, table, &query, Role::ADMIN, None, evaluator, executor)
+                .await?;
         for row in read.as_array().into_iter().flatten() {
             if let (Some(key), Json::Object(map)) = (row.get(&pk).map(key_text), row) {
                 current.insert(key, map.clone());

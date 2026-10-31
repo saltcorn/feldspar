@@ -24,6 +24,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::{
@@ -77,13 +78,13 @@ async fn provider(cat: &Catalog, queries: Vec<CustomQuery>) -> Result<RestProvid
 }
 
 fn admin() -> Result<User> {
-    User::new(uuid::Uuid::new_v4(), sc_auth::ROLE_ADMIN)
+    Ok(User::new(uuid::Uuid::new_v4(), Role::ADMIN))
 }
 
 /// A caller at the public role, identified by the email an ownership policy
 /// reads.
-fn caller(email: &str, role: u8) -> Result<User> {
-    let mut user = User::new(uuid::Uuid::new_v4(), role)?;
+fn caller(email: &str, role: Role) -> Result<User> {
+    let mut user = User::new(uuid::Uuid::new_v4(), role);
     user.extra
         .insert("email".to_owned(), Value::Text(email.to_owned()));
     Ok(user)
@@ -117,7 +118,7 @@ fn window() -> CustomQuery {
         CustomParam::new("from", ValueType::Date),
         CustomParam::new("until", ValueType::Date),
     ])
-    .min_role(sc_auth::ROLE_ADMIN)
+    .min_role(Role::ADMIN)
 }
 
 #[tokio::test]
@@ -289,7 +290,7 @@ async fn a_caller_below_the_queries_role_floor_is_refused() -> Result<()> {
     let resp = call(
         &api,
         &cat,
-        Some(&caller("bo@example.com", 80)?),
+        Some(&caller("bo@example.com", Role::of(80))?),
         "/api/reports/window",
         &[("from", "2020-01-01"), ("until", "2023-01-01")],
     )
@@ -409,7 +410,7 @@ async fn a_query_over_an_rls_table_sees_only_the_callers_rows() -> Result<()> {
     .params([CustomParam::new("least", ValueType::Int)])
     // Below admin on purpose: an admin passes the policy's role floor, so a
     // test run as one would prove nothing.
-    .min_role(100);
+    .min_role(Role::PUBLIC);
     let api = provider(&cat, vec![query]).await?;
 
     let count = |resp: &ApiResponse| -> i64 {
@@ -421,7 +422,7 @@ async fn a_query_over_an_rls_table_sees_only_the_callers_rows() -> Result<()> {
     let ada = call(
         &api,
         &cat,
-        Some(&caller("ada@example.com", 100)?),
+        Some(&caller("ada@example.com", Role::PUBLIC)?),
         "/api/reports/count",
         &[("least", "0")],
     )
@@ -431,7 +432,7 @@ async fn a_query_over_an_rls_table_sees_only_the_callers_rows() -> Result<()> {
     let bo = call(
         &api,
         &cat,
-        Some(&caller("bo@example.com", 100)?),
+        Some(&caller("bo@example.com", Role::PUBLIC)?),
         "/api/reports/count",
         &[("least", "0")],
     )

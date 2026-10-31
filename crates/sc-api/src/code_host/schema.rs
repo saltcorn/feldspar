@@ -386,6 +386,7 @@ mod tests {
     use crate::graphql::testing::{catalog_of, id_field, physical, plain_field, table_of};
     use sc_catalog::AccessRules;
     use sc_db::PhysicalTable;
+    use sc_types::Role;
 
     /// `books` with an author key and `authors` behind it — the smallest schema
     /// with a foreign key in it.
@@ -566,8 +567,8 @@ mod tests {
     fn a_table_carries_its_ownership_rule_both_ways_it_can_be_read() {
         let mut table = table_of("notes", vec![id_field(), plain_field("body")]);
         table.access = AccessRules {
-            min_role_read: 40,
-            min_role_write: 20,
+            min_role_read: Role::of(40),
+            min_role_write: Role::of(20),
         };
         table.label = "Notes".to_owned();
         table.description = "what somebody wrote down".to_owned();

@@ -14,6 +14,7 @@
 //!   whose server entry runs with admin authority).
 
 use crate::common;
+use sc_types::Role;
 
 use common::{Env, config};
 use sc_agent::RunCaller;
@@ -38,13 +39,13 @@ fn everything() -> Attrs {
 }
 
 fn staff() -> RunCaller {
-    RunCaller::user(sc_auth::User::new(uuid::Uuid::new_v4(), 40).expect("a user"))
+    RunCaller::user(sc_auth::User::new(uuid::Uuid::new_v4(), Role::of(40)))
 }
 
 /// An admin chatting through an agent an application exposes: script on the
 /// application's origin can send that chat (security review #21).
 fn exposed_admin() -> RunCaller {
-    RunCaller::exposed(sc_auth::User::new(uuid::Uuid::new_v4(), 1).expect("a user"))
+    RunCaller::exposed(sc_auth::User::new(uuid::Uuid::new_v4(), Role::ADMIN))
 }
 
 fn offered_to(env: &Env, trait_: &str, config: &Attrs, caller: &RunCaller) -> Vec<String> {

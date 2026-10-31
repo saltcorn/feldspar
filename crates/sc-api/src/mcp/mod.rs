@@ -56,6 +56,7 @@
 //! The full ten-tool set is therefore assembled by `sc_app::mcp::tool_set`, the
 //! lowest layer that can name every tool in it.
 
+use sc_types::Role;
 mod code_api;
 mod docs;
 mod endpoint_tool;
@@ -437,7 +438,7 @@ pub struct ToolContext<'a> {
     pub user: Option<&'a User>,
     /// The role this call is authorized at: the user's own, or 1 for a system
     /// run. Every tool here refuses anything but 1.
-    pub role: u8,
+    pub role: Role,
     /// The trigger dispatcher, where this process has one.
     ///
     /// Carried rather than reached for, exactly as `TraitContext` carries it: a
@@ -626,8 +627,8 @@ impl ToolSet {
 /// The check is on the **call's** caller, not on any agent's `min_role`: an
 /// agent may be reachable at role 80 for everything else it does and still must
 /// not hand that caller the schema.
-pub fn require_admin(role: u8, tool: &str) -> Result<()> {
-    if role == 1 {
+pub fn require_admin(role: Role, tool: &str) -> Result<()> {
+    if role.is_admin() {
         return Ok(());
     }
     Err(Error::invalid(format!(
@@ -710,13 +711,12 @@ pub fn optional_bool(obj: &Map<String, Json>, key: &str) -> Result<Option<bool>>
 }
 
 /// An optional role argument, checked against the 1–100 scale.
-pub fn optional_role(obj: &Map<String, Json>, key: &str) -> Result<Option<u8>> {
+pub fn optional_role(obj: &Map<String, Json>, key: &str) -> Result<Option<Role>> {
     match obj.get(key) {
         None | Some(Json::Null) => Ok(None),
         Some(Json::Number(n)) => n
             .as_i64()
-            .and_then(|n| u8::try_from(n).ok())
-            .filter(|r| (1..=100).contains(r))
+            .and_then(|n| Role::try_from(n).ok())
             .map(Some)
             .ok_or_else(|| {
                 Error::invalid(format!(
@@ -749,8 +749,10 @@ mod tests {
 
     #[test]
     fn only_an_admin_reaches_these_tools() {
-        assert!(require_admin(1, TOOL_EDIT).is_ok());
-        let err = require_admin(40, TOOL_EDIT).unwrap_err().to_string();
+        assert!(require_admin(Role::ADMIN, TOOL_EDIT).is_ok());
+        let err = require_admin(Role::of(40), TOOL_EDIT)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("only available to an administrator"), "{err}");
         assert!(err.contains("role-40"), "{err}");
     }

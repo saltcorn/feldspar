@@ -28,35 +28,52 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## Q1 — `Role` and one principal (§4.1, §4.2)
 
-- [ ] Q1.1 `Role(u8)` newtype in a low crate (sc-types or sc-auth): private field, `1..=100` on
+- [x] Q1.1 `Role(u8)` newtype in a low crate (sc-types or sc-auth): private field, `1..=100` on
       construction, `Role::ADMIN`, `Role::PUBLIC`, `meets(floor)`, `is_admin()`. Serde as `u8`
       (`try_from` / `into`). No `Ord`, or one where more privilege compares greater.
-- [ ] Q1.2 Move every role field and parameter to `Role`: `User`, `CallerContext`, `Event`,
+- [x] Q1.2 Move every role field and parameter to `Role`: `User`, `CallerContext`, `Event`,
       `AuthRequirement::MinRole`, the per-crate `Caller` structs, table / stream / trigger
       `min_role`. Replace the 43 hand-written `role <= …` comparisons and the `role == 1` checks
       (`sc-server/src/handlers.rs:172`, `sc-api/src/mcp/mod.rs:630`,
       `sc-core-traits/src/coding.rs:766`, `sc-module/src/permissions.rs:287`).
-- [ ] Q1.3 Delete the duplicate `ROLE_ADMIN` (6) / `ROLE_PUBLIC` (4) constants, including the
+- [x] Q1.3 Delete the duplicate `ROLE_ADMIN` (6) / `ROLE_PUBLIC` (4) constants, including the
       private copies in `sc-catalog/src/history.rs:25` and `retention.rs:45`, and the four
       `caller_role` / `role_of` helpers.
-- [ ] Q1.4 A clippy `disallowed_methods` / review grep, or a test, that fails on a numeric role
-      literal compared to a role outside sc-auth.
-- [ ] Q1.5 `Principal` in sc-catalog (or sc-auth): role, `Option<AuthenticatedUser>`, trigger
-      chain, calling app, guest session, changeset. Replaces `CallerContext`.
-- [ ] Q1.6 `Authority<'a> { System(SystemReason), Caller(&'a Principal) }`. `System` only through
+- [x] Q1.4 A clippy `disallowed_methods` / review grep, or a test, that fails on a numeric role
+      literal compared to a role outside sc-auth. (A test: `crates/sc-types/tests/role_guard.rs`.)
+- [x] Q1.5 `Principal` in sc-catalog (or sc-auth): role, `Option<AuthenticatedUser>`, trigger
+      chain, calling app, guest session, changeset. Replaces `CallerContext`. (The user is still
+      the GUC's JSON object until Q2.2 adds `AuthenticatedUser`; sc-auth sits above sc-catalog.)
+- [x] Q1.6 `Authority<'a> { System(SystemReason), Caller(&'a Principal) }`. `System` only through
       `Authority::system("reason")`. Replace the 64 `Option<&CallerContext>` parameters
       (`SharedTx::run`, the `TriggerDispatcher` methods in `sc-action/src/dispatch.rs:517-730`, …).
-- [ ] Q1.7 Replace `Caller::admin()`, `CallerContext::new(ROLE_ADMIN, …)` and other ad-hoc admin
+- [x] Q1.7 Replace `Caller::admin()`, `CallerContext::new(ROLE_ADMIN, …)` and other ad-hoc admin
       authority with `Authority::system(..)`. Write the resulting list of system-authority call
       sites into the security review doc as an inventory to keep current.
-- [ ] Q1.8 Fold the per-crate caller structs (§4 list) into `Principal` or thin views over it:
+- [~] Q1.8 Fold the per-crate caller structs (§4 list) into `Principal` or thin views over it:
       `sc_dataset::access::Caller`, `sc_live::access::Caller`, `sc_files::FileCaller`,
       `sc_agent::RunCaller`, `sc_module::RouteCaller`, `sc_api::write_as::Caller`, sc-server's
       `LiveCaller` / `GuestCaller` / `AppCaller`.
-- [ ] Q1.9 Carry the trigger chain, origin and changeset in `Principal`, not task-locals
+      Done: `RouteCaller` removed (routes take a `Principal`); `write_as::Caller` already holds the
+      `&Principal`; `Principal::file_caller()` is the file rule's view. Remaining:
+      `sc_files::FileCaller` must stay a type of its own (sc-files is below sc-catalog), but the
+      five places that build one from an `Option<&User>` should share one helper.
+      `sc_dataset::Caller` adds the application's table allow-list and keeps the user as `Value`s.
+      Make it `Principal` + tables, and replace `Caller::admin()` with `Authority::system`.
+      `sc_live::access::Caller` is a `Copy` `{role, user id}` view; build it from a `Principal`.
+      `sc_agent::RunCaller` adds `triggered` / `exposed`: carry those as principal flags (the
+      chain's untrusted marker already does half of it). `LiveCaller` / `GuestCaller` /
+      `AppCaller` are request-resolution results (session, cookie token, refusal), not
+      principals. They belong with Q2's extractors.
+- [x] Q1.9 Carry the trigger chain, origin and changeset in `Principal`, not task-locals
       (`sc-catalog/src/caller.rs:111`, `changeset.rs:218`, `outbox.rs:217`). Where a task-local
       stays, add a `spawn_scoped` helper that propagates it and use it everywhere. Test: a trigger
       chain that crosses a `tokio::spawn` keeps its "triggered" marker (security review #32).
+      (The chain, app, session and changeset were already fields of the principal. The origin,
+      changeset and outbox task-locals stay, captured by `TaskScope` and re-entered by
+      `sc_catalog::spawn_scoped`, which exposed-agent turns, dataset installs and GraphQL's
+      `DataLoader` use. The other `tokio::spawn`s are servers, schedulers and subprocess pumps
+      with no caller. sc-action's `HANDLING_ERROR` task-local is not covered.)
 
 ## Q2 — Authenticated users and proof-carrying extractors (§4.3, §4.5)
 

@@ -10,10 +10,11 @@
 //! - A secret is always its sentinel, before and after.
 //! - Changesets span tables, so listing and reading them is the admin's alone.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use sc_auth::{ROLE_ADMIN, User};
+use sc_auth::User;
 use sc_catalog::history::{
     self, AsOf, ChangesetFilter, ChangesetRecord, ChangesetSummary, HistoryEntry,
 };
@@ -33,7 +34,7 @@ pub struct HistoryReader<'a> {
     /// The catalog.
     pub catalog: &'a Catalog,
     /// The caller's role (public when nobody is signed in).
-    pub role: u8,
+    pub role: Role,
     /// The caller, when signed in.
     pub user: Option<&'a User>,
     /// For a read rule that needs JavaScript.
@@ -52,14 +53,14 @@ impl<'a> HistoryReader<'a> {
     ) -> HistoryReader<'a> {
         HistoryReader {
             catalog,
-            role: crate::ownership::caller_role(user),
+            role: sc_auth::role_of(user),
             user,
             evaluator,
         }
     }
 
     pub(crate) fn is_admin(&self) -> bool {
-        self.role <= ROLE_ADMIN
+        self.role.is_admin()
     }
 
     /// `name`, when its history is on and open to this caller.
@@ -71,7 +72,7 @@ impl<'a> HistoryReader<'a> {
             )));
         }
         let min_role = history::history_min_role(&table.attributes);
-        if self.role > min_role.max(ROLE_ADMIN) {
+        if !self.role.meets(min_role) {
             return Err(Error::auth(format!(
                 "you may not read the history of `{name}`"
             )));

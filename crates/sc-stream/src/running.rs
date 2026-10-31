@@ -39,6 +39,7 @@
 //! consumer — is a memory leak with a delay built into it, and the delay is
 //! what makes it hard to diagnose.
 
+use sc_types::Role;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -357,7 +358,7 @@ impl RunningStream {
 
     /// The role floor for observing it through an application, or `None` for
     /// admin-only.
-    pub fn min_role(&self) -> Option<u8> {
+    pub fn min_role(&self) -> Option<Role> {
         self.with_row(|row| row.min_role)
     }
 

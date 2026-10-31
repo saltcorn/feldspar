@@ -16,6 +16,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -80,7 +81,10 @@ fn book_insert() -> Event {
     Event::new(EventKind::Insert)
         .on("books")
         .row(json!({ "id": 7, "title": "A Book", "pages": 100 }))
-        .caller(1, Some(json!({ "email": "admin@example.com", "id": 3 })))
+        .caller(
+            Role::ADMIN,
+            Some(json!({ "email": "admin@example.com", "id": 3 })),
+        )
 }
 
 fn config(code: &str) -> Attrs {
@@ -536,7 +540,7 @@ async fn as_user_delegates_to_the_event_own_caller() -> Result<()> {
         // The caller object as an event carries it: the id is a uuid, because
         // acting as somebody requires knowing which somebody.
         .caller(
-            40,
+            Role::of(40),
             Some(json!({
                 "id": "6b1c2d64-3f3a-4a52-9a8b-0f4d2b7f1a11",
                 "role": 40,
@@ -912,7 +916,7 @@ async fn a_delegated_stream_obeys_the_ownership_formula_or_says_it_cannot() -> R
     // Ada, at a role below the table's floors — the same caller delegation is
     // tested with above, because whose rows these are is the whole question.
     let event = Event::new(EventKind::None).payload(Json::Null).caller(
-        40,
+        Role::of(40),
         Some(json!({
             "id": "6b1c2d64-3f3a-4a52-9a8b-0f4d2b7f1a11",
             "role": 40,

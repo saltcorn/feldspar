@@ -57,6 +57,7 @@
 //! form. A context with no server (a CLI command) saves the record and rewrites
 //! the client itself, and says the change is served from the next start.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::mcp::{AdminTool, Area, ToolContext, arguments, optional_string, require_grant};
@@ -831,12 +832,12 @@ fn locales_json(app: &Application) -> Result<Json> {
 /// Set the keys of the `access` section that were given; the rest are kept.
 /// The ranges and the formula are checked by the save.
 fn change_access(app: &mut Application, section: &Map<String, Json>) -> Result<()> {
-    let role = |key: &str| -> Result<Option<u8>> {
+    let role = |key: &str| -> Result<Option<Role>> {
         match section.get(key) {
             None | Some(Json::Null) => Ok(None),
             Some(value) => value
                 .as_u64()
-                .and_then(|r| u8::try_from(r).ok())
+                .and_then(|r| Role::try_from(r).ok())
                 .map(Some)
                 .ok_or_else(|| {
                     Error::invalid(format!(
@@ -1513,10 +1514,10 @@ mod tests {
                 config: Default::default(),
             },
         )
-        .min_role(40)
+        .min_role(Role::of(40))
         .access_if("user.department === \"Finance\"");
         change_access(&mut app, &section(json!({ "max_role": 20 }))).unwrap();
-        assert_eq!((app.min_role, app.max_role), (40, 20));
+        assert_eq!((app.min_role, app.max_role), (Role::of(40), Role::of(20)));
         assert_eq!(app.access_if, "user.department === \"Finance\"");
         change_access(&mut app, &section(json!({ "access_if": "" }))).unwrap();
         assert!(app.access_if.is_empty());

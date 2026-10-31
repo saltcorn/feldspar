@@ -15,6 +15,8 @@
 //! Needs `npm`, which installs the module, and skips without it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -64,10 +66,10 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
         default_expression: Some("user.id".to_owned()),
         ..user_key("owner")
     };
-    let tables: Vec<(&str, u8, Option<&str>, Vec<FieldSpec>)> = vec![
+    let tables: Vec<(&str, Role, Option<&str>, Vec<FieldSpec>)> = vec![
         (
             "plans",
-            100,
+            Role::PUBLIC,
             None,
             vec![
                 id(),
@@ -85,25 +87,25 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
         ),
         (
             "notes",
-            1,
+            Role::ADMIN,
             Some("owner === user.id"),
             vec![id(), owner(), field("text", "text")],
         ),
         (
             "blends",
-            1,
+            Role::ADMIN,
             Some("owner === user.id && user.role <= 70"),
             vec![id(), owner(), field("text", "text")],
         ),
         (
             "flights",
-            1,
+            Role::ADMIN,
             Some("owner === user.id && user.role <= 60"),
             vec![id(), owner(), field("text", "text")],
         ),
         (
             "reminders",
-            1,
+            Role::ADMIN,
             None,
             vec![id(), user_key("user"), field("ends", "timestamp")],
         ),
@@ -116,7 +118,7 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
                 database: String::new(),
                 settings: TableSettings {
                     min_role_read: Some(read),
-                    min_role_write: Some(1),
+                    min_role_write: Some(Role::ADMIN),
                     ownership_formula: ownership.map(str::to_owned),
                     ..TableSettings::default()
                 },
@@ -162,7 +164,7 @@ fn triggers() -> Vec<Trigger> {
     ]
     .into_iter()
     .fold(
-        Trigger::new("subscribe", EventKind::None, "pay_checkout").min_role(80),
+        Trigger::new("subscribe", EventKind::None, "pay_checkout").min_role(Role::of(80)),
         |t, (k, v)| t.config(k, v),
     );
     vec![
@@ -175,7 +177,7 @@ fn triggers() -> Vec<Trigger> {
             .config("note", "14-day trial"),
         subscribe,
         Trigger::new("manage_plan", EventKind::None, "pay_portal")
-            .min_role(80)
+            .min_role(Role::of(80))
             .config("account", "saas")
             .config("return_path", "/account"),
         Trigger::new("trial_reminders", EventKind::Daily, "run_js_code")
@@ -198,7 +200,7 @@ async fn setup() -> sc_error::Result<Booted> {
     let booted = boot("saas").await?;
     let catalog = &booted.catalog;
     for (role, name) in [(60, "Pro"), (70, "Basic"), (80, "User")] {
-        sc_auth::save_role(catalog, &sc_auth::Role::new(role, name)).await?;
+        sc_auth::save_role(catalog, &sc_auth::RoleDef::new(Role::of(role), name)).await?;
     }
     // Step 1: the test account, with the plans' prices, and the plans.
     sc_api::rows::create_row(
@@ -372,7 +374,12 @@ async fn brew_notes_trials_subscribes_reminds_and_lapses_as_the_tutorial_says()
         .await;
     notes
         .dispatcher
-        .run_trigger(catalog, "trial_reminders", json!({}), None)
+        .run_trigger(
+            catalog,
+            "trial_reminders",
+            json!({}),
+            Authority::system("test"),
+        )
         .await?;
     assert_eq!(notes.rows("SELECT id FROM reminders").await.len(), 1);
     let sent = notes.mail.sent();
@@ -434,7 +441,12 @@ async fn brew_notes_trials_subscribes_reminds_and_lapses_as_the_tutorial_says()
     notes.execute("DELETE FROM reminders").await;
     notes
         .dispatcher
-        .run_trigger(catalog, "trial_reminders", json!({}), None)
+        .run_trigger(
+            catalog,
+            "trial_reminders",
+            json!({}),
+            Authority::system("test"),
+        )
         .await?;
     assert!(notes.rows("SELECT id FROM reminders").await.is_empty());
     assert_eq!(notes.mail.sent().len(), 1);

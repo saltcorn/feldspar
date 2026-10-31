@@ -16,6 +16,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -52,7 +53,7 @@ fn book_insert() -> Event {
     Event::new(EventKind::Insert)
         .on("books")
         .row(json!({ "id": 7, "title": "A Book", "pages": 100 }))
-        .caller(1, Some(json!({ "email": "admin@example.com" })))
+        .caller(Role::ADMIN, Some(json!({ "email": "admin@example.com" })))
 }
 
 fn config(entries: &[(&str, Json)]) -> Attrs {
@@ -309,7 +310,7 @@ async fn a_templated_host_reaches_only_public_addresses() -> Result<()> {
     let event = Event::new(EventKind::Insert)
         .on("books")
         .row(json!({ "id": 7, "title": url, "pages": 100 }))
-        .caller(1, Some(json!({ "email": "admin@example.com" })));
+        .caller(Role::ADMIN, Some(json!({ "email": "admin@example.com" })));
 
     // The whole URL from the row: a loopback literal is refused before
     // anything is sent.
@@ -324,7 +325,7 @@ async fn a_templated_host_reaches_only_public_addresses() -> Result<()> {
         let event = Event::new(EventKind::Insert)
             .on("books")
             .row(json!({ "id": 7, "title": target, "pages": 100 }))
-            .caller(1, None);
+            .caller(Role::ADMIN, None);
         let msg = run(&catalog, &event, &cfg).await.unwrap_err().to_string();
         assert!(msg.contains("private or reserved"), "{target}: {msg}");
     }
@@ -342,7 +343,7 @@ async fn a_templated_host_reaches_only_public_addresses() -> Result<()> {
     let event = Event::new(EventKind::Insert)
         .on("books")
         .row(json!({ "id": 7, "title": "localhost", "pages": 100 }))
-        .caller(1, None);
+        .caller(Role::ADMIN, None);
     let msg = run(&catalog, &event, &cfg).await.unwrap_err().to_string();
     assert!(
         msg.contains("private or reserved") || msg.contains("localhost"),

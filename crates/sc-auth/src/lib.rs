@@ -108,7 +108,7 @@ pub use password_tokens::{
 };
 pub use roles::{
     COL_ATTRIBUTES as COL_ROLE_ATTRIBUTES, COL_DESCRIPTION as COL_ROLE_DESCRIPTION,
-    COL_NAME as COL_ROLE_NAME, ROLES_TABLE, Role, bootstrap_roles, delete_role, list_roles,
+    COL_NAME as COL_ROLE_NAME, ROLES_TABLE, RoleDef, bootstrap_roles, delete_role, list_roles,
     load_role, load_role_by_name, save_role,
 };
 pub use session::{
@@ -127,7 +127,7 @@ pub use tokens::{
     bearer_secret_hash, bootstrap_api_tokens, list_api_tokens, load_api_token, mint_api_token,
     new_bearer_secret, revoke_api_token, sweep_expired_api_tokens,
 };
-pub use user::User;
+pub use user::{User, role_of};
 
 /// Held while the role grants or the credits ledger are created on first use,
 /// so two first writes at once do not both create them.
@@ -135,6 +135,6 @@ static CREATING_TABLES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new((
 
 pub use users::{
     COL_ATTRIBUTES, COL_DISABLED, COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_LANGUAGE,
-    COL_PASSWORD_HASH, COL_ROLE, ROLE_ADMIN, ROLE_PUBLIC, SYSTEM_USER_COLUMNS, USERS_TABLE,
-    bootstrap, is_api_hidden_column, is_system_user_column, role_in_range,
+    COL_PASSWORD_HASH, COL_ROLE, SYSTEM_USER_COLUMNS, USERS_TABLE, bootstrap, is_api_hidden_column,
+    is_system_user_column,
 };

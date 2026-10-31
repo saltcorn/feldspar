@@ -7,11 +7,11 @@
 //! Postgres, that the search really is answered by the index; on SQLite, that
 //! the index follows writes and survives its table's text fields changing.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation};
 use sc_api::{query_string, rows};
-use sc_auth::ROLE_ADMIN;
 use sc_catalog::{
     Catalog, ConstraintKind, DataField, DataFieldKind, SecretKey, TableConstraint,
     bootstrap_field_meta, bootstrap_table_meta,
@@ -99,7 +99,7 @@ async fn titles(catalog: &Catalog, pairs: &[(&str, &str)]) -> Result<Vec<String>
         .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
         .collect();
     let query = query_string::row_query(&table, &pairs, 50)?;
-    let found = sc_api::read_rows_as(catalog, &table, &query, ROLE_ADMIN, None, None).await?;
+    let found = sc_api::read_rows_as(catalog, &table, &query, Role::ADMIN, None, None).await?;
     Ok(found
         .as_array()
         .into_iter()
@@ -152,14 +152,14 @@ async fn the_common_contract(catalog: &Catalog) -> Result<()> {
     let table = catalog.require("posts")?;
     let only_title = sc_api::search::text_search(&table, "ownership", Some(&["title".into()]))?;
     let query = rows::RowQuery::new().searching(only_title);
-    let found = sc_api::read_rows_as(catalog, &table, &query, ROLE_ADMIN, None, None).await?;
+    let found = sc_api::read_rows_as(catalog, &table, &query, Role::ADMIN, None, None).await?;
     assert_eq!(found, json!([]));
     let body = sc_api::search::text_search(&table, "ownership", Some(&["body".into()]))?;
     let found = sc_api::read_rows_as(
         catalog,
         &table,
         &rows::RowQuery::new().searching(body),
-        ROLE_ADMIN,
+        Role::ADMIN,
         None,
         None,
     )
@@ -324,7 +324,7 @@ async fn rest_and_graphql_take_a_search() -> Result<()> {
 
     let catalog = posts(Arc::new(SqliteDriver::open_in_memory()?), true).await?;
     let table = catalog.require("posts")?;
-    let user = sc_auth::User::new(uuid::Uuid::new_v4(), ROLE_ADMIN)?;
+    let user = sc_auth::User::new(uuid::Uuid::new_v4(), Role::ADMIN);
     let title_list = |body: &Json| -> Vec<String> {
         body.as_array()
             .into_iter()

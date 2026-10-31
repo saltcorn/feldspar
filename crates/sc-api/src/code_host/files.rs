@@ -41,7 +41,7 @@
 //! consequences of the code:
 //!
 //! - under **admin** authority no rule is consulted at all. Not a shortcut taken
-//!   for speed — `ROLE_ADMIN` clears every rule that can be written, so
+//!   for speed — `Role::ADMIN` clears every rule that can be written, so
 //!   consulting them would be reading metadata up the whole path to reach a
 //!   foregone conclusion — but it does mean the store floor is not read from the
 //!   database on the common path either.
@@ -76,6 +76,7 @@
 //!
 //! [`DEFAULT_MAX_FILE_OPS`]: sc_expr::DEFAULT_MAX_FILE_OPS
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -157,7 +158,7 @@ pub struct FileStoreHost<'a> {
     /// put a query in front of every file a loop touches. It cannot change under
     /// a run that is measured in milliseconds, and a run that raced an admin
     /// editing the store would be as arbitrary either way.
-    floors: Mutex<BTreeMap<String, Option<u8>>>,
+    floors: Mutex<BTreeMap<String, Option<Role>>>,
     /// Where the run's application serves store files, for `file.url()`.
     urls: Option<Arc<dyn FileUrls>>,
     /// What an operation that names no authority runs under: the admin's for a
@@ -203,7 +204,7 @@ impl<'a> FileStoreHost<'a> {
     ///
     /// [`TableHost::caused_by`]: super::TableHost::caused_by
     #[must_use]
-    pub fn caused_by(mut self, role: u8, user: Option<&Json>) -> FileStoreHost<'a> {
+    pub fn caused_by(mut self, role: Role, user: Option<&Json>) -> FileStoreHost<'a> {
         let user_id = user.and_then(|u| u.get("id")).and_then(|id| match id {
             Json::String(s) => Some(s.clone()),
             Json::Number(n) => Some(n.to_string()),
@@ -238,7 +239,7 @@ impl<'a> FileStoreHost<'a> {
     ///
     /// `None` for a store with no definition row — an ephemeral `--file-store` —
     /// which is the same answer every other file endpoint resolves for one.
-    async fn floor(&self, name: &str) -> Result<Option<u8>> {
+    async fn floor(&self, name: &str) -> Result<Option<Role>> {
         if let Ok(cache) = self.floors.lock()
             && let Some(known) = cache.get(name)
         {
@@ -324,7 +325,6 @@ impl<'a> FileStoreHost<'a> {
             (_, None) => None,
         };
         if let Some(role) = req.min_role {
-            valid_role(role)?;
             if req.authority == Authority::User {
                 self.only_tightens(store, req, path, Some(role)).await?;
             }
@@ -376,7 +376,7 @@ impl<'a> FileStoreHost<'a> {
         store: &dyn FileStore,
         req: &FileRequest,
         path: &str,
-        min_role: Option<u8>,
+        min_role: Option<Role>,
     ) -> Result<()> {
         let floor = self.floor(&req.store).await?;
         let before = effective_min_role(store, floor, path).await?;
@@ -437,7 +437,7 @@ struct FileRequest {
     to_path: Option<String>,
     /// `setMeta`: the rule to set on this entry, or `null` for none.
     #[serde(default)]
-    min_role: Option<u8>,
+    min_role: Option<Role>,
     /// `setMeta`: the entry's attributes, which replace what was there.
     #[serde(default)]
     attributes: Option<BTreeMap<String, String>>,
@@ -467,7 +467,7 @@ struct FileRequest {
 /// What a write records beside its bytes.
 struct PlannedMeta {
     owner: Option<OwnerPlan>,
-    min_role: Option<u8>,
+    min_role: Option<Role>,
     filename: Option<String>,
 }
 
@@ -500,24 +500,13 @@ fn owner_option(req: &FileRequest) -> Result<Option<Option<String>>> {
     }
 }
 
-/// Refuse a role outside the scale.
-fn valid_role(role: u8) -> Result<()> {
-    if !(1..=sc_auth::ROLE_PUBLIC).contains(&role) {
-        return Err(Error::invalid(format!(
-            "`minRole` is a role from 1 (admin) to {} (public), not {role}",
-            sc_auth::ROLE_PUBLIC
-        )));
-    }
-    Ok(())
-}
-
 /// The server-log line for a file operation the access rules refused, or `None`
 /// when `err` is not a refusal (a missing file, a bad argument).
 fn refusal_warning(req: &FileRequest, caller: &FileCaller, err: &Error) -> Option<String> {
     let message = err.auth_message()?;
     let who = match &caller.user_id {
         Some(id) => format!("user `{id}` (role {})", caller.role),
-        None if caller.role == sc_auth::ROLE_PUBLIC => "the public role".to_owned(),
+        None if caller.role.is_public() => "the public role".to_owned(),
         None => format!("role {}", caller.role),
     };
     Some(format!(
@@ -1022,9 +1011,6 @@ impl FileStoreHost<'_> {
     async fn set_meta(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
         self.permit_write(store, &req.store, path, &req.authority)
             .await?;
-        if let Some(role) = req.min_role {
-            valid_role(role)?;
-        }
         let current = store.get_meta(path).await?.owner;
         let owner = match owner_option(req)? {
             None => current,
@@ -1108,22 +1094,22 @@ fn entry_json(entry: &Entry) -> Json {
     })
 }
 
-/// The more restrictive (numerically smaller) of two optional rules, with `None`
+/// The more restrictive (more privileged) of two optional rules, with `None`
 /// meaning "says nothing" rather than "public".
-fn tightest(a: Option<u8>, b: Option<u8>) -> Option<u8> {
+fn tightest(a: Option<Role>, b: Option<Role>) -> Option<Role> {
     match (a, b) {
-        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), Some(b)) => Some(a.most_privileged(b)),
         (Some(a), None) => Some(a),
         (None, b) => b,
     }
 }
 
 /// Whether `after` grants access to anyone `before` did not.
-fn looser(after: Option<u8>, before: Option<u8>) -> bool {
+fn looser(after: Option<Role>, before: Option<Role>) -> bool {
     match (after, before) {
         // Nothing said at all is the loosest there is.
         (None, Some(_)) => true,
-        (Some(after), Some(before)) => after > before,
+        (Some(after), Some(before)) => before.outranks(after),
         _ => false,
     }
 }
@@ -1185,14 +1171,32 @@ mod tests {
     #[test]
     fn a_rule_can_be_tightened_and_not_loosened() {
         // Smaller is more restrictive, and "nothing said" is the loosest of all.
-        assert_eq!(tightest(Some(40), Some(10)), Some(10));
-        assert_eq!(tightest(None, Some(10)), Some(10));
-        assert_eq!(tightest(Some(40), None), Some(40));
-        assert!(looser(Some(100), Some(40)), "public is looser than a floor");
-        assert!(looser(None, Some(40)), "no rule is looser than a rule");
-        assert!(!looser(Some(10), Some(40)), "tightening is allowed");
-        assert!(!looser(Some(40), Some(40)), "unchanged is not looser");
-        assert!(!looser(Some(40), None), "adding a rule is tightening");
+        assert_eq!(
+            tightest(Some(Role::of(40)), Some(Role::of(10))),
+            Some(Role::of(10))
+        );
+        assert_eq!(tightest(None, Some(Role::of(10))), Some(Role::of(10)));
+        assert_eq!(tightest(Some(Role::of(40)), None), Some(Role::of(40)));
+        assert!(
+            looser(Some(Role::PUBLIC), Some(Role::of(40))),
+            "public is looser than a floor"
+        );
+        assert!(
+            looser(None, Some(Role::of(40))),
+            "no rule is looser than a rule"
+        );
+        assert!(
+            !looser(Some(Role::of(10)), Some(Role::of(40))),
+            "tightening is allowed"
+        );
+        assert!(
+            !looser(Some(Role::of(40)), Some(Role::of(40))),
+            "unchanged is not looser"
+        );
+        assert!(
+            !looser(Some(Role::of(40)), None),
+            "adding a rule is tightening"
+        );
     }
 
     #[test]
@@ -1202,8 +1206,12 @@ mod tests {
         }))
         .unwrap();
         let refused = Error::auth(r#"not permitted to access "p/7/a.pdf" in file store uploads"#);
-        let warning =
-            refusal_warning(&req, &FileCaller::new(80, Some("12".into())), &refused).unwrap();
+        let warning = refusal_warning(
+            &req,
+            &FileCaller::new(Role::of(80), Some("12".into())),
+            &refused,
+        )
+        .unwrap();
         assert_eq!(
             warning,
             "feldspar: warning: a code body's file `delete` of \"p/7/a.pdf\" in store \

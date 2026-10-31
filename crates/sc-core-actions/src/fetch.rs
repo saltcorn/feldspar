@@ -501,6 +501,7 @@ fn quoted_body(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sc_types::Role;
 
     fn config(entries: &[(&str, Json)]) -> Attrs {
         entries
@@ -651,7 +652,7 @@ mod tests {
         let event = Event::new(sc_action::EventKind::Insert)
             .on("books")
             .row(json!({ "id": 1 }))
-            .caller(1, Some(json!({ "email": "a@b.c" })));
+            .caller(Role::ADMIN, Some(json!({ "email": "a@b.c" })));
         assert_eq!(
             event_json(&event),
             json!({

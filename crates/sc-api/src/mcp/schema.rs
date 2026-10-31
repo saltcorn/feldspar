@@ -1143,6 +1143,7 @@ fn field_kind(obj: &Map<String, Json>) -> Result<Option<DataFieldKind>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sc_types::Role;
 
     #[test]
     fn a_file_field_is_named_by_its_store_and_file_is_not_a_type() {
@@ -1229,7 +1230,7 @@ mod tests {
         .unwrap() else {
             panic!("an alter_table");
         };
-        assert_eq!(settings.min_role_read, Some(40));
+        assert_eq!(settings.min_role_read, Some(Role::of(40)));
         // The three settings the caller did not name are `None` — "leave it" —
         // which is the whole divergence from `updateTable`'s whole-object
         // contract (§13.1).

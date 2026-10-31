@@ -2,6 +2,79 @@
 
 Changes in reverse chronological order.
 
+## Code quality Q1: `Role`, `Principal` and `Authority`
+
+The second milestone of `TODO-code-quality.md` (§4.1, §4.2 of the review). Nothing changes on the
+wire, in stored data or in the schema: a role still serializes and is stored as its number.
+
+**`sc_types::Role`** replaces the bare `u8` role everywhere: `User`, `Principal`, `Event`,
+`AuthRequirement::MinRole`, table / file store / trigger / agent / stream / view / application /
+upload-slot / dataset / workflow-form `min_role`s, grants, invitations, module role ceilings, and
+the per-crate callers. Its field is private and only `1..=100` constructs one (`Role::new`,
+`TryFrom<u8 | i64 | u64>`, `Role::of` for literals, serde `try_from`). It has `Role::ADMIN`,
+`Role::PUBLIC`, `meets(floor)`, `outranks`, `is_admin`, `is_public`, `most_privileged`,
+`least_privileged`, and **no `Ord`**. With an ordering, the old `role <= min_role` idiom would
+have kept compiling with whichever meaning the ordering picked. Without one, every hand-written
+comparison failed to compile and was rewritten. `Display` prints the number and honours width
+flags. `Default` is `PUBLIC`, so `Principal::default()` is no longer role 0, which used to pass
+every `role <= floor` check.
+- Range checks that a `Role` makes redundant were deleted (table access, file store rows, history
+  `min_role`, triggers, agents, streams, workflow forms, applications, upload slots, custom
+  queries, dataset sharing, schema edits, the code host's `minRole`). Reading a stored role
+  outside `1..=100` is still a named error.
+- `user.role == 1` checks became `is_admin()` (sc-server onboarding, sc-api MCP `require_admin`,
+  sc-core-traits coding, sc-module permissions). The users-table insert/update rule
+  (`user_rows.rs`) compared a raw `i64` with `i64::from(caller.role)`. It now reads a `Role` and
+  uses `outranks` / `meets`, and an out-of-range role there is a 400 rather than a 403.
+- `User::new` is infallible now that a role cannot be out of range.
+- Deleted: the six `ROLE_ADMIN` / four `ROLE_PUBLIC` constants (sc-auth, sc-files, sc-action,
+  sc-workflow, sc-viewpattern, and the private copies in sc-catalog `history.rs` and
+  `retention.rs`), `sc_auth::role_in_range`, and the four `caller_role` / `role_of` helpers. The
+  one way an optional user becomes a role is `sc_auth::role_of`. sc-auth's role *row* struct was
+  renamed `RoleDef` to free the name.
+- **Guard:** `crates/sc-types/tests/role_guard.rs` scans every crate's source, with comments and
+  strings stripped. It fails on a role-named binding typed `u8`, a role compared with a number
+  literal, a role number unwrapped with `.get()` and ordered by hand, and any new `ROLE_ADMIN` /
+  `ROLE_PUBLIC` constant. Only `sc-types/src/role.rs` is exempt.
+
+**`Principal`** (sc-catalog) replaces `CallerContext`: role, user, trigger chain, calling
+application, guest session and changeset. `sc_api::caller_context(_at)` are now
+`principal_of` / `principal_at`. The user is still the JSON object the `sc.user` GUC carries;
+Q2.2's `AuthenticatedUser` will replace it.
+
+**`Authority<'a> { System(SystemReason), Caller(&'a Principal) }`** replaces the 65
+`Option<&CallerContext>` parameters (`SharedTx::run`, the row layer, CSV and geo import, public
+dataset install, the `TriggerDispatcher` methods, the credits ledger, the users-table guards).
+`None` used to mean "nobody, plus the ambient changeset". The server's own authority is now
+written `Authority::system("reason")`, the only way to make a `SystemReason`, and request paths
+pass `Authority::Caller`. Two request paths that passed `None` now pass their caller: REST file
+downloads, and grouped aggregates decided by an ownership predicate.
+- **Behaviour change:** `System` is the admin role with no user. On a row-level-security table it
+  sets `sc.role` to 1 in `SharedTx` and in the row layer, where `None` used to fail closed. So
+  "is this file still referenced?" (file cleanup and retention), persisting a live document, and
+  the ownership check's read of an existing row now see rows a policy would have hidden from
+  "nobody". A system write to a table that is only change-logged still goes through the provider,
+  so history groups it as before.
+- `Caller::admin()`-style ad-hoc authority was converted where it had no user (the retention
+  job). Every system call site, and the admin principals that remain, are listed in
+  docs/SECURITY_REVIEW_2026-10.md, "System-authority inventory".
+
+**Context across `spawn`.** `sc_catalog::TaskScope` captures the task-locals a caller's work runs
+inside (origin, ambient changeset, run outbox), and `spawn_scoped` re-enters them in the spawned
+task. Exposed-agent turns (`app_agents.rs`), public dataset installs and GraphQL's `DataLoader`
+now spawn with it. Before, a plain `tokio::spawn` dropped the application and guest session, so
+an ownership formula's `session.id` read nothing. Test:
+`caller::tests::a_triggered_chain_and_its_origin_survive_a_spawn` keeps the untrusted-input marker
+in the principal's chain across a spawn and shows a bare spawn losing the origin (security review
+#32).
+
+**Per-crate callers (partly).** `sc_module::RouteCaller` is gone; module routes take a
+`Principal`, built by `sc_api::principal_of`, which removed sc-server's copy of that conversion.
+`Principal::file_caller()` / `user_id()` give the file rule's view (sc-files sits below
+sc-catalog, so `FileCaller` stays a separate type). Still separate, for reasons recorded in
+TODO-code-quality.md Q1.8: `sc_dataset::Caller`, `sc_live::access::Caller`,
+`sc_agent::RunCaller`, and sc-server's `LiveCaller` / `GuestCaller` / `AppCaller`.
+
 ## Code quality Q0: quick wins
 
 The first milestone of `TODO-code-quality.md`. Nothing changes on the wire, in stored data or in

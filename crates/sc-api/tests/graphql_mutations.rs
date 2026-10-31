@@ -14,6 +14,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -111,13 +112,13 @@ fn provider(cat: &Catalog) -> Result<GraphqlProvider> {
 }
 
 fn admin() -> Result<User> {
-    User::new(uuid::Uuid::new_v4(), sc_auth::ROLE_ADMIN)
+    Ok(User::new(uuid::Uuid::new_v4(), Role::ADMIN))
 }
 
 /// A caller at the public role, identified by an email an ownership formula can
 /// read.
 fn caller(email: &str) -> Result<User> {
-    let mut user = User::new(uuid::Uuid::new_v4(), 100)?;
+    let mut user = User::new(uuid::Uuid::new_v4(), Role::PUBLIC);
     user.extra
         .insert("email".to_owned(), Value::Text(email.to_owned()));
     Ok(user)
@@ -435,7 +436,7 @@ async fn a_table_nobody_below_the_floor_may_write_refuses_at_resolve_time() -> R
     let api = provider(&cat)?;
     assert!(api.sdl().contains("insert_tasks"), "{}", api.sdl());
 
-    let public = User::new(uuid::Uuid::new_v4(), 100)?;
+    let public = User::new(uuid::Uuid::new_v4(), Role::PUBLIC);
     for document in [
         r#"mutation { insert_tasks(object: { title: "sneaking in" }) { id } }"#,
         r#"mutation { update_tasks_by_pk(pk_columns: { id: 1 }, set: { title: "x" }) { id } }"#,

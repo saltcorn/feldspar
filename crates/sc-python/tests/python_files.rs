@@ -19,6 +19,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -363,7 +364,7 @@ async fn a_delegated_body_obeys_the_folder_rule_and_the_trigger_does_not() -> Re
         .set_meta(
             "private",
             &FileMeta {
-                min_role: Some(1),
+                min_role: Some(Role::ADMIN),
                 ..Default::default()
             },
         )

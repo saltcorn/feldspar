@@ -9,6 +9,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -155,7 +156,7 @@ async fn fixture_with(db: &TestDb, formula: Option<&str>) -> Result<Fixture> {
     bootstrap_change_log(&cat).await?;
     cat.reload().await?;
 
-    let synced = |read: u8, formula: Option<&str>| schema_edit::TableSettings {
+    let synced = |read: Role, formula: Option<&str>| schema_edit::TableSettings {
         min_role_read: Some(read),
         min_role_write: Some(read),
         ownership_formula: formula.map(Into::into),
@@ -168,29 +169,29 @@ async fn fixture_with(db: &TestDb, formula: Option<&str>) -> Result<Fixture> {
             schema_edit::Operation::AlterTable {
                 table: "notes".into(),
                 settings: match formula {
-                    Some(formula) => synced(1, Some(formula)),
-                    None => synced(80, None),
+                    Some(formula) => synced(Role::ADMIN, Some(formula)),
+                    None => synced(Role::of(80), None),
                 },
             },
             schema_edit::Operation::AlterTable {
                 table: "items".into(),
-                settings: synced(80, None),
+                settings: synced(Role::of(80), None),
             },
             schema_edit::Operation::AlterTable {
                 table: "lists".into(),
-                settings: synced(80, None),
+                settings: synced(Role::of(80), None),
             },
             schema_edit::Operation::AlterTable {
                 table: "entries".into(),
-                settings: synced(80, None),
+                settings: synced(Role::of(80), None),
             },
         ],
         &schema_edit::ApplyOptions::default(),
     )
     .await?;
 
-    sc_auth::save_role(&cat, &sc_auth::Role::new(80, "User")).await?;
-    let ann = create_user(&cat, "ann@example.com", "ann-password", 80).await?;
+    sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(80), "User")).await?;
+    let ann = create_user(&cat, "ann@example.com", "ann-password", Role::of(80)).await?;
     let tables = ["notes", "items", "lists", "entries"]
         .iter()
         .map(|t| cat.require(t))

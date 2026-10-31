@@ -39,6 +39,7 @@
 //! every update since; merges only shrink it) and encodes the document to
 //! measure it exactly only when that bound says it might be too big.
 
+use sc_catalog::Authority;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -484,7 +485,12 @@ impl DocRoom {
                 .columns(vec![Projection::expr(Expr::col(self.target.field.clone()))])
                 .filter(filter)
                 .for_update();
-            let found = tx.run(None, &Statement::from(select)).await?;
+            let found = tx
+                .run(
+                    Authority::system("live document: persist merged state"),
+                    &Statement::from(select),
+                )
+                .await?;
             let row = found.first().ok_or_else(|| {
                 Error::not_found(format!(
                     "the row `{}` of `{}` holding this document is gone",

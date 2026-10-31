@@ -10,6 +10,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::ApiProvider;
@@ -377,11 +378,11 @@ async fn ownership_joins_through_the_module_tables_for_reads_and_writes() -> Res
     assert!(report.issues.is_empty(), "{:?}", report.issues);
 
     for (role, name) in [(40, "Staff"), (80, "User")] {
-        sc_auth::save_role(&cat, &sc_auth::Role::new(role, name)).await?;
+        sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(role), name)).await?;
     }
-    let staff = sc_auth::create_user(&cat, "staff@example.com", "pw-staff-1", 40).await?;
-    let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", 80).await?;
-    let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", 80).await?;
+    let staff = sc_auth::create_user(&cat, "staff@example.com", "pw-staff-1", Role::of(40)).await?;
+    let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", Role::of(80)).await?;
+    let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", Role::of(80)).await?;
 
     // What the service writes, with the module's authority: a shared account
     // for staff, and ann's personal one, a message and an attachment in each.
@@ -684,9 +685,9 @@ async fn an_owner_may_update_their_own_account() -> Result<()> {
     let cat = Arc::new(catalog(&db).await?);
     let report = sync(&cat, MODULE, &mail_tables(), &ModuleTables::new()).await;
     assert!(report.issues.is_empty(), "{:?}", report.issues);
-    sc_auth::save_role(&cat, &sc_auth::Role::new(80, "User")).await?;
-    let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", 80).await?;
-    let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", 80).await?;
+    sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(80), "User")).await?;
+    let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", Role::of(80)).await?;
+    let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", Role::of(80)).await?;
     let admin = TableHost::new(&cat);
     let anns = ask(
         &admin,

@@ -30,6 +30,7 @@
 //! as much as the backup, and an installation can restore the largest backup it
 //! can take.
 
+use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -847,15 +848,14 @@ async fn restore_role(catalog: &Catalog, value: &Json) -> Result<String> {
     let number = obj
         .get("role")
         .and_then(Json::as_i64)
-        .and_then(|n| u8::try_from(n).ok())
-        .filter(|r| sc_auth::role_in_range(*r))
+        .and_then(|n| Role::try_from(n).ok())
         .ok_or_else(|| Error::invalid("a role must have a number between 1 and 100"))?;
     let name = obj
         .get("name")
         .and_then(Json::as_str)
         .filter(|n| !n.trim().is_empty())
         .ok_or_else(|| Error::invalid("a role must have a name"))?;
-    let mut role = sc_auth::Role::new(number, name.trim());
+    let mut role = sc_auth::RoleDef::new(number, name.trim());
     role.description = obj
         .get("description")
         .and_then(Json::as_str)
@@ -3645,7 +3645,7 @@ async fn restore_workspaces(catalog: &Catalog, archive: &Archive, report: &mut R
             workspace.share_role = value
                 .get("share_role")
                 .and_then(Json::as_u64)
-                .and_then(|r| u8::try_from(r).ok());
+                .and_then(|r| Role::try_from(r).ok());
             workspace.application = value
                 .get("application")
                 .and_then(Json::as_str)

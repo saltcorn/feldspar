@@ -22,6 +22,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{
@@ -29,7 +31,7 @@ use sc_action::{
     save_trigger,
 };
 use sc_api::rows;
-use sc_catalog::{CallerContext, Catalog, TableEvents};
+use sc_catalog::{Catalog, Principal, TableEvents};
 use sc_core_actions::builtin_actions;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -69,7 +71,7 @@ fn audit_completed() -> Trigger {
 /// Step 3's trigger, verbatim.
 fn archive_done() -> Trigger {
     Trigger::new("archive_done", EventKind::None, "delete_rows")
-        .min_role(40)
+        .min_role(Role::of(40))
         .config("table", "tasks")
         .config("where", "done && owner === user.email")
 }
@@ -183,13 +185,13 @@ impl Tutorial {
     /// who ticked the box.
     async fn tick(&self, id: &str, done: bool, member: &str) -> Result<()> {
         let tasks = self.catalog.require("tasks")?;
-        let caller = CallerContext::new(40, Some(json!({ "email": member })));
+        let caller = Principal::new(Role::of(40), Some(json!({ "email": member })));
         rows::update_row_ctx(
             &self.catalog,
             &tasks,
             id,
             &json!({ "done": done }),
-            Some(&caller),
+            Authority::Caller(&caller),
         )
         .await?;
         Ok(())
@@ -300,10 +302,15 @@ async fn the_none_trigger_archives_the_callers_own_finished_tasks() -> Result<()
 
     // What the app's `POST /api/actions/archive_done` does, with the member as
     // the caller: the same `run_trigger` the admin's Run button calls.
-    let caller = CallerContext::new(40, Some(json!({ "email": member })));
+    let caller = Principal::new(Role::of(40), Some(json!({ "email": member })));
     let result = t
         .dispatcher
-        .run_trigger(&t.catalog, "archive_done", json!({}), Some(&caller))
+        .run_trigger(
+            &t.catalog,
+            "archive_done",
+            json!({}),
+            Authority::Caller(&caller),
+        )
         .await?;
     assert_eq!(result["deleted"], json!(1), "{result}");
 
@@ -366,10 +373,15 @@ async fn the_code_body_reads_the_tasks_and_writes_an_audit_row_for_each() -> Res
     }
 
     // Pressing Run, as the document says to.
-    let caller = CallerContext::new(40, Some(json!({ "email": member })));
+    let caller = Principal::new(Role::of(40), Some(json!({ "email": member })));
     let result = t
         .dispatcher
-        .run_trigger(&t.catalog, "sweep_report", json!({}), Some(&caller))
+        .run_trigger(
+            &t.catalog,
+            "sweep_report",
+            json!({}),
+            Authority::Caller(&caller),
+        )
         .await?;
     assert_eq!(
         result,
@@ -415,7 +427,12 @@ async fn the_grouped_read_answers_one_row_per_owner_as_the_document_prints_it() 
 
     let result = t
         .dispatcher
-        .run_trigger(&t.catalog, "open_by_owner", json!({}), None)
+        .run_trigger(
+            &t.catalog,
+            "open_by_owner",
+            json!({}),
+            Authority::system("test"),
+        )
         .await?;
     assert_eq!(
         result,
@@ -447,10 +464,15 @@ async fn the_streamed_sweep_writes_the_same_rows_the_read_one_does() -> Result<(
     // that does not fit in one — so the test is that the body it prints does what
     // the body above it does, on the same three tasks. Ordered by title here,
     // which is what the printed example orders by.
-    let caller = CallerContext::new(40, Some(json!({ "email": member })));
+    let caller = Principal::new(Role::of(40), Some(json!({ "email": member })));
     let result = t
         .dispatcher
-        .run_trigger(&t.catalog, "sweep_streamed", json!({}), Some(&caller))
+        .run_trigger(
+            &t.catalog,
+            "sweep_streamed",
+            json!({}),
+            Authority::Caller(&caller),
+        )
         .await?;
     assert_eq!(
         result,
@@ -492,14 +514,14 @@ async fn a_body_runs_the_other_two_triggers_the_tutorial_wrote() -> Result<()> {
     // happening from one body: step 3's `archive_done` deletes this member's
     // finished tasks, and step 5's `sweep_report` — which runs *after* it — finds
     // none left to sweep.
-    let caller = CallerContext::new(40, Some(json!({ "email": member })));
+    let caller = Principal::new(Role::of(40), Some(json!({ "email": member })));
     let result = t
         .dispatcher
         .run_trigger(
             &t.catalog,
             "run_others",
             json!({ "today": 0 }),
-            Some(&caller),
+            Authority::Caller(&caller),
         )
         .await?;
     assert_eq!(

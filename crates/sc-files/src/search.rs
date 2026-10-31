@@ -26,6 +26,7 @@
 use crate::access::filter_visible;
 use crate::store::{Entry, FileStore};
 use sc_error::{Error, Result};
+use sc_types::Role;
 
 /// Directory names skipped unless the caller asks for them by searching inside
 /// one.
@@ -143,7 +144,7 @@ pub struct SearchOutcome {
 /// manager's rule applied to a walk instead of to a single path.
 pub async fn search_store(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
+    store_min_role: Option<Role>,
     caller: &crate::FileCaller,
     query: &SearchQuery,
 ) -> Result<SearchOutcome> {
@@ -517,7 +518,7 @@ pub struct FoundFiles {
 /// entries visited and `max_results` returned.
 pub async fn find_files(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
+    store_min_role: Option<Role>,
     caller: &crate::FileCaller,
     dir: &str,
     query: &str,
@@ -579,7 +580,7 @@ const GENERATED_PROJECT_DIRS: [&str; 2] = ["android", "ios"];
 /// of images and none of them is the app's.
 pub async fn find_by_extension(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
+    store_min_role: Option<Role>,
     caller: &crate::FileCaller,
     dir: &str,
     extensions: &[String],
@@ -623,7 +624,7 @@ fn has_extension(name: &str, extensions: &[String]) -> bool {
 /// outcome says when that stopped the walk.
 pub async fn walk_store(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
+    store_min_role: Option<Role>,
     caller: &crate::FileCaller,
     dir: &str,
     exclude_dirs: &[&str],

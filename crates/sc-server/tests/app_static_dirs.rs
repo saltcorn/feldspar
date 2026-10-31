@@ -20,6 +20,7 @@
 //!   fallback still answers a path no directory claims.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,7 +32,7 @@ use sc_app::{
     ApiConfig, Application, CodeFramework, FrameworkRef, StaticDir, app_source_from_config,
     build_application,
 };
-use sc_auth::{ROLE_ADMIN, SessionStore, create_user};
+use sc_auth::{SessionStore, create_user};
 use sc_catalog::{Catalog, FileStoreId, TableId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -311,7 +312,7 @@ async fn setup(
 async fn a_static_directory_serves_its_files_and_nothing_else() -> sc_error::Result<()> {
     let tmp = TempDir::new("serve");
     let (router, catalog, assets, _db) = setup(&tmp).await?;
-    create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
 
     let mut visitor = Client::new(router.clone(), APP_HOST);
 
@@ -397,7 +398,7 @@ async fn a_static_directory_serves_its_files_and_nothing_else() -> sc_error::Res
         .set_meta(
             "media/private",
             &FileMeta {
-                min_role: Some(40),
+                min_role: Some(Role::of(40)),
                 ..Default::default()
             },
         )
@@ -440,15 +441,15 @@ async fn a_static_directory_serves_its_files_and_nothing_else() -> sc_error::Res
 async fn an_owned_file_is_served_to_its_owner_alone() -> sc_error::Result<()> {
     let tmp = TempDir::new("owner");
     let (router, catalog, assets, _db) = setup(&tmp).await?;
-    sc_auth::save_role(&catalog, &sc_auth::Role::new(80, "Reader")).await?;
-    let ada = create_user(&catalog, "ada@example.com", "ada-pw", 80).await?;
-    create_user(&catalog, "bob@example.com", "bob-pw", 80).await?;
+    sc_auth::save_role(&catalog, &sc_auth::RoleDef::new(Role::of(80), "Reader")).await?;
+    let ada = create_user(&catalog, "ada@example.com", "ada-pw", Role::of(80)).await?;
+    create_user(&catalog, "bob@example.com", "bob-pw", Role::of(80)).await?;
 
     assets
         .set_meta(
             "media/private",
             &FileMeta {
-                min_role: Some(1),
+                min_role: Some(Role::ADMIN),
                 ..Default::default()
             },
         )
@@ -562,7 +563,6 @@ async fn a_directory_naming_an_undeclared_store_serves_nothing() -> sc_error::Re
 async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()> {
     use sc_agent::{RunCaller, RunId, RunMode, ToolsContext, TraitContext};
     use sc_core_traits::builtin_traits;
-    use sc_files::ROLE_PUBLIC;
     use sc_types::Attrs;
 
     let tmp = TempDir::new("list-assets");
@@ -584,7 +584,7 @@ async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()
         .set_meta(
             "media/private",
             &FileMeta {
-                min_role: Some(40),
+                min_role: Some(Role::of(40)),
                 ..Default::default()
             },
         )
@@ -637,7 +637,7 @@ async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()
         .collect();
     assert!(!without.contains(&tool), "{without:?}");
 
-    let call = async |args: serde_json::Value, role: u8| -> sc_error::Result<serde_json::Value> {
+    let call = async |args: serde_json::Value, role: Role| -> sc_error::Result<serde_json::Value> {
         let caller = RunCaller {
             role,
             ..RunCaller::system()
@@ -665,7 +665,7 @@ async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()
     };
 
     // --- what a guest is told, and what the router then serves ----------------
-    let listed = call(json!({}), ROLE_PUBLIC).await?;
+    let listed = call(json!({}), Role::PUBLIC).await?;
     let rows = listed["assets"].as_array().unwrap().clone();
     assert_eq!(listed["truncated"], json!(false), "{listed}");
     let urls: Vec<&str> = rows.iter().map(|r| r["url"].as_str().unwrap()).collect();
@@ -708,7 +708,7 @@ async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()
     );
 
     // --- an admin sees the closed file, and its URL works for them -------------
-    let listed = call(json!({}), ROLE_ADMIN).await?;
+    let listed = call(json!({}), Role::ADMIN).await?;
     let urls: Vec<&str> = listed["assets"]
         .as_array()
         .unwrap()
@@ -721,7 +721,7 @@ async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()
     );
 
     // --- the glob and the cap behave as `find_files`' do -----------------------
-    let pngs = call(json!({"pattern": "*.png"}), ROLE_ADMIN).await?;
+    let pngs = call(json!({"pattern": "*.png"}), Role::ADMIN).await?;
     let urls: Vec<&str> = pngs["assets"]
         .as_array()
         .unwrap()
@@ -730,7 +730,7 @@ async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()
         .collect();
     assert_eq!(urls, ["/img/hero.png"], "{pngs}");
     // A directory narrows it the same way.
-    let under = call(json!({"dir": "private"}), ROLE_ADMIN).await?;
+    let under = call(json!({"dir": "private"}), Role::ADMIN).await?;
     let urls: Vec<&str> = under["assets"]
         .as_array()
         .unwrap()
@@ -743,7 +743,7 @@ async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()
     let mut capped = config.clone();
     capped.insert("max_results".to_owned(), json!(1));
     let caller = RunCaller {
-        role: ROLE_ADMIN,
+        role: Role::ADMIN,
         ..RunCaller::system()
     };
     let mut state = serde_json::Value::Null;

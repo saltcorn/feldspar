@@ -13,13 +13,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use sc_action::{
     ActionContext, Event, EventKind, Trigger, TriggerDispatcher, bootstrap_triggers, save_trigger,
 };
-use sc_catalog::{CallerContext, Catalog};
+use sc_catalog::{Catalog, Principal};
 use sc_core_actions::builtin_actions;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -116,7 +118,7 @@ fn book_insert() -> Event {
     Event::new(EventKind::Insert)
         .on("books")
         .row(json!({ "id": 7, "title": "A Book" }))
-        .caller(1, Some(json!({ "email": "ada@example.com" })))
+        .caller(Role::ADMIN, Some(json!({ "email": "ada@example.com" })))
 }
 
 fn config(code: &str) -> Attrs {
@@ -283,13 +285,13 @@ async fn the_run_button_reaches_the_adapter_too() -> Result<()> {
     save_trigger(&world.catalog, &registry, &trigger).await?;
     dispatcher.reload(&world.catalog).await?;
 
-    let caller = CallerContext::new(1, Some(json!({ "email": "ada@example.com" })));
+    let caller = Principal::new(Role::ADMIN, Some(json!({ "email": "ada@example.com" })));
     let out = dispatcher
         .run_trigger(
             &world.catalog,
             "reindex",
             json!({ "why": "nightly" }),
-            Some(&caller),
+            Authority::Caller(&caller),
         )
         .await?;
     assert_eq!(out, json!("ran"));

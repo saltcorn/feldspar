@@ -22,6 +22,7 @@
 
 #[cfg(feature = "deno-host")]
 mod deno {
+    use sc_types::Role;
     use std::collections::BTreeSet;
     use std::path::Path;
     use std::process::{Child, Command, Stdio};
@@ -208,13 +209,13 @@ mod deno {
             load_module(&cat, "imap-mirror", &["127.0.0.1:11993", "127.0.0.1:10465"]).await;
         let registry = Arc::new(registry);
 
-        sc_auth::save_role(&cat, &sc_auth::Role::new(80, "User"))
+        sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(80), "User"))
             .await
             .unwrap();
-        let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", 80)
+        let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", Role::of(80))
             .await
             .unwrap();
-        let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", 80)
+        let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", Role::of(80))
             .await
             .unwrap();
 

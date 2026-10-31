@@ -21,6 +21,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -159,7 +160,7 @@ async fn the_server_serves_a_module_with_node_off_the_path() -> sc_error::Result
             &catalog,
             "echo it",
             json!({ "id": 1, "title": "Dune" }),
-            None,
+            Authority::system("test"),
         )
         .await?;
     // The trigger's own settings reached v1's `configuration`, and the event

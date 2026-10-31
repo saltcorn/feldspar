@@ -12,6 +12,7 @@ use sc_query::{Statement, Value};
 use sc_types::{BasicType, TypeRef};
 use serde_json::Value as Json;
 
+use crate::caller::Authority;
 use crate::catalog::Catalog;
 use crate::field::{Attrs, DataField};
 use crate::tx::SharedTx;
@@ -171,7 +172,7 @@ pub async fn sync_watermark(catalog: &Catalog, tx: &SharedTx) -> Result<SyncWate
     if catalog.primary().dialect().is_sqlite() {
         let rows = tx
             .run(
-                None,
+                Authority::system("sync: read the change-log watermark"),
                 &Statement::raw(
                     format!(
                         "SELECT max(coalesce((SELECT seq FROM sqlite_sequence WHERE name = '{log}'), 0), \
@@ -191,7 +192,7 @@ pub async fn sync_watermark(catalog: &Catalog, tx: &SharedTx) -> Result<SyncWate
     }
     let rows = tx
         .run(
-            None,
+            Authority::system("sync: read the change-log watermark"),
             &Statement::raw("SELECT txid_current_snapshot()::text", Vec::new()),
         )
         .await?;
@@ -280,7 +281,12 @@ pub async fn changed_entries(
             ],
         )
     };
-    let rows = tx.run(None, &Statement::raw(sql, binds)).await?;
+    let rows = tx
+        .run(
+            Authority::system("sync: read the change log"),
+            &Statement::raw(sql, binds),
+        )
+        .await?;
     Ok(rows
         .iter()
         .filter_map(|row| {

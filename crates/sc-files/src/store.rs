@@ -10,6 +10,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use sc_error::Result;
+use sc_types::Role;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -99,7 +100,7 @@ pub struct FileStat {
 pub struct FileMeta {
     /// Minimum role permitted to read this entry, if restricted. `None` leaves
     /// access to be decided by directories higher in the path.
-    pub min_role: Option<u8>,
+    pub min_role: Option<Role>,
     /// Who created the entry, as the user's id. `None` for anything written
     /// before there was a user to record — a file put there by a code body, a
     /// scaffold, or by hand on the disk underneath.

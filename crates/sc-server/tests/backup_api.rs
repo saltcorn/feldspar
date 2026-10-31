@@ -27,6 +27,7 @@
 //!   endpoint.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
@@ -1201,7 +1202,7 @@ async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
             "{}",
             v.name
         );
-        assert_eq!(v.min_role, 1, "{}", v.name);
+        assert_eq!(v.min_role, Role::ADMIN, "{}", v.name);
     }
     assert_eq!(view("List Books").viewpattern, "List");
     assert_eq!(view("List Books").table_name.as_deref(), Some("Books"));
@@ -1218,7 +1219,7 @@ async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
     let pages = sc_viewpattern::list_pages(&server.catalog, app.id).await?;
     assert_eq!(pages.len(), 1);
     assert_eq!(pages[0].name, "BooksOverview");
-    assert_eq!(pages[0].min_role, 1);
+    assert_eq!(pages[0].min_role, Role::ADMIN);
     assert_eq!(pages[0].layout, pack["pages"][0]["layout"]);
     assert_eq!(pages[0].attributes["root_page_for_roles"], json!([]));
 

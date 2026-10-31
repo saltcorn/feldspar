@@ -309,6 +309,7 @@ pub fn credentials(body: &Json) -> Result<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sc_types::Role;
 
     #[test]
     fn credentials_require_both_fields_non_blank() {
@@ -326,7 +327,7 @@ mod tests {
 
     #[test]
     fn user_summary_never_leaks_extra_columns() {
-        let mut user = User::new(uuid::Uuid::new_v4(), 1).unwrap();
+        let mut user = User::new(uuid::Uuid::new_v4(), Role::ADMIN);
         user.extra
             .insert(COL_EMAIL.to_owned(), Value::Text("a@b.c".to_owned()));
         // An admin-added column, and something that must never travel.

@@ -71,14 +71,6 @@ pub async fn validate_trigger(
     // ([`Action::config_spec_for`] — `send_email`'s attachment checkboxes are the
     // table's File fields), and so can what its settings mean.
 
-    if let Some(role) = trigger.min_role
-        && !(1..=100).contains(&role)
-    {
-        return Err(problem(format!(
-            "`min_role` must be a role between 1 and 100, got {role}"
-        )));
-    }
-
     // The event and the channel have to agree: a table event without a table
     // cannot know what to listen to, and a login event with one is a
     // misunderstanding worth naming rather than a channel silently ignored.

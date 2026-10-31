@@ -11,6 +11,7 @@
 //! reads differently.
 
 use crate::common;
+use sc_types::Role;
 
 use common::{Env, as_user, config};
 use sc_agent::RunCaller;
@@ -194,8 +195,8 @@ async fn a_drop_needs_its_grant_and_takes_the_overlay_rows_with_it() -> Result<(
         .expect("the description's row");
     meta.label = "Clients".to_owned();
     meta.access = sc_catalog::AccessRules {
-        min_role_read: 40,
-        min_role_write: 40,
+        min_role_read: Role::of(40),
+        min_role_write: Role::of(40),
     };
     sc_catalog::save_table_meta(&env.catalog, &meta).await?;
 
@@ -467,8 +468,8 @@ async fn altering_a_table_leaves_the_settings_it_does_not_name() -> Result<()> {
         .expect("the formula's row");
     meta.label = "The Library".to_owned();
     meta.access = sc_catalog::AccessRules {
-        min_role_read: 20,
-        min_role_write: 10,
+        min_role_read: Role::of(20),
+        min_role_write: Role::of(10),
     };
     sc_catalog::save_table_meta(&env.catalog, &meta).await?;
 
@@ -482,7 +483,10 @@ async fn altering_a_table_leaves_the_settings_it_does_not_name() -> Result<()> {
     .unwrap_err()
     .to_string();
     assert!(err.contains("allow_access_changes"), "{err}");
-    assert_eq!(env.catalog.require("books")?.access.min_role_read, 20);
+    assert_eq!(
+        env.catalog.require("books")?.access.min_role_read,
+        Role::of(20)
+    );
 
     // With it, only what was named moves. This is the omitted-means-leave rule,
     // and the test that would have caught `updateTable`'s whole-object contract
@@ -494,9 +498,10 @@ async fn altering_a_table_leaves_the_settings_it_does_not_name() -> Result<()> {
     )
     .await?;
     let books = env.catalog.require("books")?;
-    assert_eq!(books.access.min_role_read, 40);
+    assert_eq!(books.access.min_role_read, Role::of(40));
     assert_eq!(
-        books.access.min_role_write, 10,
+        books.access.min_role_write,
+        Role::of(10),
         "the write floor was not named"
     );
     assert_eq!(

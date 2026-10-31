@@ -13,13 +13,14 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, TableId, TableMeta, bootstrap_table_meta, save_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -50,9 +51,9 @@ const ACCOUNTANT: &str = "accountant@example.com";
 const ENGINEER: &str = "engineer@example.com";
 const MEMBER: &str = "member@example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_STAFF: u8 = 40;
-const ROLE_CAPPED: u8 = 20;
-const ROLE_MEMBER: u8 = 80;
+const ROLE_STAFF: Role = Role::of(40);
+const ROLE_CAPPED: Role = Role::of(20);
+const ROLE_MEMBER: Role = Role::of(80);
 
 /// One request to `host`, with exactly the cookies and CSRF header given.
 async fn send(
@@ -186,10 +187,10 @@ async fn setup() -> sc_error::Result<Server> {
         .await
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     catalog.reload().await?;
-    save_role(&catalog, &Role::new(ROLE_CAPPED, "Manager")).await?;
-    save_role(&catalog, &Role::new(ROLE_STAFF, "Staff")).await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
-    create_user(&catalog, ADMIN, PASSWORD, ROLE_ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_CAPPED, "Manager")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_STAFF, "Staff")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
+    create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
     create_user(&catalog, ACCOUNTANT, PASSWORD, ROLE_STAFF).await?;
     create_user(&catalog, ENGINEER, PASSWORD, ROLE_STAFF).await?;
     create_user(&catalog, MEMBER, PASSWORD, ROLE_MEMBER).await?;
@@ -207,12 +208,12 @@ async fn setup() -> sc_error::Result<Server> {
     // The notice is open to everybody; the ledger is admin-only.
     save_table_meta(
         &catalog,
-        &TableMeta::new("notice").access(ROLE_PUBLIC, ROLE_PUBLIC),
+        &TableMeta::new("notice").access(Role::PUBLIC, Role::PUBLIC),
     )
     .await?;
     save_table_meta(
         &catalog,
-        &TableMeta::new("ledger").access(ROLE_ADMIN, ROLE_ADMIN),
+        &TableMeta::new("ledger").access(Role::ADMIN, Role::ADMIN),
     )
     .await?;
 
@@ -358,7 +359,7 @@ async fn max_role_serves_an_admin_as_the_capped_role() -> sc_error::Result<()> {
     let (status, body) = server.get(OPEN_HOST, "/api/ledger", Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = server.get(OPEN_HOST, "/api/whoami", Some(&session)).await;
-    assert_eq!(body["role"], json!(ROLE_ADMIN), "{status}: {body}");
+    assert_eq!(body["role"], json!(Role::ADMIN), "{status}: {body}");
     Ok(())
 }
 

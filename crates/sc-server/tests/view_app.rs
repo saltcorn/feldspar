@@ -9,6 +9,7 @@
 //! **Skipped, saying so, where no Chromium is installed**: these tests need an
 //! external browser, which `scripts/setup-host.sh` installs on a server.
 
+use sc_types::Role;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +18,7 @@ use sc_agent::{
     AppPreviewer, BrowserDriver, HostCapabilities, RunCaller, RunId, RunMode, TraitContext,
 };
 use sc_app::{ApiConfig, Application, FrameworkRef, bootstrap, save_application};
-use sc_auth::{ROLE_ADMIN, Role, SessionStore, User, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, User, create_user, save_role};
 use sc_catalog::{Catalog, FileStoreId, TableId, TableMeta, save_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -169,11 +170,11 @@ async fn setup(tag: &str, executable: PathBuf) -> Result<Env> {
     write_source(&tmp.0);
     catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", &tmp.0)?))?;
 
-    save_role(&catalog, &Role::new(80, "Member")).await?;
-    create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
-    let alice = create_user(&catalog, ALICE, "alice-pw", 80).await?;
-    let bob = create_user(&catalog, BOB, "bob-pw", 80).await?;
-    let mut meta = TableMeta::new("notes").access(1, 1);
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Member")).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
+    let alice = create_user(&catalog, ALICE, "alice-pw", Role::of(80)).await?;
+    let bob = create_user(&catalog, BOB, "bob-pw", Role::of(80)).await?;
+    let mut meta = TableMeta::new("notes").access(Role::ADMIN, Role::ADMIN);
     // Admin-only floors: the formula is the only way a member reads a row.
     meta.set_ownership_formula(Some("owner === user.email"));
     save_table_meta(&catalog, &meta).await?;
@@ -609,7 +610,7 @@ async fn a_planned_features_pages_are_looked_at_on_the_planners_preview() -> Res
             ("may_edit", json!(true)),
         ])))
         .role(ModelRole::Strong, ModelRef::new("main", None))
-        .min_role(80);
+        .min_role(Role::of(80));
     sc_agent::save_agent(&env.catalog, env.agents.registry(), &agent).await?;
     // What `feldspar serve` installs at startup, so every run reaches them.
     env.agents

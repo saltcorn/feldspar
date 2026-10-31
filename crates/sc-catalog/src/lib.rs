@@ -62,8 +62,8 @@ mod wakeups;
 
 pub use admin_host::{AdminCall, AdminHost};
 pub use caller::{
-    CallerContext, CallingApp, Origin, UNTRUSTED_ORIGIN, current_origin, is_untrusted_chain,
-    untrusted_chain, with_origin,
+    Authority, CallingApp, Origin, Principal, SystemReason, TaskScope, UNTRUSTED_ORIGIN,
+    current_origin, is_untrusted_chain, spawn_scoped, untrusted_chain, with_origin,
 };
 pub use catalog::{Catalog, ProvidedTableIssue, SchemaStep};
 pub use change_log::{
@@ -149,6 +149,7 @@ pub use wakeups::RunWakeups;
 mod tests {
     use super::*;
     use sc_db::{Column, ColumnGenerator, ForeignKey, PhysicalTable};
+    use sc_types::Role;
     use sc_types::{BasicType, TypeRef};
 
     #[test]
@@ -269,8 +270,8 @@ mod tests {
     #[test]
     fn access_rules_default_is_admin_only() {
         let rules = AccessRules::default();
-        assert_eq!(rules.min_role_read, 1);
-        assert_eq!(rules.min_role_write, 1);
+        assert_eq!(rules.min_role_read, Role::ADMIN);
+        assert_eq!(rules.min_role_write, Role::ADMIN);
     }
 
     #[test]
@@ -297,14 +298,14 @@ mod tests {
         let meta = TableMeta::new("book")
             .label("Books")
             .description("The library catalogue")
-            .access(80, 40);
+            .access(Role::of(80), Role::of(40));
         table.apply_overlay(&meta);
 
         // Added: exactly the four things the overlay is the authority on.
         assert_eq!(table.label, "Books");
         assert_eq!(table.description, "The library catalogue");
-        assert_eq!(table.access.min_role_read, 80);
-        assert_eq!(table.access.min_role_write, 40);
+        assert_eq!(table.access.min_role_read, Role::of(80));
+        assert_eq!(table.access.min_role_write, Role::of(40));
         assert_eq!(table.overlay, Some(meta.id));
 
         // Untouched: everything the database is the authority on. The merge has
@@ -321,10 +322,10 @@ mod tests {
     #[test]
     fn an_empty_label_means_none_given_not_a_blank_label() {
         let mut table = Table::from_physical(DbId::primary(), &physical_with_fk());
-        table.apply_overlay(&TableMeta::new("book").access(100, 100));
+        table.apply_overlay(&TableMeta::new("book").access(Role::PUBLIC, Role::PUBLIC));
         assert_eq!(table.label, "book", "the table's own name stays the label");
         assert_eq!(table.description, "");
-        assert_eq!(table.access.min_role_read, 100);
+        assert_eq!(table.access.min_role_read, Role::PUBLIC);
     }
 
     #[test]
@@ -339,7 +340,7 @@ mod tests {
         table.apply_overlay(
             &TableMeta::new("_fd_config")
                 .label("Config")
-                .access(100, 100),
+                .access(Role::PUBLIC, Role::PUBLIC),
         );
 
         assert_eq!(table.access, AccessRules::default());

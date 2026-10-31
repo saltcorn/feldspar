@@ -11,6 +11,7 @@
 //! Non-admins are rejected throughout.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,7 +19,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, SessionStore, create_user};
+use sc_auth::{SessionStore, create_user};
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -258,7 +259,7 @@ async fn a_created_application_builds_itself_and_serves_without_a_restart() -> s
 {
     let tmp = TempDir::new("first-build");
     let (router, catalog, _db) = setup(&tmp).await?;
-    create_user(&catalog, "admin@example.com", "correct-horse", ROLE_ADMIN).await?;
+    create_user(&catalog, "admin@example.com", "correct-horse", Role::ADMIN).await?;
     let mut admin = Client::new(router.clone(), BASE_DOMAIN);
     admin.login("admin@example.com", "correct-horse").await;
 
@@ -294,7 +295,7 @@ async fn a_created_application_builds_itself_and_serves_without_a_restart() -> s
 async fn applications_are_managed_over_http_and_serve_without_a_restart() -> sc_error::Result<()> {
     let tmp = TempDir::new("story");
     let (router, catalog, _db) = setup(&tmp).await?;
-    create_user(&catalog, "admin@example.com", "correct-horse", ROLE_ADMIN).await?;
+    create_user(&catalog, "admin@example.com", "correct-horse", Role::ADMIN).await?;
 
     let mut admin = Client::new(router.clone(), BASE_DOMAIN);
     admin.login("admin@example.com", "correct-horse").await;
@@ -454,7 +455,7 @@ async fn the_react_framework_is_offered_first_and_brings_its_own_defaults() -> s
 {
     let tmp = TempDir::new("react");
     let (router, catalog, _db) = setup(&tmp).await?;
-    create_user(&catalog, "admin@example.com", "correct-horse", ROLE_ADMIN).await?;
+    create_user(&catalog, "admin@example.com", "correct-horse", Role::ADMIN).await?;
     let mut admin = Client::new(router, BASE_DOMAIN);
     admin.login("admin@example.com", "correct-horse").await;
 
@@ -615,7 +616,7 @@ async fn the_react_framework_is_offered_first_and_brings_its_own_defaults() -> s
 async fn an_api_that_would_swallow_the_apps_ui_is_refused_on_save() -> sc_error::Result<()> {
     let tmp = TempDir::new("mounts");
     let (router, catalog, _db) = setup(&tmp).await?;
-    create_user(&catalog, "admin@example.com", "correct-horse", ROLE_ADMIN).await?;
+    create_user(&catalog, "admin@example.com", "correct-horse", Role::ADMIN).await?;
     let mut admin = Client::new(router, BASE_DOMAIN);
     admin.login("admin@example.com", "correct-horse").await;
 
@@ -668,7 +669,7 @@ async fn an_api_that_would_swallow_the_apps_ui_is_refused_on_save() -> sc_error:
 async fn a_custom_sql_query_is_saved_described_and_returned() -> sc_error::Result<()> {
     let tmp = TempDir::new("customsql");
     let (router, catalog, _db) = setup(&tmp).await?;
-    create_user(&catalog, "admin@example.com", "correct-horse", ROLE_ADMIN).await?;
+    create_user(&catalog, "admin@example.com", "correct-horse", Role::ADMIN).await?;
     let mut admin = Client::new(router, BASE_DOMAIN);
     admin.login("admin@example.com", "correct-horse").await;
 
@@ -753,7 +754,7 @@ async fn a_custom_sql_query_is_saved_described_and_returned() -> sc_error::Resul
 async fn a_custom_sql_query_is_described_without_being_saved() -> sc_error::Result<()> {
     let tmp = TempDir::new("describe");
     let (router, catalog, _db) = setup(&tmp).await?;
-    create_user(&catalog, "admin@example.com", "correct-horse", ROLE_ADMIN).await?;
+    create_user(&catalog, "admin@example.com", "correct-horse", Role::ADMIN).await?;
     let mut admin = Client::new(router, BASE_DOMAIN);
     admin.login("admin@example.com", "correct-horse").await;
 
@@ -818,7 +819,13 @@ async fn non_admins_are_rejected_from_every_application_endpoint() -> sc_error::
     let tmp = TempDir::new("authz");
     let (router, catalog, _db) = setup(&tmp).await?;
     // A real, non-admin user.
-    create_user(&catalog, "reader@example.com", "correct-horse", ROLE_PUBLIC).await?;
+    create_user(
+        &catalog,
+        "reader@example.com",
+        "correct-horse",
+        Role::PUBLIC,
+    )
+    .await?;
 
     // Anonymous: every endpoint requires authentication.
     let mut anon = Client::new(router.clone(), BASE_DOMAIN);
@@ -894,7 +901,7 @@ async fn non_admins_are_rejected_from_every_application_endpoint() -> sc_error::
 async fn a_static_directory_added_by_an_edit_serves_without_a_rebuild() -> sc_error::Result<()> {
     let tmp = TempDir::new("edit-static-dir");
     let (router, catalog, _db) = setup(&tmp).await?;
-    create_user(&catalog, "admin@example.com", "correct-horse", ROLE_ADMIN).await?;
+    create_user(&catalog, "admin@example.com", "correct-horse", Role::ADMIN).await?;
     let mut admin = Client::new(router.clone(), BASE_DOMAIN);
     admin.login("admin@example.com", "correct-horse").await;
 
@@ -977,7 +984,7 @@ async fn a_build_with_after_build_checks_records_a_run() -> sc_error::Result<()>
     let tmp = TempDir::new("after-build");
     let (router, catalog, _db) = setup(&tmp).await?;
     sc_check::bootstrap_checklists(&catalog).await?;
-    let user = create_user(&catalog, "admin@example.com", "correct-horse", ROLE_ADMIN).await?;
+    let user = create_user(&catalog, "admin@example.com", "correct-horse", Role::ADMIN).await?;
     let mut admin = Client::new(router.clone(), BASE_DOMAIN);
     admin.login("admin@example.com", "correct-horse").await;
 

@@ -48,6 +48,7 @@
 //! Running it twice is a no-op, which is what lets it run on **every** load:
 //! install, upgrade, a configuration change and a restart are one path.
 
+use sc_types::Role;
 use std::collections::BTreeSet;
 
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation, TableSettings};
@@ -92,10 +93,10 @@ pub struct TableDecl {
     pub ownership: Option<String>,
     /// The least role that may read rows, applied when the table is created.
     #[serde(default)]
-    pub min_role_read: Option<u8>,
+    pub min_role_read: Option<Role>,
     /// The least role that may write rows, applied when the table is created.
     #[serde(default)]
-    pub min_role_write: Option<u8>,
+    pub min_role_write: Option<Role>,
 }
 
 /// One declared field.

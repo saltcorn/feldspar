@@ -164,7 +164,7 @@ async fn evaluate(
     limits: &SandboxLimits,
 ) -> Result<Json> {
     let evaluator = ctx.require_evaluator()?;
-    let caller = sc_api::caller_context_at(ctx.caller.role, ctx.caller.user.as_ref());
+    let caller = sc_api::principal_at(ctx.caller.role, ctx.caller.user.as_ref());
     let table = (grants.tables != TableAccess::None).then(|| SandboxTables {
         inner: TableHost::new(ctx.catalog)
             .caused_by(caller.role, caller.user.clone())

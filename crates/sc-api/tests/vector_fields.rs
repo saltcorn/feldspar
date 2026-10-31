@@ -8,11 +8,11 @@
 //! OpenAI-compatible stub, back-filled by `embed_rows`, and a nearest read
 //! given text rather than a vector — through the row API, REST and GraphQL.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation};
 use sc_api::{query_string, rows, vector};
-use sc_auth::ROLE_ADMIN;
 use sc_catalog::{
     Catalog, ConstraintKind, DataField, TableConstraint, bootstrap_field_meta, bootstrap_table_meta,
 };
@@ -80,7 +80,7 @@ async fn titles(catalog: &Catalog, pairs: &[(&str, &str)]) -> Result<Vec<String>
         .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
         .collect();
     let query = query_string::row_query(&table, &pairs, 50)?;
-    let found = sc_api::read_rows_as(catalog, &table, &query, ROLE_ADMIN, None, None).await?;
+    let found = sc_api::read_rows_as(catalog, &table, &query, Role::ADMIN, None, None).await?;
     Ok(title_list(&found))
 }
 
@@ -459,7 +459,7 @@ async fn rest_and_graphql_take_a_nearest() -> Result<()> {
     for title in ["fruit salad", "car wash", "weather"] {
         rows::create_row(&catalog, &table, &json!({ "title": title })).await?;
     }
-    let user = sc_auth::User::new(uuid::Uuid::new_v4(), ROLE_ADMIN)?;
+    let user = sc_auth::User::new(uuid::Uuid::new_v4(), Role::ADMIN);
 
     let rest = RestProvider::project("/api", std::slice::from_ref(&table));
     let list = rest

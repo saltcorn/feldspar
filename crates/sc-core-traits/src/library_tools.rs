@@ -24,6 +24,7 @@
 //!   payload is stored on the run, so what is applied is what the function
 //!   proposed, not anything the model or the client says afterwards.
 
+use sc_catalog::Authority;
 use std::collections::BTreeSet;
 
 use sc_agent::{AgentTrait, RequestKind, ToolsContext, TraitCheck, TraitContext, UserRequest};
@@ -250,7 +251,7 @@ async fn call_function(
     );
     let mut scope = Attrs::new();
     scope.insert("args".to_owned(), argument.clone());
-    let caller = sc_api::caller_context_at(ctx.caller.role, ctx.caller.user.as_ref())
+    let caller = sc_api::principal_at(ctx.caller.role, ctx.caller.user.as_ref())
         .chained(ctx.caller.tool_chain());
     // In an application's chat, its own libraries over the instance's.
     let application = caller.app.as_ref().map(|app| app.id);
@@ -261,7 +262,7 @@ async fn call_function(
             &format!("{}/{tool}", ctx.agent),
             &code,
             scope,
-            Some(&caller),
+            Authority::Caller(&caller),
             application,
             None,
         )

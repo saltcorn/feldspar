@@ -45,6 +45,7 @@
 
 use sc_error::{Error, Result};
 use sc_types::Attrs;
+use sc_types::Role;
 use serde_json::{Value as Json, json};
 
 /// The keys the stored JSON object uses, which are also the field names the API
@@ -75,7 +76,7 @@ pub const ANY_HOST: &str = "*";
 /// Every list is an allow-list and every empty list means *nothing*, never
 /// *everything* — which is the one place this type could have gone wrong, and
 /// the reason [`ModulePermissions::closed`] is what [`Default`] answers.
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModulePermissions {
     /// Hosts the module may open a socket to: `broker.example` (any port),
     /// `broker.example:1883` (that port only), or `unix:/var/run/postgresql/
@@ -89,7 +90,7 @@ pub struct ModulePermissions {
     pub env: Vec<String>,
     /// The most privileged role the module may grant (`ctx.roles.grant`), or
     /// `None` for no role at all. Never 1: no module may make an admin.
-    pub roles: Option<u8>,
+    pub roles: Option<Role>,
 }
 
 impl ModulePermissions {
@@ -129,9 +130,9 @@ impl ModulePermissions {
 
     /// Whether the module may grant `role`: a role at or below its ceiling in
     /// privilege, and never the admin's or the public's.
-    pub fn may_grant_role(&self, role: u8) -> bool {
+    pub fn may_grant_role(&self, role: Role) -> bool {
         self.roles
-            .is_some_and(|ceiling| role >= ceiling && role > 1 && role < 100)
+            .is_some_and(|ceiling| ceiling.meets(role) && !role.is_admin() && !role.is_public())
     }
 
     /// Read a stored (or posted) permission set, checking every entry.
@@ -259,7 +260,7 @@ fn entries(
 /// The `roles` entry: a list of at most one role number, the most privileged
 /// the module may grant. Written as text by the form and as a number by a
 /// manifest, so both are read.
-fn role_ceiling(object: &Attrs) -> Result<Option<u8>> {
+fn role_ceiling(object: &Attrs) -> Result<Option<Role>> {
     let list = match object.get(PERM_ROLES) {
         None | Some(Json::Null) => return Ok(None),
         Some(Json::Array(list)) => list,
@@ -278,27 +279,26 @@ fn role_ceiling(object: &Attrs) -> Result<Option<u8>> {
             Json::String(s) => s.trim().parse::<u64>().ok(),
             _ => None,
         };
-        let Some(role) = role else {
+        let Some(role) = role.and_then(|r| Role::try_from(r).ok()) else {
             return Err(Error::invalid(format!(
-                "`{entry}` is not a role number; the `{PERM_ROLES}` permission is the most \
-                 privileged role the module may grant, like 70"
+                "`{entry}` is not a role number from 1 to 100; the `{PERM_ROLES}` permission is \
+                 the most privileged role the module may grant, like 70"
             )));
         };
-        if role <= 1 {
+        if role.is_admin() {
             return Err(Error::invalid(
                 "no module may grant the admin role (1); give it the most privileged role it \
                  may grant, like 70",
             ));
         }
-        if role >= 100 {
+        if role.is_public() {
             return Err(Error::invalid(format!(
-                "role {role} cannot be granted: the public role is everybody's already, and \
-                 roles run to 100"
+                "role {role} cannot be granted: the public role is everybody's already"
             )));
         }
-        ceilings.push(role as u8);
+        ceilings.push(role);
     }
-    ceilings.sort_unstable();
+    ceilings.sort_unstable_by_key(|r| r.get());
     ceilings.dedup();
     match ceilings.as_slice() {
         [] => Ok(None),
@@ -501,7 +501,7 @@ mod tests {
             read: vec!["/srv/data".into()],
             write: Vec::new(),
             env: vec!["MQTT_PASSWORD".into()],
-            roles: Some(70),
+            roles: Some(Role::of(70)),
         };
         let stored = Json::Object(permissions.to_json());
         assert_eq!(ModulePermissions::from_json(&stored).unwrap(), permissions);
@@ -510,18 +510,18 @@ mod tests {
     #[test]
     fn a_role_ceiling_is_one_role_never_the_admins_and_not_the_workers() {
         let set = ModulePermissions::from_json(&json!({ "roles": ["70"] })).unwrap();
-        assert_eq!(set.roles, Some(70));
+        assert_eq!(set.roles, Some(Role::of(70)));
         assert_eq!(
             ModulePermissions::from_json(&json!({ "roles": [70] }))
                 .unwrap()
                 .roles,
-            Some(70),
+            Some(Role::of(70)),
             "a manifest writes it as a number"
         );
-        assert!(set.may_grant_role(70) && set.may_grant_role(99));
-        assert!(!set.may_grant_role(60), "above the ceiling");
-        assert!(!set.may_grant_role(1) && !set.may_grant_role(100));
-        assert!(!ModulePermissions::closed().may_grant_role(80));
+        assert!(set.may_grant_role(Role::of(70)) && set.may_grant_role(Role::of(99)));
+        assert!(!set.may_grant_role(Role::of(60)), "above the ceiling");
+        assert!(!set.may_grant_role(Role::ADMIN) && !set.may_grant_role(Role::PUBLIC));
+        assert!(!ModulePermissions::closed().may_grant_role(Role::of(80)));
         assert_eq!(set.sentences(), ["may grant users roles 70 to 99"]);
         assert!(!set.is_closed());
         // The worker never sees it, so it does not split the pool.

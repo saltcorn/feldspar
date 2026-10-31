@@ -626,7 +626,7 @@ impl ModuleServices {
         &self,
         segment: &str,
         request: sc_module::RouteRequest,
-        caller: &sc_module::RouteCaller,
+        caller: &sc_catalog::Principal,
     ) -> Result<Option<sc_module::WebhookResponse>> {
         let set = self.modules();
         let Some(loaded) = sc_module::route_module(&set, segment)? else {

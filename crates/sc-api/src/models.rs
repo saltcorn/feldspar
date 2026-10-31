@@ -12,11 +12,13 @@
 //! `predict("…")`, the read path's calculated fields and a code body's
 //! `m.predict(…)` all end here.
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use sc_auth::User;
-use sc_catalog::{CallerContext, Catalog, ModelSummary, PredictRows, Table};
+use sc_catalog::{Catalog, ModelSummary, PredictRows, Principal, Table};
 use sc_error::{Error, Result};
 use sc_expr::JsEvaluator;
 use sc_model::{
@@ -258,11 +260,11 @@ const COUNT_STATISTICS: [&str; 2] = ["ess_bulk", "ess_tail"];
 /// `db.counties.asUser().update(…)`.
 pub enum Writer<'a> {
     /// Written under this context, through the row layer.
-    Context(&'a CallerContext),
+    Context(&'a Principal),
     /// Written as this caller, through the ownership rule.
     As {
         /// The role every floor is checked against.
-        role: u8,
+        role: Role,
         /// The user an ownership formula and an RLS policy read.
         user: Option<&'a User>,
         /// For an ownership formula only the evaluator can decide.
@@ -282,7 +284,8 @@ impl Writer<'_> {
     ) -> Result<Json> {
         match self {
             Writer::Context(context) => {
-                rows::create_row_in(catalog, table, body, Some(context), executor).await
+                rows::create_row_in(catalog, table, body, Authority::Caller(context), executor)
+                    .await
             }
             Writer::As {
                 role,
@@ -308,7 +311,15 @@ impl Writer<'_> {
     ) -> Result<Json> {
         match self {
             Writer::Context(context) => {
-                rows::update_row_in(catalog, table, key, body, Some(context), executor).await
+                rows::update_row_in(
+                    catalog,
+                    table,
+                    key,
+                    body,
+                    Authority::Caller(context),
+                    executor,
+                )
+                .await
             }
             Writer::As {
                 role,

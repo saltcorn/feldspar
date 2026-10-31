@@ -33,9 +33,8 @@ use sc_action::{
     ActionRegistry, EventKind, Trigger, TriggerDispatcher, bootstrap_triggers, save_trigger,
 };
 use sc_catalog::{
-    CallerContext, Catalog, DataField, ProvidedTableDef, ProvidedWrites, TableMeta,
-    TableProviderHost, TableProviderHosts, bootstrap_table_meta, prefetch_bindings,
-    save_table_meta,
+    Catalog, DataField, Principal, ProvidedTableDef, ProvidedWrites, TableMeta, TableProviderHost,
+    TableProviderHosts, bootstrap_table_meta, prefetch_bindings, save_table_meta,
 };
 use sc_core_actions::{CodeSurfaces, builtin_actions};
 use sc_db::DatabaseDriver;
@@ -431,7 +430,7 @@ async fn a_python_modules_action_fires_from_a_trigger_and_writes_through_db() ->
     save_trigger(&catalog, &registry, &trigger).await?;
     dispatcher.reload(&catalog).await?;
 
-    let caller = CallerContext::new(1, Some(json!({ "email": "ada@example.com" })));
+    let caller = Principal::new(1, Some(json!({ "email": "ada@example.com" })));
     let result = dispatcher
         .run_trigger(&catalog, "note it", json!({ "who": "ada" }), Some(&caller))
         .await?;

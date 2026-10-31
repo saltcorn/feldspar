@@ -11,6 +11,7 @@
 //! collation, the filter by bytes, and the two agree only on text of one case
 //! (see `sc_live::filter`).
 
+use sc_catalog::Authority;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -108,7 +109,14 @@ async fn parity(catalog: Arc<Catalog>) -> Result<()> {
     }
     let like = LikeRules::of(catalog.driver_for(&table)?.as_ref());
     // The rows as the REST read returns them — what a change's image is.
-    let all = match rows::list_rows_query(&catalog, &table, &RowQuery::new(), None).await? {
+    let all = match rows::list_rows_query(
+        &catalog,
+        &table,
+        &RowQuery::new(),
+        Authority::system("test"),
+    )
+    .await?
+    {
         Json::Array(all) => all,
         other => panic!("a read returns an array, got {other}"),
     };
@@ -116,8 +124,13 @@ async fn parity(catalog: Arc<Catalog>) -> Result<()> {
 
     for filter in filters() {
         let lowered = sc_api::filter::api_where(&table, Some(&filter))?;
-        let read =
-            rows::list_rows_query(&catalog, &table, &RowQuery::new().where_(lowered), None).await?;
+        let read = rows::list_rows_query(
+            &catalog,
+            &table,
+            &RowQuery::new().where_(lowered),
+            Authority::system("test"),
+        )
+        .await?;
         let read = ids(read.as_array().map(Vec::as_slice).unwrap_or_default());
         let parsed = RowFilter::parse(&table, Some(&filter), like)?;
         let rust: Vec<Json> = all

@@ -8,6 +8,7 @@
 //! finished in another browser, write nothing.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -292,7 +293,10 @@ async fn setup() -> sc_error::Result<(Server, Browser)> {
 async fn begin(server: &Server, user: &sc_auth::User, provider: &str) -> String {
     let event = Event::new(EventKind::None)
         .payload(json!({ "account_id": 1, "provider": provider }))
-        .caller(1, Some(json!({ "id": user.id.to_string(), "role": 1 })));
+        .caller(
+            Role::ADMIN,
+            Some(json!({ "id": user.id.to_string(), "role": 1 })),
+        );
     let config = Attrs::new();
     let registry = server.dispatcher.registry();
     let action = registry.require("connect").unwrap();

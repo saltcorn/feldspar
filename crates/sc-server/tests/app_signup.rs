@@ -12,6 +12,7 @@
 //!   `/api/login`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,7 +23,7 @@ use axum::http::{Request, StatusCode, header};
 use sc_app::{
     ApiConfig, Application, CodeFramework, FrameworkRef, app_source_from_config, build_application,
 };
-use sc_auth::{Role, SessionStore, load_user_by_email, save_role};
+use sc_auth::{RoleDef, SessionStore, load_user_by_email, save_role};
 use sc_catalog::{Catalog, FileStoreId, TableId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -281,7 +282,7 @@ async fn signup_makes_an_account_with_the_configured_role_and_signs_it_in() -> s
         .with(sc_api::REST_CFG_NEW_USER_ROLE, 80);
     let (router, catalog, _db) = setup(&tmp, api).await?;
     // Role 80 has to exist for an account to hold it (`users.role` is a key).
-    save_role(&catalog, &Role::new(80, "Member")).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Member")).await?;
 
     let mut app = Client::new(router, APP_HOST);
     // Load the SPA first: that is what hands a browser its CSRF cookie.
@@ -359,7 +360,7 @@ async fn signup_is_throttled_per_address() -> sc_error::Result<()> {
         .with(sc_api::REST_CFG_ALLOW_SIGNUP, true)
         .with(sc_api::REST_CFG_NEW_USER_ROLE, 80);
     let (router, catalog, _db) = setup(&tmp, api).await?;
-    save_role(&catalog, &Role::new(80, "Member")).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Member")).await?;
 
     let peer: std::net::SocketAddr = "203.0.113.77:4000".parse().unwrap();
     for n in 0..6 {

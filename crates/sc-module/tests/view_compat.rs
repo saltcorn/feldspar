@@ -14,6 +14,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use crate::common;
 use crate::view_runtime::{NO_BUNDLE, bundle};
+use sc_types::Role;
 
 use std::sync::Arc;
 
@@ -351,7 +352,7 @@ async fn the_request_and_response_shims_have_v1s_shape() {
         user: Some(sc_viewpattern::ViewUser {
             id: "u1".into(),
             email: "ada@example.com".into(),
-            role_id: 1,
+            role_id: Role::ADMIN,
         }),
         base_url: "https://books.example".into(),
         csrf_token: "tok".into(),

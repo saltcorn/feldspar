@@ -4,6 +4,8 @@
 //! changes, the cleanup job, and `seq` as sync's watermark.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::history::HistoryReader;
@@ -12,7 +14,7 @@ use sc_api::{rows, schema_edit};
 use sc_auth::User;
 use sc_catalog::retention::clean_change_log;
 use sc_catalog::{
-    CallerContext, Catalog, Changeset, ChangesetSource, SchemaStep, SharedTx, bootstrap_change_log,
+    Catalog, Changeset, ChangesetSource, Principal, SchemaStep, SharedTx, bootstrap_change_log,
     bootstrap_field_meta, bootstrap_table_meta, changed_keys, changeset, sync_watermark,
 };
 use sc_db::DatabaseDriver;
@@ -117,11 +119,11 @@ async fn entries(catalog: &Catalog) -> Result<Vec<(String, String, String, Json,
 }
 
 fn admin() -> User {
-    User::new(ADMIN.parse().unwrap(), 1).unwrap()
+    User::new(ADMIN.parse().unwrap(), Role::ADMIN)
 }
 
-fn caller() -> CallerContext {
-    CallerContext::new(1, Some(json!({ "id": ADMIN, "role": 1 })))
+fn caller() -> Principal {
+    Principal::new(Role::ADMIN, Some(json!({ "id": ADMIN, "role": 1 })))
 }
 
 fn request() -> Arc<Changeset> {
@@ -156,7 +158,7 @@ async fn writes_are_merged_into_one_entry_per_row_per_changeset() -> Result<()> 
             &todo,
             "1",
             &json!({ "title": "oat milk" }),
-            Some(&caller()),
+            Authority::Caller(&caller()),
         )
         .await?;
         rows::update_row_ctx(
@@ -164,14 +166,14 @@ async fn writes_are_merged_into_one_entry_per_row_per_changeset() -> Result<()> 
             &todo,
             "1",
             &json!({ "done": true }),
-            Some(&caller()),
+            Authority::Caller(&caller()),
         )
         .await?;
         rows::create_row_ctx(
             &catalog,
             &audit,
             &json!({ "what": "done" }),
-            Some(&caller()),
+            Authority::Caller(&caller()),
         )
         .await
     })
@@ -222,7 +224,7 @@ async fn writes_are_merged_into_one_entry_per_row_per_changeset() -> Result<()> 
             &catalog,
             &todo,
             &json!({ "title": "bread", "meta": { "aisle": [3, 4] } }),
-            Some(&caller()),
+            Authority::Caller(&caller()),
         )
         .await?;
         let id = row["id"].to_string();
@@ -231,7 +233,7 @@ async fn writes_are_merged_into_one_entry_per_row_per_changeset() -> Result<()> 
             &todo,
             &id,
             &json!({ "title": "rye" }),
-            Some(&caller()),
+            Authority::Caller(&caller()),
         )
         .await
     })
@@ -263,7 +265,7 @@ async fn writes_are_merged_into_one_entry_per_row_per_changeset() -> Result<()> 
         &todo,
         "1",
         &json!({ "title": "oat milk" }),
-        Some(&caller()),
+        Authority::Caller(&caller()),
     )
     .await?;
     assert_eq!(entries(&catalog).await?.len(), before);
@@ -344,14 +346,14 @@ async fn history_is_read_restored_and_undone() -> Result<()> {
             &todo,
             "1",
             &json!({ "title": "oat milk" }),
-            Some(&caller()),
+            Authority::Caller(&caller()),
         )
         .await?;
         rows::create_row_ctx(
             &catalog,
             &audit,
             &json!({ "what": "renamed" }),
-            Some(&caller()),
+            Authority::Caller(&caller()),
         )
         .await
     })
@@ -382,7 +384,7 @@ async fn history_is_read_restored_and_undone() -> Result<()> {
     assert!(rows_of(&catalog, "SELECT * FROM audit").await?.is_empty());
 
     // Delete, list as deleted, restore.
-    rows::delete_row_ctx(&catalog, &todo, "1", Some(&caller())).await?;
+    rows::delete_row_ctx(&catalog, &todo, "1", Authority::Caller(&caller())).await?;
     let deleted = reader.deleted_rows("todo", None, 0).await?;
     assert_eq!(deleted[0]["key"], json!("1"));
     assert_eq!(deleted[0]["row"]["title"], json!("milk"));
@@ -415,7 +417,7 @@ async fn the_triggers_follow_the_tables_columns() -> Result<()> {
         &todo(),
         "1",
         &json!({ "note": "2%" }),
-        Some(&caller()),
+        Authority::Caller(&caller()),
     )
     .await?;
     assert_eq!(entries(&catalog).await?[0].4, json!({ "note": "2%" }));
@@ -440,7 +442,7 @@ async fn the_triggers_follow_the_tables_columns() -> Result<()> {
         &todo(),
         "1",
         &json!({ "remark": "whole" }),
-        Some(&caller()),
+        Authority::Caller(&caller()),
     )
     .await?;
     assert_eq!(
@@ -463,7 +465,7 @@ async fn the_triggers_follow_the_tables_columns() -> Result<()> {
         &todo(),
         "1",
         &json!({ "title": "cream" }),
-        Some(&caller()),
+        Authority::Caller(&caller()),
     )
     .await?;
     assert_eq!(entries(&catalog).await?[2].4, json!({ "title": "cream" }));
@@ -562,7 +564,7 @@ async fn a_renamed_table_keeps_its_history() -> Result<()> {
         &tasks,
         "1",
         &json!({ "title": "bread" }),
-        Some(&caller()),
+        Authority::Caller(&caller()),
     )
     .await?;
     let tables: Vec<String> = entries(&catalog).await?.into_iter().map(|e| e.0).collect();

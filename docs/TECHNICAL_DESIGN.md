@@ -1560,7 +1560,7 @@ URL as this request reached it, and its native apps' URL scheme from the `url_sc
 and the caller's **guest session**. They travel as one `sc_catalog::Origin`. The router runs an
 application request inside it (`with_origin`, a task-local), and whatever builds a caller context
 reads it there — `ownership::caller_context_at`, a code body's table host, the row actions'
-authority — so `CallerContext` carries `app` and `session` explicitly from then on, onto the write,
+authority — so `Principal` carries `app` and `session` explicitly from then on, onto the write,
 onto the event the write raises (`Event::caused_by`), and back into scope by the dispatcher while
 the trigger's action runs. A scheduled trigger, a service and a webhook run in no origin, and see
 none. A code body binds `app` (`{ id, url, scheme }` or null) and `session` (`{ id }` or null)
@@ -12053,7 +12053,7 @@ entries in `seq` order, computed when read.
 
 A changeset is **not a transaction**. A trigger's action commits *after* the write that fired
 it, in its own transaction (§10.2), so grouping by `txid` would separate the user's edit from
-the denormalising write its trigger made. Instead, `CallerContext` carries `changeset` next to
+the denormalising write its trigger made. Instead, `Principal` carries `changeset` next to
 the trigger `chain` it already carries, and `set_caller_context` sets it as the
 transaction-local `sc.changeset`, beside `sc.role` and `sc.user`. `Event` carries it too, so a
 trigger's action passes it to the writes it makes.
@@ -12062,7 +12062,7 @@ trigger's action passes it to the writes it makes.
 the rest of its row, and the writer's `user_id` (with `session` only when there is a user). The
 trigger needs all of it, because it writes the `_fd_changesets` row. Most code never handles a
 changeset: one is **ambient** for the task that runs the action (`sc_catalog::changeset::scope`),
-and `CallerContext::new` picks it up. The server's request middleware sets one for each request,
+and `Principal::new` picks it up. The server's request middleware sets one for each request,
 and so do a CSV import, an MCP tool call, a workflow step (from the run) and a trigger's action
 (from the event). A write to a change-logged table always runs in a caller-context transaction,
 so the GUCs reach the trigger.

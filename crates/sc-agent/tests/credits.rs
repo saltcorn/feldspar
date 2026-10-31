@@ -6,6 +6,8 @@
 //! **2 credits a call**, whatever the model's prices.
 
 use crate::common;
+use sc_catalog::Authority;
+use sc_types::Role;
 
 use std::sync::Arc;
 
@@ -17,7 +19,7 @@ use sc_agent::{
     ATTR_CREDITS_PER_DOLLAR, Agent, Budget, Conclusion, EnabledTrait, ModelRole, ProviderConnector,
     RunCaller, Runner, save_agent,
 };
-use sc_auth::{NewCreditGrant, Role, User};
+use sc_auth::{NewCreditGrant, RoleDef, User};
 use sc_catalog::Catalog;
 use sc_error::Result;
 use sc_test_harness::TestDb;
@@ -28,16 +30,16 @@ fn metered_agent() -> Agent {
         .system_prompt("You build things.")
         .with_trait(EnabledTrait::new("tally"))
         // Anybody may use it: a session of it is checked against the caller.
-        .min_role(100)
+        .min_role(Role::PUBLIC)
         .attribute(ATTR_CREDITS_PER_1K_INPUT, 100)
         .attribute(ATTR_CREDITS_PER_1K_OUTPUT, 200)
 }
 
 /// The agent catalog, plus the users and credit tables and one user at `role`.
-async fn with_user(db: &TestDb, role: u8) -> Result<(Catalog, User)> {
+async fn with_user(db: &TestDb, role: Role) -> Result<(Catalog, User)> {
     let catalog = catalog(db).await?;
     sc_auth::bootstrap(&catalog).await?;
-    sc_auth::save_role(&catalog, &Role::new(80, "Member")).await?;
+    sc_auth::save_role(&catalog, &RoleDef::new(Role::of(80), "Member")).await?;
     let user = sc_auth::create_user(&catalog, "payer@example.com", "pw", role).await?;
     Ok((catalog, user))
 }
@@ -55,7 +57,7 @@ async fn grant(catalog: &Catalog, user: &User, amount: i64, key: &str) -> Result
             note: None,
             rollover: None,
         },
-        None,
+        Authority::system("test"),
     )
     .await?;
     Ok(())
@@ -80,7 +82,7 @@ const OUT_OF_CREDITS: Conclusion = Conclusion::OverBudget {
 #[tokio::test]
 async fn a_metered_run_debits_each_call_and_stops_when_the_caller_runs_out() -> Result<()> {
     let db = TestDb::new().await?;
-    let (catalog, user) = with_user(&db, 80).await?;
+    let (catalog, user) = with_user(&db, Role::of(80)).await?;
     let registry = registry(Counter::new())?;
     let agent = metered_agent();
     grant(&catalog, &user, 5, "start").await?;
@@ -161,7 +163,7 @@ async fn a_metered_run_debits_each_call_and_stops_when_the_caller_runs_out() -> 
 #[tokio::test]
 async fn a_run_needs_the_minimum_balance_to_start() -> Result<()> {
     let db = TestDb::new().await?;
-    let (catalog, user) = with_user(&db, 80).await?;
+    let (catalog, user) = with_user(&db, Role::of(80)).await?;
     let registry = registry(Counter::new())?;
     let agent = metered_agent().attribute(ATTR_CREDITS_MIN_BALANCE, 5);
     grant(&catalog, &user, 3, "some").await?;
@@ -201,7 +203,7 @@ async fn a_run_needs_the_minimum_balance_to_start() -> Result<()> {
 #[tokio::test]
 async fn an_anonymous_caller_is_refused_and_an_admin_is_never_charged() -> Result<()> {
     let db = TestDb::new().await?;
-    let (catalog, admin) = with_user(&db, 1).await?;
+    let (catalog, admin) = with_user(&db, Role::ADMIN).await?;
     let registry = registry(Counter::new())?;
     let agent = metered_agent();
 
@@ -233,7 +235,7 @@ async fn an_anonymous_caller_is_refused_and_an_admin_is_never_charged() -> Resul
 #[tokio::test]
 async fn sub_agents_and_a_tools_own_calls_are_charged_to_the_same_caller() -> Result<()> {
     let db = TestDb::new().await?;
-    let (catalog, user) = with_user(&db, 80).await?;
+    let (catalog, user) = with_user(&db, Role::of(80)).await?;
     let registry = registry(Counter::new())?;
     let agent = metered_agent();
     save_agent(&catalog, &registry, &agent).await?;
@@ -279,7 +281,7 @@ async fn sub_agents_and_a_tools_own_calls_are_charged_to_the_same_caller() -> Re
 #[tokio::test]
 async fn a_rate_per_dollar_is_refused_until_every_model_has_a_price() -> Result<()> {
     let db = TestDb::new().await?;
-    let (catalog, _) = with_user(&db, 80).await?;
+    let (catalog, _) = with_user(&db, Role::of(80)).await?;
     let registry = registry(Counter::new())?;
     let agent = Agent::new("builder", "main")
         .with_trait(EnabledTrait::new("tally"))
@@ -297,7 +299,7 @@ async fn a_rate_per_dollar_is_refused_until_every_model_has_a_price() -> Result<
 async fn a_tools_image_call_is_ledgered_and_charged_at_its_own_cost() -> Result<()> {
     // TODO-agent-skills AS3.5.
     let db = TestDb::new().await?;
-    let (catalog, user) = with_user(&db, 80).await?;
+    let (catalog, user) = with_user(&db, Role::of(80)).await?;
     let registry = registry(Counter::new())?;
     // 100 credits a dollar for a call with a cost, the token rates otherwise.
     let agent = metered_agent().attribute(ATTR_CREDITS_PER_DOLLAR, 100);
