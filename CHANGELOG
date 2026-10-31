@@ -2,6 +2,15 @@
 
 Changes in reverse chronological order.
 
+## Test fix: the expired-grant session test no longer races its own grant
+
+`role_grants::an_expired_grant_ends_access_with_no_write_even_through_a_cached_session` gave its
+grant 1.5s to live, and that time had to cover the grant write, login (session insert, sweep,
+user load) and the first `user_for`. Under a full parallel run against one database this took
+longer than 1.5s now and then, so the grant had already ended and the session showed the base
+role (80, not 60). The window is now 5s, the test sleeps until just past the grant's end rather
+than a fixed 1.7s, and the first assertion's message gives the end time and the current time.
+
 ## Deployment: three ways to get the executable, one way to set a host up (TODO D1.5)
 
 Before the general release, the deployment options are cut down to the ones that are needed.
