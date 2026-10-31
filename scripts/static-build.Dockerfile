@@ -137,12 +137,19 @@ ENV SC_BUNDLE_PREFIX=${PREFIX}
 # own subdirectory of it: they differ in RUSTFLAGS, features and base image, and
 # sharing one target directory would rebuild everything on every switch — or
 # worse, link objects compiled against one Debian's headers into the other.
+#
+# The UI bundles are built by sc-cli's build script into `ui/*/dist` of this
+# source tree, which `.dockerignore` keeps out of the context, so every build
+# starts without them. The cached build script runs again only when a UI's
+# sources change, so the `package.json` files it watches are touched first:
+# otherwise a second build that changes only Rust code has no bundles to copy.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/build/target,sharing=locked \
     set -eu; \
     export SC_BUILD_ADMIN="${SC_BUILD_ADMIN}"; \
     export SC_BUILD_TIME="${SC_BUILD_TIME}" SC_BUILD_COMMIT="${SC_BUILD_COMMIT}"; \
     export CARGO_TARGET_DIR="/build/target/${VARIANT}"; \
+    case "${SC_BUILD_ADMIN}" in 0|false|False|FALSE) ;; *) touch ui/*/package.json ;; esac; \
     case "${VARIANT}" in \
         static) \
             export RUSTFLAGS="-C target-feature=+crt-static${RUSTFLAGS:+ ${RUSTFLAGS}}"; \

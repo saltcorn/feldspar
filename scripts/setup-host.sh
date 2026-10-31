@@ -871,7 +871,10 @@ if [ "${VARIANT}" = "linux" ] && { [ -x "${BINARY}" ] || [ "${DRY_RUN}" -eq 1 ];
     if [ "${DRY_RUN}" -eq 1 ]; then
         run_root runuser -u "${SERVICE_USER}" -- "${BINARY}" python check
     else
-        _check() { ${SUDO} runuser -u "${SERVICE_USER}" -- env "$@" "${BINARY}" python check; }
+        # The unit's environment, not this shell's: a caller's SSL_CERT_FILE
+        # (cargo sets one for everything it runs) would make the first check
+        # pass for a reason the service will not have.
+        _check() { ${SUDO} runuser -u "${SERVICE_USER}" -- env -u SSL_CERT_FILE -u SSL_CERT_DIR "$@" "${BINARY}" python check; }
         _log="$(mktemp)"
         if _check >"${_log}" 2>&1; then
             note "it does"

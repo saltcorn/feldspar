@@ -297,8 +297,9 @@ Containers and emulators always use the host's page size, so the build asserts i
       `libpython3.13.a` with `-rdynamic` and drop `python/lib` from the runtime picture.
       *Done:* PBS `20261026` / CPython 3.13.18 ships `lib/libpython3.13.so.1.0`, so it is the
       shared link. The bundling is `scripts/lib/python-bundle.sh`, which also rewrites PBS's
-      `/install` placeholder in `sysconfig` to `${PREFIX}/python`. The Docker build and its
-      smoke run have not been run yet: the machine this was written on has no docker.
+      `/install` placeholder in `sysconfig` to `${PREFIX}/python`, and (since R2.4) compiles
+      the library's bytecode, which `install_only_stripped` does not ship. The Docker build
+      and its smoke run pass (R2.4).
 - [x] R1.2 The `.glibc` copies (D3): copy `ld-linux-x86-64.so.2`, `libc.so.6`, `libm.so.6`,
       `libgcc_s.so.1`, `libnss_compat.so.2` and `libnss_db.so.2` from the build image to
       `${PREFIX}/glibc` (aarch64: its own loader name). Make `bin/feldspar.glibc` and
@@ -356,7 +357,7 @@ Containers and emulators always use the host's page size, so the build asserts i
       *Done:* decided per host rather than per family: `setup-host.sh` runs `feldspar python
       check` as the service account and writes the line only when the check passes with the
       host's bundle and fails without it. The smoke test reports `NEEDS SSL_CERT_FILE` per image.
-- [~] R2.4 The smoke test in `build-static.sh` runs the R1.7 self-check on `debian:13-slim`,
+- [x] R2.4 The smoke test in `build-static.sh` runs the R1.7 self-check on `debian:13-slim`,
       `debian:12-slim`, `ubuntu:24.04`, `ubuntu:latest`, `fedora:latest`, `almalinux:10`,
       `archlinux:latest`, `opensuse/leap:16.0`, `opensuse/tumbleweed` and `alpine:3`, each after
       the tarball's own `install.sh`. It also checks:
@@ -369,13 +370,35 @@ Containers and emulators always use the host's page size, so the build asserts i
 
       Derivatives (Mint, MX, CachyOS, Manjaro, EndeavourOS, Rocky) are covered by `ID_LIKE`, not
       by images.
-      *Written, never run:* `smoke_test_distros` and `scripts/lib/smoke-linux.sh` install through
-      the curl installer from a `file://` release, and the self-check now prints the mapped libc
-      and takes `--import`. The machine this was written on has no docker; the first `--docker`
-      build will be the first run. Mark done once it passes on every image.
-- [ ] R2.5 SELinux: on a Fedora or Alma VM with SELinux enforcing, `setup-host.sh` then a Python
+      *Done:* `smoke_test_distros` and `scripts/lib/smoke-linux.sh` install through the curl
+      installer from a `file://` release. `build-static.sh --docker --variant linux` passes on
+      all ten images; none needs `SSL_CERT_FILE`. The first runs found four things, all fixed:
+      - **The stdlib had no bytecode.** PBS's `install_only_stripped` ships almost no `.pyc`
+        files (R1.1 assumed it did), so a root process wrote `__pycache__` into the installed
+        prefix and the service account recompiled the stdlib on every start. Caught by the
+        "second install changes nothing" check. `python-bundle.sh fetch` now compiles the whole
+        library with the bundled interpreter.
+      - **A second docker build had no UI.** sc-cli's build script builds `ui/*/dist` into the
+        source tree, which `.dockerignore` leaves out, and reruns only when UI sources change.
+        The Dockerfile now touches the watched `package.json` files before `cargo build`.
+      - **The `--upgrade` scenario's older server died at start** on `debian:13-slim`: the
+        server's HTTP client refuses to build with no CA certificates, and the older tree was
+        installed before the curl installer had added them. The smoke script installs
+        `ca-certificates` first, as the curl installer would have.
+      - **On Alpine, the old server's mapped libc** after the swap is
+        `${PREFIX}.old/glibc/libc.so.6` (the renamed tree it still runs from, as D11 intends),
+        not `${PREFIX}/glibc/…`, which is what the check expected.
+- [x] R2.5 SELinux: on a Fedora or Alma VM with SELinux enforcing, `setup-host.sh` then a Python
       trigger works. V8 and CPython both need writable and executable memory, from a binary under
       `/opt`. Note the result in `docs/OPERATIONS.md`; make a fix only if it fails.
+      *Done, no fix needed:* a Fedora 44 VM (incus), `targeted` policy, enforcing. The curl
+      installer and `setup-host.sh --no-browser` ran through, the HTTPS self-check passed as the
+      service account, and the service runs in `unconfined_service_t` (the tree is `usr_t`). A
+      `startup` trigger with `run_python_code` ran in the service: `hashlib` (OpenSSL),
+      `decimal` and a module's compiled `markupsafe`, and its row was written. No AVC denials
+      except for the incus agent itself, so the VM was driven over ssh. AlmaLinux's incus image
+      needs `genisoimage` on the host, which this machine lacks, so Alma was not tried; RHEL 10
+      ships the same policy.
 - [x] R2.6 Install by swapping trees (D11). The tarball's `install.sh` (generated in
       `build-static.sh`):
       - copies the tree to `${PREFIX}.new` on the same filesystem, applies R2.1's libc choice
@@ -421,12 +444,12 @@ Containers and emulators always use the host's page size, so the build asserts i
       module (`plugins/markdown`, `plugins/sklearn`) writes `*.egg-info` there. Under the service
       account that **fails**, so those modules cannot be installed from a tarball install today.
       That is a module-installer bug (copy the directory before `pip install`), not fixed here.
-      The tests above run locally in `crates/sc-cli/tests/install_tree.rs`. In the smoke test
-      they are written but not yet run (R2.4).
+      The tests above run locally in `crates/sc-cli/tests/install_tree.rs`, and in the smoke
+      test on `debian:13-slim` and `alpine:3`, where they pass (R2.4).
 
 ## R3 — Release, documentation and retiring `static`
 
-- [~] R3.1 `--release` publishes the new artifact as `feldspar-linux-<arch>.tar.gz` (D13) and, for
+- [x] R3.1 `--release` publishes the new artifact as `feldspar-linux-<arch>.tar.gz` (D13) and, for
       x86_64 and until R3.3, also as `feldspar-debian13-python.tar.gz` (D5). Upgrading a `debian13-python` host with the new
       tarball keeps its venv and its installed Python modules working (R1.6). Check this once by
       hand on a Debian 13 VM.
@@ -434,9 +457,20 @@ Containers and emulators always use the host's page size, so the build asserts i
       published names (`OBJECTS`), each uploaded with a `.sha256` naming it. The static artifact
       keeps `feldspar.tar.gz`, and only an x86_64 build publishes it or the `debian13-python`
       name. On aarch64, `both` means the linux artifact alone, and `--release --variant static`
-      is refused. The curl installer now fetches `feldspar-linux-x86_64.tar.gz`. **Still to do:**
-      the upgrade of a real `debian13-python` host on a Debian 13 VM. Mark done once it has
-      kept a venv with an installed module working.
+      is refused. The curl installer now fetches `feldspar-linux-x86_64.tar.gz`.
+      *Checked by hand* on a Debian 13 VM (incus): the published `debian13-python` tarball
+      (`efdb4fa0`) installed with its own `install.sh` and `setup-host.sh`, and a local module
+      that needs `markupsafe`'s compiled wheel installed with `feldspar module install`. The new
+      curl installer upgraded it, and the bundled 3.13.18 imported the module from the venv
+      Debian's 3.13.5 made. **It found a bug in R1.6:** `venv --upgrade` keeps an interpreter
+      link that already exists, so the venv's `bin/python3` still pointed at `/usr/bin/python3`
+      while `pyvenv.cfg` named the bundle, and the repoint failed in `ensurepip` (Debian's
+      interpreter). After that `needs_repoint` said it was done, so the venv would have stayed
+      on the host's Python. Fixed: the repoint removes the `bin/python*` links first, and
+      `needs_repoint` also answers yes for a link that does not resolve to the bundled
+      interpreter, which heals a half-moved venv (this VM was one, and was healed by the next
+      install). Then, with every host `python3*`/`libpython*` package purged, the service
+      restarted, the module loaded, and another install worked.
 - [x] R3.2 Documentation:
       - `docs/OPERATIONS.md` §1–§2: one download, the distribution list, which libc an install
         uses and why, and the CPython pin and how to bump it;

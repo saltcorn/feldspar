@@ -2,6 +2,54 @@
 
 Changes in reverse chronological order.
 
+## Portable release R2.4, R2.5, R3.1: the checks that needed docker and VMs, and what they found
+
+The parts of `TODO-portable-release.md` that the machine that wrote R1–R4 could not run: the
+docker build with its distribution smoke test, SELinux on a Fedora VM, and upgrading a real
+`debian13-python` host. All three pass now. They found two bugs in the release and two in the
+tests, and the full test suite found two more test bugs.
+
+- **A `debian13-python` host's venv kept running the host's Python after the upgrade (R1.6).**
+  `python3 -m venv --upgrade` keeps an interpreter link that already exists, so the repoint
+  rewrote `pyvenv.cfg` but left `bin/python3 -> /usr/bin/python3`, and failed in `ensurepip`.
+  After that the server believed the move was done, and removing the host's `python3` would
+  have broken every later module install. `sc-python` now removes the environment's
+  `bin/python*` links before `venv --upgrade`, and also repoints an environment whose
+  `bin/python` links to anything but the bundled interpreter, which heals one that is already
+  half-moved. Found on a Debian 13 VM; checked there end to end (upgrade, repoint, host Python
+  packages purged, module still loads, a further install works).
+- **The bundled CPython shipped without its stdlib bytecode.** python-build-standalone's
+  `install_only_stripped` has almost no `.pyc` files, so a process run as root wrote
+  `__pycache__` into `/opt/feldspar/python` (which an install treats as read-only), and the
+  service account, which cannot, compiled the stdlib again on every start.
+  `scripts/lib/python-bundle.sh` now compiles the whole library at build time. The tarball
+  grows by about 5 MB.
+- **A second `--docker` build failed with "ui/admin/dist was not built".** The UI bundles are
+  built by sc-cli's build script into the source tree, which `.dockerignore` excludes, and the
+  cached build script reran only when UI sources changed. `static-build.Dockerfile` now touches
+  the `package.json` files the build script watches, so each docker build makes its bundles.
+- **`setup-host.sh`'s HTTPS check honoured the caller's `SSL_CERT_FILE`.** The check is meant to
+  ask whether the service, which has no such variable, can make a verified request. It now
+  clears `SSL_CERT_FILE` and `SSL_CERT_DIR` for that check. Cargo sets `SSL_CERT_FILE` for
+  everything it runs, which is how `setup_host::ssl_cert_file_goes_into_the_unit_only_where_https_needs_it`
+  failed.
+- **`setup_host::each_family_gets_its_own_packages_database_setup_and_account` depended on the
+  machine.** On a host with a real `feldspar` account the plan skipped creating one. The test
+  now stubs `id` for account lookups.
+- **The smoke test (R2.4)** passes on all ten images (Debian 12 and 13, Ubuntu 24.04 and latest,
+  Fedora, AlmaLinux 10, Arch, Leap 16, Tumbleweed, Alpine 3); none needs `SSL_CERT_FILE`. Two
+  fixes to `scripts/lib/smoke-linux.sh`: the `--upgrade` scenario installs `ca-certificates`
+  before its older tree (the server will not start with no CA certificates, and a host that
+  is being upgraded has them), and on Alpine it expects the old server to map
+  `${PREFIX}.old/glibc/libc.so.6` after the swap, since it still runs from the renamed tree.
+- **SELinux (R2.5)**: on Fedora 44, enforcing, `setup-host.sh` and a Python trigger work with no
+  denials and no change. `docs/OPERATIONS.md` §1.1 says so, and how far each distribution has
+  been tried; §1.4 describes the repoint as it now works.
+- **Tests.** `sc-python`: `an_environment_whose_interpreter_still_links_to_the_host_is_moved`
+  (a half-moved venv, and one whose host interpreter is gone), and the existing repoint test now
+  checks where `bin/python*` resolve. Its fake interpreter behaves like CPython's venv, keeping
+  links that already exist. Both fail without the fix.
+
 ## Portable release R4: the curl installer picks the tarball by platform; `release.sh`
 
 R4 of `TODO-portable-release.md` now holds only the platform work that needs neither an aarch64 nor

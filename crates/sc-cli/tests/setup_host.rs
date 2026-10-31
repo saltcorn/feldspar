@@ -945,6 +945,17 @@ fn plan_on(os_release: &str, extra: &[&str]) -> (Output, String) {
             std::os::unix::fs::symlink(found, tools.join(tool)).unwrap();
         }
     }
+    // No service account yet, whatever this machine has: a host that runs
+    // feldspar itself has a `feldspar` account, and the plan would skip making
+    // it. `id -u` and `id -un` are still the real answers.
+    let id = which("id").expect("id");
+    write_executable(
+        &bin.join("id"),
+        &format!(
+            "#!/bin/sh\ncase \"${{1:-}}\" in -*) exec {} \"$@\" ;; esac\nexit 1\n",
+            id.display()
+        ),
+    );
     let osr = dir.join("os-release");
     fs::write(&osr, os_release).unwrap();
     let out = Command::new(tools.join("sh"))

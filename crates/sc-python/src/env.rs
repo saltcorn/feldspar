@@ -586,7 +586,9 @@ impl PythonEnvironment {
     /// there is one, it is the interpreter pip runs under (an operator's own
     /// `--python-bin` is their choice and is left alone), the environment was
     /// built by the same `major.minor` as the embedded interpreter, and by an
-    /// interpreter somewhere else.
+    /// interpreter somewhere else — or its `bin/python` is a link to one, which
+    /// is what an interrupted move leaves, and an environment whose interpreter
+    /// the operator has since removed.
     fn needs_repoint(&self) -> bool {
         let Some(bundled) = &self.bundled else {
             return false;
@@ -600,18 +602,56 @@ impl PythonEnvironment {
         if embedded != built {
             return false;
         }
-        match (venv_home(&self.dir), bundled.parent()) {
-            (Some(home), Some(bundled_home)) => !same_dir(&home, bundled_home),
-            _ => false,
+        let moved = match (venv_home(&self.dir), bundled.parent()) {
+            (Some(home), Some(bundled_home)) => same_dir(&home, bundled_home),
+            _ => true,
+        };
+        // A copied interpreter (`venv --copies`) is the environment's own, and
+        // never resolves to the bundle: only a link is followed.
+        let python = self.python();
+        let linked_elsewhere = python.is_symlink()
+            && match (std::fs::canonicalize(&python), std::fs::canonicalize(bundled)) {
+                (Ok(target), Ok(bundled)) => target != bundled,
+                _ => true,
+            };
+        !moved || linked_elsewhere
+    }
+
+    /// Remove the environment's interpreter links — `bin/python`, `python3`,
+    /// `python3.N` — so `venv --upgrade` makes them again: it leaves a link that
+    /// already exists alone, so without this the environment keeps running the
+    /// host's `python3` after its `pyvenv.cfg` has been moved.
+    fn unlink_interpreters(&self) -> Result<()> {
+        let bin = self.dir.join("bin");
+        let Ok(entries) = std::fs::read_dir(&bin) else {
+            return Ok(());
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let interpreter = name
+                .strip_prefix("python")
+                .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit() || c == '.'));
+            if interpreter && entry.path().is_symlink() {
+                std::fs::remove_file(entry.path()).map_err(|e| {
+                    Error::config(format!(
+                        "could not remove {} to move this server's Python environment onto {}: {e}",
+                        entry.path().display(),
+                        self.bin.display()
+                    ))
+                })?;
+            }
         }
+        Ok(())
     }
 
     /// `<bundled python3> -m venv --upgrade <dir>`, where
     /// [`needs_repoint`](Self::needs_repoint) says so (TODO-portable-release
     /// R1.6).
     ///
-    /// `--upgrade` rewrites `pyvenv.cfg` and the environment's `bin/python`
-    /// links and leaves `site-packages` alone, so every installed module stays
+    /// `--upgrade` rewrites `pyvenv.cfg`, makes the `bin/python` links
+    /// [`unlink_interpreters`](Self::unlink_interpreters) removed, and leaves
+    /// `site-packages` alone, so every installed module stays
     /// installed: what changes is only which program pip runs as. The embedded
     /// interpreter imports from `site-packages` directly, so a server that
     /// never installs again would not need this — but the first install after
@@ -620,6 +660,7 @@ impl PythonEnvironment {
         if !self.needs_repoint() {
             return Ok(());
         }
+        self.unlink_interpreters()?;
         let output = Command::new(&self.bin)
             .arg("-m")
             .arg("venv")
@@ -1042,7 +1083,9 @@ mod tests {
     }
 
     /// A stand-in for the bundled `python3`: records its arguments, and does
-    /// what `-m venv --upgrade` does to `pyvenv.cfg` — points `home` at itself.
+    /// what `-m venv --upgrade` does — points `pyvenv.cfg`'s `home` at itself,
+    /// and links `bin/python*` to itself, but only where no link is already
+    /// there (CPython's `symlink_or_copy`).
     #[cfg(unix)]
     fn fake_bundled(root: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -1053,9 +1096,13 @@ mod tests {
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\n\
                  cfg=\"$4/pyvenv.cfg\"\n\
-                 sed 's,^home = .*,home = {home},' \"$cfg\" > \"$cfg.new\" && mv \"$cfg.new\" \"$cfg\"\n",
+                 sed 's,^home = .*,home = {home},' \"$cfg\" > \"$cfg.new\" && mv \"$cfg.new\" \"$cfg\"\n\
+                 for n in python python3 python3.13; do\n\
+                 [ -L \"$4/bin/$n\" ] || ln -s '{bin}' \"$4/bin/$n\"\n\
+                 done\n",
                 log = root.join("calls").display(),
                 home = bin.parent().unwrap().display(),
+                bin = bin.display(),
             ),
         )
         .unwrap();
@@ -1063,16 +1110,31 @@ mod tests {
         bin
     }
 
+    /// An environment as `<home>/python3 -m venv` leaves it: `pyvenv.cfg`, and
+    /// `bin/python*` linked to a stand-in for that interpreter.
     #[cfg(unix)]
     fn environment_built_by(root: &Path, home: &str, version: &str) -> PathBuf {
         let dir = root.join("venv");
-        std::fs::create_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::write(
             dir.join("pyvenv.cfg"),
             format!("home = {home}\ninclude-system-site-packages = false\nversion = {version}\n"),
         )
         .unwrap();
+        let host = root.join("host/python3");
+        std::fs::create_dir_all(host.parent().unwrap()).unwrap();
+        std::fs::write(&host, "").unwrap();
+        std::os::unix::fs::symlink(&host, dir.join("bin/python")).unwrap();
+        std::os::unix::fs::symlink("python", dir.join("bin/python3")).unwrap();
+        std::os::unix::fs::symlink("python", dir.join("bin/python3.13")).unwrap();
         dir
+    }
+
+    /// Where the environment's `bin/python` leads.
+    #[cfg(unix)]
+    fn interpreter_of(dir: &Path) -> PathBuf {
+        std::fs::canonicalize(dir.join("bin/python")).unwrap()
     }
 
     #[cfg(unix)]
@@ -1095,6 +1157,14 @@ mod tests {
             &venv_home(&dir).unwrap(),
             bundled.parent().unwrap()
         ));
+        // And pip runs as the bundled interpreter: the host's links are gone.
+        for name in ["python", "python3", "python3.13"] {
+            assert_eq!(
+                std::fs::canonicalize(dir.join("bin").join(name)).unwrap(),
+                std::fs::canonicalize(&bundled).unwrap(),
+                "bin/{name}"
+            );
+        }
 
         // Once moved, it is left alone — by an install and by an uninstall.
         environment.ensure().await.unwrap();
@@ -1103,6 +1173,39 @@ mod tests {
             calls,
             "an environment already on the bundled interpreter is not upgraded again"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What an earlier move left behind: `pyvenv.cfg` names the bundle, but
+    /// `bin/python` is still the host's, because `venv --upgrade` keeps a link
+    /// that is already there. And the same with the host's `python3` removed,
+    /// so the link dangles.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_environment_whose_interpreter_still_links_to_the_host_is_moved() {
+        let root = scratch("half-moved");
+        let bundled = fake_bundled(&root);
+        let home = bundled.parent().unwrap().display().to_string();
+        for remove_host in [false, true] {
+            let dir = environment_built_by(&root, &home, "3.13.18");
+            if remove_host {
+                std::fs::remove_file(root.join("host/python3")).unwrap();
+            }
+            let environment = PythonEnvironment {
+                dir: dir.clone(),
+                bin: bundled.clone(),
+                embedded: Some((3, 13)),
+                bundled: Some(bundled.clone()),
+            };
+            assert!(environment.needs_repoint(), "host removed: {remove_host}");
+            environment.ensure().await.expect("repointed");
+            assert_eq!(
+                interpreter_of(&dir),
+                std::fs::canonicalize(&bundled).unwrap(),
+                "host removed: {remove_host}"
+            );
+            assert!(!environment.needs_repoint());
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

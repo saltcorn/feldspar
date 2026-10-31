@@ -144,14 +144,21 @@ distribution, not past a platform with no release, since there is nothing to
 download. aarch64 Linux and macOS releases are planned (TODO-portable-release
 R5).
 
-How far each family has been tried: the build's smoke test is written to
-install the tarball in a container image of each (Debian 12 and 13, Ubuntu 24.04 and the latest,
-Fedora, AlmaLinux 10, Arch, Leap 16, Tumbleweed, Alpine 3) and runs
-`feldspar python check` there, but has not yet run against a real build
-(TODO-portable-release R2.4). `setup-host.sh` on
-Fedora, openSUSE and Arch has so far been checked as a `--dry-run` plan only,
-and SELinux in enforcing mode (Fedora, RHEL) has not been tried (R2.5). Report
-what fails.
+How far each family has been tried: every `--docker` build installs the
+tarball with the curl installer in a container image of each (Debian 12 and 13,
+Ubuntu 24.04 and the latest, Fedora, AlmaLinux 10, Arch, Leap 16, Tumbleweed,
+Alpine 3) and runs `feldspar python check` there, HTTPS request included; on
+Debian 13 and Alpine it also makes a venv, pip-installs a manylinux wheel, and
+upgrades a running install. All ten pass, and none needs `SSL_CERT_FILE`.
+`setup-host.sh` has been run for real on Debian 13 and on Fedora 44; on openSUSE
+and Arch it has been checked as a `--dry-run` plan only. Report what fails.
+
+**SELinux.** On Fedora 44 with SELinux enforcing (the `targeted` policy),
+`setup-host.sh` runs through and the service works, Python triggers included
+(TODO-portable-release R2.5): no AVC denials, no policy changes needed. The
+installed tree is labelled `usr_t`, and systemd starts the service in
+`unconfined_service_t`, which allows the writable and executable memory V8 and
+CPython need. RHEL 10 and its rebuilds ship the same policy.
 
 ### 1.2 Which libc an install uses
 
@@ -240,9 +247,15 @@ Before the Linux artifact there was a Debian 13 only build, which linked Debian'
 The Python environment and the modules installed in it keep working. The
 environment was made by Debian's `python3.13`, which is the same minor version as
 the bundled one, so at the next module install the server repoints it at the
-bundled interpreter (`python3 -m venv --upgrade`, which keeps `site-packages`).
-After that, Debian's `python3`, `python3-venv` and `libpython3.13` are no longer
-used by feldspar and can be removed if nothing else on the host needs them.
+bundled interpreter: it removes the environment's `bin/python*` links, which
+pointed at Debian's `python3`, and runs `python3 -m venv --upgrade`, which keeps
+`site-packages` and makes the links again. After that, Debian's `python3`,
+`python3-venv` and `libpython3.13` are no longer used by feldspar and can be
+removed if nothing else on the host needs them. This has been done by hand on a
+Debian 13 VM: an install of the published `debian13-python` release with a
+module that needs a compiled wheel, upgraded, its environment repointed, and the
+host's Python packages purged. The module still loaded and a further install
+still worked.
 
 ---
 

@@ -72,6 +72,15 @@ if [ "${upgrade}" -eq 1 ]; then
     tar -xzf "${release}/${object}" -C "${work}/old"
     old_tree="$(echo "${work}"/old/feldspar-*)"
     echo "only the older release has this" > "${old_tree}/old-only.txt"
+    # The older tree stands for a host the curl installer set up, so it has
+    # that installer's CA certificates: the server's HTTP client refuses to
+    # start with an empty root store, and a slim image has none.
+    if command -v apt-get >/dev/null; then
+        apt-get update -qq > /dev/null &&
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates > /dev/null
+    elif command -v apk >/dev/null; then
+        apk add -q ca-certificates
+    fi || fail "could not install ca-certificates for the older tree"
     say "installing an older tree (with old-only.txt)"
     "${old_tree}/install.sh" --no-next-steps > "${work}/old-install.log" 2>&1 ||
         { cat "${work}/old-install.log" >&2; fail "the first install failed"; }
@@ -161,9 +170,11 @@ fi
 if [ "${upgrade}" -eq 1 ]; then
     kill -0 "${server}" 2>/dev/null ||
         { cat "${work}/serve.log" >&2; fail "the server running from the old tree died during the install"; }
+    # On musl the server started before the swap runs the old tree's bundled
+    # glibc, whose path the kernel now reports under its new name.
     maps="$(awk '$6 ~ /\/libc\.so\.6$/ { print $6; exit }' "/proc/${server}/maps")"
     case "${musl}:${maps}" in
-        1:"${prefix}/glibc/libc.so.6"|0:/*) say "the running server maps ${maps}" ;;
+        1:"${prefix}.old/glibc/libc.so.6"|0:/*) say "the running server maps ${maps}" ;;
         *) fail "the running server maps ${maps:-no libc.so.6}" ;;
     esac
     [ -f "${prefix}.old/old-only.txt" ] || fail "${prefix}.old does not hold the old tree"
