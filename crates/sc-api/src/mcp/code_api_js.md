@@ -138,6 +138,23 @@ caller — the default in a query, or `fs(s).asUser()` — is also checked again
 served (a file they may not read is a 404); one opened with `fs(s).asAdmin()` is not — the
 query's own code is the check.
 
+**The owner rule, under the caller's authority.** A file's recorded owner may always read it,
+and so may anyone whose role clears the `minRole` of the store, the file and every folder on its
+path. The owner grants access; it hides nothing. A file with an owner and no `minRole` is
+readable by everyone, so a private upload is `minRole: 1` plus its owner. Writes are stricter:
+a file with an owner can be overwritten, deleted, moved or have its metadata changed **only by
+its owner** or by `asAdmin()` code, whatever its `minRole`. Deleting a folder that holds another
+user's file is refused the same way. A file with no owner follows the `minRole` rule for writes
+too.
+
+A write or `mkdir` as the caller records the caller as the owner when the file has none yet. So
+the first user to write a file through a query owns it from then on: a settings file several
+users update, or a project folder its members upload into, then refuses everyone else's writes
+and deletes (`not permitted to access "<path>" in file store <store>`). Write and delete files
+that several users share with `fs(s).asAdmin()`, after the query has checked who may: a write as
+admin records no owner, so the file stays nobody's. (A file left with no owner is claimed by the
+next caller who writes it, so every write to it must be as admin, not only the first.)
+
 An upload slot's **hook** is a code query too (a POST is best). It runs before an upload is
 accepted, with `body = { filename, size, mime, slot }` and `user` the uploader; throw
 `httpError(403, …)` (or 413, …) to refuse, or return `{ path, meta, min_role }` — all optional —
@@ -259,6 +276,21 @@ server instead — every row, no rules — so use it only where the query must, 
 value the caller chose without checking it. In a **trigger** (and a server-rendered page) the
 default is the other way round: it acts as the server, and `.asUser()` acts as the event's
 user.
+
+**Each handle has its own authority.** `db.asAdmin()` covers `db` and nothing else: `fs(...)`,
+`models` and `trigger(...)` still act as the caller, so `trigger("notify_admin").run()` after
+`db = db.asAdmin()` is still checked against that trigger's `min_role` (admin-only when it has
+none). Each needs its own `.asAdmin()`. A query whose every access is the server's switches each one:
+
+```js
+db = db.asAdmin();                                         // the whole db handle
+const store = fs("uploads").asAdmin();                     // a store handle
+await trigger("notify_admin").asAdmin().run({ id });       // a trigger handle
+const m = (await models.get("churn")).asAdmin();           // a model handle (its write-backs)
+```
+
+A `try { … } catch {}` around one of these hides a refusal completely, so test a query as a
+non-admin user with the role real users have; as admin every check passes.
 
 For what the chain cannot say, raw SQL with `$1` binds, answering the rows:
 
@@ -383,7 +415,10 @@ const me = requireUser();
 - That is the run's handle, **not the importing code's variable**: `db = db.asAdmin()` in a
   query rebinds its own `db` and does not reach a library it imports, whose `db` still acts as
   the caller. A library that must read as the server says `.asAdmin()` itself — or, clearer,
-  takes the handle as an argument (`ownShare(db.asAdmin(), token)`).
+  takes the handle as an argument (`ownShare(db.asAdmin(), token)`). A library whose every
+  access is the server's may rebind its own handle at its top level (`db = db.asAdmin();`); that
+  holds for this run's import of it, and for nobody else. As in a query, it covers `db` only:
+  `fs`, `trigger` and the model handles need their own `.asAdmin()`.
 - Names resolve to the application's own library first, then the instance-wide one. A trigger
   belongs to no application and sees instance-wide libraries only.
 - A library may `lib()` another; a cycle throws naming the chain (`a → b → a`).

@@ -574,6 +574,60 @@ fn generated_changes_client_type_checks() -> std::io::Result<()> {
     type_check("changes", &client_ts, CHANGES_USAGE_TS)
 }
 
+/// A usage module for an application that exposes a table's changes without
+/// serving that table's row API: the change's key is a `LiveTopic`, and the
+/// client must still compile.
+const CHANGES_WITHOUT_ROW_API_USAGE_TS: &str = r#"
+import { createClient, type LiveTopic, type PostsLiveEnvelope } from "./client";
+
+export function exercise(): void {
+  const api = createClient({ baseUrl: "https://blog.example.com" });
+  api.live.posts_live
+    .subscribe(
+      {},
+      {
+        element(envelope: PostsLiveEnvelope) {
+          const key: LiveTopic = envelope.value.key;
+          void key;
+        },
+      },
+    )
+    .close();
+}
+"#;
+
+#[test]
+fn generated_changes_client_without_row_api_type_checks() -> std::io::Result<()> {
+    use sc_api::{StreamExport, StreamTopics, TypeSchema};
+
+    // `posts` is in no endpoint set: the app streams its changes but serves no
+    // row API for it (it is not in `api_tables`).
+    let streams = [StreamExport {
+        name: "posts_live".to_owned(),
+        path: "/api/live".to_owned(),
+        value: TypeSchema::json(),
+        topics: StreamTopics::Changes {
+            table: "posts".to_owned(),
+        },
+        presence: false,
+        client_publish: false,
+    }];
+    let client_ts = sc_api::generate_client_with_streams(&sc_api::EndpointSet::new(), &streams);
+    // Checked without `tsc` too, so the regression is caught where no compiler
+    // is installed: the envelope names `LiveTopic`, so the client imports it.
+    assert!(client_ts.contains("LiveChange<Record<string, unknown>, LiveTopic>"));
+    let import = client_ts
+        .lines()
+        .find(|line| line.starts_with("import {") && line.ends_with("from \"./helper\";"))
+        .expect("the client imports its helper");
+    assert!(import.contains("type LiveTopic"), "{import}");
+    type_check(
+        "changes-without-row-api",
+        &client_ts,
+        CHANGES_WITHOUT_ROW_API_USAGE_TS,
+    )
+}
+
 #[test]
 fn generated_query_parameter_client_type_checks() -> std::io::Result<()> {
     use sc_api::{Endpoint, EndpointSet, Method, PathSpec, QueryParam, TypeSchema, ValueType};

@@ -398,6 +398,41 @@ tree swap) is R2.
   bookworm build, `patchelf` on the real binary, and Alpine running `feldspar.glibc` are
   unverified.
 
+## Change stream over a table with no row API compiles; refused file operations are logged; authority docs
+
+From a report on upgrading 24 apps to apps with no default row API and caller-authority queries.
+
+**A file operation the access rules refuse is logged as a warning.** Cleanup code usually wraps
+file deletes in `try/catch`, so a refused delete or write (another user's file, a floor the
+caller does not clear) failed without anyone seeing it. `FileStoreHost::files`, which every
+JavaScript and Python `fs` operation goes through, now writes one line to the server log for each
+auth refusal, whether or not the body catches it:
+`feldspar: warning: a code body's file `delete` of "p/a.pdf" in store `uploads`, as user `12`
+(role 80), was refused: not permitted to access …`. Other errors (a missing file, a bad
+argument) are not logged. Test: `code_host::files::tests::a_refused_operation_is_a_warning_and_nothing_else_is`.
+
+**A generated client with a change stream over a table that has no row API failed to compile.**
+When the table a `Changes` stream reads was not in `api_tables` (or had no key column), the
+stream's key was typed `LiveTopic`. `client.ts` used that name in `…Envelope` and
+`LiveChangesStream<…>` but only re-exported it, so `tsc` failed with TS2304 "Cannot find name
+'LiveTopic'". `sc_api::typescript` now imports `LiveTopic` whenever a change typing uses it.
+Test: `typescript_typecheck::generated_changes_client_without_row_api_type_checks` checks the
+import line without a compiler and type-checks the client with `tsc` when one is available.
+
+**`code_api_js.md` (`describe_code_api`) says what the upgrade did not:**
+- Each handle has its own authority. `db.asAdmin()` covers `db` only, and `fs(...)`,
+  `trigger(...)` and model handles each need their own `.asAdmin()`. A trigger run as the caller
+  is checked against its `min_role`, which is admin-only when it has none. There is one example
+  per handle, and a warning that a `try/catch` hides a refusal.
+- The file owner rule. An owner may always read a file, but an owner with no `minRole` hides
+  nothing. Only the owner or admin authority may overwrite, delete, move or change the metadata
+  of an owned file. A write or `mkdir` as the caller records the caller as owner when the file
+  has none, so shared files and cleanup code must write and delete with `fs(s).asAdmin()`.
+- A library may rebind its own `db` at its top level. That holds for that import in that run
+  only, and covers `db` only. Test:
+  `sc-expr` `a_body_rebinding_db_does_not_reach_a_library_and_a_library_may_rebind_its_own`.
+- Test for the reference text: `the_reference_says_each_handle_and_each_library_has_its_own_authority`.
+
 ## Trigger docs: a trigger that fails raises the `error` event
 
 The `error` event for a failed trigger (below) was only in the design document, so app builders

@@ -137,4 +137,22 @@ mod tests {
             assert!(!JS_CODE_API.contains(gone), "still teaches `{gone}`");
         }
     }
+
+    #[test]
+    fn the_reference_says_each_handle_and_each_library_has_its_own_authority() {
+        // What upgrading apps to caller-authority queries tripped over: a
+        // `db.asAdmin()` that was taken to cover `trigger` and `fs`, and a file
+        // owner rule that refuses another user's writes.
+        for taught in [
+            "**Each handle has its own authority.** `db.asAdmin()` covers `db` and nothing else",
+            "await trigger(\"notify_admin\").asAdmin().run({ id });",
+            "(await models.get(\"churn\")).asAdmin();",
+            "The owner grants access; it hides nothing.",
+            "**only by\nits owner** or by `asAdmin()` code",
+            "records the caller as the owner when the file has none yet",
+            "may rebind its own handle at its top level (`db = db.asAdmin();`)",
+        ] {
+            assert!(JS_CODE_API.contains(taught), "missing `{taught}`");
+        }
+    }
 }
