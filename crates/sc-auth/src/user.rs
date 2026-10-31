@@ -11,6 +11,16 @@
 //! **deliberately excluded** from `extra`: a `User` is the object passed around
 //! the request/session, so keeping the hash out of it avoids leaking it into
 //! logs, session state, or API responses.
+//!
+//! # A `User` is data; an [`AuthenticatedUser`] is a proof
+//!
+//! The fields are private and a `User` cannot be deserialized, so neither a
+//! struct literal nor a JSON blob can stand in for one that was read from the
+//! table. A `User` is still only a description of a row — [`User::new`] and
+//! [`User::from_json`] build one for a test or an event's caller. What says
+//! "somebody presented a credential and it was this user" is
+//! [`AuthenticatedUser`], which only the session store and the API-token
+//! verification construct.
 
 use sc_types::Role;
 use std::collections::BTreeMap;
@@ -19,7 +29,7 @@ use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_expr::value_from_json;
 use sc_query::Value;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value as Json;
 use uuid::Uuid;
 
@@ -27,15 +37,18 @@ use crate::users::{COL_DISABLED, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_RO
 
 /// A user of the system: the two guaranteed fields plus an opaque bag of the
 /// admin-defined columns (technical design §7.1).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Serializes as `{id, role, extra}`, as it always has; it has no
+/// `Deserialize` (see the module docs).
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct User {
     /// The non-deletable UUID primary key.
-    pub id: Uuid,
+    id: Uuid,
     /// The role, `1..=100` (1 = admin, 100 = public).
-    pub role: Role,
+    role: Role,
     /// Every other column of the row keyed by column name — e.g. `email` and any
     /// fields the admin has added. Excludes `id`, `role`, and the password hash.
-    pub extra: BTreeMap<String, Value>,
+    extra: BTreeMap<String, Value>,
 }
 
 impl User {
@@ -143,6 +156,49 @@ impl User {
         Ok(Some(user))
     }
 
+    /// The non-deletable UUID primary key.
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+
+    /// The role this user is served at: `users.role`, or the effective role
+    /// when the user was loaded with their grants.
+    pub fn role(&self) -> Role {
+        self.role
+    }
+
+    /// Every column of the row other than `id`, `role` and the password hash,
+    /// keyed by column name.
+    pub fn extra(&self) -> &BTreeMap<String, Value> {
+        &self.extra
+    }
+
+    /// This user with one more (or a replaced) admin-defined field. For a
+    /// caller describing a user it already holds — a test, a fixture — and
+    /// never a way to change `id` or `role`, which are not fields of `extra`.
+    pub fn with_field(mut self, name: impl Into<String>, value: Value) -> User {
+        let name = name.into();
+        if name != COL_ID && name != COL_ROLE && name != COL_PASSWORD_HASH {
+            self.extra.insert(name, value);
+        }
+        self
+    }
+
+    /// This user served at no more privilege than `ceiling`: the less
+    /// privileged of their own role and it. Only ever lowers authority — an
+    /// application's maximum role is applied with it.
+    pub fn capped_at(mut self, ceiling: Role) -> User {
+        self.role = self.role.least_privileged(ceiling);
+        self
+    }
+
+    /// This user at `role`: what loading a user with their grants does. Inside
+    /// this crate only, because it can raise a role.
+    pub(crate) fn with_role(mut self, role: Role) -> User {
+        self.role = role;
+        self
+    }
+
     /// Whether this user is an administrator (`role == 1`).
     pub fn is_admin(&self) -> bool {
         self.role.is_admin()
@@ -212,6 +268,58 @@ impl User {
     }
 }
 
+/// A [`User`] somebody presented a credential for, and the credential checked
+/// out: a session token the [`SessionStore`](crate::SessionStore) resolved, or
+/// an API token [`authenticate_api_token`](crate::authenticate_api_token) /
+/// [`authenticate_route_token`](crate::authenticate_route_token) verified.
+///
+/// Those are its only constructors (the one that wraps a `User` is private to
+/// this crate), so holding one is the proof — a struct literal, a JSON blob or
+/// a user read from the table by id cannot become one. It derefs to the
+/// [`User`] for reading, and [`into_user`](AuthenticatedUser::into_user) gives
+/// up the proof for code that only needs the data.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct AuthenticatedUser(User);
+
+impl AuthenticatedUser {
+    /// `user`, whose credential the caller has just verified.
+    pub(crate) fn verified(user: User) -> AuthenticatedUser {
+        AuthenticatedUser(user)
+    }
+
+    /// The user this credential is for.
+    pub fn user(&self) -> &User {
+        &self.0
+    }
+
+    /// The user, without the proof.
+    pub fn into_user(self) -> User {
+        self.0
+    }
+
+    /// The same signed-in user served at no more privilege than `ceiling`
+    /// ([`User::capped_at`]): an application's maximum role. Lowering a role
+    /// cannot forge anything, so the proof is kept.
+    pub fn capped_at(self, ceiling: Role) -> AuthenticatedUser {
+        AuthenticatedUser(self.0.capped_at(ceiling))
+    }
+}
+
+impl std::ops::Deref for AuthenticatedUser {
+    type Target = User;
+
+    fn deref(&self) -> &User {
+        &self.0
+    }
+}
+
+impl From<AuthenticatedUser> for User {
+    fn from(user: AuthenticatedUser) -> User {
+        user.0
+    }
+}
+
 /// The role a caller holds: the signed-in user's, or [`Role::PUBLIC`] for nobody.
 ///
 /// The one place an optional user becomes a role.
@@ -234,6 +342,26 @@ mod tests {
     fn row(columns: &[&str], values: Vec<Value>) -> Row {
         let cols = Arc::new(columns.iter().map(|c| c.to_string()).collect());
         Row::new(cols, values).unwrap()
+    }
+
+    #[test]
+    fn a_user_serializes_as_before_and_its_builders_cannot_raise_it() {
+        let id = Uuid::new_v4();
+        let user = User::new(id, Role::of(40))
+            .with_field(COL_EMAIL, Value::Text("ada@example.com".into()))
+            // `id`, `role` and the hash are not fields of `extra`.
+            .with_field(COL_ROLE, Value::Int(1))
+            .with_field(COL_PASSWORD_HASH, Value::Text("$argon2id$".into()));
+        assert_eq!(user.role(), Role::of(40));
+        assert_eq!(user.extra().len(), 1);
+        // The wire shape is the one the public fields had.
+        let json = serde_json::to_value(&user).unwrap();
+        assert_eq!(json["id"], serde_json::json!(id.to_string()));
+        assert_eq!(json["role"], serde_json::json!(40));
+        assert!(json["extra"].get(COL_EMAIL).is_some());
+        // Capping only ever lowers.
+        assert_eq!(user.clone().capped_at(Role::ADMIN).role(), Role::of(40));
+        assert_eq!(user.capped_at(Role::PUBLIC).role(), Role::PUBLIC);
     }
 
     #[test]

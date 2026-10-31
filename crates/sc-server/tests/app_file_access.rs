@@ -571,7 +571,7 @@ async fn an_upload_into_a_private_folder_is_its_uploaders_alone() -> sc_error::R
     assert_eq!(status, StatusCode::CREATED, "{updated}");
     assert_eq!(
         uploads.get_meta("private/ada.txt").await?.owner,
-        Some(ada.id.to_string()),
+        Some(ada.id().to_string()),
         "the uploader owns the upload"
     );
 

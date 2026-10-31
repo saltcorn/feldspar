@@ -84,9 +84,9 @@ pub fn user_summary_schema() -> TypeSchema {
 /// an API response.
 pub fn user_summary_json(user: &User) -> Json {
     json!({
-        "id": user.id.to_string(),
+        "id": user.id().to_string(),
         "email": user.get(COL_EMAIL).and_then(Value::as_text).unwrap_or_default(),
-        "role": i64::from(user.role),
+        "role": i64::from(user.role()),
     })
 }
 
@@ -271,15 +271,15 @@ pub fn user_credits_json(
 /// columns the system owns out of the ones the admin added.
 pub fn user_row_json(user: &User) -> Json {
     let extra: serde_json::Map<String, Json> = user
-        .extra
+        .extra()
         .iter()
         .filter(|(column, _)| !sc_auth::is_system_user_column(column))
         .map(|(column, value)| (column.clone(), crate::convert::value_to_json(value)))
         .collect();
     json!({
-        "id": user.id.to_string(),
+        "id": user.id().to_string(),
         "email": user.get(COL_EMAIL).and_then(Value::as_text).unwrap_or_default(),
-        "role": i64::from(user.role),
+        "role": i64::from(user.role()),
         "disabled": user.is_disabled(),
         "language": user.language(),
         "check_user": user.is_check_user(),
@@ -328,10 +328,9 @@ mod tests {
     #[test]
     fn user_summary_never_leaks_extra_columns() {
         let mut user = User::new(uuid::Uuid::new_v4(), Role::ADMIN);
-        user.extra
-            .insert(COL_EMAIL.to_owned(), Value::Text("a@b.c".to_owned()));
+        user = user.with_field(COL_EMAIL.to_owned(), Value::Text("a@b.c".to_owned()));
         // An admin-added column, and something that must never travel.
-        user.extra.insert(
+        user = user.with_field(
             "password_hash".to_owned(),
             Value::Text("$argon2id$".to_owned()),
         );

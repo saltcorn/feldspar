@@ -425,7 +425,7 @@ impl AdminTool for SaveTranslations {
         let mut out = host(ctx)?
             .call_admin(
                 call.param("locale", locale.clone())
-                    .user(ctx.user.map(|u| u.id)),
+                    .user(ctx.user.map(|u| u.id())),
             )
             .await?;
         out["written"] = json!(changes.values().filter(|v| !v.is_null()).count());
@@ -470,7 +470,7 @@ async fn get_translations(ctx: &ToolContext<'_>, target: &Target) -> Result<Json
         Target::Instance => AdminCall::new("getInstanceTranslations", Json::Null),
     };
     host(ctx)?
-        .call_admin(call.user(ctx.user.map(|u| u.id)))
+        .call_admin(call.user(ctx.user.map(|u| u.id())))
         .await
 }
 

@@ -64,7 +64,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
       `sc_agent::RunCaller` adds `triggered` / `exposed`: carry those as principal flags (the
       chain's untrusted marker already does half of it). `LiveCaller` / `GuestCaller` /
       `AppCaller` are request-resolution results (session, cookie token, refusal), not
-      principals. They belong with Q2's extractors.
+      principals. They belong with Q2's extractors. (Q2: `AppCaller` now also carries the
+      admitted user as an `AuthenticatedUser` (`signed_in`), which is what an Analytics handler is
+      handed; `LiveCaller` / `GuestCaller` and the app live socket's copied `User` are unchanged.)
 - [x] Q1.9 Carry the trigger chain, origin and changeset in `Principal`, not task-locals
       (`sc-catalog/src/caller.rs:111`, `changeset.rs:218`, `outbox.rs:217`). Where a task-local
       stays, add a `spawn_scoped` helper that propagates it and use it everywhere. Test: a trigger
@@ -77,22 +79,33 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## Q2 — Authenticated users and proof-carrying extractors (§4.3, §4.5)
 
-- [ ] Q2.1 `sc_auth::User`: private fields with accessors. Keep `User::from_row`. Remove
+- [x] Q2.1 `sc_auth::User`: private fields with accessors. Keep `User::from_row`. Remove
       `Deserialize` from `User`, or move it to a separate summary type; check every place that
-      deserialized one.
-- [ ] Q2.2 `AuthenticatedUser`, constructible only by the session store and API-token
+      deserialized one. (Nothing deserialized one: the workspace compiles without it.
+      `with_field` and `capped_at` replace the field writes; neither can change `id` or raise
+      `role`.)
+- [x] Q2.2 `AuthenticatedUser`, constructible only by the session store and API-token
       verification.
-- [ ] Q2.3 `AdminSession` (`FromRequestParts`): session valid, role admin, request on the admin
+- [x] Q2.3 `AdminSession` (`FromRequestParts`): session valid, role admin, request on the admin
       host. Use it in every real admin axum route (`/upload`, `/download`, `/backup/*`, LSP,
       agent chat, observe, fit progress, …) and delete the manual
       `admin_host_only` + `session_user` + `enforce_auth` sequences, including `admin_of`.
-- [ ] Q2.4 The dispatcher passes `AdminSession` to `.auth(admin())` endpoints and
+      (Also the IDE, Analytics UI and builder bundles. `session_user` remains for the OAuth
+      consent screen and v1 module routes, which are not admin-only.)
+- [x] Q2.4 The dispatcher passes `AdminSession` to `.auth(admin())` endpoints and
       `AuthenticatedUser` to `.auth(LoggedIn)` endpoints, instead of `Option<User>`.
-- [ ] Q2.5 Bind sessions to the host scope that issued them; refuse an app-issued session on admin
-      routes (open item from security review #15).
-- [ ] Q2.6 Long-lived sockets hold the extractor value and revalidate it, rather than a copied
-      `User` (security review #42's class).
-- [ ] Q2.7 Tests: an admin session on an application host is refused on each admin route; a
+      (Handlers are registered behind a gate — `register` / `register_signed_in` /
+      `register_admin` / `register_analytics` — and `HandlerCtx<W>` carries the gate's caller.
+      An admin handler receives an `Admin`: an `AdminSession`, or `Admin::delegated` for the
+      MCP endpoint tools and the catalog's `AdminHost`, which run their own admin check; both
+      are in the security review's inventory.)
+- [x] Q2.5 Bind sessions to the host scope that issued them; refuse an app-issued session on admin
+      routes (open item from security review #15). (The scope is in the token, `app-` prefix, so
+      no schema change; an older token reads as admin-host and lapses with its expiry.)
+- [x] Q2.6 Long-lived sockets hold the extractor value and revalidate it, rather than a copied
+      `User` (security review #42's class). (Admin chat, LSP, stream Observe and fit progress:
+      `AdminWatch`. An application's live socket keeps its own re-check.)
+- [x] Q2.7 Tests: an admin session on an application host is refused on each admin route; a
       handler cannot be registered for an admin endpoint without taking `AdminSession` (compile
       test or registry check).
 

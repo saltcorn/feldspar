@@ -84,7 +84,7 @@ async fn create_notes(catalog: &Catalog, ownership: &str) -> Result<()> {
 
 fn writer(email: &str) -> User {
     let mut user = User::new(uuid::Uuid::new_v4(), Role::of(40));
-    user.extra.insert("email".into(), Value::Text(email.into()));
+    user = user.with_field("email", Value::Text(email.into()));
     user
 }
 

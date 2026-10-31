@@ -64,7 +64,7 @@ async fn a_forgotten_admin_password_is_reset_from_the_cli() -> sc_error::Result<
     let user = sc_auth::load_user_by_email(&catalog, ADMIN)
         .await?
         .expect("created");
-    assert_eq!(user.role, Role::ADMIN);
+    assert_eq!(user.role(), Role::ADMIN);
     assert!(signs_in(&catalog, ADMIN, "first-password").await);
 
     // add-user with no password reads it (stdin is not a terminal here); the
@@ -135,7 +135,7 @@ async fn a_forgotten_admin_password_is_reset_from_the_cli() -> sc_error::Result<
     let staff = sc_auth::load_user_by_email(&catalog, "staff@example.com")
         .await?
         .expect("exists");
-    assert_eq!(staff.role, Role::ADMIN);
+    assert_eq!(staff.role(), Role::ADMIN);
     assert!(signs_in(&catalog, "staff@example.com", "promoted").await);
 
     // An empty piped password is refused, and nothing changes.

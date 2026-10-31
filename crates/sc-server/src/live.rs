@@ -255,7 +255,7 @@ async fn serve_in(socket: WebSocket, env: LiveEnv, caller: LiveCaller) {
     let limits = env.hub.limits().clone();
     let info = ConnectionInfo {
         app: env.subdomain.clone(),
-        user: caller.user.as_ref().map(|user| user.id),
+        user: caller.user.as_ref().map(|user| user.id()),
         session: caller.session.clone(),
     };
     let (connection, mut deliveries) = match env.hub.connect(info) {
@@ -473,7 +473,7 @@ impl Live {
     /// Who this connection is, as access is decided.
     fn caller(&self) -> Caller {
         let user = self.caller.user.as_ref();
-        Caller::new(user.map(|u| u.role), user.map(|u| u.id))
+        Caller::new(user.map(|u| u.role()), user.map(|u| u.id()))
     }
 
     /// One message from the client.
@@ -1187,7 +1187,7 @@ impl Live {
                     shown_fields(&self.env.catalog, self.caller.user.as_ref(), &shown).await;
                 let (seat, members) = self.connection.join_presence(
                     room,
-                    self.caller.user.as_ref().map(|user| user.id),
+                    self.caller.user.as_ref().map(|user| user.id()),
                     fields,
                 );
                 if let Some(extras) = self.extras.get_mut(sub) {
@@ -1669,7 +1669,7 @@ impl Live {
         let mut now: Option<User> = None;
         if let Some(token) = &self.caller.session {
             match self.env.sessions.user_for(token).await {
-                Ok(Some(user)) => now = Some(user),
+                Ok(Some(user)) => now = Some(user.into_user()),
                 Ok(None) => {
                     return Err(CloseReason {
                         code: ErrorCode::SignedOut,
@@ -1973,7 +1973,7 @@ async fn shown_fields(
     }
     // Read afresh rather than taken from the session's copy, which can be a
     // minute old: a name changed a moment ago is the name shown.
-    let current = match sc_auth::load_user(catalog, user.id).await {
+    let current = match sc_auth::load_user(catalog, user.id()).await {
         Ok(Some(current)) => current,
         Ok(None) => return fields,
         Err(e) => {
@@ -1987,7 +1987,7 @@ async fn shown_fields(
     for name in shown {
         // Never the hash, whatever the settings say (`users` rows never carry
         // it onto a `User`, and the stream form refuses it).
-        if let Some(value) = current.extra.get(name) {
+        if let Some(value) = current.extra().get(name) {
             fields.insert(name.clone(), sc_types::value_to_json(value));
         }
     }

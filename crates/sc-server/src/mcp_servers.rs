@@ -25,7 +25,7 @@ use crate::handler::{HandlerRegistry, HandlerResponse};
 const MCP_TRAIT: &str = "mcp_server";
 
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
-    reg.register("listMcpServers", {
+    reg.register_admin("listMcpServers", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -43,7 +43,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("createMcpServer", {
+    reg.register_admin("createMcpServer", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -55,7 +55,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("updateMcpServer", {
+    reg.register_admin("updateMcpServer", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -80,7 +80,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("deleteMcpServer", {
+    reg.register_admin("deleteMcpServer", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -98,7 +98,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
 
     // A structurally wrong definition is an ordinary error (the admin's typo);
     // a server that refuses or cannot be reached is a 200 with `ok: false`.
-    reg.register("testMcpServer", {
+    reg.register_admin("testMcpServer", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -126,7 +126,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("listMcpServerTools", {
+    reg.register_admin("listMcpServerTools", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();

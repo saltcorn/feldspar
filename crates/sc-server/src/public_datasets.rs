@@ -243,7 +243,7 @@ fn failed_now(key: &str, error: &str) -> InstallJob {
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, fetch: Arc<dyn Fetch>) {
     let jobs = InstallJobs::default();
 
-    reg.register("listPublicDatasets", {
+    reg.register_admin("listPublicDatasets", {
         let catalog = catalog.clone();
         let jobs = jobs.clone();
         move |_ctx| {
@@ -264,7 +264,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, fetch: 
         }
     });
 
-    reg.register("installPublicDataset", {
+    reg.register_admin("installPublicDataset", {
         let catalog = catalog.clone();
         let jobs = jobs.clone();
         move |ctx| {
@@ -275,14 +275,14 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, fetch: 
                 let key = ctx.path_param("key")?;
                 // An unknown key is a 404 now, not a failed job later.
                 public_datasets::find(key)?;
-                let caller = sc_api::principal_at(Role::ADMIN, ctx.user.as_ref());
+                let caller = sc_api::principal_at(Role::ADMIN, ctx.user());
                 let job = jobs.start(catalog, key, fetch, caller);
                 Ok(HandlerResponse::ok(job.to_json()).with_status(202))
             }
         }
     });
 
-    reg.register("getPublicDatasetInstall", {
+    reg.register_admin("getPublicDatasetInstall", {
         let jobs = jobs.clone();
         move |ctx| {
             let jobs = jobs.clone();

@@ -91,7 +91,7 @@ use sc_error::{Error, Result};
 use sc_log::Verbosity;
 use serde_json::{Value as Json, json};
 
-use crate::handler::{HandlerCtx, HandlerRegistry};
+use crate::handler::{Admin, Caller, HandlerCtx, HandlerRegistry};
 use crate::router::AppState;
 
 /// The route the server listens for MCP on.
@@ -486,7 +486,7 @@ async fn call_tool(
     let ctx = ToolContext {
         catalog,
         user: Some(&caller.user),
-        role: caller.user.role,
+        role: caller.user.role(),
         triggers: state.apps.triggers(),
         actor: &caller.token.label,
     };
@@ -580,7 +580,7 @@ async fn checklist_tool(
             run: format!("mcp:{}", caller.token.id),
             grant: sc_check::ChecklistGrant::from_attrs(&flags),
         },
-        role: caller.user.role,
+        role: caller.user.role(),
     };
     sc_log::log_info!("MCP [{}] {name}", caller.token.label);
     sc_check::tools::call_tool(name, arguments, &call).await
@@ -663,7 +663,9 @@ impl AdminTool for EndpointTool {
             path_params: call.path_params,
             query: call.request.query,
             body: call.request.body,
-            user: ctx.user.cloned(),
+            // `check_caller` has just required the admin role and the
+            // endpoint's own requirement: this tool layer vouches for it.
+            who: Caller::Admin(Admin::delegated(ctx.user.cloned(), "mcp endpoint tool")),
             // A projected tool never carries bytes: the endpoints that do are
             // tier 3, and a JSON arguments object has no shape for them.
             raw_body: None,
@@ -791,7 +793,9 @@ impl sc_catalog::AdminHost for AdminHandlers {
             path_params: call.path_params.into_iter().collect(),
             query: Vec::new(),
             body: call.body,
-            user,
+            // The admin tools behind `AdminHost` (`sc_app::mcp`) are reached
+            // only by a caller that passed their admin check.
+            who: Caller::Admin(Admin::delegated(user, "catalog admin host")),
             raw_body: None,
             raw_file: None,
             analytics_app: None,

@@ -38,7 +38,7 @@ use crate::handlers::{
 
 /// Register `listEntities` on `reg`.
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: Arc<AppMounts>) {
-    reg.register("listEntities", {
+    reg.register_admin("listEntities", {
         move |ctx| {
             let catalog = catalog.clone();
             let apps = apps.clone();

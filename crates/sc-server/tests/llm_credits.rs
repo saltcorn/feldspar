@@ -195,7 +195,7 @@ async fn an_admin_grants_credits_each_user_reads_their_own_and_running_low_fires
     // The admin grants credits by hand, exactly, and sets a threshold.
     let mut admin = Client::new(router.clone(), BASE_DOMAIN);
     admin.login("admin@example.com", "admin-pw").await;
-    let path = format!("/api/users/{}/credits", ada.id);
+    let path = format!("/api/users/{}/credits", ada.id());
     let (status, credits) = admin
         .send(
             "POST",
@@ -239,7 +239,7 @@ async fn an_admin_grants_credits_each_user_reads_their_own_and_running_low_fires
         .send(
             "POST",
             "/api/credit_buckets",
-            Some(json!({ "user_id": ada.id, "amount": "1000", "remaining": "1000" })),
+            Some(json!({ "user_id": ada.id(), "amount": "1000", "remaining": "1000" })),
         )
         .await;
     assert!(status.is_client_error(), "{status}");
@@ -247,7 +247,7 @@ async fn an_admin_grants_credits_each_user_reads_their_own_and_running_low_fires
     // An agent run's debit takes Ada from 10.5 to 4.5, below her threshold: the
     // `low_balance` entry fires the application's trigger, once.
     let debit = |amount: i64, key: &str| CreditDebit {
-        user_id: ada.id,
+        user_id: ada.id(),
         amount: Decimal::from(amount),
         key: key.to_owned(),
         ..CreditDebit::default()
@@ -263,7 +263,7 @@ async fn an_admin_grants_credits_each_user_reads_their_own_and_running_low_fires
         .await
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     assert_eq!(notices.len(), 1, "one notice for one fall");
-    assert_eq!(notices[0].get::<_, String>(0), ada.id.to_string());
+    assert_eq!(notices[0].get::<_, String>(0), ada.id().to_string());
     assert_eq!(notices[0].get::<_, String>(1), "4.5");
 
     let (status, credits) = admin.send("GET", &path, None).await;

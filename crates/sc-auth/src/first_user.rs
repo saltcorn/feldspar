@@ -127,10 +127,7 @@ pub async fn create_first_user(catalog: &Catalog, email: &str, password: &str) -
         .await?;
     tx.commit().await?;
 
-    let mut user = User::new(id, Role::ADMIN);
-    user.extra
-        .insert(COL_EMAIL.to_owned(), Value::Text(email.to_owned()));
-    Ok(user)
+    Ok(User::new(id, Role::ADMIN).with_field(COL_EMAIL, Value::Text(email.to_owned())))
 }
 
 #[cfg(test)]

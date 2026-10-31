@@ -470,7 +470,7 @@ impl StepType for ExpectDenied {
             let operation = text(params, "operation")?;
             let who = cx
                 .run_as
-                .and_then(|u| u.extra.get("email"))
+                .and_then(|u| u.extra().get("email"))
                 .map(|e| match e {
                     sc_query::Value::Text(t) => t.clone(),
                     other => format!("{other:?}"),

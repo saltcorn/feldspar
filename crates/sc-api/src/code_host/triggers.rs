@@ -193,7 +193,7 @@ impl<'a> TriggerRunHost<'a> {
             Authority::Public => (Principal::new(Role::PUBLIC, None), None),
             Authority::Named(id) => {
                 let user = super::load_named_user(self.catalog, id).await?;
-                let caller = crate::ownership::principal_at(user.role, Some(&user));
+                let caller = crate::ownership::principal_at(user.role(), Some(&user));
                 (caller, Some(user))
             }
         };
@@ -210,7 +210,7 @@ impl<'a> TriggerRunHost<'a> {
                 return Err(Error::auth(format!(
                     "{} may not run `{name}`; it needs role {floor} or better",
                     match (&named, &request.authority) {
-                        (Some(user), _) => format!("user `{}`", user.id),
+                        (Some(user), _) => format!("user `{}`", user.id()),
                         (None, Authority::Public) => "the public role".to_owned(),
                         _ => "this event's caller".to_owned(),
                     }

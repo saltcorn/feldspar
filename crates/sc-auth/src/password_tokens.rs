@@ -401,19 +401,19 @@ pub async fn invite_user(
         return Err(Error::invalid("email is required"));
     }
     if let Some(existing) = load_user_by_email(catalog, &email).await? {
-        if user_has_password(catalog, existing.id).await? {
+        if user_has_password(catalog, existing.id()).await? {
             return Ok(InviteOutcome::AlreadyActive);
         }
-        check_invite_role(existing.role, inviter_role)?;
+        check_invite_role(existing.role(), inviter_role)?;
         let token =
-            issue_password_token(catalog, existing.id, PasswordTokenPurpose::Invite).await?;
+            issue_password_token(catalog, existing.id(), PasswordTokenPurpose::Invite).await?;
         return Ok(InviteOutcome::Resent {
             user: existing,
             token,
         });
     }
     let user = create_invited_user(catalog, NewUser { email, ..new }).await?;
-    let token = issue_password_token(catalog, user.id, PasswordTokenPurpose::Invite).await?;
+    let token = issue_password_token(catalog, user.id(), PasswordTokenPurpose::Invite).await?;
     Ok(InviteOutcome::Created { user, token })
 }
 

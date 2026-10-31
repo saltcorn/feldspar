@@ -66,7 +66,7 @@ fn trial() -> Attrs {
 fn signed_up(user: &sc_auth::User) -> Event {
     Event::new(EventKind::Insert)
         .on("users")
-        .row(json!({ "id": user.id.to_string(), "email": "new@example.com", "role": 80 }))
+        .row(json!({ "id": user.id().to_string(), "email": "new@example.com", "role": 80 }))
 }
 
 async fn run(catalog: &Catalog, event: &Event, cfg: &Attrs) -> Result<Json> {
@@ -93,10 +93,10 @@ async fn a_trial_granted_on_sign_up_is_not_granted_again_after_it_expires() -> R
     assert_eq!(first["granted"], json!(true), "{first}");
     assert_eq!(first["role"], json!(70));
     assert_eq!(
-        load_user(&catalog, user.id).await?.unwrap().role,
+        load_user(&catalog, user.id()).await?.unwrap().role(),
         Role::of(70)
     );
-    let grants = list_role_grants(&catalog, user.id).await?;
+    let grants = list_role_grants(&catalog, user.id()).await?;
     assert_eq!(grants.len(), 1);
     assert_eq!(grants[0].source, "grant_role");
     assert_eq!(grants[0].note.as_deref(), Some("14-day trial"));
@@ -118,24 +118,24 @@ async fn a_trial_granted_on_sign_up_is_not_granted_again_after_it_expires() -> R
         .await
         .map_err(|e| Error::database(e.to_string()))?;
     assert_eq!(
-        load_user(&catalog, user.id).await?.unwrap().role,
+        load_user(&catalog, user.id()).await?.unwrap().role(),
         Role::of(80)
     );
     // …and is still not granted again.
     let after = run(&catalog, &signed_up(&user), &trial()).await?;
     assert_eq!(after["granted"], json!(false), "{after}");
     assert_eq!(
-        load_user(&catalog, user.id).await?.unwrap().role,
+        load_user(&catalog, user.id()).await?.unwrap().role(),
         Role::of(80)
     );
-    assert_eq!(list_role_grants(&catalog, user.id).await?.len(), 1);
+    assert_eq!(list_role_grants(&catalog, user.id()).await?.len(), 1);
 
     // The key is per user: somebody else signing up gets a trial of their own.
     let other = create_user(&catalog, "other@example.com", "pw", Role::of(80)).await?;
     let theirs = run(&catalog, &signed_up(&other), &trial()).await?;
     assert_eq!(theirs["granted"], json!(true), "{theirs}");
     assert_eq!(
-        load_user(&catalog, user.id).await?.unwrap().role,
+        load_user(&catalog, user.id()).await?.unwrap().role(),
         Role::of(80)
     );
 
@@ -148,9 +148,9 @@ async fn a_trial_granted_on_sign_up_is_not_granted_again_after_it_expires() -> R
     ]);
     run(&catalog, &signed_up(&user), &comp).await?;
     run(&catalog, &signed_up(&user), &comp).await?;
-    assert_eq!(list_role_grants(&catalog, user.id).await?.len(), 2);
+    assert_eq!(list_role_grants(&catalog, user.id()).await?.len(), 2);
     assert_eq!(
-        load_user(&catalog, user.id).await?.unwrap().role,
+        load_user(&catalog, user.id()).await?.unwrap().role(),
         Role::of(70)
     );
     Ok(())

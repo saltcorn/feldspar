@@ -2,6 +2,72 @@
 
 Changes in reverse chronological order.
 
+## Code quality Q2: authenticated users and proof-carrying extractors
+
+The third milestone of `TODO-code-quality.md` (§4.3, §4.5 of the review). Nothing changes in
+stored data or the schema; a `User` serializes as it did. One wire-visible change: a session
+started on an application's host has a token starting `app-` (see below).
+
+**`sc_auth::User` is data, not a proof.** Its fields are private (`id()`, `role()`, `extra()`,
+`get()`) and it no longer implements `Deserialize`, so neither a struct literal nor a JSON blob
+can stand in for one read from the table. Nothing in the workspace deserialized one. The field
+writes became `with_field(name, value)` (cannot set `id`, `role` or the password hash) and
+`capped_at(role)` (only lowers: an application's `max_role`, `sc_app::cap_role`). Loading a user
+with their grants uses a crate-private `with_role`.
+
+**`sc_auth::AuthenticatedUser`** wraps a `User` somebody presented a credential for. Only
+`SessionStore::user_for` and API-token verification (`ApiCaller::user`) make one; it derefs to
+the `User` and `into_user()` drops the proof. `capped_at` keeps it, since lowering a role forges
+nothing.
+
+**`AdminSession`** (`sc-server/src/admin_session.rs`), the workspace's second
+`FromRequestParts`: its one constructor checks that the request is on the admin host, carries a
+live session, that the session was issued on the admin host, and that the user is an
+administrator. `/upload`, `/download`, `/backup/create`, `/backup/upload`, the LSP, agent chat,
+stream Observe and fit-progress sockets take one, and the IDE, Analytics UI and builder bundles
+resolve one. `admin_of`, `admin_host_only` and the hand-written `session_user` + `enforce_auth`
+sequences on those routes are gone. Observe and fit progress now also answer `404` on a hidden
+preview's host, as the other admin routes did. On a socket route, an unauthenticated request is
+now refused before its `Origin` is checked (`401`, where it was `403`), and `/backup/create`
+refuses a caller without an admin session before it reads the body (`401`, where an oversized
+body used to be a `413` first).
+
+**Handler gates.** `HandlerCtx<W>` carries who is calling as `who: W` (`ctx.user()` reads the
+user). A handler is registered behind a gate: `register` (open, handed the `Caller`),
+`register_signed_in` (an `AuthenticatedUser`), `register_admin` (an `Admin`) or
+`register_analytics` (an `AnalyticsCaller`: admin on the admin host, the application's visitor on
+an Analytics application's host). The registry narrows the dispatcher's `Caller` before the
+handler runs and refuses one the gate does not admit. `Admin` is an `AdminSession`, or
+`Admin::delegated` for the MCP server's endpoint tools and the catalog's `AdminHost`, which make
+their own admin check (listed in docs/SECURITY_REVIEW_2026-10.md's inventory). At startup the
+router refuses an endpoint set in which an `admin()` endpoint's handler is not behind the admin
+(or Analytics) gate, a `LoggedIn` endpoint's is behind the open gate, or an Analytics
+application's endpoint is not behind the Analytics gate. The 249 admin handlers, 38 Analytics
+handlers and `logout` were moved to their gates; `authStatus`, `login` and `createFirstUser` stay
+open.
+
+**Sessions are bound to the host that issued them** (security review #15's open item). A session
+started on an application's host — its sign-in, OAuth, a checklist's browser, `call_api` — gets a
+token prefixed `app-` (`SessionScope::App`); the admin host, the admin handoff and `feldspar auth
+token` mint the plain 64-hex-digit tokens they always did. The scope is part of the hashed token,
+so no column was added. On the admin host an application's session is no session: admin routes
+answer `401` and `authStatus` shows nobody, so an admin signed in to an application (or sharing
+sign-in) signs in again on the admin host. A token issued before this change reads as an
+admin-host token and lapses with its expiry.
+
+**Admin sockets hold their session.** The chat socket's `ChatSession` became `AdminWatch`, which
+the LSP, Observe and fit-progress sockets now use too: each registers as a session listener and
+re-reads its `AdminSession` every 30 s, and closes when the session ends, the account is disabled
+or deleted, or the user is no longer an admin (security review #42's class; only the chat did
+this before).
+
+Tests: `router::an_application_session_is_no_admin_session_on_the_admin_host`,
+`router::an_admin_endpoint_cannot_be_served_by_an_open_handler` (startup check, and an admin
+handler called without admin authority is refused), `app_serving::admin_file_and_backup_routes_are_nothing_on_an_application_host`
+(extended to the four sockets, and to an application session on the admin host),
+`session::tests::a_session_says_which_host_issued_it`,
+`user::tests::a_user_serializes_as_before_and_its_builders_cannot_raise_it`.
+
 ## Code quality Q1: `Role`, `Principal` and `Authority`
 
 The second milestone of `TODO-code-quality.md` (§4.1, §4.2 of the review). Nothing changes on the

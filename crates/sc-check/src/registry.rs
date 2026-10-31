@@ -316,7 +316,7 @@ pub struct StepContext<'a> {
 impl<'a> StepContext<'a> {
     /// The role `run_as` acts at: theirs, or public.
     pub fn role(&self) -> Role {
-        self.run_as.map_or(Role::PUBLIC, |u| u.role)
+        self.run_as.map_or(Role::PUBLIC, |u| u.role())
     }
 
     /// The formula evaluator, where the type needs data and the host has one.

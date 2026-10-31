@@ -66,7 +66,7 @@ fn admin() -> User {
 }
 
 fn id(user: &User) -> String {
-    user.id.hyphenated().to_string()
+    user.id().hyphenated().to_string()
 }
 
 fn key(name: &str, target: &str) -> DataField {
@@ -185,7 +185,7 @@ impl Fixture {
             .hub
             .connect(ConnectionInfo {
                 app: "boards".to_owned(),
-                user: Some(user.id),
+                user: Some(user.id()),
                 session: None,
             })
             .expect("connects");
@@ -506,7 +506,7 @@ async fn a_users_stream_is_typed_and_sent_without_the_password_hash() -> Result<
     let (connection, mut queue) = hub
         .connect(ConnectionInfo {
             app: "people".to_owned(),
-            user: Some(admin().id),
+            user: Some(admin().id()),
             session: None,
         })
         .expect("connects");

@@ -236,7 +236,7 @@ async fn user_id(cx: &ToolCall<'_>, email: Option<&str>) -> Result<Option<Uuid>>
     let user = sc_auth::load_user_by_email(cx.env.catalog, email)
         .await?
         .ok_or_else(|| Error::not_found(format!("no user with email `{email}`")))?;
-    Ok(Some(user.id))
+    Ok(Some(user.id()))
 }
 
 fn drafts(value: Option<&Json>) -> Result<Vec<StepDraft>> {

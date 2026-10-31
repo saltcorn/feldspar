@@ -162,9 +162,9 @@ impl StepType for DeclaredStep {
                 "run": { "id": cx.run_id.to_string() },
                 "vars": cx.vars,
                 "user": cx.run_as.map(|u| json!({
-                    "id": u.id.to_string(),
+                    "id": u.id().to_string(),
                     "email": u.get(sc_auth::COL_EMAIL).and_then(sc_query::Value::as_text),
-                    "role": u.role,
+                    "role": u.role(),
                 })),
                 "application": cx.application.map(|a| json!({
                     "id": a.id.0.to_string(),

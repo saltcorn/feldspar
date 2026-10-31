@@ -185,7 +185,7 @@ fn statuses(results: &[Json]) -> Vec<&str> {
 async fn a_device_uploads_what_it_did_offline() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let ann = f.ann.id.to_string();
+    let ann = f.ann.id().to_string();
     let device = register(&f, &f.ann).await?;
     let note = NOTE.replace('n', "a");
     let item = ITEM.replace('i', "b");
@@ -242,7 +242,7 @@ async fn a_device_uploads_what_it_did_offline() -> Result<()> {
 async fn a_refused_change_does_not_stop_the_others() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let (ann, bob) = (f.ann.id.to_string(), f.bob.id.to_string());
+    let (ann, bob) = (f.ann.id().to_string(), f.bob.id().to_string());
     let device = register(&f, &f.ann).await?;
     let mine = NOTE.replace('n', "a");
     let gone = NOTE.replace('n', "f");
@@ -303,7 +303,7 @@ async fn a_refused_change_does_not_stop_the_others() -> Result<()> {
 async fn a_retried_upload_is_applied_once() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let ann = f.ann.id.to_string();
+    let ann = f.ann.id().to_string();
     let device = register(&f, &f.ann).await?;
     let changes = |from: i64| {
         json!([

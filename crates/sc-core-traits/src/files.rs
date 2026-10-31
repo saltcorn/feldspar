@@ -307,7 +307,10 @@ async fn build_output_holding(
 /// A run's caller as a file rule sees them: the role every check runs at, and
 /// the user id the owner rule compares with (none for a system run).
 pub fn file_caller(caller: &RunCaller) -> FileCaller {
-    FileCaller::new(caller.role, caller.user.as_ref().map(|u| u.id.to_string()))
+    FileCaller::new(
+        caller.role,
+        caller.user.as_ref().map(|u| u.id().to_string()),
+    )
 }
 
 /// The save-and-load check the coding trait makes: the store is one this

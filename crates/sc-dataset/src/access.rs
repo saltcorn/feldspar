@@ -83,11 +83,11 @@ impl Caller {
     /// The caller a request's user is, or nobody's (the public role).
     pub fn of_user(user: Option<&User>) -> Caller {
         Caller {
-            role: user.map_or(Role::PUBLIC, |u| u.role),
+            role: user.map_or(Role::PUBLIC, |u| u.role()),
             user: user.map(|u| {
-                let mut fields = u.extra.clone();
-                fields.insert(COL_ID.to_owned(), Value::Uuid(u.id));
-                fields.insert(COL_ROLE.to_owned(), Value::Int(i64::from(u.role)));
+                let mut fields = u.extra().clone();
+                fields.insert(COL_ID.to_owned(), Value::Uuid(u.id()));
+                fields.insert(COL_ROLE.to_owned(), Value::Int(i64::from(u.role())));
                 fields
             }),
             tables: None,
@@ -547,7 +547,7 @@ mod tests {
         let user = User::new(uuid::Uuid::new_v4(), Role::of(40));
         let caller = Caller::of_user(Some(&user)).within(["houses".to_owned()]);
         assert_eq!(caller.role, Role::of(40));
-        assert_eq!(caller.user_id(), Some(user.id));
+        assert_eq!(caller.user_id(), Some(user.id()));
         assert!(caller.may_name("houses"));
         assert!(!caller.may_name("incidents"));
         assert!(!caller.is_admin());
@@ -565,7 +565,7 @@ mod tests {
                 .as_ref()
                 .and_then(|u| u.get("id"))
                 .and_then(Json::as_str),
-            Some(user.id.to_string().as_str())
+            Some(user.id().to_string().as_str())
         );
     }
 }

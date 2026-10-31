@@ -181,7 +181,11 @@ impl AppRequester for AppRequests {
             )));
         }
         let session = match request.user {
-            Some(user) => Some(self.sessions.login(user.clone()).await?),
+            Some(user) => Some(
+                self.sessions
+                    .login_in(user.clone(), sc_auth::SessionScope::App)
+                    .await?,
+            ),
             None => None,
         };
         let pass = request.preview.map(|preview| {

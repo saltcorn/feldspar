@@ -417,7 +417,7 @@ async fn setup() -> Result<Server> {
         addr,
         _dir: dir,
     };
-    let owner = alice.id.hyphenated().to_string();
+    let owner = alice.id().hyphenated().to_string();
     let notes = catalog.require("notes")?;
     sc_api::rows::create_row(
         &catalog,

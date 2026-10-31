@@ -95,7 +95,7 @@ pub(crate) async fn pull(
     let synced: Vec<Table> = exposed
         .iter()
         .filter_map(|name| cat.get(name).ok().flatten())
-        .filter(|table| table.sync_enabled() && may_read(table, user.role))
+        .filter(|table| table.sync_enabled() && may_read(table, user.role()))
         .collect();
 
     let tx = SharedTx::begin_snapshot(cat).await?;
@@ -153,7 +153,7 @@ async fn read_tables(
                 "table": table.name,
                 "reset": true,
                 "rows": ownership::read_rows_as_in(
-                    cat, table, &RowQuery::new(), user.role, Some(user), evaluator, &executor,
+                    cat, table, &RowQuery::new(), user.role(), Some(user), evaluator, &executor,
                 ).await?,
                 "removed": [],
             }),
@@ -242,7 +242,7 @@ async fn changes_of(
             cat,
             table,
             &query,
-            user.role,
+            user.role(),
             Some(user),
             evaluator,
             &executor,
@@ -329,7 +329,7 @@ async fn was_held(
         }
         let image = Json::Object(image);
         let readable = ownership::RowImage::new(table, &image)
-            .readable(cat, user.role, Some(user), evaluator)
+            .readable(cat, user.role(), Some(user), evaluator)
             .await
             .unwrap_or(false);
         if readable {

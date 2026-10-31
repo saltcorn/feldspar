@@ -558,7 +558,7 @@ async fn part_one_the_live_socket() -> Result<()> {
     let member_id = sc_auth::load_user_by_email(&tutorial.catalog, MEMBER)
         .await?
         .unwrap()
-        .id;
+        .id();
     sc_auth::update_user(
         &tutorial.catalog,
         member_id,
@@ -725,7 +725,7 @@ async fn part_two_notifications_and_progress() -> Result<()> {
     let member_id = sc_auth::load_user_by_email(&tutorial.catalog, MEMBER)
         .await?
         .unwrap()
-        .id;
+        .id();
 
     // --- Step 1: an internal stream, one topic per user --------------------
     let keys: Value = serde_json::from_str(&doc_block(
@@ -997,7 +997,7 @@ async fn part_four_presence_on_the_board() -> Result<()> {
             .await
             .unwrap()
             .unwrap()
-            .id
+            .id()
             .hyphenated()
             .to_string()
     };

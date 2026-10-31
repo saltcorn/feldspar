@@ -88,7 +88,7 @@ async fn admin_only_login_gate() -> sc_error::Result<()> {
     // The non-admin has valid credentials (ungated authenticate accepts them)…
     let member = authenticate(&catalog, "member@example.com", "member-pw").await?;
     assert!(member.is_some());
-    assert_eq!(member.unwrap().role, Role::of(40));
+    assert_eq!(member.unwrap().role(), Role::of(40));
 
     // …but the admin gate rejects them.
     assert!(

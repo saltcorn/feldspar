@@ -123,7 +123,7 @@ mod deno {
             let (connection, queue) = hub
                 .connect(ConnectionInfo {
                     app: "mail".to_owned(),
-                    user: Some(user.id),
+                    user: Some(user.id()),
                     session: None,
                 })
                 .expect("connects");
@@ -248,7 +248,7 @@ mod deno {
             (&bob, "bob2"),
         ] {
             let values = json!({
-                "owner": user.id.to_string(), "label": login, "email": format!("{login}@example.com"),
+                "owner": user.id().to_string(), "label": login, "email": format!("{login}@example.com"),
                 "display_name": login, "mode": "mirror", "min_role": 1,
                 "imap_host": "127.0.0.1", "imap_port": 11993, "imap_security": "tls",
                 "imap_user": login, "imap_password": PASSWORD,

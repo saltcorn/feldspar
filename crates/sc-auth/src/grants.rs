@@ -306,11 +306,10 @@ fn resolve(base: Role, grants: &[RoleGrant], now: DateTime<Utc>) -> EffectiveRol
 /// `user` served at their effective role, and when that next changes.
 pub(crate) async fn with_grants(
     catalog: &Catalog,
-    mut user: crate::User,
+    user: crate::User,
 ) -> Result<(crate::User, Option<DateTime<Utc>>)> {
-    let effective = effective_role(catalog, user.id, user.role).await?;
-    user.role = effective.role;
-    Ok((user, effective.changes_at))
+    let effective = effective_role(catalog, user.id(), user.role()).await?;
+    Ok((user.with_role(effective.role), effective.changes_at))
 }
 
 /// Grant a role, or update the grant `(source, source_ref)` already names —

@@ -112,9 +112,9 @@ pub use roles::{
     load_role, load_role_by_name, save_role,
 };
 pub use session::{
-    CACHE_CAPACITY, CACHE_TTL_SECONDS, COL_EXPIRES_AT as COL_SESSION_EXPIRES_AT,
+    APP_TOKEN_PREFIX, CACHE_CAPACITY, CACHE_TTL_SECONDS, COL_EXPIRES_AT as COL_SESSION_EXPIRES_AT,
     COL_TOKEN_HASH as COL_SESSION_TOKEN_HASH, COL_USER as COL_SESSION_USER, DEFAULT_TTL_HOURS,
-    SESSIONS_TABLE, SessionEnded, SessionListener, SessionStore, bootstrap_sessions,
+    SESSIONS_TABLE, SessionEnded, SessionListener, SessionScope, SessionStore, bootstrap_sessions,
     changeset_session_key, changeset_token_key, create_session, delete_sessions_for_user,
 };
 pub use tokens::{
@@ -127,7 +127,7 @@ pub use tokens::{
     bearer_secret_hash, bootstrap_api_tokens, list_api_tokens, load_api_token, mint_api_token,
     new_bearer_secret, revoke_api_token, sweep_expired_api_tokens,
 };
-pub use user::{User, role_of};
+pub use user::{AuthenticatedUser, User, role_of};
 
 /// Held while the role grants or the credits ledger are created on first use,
 /// so two first writes at once do not both create them.

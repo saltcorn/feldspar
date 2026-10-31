@@ -367,7 +367,7 @@ async fn a_personal_memory_is_only_read_back_for_its_own_user() -> Result<()> {
     let found = list_memories(&env.catalog, &filter).await?;
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].topic, "drinks");
-    assert_eq!(found[0].user, ada.user.as_ref().map(|u| u.id));
+    assert_eq!(found[0].user, ada.user.as_ref().map(|u| u.id()));
     Ok(())
 }
 
@@ -376,7 +376,7 @@ async fn consolidated_preferences_reach_only_their_users_session() -> Result<()>
     let env = memory_env().await?;
     let ada = RunCaller::user(reader("ada@example.com"));
     let bob = RunCaller::user(reader("bob@example.com"));
-    let ada_id = ada.user.as_ref().unwrap().id;
+    let ada_id = ada.user.as_ref().unwrap().id();
     replace_preferences(
         &env.catalog,
         "librarian",
@@ -523,7 +523,7 @@ async fn a_personal_memory_never_reaches_another_users_run() -> Result<()> {
     replace_preferences(
         &env.catalog,
         "librarian",
-        ada.user.as_ref().unwrap().id,
+        ada.user.as_ref().unwrap().id(),
         "Allergic to penicillin.",
     )
     .await?;
@@ -549,7 +549,7 @@ async fn consolidate_memory_summarises_each_users_own_memories() -> Result<()> {
             &env.catalog,
             &NewMemory {
                 agent: "librarian".into(),
-                user: Some(user.id),
+                user: Some(user.id()),
                 run: None,
                 kind: "memory".into(),
                 personal: true,
@@ -585,7 +585,7 @@ async fn consolidate_memory_summarises_each_users_own_memories() -> Result<()> {
         let about_ada = sent.contains("Ada prefers tea");
         assert_eq!(about_ada, sent.contains("science fiction"), "{sent}");
         assert_ne!(about_ada, sent.contains("Bob prefers coffee"), "{sent}");
-        profiles.push((if about_ada { ada.id } else { bob.id }, profile));
+        profiles.push((if about_ada { ada.id() } else { bob.id() }, profile));
     }
     for (user, profile) in profiles {
         let preferences = preferences_of(&env.catalog, "librarian", user)

@@ -360,7 +360,7 @@ fn asker(
     let owner = crate::uploads::uploader_of(user.as_ref(), jar, secure);
     match user {
         Some(user) => Ok(Asker {
-            user: Some(user.id),
+            user: Some(user.id()),
             caller: RunCaller::exposed(user),
             owner,
         }),

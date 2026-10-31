@@ -366,7 +366,7 @@ async fn the_sub_agent_runs_as_the_person_chatting_and_not_as_the_server() -> Re
 
     let agent = librarian(&[]);
     let caller = as_user("bob@example.com");
-    let bob = caller.user.as_ref().unwrap().id;
+    let bob = caller.user.as_ref().unwrap().id();
     let (run, _) = chat(&env, &scripts, &agent, caller, "what have I got?").await?;
 
     let child_id = serde_json::from_str::<Json>(&delegation_result(

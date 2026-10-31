@@ -772,7 +772,7 @@ async fn the_tutorials_shop_takes_a_guests_order_to_paid_and_delivers_it() -> sc
         Role::of(80),
     )
     .await?
-    .id;
+    .id();
     create_user(
         &shop.catalog,
         "ada@example.com",

@@ -167,11 +167,11 @@ pub fn admin_handlers_with(
                 // token. Not a secret, and only said while it can matter.
                 let token_required =
                     !exists && !sc_config::first_user_tokens(&catalog).await?.is_empty();
-                let current = ctx.user.as_ref().map_or(Json::Null, user_summary_json);
+                let current = ctx.user().map_or(Json::Null, user_summary_json);
                 // Asked only of an admin: nobody else is shown the dialogs, and
                 // a signed-out caller has no business learning the answer.
-                let onboarding_pending = match &ctx.user {
-                    Some(user) if user.role.is_admin() => {
+                let onboarding_pending = match ctx.user() {
+                    Some(user) if user.role().is_admin() => {
                         sc_config::config_value(&catalog, sc_config::ONBOARDING_DONE).await?
                             != json!(true)
                     }
@@ -197,7 +197,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("finishOnboarding", {
+    reg.register_admin("finishOnboarding", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -280,13 +280,13 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("logout", |_ctx| async {
+    reg.register_signed_in("logout", |_ctx| async {
         Ok(HandlerResponse::end_session(json!({ "ok": true })))
     });
 
     // --- catalog: tables & fields ------------------------------------------
 
-    reg.register("listTables", {
+    reg.register_admin("listTables", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -303,7 +303,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createTable", {
+    reg.register_admin("createTable", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -339,7 +339,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createTableFromCsv", {
+    reg.register_admin("createTableFromCsv", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -361,7 +361,7 @@ pub fn admin_handlers_with(
                     &name,
                     &optional_str(obj, "database"),
                     &document,
-                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user())),
                 )
                 .await?;
                 let rls = catalog.primary().capabilities().row_level_security;
@@ -374,7 +374,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createTableFromGeoFile", {
+    reg.register_admin("createTableFromGeoFile", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -394,7 +394,7 @@ pub fn admin_handlers_with(
                     &file_name,
                     &bytes,
                     Some(layer.trim()).filter(|l| !l.is_empty()),
-                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user())),
                 )
                 .await?;
                 let rls = catalog.primary().capabilities().row_level_security;
@@ -408,7 +408,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("dropTable", {
+    reg.register_admin("dropTable", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -446,7 +446,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("renameTable", {
+    reg.register_admin("renameTable", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -472,7 +472,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateTable", {
+    reg.register_admin("updateTable", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -513,7 +513,7 @@ pub fn admin_handlers_with(
 
     // --- metadata tables ------------------------------------------------------
 
-    reg.register("listMetadataTables", {
+    reg.register_admin("listMetadataTables", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -524,7 +524,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createMetadataTable", {
+    reg.register_admin("createMetadataTable", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -545,7 +545,7 @@ pub fn admin_handlers_with(
 
     // --- table providers (§8.3) ---------------------------------------------
 
-    reg.register("listTableProviders", {
+    reg.register_admin("listTableProviders", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -570,7 +570,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createProvidedTable", {
+    reg.register_admin("createProvidedTable", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -599,7 +599,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateProvidedTable", {
+    reg.register_admin("updateProvidedTable", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -640,7 +640,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteTableSettings", {
+    reg.register_admin("deleteTableSettings", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -657,7 +657,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listOrphanTableSettings", {
+    reg.register_admin("listOrphanTableSettings", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -686,7 +686,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listRoles", {
+    reg.register_admin("listRoles", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -697,7 +697,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createRole", {
+    reg.register_admin("createRole", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -712,7 +712,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteRole", {
+    reg.register_admin("deleteRole", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -727,7 +727,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listFields", {
+    reg.register_admin("listFields", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -752,7 +752,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listInboundKeys", {
+    reg.register_admin("listInboundKeys", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -771,7 +771,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createField", {
+    reg.register_admin("createField", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -813,7 +813,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateField", {
+    reg.register_admin("updateField", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -878,7 +878,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteField", {
+    reg.register_admin("deleteField", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -906,7 +906,7 @@ pub fn admin_handlers_with(
 
     // --- table constraints (§5) ---------------------------------------------
 
-    reg.register("listConstraints", {
+    reg.register_admin("listConstraints", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -921,7 +921,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createConstraint", {
+    reg.register_admin("createConstraint", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -958,7 +958,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteConstraint", {
+    reg.register_admin("deleteConstraint", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -979,7 +979,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listFieldTypes", {
+    reg.register_admin("listFieldTypes", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1023,7 +1023,7 @@ pub fn admin_handlers_with(
     // vocabulary an application's REST read takes, parsed by the same code
     // (`sc_api::query_string`). The admin grid sends `order`, `limit`, `offset`
     // and one `column=op.value` pair per box its filter row has typed in.
-    reg.register("listRows", {
+    reg.register_admin("listRows", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1035,7 +1035,7 @@ pub fn admin_handlers_with(
                     &catalog,
                     &table,
                     &query,
-                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user())),
                 )
                 .await?;
                 // The data editor is a client like any other: it may write a
@@ -1046,7 +1046,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("countRows", {
+    reg.register_admin("countRows", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1061,7 +1061,7 @@ pub fn admin_handlers_with(
                     &catalog,
                     &table,
                     filter,
-                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user())),
                 )
                 .await?;
                 Ok(HandlerResponse::ok(json!({ "count": count })))
@@ -1069,7 +1069,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createRow", {
+    reg.register_admin("createRow", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1079,7 +1079,7 @@ pub fn admin_handlers_with(
                     &catalog,
                     &table,
                     &ctx.body,
-                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user())),
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
@@ -1090,7 +1090,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateRow", {
+    reg.register_admin("updateRow", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1102,7 +1102,7 @@ pub fn admin_handlers_with(
                     &table,
                     id,
                     &ctx.body,
-                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user())),
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
@@ -1113,7 +1113,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteRow", {
+    reg.register_admin("deleteRow", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1126,7 +1126,7 @@ pub fn admin_handlers_with(
                     &catalog,
                     &table,
                     id,
-                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user())),
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
@@ -1135,7 +1135,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteAllRows", {
+    reg.register_admin("deleteAllRows", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1144,7 +1144,7 @@ pub fn admin_handlers_with(
                 let deleted = rows::delete_all_rows_ctx(
                     &catalog,
                     &table,
-                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user())),
                 )
                 .await?;
                 if deleted > 0 {
@@ -1160,7 +1160,7 @@ pub fn admin_handlers_with(
     // Admin-only routes, read through `sc_api::history` all the same, so the
     // table must keep history and secrets are the sentinel here as everywhere.
 
-    reg.register("getRowHistory", {
+    reg.register_admin("getRowHistory", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -1168,7 +1168,7 @@ pub fn admin_handlers_with(
             let apps = apps.clone();
             async move {
                 let evaluator = apps.evaluator();
-                let reader = HistoryReader::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let reader = HistoryReader::new(&catalog, ctx.user(), evaluator.as_ref());
                 let out = reader
                     .row_history(ctx.path_param("table")?, ctx.path_param("id")?)
                     .await?;
@@ -1177,7 +1177,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listDeletedRows", {
+    reg.register_admin("listDeletedRows", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -1185,7 +1185,7 @@ pub fn admin_handlers_with(
             let apps = apps.clone();
             async move {
                 let evaluator = apps.evaluator();
-                let reader = HistoryReader::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let reader = HistoryReader::new(&catalog, ctx.user(), evaluator.as_ref());
                 let limit = optional_query_u64(&ctx, "limit")?;
                 let offset = optional_query_u64(&ctx, "offset")?.unwrap_or(0);
                 let out = reader
@@ -1196,7 +1196,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("getRowAsOf", {
+    reg.register_admin("getRowAsOf", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -1204,7 +1204,7 @@ pub fn admin_handlers_with(
             let apps = apps.clone();
             async move {
                 let evaluator = apps.evaluator();
-                let reader = HistoryReader::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let reader = HistoryReader::new(&catalog, ctx.user(), evaluator.as_ref());
                 let as_of = ctx.query_get("as_of").ok_or_else(|| {
                     Error::invalid("`as_of` is required: a time or an entry's number")
                 })?;
@@ -1216,24 +1216,24 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listChangesets", {
+    reg.register_admin("listChangesets", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
             async move {
-                let reader = HistoryReader::new(&catalog, ctx.user.as_ref(), None);
+                let reader = HistoryReader::new(&catalog, ctx.user(), None);
                 let filter = sc_api::history::changeset_filter(&ctx.query)?;
                 Ok(HandlerResponse::ok(reader.list_changesets(filter).await?))
             }
         }
     });
 
-    reg.register("getChangeset", {
+    reg.register_admin("getChangeset", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
             async move {
-                let reader = HistoryReader::new(&catalog, ctx.user.as_ref(), None);
+                let reader = HistoryReader::new(&catalog, ctx.user(), None);
                 Ok(HandlerResponse::ok(
                     reader.changeset(ctx.path_param("id")?).await?,
                 ))
@@ -1246,7 +1246,7 @@ pub fn admin_handlers_with(
     // Writes as the caller through `sc_api::undo`, each in one transaction and
     // a changeset of its own.
 
-    reg.register("restoreRow", {
+    reg.register_admin("restoreRow", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -1254,7 +1254,7 @@ pub fn admin_handlers_with(
             let apps = apps.clone();
             async move {
                 let evaluator = apps.evaluator();
-                let reverser = Reverser::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let reverser = Reverser::new(&catalog, ctx.user(), evaluator.as_ref());
                 let restored = reverser
                     .restore_row(ctx.path_param("table")?, ctx.path_param("id")?)
                     .await?;
@@ -1263,7 +1263,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("revertRow", {
+    reg.register_admin("revertRow", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -1271,7 +1271,7 @@ pub fn admin_handlers_with(
             let apps = apps.clone();
             async move {
                 let evaluator = apps.evaluator();
-                let reverser = Reverser::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let reverser = Reverser::new(&catalog, ctx.user(), evaluator.as_ref());
                 let version = int_field(require_object(&ctx.body)?, "version")?;
                 let restored = reverser
                     .revert_row(ctx.path_param("table")?, ctx.path_param("id")?, version)
@@ -1281,7 +1281,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("undoChangeset", {
+    reg.register_admin("undoChangeset", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -1289,7 +1289,7 @@ pub fn admin_handlers_with(
             let apps = apps.clone();
             async move {
                 let evaluator = apps.evaluator();
-                let reverser = Reverser::new(&catalog, ctx.user.as_ref(), evaluator.as_ref());
+                let reverser = Reverser::new(&catalog, ctx.user(), evaluator.as_ref());
                 let id = ctx.path_param("id")?;
                 let id: uuid::Uuid = id
                     .parse()
@@ -1315,7 +1315,7 @@ pub fn admin_handlers_with(
 
     // --- rows in bulk, as CSV ----------------------------------------------
 
-    reg.register("exportTableCsv", {
+    reg.register_admin("exportTableCsv", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1324,7 +1324,7 @@ pub fn admin_handlers_with(
                 let document = csv_rows::export_table(
                     &catalog,
                     &table,
-                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user())),
                 )
                 .await?;
                 // The browser saves the file, so the server says what to call
@@ -1338,7 +1338,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("importTableCsv", {
+    reg.register_admin("importTableCsv", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1353,7 +1353,7 @@ pub fn admin_handlers_with(
                     &catalog,
                     &table,
                     &document,
-                    Authority::Caller(&admin_caller(ctx.user.as_ref())),
+                    Authority::Caller(&admin_caller(ctx.user())),
                 )
                 .await?;
                 // An import is row by row, so any row that went in counts.
@@ -1376,7 +1376,7 @@ pub fn admin_handlers_with(
     // reason: an endpoint added later would have to build the JSON by hand to
     // leak one.
 
-    reg.register("listDatabaseConnections", {
+    reg.register_admin("listDatabaseConnections", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -1391,7 +1391,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createDatabaseConnection", {
+    reg.register_admin("createDatabaseConnection", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1413,7 +1413,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateDatabaseConnection", {
+    reg.register_admin("updateDatabaseConnection", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1451,7 +1451,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteDatabaseConnection", {
+    reg.register_admin("deleteDatabaseConnection", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1474,7 +1474,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("testDatabaseConnection", {
+    reg.register_admin("testDatabaseConnection", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1528,7 +1528,7 @@ pub fn admin_handlers_with(
     // running with the flag would see an empty list. Stored stores come first,
     // then any connected store with no definition, which reports a null id to
     // say "there is nothing here to edit".
-    reg.register("listFileStores", {
+    reg.register_admin("listFileStores", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -1549,7 +1549,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createFileStore", {
+    reg.register_admin("createFileStore", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1581,7 +1581,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateFileStore", {
+    reg.register_admin("updateFileStore", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1620,7 +1620,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteFileStore", {
+    reg.register_admin("deleteFileStore", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1648,7 +1648,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listFileStoreBackends", {
+    reg.register_admin("listFileStoreBackends", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1682,7 +1682,7 @@ pub fn admin_handlers_with(
     // Configure scope: against configuration the admin has not saved yet, so the
     // definition is built from the body and thrown away, and what comes back is
     // its config for the form to adopt.
-    reg.register("runBackendOperation", {
+    reg.register_admin("runBackendOperation", {
         move |ctx| async move {
             let backend = ctx.path_param("backend")?.to_owned();
             let operation = ctx.path_param("operation")?.to_owned();
@@ -1708,7 +1708,7 @@ pub fn admin_handlers_with(
     // the definition is persisted, and the store is reconnected — an operation
     // may be exactly what makes it connectable (a clone), and an admin who has
     // just repaired a store should not have to save again to use it.
-    reg.register("runFileStoreOperation", {
+    reg.register_admin("runFileStoreOperation", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1759,7 +1759,7 @@ pub fn admin_handlers_with(
     // the record is serialised, rather than in the screen — a second reader added
     // later gets the same treatment without having to know it needs it (§11.1).
 
-    reg.register("listLlmProviders", {
+    reg.register_admin("listLlmProviders", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -1775,7 +1775,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createLlmProvider", {
+    reg.register_admin("createLlmProvider", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1796,7 +1796,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateLlmProvider", {
+    reg.register_admin("updateLlmProvider", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1824,7 +1824,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("setDefaultLlmProvider", {
+    reg.register_admin("setDefaultLlmProvider", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1843,7 +1843,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteLlmProvider", {
+    reg.register_admin("deleteLlmProvider", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1863,7 +1863,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listLlmProviderBackends", {
+    reg.register_admin("listLlmProviderBackends", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1887,7 +1887,7 @@ pub fn admin_handlers_with(
     // secret, so nothing is redacted here; what a listed model carries beside
     // its row is what its blank settings resolve to.
 
-    reg.register("listLlmModels", {
+    reg.register_admin("listLlmModels", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1903,7 +1903,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createLlmModel", {
+    reg.register_admin("createLlmModel", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1916,7 +1916,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateLlmModel", {
+    reg.register_admin("updateLlmModel", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1965,7 +1965,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteLlmModel", {
+    reg.register_admin("deleteLlmModel", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1986,7 +1986,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listLlmModelSettings", {
+    reg.register_admin("listLlmModelSettings", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2011,7 +2011,7 @@ pub fn admin_handlers_with(
     // Asks the host which models it serves. Like a test, a host that cannot
     // answer is a 200 with `ok: false`: the refusal *is* the answer, and "type
     // the name instead" is what the admin needs to read.
-    reg.register("fetchLlmModels", {
+    reg.register_admin("fetchLlmModels", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2056,7 +2056,7 @@ pub fn admin_handlers_with(
     // refusing is the answer to the question that was asked — "does this work?"
     // — and an error response would make the UI show it as a broken request
     // rather than as the diagnostic it is.
-    reg.register("testLlmModel", {
+    reg.register_admin("testLlmModel", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2172,7 +2172,7 @@ pub fn admin_handlers_with(
     // usable on a running server, which is the whole point of installing one
     // from a form rather than from a deploy.
 
-    reg.register("listModules", {
+    reg.register_admin("listModules", {
         let apps = apps.clone();
         move |ctx| {
             let apps = apps.clone();
@@ -2185,7 +2185,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("installModule", {
+    reg.register_admin("installModule", {
         let apps = apps.clone();
         move |ctx| {
             let apps = apps.clone();
@@ -2197,7 +2197,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateModule", {
+    reg.register_admin("updateModule", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -2261,7 +2261,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteModule", {
+    reg.register_admin("deleteModule", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -2279,7 +2279,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("reloadModules", {
+    reg.register_admin("reloadModules", {
         let apps = apps.clone();
         move |_ctx| {
             let apps = apps.clone();
@@ -2298,7 +2298,7 @@ pub fn admin_handlers_with(
     // registry the chat socket runs with, and the list carries the reason a
     // stored agent is not usable beside it — because editing it is the repair.
 
-    reg.register("listAgents", {
+    reg.register_admin("listAgents", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |_ctx| {
@@ -2327,7 +2327,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createAgent", {
+    reg.register_admin("createAgent", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -2342,7 +2342,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateAgent", {
+    reg.register_admin("updateAgent", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -2370,7 +2370,7 @@ pub fn admin_handlers_with(
 
     // --- code libraries (TODO F3) --------------------------------------------
 
-    reg.register("listCodeLibraries", {
+    reg.register_admin("listCodeLibraries", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -2381,7 +2381,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createCodeLibrary", {
+    reg.register_admin("createCodeLibrary", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2396,7 +2396,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateCodeLibrary", {
+    reg.register_admin("updateCodeLibrary", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2415,7 +2415,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteCodeLibrary", {
+    reg.register_admin("deleteCodeLibrary", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2429,7 +2429,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteAgent", {
+    reg.register_admin("deleteAgent", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2450,7 +2450,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listAgentTraits", {
+    reg.register_admin("listAgentTraits", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -2477,7 +2477,7 @@ pub fn admin_handlers_with(
 
     // --- runs ---------------------------------------------------------------
 
-    reg.register("listRuns", {
+    reg.register_admin("listRuns", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2493,7 +2493,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("getRun", {
+    reg.register_admin("getRun", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2507,7 +2507,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("getRunPart", {
+    reg.register_admin("getRunPart", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2522,7 +2522,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("getRunDiff", {
+    reg.register_admin("getRunDiff", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2539,7 +2539,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteRun", {
+    reg.register_admin("deleteRun", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2553,7 +2553,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("browseFiles", {
+    reg.register_admin("browseFiles", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2577,7 +2577,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("findFiles", {
+    reg.register_admin("findFiles", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2611,7 +2611,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listStoreFiles", {
+    reg.register_admin("listStoreFiles", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2643,7 +2643,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("getHelp", {
+    reg.register_admin("getHelp", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2651,7 +2651,7 @@ pub fn admin_handlers_with(
                 let topic = ctx.path_param("topic")?.to_owned();
                 let context = help_context(
                     &catalog,
-                    ctx.user.as_ref(),
+                    ctx.user(),
                     ctx.query_get("table"),
                     ctx.query_get("event"),
                 )
@@ -2664,7 +2664,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("searchFiles", {
+    reg.register_admin("searchFiles", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2726,7 +2726,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("readFile", {
+    reg.register_admin("readFile", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2753,7 +2753,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("writeFile", {
+    reg.register_admin("writeFile", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2766,13 +2766,13 @@ pub fn admin_handlers_with(
                 let data = file_body_bytes(obj)?;
                 let size = data.len();
                 store.write(&path, data).await?;
-                record_owner(store.as_ref(), &path, ctx.user.as_ref()).await;
+                record_owner(store.as_ref(), &path, ctx.user()).await;
                 Ok(HandlerResponse::ok(file_entry_written_json(&path, size)).with_status(201))
             }
         }
     });
 
-    reg.register("makeDirectory", {
+    reg.register_admin("makeDirectory", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2783,13 +2783,13 @@ pub fn admin_handlers_with(
                 let path = non_empty_str_field(obj, "path")?.to_owned();
                 check_write(store.as_ref(), floor, &path, &file_caller(&ctx)).await?;
                 store.mkdir(&path).await?;
-                record_owner(store.as_ref(), &path, ctx.user.as_ref()).await;
+                record_owner(store.as_ref(), &path, ctx.user()).await;
                 Ok(HandlerResponse::ok(directory_entry_json(&path)).with_status(201))
             }
         }
     });
 
-    reg.register("deleteFile", {
+    reg.register_admin("deleteFile", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2805,7 +2805,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("renameFile", {
+    reg.register_admin("renameFile", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2831,7 +2831,7 @@ pub fn admin_handlers_with(
     // (the endpoint model has no bytes shape), but registered here like any
     // other handler so it reaches the same catalog and the same access rule.
     // Routing around the `EndpointSet` must not mean routing around those.
-    reg.register("uploadFile", {
+    reg.register_admin("uploadFile", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2843,7 +2843,7 @@ pub fn admin_handlers_with(
                 let data = ctx.raw_body()?.clone();
                 let size = data.len();
                 store.write(&path, data).await?;
-                record_owner(store.as_ref(), &path, ctx.user.as_ref()).await;
+                record_owner(store.as_ref(), &path, ctx.user()).await;
                 Ok(HandlerResponse::ok(file_entry_written_json(&path, size)).with_status(201))
             }
         }
@@ -2851,7 +2851,7 @@ pub fn admin_handlers_with(
 
     // The bytes of one file, as a download (the `/download/{store}/{*path}`
     // route): what the file manager's Download fetches, however large.
-    reg.register("downloadFile", {
+    reg.register_admin("downloadFile", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2869,7 +2869,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("getFileMeta", {
+    reg.register_admin("getFileMeta", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2886,7 +2886,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("setFileMeta", {
+    reg.register_admin("setFileMeta", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -2938,7 +2938,7 @@ pub fn admin_handlers_with(
     // registry the dispatcher runs — and then reloads the live set, so the list
     // an admin is looking at is the set that will fire.
 
-    reg.register("listTriggers", {
+    reg.register_admin("listTriggers", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |_ctx| {
@@ -2979,7 +2979,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createTrigger", {
+    reg.register_admin("createTrigger", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3006,7 +3006,7 @@ pub fn admin_handlers_with(
                         &catalog,
                         &sc_workflow::Workflow::empty(trigger.id),
                         "created",
-                        ctx.user.as_ref().map(|u| u.id),
+                        ctx.user().map(|u| u.id()),
                     )
                     .await?;
                 }
@@ -3017,7 +3017,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateTrigger", {
+    reg.register_admin("updateTrigger", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3053,7 +3053,7 @@ pub fn admin_handlers_with(
                         &catalog,
                         &sc_workflow::Workflow::empty(id),
                         "created",
-                        ctx.user.as_ref().map(|u| u.id),
+                        ctx.user().map(|u| u.id()),
                     )
                     .await?;
                 }
@@ -3064,7 +3064,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteTrigger", {
+    reg.register_admin("deleteTrigger", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3087,7 +3087,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("runTrigger", {
+    reg.register_admin("runTrigger", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3106,7 +3106,7 @@ pub fn admin_handlers_with(
                 // admin who pressed the button. A failing action comes back as
                 // an error — a 200 carrying a hidden failure is the thing a
                 // "test this now" button exists to prevent.
-                let caller = admin_caller(ctx.user.as_ref());
+                let caller = admin_caller(ctx.user());
                 let result = dispatcher
                     .run_trigger(
                         &catalog,
@@ -3120,7 +3120,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("testRunTrigger", {
+    reg.register_admin("testRunTrigger", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3132,7 +3132,7 @@ pub fn admin_handlers_with(
                 let trigger = load_trigger(&catalog, id)
                     .await?
                     .ok_or_else(|| Error::not_found(format!("no trigger with id {id}")))?;
-                let caller = admin_caller(ctx.user.as_ref());
+                let caller = admin_caller(ctx.user());
                 // A table trigger has no occurrence of its own when a person
                 // presses a button, so one is borrowed: a row picked at random
                 // from the table it fires on. Read *before* the run and sent
@@ -3186,7 +3186,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listActions", {
+    reg.register_admin("listActions", {
         let apps = apps.clone();
         let catalog = catalog.clone();
         move |ctx| {
@@ -3258,7 +3258,7 @@ pub fn admin_handlers_with(
     // listed and still editable — with its issues beside it, because editing it
     // is the repair — and what it cannot do is start a run.
 
-    reg.register("getWorkflow", {
+    reg.register_admin("getWorkflow", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3302,7 +3302,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("saveWorkflow", {
+    reg.register_admin("saveWorkflow", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3331,7 +3331,7 @@ pub fn admin_handlers_with(
                     &catalog,
                     &workflow,
                     &optional_str(obj, "description"),
-                    ctx.user.as_ref().map(|u| u.id),
+                    ctx.user().map(|u| u.id()),
                 )
                 .await?;
                 let versions = sc_workflow::list_workflow_versions(&catalog, trigger.id).await?;
@@ -3346,7 +3346,7 @@ pub fn admin_handlers_with(
     // not a deletion of the versions in between — a run suspended on any of them
     // still has to be able to load the one it is pinned to tomorrow, which is
     // the whole reason the table is append-only (decision 2).
-    reg.register("revertWorkflow", {
+    reg.register_admin("revertWorkflow", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3382,7 +3382,7 @@ pub fn admin_handlers_with(
                     &catalog,
                     &old,
                     &description,
-                    ctx.user.as_ref().map(|u| u.id),
+                    ctx.user().map(|u| u.id()),
                 )
                 .await?;
                 let versions = sc_workflow::list_workflow_versions(&catalog, trigger.id).await?;
@@ -3393,7 +3393,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listWorkflowRuns", {
+    reg.register_admin("listWorkflowRuns", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -3423,7 +3423,7 @@ pub fn admin_handlers_with(
 
     // --- the three things an admin does to a run ----------------------------
 
-    reg.register("resumeRun", {
+    reg.register_admin("resumeRun", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3439,7 +3439,7 @@ pub fn admin_handlers_with(
                 // a form exposed to a role is exactly the thing that must not be
                 // reachable by way of a surface that forgot to ask.
                 if let Some(form) = sc_workflow::run_pending_form(&run)? {
-                    sc_workflow::check_may_resume(&form, sc_auth::role_of(ctx.user.as_ref()))?;
+                    sc_workflow::check_may_resume(&form, sc_auth::role_of(ctx.user()))?;
                 }
                 let values = match &ctx.body {
                     Json::Null => sc_types::Attrs::new(),
@@ -3460,7 +3460,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("cancelRun", {
+    reg.register_admin("cancelRun", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -3484,7 +3484,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("retryRun", {
+    reg.register_admin("retryRun", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3514,7 +3514,7 @@ pub fn admin_handlers_with(
     // is a spawned job (§8) — so the handler that starts one answers as soon as
     // the row exists and the screen polls it.
 
-    reg.register("listModelProviders", {
+    reg.register_admin("listModelProviders", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3610,7 +3610,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("previewDataset", {
+    reg.register_admin("previewDataset", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3663,7 +3663,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listModels", {
+    reg.register_admin("listModels", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3694,7 +3694,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("getModel", {
+    reg.register_admin("getModel", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3717,7 +3717,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("saveModel", {
+    reg.register_admin("saveModel", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3764,7 +3764,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("cloneModel", {
+    reg.register_admin("cloneModel", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3786,7 +3786,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("modelUsage", {
+    reg.register_admin("modelUsage", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -3800,7 +3800,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("patchModelViewState", {
+    reg.register_admin("patchModelViewState", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -3823,7 +3823,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteModel", {
+    reg.register_admin("deleteModel", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3845,7 +3845,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("fitModel", {
+    reg.register_admin("fitModel", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3873,7 +3873,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listModelInstances", {
+    reg.register_admin("listModelInstances", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -3890,7 +3890,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("getModelInstance", {
+    reg.register_admin("getModelInstance", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3936,7 +3936,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteModelInstance", {
+    reg.register_admin("deleteModelInstance", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -3953,7 +3953,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("activateModelInstance", {
+    reg.register_admin("activateModelInstance", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -3976,7 +3976,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("predictRows", {
+    reg.register_admin("predictRows", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -4054,7 +4054,7 @@ pub fn admin_handlers_with(
     // reading of the request and the two things only a server can do — read a
     // model's datasets through the row layer, and start or stop a job.
 
-    reg.register("getProgramInterface", {
+    reg.register_admin("getProgramInterface", {
         let apps = apps.clone();
         move |ctx| {
             let apps = apps.clone();
@@ -4099,7 +4099,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("previewModelData", {
+    reg.register_admin("previewModelData", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -4124,7 +4124,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("suggestBindings", {
+    reg.register_admin("suggestBindings", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -4145,7 +4145,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("compileModel", {
+    reg.register_admin("compileModel", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -4183,7 +4183,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("cancelModelFit", {
+    reg.register_admin("cancelModelFit", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -4216,7 +4216,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("getModelDraws", {
+    reg.register_admin("getModelDraws", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -4268,7 +4268,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("getPosteriorSummary", {
+    reg.register_admin("getPosteriorSummary", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -4289,7 +4289,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("downloadModelRun", {
+    reg.register_admin("downloadModelRun", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -4314,7 +4314,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("writePosterior", {
+    reg.register_admin("writePosterior", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -4338,7 +4338,7 @@ pub fn admin_handlers_with(
                 // The admin's own authority — the same the row API grants them —
                 // through the ordinary write path, so the target table's own
                 // triggers fire.
-                let authority = admin_caller(ctx.user.as_ref());
+                let authority = admin_caller(ctx.user());
                 let written = sc_api::models::write_posterior(
                     &catalog,
                     &model,
@@ -4368,7 +4368,7 @@ pub fn admin_handlers_with(
     // triggers that name the stream, because `sc-stream` sits below `sc-action`
     // and cannot ask.
 
-    reg.register("listStreamProviders", {
+    reg.register_admin("listStreamProviders", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -4457,7 +4457,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listStreams", {
+    reg.register_admin("listStreams", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |_ctx| {
@@ -4479,7 +4479,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("getStream", {
+    reg.register_admin("getStream", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -4494,7 +4494,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("saveStream", {
+    reg.register_admin("saveStream", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -4539,7 +4539,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteStream", {
+    reg.register_admin("deleteStream", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -4569,7 +4569,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("streamStatus", {
+    reg.register_admin("streamStatus", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -4618,7 +4618,7 @@ pub fn admin_handlers_with(
     // way in (§11.1), and a certificate is parsed before it is saved, because a
     // key that does not match its chain must fail in front of the admin rather
     // than at the next restart (§13.5).
-    reg.register("getSettings", {
+    reg.register_admin("getSettings", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -4630,7 +4630,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateSettings", {
+    reg.register_admin("updateSettings", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -4764,7 +4764,7 @@ pub fn admin_handlers_with(
     // out (`oauth_provider_json`) and the sentinel merged back on the way in,
     // as an LLM provider's key is.
 
-    reg.register("listOAuthProviders", {
+    reg.register_admin("listOAuthProviders", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -4779,14 +4779,14 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("getOAuthProviderSpec", |ctx| async move {
+    reg.register_admin("getOAuthProviderSpec", |ctx| async move {
         Ok(HandlerResponse::ok(json!({
             "fields": spec_json(&sc_config::oauth_provider_spec(), &ctx.locale),
             "callback_path": crate::oauth::CALLBACK_ROUTE,
         })))
     });
 
-    reg.register("createOAuthProvider", {
+    reg.register_admin("createOAuthProvider", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -4804,7 +4804,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateOAuthProvider", {
+    reg.register_admin("updateOAuthProvider", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -4827,7 +4827,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteOAuthProvider", {
+    reg.register_admin("deleteOAuthProvider", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -4849,7 +4849,7 @@ pub fn admin_handlers_with(
     // yet (Settings → Development → Admin subdomain). Polled by the dialog a
     // move opens: the certificate for a new name is a minute of ACME traffic
     // away, and the admin is not let go to an address that would refuse them.
-    reg.register("getAdminAddress", {
+    reg.register_admin("getAdminAddress", {
         let apps = apps.clone();
         move |_ctx| {
             let apps = apps.clone();
@@ -4860,14 +4860,14 @@ pub fn admin_handlers_with(
     // A single-use token that gives the signed-in admin a session on the admin
     // UI's current host. The session cookie is host-only, so without this
     // following a move would mean logging in again (`crate::admin_host`).
-    reg.register("createAdminHandoff", {
+    reg.register_admin("createAdminHandoff", {
         let apps = apps.clone();
         move |ctx| {
             let apps = apps.clone();
             async move {
                 let user = ctx
-                    .user
-                    .clone()
+                    .user()
+                    .cloned()
                     .ok_or_else(|| Error::invalid("there is no session to hand off"))?;
                 let host = apps.admin_host().ok_or_else(|| {
                     Error::invalid(
@@ -4895,7 +4895,7 @@ pub fn admin_handlers_with(
     // "authentication failed" and "relay access denied" are three different
     // problems with three different fixes, and the whole value of a test button
     // is learning which one you have.
-    reg.register("sendTestEmail", {
+    reg.register_admin("sendTestEmail", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -4911,8 +4911,7 @@ pub fn admin_handlers_with(
                 let to = match ctx.body.get("to") {
                     Some(Json::String(s)) if !s.trim().is_empty() => s.trim().to_owned(),
                     _ => ctx
-                        .user
-                        .as_ref()
+                        .user()
                         .and_then(|user| user.get(COL_EMAIL))
                         .and_then(Value::as_text)
                         .map(str::to_owned)
@@ -4948,7 +4947,7 @@ pub fn admin_handlers_with(
     // modules because none of it is a *setting* — every number here is a fact
     // about the running process, and the two that are configurable are flags
     // that need a restart, which is precisely the thing an admin needs told.
-    reg.register("getPythonStatus", {
+    reg.register_admin("getPythonStatus", {
         let apps = apps.clone();
         move |_ctx| {
             let apps = apps.clone();
@@ -4985,7 +4984,7 @@ pub fn admin_handlers_with(
 
     // Settings → System: which build this is, its database, and what the
     // process is doing to the machine (`crate::system`).
-    reg.register("getSystemInfo", {
+    reg.register_admin("getSystemInfo", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -4999,7 +4998,7 @@ pub fn admin_handlers_with(
 
     // Exit for whatever manages the process to start it again. The answer goes
     // out first; the exit follows it (`crate::system::schedule_restart`).
-    reg.register("restartServer", move |_ctx| async move {
+    reg.register_admin("restartServer", move |_ctx| async move {
         crate::system::schedule_restart();
         Ok(HandlerResponse::ok(json!({ "restarting": true })))
     });
@@ -5019,7 +5018,7 @@ pub fn admin_handlers_with(
     // What this server has to offer, plus the selection the admin last made — so
     // the dialog opens on their tuned choice rather than on everything, and on
     // *everything* the first time.
-    reg.register("getBackupOptions", {
+    reg.register_admin("getBackupOptions", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -5040,7 +5039,7 @@ pub fn admin_handlers_with(
     // than by a save button of its own: the admin's answer to "what should a backup
     // include" is exactly the backup they just took, and a screen that made them
     // state it twice would drift.
-    reg.register("createBackup", {
+    reg.register_admin("createBackup", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -5091,7 +5090,7 @@ pub fn admin_handlers_with(
     // the same and answered with `locked` and its `id`, and the dialog asks
     // for the password and hands it to `unlockBackup`, which answers what this
     // would have.
-    reg.register("uploadBackup", {
+    reg.register_admin("uploadBackup", {
         let pending = pending.clone();
         move |ctx| {
             let pending = pending.clone();
@@ -5120,7 +5119,7 @@ pub fn admin_handlers_with(
     // The password of an uploaded, protected backup: checked against the file,
     // held with it for the restore, and answered with what the file holds. A
     // wrong password is refused and the file stays, so the admin can try again.
-    reg.register("unlockBackup", {
+    reg.register_admin("unlockBackup", {
         let pending = pending.clone();
         move |ctx| {
             let pending = pending.clone();
@@ -5149,7 +5148,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("restoreBackup", {
+    reg.register_admin("restoreBackup", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         let pending = pending.clone();
@@ -5209,7 +5208,7 @@ pub fn admin_handlers_with(
     // reaches the destination (`check`), which for SFTP is also when the
     // server's host key is learnt and recorded.
 
-    reg.register("listBackupSchedules", {
+    reg.register_admin("listBackupSchedules", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -5227,7 +5226,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createBackupSchedule", {
+    reg.register_admin("createBackupSchedule", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -5254,7 +5253,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateBackupSchedule", {
+    reg.register_admin("updateBackupSchedule", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -5295,7 +5294,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteBackupSchedule", {
+    reg.register_admin("deleteBackupSchedule", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -5319,7 +5318,7 @@ pub fn admin_handlers_with(
 
     // --- clear all ----------------------------------------------------------
 
-    reg.register("getClearAllPreview", {
+    reg.register_admin("getClearAllPreview", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -5331,7 +5330,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("clearAll", {
+    reg.register_admin("clearAll", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -5364,7 +5363,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listApplications", {
+    reg.register_admin("listApplications", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -5502,7 +5501,7 @@ pub fn admin_handlers_with(
         }
     }
 
-    reg.register("createApplication", {
+    reg.register_admin("createApplication", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -5584,7 +5583,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateApplication", {
+    reg.register_admin("updateApplication", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -5638,7 +5637,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteApplication", {
+    reg.register_admin("deleteApplication", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -5682,7 +5681,7 @@ pub fn admin_handlers_with(
     // renders from, so a save or a delete is live on the app's next request with
     // no build and no remount (TODO "Saltcorn UI" §1, §4).
 
-    reg.register("listViews", {
+    reg.register_admin("listViews", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -5696,7 +5695,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("getView", {
+    reg.register_admin("getView", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -5711,7 +5710,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("saveView", {
+    reg.register_admin("saveView", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -5734,7 +5733,7 @@ pub fn admin_handlers_with(
                 // and saves what the store accepts.
                 sc_viewpattern::validate_view(&catalog, &view).await?;
                 if sc_viewpattern::view_runtime().is_ok() {
-                    view_configurer(&catalog, &app, ctx.user.as_ref(), &apps)
+                    view_configurer(&catalog, &app, ctx.user(), &apps)
                         .await?
                         .check(&view)
                         .await?;
@@ -5747,7 +5746,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createView", {
+    reg.register_admin("createView", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -5769,7 +5768,7 @@ pub fn admin_handlers_with(
                 // Refused by the store's sentence before the pattern is asked
                 // anything about a table it may not have.
                 sc_viewpattern::validate_view(&catalog, &view).await?;
-                view.configuration = view_configurer(&catalog, &app, ctx.user.as_ref(), &apps)
+                view.configuration = view_configurer(&catalog, &app, ctx.user(), &apps)
                     .await?
                     .initial_config(
                         &view.viewpattern,
@@ -5785,7 +5784,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("viewConfigStep", {
+    reg.register_admin("viewConfigStep", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -5819,7 +5818,7 @@ pub fn admin_handlers_with(
                         app.name
                     )));
                 }
-                let step = view_configurer(&catalog, &app, ctx.user.as_ref(), &apps)
+                let step = view_configurer(&catalog, &app, ctx.user(), &apps)
                     .await?
                     .step(pattern, table, name, index, &context)
                     .await?;
@@ -5832,7 +5831,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("viewReferences", {
+    reg.register_admin("viewReferences", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -5847,7 +5846,7 @@ pub fn admin_handlers_with(
                 {
                     return Err(no_such("view", &app, name));
                 }
-                let references = view_configurer(&catalog, &app, ctx.user.as_ref(), &apps)
+                let references = view_configurer(&catalog, &app, ctx.user(), &apps)
                     .await?
                     .references(name)
                     .await?;
@@ -5879,7 +5878,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteView", {
+    reg.register_admin("deleteView", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -5897,7 +5896,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("listPages", {
+    reg.register_admin("listPages", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -5911,7 +5910,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("getPage", {
+    reg.register_admin("getPage", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -5926,7 +5925,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("savePage", {
+    reg.register_admin("savePage", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -5949,7 +5948,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deletePage", {
+    reg.register_admin("deletePage", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -5973,7 +5972,7 @@ pub fn admin_handlers_with(
     // and that it is a layout; then every check `saveView` makes runs over the
     // merged configuration, and the view and its library edits are written in
     // one transaction.
-    reg.register("saveViewLayout", {
+    reg.register_admin("saveViewLayout", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -5990,7 +5989,7 @@ pub fn admin_handlers_with(
                 let columns = required_member(obj, "columns", "the columns the builder wrote")?;
                 let layout = required_member(obj, "layout", "the layout the builder wrote")?;
                 let updates = library_updates_member(obj)?;
-                let configurer = view_configurer(&catalog, &app, ctx.user.as_ref(), &apps).await?;
+                let configurer = view_configurer(&catalog, &app, ctx.user(), &apps).await?;
                 let step = configurer
                     .step(
                         &view.viewpattern,
@@ -6026,7 +6025,7 @@ pub fn admin_handlers_with(
 
     // A page's layout, replacing the page's: checked as a page is, and written
     // with its library edits in one transaction.
-    reg.register("savePageLayout", {
+    reg.register_admin("savePageLayout", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -6047,7 +6046,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("pageReferences", {
+    reg.register_admin("pageReferences", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -6078,7 +6077,7 @@ pub fn admin_handlers_with(
     // reloads; `getLibraryItem` reads the row, because a placed instance must
     // start from the latest layout.
 
-    reg.register("listLibrary", {
+    reg.register_admin("listLibrary", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -6100,7 +6099,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("getLibraryItem", {
+    reg.register_admin("getLibraryItem", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -6115,7 +6114,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createLibraryItem", {
+    reg.register_admin("createLibraryItem", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -6141,7 +6140,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("saveLibraryItem", {
+    reg.register_admin("saveLibraryItem", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -6167,7 +6166,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("saveLibraryUpdates", {
+    reg.register_admin("saveLibraryUpdates", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -6184,7 +6183,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteLibraryItem", {
+    reg.register_admin("deleteLibraryItem", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -6231,7 +6230,7 @@ pub fn admin_handlers_with(
     // running application serves the change on the next reload with no build
     // (D7).
 
-    reg.register("getTranslations", {
+    reg.register_admin("getTranslations", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -6244,7 +6243,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("setApplicationLocales", {
+    reg.register_admin("setApplicationLocales", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6274,7 +6273,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("saveTranslations", {
+    reg.register_admin("saveTranslations", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6295,7 +6294,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("translateMissing", {
+    reg.register_admin("translateMissing", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6318,7 +6317,7 @@ pub fn admin_handlers_with(
     // A save or fill drops every mount's cached catalogues, because every
     // application serves the shared catalogue under its own.
 
-    reg.register("getInstanceTranslations", {
+    reg.register_admin("getInstanceTranslations", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -6330,7 +6329,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("saveInstanceTranslations", {
+    reg.register_admin("saveInstanceTranslations", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6355,7 +6354,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("translateInstanceMissing", {
+    reg.register_admin("translateInstanceMissing", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6382,7 +6381,7 @@ pub fn admin_handlers_with(
     // subset, a view or page of the application — is checked here first, so a
     // refusal names it rather than failing inside v1's code.
 
-    reg.register("builderFieldPreview", {
+    reg.register_admin("builderFieldPreview", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6405,7 +6404,7 @@ pub fn admin_handlers_with(
                             .map(|v| (key.to_owned(), v.clone()))
                     })
                     .collect();
-                let html = view_configurer(&catalog, &app, ctx.user.as_ref(), &apps)
+                let html = view_configurer(&catalog, &app, ctx.user(), &apps)
                     .await?
                     .field_preview(table, field, fieldview, &Json::Object(body))
                     .await?;
@@ -6414,7 +6413,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("builderFieldviewConfigForm", {
+    reg.register_admin("builderFieldviewConfigForm", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6425,7 +6424,7 @@ pub fn admin_handlers_with(
                 let obj = require_object(&ctx.body)?;
                 let table = non_empty_str_field(obj, "table")?;
                 require_subset_table(&app, table)?;
-                let form = view_configurer(&catalog, &app, ctx.user.as_ref(), &apps)
+                let form = view_configurer(&catalog, &app, ctx.user(), &apps)
                     .await?
                     .fieldview_config(table, &ctx.body)
                     .await?;
@@ -6434,7 +6433,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("builderViewPreview", {
+    reg.register_admin("builderViewPreview", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6455,7 +6454,7 @@ pub fn admin_handlers_with(
                     Some(state @ Json::Object(_)) => state.clone(),
                     Some(_) => return Err(Error::invalid("`state` must be an object")),
                 };
-                let html = view_configurer(&catalog, &app, ctx.user.as_ref(), &apps)
+                let html = view_configurer(&catalog, &app, ctx.user(), &apps)
                     .await?
                     .view_preview(name, &state)
                     .await?;
@@ -6464,7 +6463,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("builderPagePreview", {
+    reg.register_admin("builderPagePreview", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6480,7 +6479,7 @@ pub fn admin_handlers_with(
                 {
                     return Err(no_such("page", &app, name));
                 }
-                let html = view_configurer(&catalog, &app, ctx.user.as_ref(), &apps)
+                let html = view_configurer(&catalog, &app, ctx.user(), &apps)
                     .await?
                     .page_preview(name)
                     .await?;
@@ -6489,7 +6488,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("builderDistinctValues", {
+    reg.register_admin("builderDistinctValues", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6500,7 +6499,7 @@ pub fn admin_handlers_with(
                 let table = ctx.path_param("table")?;
                 let field = ctx.path_param("field")?;
                 require_subset_table(&app, table)?;
-                let values = view_configurer(&catalog, &app, ctx.user.as_ref(), &apps)
+                let values = view_configurer(&catalog, &app, ctx.user(), &apps)
                     .await?
                     .distinct_values(table, field)
                     .await?;
@@ -6513,7 +6512,7 @@ pub fn admin_handlers_with(
     // runtime's manifest only describes its entries. A server with no view
     // runtime running (built without the bundle) still lists the names, since
     // they are still what a view may be saved with.
-    reg.register("listViewPatterns", |_ctx| async move {
+    reg.register_admin("listViewPatterns", |_ctx| async move {
         let manifests = match sc_viewpattern::view_runtime() {
             Ok(runtime) => runtime.patterns().await.unwrap_or_default(),
             Err(_) => Vec::new(),
@@ -6540,7 +6539,7 @@ pub fn admin_handlers_with(
         Ok(HandlerResponse::ok(Json::Array(out)))
     });
 
-    reg.register("buildApplication", {
+    reg.register_admin("buildApplication", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6565,7 +6564,7 @@ pub fn admin_handlers_with(
     // build in progress (`sc_app::remove_dependencies`), and a build failure
     // after it is reported as Build reports one; the next build installs again
     // either way, since nothing was put back.
-    reg.register("deepCleanApplication", {
+    reg.register_admin("deepCleanApplication", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6606,7 +6605,7 @@ pub fn admin_handlers_with(
     // refused here, before anything starts. A build already running for this
     // target answers itself — a second click joins it rather than starting a
     // second Gradle in the same project directory.
-    reg.register("buildApplicationTarget", {
+    reg.register_admin("buildApplicationTarget", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6690,7 +6689,7 @@ pub fn admin_handlers_with(
 
     // Run an operation a target declares (a keystore generator): the module's
     // files written into the application's store, its settings saved on it.
-    reg.register("runApplicationTargetOperation", {
+    reg.register_admin("runApplicationTargetOperation", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -6738,7 +6737,7 @@ pub fn admin_handlers_with(
 
     // The latest build of a target: what the UI polls while one runs, and asks
     // after a reload to pick up a build that is still going.
-    reg.register("getApplicationTargetBuild", {
+    reg.register_admin("getApplicationTargetBuild", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6776,7 +6775,7 @@ pub fn admin_handlers_with(
     // cannot fail on anything but the store. It is the same call the automatic
     // path makes when a table changes (decision 10), so an admin who wants it
     // now and an admin who changed a column get the same files.
-    reg.register("updateApplicationClient", {
+    reg.register_admin("updateApplicationClient", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6813,7 +6812,7 @@ pub fn admin_handlers_with(
     // A GraphQL endpoint answers `200` with its errors in the body, so the
     // provider's response — status and all — is passed through as it stands
     // rather than being re-judged here.
-    reg.register("runApplicationGraphql", {
+    reg.register_admin("runApplicationGraphql", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -6860,7 +6859,7 @@ pub fn admin_handlers_with(
                     client_ip: None,
                     preview: false,
                 };
-                let resp = provider.handle(req, &catalog, ctx.user.as_ref()).await?;
+                let resp = provider.handle(req, &catalog, ctx.user()).await?;
                 Ok(HandlerResponse::ok(resp.body).with_status(resp.status))
             }
         }
@@ -6871,7 +6870,7 @@ pub fn admin_handlers_with(
     // Server-query options are resolved here, so the UI receives a concrete list
     // and needs no query evaluator of its own (§1.6). That is what let the
     // `store` setting become a pick-list without waiting for `ui/form-runtime`.
-    reg.register("listFrameworks", {
+    reg.register_admin("listFrameworks", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -6931,7 +6930,7 @@ pub fn admin_handlers_with(
     // asking the admin to remember them. This is the *same* list
     // `app_providers_with` switches on, so a name offered here is a name that
     // mounts — which is the whole point of listing them from the server.
-    reg.register("listApiProviders", |ctx| async move {
+    reg.register_admin("listApiProviders", |ctx| async move {
         let out: Vec<Json> = registered_api_provider_info()
             .into_iter()
             .map(|info| {
@@ -6966,7 +6965,7 @@ pub fn admin_handlers_with(
     // is where Postgres's own message comes from. Deciding it twice would be two
     // answers to "is this query valid", and the one that is wrong is the one
     // nobody is reading until a caller hits it.
-    reg.register("describeCustomQuery", {
+    reg.register_admin("describeCustomQuery", {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -7006,7 +7005,7 @@ pub fn admin_handlers_with(
 
     // --- users --------------------------------------------------------------
 
-    reg.register("listUsers", {
+    reg.register_admin("listUsers", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -7034,7 +7033,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createUser", {
+    reg.register_admin("createUser", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7063,7 +7062,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateUser", {
+    reg.register_admin("updateUser", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7100,7 +7099,7 @@ pub fn admin_handlers_with(
     // the effective one, every grant the user has had, and lets an admin add a
     // time-limited one by hand or revoke one — a subscription's included, which
     // the provider's next renewal would put back.
-    reg.register("listUserRoleGrants", {
+    reg.register_admin("listUserRoleGrants", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7109,10 +7108,10 @@ pub fn admin_handlers_with(
                 let user = sc_auth::load_base_user(&catalog, id)
                     .await?
                     .ok_or_else(|| Error::not_found(format!("no user with id {id}")))?;
-                let effective = sc_auth::effective_role(&catalog, id, user.role).await?;
+                let effective = sc_auth::effective_role(&catalog, id, user.role()).await?;
                 let grants = sc_auth::list_role_grants(&catalog, id).await?;
                 Ok(HandlerResponse::ok(json!({
-                    "base_role": i64::from(user.role),
+                    "base_role": i64::from(user.role()),
                     "effective_role": i64::from(effective.role),
                     "grants": grants.iter().map(sc_api::auth::role_grant_json).collect::<Vec<_>>(),
                 })))
@@ -7120,7 +7119,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("grantUserRole", {
+    reg.register_admin("grantUserRole", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7165,7 +7164,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("revokeUserRoleGrant", {
+    reg.register_admin("revokeUserRoleGrant", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7191,7 +7190,7 @@ pub fn admin_handlers_with(
     // LLM credits (TODO-payments P6.2). Every answer is the whole view — the
     // balance, the buckets and the latest entries — so the page redraws from
     // what the server now holds rather than guessing at what changed.
-    reg.register("getUserCredits", {
+    reg.register_admin("getUserCredits", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7202,7 +7201,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("grantUserCredits", {
+    reg.register_admin("grantUserCredits", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7225,7 +7224,7 @@ pub fn admin_handlers_with(
                     }
                 };
                 let note = optional_str(obj, "note");
-                let caller = admin_caller(ctx.user.as_ref());
+                let caller = admin_caller(ctx.user());
                 sc_auth::grant_credits(
                     &catalog,
                     sc_auth::NewCreditGrant {
@@ -7246,7 +7245,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("setUserCreditThreshold", {
+    reg.register_admin("setUserCreditThreshold", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7254,7 +7253,7 @@ pub fn admin_handlers_with(
                 let id = parse_user_id(ctx.path_param("id")?)?;
                 let obj = require_object(&ctx.body)?;
                 let threshold = credit_amount(obj.get("threshold"), "threshold")?;
-                let caller = admin_caller(ctx.user.as_ref());
+                let caller = admin_caller(ctx.user());
                 sc_auth::set_low_balance_threshold(
                     &catalog,
                     id,
@@ -7267,7 +7266,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteUser", {
+    reg.register_admin("deleteUser", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7289,7 +7288,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("setUserDisabled", {
+    reg.register_admin("setUserDisabled", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7312,7 +7311,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("forceLogoutUser", {
+    reg.register_admin("forceLogoutUser", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7331,7 +7330,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("becomeUser", {
+    reg.register_admin("becomeUser", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7356,7 +7355,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("setRandomPassword", {
+    reg.register_admin("setRandomPassword", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7387,7 +7386,7 @@ pub fn admin_handlers_with(
     // that runs as somebody else hands out their authority without their
     // knowledge.
 
-    reg.register("listApiTokens", {
+    reg.register_admin("listApiTokens", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -7402,7 +7401,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createApiToken", {
+    reg.register_admin("createApiToken", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7412,8 +7411,7 @@ pub fn admin_handlers_with(
                 // loud rather than defaulting, because "which user does this
                 // token run as?" is the whole of §13.6's authentication.
                 let user = ctx
-                    .user
-                    .as_ref()
+                    .user()
                     .ok_or_else(|| {
                         Error::auth(t!(
                             ctx.locale,
@@ -7450,7 +7448,7 @@ pub fn admin_handlers_with(
                 let minted = mint_api_token(
                     &catalog,
                     NewApiToken {
-                        user_id: user.id,
+                        user_id: user.id(),
                         label: str_field(obj, "label")?.to_owned(),
                         grants,
                         expires_at,
@@ -7468,7 +7466,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("revokeApiToken", {
+    reg.register_admin("revokeApiToken", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7486,7 +7484,7 @@ pub fn admin_handlers_with(
     // `/build-agent/*` (`crate::build_agent`) with the token `createBuildHost`
     // answers once; every decision about that token is `sc_app::build_hosts`'s.
 
-    reg.register("listBuildHosts", {
+    reg.register_admin("listBuildHosts", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -7502,7 +7500,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("createBuildHost", {
+    reg.register_admin("createBuildHost", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7523,7 +7521,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("updateBuildHost", {
+    reg.register_admin("updateBuildHost", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7546,7 +7544,7 @@ pub fn admin_handlers_with(
         }
     });
 
-    reg.register("deleteBuildHost", {
+    reg.register_admin("deleteBuildHost", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -7679,12 +7677,12 @@ async fn help_context(
     }
     if let Some(user) = user {
         let mut object: serde_json::Map<String, Json> = user
-            .extra
+            .extra()
             .iter()
             .map(|(k, v)| (k.clone(), sc_types::value_to_json(v)))
             .collect();
-        object.insert("id".into(), json!(user.id));
-        object.insert("role".into(), json!(user.role));
+        object.insert("id".into(), json!(user.id()));
+        object.insert("role".into(), json!(user.role()));
         context.insert("user".into(), Json::Object(object));
     }
     if let Some(users) = tables.iter().find(|t| t.name == USERS_TABLE) {
@@ -9182,10 +9180,10 @@ async fn resolve_store(
 /// and an admin clears every rule. The check is wired in regardless: it is correct
 /// by construction, costs nothing, and starts doing real work the moment a
 /// non-admin role can reach a store.
-fn file_caller(ctx: &crate::handler::HandlerCtx) -> sc_files::FileCaller {
+fn file_caller(ctx: &crate::handler::HandlerCtx<impl crate::handler::Who>) -> sc_files::FileCaller {
     sc_files::FileCaller::new(
-        sc_auth::role_of(ctx.user.as_ref()),
-        ctx.user.as_ref().map(|u| u.id.to_string()),
+        sc_auth::role_of(ctx.user()),
+        ctx.user().map(|u| u.id().to_string()),
     )
 }
 
@@ -10516,7 +10514,7 @@ const DEFAULT_RUN_PAGE: usize = 50;
 /// Lenient on purpose, and only here: a paging parameter a client got wrong is
 /// not worth failing a list over, and the failure it would cause — a screen that
 /// shows nothing — is worse than a page of the default size.
-fn query_count(ctx: &crate::handler::HandlerCtx, name: &str, fallback: usize) -> usize {
+fn query_count<W>(ctx: &crate::handler::HandlerCtx<W>, name: &str, fallback: usize) -> usize {
     ctx.query_get(name)
         .and_then(|raw| raw.trim().parse::<usize>().ok())
         .unwrap_or(fallback)
@@ -11169,8 +11167,12 @@ fn user_extra_values(users: &Table, obj: &Map<String, Json>) -> Result<BTreeMap<
 /// is unsafe for the system — an installation can have another admin do it — so
 /// this is a guard rail, not an access rule, and it names the account rather than
 /// pretending the operation does not exist.
-fn refuse_self(ctx: &crate::handler::HandlerCtx, id: uuid::Uuid, verb: &str) -> Result<()> {
-    if ctx.user.as_ref().is_some_and(|u| u.id == id) {
+fn refuse_self<W: crate::handler::Who>(
+    ctx: &crate::handler::HandlerCtx<W>,
+    id: uuid::Uuid,
+    verb: &str,
+) -> Result<()> {
+    if ctx.user().is_some_and(|u| u.id() == id) {
         return Err(Error::invalid(format!(
             "you cannot {verb} the account you are signed in as"
         )));
@@ -11867,7 +11869,7 @@ pub(crate) fn stream_from_body(body: &Map<String, Json>) -> Result<sc_stream::St
 /// A dataset in a query string is unusual and deliberate: `listModelProviders`
 /// answers what a provider's form looks like *for this dataset*, and the dataset
 /// being asked about does not exist anywhere yet — there is no id to name it by.
-fn query_json(ctx: &crate::handler::HandlerCtx, name: &str) -> Result<Option<Json>> {
+fn query_json<W>(ctx: &crate::handler::HandlerCtx<W>, name: &str) -> Result<Option<Json>> {
     let Some(raw) = ctx.query_get(name).map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
@@ -11877,7 +11879,7 @@ fn query_json(ctx: &crate::handler::HandlerCtx, name: &str) -> Result<Option<Jso
 }
 
 /// A required, non-empty query parameter.
-fn required_query(ctx: &crate::handler::HandlerCtx, name: &str) -> Result<String> {
+fn required_query<W>(ctx: &crate::handler::HandlerCtx<W>, name: &str) -> Result<String> {
     ctx.query_get(name)
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -12477,7 +12479,7 @@ async fn owner_label(catalog: &Catalog, id: &str) -> Json {
     };
     let email = user
         .as_ref()
-        .and_then(|u| u.extra.get("email"))
+        .and_then(|u| u.extra().get("email"))
         .and_then(|value| value.as_text().map(str::to_owned));
     Json::String(email.unwrap_or_else(|| id.to_owned()))
 }
@@ -12509,7 +12511,7 @@ async fn with_meta(
 /// already recorded ([`sc_files::record_owner`]).
 async fn record_owner(store: &dyn FileStore, path: &str, user: Option<&sc_auth::User>) {
     if let Some(user) = user {
-        sc_files::record_owner(store, path, &user.id.to_string()).await;
+        sc_files::record_owner(store, path, &user.id().to_string()).await;
     }
 }
 
@@ -12863,7 +12865,7 @@ fn int_field(obj: &Map<String, Json>, key: &str) -> Result<i64> {
 }
 
 /// An optional whole-number query parameter; absent or empty is `None`.
-fn optional_query_u64(ctx: &crate::HandlerCtx, name: &str) -> Result<Option<u64>> {
+fn optional_query_u64<W>(ctx: &crate::HandlerCtx<W>, name: &str) -> Result<Option<u64>> {
     match ctx.query_get(name) {
         None | Some("") => Ok(None),
         Some(raw) => raw

@@ -212,8 +212,8 @@ fn new_csrf_token() -> String {
 /// whichever made the session.
 fn user_summary(user: &User) -> Json {
     json!({
-        "id": user.id.to_string(),
-        "role": user.role,
+        "id": user.id().to_string(),
+        "role": user.role(),
         "email": user.get(sc_auth::COL_EMAIL).and_then(|v| match v {
             sc_query::Value::Text(t) => Some(t.clone()),
             _ => None,
@@ -558,7 +558,7 @@ pub async fn session_for(
     target: &Target,
     user: &User,
 ) -> Result<(Vec<Cookie>, Json)> {
-    let token = create_session(catalog, user.id, Duration::hours(DEFAULT_TTL_HOURS)).await?;
+    let token = create_session(catalog, user.id(), Duration::hours(DEFAULT_TTL_HOURS)).await?;
     Ok((cookies_for(target, token), user_summary(user)))
 }
 

@@ -1500,14 +1500,14 @@ async fn mcp_token_create_command(args: &[String]) -> Result<()> {
 
     let user = sc_cli::auth::resolve_user(&catalog, &parsed.user).await?;
     let email = user
-        .extra
+        .extra()
         .get(sc_auth::COL_EMAIL)
         .and_then(|e| e.as_text())
         .unwrap_or("the selected user")
         .to_owned();
     // A token for a non-admin would be minted and then refused on every call —
     // unless it is a routes-only one, which runs as a user of any role.
-    if !user.role.is_admin() && !parsed.routes_only {
+    if !user.role().is_admin() && !parsed.routes_only {
         return Err(sc_error::Error::invalid(format!(
             "{email} is not an administrator, and an MCP token only works for one"
         )));
@@ -1516,7 +1516,7 @@ async fn mcp_token_create_command(args: &[String]) -> Result<()> {
     let minted = sc_auth::mint_api_token(
         &catalog,
         sc_auth::NewApiToken {
-            user_id: user.id,
+            user_id: user.id(),
             label: parsed.label.clone(),
             grants,
             expires_at: sc_cli::mcp_token::expiry(parsed.expires_in_days, chrono::Utc::now()),
@@ -1546,7 +1546,7 @@ async fn mcp_token_create_command(args: &[String]) -> Result<()> {
         eprintln!(
             "feldspar: the token is shown once. It reaches module routes only, as {email} \
              (role {}):",
-            user.role
+            user.role()
         );
         eprintln!(
             "  curl -H \"Authorization: Bearer {}\" {}{}/<module>/<route>",
@@ -2326,7 +2326,7 @@ async fn add_user_command(args: &[String]) -> Result<()> {
         parsed.email.trim(),
         role.name,
         role.role,
-        user.id
+        user.id()
     );
     Ok(())
 }
@@ -2357,12 +2357,12 @@ async fn modify_user_command(args: &[String]) -> Result<()> {
     };
     // First, so a refusal (the last enabled admin) changes nothing else.
     if let Some(disabled) = parsed.disabled {
-        sc_auth::set_user_disabled(&catalog, user.id, disabled).await?;
+        sc_auth::set_user_disabled(&catalog, user.id(), disabled).await?;
         if disabled {
             // A disabled account stops resolving from a session it holds; the
             // rows are dropped too, as the admin UI's "Disable" drops them.
             sc_auth::SessionStore::database(catalog.clone())
-                .end_user_sessions(user.id)
+                .end_user_sessions(user.id())
                 .await?;
         }
         eprintln!(
@@ -2376,7 +2376,7 @@ async fn modify_user_command(args: &[String]) -> Result<()> {
     }
     sc_auth::update_user(
         &catalog,
-        user.id,
+        user.id(),
         sc_auth::UserUpdate {
             role: role.as_ref().map(|r| r.role),
             password: password.clone(),
@@ -2412,9 +2412,9 @@ async fn delete_user_command(args: &[String]) -> Result<()> {
         .ok_or_else(|| {
             sc_error::Error::not_found(format!("no user with the email `{}`", email.trim()))
         })?;
-    sc_auth::delete_user(&catalog, user.id).await?;
+    sc_auth::delete_user(&catalog, user.id()).await?;
     sc_auth::SessionStore::database(catalog.clone())
-        .end_user_sessions(user.id)
+        .end_user_sessions(user.id())
         .await?;
     eprintln!("feldspar: deleted {}", email.trim());
     Ok(())

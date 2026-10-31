@@ -395,7 +395,8 @@ impl<'a> Reverser<'a> {
         let Some((record, entries)) = history::changeset_entries(self.catalog, id).await? else {
             return Err(Error::not_found(format!("there is no changeset `{id}`")));
         };
-        if !self.is_admin() && (self.user.map(|u| u.id) != record.user_id || self.user.is_none()) {
+        if !self.is_admin() && (self.user.map(|u| u.id()) != record.user_id || self.user.is_none())
+        {
             return Err(Error::auth("you may undo only your own changes"));
         }
         if let Some(name) = only_table

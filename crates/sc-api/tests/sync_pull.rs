@@ -154,7 +154,7 @@ fn set(items: &[&str]) -> BTreeSet<String> {
 async fn a_first_pull_returns_every_readable_row() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let (ann, bob) = (f.ann.id, f.bob.id);
+    let (ann, bob) = (f.ann.id(), f.bob.id());
     sql(
         &db,
         &format!(
@@ -205,7 +205,7 @@ async fn a_first_pull_returns_every_readable_row() -> Result<()> {
 async fn a_later_pull_brings_what_changed_and_what_is_gone() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let (ann, bob) = (f.ann.id, f.bob.id);
+    let (ann, bob) = (f.ann.id(), f.bob.id());
     let gone = "00000000-0000-4000-8000-0000000000a3";
     let given = "00000000-0000-4000-8000-0000000000a4";
     let bobs = "00000000-0000-4000-8000-0000000000b3";
@@ -271,7 +271,7 @@ async fn a_later_pull_brings_what_changed_and_what_is_gone() -> Result<()> {
 async fn a_transaction_that_commits_late_is_not_skipped() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let ann = f.ann.id;
+    let ann = f.ann.id();
     let device = register(&f, &f.ann).await?;
     let first = pull(&f, &f.ann, &device, &Json::Null).await?;
 
@@ -304,7 +304,7 @@ async fn a_transaction_that_commits_late_is_not_skipped() -> Result<()> {
 async fn an_open_transaction_elsewhere_does_not_stall_pulls() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let ann = f.ann.id;
+    let ann = f.ann.id();
     let device = register(&f, &f.ann).await?;
     let first = pull(&f, &f.ann, &device, &Json::Null).await?;
 
@@ -362,7 +362,7 @@ async fn a_watermark_that_is_not_one_is_refused() -> Result<()> {
 async fn a_device_not_seen_within_the_retention_reloads_its_tables() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let ann = f.ann.id;
+    let ann = f.ann.id();
     sql(
         &db,
         &format!("INSERT INTO notes (title, owner) VALUES ('ann 1', '{ann}');"),

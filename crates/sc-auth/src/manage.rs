@@ -176,7 +176,7 @@ pub async fn claim_unproven_account(catalog: &Catalog, user: User) -> Result<Use
     if !user.email_unproven() {
         return Ok(user);
     }
-    let id = user.id;
+    let id = user.id();
     let claimed = write(
         catalog,
         id,
@@ -221,7 +221,7 @@ pub async fn refuse_last_admin(catalog: &Catalog, id: Uuid, verb: &str) -> Resul
     let Some(user) = load_base_user(catalog, id).await? else {
         return Ok(());
     };
-    if !user.role.is_admin() || user.is_disabled() {
+    if !user.role().is_admin() || user.is_disabled() {
         return Ok(());
     }
     let select = Select::from(Source::table(USERS_TABLE))

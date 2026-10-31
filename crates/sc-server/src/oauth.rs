@@ -439,7 +439,7 @@ pub(crate) async fn consent(
         Ok(user) => user,
         Err(response) => return *response,
     };
-    if user.is_none_or(|u| u.id.to_string() != flow.user) {
+    if user.is_none_or(|u| u.id().to_string() != flow.user) {
         return Redirect::to(&with_error(
             &return_to,
             "sign in as the user who asked to connect this account",
@@ -788,7 +788,7 @@ async fn account_for(
             .await
             .map_err(failed)?;
         sessions
-            .end_user_sessions(claimed.id)
+            .end_user_sessions(claimed.id())
             .await
             .map_err(failed)?;
         return Ok(claimed);

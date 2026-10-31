@@ -357,7 +357,7 @@ pub(crate) async fn decide(
             )
         });
         let user = subscriber.caller.get();
-        let role = user.as_ref().map_or(Role::PUBLIC, |user| user.role);
+        let role = user.as_ref().map_or(Role::PUBLIC, |user| user.role());
         let guest = subscriber.caller.guest_session();
         // The verdict is asked inside the caller's origin, so that an
         // ownership formula's `session.id` is their guest session's.
@@ -365,7 +365,7 @@ pub(crate) async fn decide(
             app: None,
             session: guest.clone(),
         };
-        let who = (user.as_ref().map(|user| user.id), role, guest);
+        let who = (user.as_ref().map(|user| user.id()), role, guest);
         let known = readable.entry(who).or_insert((None, None));
         let started = Instant::now();
         if matches_old

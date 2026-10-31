@@ -180,8 +180,7 @@ fn admin() -> Result<User> {
 /// and the generated policy both read.
 fn caller(email: &str) -> Result<User> {
     let mut user = User::new(uuid::Uuid::new_v4(), Role::PUBLIC);
-    user.extra
-        .insert("email".to_owned(), Value::Text(email.to_owned()));
+    user = user.with_field("email".to_owned(), Value::Text(email.to_owned()));
     Ok(user)
 }
 
@@ -416,9 +415,7 @@ async fn a_join_into_a_forced_table_reads_the_callers_own_row() -> Result<()> {
     let api = provider(&cat)?;
 
     let mut engineer = caller("ada@example.com")?;
-    engineer
-        .extra
-        .insert("department".to_owned(), Value::Text("Engineering".into()));
+    engineer = engineer.with_field("department".to_owned(), Value::Text("Engineering".into()));
     let body = run_as(
         &api,
         &cat,

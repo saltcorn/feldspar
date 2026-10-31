@@ -162,6 +162,7 @@ pub(crate) async fn language_server_upgrade(
     slots: &ServerSlots,
     program: Arc<PathBuf>,
     store: String,
+    session: crate::admin_session::AdminWatch,
 ) -> axum::response::Response {
     // Both questions are answered before the upgrade, so a refusal costs no
     // process and no socket beyond the one it is reported on.
@@ -169,7 +170,11 @@ pub(crate) async fn language_server_upgrade(
         Err(reason) => reason,
         Ok(root) => match Arc::clone(slots).try_acquire_owned() {
             Ok(permit) => {
-                return ws.on_upgrade(move |socket| bridge(socket, program, root, store, permit));
+                // Held open only while the admin session lasts (#42's class):
+                // its end drops the bridge, which kills the process.
+                return ws.on_upgrade(move |socket| {
+                    session.guard(bridge(socket, program, root, store, permit))
+                });
             }
             Err(_) => format!(
                 "the server is already running its maximum of {MAX_LANGUAGE_SERVERS} language servers"

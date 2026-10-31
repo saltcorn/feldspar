@@ -84,7 +84,15 @@ mod deno {
         let name = names[0].clone();
 
         // Allowed roles 60 to 99.
-        let result = run(&cat, &name, &host, &installer, Some(Role::of(60)), user.id).await;
+        let result = run(
+            &cat,
+            &name,
+            &host,
+            &installer,
+            Some(Role::of(60)),
+            user.id(),
+        )
+        .await;
         assert_eq!(result["granted"]["ok"]["role"], json!(70), "{result}");
         assert_eq!(result["granted"]["ok"]["note"], json!("Basic"));
         // The renewal is the same grant, moved to the better tier.
@@ -119,12 +127,12 @@ mod deno {
                 .is_none()
         );
         assert_eq!(
-            load_user(&cat, user.id).await.unwrap().unwrap().role,
+            load_user(&cat, user.id()).await.unwrap().unwrap().role(),
             Role::of(80)
         );
 
         // Allowed nothing: every grant is refused, saying where to allow it.
-        let result = run(&cat, &name, &host, &installer, None, user.id).await;
+        let result = run(&cat, &name, &host, &installer, None, user.id()).await;
         let refused = result["granted"]["refused"].as_str().unwrap();
         assert!(
             refused.contains("has not been allowed to grant roles"),

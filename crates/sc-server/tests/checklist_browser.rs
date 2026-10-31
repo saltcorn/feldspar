@@ -238,12 +238,12 @@ impl Env {
     ) -> Result<Checklist> {
         let mut input = ChecklistInput::new(name);
         input.application = Some(self.app.id.0);
-        input.run_as = Some(self.member.id);
+        input.run_as = Some(self.member.id());
         input.attributes = attributes.as_object().cloned().unwrap_or_default();
         edit::create_checklist(
             &self.catalog,
             &self.registry,
-            &Editor::Human(self.admin.id),
+            &Editor::Human(self.admin.id()),
             input,
             steps,
         )
@@ -526,11 +526,11 @@ async fn react_steps_wait_for_the_render_and_see_an_error_boundary() -> Result<(
     let live = CheckEnv::new(&env.catalog, &env.registry)
         .with_browser(Some(env.driver.as_ref()))
         .with_screenshots(&shots);
-    let admin = Editor::Human(env.admin.id);
+    let admin = Editor::Human(env.admin.id());
     let checklist = |name: &str, steps: Vec<StepDraft>| {
         let mut input = ChecklistInput::new(name);
         input.application = Some(spa.id.0);
-        input.run_as = Some(env.member.id);
+        input.run_as = Some(env.member.id());
         input.attributes = json!({ "timeout": 8 }).as_object().cloned().unwrap();
         edit::create_checklist(&env.catalog, &env.registry, &admin, input, steps)
     };

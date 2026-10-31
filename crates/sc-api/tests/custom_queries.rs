@@ -85,8 +85,7 @@ fn admin() -> Result<User> {
 /// reads.
 fn caller(email: &str, role: Role) -> Result<User> {
     let mut user = User::new(uuid::Uuid::new_v4(), role);
-    user.extra
-        .insert("email".to_owned(), Value::Text(email.to_owned()));
+    user = user.with_field("email".to_owned(), Value::Text(email.to_owned()));
     Ok(user)
 }
 

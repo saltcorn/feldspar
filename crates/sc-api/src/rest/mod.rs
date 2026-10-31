@@ -916,7 +916,7 @@ impl RestProvider {
             outcome = outcome.and(limiter.hit(&format!("{scope}:ip:{ip}"), rate));
         }
         if let (Some(rate), Some(user)) = (limits.per_user, user) {
-            outcome = outcome.and(limiter.hit(&format!("{scope}:user:{}", user.id), rate));
+            outcome = outcome.and(limiter.hit(&format!("{scope}:user:{}", user.id()), rate));
         }
         outcome
     }
@@ -1643,7 +1643,7 @@ async fn code_answer(
             None => (500, json!({ "error": "internal error", "id": id })),
         },
     };
-    let admin = user.is_some_and(|u| u.role.is_admin());
+    let admin = user.is_some_and(|u| u.role().is_admin());
     let body = match admin {
         true => json!({ "error": full, "id": id }),
         false => public,
@@ -1763,8 +1763,8 @@ async fn code_response(
 /// user id the owner rule (§2.1) compares with.
 fn file_caller(user: Option<&User>) -> FileCaller {
     FileCaller::new(
-        user.map_or(Role::PUBLIC, |u| u.role),
-        user.map(|u| u.id.to_string()),
+        user.map_or(Role::PUBLIC, |u| u.role()),
+        user.map(|u| u.id().to_string()),
     )
 }
 

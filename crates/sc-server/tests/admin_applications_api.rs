@@ -999,11 +999,11 @@ async fn a_build_with_after_build_checks_records_a_run() -> sc_error::Result<()>
     let registry = sc_check::StepRegistry::installed();
     let mut input = sc_check::ChecklistInput::new("Nothing is mailed");
     input.application = Some(app_id);
-    input.run_as = Some(user.id);
+    input.run_as = Some(user.id());
     let checklist = sc_check::edit::create_checklist(
         &catalog,
         &registry,
-        &sc_check::Editor::Human(user.id),
+        &sc_check::Editor::Human(user.id()),
         input,
         vec![sc_check::StepDraft::new("data.expect_sent").param("count", 0)],
     )

@@ -1631,12 +1631,12 @@ pub(crate) async fn application_snapshot(
 
 pub(crate) fn view_user(user: &User) -> ViewUser {
     ViewUser {
-        id: user.id.to_string(),
-        email: match user.extra.get("email") {
+        id: user.id().to_string(),
+        email: match user.extra().get("email") {
             Some(sc_query::Value::Text(email)) => email.clone(),
             _ => String::new(),
         },
-        role_id: user.role,
+        role_id: user.role(),
     }
 }
 
@@ -1726,8 +1726,8 @@ pub async fn serve_store_file(
         .await?
         .and_then(|def| def.min_role);
     let caller = sc_files::FileCaller::new(
-        user.map_or(Role::PUBLIC, |u| u.role),
-        user.map(|u| u.id.to_string()),
+        user.map_or(Role::PUBLIC, |u| u.role()),
+        user.map(|u| u.id().to_string()),
     );
     if sc_files::check_access(store.as_ref(), floor, &path, &caller)
         .await

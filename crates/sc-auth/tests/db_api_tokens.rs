@@ -80,7 +80,7 @@ fn grants() -> Attrs {
 
 fn new_token(user: &User, label: &str) -> NewApiToken {
     NewApiToken {
-        user_id: user.id,
+        user_id: user.id(),
         label: label.to_owned(),
         grants: grants(),
         expires_at: None,
@@ -110,8 +110,8 @@ async fn a_minted_token_authenticates_and_its_plaintext_is_not_in_the_table() ->
     assert!(minted.secret.starts_with(TOKEN_PREFIX));
 
     let caller = authenticate_api_token(&f.catalog, &minted.secret).await?;
-    assert_eq!(caller.user.id, user.id);
-    assert_eq!(caller.user.role, Role::ADMIN);
+    assert_eq!(caller.user.id(), user.id());
+    assert_eq!(caller.user.role(), Role::ADMIN);
     assert_eq!(caller.token.id, minted.token.id);
     // The grants arrive back as they were minted: this crate stores them and
     // does not interpret them (§13.6 — the vocabulary is `sc-api::mcp`'s).
@@ -234,7 +234,7 @@ async fn a_token_is_no_stronger_than_the_account_it_names() -> Result<()> {
     authenticate_api_token(&f.catalog, &theirs.secret).await?;
     update_user(
         &f.catalog,
-        demoted.id,
+        demoted.id(),
         UserUpdate {
             role: Some(Role::PUBLIC),
             ..UserUpdate::default()
@@ -249,7 +249,7 @@ async fn a_token_is_no_stronger_than_the_account_it_names() -> Result<()> {
     // Disabled.
     let disabled = admin(&f.catalog, "disabled@example.com").await?;
     let theirs = mint_api_token(&f.catalog, new_token(&disabled, "disabled")).await?;
-    set_user_disabled(&f.catalog, disabled.id, true).await?;
+    set_user_disabled(&f.catalog, disabled.id(), true).await?;
     let err = authenticate_api_token(&f.catalog, &theirs.secret)
         .await
         .expect_err("a disabled account's token is not a credential");
@@ -259,7 +259,7 @@ async fn a_token_is_no_stronger_than_the_account_it_names() -> Result<()> {
     // why `user_id` is not a foreign key.
     let deleted = admin(&f.catalog, "deleted@example.com").await?;
     let theirs = mint_api_token(&f.catalog, new_token(&deleted, "deleted")).await?;
-    assert!(delete_user(&f.catalog, deleted.id).await?);
+    assert!(delete_user(&f.catalog, deleted.id()).await?);
     let err = authenticate_api_token(&f.catalog, &theirs.secret)
         .await
         .expect_err("there is nobody left to run as");

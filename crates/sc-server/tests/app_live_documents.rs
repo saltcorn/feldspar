@@ -308,7 +308,7 @@ async fn setup() -> Result<Server> {
     let mut users = HashMap::new();
     for email in [ALICE, BOB, CAROL, DAVE] {
         let user = create_user(&catalog, email, PASSWORD, ROLE_MEMBER).await?;
-        users.insert(email, user.id);
+        users.insert(email, user.id());
     }
 
     let evaluator = sc_server::default_js_evaluator();

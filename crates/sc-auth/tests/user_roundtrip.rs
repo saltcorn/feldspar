@@ -78,15 +78,15 @@ async fn user_row_round_trips_into_user() -> sc_error::Result<()> {
     assert_eq!(rows.len(), 1);
 
     let user = User::from_row(&rows[0])?;
-    assert_eq!(user.id, id);
-    assert_eq!(user.role, Role::ADMIN);
+    assert_eq!(user.id(), id);
+    assert_eq!(user.role(), Role::ADMIN);
     assert!(user.is_admin());
     assert_eq!(
         user.get(COL_EMAIL),
         Some(&Value::Text("admin@example.com".into()))
     );
     // The password hash is never carried on a User, even when the row includes it.
-    assert!(!user.extra.contains_key(COL_PASSWORD_HASH));
+    assert!(!user.extra().contains_key(COL_PASSWORD_HASH));
 
     Ok(())
 }

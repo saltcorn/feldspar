@@ -45,7 +45,7 @@ pub(crate) async fn register(
         &devices,
         &json!({
             "id": id.to_string(),
-            "user_id": user.id.to_string(),
+            "user_id": user.id().to_string(),
             "application": application.to_string(),
             "name": name,
         }),
@@ -77,7 +77,7 @@ pub(super) async fn check_device(
         filter: Some(
             Expr::col("id")
                 .eq(Expr::lit(Value::Uuid(id)))
-                .and(Expr::col("user_id").eq(Expr::lit(Value::Uuid(user.id))))
+                .and(Expr::col("user_id").eq(Expr::lit(Value::Uuid(user.id()))))
                 .and(Expr::col("application").eq(Expr::lit(Value::Uuid(application)))),
         ),
         limit: Some(1),

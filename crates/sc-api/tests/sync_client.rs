@@ -351,7 +351,7 @@ async fn a_device_works_on_its_copy_offline_and_syncs_it() -> Result<()> {
         &db,
         &format!(
             "INSERT INTO notes (id, title, owner) VALUES ('{SERVER_NOTE}', 'Server note', '{}')",
-            f.ann.id
+            f.ann.id()
         ),
     )
     .await?;
@@ -366,7 +366,7 @@ async fn a_device_works_on_its_copy_offline_and_syncs_it() -> Result<()> {
         &f,
         "client",
         DRIVER_TS,
-        &[SERVER_NOTE, &f.ann.id.to_string()],
+        &[SERVER_NOTE, &f.ann.id().to_string()],
     )
     .await?;
 
@@ -871,7 +871,7 @@ async fn the_copy_answers_every_read_like_the_server() -> Result<()> {
     // `notes` readable without a formula: the server does not follow a key into
     // a table read through one, and the copy would (see the TODO).
     let f = fixture_with(&db, None).await?;
-    let ann = f.ann.id;
+    let ann = f.ann.id();
     sql(
         &db,
         &format!(

@@ -78,7 +78,7 @@ async fn a_token_minted_from_the_cli_authenticates_until_it_is_revoked() -> sc_e
     assert_eq!(
         caller
             .user
-            .extra
+            .extra()
             .get(sc_auth::COL_EMAIL)
             .and_then(|e| e.as_text()),
         Some(ADMIN)

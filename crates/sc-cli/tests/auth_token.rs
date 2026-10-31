@@ -357,8 +357,8 @@ async fn a_session_is_minted_with_no_server_running() -> sc_error::Result<()> {
         .expect("session")
         .value;
     assert_eq!(
-        store.user_for(token).await?.expect("a live session").id,
-        user.id
+        store.user_for(token).await?.expect("a live session").id(),
+        user.id()
     );
     Ok(())
 }

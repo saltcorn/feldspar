@@ -460,7 +460,7 @@ async fn an_owned_file_is_served_to_its_owner_alone() -> sc_error::Result<()> {
     sc_files::record_owner(
         assets.as_ref(),
         "media/private/ada.png",
-        &ada.id.to_string(),
+        &ada.id().to_string(),
     )
     .await;
 

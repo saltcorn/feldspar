@@ -247,7 +247,7 @@ impl Server {
             .unwrap();
         sc_auth::update_user(
             &self.catalog,
-            user.id,
+            user.id(),
             UserUpdate {
                 role: Some(role),
                 ..UserUpdate::default()
@@ -903,7 +903,7 @@ async fn a_session_gone_from_the_store_closes_the_socket() -> Result<()> {
     let editor = sc_auth::load_user_by_email(&server.catalog, EDITOR)
         .await?
         .unwrap();
-    sc_auth::delete_sessions_for_user(&server.catalog, editor.id).await?;
+    sc_auth::delete_sessions_for_user(&server.catalog, editor.id()).await?;
 
     let frames = until_closed(&mut socket).await;
     let error = frames

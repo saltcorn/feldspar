@@ -215,7 +215,7 @@ async fn check_users(catalog: &Catalog) -> Result<Vec<(Uuid, String, Role)>> {
     let mut out: Vec<(Uuid, String, Role)> = Vec::new();
     for row in &rows {
         let user = User::from_row(row)?;
-        if !user.is_check_user() || user.is_disabled() || out.iter().any(|u| u.2 == user.role) {
+        if !user.is_check_user() || user.is_disabled() || out.iter().any(|u| u.2 == user.role()) {
             continue;
         }
         let email = user
@@ -223,7 +223,7 @@ async fn check_users(catalog: &Catalog) -> Result<Vec<(Uuid, String, Role)>> {
             .and_then(sc_query::Value::as_text)
             .unwrap_or_default()
             .to_owned();
-        out.push((user.id, email, user.role));
+        out.push((user.id(), email, user.role()));
     }
     out.sort_by_key(|u| u.2.get());
     Ok(out)

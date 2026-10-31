@@ -419,7 +419,12 @@ impl ChromiumDriver {
         if let Some(user) = request.user
             && page.session.is_none()
         {
-            page.session = Some(self.sessions.login(user.clone()).await?);
+            // An application's page: an application's session (#15).
+            page.session = Some(
+                self.sessions
+                    .login_in(user.clone(), sc_auth::SessionScope::App)
+                    .await?,
+            );
         }
         if !page.origins.contains(&origin) {
             let mut cookies = vec![(PREVIEW_COOKIE, page.pass.clone())];

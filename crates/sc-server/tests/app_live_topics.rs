@@ -346,8 +346,10 @@ async fn setup() -> Result<Server> {
     create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
     let alice = create_user(&catalog, ALICE, PASSWORD, ROLE_MEMBER)
         .await?
-        .id;
-    let bob = create_user(&catalog, BOB, PASSWORD, ROLE_MEMBER).await?.id;
+        .id();
+    let bob = create_user(&catalog, BOB, PASSWORD, ROLE_MEMBER)
+        .await?
+        .id();
 
     let evaluator = sc_server::default_js_evaluator();
     let agents = sc_server::install_agents(&catalog).await?;

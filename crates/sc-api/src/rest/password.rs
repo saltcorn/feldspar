@@ -221,7 +221,7 @@ pub(crate) async fn invite(
         .and_then(|r| Role::try_from(r).ok())
         .ok_or_else(|| Error::invalid("`role` must be the new account's role number"))?;
     let language = optional_text(obj, "language")?;
-    let extra = user_fields(cat, obj.get("fields"), inviter.role)?;
+    let extra = user_fields(cat, obj.get("fields"), inviter.role())?;
 
     // Everything that can be wrong with the *message* is found before an
     // account exists, so a bad template never leaves one behind.
@@ -237,7 +237,7 @@ pub(crate) async fn invite(
         language,
         extra,
     };
-    let (user, token, created) = match invite_user(cat, new, inviter.role).await? {
+    let (user, token, created) = match invite_user(cat, new, inviter.role()).await? {
         InviteOutcome::Created { user, token } => (user, token, true),
         InviteOutcome::Resent { user, token } => (user, token, false),
         InviteOutcome::AlreadyActive => {
@@ -258,8 +258,8 @@ pub(crate) async fn invite(
         // made a moment ago goes again, and the caller can simply retry. A
         // resent invitation's account was already there and stays.
         if created {
-            sc_auth::delete_password_tokens_for_user(cat, user.id).await?;
-            sc_auth::delete_user(cat, user.id).await?;
+            sc_auth::delete_password_tokens_for_user(cat, user.id()).await?;
+            sc_auth::delete_user(cat, user.id()).await?;
         }
         return Err(Error::msg(format!(
             "the invitation could not be sent, so no account was made: {e}"
@@ -304,13 +304,13 @@ pub(crate) async fn forgot_password(
         _ => return ok(),
     };
     let throttle = chrono::Duration::seconds(RESET_THROTTLE_SECONDS);
-    if password_token_issued_within(cat, user.id, PasswordTokenPurpose::Reset, throttle).await? {
+    if password_token_issued_within(cat, user.id(), PasswordTokenPurpose::Reset, throttle).await? {
         return ok();
     }
     let Some(to) = user_email(&user).map(str::to_owned) else {
         return ok();
     };
-    let token = issue_password_token(cat, user.id, PasswordTokenPurpose::Reset).await?;
+    let token = issue_password_token(cat, user.id(), PasswordTokenPurpose::Reset).await?;
     let template = Template {
         from: None,
         subject: RESET_SUBJECT.to_owned(),

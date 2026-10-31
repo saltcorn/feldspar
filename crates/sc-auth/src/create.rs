@@ -153,17 +153,15 @@ async fn insert_user_marked(
         .try_collect()
         .await?;
 
-    let mut user = User::new(id, new.role);
-    user.extra
-        .insert(COL_EMAIL.to_owned(), Value::Text(email.to_owned()));
+    let mut user = User::new(id, new.role).with_field(COL_EMAIL, Value::Text(email.to_owned()));
     if let Some(language) = language {
-        user.extra
-            .insert(COL_LANGUAGE.to_owned(), Value::Text(language.to_owned()));
+        user = user.with_field(COL_LANGUAGE, Value::Text(language.to_owned()));
     }
-    user.extra.extend(new.extra);
+    for (name, value) in new.extra {
+        user = user.with_field(name, value);
+    }
     if unproven {
-        user.extra
-            .insert(COL_EMAIL_VERIFIED.to_owned(), Value::Bool(false));
+        user = user.with_field(COL_EMAIL_VERIFIED, Value::Bool(false));
     }
     Ok(user)
 }

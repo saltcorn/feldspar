@@ -480,7 +480,7 @@ async fn a_large_upload_resumes_after_a_dropped_connection_and_is_its_uploaders_
     let alice_id = sc_auth::load_user_by_email(&server.catalog, "alice@example.com")
         .await?
         .unwrap()
-        .id
+        .id()
         .to_string();
     assert_eq!(meta.owner.as_deref(), Some(alice_id.as_str()));
     assert_eq!(
@@ -780,6 +780,16 @@ async fn the_body_limits_are_settings_and_refuse_with_json() -> sc_error::Result
     // the file manager's upload over `--max-upload-bytes`, are both JSON 413s.
     let mut admin = Client::new(server.router.clone(), "example.com");
     admin.prime().await;
+    let login_body = serde_json::to_vec(&json!({
+        "email": "admin@example.com", "password": PASSWORD
+    }))
+    .unwrap();
+    let logged_in = admin
+        .send("POST", "/api/login", &json_ct, Body::from(login_body))
+        .await;
+    assert_eq!(logged_in.status, StatusCode::OK, "{}", logged_in.json());
+    // Signed in first: an admin route refuses a caller without an admin
+    // session before it reads a byte of the body (`AdminSession`, Q2.3).
     let backup = admin
         .send(
             "POST",
@@ -795,14 +805,6 @@ async fn the_body_limits_are_settings_and_refuse_with_json() -> sc_error::Result
         String::from_utf8_lossy(&backup.body)
     );
 
-    let login_body = serde_json::to_vec(&json!({
-        "email": "admin@example.com", "password": PASSWORD
-    }))
-    .unwrap();
-    let logged_in = admin
-        .send("POST", "/api/login", &json_ct, Body::from(login_body))
-        .await;
-    assert_eq!(logged_in.status, StatusCode::OK, "{}", logged_in.json());
     let upload = admin
         .send(
             "POST",

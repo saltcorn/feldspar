@@ -295,7 +295,7 @@ async fn begin(server: &Server, user: &sc_auth::User, provider: &str) -> String 
         .payload(json!({ "account_id": 1, "provider": provider }))
         .caller(
             Role::ADMIN,
-            Some(json!({ "id": user.id.to_string(), "role": 1 })),
+            Some(json!({ "id": user.id().to_string(), "role": 1 })),
         );
     let config = Attrs::new();
     let registry = server.dispatcher.registry();
@@ -373,7 +373,7 @@ async fn a_modules_consent_flow_stores_the_tokens_in_its_row() -> sc_error::Resu
         .await?
         .batch_execute(&format!(
             "INSERT INTO oa_accounts (owner, email, auth) VALUES ('{}', 'ada@outlook.com', 'password')",
-            user.id
+            user.id()
         ))
         .await
         .map_err(|e| sc_error::Error::database(e.to_string()))?;

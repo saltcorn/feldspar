@@ -709,7 +709,7 @@ async fn an_agent_run_as_the_events_user_acts_and_is_recorded_as_them() -> Resul
     )
     .await?;
     let ada = common::reader("ada@example.com");
-    let caller = sc_api::principal_at(ada.role, Some(&ada));
+    let caller = sc_api::principal_at(ada.role(), Some(&ada));
     let result = env
         .dispatcher
         .as_ref()
@@ -730,7 +730,7 @@ async fn an_agent_run_as_the_events_user_acts_and_is_recorded_as_them() -> Resul
     // …and the run is hers.
     let runs = list_runs(&env.catalog, "noter").await?;
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].user, Some(ada.id));
+    assert_eq!(runs[0].user, Some(ada.id()));
     Ok(())
 }
 
@@ -745,7 +745,7 @@ async fn an_agent_run_as_the_events_user_keeps_the_agents_floor() -> Result<()> 
     )
     .await?;
     let ada = common::reader("ada@example.com");
-    let caller = sc_api::principal_at(ada.role, Some(&ada));
+    let caller = sc_api::principal_at(ada.role(), Some(&ada));
     let err = env
         .dispatcher
         .as_ref()

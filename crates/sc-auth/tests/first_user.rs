@@ -50,7 +50,7 @@ async fn create_first_user_flow() -> sc_error::Result<()> {
 
     // Create the first user: an admin.
     let user = create_first_user(&catalog, "admin@example.com", "s3cret-pw").await?;
-    assert_eq!(user.role, Role::ADMIN);
+    assert_eq!(user.role(), Role::ADMIN);
     assert!(user.is_admin());
     assert_eq!(
         user.get(COL_EMAIL),
@@ -77,7 +77,7 @@ async fn create_first_user_flow() -> sc_error::Result<()> {
         .try_collect()
         .await?;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get(COL_ID), Some(&Value::Uuid(user.id)));
+    assert_eq!(rows[0].get(COL_ID), Some(&Value::Uuid(user.id())));
     match rows[0].get(COL_PASSWORD_HASH) {
         Some(Value::Text(hash)) => {
             assert_ne!(hash, "s3cret-pw");

@@ -181,7 +181,7 @@ impl AdminTool for CreateStore {
             .filter(|b| !b.is_empty())
             .unwrap_or_else(|| sc_files::LOCAL_BACKEND.to_owned());
         let description = optional_string(&args, ARG_DESCRIPTION)?.unwrap_or_default();
-        let user = ctx.user.map(|u| u.id);
+        let user = ctx.user.map(|u| u.id());
 
         let config = match backend.as_str() {
             sc_files::LOCAL_BACKEND => {
@@ -436,7 +436,7 @@ impl AdminTool for CreateApp {
             "apis": [{ "provider": DEFAULT_API_PROVIDER, "mount": DEFAULT_API_MOUNT }],
         });
         let created = host
-            .call_admin(AdminCall::new("createApplication", body).user(ctx.user.map(|u| u.id)))
+            .call_admin(AdminCall::new("createApplication", body).user(ctx.user.map(|u| u.id())))
             .await?;
 
         let app = crate::load_application_by_subdomain(ctx.catalog, &subdomain)

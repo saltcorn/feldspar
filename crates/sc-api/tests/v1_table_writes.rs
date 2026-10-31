@@ -154,7 +154,7 @@ async fn the_definition_of_dones_six_lines_read_and_write() -> Result<()> {
                                                  "{id}");
                return {{ pk: books.pk_name, titles: recent.map((b) => b.title),
                          err: err === undefined ? "ok" : err }};"#,
-            id = ada.id
+            id = ada.id()
         ),
     )
     .await?;
@@ -378,7 +378,7 @@ async fn a_delegated_write_is_checked_as_the_row_is_and_as_it_would_become() -> 
                  mine: await books.getRows({{}}, {{ forUser: ada, orderBy: "id" }})
                          .then((rs) => rs.map((r) => r.title)),
                }};"#,
-            id = ada.id
+            id = ada.id()
         ),
     )
     .await?;
@@ -446,7 +446,7 @@ async fn a_write_the_named_user_may_not_make_is_refused_as_v1_refuses_it() -> Re
                  as_admin: (await books.getRows({{}})).length,
                  emma: await books.countRows({{ title: "Emma" }}),
                }};"#,
-            id = ada.id
+            id = ada.id()
         ),
     )
     .await?;

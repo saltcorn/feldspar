@@ -443,7 +443,7 @@ impl<'a> TableHost<'a> {
             Authority::Named(id) => {
                 let user = load_named_user(self.catalog, &id).await?;
                 Ok(Actor::Caller {
-                    role: user.role,
+                    role: user.role(),
                     user: Some(user),
                 })
             }

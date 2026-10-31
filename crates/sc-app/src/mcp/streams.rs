@@ -251,7 +251,7 @@ async fn edit_streams(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Re
 
     let mut notes = Vec::new();
     let host = ctx.catalog.admin_host();
-    let user = ctx.user.map(|u| u.id);
+    let user = ctx.user.map(|u| u.id());
     for plan in &planned {
         match &host {
             Some(host) => {

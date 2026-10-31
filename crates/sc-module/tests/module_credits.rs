@@ -74,7 +74,7 @@ mod deno {
             "only what it named"
         );
 
-        let event = Event::new(EventKind::None).payload(json!({ "user": user.id.to_string() }));
+        let event = Event::new(EventKind::None).payload(json!({ "user": user.id().to_string() }));
         let config = Attrs::new();
         let action = registry.require("grant_credits").unwrap();
         let mut ctx = ActionContext::new(&cat, &event, &config, "grant credits");
@@ -112,10 +112,10 @@ mod deno {
         );
 
         // The buckets are the module's, under its own name.
-        let balance = credit_balance(&cat, user.id).await.unwrap();
+        let balance = credit_balance(&cat, user.id()).await.unwrap();
         assert_eq!(balance.balance, Decimal::new(1525, 1));
         assert_eq!(balance.low_balance_threshold, Some(Decimal::from(10)));
-        let buckets = list_credit_buckets(&cat, user.id).await.unwrap();
+        let buckets = list_credit_buckets(&cat, user.id()).await.unwrap();
         assert_eq!(buckets.len(), 3);
         let first = buckets.iter().find(|b| b.key == "invoice:in_1").unwrap();
         assert!(first.remaining.is_zero(), "rolled over, and emptied");

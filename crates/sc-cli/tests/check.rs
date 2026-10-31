@@ -36,9 +36,9 @@ async fn check_run_exits_non_zero_on_a_failing_checklist() -> sc_error::Result<(
     catalog.reload().await?;
     let admin = sc_auth::create_user(&catalog, "admin@example.com", "pw", Role::ADMIN).await?;
     let registry = StepRegistry::builtin();
-    let human = Editor::Human(admin.id);
+    let human = Editor::Human(admin.id());
     let mut as_admin = ChecklistInput::new("No things");
-    as_admin.run_as = Some(admin.id);
+    as_admin.run_as = Some(admin.id());
     edit::create_checklist(
         &catalog,
         &registry,

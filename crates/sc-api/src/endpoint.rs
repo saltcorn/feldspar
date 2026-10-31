@@ -194,7 +194,7 @@ impl AuthRequirement {
         match self {
             AuthRequirement::Public => true,
             AuthRequirement::LoggedIn => user.is_some(),
-            AuthRequirement::MinRole(min) => (user.map_or(Role::PUBLIC, |u| u.role)).meets(*min),
+            AuthRequirement::MinRole(min) => (user.map_or(Role::PUBLIC, |u| u.role())).meets(*min),
         }
     }
 

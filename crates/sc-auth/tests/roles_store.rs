@@ -109,7 +109,7 @@ async fn a_user_cannot_hold_a_role_that_does_not_exist() -> Result<()> {
     // Create the role, and now the same user is accepted.
     save_role(&cat, &RoleDef::new(Role::of(40), "Editor")).await?;
     let user = create_user(&cat, "editor@example.com", "editor-pw", Role::of(40)).await?;
-    assert_eq!(user.role, Role::of(40));
+    assert_eq!(user.role(), Role::of(40));
     Ok(())
 }
 

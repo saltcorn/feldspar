@@ -33,7 +33,7 @@ use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
 
-use crate::handler::{HandlerCtx, HandlerRegistry, HandlerResponse};
+use crate::handler::{AnalyticsCaller, HandlerCtx, HandlerRegistry, HandlerResponse};
 
 /// The most distinct values `datasetColumnValues` answers.
 const MAX_VALUES: u64 = 200;
@@ -65,8 +65,8 @@ struct Access {
 }
 
 impl Access {
-    fn of(ctx: &HandlerCtx) -> Access {
-        let caller = Caller::of_user(ctx.user.as_ref());
+    fn of(ctx: &HandlerCtx<AnalyticsCaller>) -> Access {
+        let caller = Caller::of_user(ctx.user());
         match &ctx.analytics_app {
             Some(app) => Access {
                 caller: app.narrow(caller),
@@ -237,7 +237,7 @@ impl Access {
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
     // --- datasets ------------------------------------------------------------
 
-    reg.register("listDatasets", {
+    reg.register_analytics("listDatasets", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -286,7 +286,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("getDataset", {
+    reg.register_analytics("getDataset", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -298,7 +298,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("createDataset", {
+    reg.register_analytics("createDataset", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -314,7 +314,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("updateDataset", {
+    reg.register_analytics("updateDataset", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -330,7 +330,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("deleteDataset", {
+    reg.register_analytics("deleteDataset", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -349,7 +349,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("shareDataset", {
+    reg.register_analytics("shareDataset", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -372,7 +372,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("cloneDataset", {
+    reg.register_analytics("cloneDataset", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -388,7 +388,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("datasetUsage", {
+    reg.register_analytics("datasetUsage", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -437,7 +437,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("datasetShapes", {
+    reg.register_analytics("datasetShapes", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -451,7 +451,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("validateDatasetOperation", {
+    reg.register_analytics("validateDatasetOperation", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -513,7 +513,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("readDatasetStage", {
+    reg.register_analytics("readDatasetStage", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -545,7 +545,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("datasetColumnValues", {
+    reg.register_analytics("datasetColumnValues", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -576,7 +576,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("listDatasetTables", {
+    reg.register_analytics("listDatasetTables", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -604,7 +604,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
 
     // --- plots ---------------------------------------------------------------
 
-    reg.register("renderPlot", {
+    reg.register_analytics("renderPlot", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -630,7 +630,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("renderTable", {
+    reg.register_analytics("renderTable", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -656,7 +656,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("runTests", {
+    reg.register_analytics("runTests", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -680,11 +680,11 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("plotGallery", move |_ctx| async move {
+    reg.register_analytics("plotGallery", move |_ctx| async move {
         Ok(HandlerResponse::ok(json!(plot::gallery())))
     });
 
-    reg.register("suggestPlot", {
+    reg.register_analytics("suggestPlot", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -740,7 +740,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
 
     // --- map layers (A5.5) -----------------------------------------------------
 
-    reg.register("layerData", {
+    reg.register_analytics("layerData", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -768,7 +768,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("layerTile", {
+    reg.register_analytics("layerTile", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -802,7 +802,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
 
     // --- the Map workspace's table and selection (A5.10) ------------------------
 
-    reg.register("layerRows", {
+    reg.register_analytics("layerRows", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -839,7 +839,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("selectFeatures", {
+    reg.register_analytics("selectFeatures", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -864,7 +864,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("saveSelection", {
+    reg.register_analytics("saveSelection", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -896,7 +896,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
 
     // --- maps (A5.6, A5.7, A5.11, A5.12) ------------------------------------------
 
-    reg.register("mapSettings", {
+    reg.register_analytics("mapSettings", {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -907,7 +907,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("saveMapSettings", {
+    reg.register_admin("saveMapSettings", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -933,7 +933,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("allowMapHost", {
+    reg.register_admin("allowMapHost", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -945,11 +945,11 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("listMapTools", move |_ctx| async move {
+    reg.register_analytics("listMapTools", move |_ctx| async move {
         Ok(HandlerResponse::ok(json!(tools::tool_descriptors())))
     });
 
-    reg.register("runMapTool", {
+    reg.register_analytics("runMapTool", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -994,7 +994,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("suggestMap", {
+    reg.register_analytics("suggestMap", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1030,7 +1030,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("renderMap", {
+    reg.register_analytics("renderMap", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1055,7 +1055,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("renderPanel", {
+    reg.register_analytics("renderPanel", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1097,7 +1097,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
 
     // --- the model editor ----------------------------------------------------
 
-    reg.register("getModelOutputs", {
+    reg.register_admin("getModelOutputs", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1163,7 +1163,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
 
     // --- the shell -----------------------------------------------------------
 
-    reg.register("analyticsShell", {
+    reg.register_analytics("analyticsShell", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1184,7 +1184,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
 
     // --- workspaces ----------------------------------------------------------
 
-    reg.register("listWorkspaceKinds", move |ctx| async move {
+    reg.register_analytics("listWorkspaceKinds", move |ctx| async move {
         let access = Access::of(&ctx);
         Ok(HandlerResponse::ok(Json::Array(
             WorkspaceKind::ALL
@@ -1203,7 +1203,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         )))
     });
 
-    reg.register("listWorkspaces", {
+    reg.register_analytics("listWorkspaces", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1220,7 +1220,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("getWorkspace", {
+    reg.register_analytics("getWorkspace", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1232,7 +1232,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("createWorkspace", {
+    reg.register_analytics("createWorkspace", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1241,7 +1241,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                 let kind = WorkspaceKind::parse(&text(&ctx.body, "kind")?)?;
                 kind.check_available()?;
                 let access = Access::of(&ctx);
-                let mut ws = Workspace::new(name, kind, ctx.user.as_ref().map(|u| u.id));
+                let mut ws = Workspace::new(name, kind, ctx.user().map(|u| u.id()));
                 if let Some(app) = &access.app {
                     app.check_create_workspace(kind)?;
                     ws = ws.in_application(app.app);
@@ -1253,7 +1253,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("updateWorkspace", {
+    reg.register_analytics("updateWorkspace", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1268,7 +1268,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("shareWorkspace", {
+    reg.register_analytics("shareWorkspace", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1289,7 +1289,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("saveWorkspaceState", {
+    reg.register_analytics("saveWorkspaceState", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1308,7 +1308,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register("deleteWorkspace", {
+    reg.register_analytics("deleteWorkspace", {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -1328,16 +1328,16 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
     });
 }
 
-fn uuid_param(ctx: &HandlerCtx, what: &str) -> Result<Uuid> {
+fn uuid_param<W>(ctx: &HandlerCtx<W>, what: &str) -> Result<Uuid> {
     let raw = ctx.path_param("id")?;
     Uuid::parse_str(raw).map_err(|_| Error::invalid(format!("`{raw}` is not a {what} id")))
 }
 
-fn dataset_id(ctx: &HandlerCtx) -> Result<DatasetId> {
+fn dataset_id<W>(ctx: &HandlerCtx<W>) -> Result<DatasetId> {
     uuid_param(ctx, "dataset").map(DatasetId)
 }
 
-fn workspace_id(ctx: &HandlerCtx) -> Result<WorkspaceId> {
+fn workspace_id<W>(ctx: &HandlerCtx<W>) -> Result<WorkspaceId> {
     uuid_param(ctx, "workspace").map(WorkspaceId)
 }
 

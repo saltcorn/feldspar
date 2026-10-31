@@ -101,8 +101,8 @@ async fn a_session_started_on_one_node_is_live_on_another() -> Result<()> {
         .user_for(&token)
         .await?
         .expect("node B honours node A's session");
-    assert_eq!(seen.id, user.id);
-    assert_eq!(seen.role, user.role);
+    assert_eq!(seen.id(), user.id());
+    assert_eq!(seen.role(), user.role());
 
     // And the logout crosses back the other way.
     assert!(node_b.logout(&token).await?);
@@ -257,7 +257,7 @@ async fn a_deleted_users_session_stops_resolving_and_never_blocked_the_delete() 
     f.catalog
         .primary()
         .query(&Statement::from(
-            Delete::from(USERS_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(user.id))),
+            Delete::from(USERS_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(user.id()))),
         ))
         .await?
         .try_collect()
@@ -285,8 +285,8 @@ async fn expired_sessions_lapse_and_are_swept() -> Result<()> {
     // Straight to the table, with its lifetime already spent — the store's own
     // `login` cannot make one of these, which is why the free function takes a
     // TTL rather than assuming the default.
-    let stale = create_session(&f.catalog, user.id, Duration::seconds(-1)).await?;
-    let also_stale = create_session(&f.catalog, user.id, Duration::seconds(-1)).await?;
+    let stale = create_session(&f.catalog, user.id(), Duration::seconds(-1)).await?;
+    let also_stale = create_session(&f.catalog, user.id(), Duration::seconds(-1)).await?;
     assert_eq!(session_rows(&f.catalog).await?, 3);
 
     // Lazily: reading a lapsed session both refuses it and purges its row.
@@ -318,7 +318,7 @@ async fn a_role_change_reaches_a_live_session() -> Result<()> {
                 USERS_TABLE,
                 vec![sc_query::Assignment::new("role", Expr::lit(100_i64))],
             )
-            .filter(Expr::col(COL_ID).eq(Expr::lit(user.id))),
+            .filter(Expr::col(COL_ID).eq(Expr::lit(user.id()))),
         ))
         .await?
         .try_collect()
@@ -326,7 +326,7 @@ async fn a_role_change_reaches_a_live_session() -> Result<()> {
 
     let seen = store.user_for(&token).await?.expect("still signed in");
     assert_eq!(
-        seen.role,
+        seen.role(),
         Role::PUBLIC,
         "the session names the user; it does not carry a copy of them"
     );

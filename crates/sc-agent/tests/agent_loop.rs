@@ -392,7 +392,7 @@ async fn a_trait_speaks_before_every_turn_and_the_run_records_its_caller() -> Re
         Reply::says("Three, on a Tuesday."),
     ]));
     let user = User::new(Uuid::new_v4(), Role::of(40));
-    let user_id = user.id;
+    let user_id = user.id();
     let runner = Runner::new(
         &catalog,
         &registry,

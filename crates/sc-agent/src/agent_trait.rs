@@ -552,7 +552,7 @@ impl RunCaller {
     /// A run on behalf of `user`, at that user's role. This is a chat turn.
     pub fn user(user: User) -> RunCaller {
         RunCaller {
-            role: user.role,
+            role: user.role(),
             user: Some(user),
             triggered: false,
             exposed: false,

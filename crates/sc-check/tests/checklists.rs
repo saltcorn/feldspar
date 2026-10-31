@@ -186,7 +186,7 @@ impl Env {
     }
 
     fn human(&self) -> Editor {
-        Editor::Human(self.admin.id)
+        Editor::Human(self.admin.id())
     }
 
     async fn count(&self, table: &str) -> i64 {
@@ -212,7 +212,7 @@ fn agent(run: &str, grant: ChecklistGrant) -> Editor {
 async fn a_data_checklist_inserts_runs_a_trigger_asserts_and_cleans_up() -> Result<()> {
     let env = setup("data").await?;
     let mut input = ChecklistInput::new("Orders are stamped");
-    input.run_as = Some(env.member.id);
+    input.run_as = Some(env.member.id());
     let checklist = edit::create_checklist(
         &env.catalog,
         &env.registry,
@@ -277,7 +277,7 @@ async fn a_data_checklist_inserts_runs_a_trigger_asserts_and_cleans_up() -> Resu
 async fn mail_sent_during_a_run_is_kept_on_the_run_and_not_sent() -> Result<()> {
     let env = setup("outbox").await?;
     let mut input = ChecklistInput::new("Orders are confirmed by mail");
-    input.run_as = Some(env.member.id);
+    input.run_as = Some(env.member.id());
     let checklist = edit::create_checklist(
         &env.catalog,
         &env.registry,
@@ -389,7 +389,7 @@ async fn expect_denied_fails_once_the_tables_role_is_loosened() -> Result<()> {
 async fn an_agent_appends_freely_and_proposes_everything_else() -> Result<()> {
     let env = setup("policy").await?;
     let mut as_member = ChecklistInput::new("Orders");
-    as_member.run_as = Some(env.member.id);
+    as_member.run_as = Some(env.member.id());
     let checklist = edit::create_checklist(
         &env.catalog,
         &env.registry,
@@ -546,7 +546,7 @@ async fn an_agent_may_only_run_a_checklist_as_a_check_user() -> Result<()> {
     let env = setup("runas").await?;
     let me = agent("run-1", ChecklistGrant::Full);
     let mut input = ChecklistInput::new("As the admin");
-    input.run_as = Some(env.admin.id);
+    input.run_as = Some(env.admin.id());
     let err = edit::create_checklist(&env.catalog, &env.registry, &me, input.clone(), vec![])
         .await
         .unwrap_err()
@@ -555,9 +555,9 @@ async fn an_agent_may_only_run_a_checklist_as_a_check_user() -> Result<()> {
 
     // Once an admin makes the member a check user, the agent may use it.
     assert!(!env.member.is_check_user());
-    let member = set_check_user(&env.catalog, env.member.id, true).await?;
+    let member = set_check_user(&env.catalog, env.member.id(), true).await?;
     assert!(member.is_check_user());
-    input.run_as = Some(member.id);
+    input.run_as = Some(member.id());
     input.name = "As a member".to_owned();
     let checklist = edit::create_checklist(&env.catalog, &env.registry, &me, input, vec![]).await?;
 
@@ -568,7 +568,7 @@ async fn an_agent_may_only_run_a_checklist_as_a_check_user() -> Result<()> {
         &agent("run-1", ChecklistGrant::Append),
         checklist.id,
         ProposalChange::RunAs {
-            user: Some(env.admin.id),
+            user: Some(env.admin.id()),
         },
         "needs more rights",
     )
@@ -583,7 +583,7 @@ async fn an_agent_may_only_run_a_checklist_as_a_check_user() -> Result<()> {
     );
     // A person may point a checklist at anybody.
     let mut by_hand = ChecklistInput::new("As the admin");
-    by_hand.run_as = Some(env.admin.id);
+    by_hand.run_as = Some(env.admin.id());
     edit::create_checklist(&env.catalog, &env.registry, &env.human(), by_hand, vec![]).await?;
     Ok(())
 }
@@ -600,7 +600,7 @@ async fn a_mutating_checklist_is_refused_on_production() -> Result<()> {
         ]
     };
     let mut writes = ChecklistInput::new("Writes");
-    writes.run_as = Some(env.member.id);
+    writes.run_as = Some(env.member.id());
     let checklist =
         edit::create_checklist(&env.catalog, &env.registry, &env.human(), writes, insert()).await?;
     let run = run_checklist(&env.env(), &checklist, "manual").await?;
@@ -612,7 +612,7 @@ async fn a_mutating_checklist_is_refused_on_production() -> Result<()> {
 
     // Allowed there by a person, it runs.
     let mut allowed = ChecklistInput::new("Writes, allowed");
-    allowed.run_as = Some(env.member.id);
+    allowed.run_as = Some(env.member.id());
     allowed
         .attributes
         .insert("allow_on_production".to_owned(), json!(true));
@@ -650,7 +650,7 @@ async fn a_step_the_host_cannot_run_makes_the_run_incomplete() -> Result<()> {
     save_application(&env.catalog, &app).await?;
     let mut input = ChecklistInput::new("Shop answers");
     input.application = Some(app.id.0);
-    input.run_as = Some(env.member.id);
+    input.run_as = Some(env.member.id());
     let checklist = edit::create_checklist(
         &env.catalog,
         &env.registry,

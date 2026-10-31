@@ -819,7 +819,7 @@ async fn ending_the_session_closes_the_chat_socket() -> Result<()> {
         json!({ "type": "start", "agent": "librarian" }),
     )
     .await;
-    server.sessions.end_user_sessions(other.id).await?;
+    server.sessions.end_user_sessions(other.id()).await?;
     let reason = closed_with(&mut socket).await;
     assert!(reason.contains("session ended"), "{reason}");
     Ok(())

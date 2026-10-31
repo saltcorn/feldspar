@@ -8,14 +8,29 @@
 //! (design §13.1).
 //!
 //! Handlers stay free of HTTP plumbing: they receive a [`HandlerCtx`] (path/query
-//! params, parsed JSON body, and the authenticated [`User`], already checked
-//! against the endpoint's auth requirement, and the request's negotiated
-//! locale) and return a [`HandlerResponse`]. A
+//! params, parsed JSON body, who is calling — already checked against the
+//! endpoint's auth requirement — and the request's negotiated locale) and
+//! return a [`HandlerResponse`]. A
 //! handler never touches cookies directly — instead it asks the dispatcher to
 //! start or end the session via [`SessionAction`], so login/logout stay pure.
 //! That type is [`sc_api::SessionAction`], shared with the API providers: an
 //! application's `login` and the admin's `login` describe the same session
 //! change and the dispatcher applies both the same way.
+//!
+//! # Gates
+//!
+//! Who is calling arrives typed by the **gate** a handler was registered
+//! behind (code quality Q2.4). [`register`](HandlerRegistry::register) is
+//! open: the context's [`who`](HandlerCtx::who) is the [`Caller`], anybody.
+//! [`register_signed_in`](HandlerRegistry::register_signed_in) hands an
+//! [`AuthenticatedUser`], [`register_admin`](HandlerRegistry::register_admin)
+//! an [`Admin`], and [`register_analytics`](HandlerRegistry::register_analytics)
+//! an [`AnalyticsCaller`]. The registry narrows the caller before the handler
+//! runs and refuses one the gate does not admit, so an admin handler cannot be
+//! called with anything but admin authority however it is reached; and
+//! [`check_gates`](HandlerRegistry::check_gates), which the router runs at
+//! startup, refuses an endpoint set in which an `admin()` endpoint names a
+//! handler registered behind a weaker gate.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -23,20 +38,29 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 pub use sc_api::SessionAction;
-use sc_auth::User;
-use sc_error::Result;
+use sc_api::{AuthRequirement, EndpointSet, HandlerRef};
+use sc_auth::{AuthenticatedUser, User};
+use sc_error::{Error, Result};
 use serde_json::Value;
+
+pub use crate::admin_session::{Admin, AdminSession, AnalyticsCaller, Caller, Who};
 
 /// A boxed, `Send` future — the return shape every handler produces.
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 /// A registered handler: given a [`HandlerCtx`], produce a [`HandlerResponse`].
+///
+/// Every handler is called this way, with the [`Caller`] the dispatcher
+/// resolved; the gate it was registered behind narrows the caller inside.
 pub type HandlerFn = Arc<dyn Fn(HandlerCtx) -> BoxFuture<Result<HandlerResponse>> + Send + Sync>;
 
 /// Everything a handler needs about the request, with authorization already
 /// enforced by the dispatcher.
+///
+/// `W` is who is calling, typed by the handler's gate (module docs, "Gates"):
+/// a [`Caller`] for an open handler, an [`Admin`] for an admin endpoint's.
 #[derive(Debug, Clone)]
-pub struct HandlerCtx {
+pub struct HandlerCtx<W = Caller> {
     /// Path parameters captured from the route pattern (e.g. `table`, `id`).
     pub path_params: HashMap<String, String>,
     /// Query-string parameters, in arrival order and with duplicates kept — the
@@ -46,9 +70,9 @@ pub struct HandlerCtx {
     pub query: Vec<(String, String)>,
     /// The parsed JSON request body ([`Value::Null`] when there was no body).
     pub body: Value,
-    /// The authenticated user, if any. Presence/role already satisfy the
-    /// endpoint's [`AuthRequirement`](sc_api::AuthRequirement).
-    pub user: Option<User>,
+    /// Who is calling. Presence and role already satisfy the endpoint's
+    /// [`AuthRequirement`]; the type is the handler's gate's.
+    pub who: W,
     /// The locale this request is served in (§16.1, D8).
     ///
     /// Negotiated **once**, in the router, from `?lang=`, the user's `language`
@@ -90,9 +114,40 @@ pub struct HandlerCtx {
     pub analytics_app: Option<Arc<sc_analytics::app::AppScope>>,
 }
 
-impl HandlerCtx {
-    /// A required path parameter, or an [`Error::Invalid`](sc_error::Error) if
-    /// absent (a routing/registration bug rather than user input).
+impl<W: Who> HandlerCtx<W> {
+    /// The user calling, when there is one.
+    pub fn user(&self) -> Option<&User> {
+        self.who.user()
+    }
+}
+
+impl<W> HandlerCtx<W> {
+    /// The same request with the caller narrowed by `narrow`, or its refusal.
+    fn narrow<V>(self, narrow: impl FnOnce(W) -> Result<V>) -> Result<HandlerCtx<V>> {
+        let HandlerCtx {
+            path_params,
+            query,
+            body,
+            who,
+            locale,
+            raw_body,
+            raw_file,
+            client_ip,
+            analytics_app,
+        } = self;
+        Ok(HandlerCtx {
+            who: narrow(who)?,
+            path_params,
+            query,
+            body,
+            locale,
+            raw_body,
+            raw_file,
+            client_ip,
+            analytics_app,
+        })
+    }
+
     /// The raw request body, or an error when the route did not supply one
     /// (which would be a registration bug, not user input).
     pub fn raw_body(&self) -> Result<&bytes::Bytes> {
@@ -101,6 +156,8 @@ impl HandlerCtx {
             .ok_or_else(|| sc_error::Error::invalid("this handler requires a raw request body"))
     }
 
+    /// A required path parameter, or an [`Error::Invalid`](sc_error::Error) if
+    /// absent (a routing/registration bug rather than user input).
     pub fn path_param(&self, name: &str) -> Result<&str> {
         self.path_params
             .get(name)
@@ -314,12 +371,48 @@ impl HandlerResponse {
     }
 }
 
+/// Which callers a handler was registered to serve (module docs, "Gates").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gate {
+    /// Anybody: the handler is handed the [`Caller`].
+    Open,
+    /// A signed-in user: an [`AuthenticatedUser`].
+    SignedIn,
+    /// Admin authority: an [`Admin`].
+    Admin,
+    /// The Analytics UI's caller: an [`AnalyticsCaller`] — admin authority on
+    /// the admin host, an Analytics application's visitor on its own.
+    Analytics,
+}
+
+impl Gate {
+    /// Whether a handler behind this gate may serve an endpoint requiring
+    /// `auth`: an `admin()` endpoint needs an admin (or Analytics) handler, a
+    /// `LoggedIn` one a handler that is handed a user.
+    pub fn serves(self, auth: &AuthRequirement) -> bool {
+        match auth {
+            AuthRequirement::MinRole(role) if role.is_admin() => {
+                matches!(self, Gate::Admin | Gate::Analytics)
+            }
+            AuthRequirement::LoggedIn => self != Gate::Open,
+            AuthRequirement::MinRole(_) | AuthRequirement::Public => true,
+        }
+    }
+}
+
+/// One registered handler and its gate.
+#[derive(Clone)]
+struct Registered {
+    gate: Gate,
+    handler: HandlerFn,
+}
+
 /// A name → handler map. Endpoints are dispatched by resolving their
 /// [`HandlerRef::Named`](sc_api::HandlerRef) here; an endpoint whose handler is
 /// absent (or is guest code / SQL) yields `501 Not Implemented`.
 #[derive(Clone, Default)]
 pub struct HandlerRegistry {
-    handlers: HashMap<String, HandlerFn>,
+    handlers: HashMap<String, Registered>,
 }
 
 impl HandlerRegistry {
@@ -328,7 +421,9 @@ impl HandlerRegistry {
         HandlerRegistry::default()
     }
 
-    /// Register an async handler under `name`, replacing any previous one.
+    /// Register an **open** async handler under `name`, replacing any previous
+    /// one: it is handed whoever the dispatcher resolved, and may serve only
+    /// endpoints that do not require a user ([`Gate::serves`]).
     ///
     /// Accepts any async closure `Fn(HandlerCtx) -> Future<Output = Result<HandlerResponse>>`.
     pub fn register<F, Fut>(&mut self, name: impl Into<String>, handler: F) -> &mut HandlerRegistry
@@ -337,13 +432,126 @@ impl HandlerRegistry {
         Fut: Future<Output = Result<HandlerResponse>> + Send + 'static,
     {
         let boxed: HandlerFn = Arc::new(move |ctx| Box::pin(handler(ctx)));
-        self.handlers.insert(name.into(), boxed);
+        self.insert(name, Gate::Open, boxed)
+    }
+
+    /// Register a handler for a `LoggedIn` endpoint: it is handed the
+    /// signed-in [`AuthenticatedUser`], and never called without one.
+    pub fn register_signed_in<F, Fut>(
+        &mut self,
+        name: impl Into<String>,
+        handler: F,
+    ) -> &mut HandlerRegistry
+    where
+        F: Fn(HandlerCtx<AuthenticatedUser>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<HandlerResponse>> + Send + 'static,
+    {
+        let handler = Arc::new(handler);
+        let boxed: HandlerFn =
+            Arc::new(
+                move |ctx: HandlerCtx| match ctx.narrow(Caller::into_signed_in) {
+                    Ok(ctx) => Box::pin(handler(ctx)) as BoxFuture<_>,
+                    Err(refused) => Box::pin(async move { Err(refused) }),
+                },
+            );
+        self.insert(name, Gate::SignedIn, boxed)
+    }
+
+    /// Register a handler for an `admin()` endpoint: it is handed the
+    /// [`Admin`] authority, and never called without it.
+    pub fn register_admin<F, Fut>(
+        &mut self,
+        name: impl Into<String>,
+        handler: F,
+    ) -> &mut HandlerRegistry
+    where
+        F: Fn(HandlerCtx<Admin>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<HandlerResponse>> + Send + 'static,
+    {
+        let handler = Arc::new(handler);
+        let boxed: HandlerFn =
+            Arc::new(
+                move |ctx: HandlerCtx| match ctx.narrow(Caller::into_admin) {
+                    Ok(ctx) => Box::pin(handler(ctx)) as BoxFuture<_>,
+                    Err(refused) => Box::pin(async move { Err(refused) }),
+                },
+            );
+        self.insert(name, Gate::Admin, boxed)
+    }
+
+    /// Register a handler for an Analytics endpoint: on the admin host it is
+    /// handed [`Admin`] authority, and through an Analytics application its
+    /// visitor ([`AnalyticsCaller`]).
+    pub fn register_analytics<F, Fut>(
+        &mut self,
+        name: impl Into<String>,
+        handler: F,
+    ) -> &mut HandlerRegistry
+    where
+        F: Fn(HandlerCtx<AnalyticsCaller>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<HandlerResponse>> + Send + 'static,
+    {
+        let handler = Arc::new(handler);
+        let boxed: HandlerFn = Arc::new(move |ctx: HandlerCtx| {
+            let in_app = ctx.analytics_app.is_some();
+            match ctx.narrow(|caller| caller.into_analytics(in_app)) {
+                Ok(ctx) => Box::pin(handler(ctx)) as BoxFuture<_>,
+                Err(refused) => Box::pin(async move { Err(refused) }),
+            }
+        });
+        self.insert(name, Gate::Analytics, boxed)
+    }
+
+    fn insert(&mut self, name: impl Into<String>, gate: Gate, handler: HandlerFn) -> &mut Self {
+        self.handlers
+            .insert(name.into(), Registered { gate, handler });
         self
     }
 
     /// Look up a handler by name.
     pub fn get(&self, name: &str) -> Option<&HandlerFn> {
-        self.handlers.get(name)
+        self.handlers.get(name).map(|r| &r.handler)
+    }
+
+    /// The gate the handler `name` was registered behind.
+    pub fn gate(&self, name: &str) -> Option<Gate> {
+        self.handlers.get(name).map(|r| r.gate)
+    }
+
+    /// Every handler `endpoints` name is behind a gate that serves the
+    /// endpoint's requirement ([`Gate::serves`]): an `admin()` endpoint's
+    /// handler takes [`Admin`] authority, a `LoggedIn` one's a user. An
+    /// endpoint whose handler is not registered here is left to dispatch,
+    /// which answers it `501`.
+    ///
+    /// The router runs this before it serves anything, so an admin handler
+    /// registered behind the open gate is a server that does not start rather
+    /// than a route that reaches a handler with whoever asked.
+    pub fn check_gates(&self, endpoints: &EndpointSet) -> Result<()> {
+        let wrong: Vec<String> = endpoints
+            .iter()
+            .filter_map(|ep| {
+                let HandlerRef::Named(name) = &ep.handler else {
+                    return None;
+                };
+                let gate = self.gate(name)?;
+                (!gate.serves(&ep.auth)).then(|| {
+                    format!(
+                        "`{}` requires {:?} but its handler `{name}` is registered behind the \
+                         {gate:?} gate",
+                        ep.name, ep.auth
+                    )
+                })
+            })
+            .collect();
+        if wrong.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::config(format!(
+                "handlers registered behind the wrong gate: {}",
+                wrong.join("; ")
+            )))
+        }
     }
 
     /// The number of registered handlers.

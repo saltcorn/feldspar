@@ -73,7 +73,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::lookup::load_user;
-use crate::user::User;
+use crate::user::AuthenticatedUser;
 
 /// Name of the API token table in the primary database.
 pub const API_TOKENS_TABLE: &str = "_fd_api_tokens";
@@ -240,8 +240,9 @@ pub struct MintedApiToken {
 /// Who a presented token authenticates as, and which token said so.
 #[derive(Debug)]
 pub struct ApiCaller {
-    /// The user every subsequent authorization decision is made about.
-    pub user: User,
+    /// The user every subsequent authorization decision is made about — one
+    /// of the two ways an [`AuthenticatedUser`] is made.
+    pub user: AuthenticatedUser,
     /// The token, for the audit line — its *label*, never its hash.
     pub token: ApiToken,
 }
@@ -477,7 +478,7 @@ async fn authenticate(catalog: &Catalog, presented: &str, reach: Reach) -> Resul
         // A routes-only token runs as whoever it names; the route checks the
         // role, exactly as it checks a session's.
         (true, Reach::ModuleRoute) => {}
-        (false, _) if !user.role.is_admin() => {
+        (false, _) if !user.role().is_admin() => {
             return Err(Error::auth(format!(
                 "the user the API token `{}` was minted for is no longer an \
                  administrator, and this token only ever had their authority",
@@ -488,7 +489,10 @@ async fn authenticate(catalog: &Catalog, presented: &str, reach: Reach) -> Resul
     }
 
     let token = touch_last_used(catalog, &hash, token, now).await?;
-    Ok(ApiCaller { user, token })
+    Ok(ApiCaller {
+        user: AuthenticatedUser::verified(user),
+        token,
+    })
 }
 
 /// Write `last_used_at` if it is due, returning the token as it now stands.

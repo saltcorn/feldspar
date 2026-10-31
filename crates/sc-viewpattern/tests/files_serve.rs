@@ -51,7 +51,7 @@ async fn an_owned_file_is_served_to_its_owner_and_not_found_to_anyone_else() -> 
         .await?;
     let ada = User::new(uuid::Uuid::new_v4(), Role::of(80));
     let bob = User::new(uuid::Uuid::new_v4(), Role::of(80));
-    sc_files::record_owner(store.as_ref(), "private/ada.png", &ada.id.to_string()).await;
+    sc_files::record_owner(store.as_ref(), "private/ada.png", &ada.id().to_string()).await;
 
     let app = Application::new("Books", "books", FrameworkRef::new("saltcorn-ui"))
         .with_file_store(FileStoreId("media".to_owned()));

@@ -428,7 +428,7 @@ async fn part_five_a_collaborative_notes_app() -> Result<()> {
             .await
             .unwrap()
             .unwrap()
-            .id
+            .id()
             .hyphenated()
             .to_string()
     };
@@ -1006,7 +1006,7 @@ async fn tutorial_user(tutorial: &Tutorial, email: &str) -> String {
         .await
         .unwrap()
         .unwrap()
-        .id
+        .id()
         .hyphenated()
         .to_string()
 }

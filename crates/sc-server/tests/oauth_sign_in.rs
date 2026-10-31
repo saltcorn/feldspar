@@ -506,7 +506,7 @@ async fn an_application_and_the_admin_ui_sign_in_with_an_identity_provider() -> 
     let created = load_user_by_email(&catalog, "new@example.com")
         .await?
         .unwrap();
-    assert_eq!(created.role, Role::PUBLIC);
+    assert_eq!(created.role(), Role::PUBLIC);
     let token_request = seen.lock().unwrap().token_requests.last().cloned().unwrap();
     assert_eq!(token_request["grant_type"], "authorization_code");
 
@@ -550,7 +550,7 @@ async fn an_application_and_the_admin_ui_sign_in_with_an_identity_provider() -> 
     let claimed = load_user_by_email(&catalog, "victim@example.com")
         .await?
         .unwrap();
-    assert_eq!(claimed.id, squatted.id);
+    assert_eq!(claimed.id(), squatted.id());
     assert!(!claimed.email_unproven());
 
     // An unverified address is refused, back on the page it started from.

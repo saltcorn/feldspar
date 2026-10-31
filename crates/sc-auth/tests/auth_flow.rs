@@ -81,8 +81,8 @@ async fn phase5_auth_acceptance_walk() -> sc_error::Result<()> {
     let user = authenticate(&catalog, "admin@example.com", "s3cret-pw")
         .await?
         .expect("valid credentials authenticate");
-    assert_eq!(user.id, admin.id);
-    assert_eq!(user.role, Role::ADMIN);
+    assert_eq!(user.id(), admin.id());
+    assert_eq!(user.role(), Role::ADMIN);
     assert_eq!(
         user.get(COL_EMAIL),
         Some(&Value::Text("admin@example.com".into()))
@@ -94,7 +94,7 @@ async fn phase5_auth_acceptance_walk() -> sc_error::Result<()> {
     let sessions = SessionStore::database(catalog.clone());
     let token = sessions.login(user.clone()).await?;
     assert_eq!(
-        sessions.user_for(&token).await?,
+        sessions.user_for(&token).await?.map(|u| u.into_user()),
         Some(user.clone()),
         "session resolves before logout"
     );
@@ -117,7 +117,7 @@ async fn phase5_auth_acceptance_walk() -> sc_error::Result<()> {
     );
     let expiring = short.login(user.clone()).await?;
     assert_eq!(
-        short.user_for(&expiring).await?,
+        short.user_for(&expiring).await?.map(|u| u.into_user()),
         Some(user),
         "session valid within its TTL"
     );

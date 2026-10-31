@@ -129,7 +129,7 @@ fn site_app() -> Application {
 
 impl Env {
     fn human(&self) -> Editor {
-        Editor::Human(self.admin.id)
+        Editor::Human(self.admin.id())
     }
 
     async fn checklist(

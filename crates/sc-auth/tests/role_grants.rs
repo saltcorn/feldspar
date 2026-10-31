@@ -77,18 +77,18 @@ async fn the_table_is_an_ordinary_owner_readable_one_made_by_the_first_grant() -
     );
     let user = create_user(&f.catalog, "first@example.com", "pw", Role::of(80)).await?;
     assert_eq!(
-        load_user(&f.catalog, user.id).await?.unwrap().role,
+        load_user(&f.catalog, user.id()).await?.unwrap().role(),
         Role::of(80)
     );
-    assert!(list_role_grants(&f.catalog, user.id).await?.is_empty());
+    assert!(list_role_grants(&f.catalog, user.id()).await?.is_empty());
     assert!(find_role_grant(&f.catalog, "test", "x").await?.is_none());
     assert!(!revoke_role_grant(&f.catalog, "test", "x").await?);
     assert!(f.catalog.get(ROLE_GRANTS_TABLE)?.is_none());
 
     // The first grant makes it.
-    grant_role(&f.catalog, new_grant(user.id, Role::of(60), "first")).await?;
+    grant_role(&f.catalog, new_grant(user.id(), Role::of(60), "first")).await?;
     assert_eq!(
-        load_user(&f.catalog, user.id).await?.unwrap().role,
+        load_user(&f.catalog, user.id()).await?.unwrap().role(),
         Role::of(60)
     );
     let table = f.catalog.require(ROLE_GRANTS_TABLE)?;
@@ -113,33 +113,33 @@ async fn a_grant_in_force_is_the_role_every_load_serves_and_the_base_role_stays(
     let f = fixture().await?;
     let user = create_user(&f.catalog, "m@example.com", "pw", Role::of(80)).await?;
     assert_eq!(
-        load_user(&f.catalog, user.id).await?.unwrap().role,
+        load_user(&f.catalog, user.id()).await?.unwrap().role(),
         Role::of(80)
     );
 
-    grant_role(&f.catalog, new_grant(user.id, Role::of(60), "sub_1")).await?;
+    grant_role(&f.catalog, new_grant(user.id(), Role::of(60), "sub_1")).await?;
     assert_eq!(
-        load_user(&f.catalog, user.id).await?.unwrap().role,
+        load_user(&f.catalog, user.id()).await?.unwrap().role(),
         Role::of(60)
     );
     assert_eq!(
         authenticate(&f.catalog, "m@example.com", "pw")
             .await?
             .unwrap()
-            .role,
+            .role(),
         Role::of(60),
         "a sign-in serves the effective role"
     );
     assert_eq!(
-        load_base_user(&f.catalog, user.id).await?.unwrap().role,
+        load_base_user(&f.catalog, user.id()).await?.unwrap().role(),
         Role::of(80),
         "users.role is untouched"
     );
 
     // A less privileged grant beside it changes nothing; the most privileged wins.
-    grant_role(&f.catalog, new_grant(user.id, Role::of(70), "trial")).await?;
+    grant_role(&f.catalog, new_grant(user.id(), Role::of(70), "trial")).await?;
     assert_eq!(
-        effective_role(&f.catalog, user.id, Role::of(80))
+        effective_role(&f.catalog, user.id(), Role::of(80))
             .await?
             .role,
         Role::of(60)
@@ -147,9 +147,9 @@ async fn a_grant_in_force_is_the_role_every_load_serves_and_the_base_role_stays(
 
     // A grant never lowers a role: a staff member with a Basic grant is staff.
     let staff = create_user(&f.catalog, "s@example.com", "pw", Role::of(40)).await?;
-    grant_role(&f.catalog, new_grant(staff.id, Role::of(70), "sub_2")).await?;
+    grant_role(&f.catalog, new_grant(staff.id(), Role::of(70), "sub_2")).await?;
     assert_eq!(
-        load_user(&f.catalog, staff.id).await?.unwrap().role,
+        load_user(&f.catalog, staff.id()).await?.unwrap().role(),
         Role::of(40)
     );
     Ok(())
@@ -168,7 +168,7 @@ async fn an_expired_grant_ends_access_with_no_write_even_through_a_cached_sessio
         &f.catalog,
         NewRoleGrant {
             expires_at: Some(ends),
-            ..new_grant(user.id, Role::of(60), "sub_1")
+            ..new_grant(user.id(), Role::of(60), "sub_1")
         },
     )
     .await?;
@@ -183,7 +183,7 @@ async fn an_expired_grant_ends_access_with_no_write_even_through_a_cached_sessio
     );
     let token = store.login(user.clone()).await?;
     assert_eq!(
-        store.user_for(&token).await?.unwrap().role,
+        store.user_for(&token).await?.unwrap().role(),
         Role::of(60),
         "the grant is in force until {ends} (now {})",
         Utc::now()
@@ -192,7 +192,7 @@ async fn an_expired_grant_ends_access_with_no_write_even_through_a_cached_sessio
     let until_ended = (ends - Utc::now() + Duration::milliseconds(200)).max(Duration::zero());
     tokio::time::sleep(until_ended.to_std().expect("non-negative")).await;
     assert_eq!(
-        store.user_for(&token).await?.unwrap().role,
+        store.user_for(&token).await?.unwrap().role(),
         Role::of(80),
         "the cached entry was believed only until the grant ended"
     );
@@ -202,7 +202,7 @@ async fn an_expired_grant_ends_access_with_no_write_even_through_a_cached_sessio
         before
     );
     assert_eq!(
-        load_base_user(&f.catalog, user.id).await?.unwrap().role,
+        load_base_user(&f.catalog, user.id()).await?.unwrap().role(),
         Role::of(80)
     );
     Ok(())
@@ -219,16 +219,16 @@ async fn a_grant_lands_in_a_session_within_the_freshness_ttl() -> Result<()> {
         CACHE_CAPACITY,
     );
     let token = store.login(user.clone()).await?;
-    assert_eq!(store.user_for(&token).await?.unwrap().role, Role::of(80));
+    assert_eq!(store.user_for(&token).await?.unwrap().role(), Role::of(80));
 
-    grant_role(&f.catalog, new_grant(user.id, Role::of(60), "sub_1")).await?;
+    grant_role(&f.catalog, new_grant(user.id(), Role::of(60), "sub_1")).await?;
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-    assert_eq!(store.user_for(&token).await?.unwrap().role, Role::of(60));
+    assert_eq!(store.user_for(&token).await?.unwrap().role(), Role::of(60));
 
     // And a revocation lands the same way.
     assert!(revoke_role_grant(&f.catalog, "test", "sub_1").await?);
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-    assert_eq!(store.user_for(&token).await?.unwrap().role, Role::of(80));
+    assert_eq!(store.user_for(&token).await?.unwrap().role(), Role::of(80));
     Ok(())
 }
 
@@ -238,33 +238,33 @@ async fn one_grant_per_source_and_reference_upserted_and_once_means_once() -> Re
     let user = create_user(&f.catalog, "m@example.com", "pw", Role::of(80)).await?;
 
     // A renewal extends the one grant.
-    let first = grant_role(&f.catalog, new_grant(user.id, Role::of(70), "sub_1")).await?;
+    let first = grant_role(&f.catalog, new_grant(user.id(), Role::of(70), "sub_1")).await?;
     let later = Utc::now() + Duration::days(60);
     let renewed = grant_role(
         &f.catalog,
         NewRoleGrant {
             role: Role::of(60),
             expires_at: Some(later),
-            ..new_grant(user.id, Role::of(70), "sub_1")
+            ..new_grant(user.id(), Role::of(70), "sub_1")
         },
     )
     .await?;
     assert_eq!(renewed.id, first.id);
     assert_eq!(renewed.role, Role::of(60), "a tier change moves the role");
-    assert_eq!(list_role_grants(&f.catalog, user.id).await?.len(), 1);
+    assert_eq!(list_role_grants(&f.catalog, user.id()).await?.len(), 1);
 
     // A revoked grant is kept, and an upsert brings it back.
     assert!(revoke_role_grant(&f.catalog, "test", "sub_1").await?);
     assert!(!revoke_role_grant(&f.catalog, "test", "sub_1").await?);
     assert_eq!(
-        effective_role(&f.catalog, user.id, Role::of(80))
+        effective_role(&f.catalog, user.id(), Role::of(80))
             .await?
             .role,
         Role::of(80)
     );
-    grant_role(&f.catalog, new_grant(user.id, Role::of(60), "sub_1")).await?;
+    grant_role(&f.catalog, new_grant(user.id(), Role::of(60), "sub_1")).await?;
     assert_eq!(
-        effective_role(&f.catalog, user.id, Role::of(80))
+        effective_role(&f.catalog, user.id(), Role::of(80))
             .await?
             .role,
         Role::of(60)
@@ -273,11 +273,11 @@ async fn one_grant_per_source_and_reference_upserted_and_once_means_once() -> Re
     // `once`: granted the first time, never again — not after it is revoked.
     let trial = || NewRoleGrant {
         source: "grant_role".into(),
-        ..new_grant(user.id, Role::of(70), &format!("trial:{}", user.id))
+        ..new_grant(user.id(), Role::of(70), &format!("trial:{}", user.id()))
     };
     assert!(grant_role_once(&f.catalog, trial()).await?.is_some());
     assert!(grant_role_once(&f.catalog, trial()).await?.is_none());
-    revoke_role_grant(&f.catalog, "grant_role", &format!("trial:{}", user.id)).await?;
+    revoke_role_grant(&f.catalog, "grant_role", &format!("trial:{}", user.id())).await?;
     assert!(grant_role_once(&f.catalog, trial()).await?.is_none());
     Ok(())
 }
@@ -289,7 +289,7 @@ async fn grants_that_cannot_mean_anything_are_refused() -> Result<()> {
     // A role out of range (0, 101) cannot be constructed at all.
     for (role, why) in [(Role::PUBLIC, "public"), (Role::of(55), "no such role")] {
         assert!(
-            grant_role(&f.catalog, new_grant(user.id, role, "x"))
+            grant_role(&f.catalog, new_grant(user.id(), role, "x"))
                 .await
                 .is_err(),
             "{why}"
@@ -298,7 +298,7 @@ async fn grants_that_cannot_mean_anything_are_refused() -> Result<()> {
     let backwards = NewRoleGrant {
         starts_at: Some(Utc::now()),
         expires_at: Some(Utc::now() - Duration::hours(1)),
-        ..new_grant(user.id, Role::of(60), "x")
+        ..new_grant(user.id(), Role::of(60), "x")
     };
     assert!(grant_role(&f.catalog, backwards).await.is_err());
     Ok(())
@@ -311,14 +311,14 @@ async fn deleting_the_user_or_an_unheld_role_cleans_up_the_grants() -> Result<()
     let user = create_user(&f.catalog, "m@example.com", "pw", Role::of(80)).await?;
 
     // A role held through a grant in force cannot be deleted…
-    grant_role(&f.catalog, new_grant(user.id, Role::of(70), "sub_1")).await?;
+    grant_role(&f.catalog, new_grant(user.id(), Role::of(70), "sub_1")).await?;
     assert!(delete_role(&f.catalog, Role::of(70)).await.is_err());
     // …and once the grant has ended, its history does not keep the role alive.
     revoke_role_grant(&f.catalog, "test", "sub_1").await?;
     assert!(delete_role(&f.catalog, Role::of(70)).await?);
 
-    grant_role(&f.catalog, new_grant(user.id, Role::of(60), "sub_2")).await?;
-    assert!(delete_user(&f.catalog, user.id).await?);
-    assert!(list_role_grants(&f.catalog, user.id).await?.is_empty());
+    grant_role(&f.catalog, new_grant(user.id(), Role::of(60), "sub_2")).await?;
+    assert!(delete_user(&f.catalog, user.id()).await?);
+    assert!(list_role_grants(&f.catalog, user.id()).await?.is_empty());
     Ok(())
 }

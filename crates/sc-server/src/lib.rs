@@ -20,6 +20,7 @@
 //! endpoint set at dispatch time.
 
 mod admin_host;
+mod admin_session;
 mod agents;
 // An application's exposed agents: chat, prompts and history (§11.7).
 mod analytics;
@@ -175,7 +176,8 @@ pub use config::{
     implied_base_domain,
 };
 pub use handler::{
-    BoxFuture, HandlerCtx, HandlerFn, HandlerRegistry, HandlerResponse, SessionAction,
+    Admin, AdminSession, AnalyticsCaller, BoxFuture, Caller, Gate, HandlerCtx, HandlerFn,
+    HandlerRegistry, HandlerResponse, SessionAction, Who,
 };
 pub use handlers::{admin_handlers, admin_handlers_with};
 pub use i18n::{LANG_COOKIE, LANG_QUERY};

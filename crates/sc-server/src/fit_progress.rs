@@ -47,8 +47,10 @@ pub(crate) fn fit_progress_upgrade(
     ws: WebSocketUpgrade,
     catalog: Arc<Catalog>,
     id: InstanceId,
+    session: crate::admin_session::AdminWatch,
 ) -> axum::response::Response {
-    ws.on_upgrade(move |socket| watch(socket, catalog, id))
+    // Open only while the admin session lasts (#42's class).
+    ws.on_upgrade(move |socket| session.guard(watch(socket, catalog, id)))
 }
 
 /// Send the fit's progress until it finishes or the browser goes.

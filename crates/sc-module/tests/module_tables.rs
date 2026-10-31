@@ -334,8 +334,8 @@ fn as_user<'a>(cat: &'a Catalog, user: &sc_auth::User) -> TableHost<'a> {
     sc_expr::set_isolate_prime(sc_module::prime_v8);
     TableHost::new(cat)
         .caused_by(
-            user.role,
-            Some(json!({ "id": user.id.to_string(), "role": user.role })),
+            user.role(),
+            Some(json!({ "id": user.id().to_string(), "role": user.role() })),
         )
         .with_evaluator(Some(Arc::new(DenoEvaluator::new()) as Arc<dyn JsEvaluator>))
 }
@@ -397,7 +397,7 @@ async fn ownership_joins_through_the_module_tables_for_reads_and_writes() -> Res
     let anns = ask(
         &admin,
         json!({ "op": "insert", "table": "mail_accounts",
-                "values": { "label": "ann@", "owner": ann.id.to_string(), "min_role": 1 } }),
+                "values": { "label": "ann@", "owner": ann.id().to_string(), "min_role": 1 } }),
     )
     .await?["id"]
         .clone();
@@ -449,12 +449,12 @@ async fn ownership_joins_through_the_module_tables_for_reads_and_writes() -> Res
     ask(
         &ann_host,
         json!({ "op": "insert", "table": "mail_accounts", "authority": "user",
-                "values": { "label": "ann-2@", "owner": ann.id.to_string(), "min_role": 1 } }),
+                "values": { "label": "ann-2@", "owner": ann.id().to_string(), "min_role": 1 } }),
     )
     .await?;
     for values in [
         json!({ "label": "shared@", "min_role": 80 }),
-        json!({ "label": "bobs@", "owner": bob.id.to_string(), "min_role": 1 }),
+        json!({ "label": "bobs@", "owner": bob.id().to_string(), "min_role": 1 }),
     ] {
         let refused = ask(
             &ann_host,
@@ -479,7 +479,7 @@ async fn ownership_joins_through_the_module_tables_for_reads_and_writes() -> Res
     let given = ask(
         &ann_host,
         json!({ "op": "update", "table": "mail_accounts", "authority": "user",
-                "where": { "id": anns }, "values": { "owner": bob.id.to_string() } }),
+                "where": { "id": anns }, "values": { "owner": bob.id().to_string() } }),
     )
     .await;
     assert!(given.is_err(), "{given:?}");
@@ -692,7 +692,7 @@ async fn an_owner_may_update_their_own_account() -> Result<()> {
     let anns = ask(
         &admin,
         json!({ "op": "insert", "table": "mail_accounts",
-                "values": { "label": "ann@", "owner": ann.id.to_string(), "min_role": 1,
+                "values": { "label": "ann@", "owner": ann.id().to_string(), "min_role": 1,
                             "imap_password": "hunter2" } }),
     )
     .await?["id"]
@@ -711,7 +711,7 @@ async fn an_owner_may_update_their_own_account() -> Result<()> {
                 accounts,
                 id,
                 &body,
-                user.role,
+                user.role(),
                 Some(&user),
                 Some(evaluator),
                 &[],
@@ -724,7 +724,7 @@ async fn an_owner_may_update_their_own_account() -> Result<()> {
     assert_eq!(renamed["label"], json!("Ann's mail"));
     let whole = update(
         &ann,
-        json!({ "id": anns, "label": "Ann", "owner": ann.id.to_string(), "min_role": 1,
+        json!({ "id": anns, "label": "Ann", "owner": ann.id().to_string(), "min_role": 1,
                 "imap_password": "••••••••" }),
     )
     .await?;

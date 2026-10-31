@@ -12,7 +12,6 @@
 //! test that stubbed it out would be testing nothing.
 
 use sc_types::Role;
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -433,9 +432,7 @@ pub fn config(entries: &[(&str, Json)]) -> Attrs {
 /// A user at role 40 — below `books`' admin-only floors, so their access is
 /// whatever the ownership formula grants and nothing else.
 pub fn reader(email: &str) -> User {
-    let mut user = User::new(Uuid::new_v4(), Role::of(40));
-    user.extra = BTreeMap::from([("email".to_owned(), Value::Text(email.to_owned()))]);
-    user
+    User::new(Uuid::new_v4(), Role::of(40)).with_field("email", Value::Text(email.to_owned()))
 }
 
 /// That user as a run's caller.

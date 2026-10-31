@@ -79,6 +79,24 @@
 //! 256 bits of uniform randomness, so there is no dictionary to run and nothing
 //! for a slow hash to buy.
 //!
+//! # The host scope a session was issued for
+//!
+//! A session is minted either for the **admin host** — the admin UI's sign-in,
+//! the admin handoff, `feldspar auth token` — or for an **application's**
+//! host: an application's own sign-in, a checklist's browser, `call_api`. The
+//! scope is part of the token itself ([`SessionScope::of_token`]): an
+//! application session's token starts with [`APP_TOKEN_PREFIX`], an admin
+//! session's is the plain 64 hex digits every token was before scopes existed.
+//! The token is hashed whole, so the prefix cannot be added or removed without
+//! making a token nobody issued, and nothing is added to the table.
+//!
+//! The server refuses an application session admin authority on the admin
+//! host: with shared sign-in, or an admin signed in to an application, the
+//! cookie an application's page can make the browser send is never an admin
+//! session (security review #15). A token minted before scopes existed reads
+//! as an admin-host one, so nobody is signed out by an upgrade; such a token
+//! lapses with its expiry.
+//!
 //! # The memory backend
 //!
 //! [`SessionStore::memory`] keeps the original in-memory map, and is what the
@@ -100,7 +118,35 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::lookup::load_user_until;
-use crate::user::User;
+use crate::user::{AuthenticatedUser, User};
+
+/// What an application-scoped session token starts with (module docs, "The host
+/// scope a session was issued for").
+pub const APP_TOKEN_PREFIX: &str = "app-";
+
+/// The host a session was issued on, and so the host it may act for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionScope {
+    /// Issued on the admin host (or by `feldspar auth token`). Such a session
+    /// also works on an application's host, as it always has.
+    Admin,
+    /// Issued on an application's host. Never admin authority on the admin
+    /// host, whatever the user's role.
+    App,
+}
+
+impl SessionScope {
+    /// The scope `token` was issued for. A token without the application
+    /// prefix — including every token minted before scopes existed — is an
+    /// admin-host one.
+    pub fn of_token(token: &str) -> SessionScope {
+        if token.starts_with(APP_TOKEN_PREFIX) {
+            SessionScope::App
+        } else {
+            SessionScope::Admin
+        }
+    }
+}
 
 /// Default session lifetime: one day.
 pub const DEFAULT_TTL_HOURS: i64 = 24;
@@ -186,7 +232,7 @@ pub async fn bootstrap_sessions(catalog: &Catalog) -> Result<Table> {
 /// The session it makes is an ordinary one: it does exactly what that user's
 /// account does, and expires like any other.
 pub async fn create_session(catalog: &Catalog, user_id: Uuid, ttl: Duration) -> Result<String> {
-    let token = new_token();
+    let token = new_token(SessionScope::Admin);
     let expires_at = Utc::now() + ttl;
     insert_session(catalog, &token_hash(&token), user_id, expires_at).await?;
     Ok(token)
@@ -351,16 +397,34 @@ impl SessionStore {
         self.ttl
     }
 
-    /// Start a session for `user` and return its token (to be set as a cookie).
+    /// Start a session for `user` on the admin host and return its token (to
+    /// be set as a cookie).
     pub async fn login(&self, user: User) -> Result<String> {
-        self.login_for(user, self.ttl).await
+        self.login_scoped(user, self.ttl, SessionScope::Admin).await
     }
 
-    /// Start a session for `user` that lasts `ttl` rather than the store's own
-    /// lifetime: what the server does with the stored Settings →
+    /// Start a session for `user` on `scope`'s host, with the store's own
+    /// lifetime.
+    pub async fn login_in(&self, user: User, scope: SessionScope) -> Result<String> {
+        self.login_scoped(user, self.ttl, scope).await
+    }
+
+    /// Start an admin-host session for `user` that lasts `ttl` rather than the
+    /// store's own lifetime: what the server does with the stored Settings →
     /// Authentication → Session lifetime, which can change while it runs.
     pub async fn login_for(&self, user: User, ttl: Duration) -> Result<String> {
-        let token = new_token();
+        self.login_scoped(user, ttl, SessionScope::Admin).await
+    }
+
+    /// Start a session for `user` on `scope`'s host that lasts `ttl` (module
+    /// docs, "The host scope a session was issued for").
+    pub async fn login_scoped(
+        &self,
+        user: User,
+        ttl: Duration,
+        scope: SessionScope,
+    ) -> Result<String> {
+        let token = new_token(scope);
         let expires_at = Utc::now() + ttl;
         match &self.backend {
             Backend::Memory(entries) => {
@@ -373,7 +437,7 @@ impl SessionStore {
                 catalog,
                 last_sweep,
             } => {
-                insert_session(catalog, &token_hash(&token), user.id, expires_at).await?;
+                insert_session(catalog, &token_hash(&token), user.id(), expires_at).await?;
                 // Housekeeping rides along with the one write sessions do, but
                 // at most once a minute: a login is common and a full-table
                 // delete is not free.
@@ -384,7 +448,7 @@ impl SessionStore {
                 // role, until that next changes — rather than as the caller
                 // happened to hold it: a session started straight after a
                 // sign-up whose trigger granted a trial is served the trial.
-                match load_user_until(catalog, user.id).await? {
+                match load_user_until(catalog, user.id()).await? {
                     Some((current, changes_at)) => {
                         self.cache_put(&token, &current, expires_at, changes_at);
                     }
@@ -397,7 +461,17 @@ impl SessionStore {
 
     /// The user for a session token, if the token is known and unexpired. An
     /// expired token is treated as absent (and eagerly purged).
-    pub async fn user_for(&self, token: &str) -> Result<Option<User>> {
+    ///
+    /// One of the two places an [`AuthenticatedUser`] is made: the token was
+    /// presented and this store issued it. Which host it was issued for is
+    /// [`SessionScope::of_token`]'s to say.
+    pub async fn user_for(&self, token: &str) -> Result<Option<AuthenticatedUser>> {
+        Ok(self.resolve(token).await?.map(AuthenticatedUser::verified))
+    }
+
+    /// [`user_for`](SessionStore::user_for)'s lookup, before the proof is
+    /// attached.
+    async fn resolve(&self, token: &str) -> Result<Option<User>> {
         let now = Utc::now();
         match &self.backend {
             Backend::Memory(entries) => {
@@ -505,7 +579,7 @@ impl SessionStore {
             Backend::Memory(entries) => {
                 let mut guard = entries.write().map_err(|_| poisoned())?;
                 let before = guard.len();
-                guard.retain(|_, e| e.user.id != user_id);
+                guard.retain(|_, e| e.user.id() != user_id);
                 Ok(before - guard.len())
             }
             Backend::Database { catalog, .. } => {
@@ -516,7 +590,7 @@ impl SessionStore {
                     let cache = self.cache.lock().map_err(|_| poisoned())?;
                     cache
                         .iter()
-                        .filter(|(_, cached)| cached.user.id == user_id)
+                        .filter(|(_, cached)| cached.user.id() == user_id)
                         .map(|(token, _)| token.clone())
                         .collect()
                 };
@@ -755,9 +829,18 @@ fn poisoned() -> Error {
     Error::msg("session store lock poisoned")
 }
 
-/// A fresh, unguessable session token: 256 bits from two v4 UUIDs, hex-encoded.
-fn new_token() -> String {
-    format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+/// A fresh, unguessable session token for `scope`: 256 bits from two v4
+/// UUIDs, hex-encoded, after [`APP_TOKEN_PREFIX`] for an application's.
+fn new_token(scope: SessionScope) -> String {
+    let prefix = match scope {
+        SessionScope::Admin => "",
+        SessionScope::App => APP_TOKEN_PREFIX,
+    };
+    format!(
+        "{prefix}{}{}",
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple()
+    )
 }
 
 /// The key a changeset records for the session `token` belongs to (§14.12):
@@ -801,7 +884,10 @@ mod tests {
         let user = admin();
         let token = store.login(user.clone()).await.unwrap();
         assert_eq!(token.len(), 64); // two hex UUIDs
-        assert_eq!(store.user_for(&token).await.unwrap(), Some(user));
+        assert_eq!(
+            store.user_for(&token).await.unwrap().map(|u| u.into_user()),
+            Some(user)
+        );
     }
 
     #[tokio::test]
@@ -853,13 +939,13 @@ mod tests {
         let user = admin();
         let token = store.login(user.clone()).await.unwrap();
         store.logout(&token).await.unwrap();
-        store.end_user_sessions(user.id).await.unwrap();
+        store.end_user_sessions(user.id()).await.unwrap();
         store.end_all_sessions().await.unwrap();
         assert_eq!(
             *heard.0.lock().unwrap(),
             vec![
                 format!("token {token}"),
-                format!("user {}", user.id),
+                format!("user {}", user.id()),
                 "all".to_owned()
             ]
         );
@@ -894,13 +980,13 @@ mod tests {
         let laptop = store.login(user.clone()).await.unwrap();
         let other = store.login(admin()).await.unwrap();
 
-        assert_eq!(store.end_user_sessions(user.id).await.unwrap(), 2);
+        assert_eq!(store.end_user_sessions(user.id()).await.unwrap(), 2);
         assert_eq!(store.user_for(&phone).await.unwrap(), None);
         assert_eq!(store.user_for(&laptop).await.unwrap(), None);
         assert!(store.user_for(&other).await.unwrap().is_some());
 
         // Idempotent: a user with nothing to end ends nothing.
-        assert_eq!(store.end_user_sessions(user.id).await.unwrap(), 0);
+        assert_eq!(store.end_user_sessions(user.id()).await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -911,6 +997,25 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    #[tokio::test]
+    async fn a_session_says_which_host_issued_it() {
+        let store = SessionStore::memory();
+        let admin_token = store.login(admin()).await.unwrap();
+        let app_token = store.login_in(admin(), SessionScope::App).await.unwrap();
+        assert_eq!(SessionScope::of_token(&admin_token), SessionScope::Admin);
+        assert_eq!(SessionScope::of_token(&app_token), SessionScope::App);
+        // Both resolve: the scope is the server's to apply, not a dead token.
+        assert!(store.user_for(&app_token).await.unwrap().is_some());
+        // A token minted before scopes existed — 64 hex digits — reads as the
+        // admin host's, so an upgrade signs nobody out.
+        let legacy = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        assert_eq!(SessionScope::of_token(&legacy), SessionScope::Admin);
+        // And the prefix is inside what is hashed: stripping it is a token
+        // nobody issued.
+        let stripped = app_token.trim_start_matches(APP_TOKEN_PREFIX);
+        assert!(store.user_for(stripped).await.unwrap().is_none());
+    }
+
     #[test]
     fn the_token_is_hashed_before_it_is_stored() {
         // The known SHA-256 of the empty string: this is the standard hash and
@@ -919,7 +1024,7 @@ mod tests {
             token_hash(""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
-        let token = new_token();
+        let token = new_token(SessionScope::Admin);
         let hash = token_hash(&token);
         assert_eq!(hash.len(), 64);
         assert_ne!(hash, token); // what is stored is never what is presented

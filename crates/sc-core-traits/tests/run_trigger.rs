@@ -193,7 +193,7 @@ async fn the_triggers_own_min_role_still_gates_it() -> Result<()> {
     let mut public = as_user("anon@example.com");
     public.role = Role::PUBLIC;
     if let Some(user) = &mut public.user {
-        user.role = Role::PUBLIC;
+        *user = user.clone().capped_at(Role::PUBLIC);
     }
     let err = env
         .call("run_trigger", &cfg(), json!({"title": "Dune"}), &public)

@@ -243,7 +243,7 @@ async fn updating_a_row_topic_is_the_tables_update_rule() -> Result<()> {
 
     let user = |n: u128| User::new(Uuid::from_u128(n), MEMBER);
     let (owner, editor, reader, stranger) = (user(1), user(2), user(3), user(4));
-    let id = |u: &User| u.id.hyphenated().to_string();
+    let id = |u: &User| u.id().hyphenated().to_string();
     let shares = catalog.require("shares")?;
     sc_api::rows::create_row(&catalog, &boards, &json!({ "id": 1, "owner": id(&owner) })).await?;
     for (n, member, can_edit) in [(1, &editor, true), (2, &reader, false)] {
@@ -257,7 +257,7 @@ async fn updating_a_row_topic_is_the_tables_update_rule() -> Result<()> {
     let evaluator: Arc<dyn JsEvaluator> = Arc::new(DenoEvaluator::new());
     let boards = catalog.require("boards")?;
     let may = async |u: &User, key: &str| {
-        sc_api::row_updatable_as(&catalog, &boards, key, u.role, Some(u), Some(&evaluator))
+        sc_api::row_updatable_as(&catalog, &boards, key, u.role(), Some(u), Some(&evaluator))
             .await
             .unwrap()
     };
@@ -279,7 +279,7 @@ async fn updating_a_row_topic_is_the_tables_update_rule() -> Result<()> {
             &catalog,
             &boards,
             "1",
-            reader.role,
+            reader.role(),
             Some(&reader),
             Some(&evaluator)
         )

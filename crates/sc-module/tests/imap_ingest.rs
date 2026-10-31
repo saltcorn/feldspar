@@ -208,7 +208,7 @@ pub(crate) mod deno {
     }
 
     pub(crate) fn user_json(user: &sc_auth::User) -> Json {
-        json!({ "id": user.id.to_string(), "role": user.role })
+        json!({ "id": user.id().to_string(), "role": user.role() })
     }
 
     /// Run one of the module's actions as `user`, as a trigger with event None
@@ -222,7 +222,7 @@ pub(crate) mod deno {
     ) -> sc_error::Result<Json> {
         let event = Event::new(EventKind::None)
             .payload(payload)
-            .caller(user.role, Some(user_json(user)));
+            .caller(user.role(), Some(user_json(user)));
         let config = Attrs::new();
         let action = registry.require(action).unwrap();
         let mut ctx = ActionContext::new(cat, &event, &config, "mail action");
@@ -231,7 +231,7 @@ pub(crate) mod deno {
 
     pub(crate) fn as_user<'a>(cat: &'a Catalog, user: &sc_auth::User) -> TableHost<'a> {
         TableHost::new(cat)
-            .caused_by(user.role, Some(user_json(user)))
+            .caused_by(user.role(), Some(user_json(user)))
             .with_evaluator(Some(Arc::new(DenoEvaluator::new()) as Arc<dyn JsEvaluator>))
     }
 
@@ -361,7 +361,7 @@ pub(crate) mod deno {
             .unwrap();
         let mut anns = imap("other");
         anns.as_object_mut().unwrap().extend(
-            json!({ "label": "ann@", "email": "ann@example.com", "owner": ann.id.to_string(), "min_role": 1 })
+            json!({ "label": "ann@", "email": "ann@example.com", "owner": ann.id().to_string(), "min_role": 1 })
                 .as_object()
                 .unwrap()
                 .clone(),

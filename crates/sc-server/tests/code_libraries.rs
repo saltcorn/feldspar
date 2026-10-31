@@ -232,7 +232,7 @@ async fn setup(tmp: &TempDir, tag: &str) -> sc_error::Result<Server> {
             ROLE_MEMBER,
         )
         .await?;
-        ids.insert(who, user.id);
+        ids.insert(who, user.id());
     }
     create_user(&catalog, "admin@example.com", PASSWORD, Role::ADMIN).await?;
 

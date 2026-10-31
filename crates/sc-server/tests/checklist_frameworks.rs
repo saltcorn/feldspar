@@ -66,11 +66,11 @@ async fn views_render_fails_on_a_view_whose_field_was_deleted() -> sc_error::Res
     let registry = StepRegistry::installed();
     let mut input = ChecklistInput::new("BooksDB views render");
     input.application = Some(app.id.0);
-    input.run_as = Some(admin.id);
+    input.run_as = Some(admin.id());
     let checklist = edit::create_checklist(
         &catalog,
         &registry,
-        &Editor::Human(admin.id),
+        &Editor::Human(admin.id()),
         input,
         vec![StepDraft::new("saltcorn_ui.views_render").label("Every view renders")],
     )
@@ -173,11 +173,11 @@ async fn a_module_step_type_runs_in_its_worker_through_host_calls() -> sc_error:
     let admin = sc_auth::load_user_by_email(&catalog, "admin@example.com")
         .await?
         .expect("the first user");
-    let human = Editor::Human(admin.id);
+    let human = Editor::Human(admin.id());
     let env = CheckEnv::new(&catalog, &registry);
     let checklist = |name: &str, steps: Vec<StepDraft>| {
         let mut input = ChecklistInput::new(name);
-        input.run_as = Some(admin.id);
+        input.run_as = Some(admin.id());
         edit::create_checklist(&catalog, &registry, &human, input, steps)
     };
 

@@ -1489,7 +1489,7 @@ async fn signing_in_lands_on_the_view_asked_for_and_signing_out_leaves() -> sc_e
     let account = sc_auth::load_user_by_email(&catalog, reader)
         .await?
         .expect("the account");
-    assert_eq!(account.role, Role::of(80));
+    assert_eq!(account.role(), Role::of(80));
     // Signed in, and still not allowed: a role-80 user is told so, by name.
     let forbidden = browser.app_get("/view/List%20Books", &[]).await;
     assert_eq!(

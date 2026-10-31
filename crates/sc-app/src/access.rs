@@ -81,7 +81,7 @@ pub async fn admit(
     user: Option<User>,
     evaluator: Option<&dyn JsEvaluator>,
 ) -> Admission {
-    let role = user.as_ref().map_or(Role::PUBLIC, |u| u.role);
+    let role = user.as_ref().map_or(Role::PUBLIC, |u| u.role());
     if app.min_role.outranks(role) {
         return Admission::Refused;
     }
@@ -109,19 +109,18 @@ pub async fn admit(
 
 /// `user` as `app` serves them: their role, or the application's `max_role`
 /// when that is less privileged.
-pub fn cap_role(app: &Application, mut user: User) -> User {
-    user.role = user.role.least_privileged(app.max_role);
-    user
+pub fn cap_role(app: &Application, user: User) -> User {
+    user.capped_at(app.max_role)
 }
 
 /// The user object as `access_if` sees it: `id`, `role` and every other field
 /// — the shape an ownership formula's `user` has.
 fn user_values(user: &User) -> BTreeMap<String, Value> {
-    let mut map = user.extra.clone();
-    map.insert(sc_auth::COL_ID.to_owned(), Value::Uuid(user.id));
+    let mut map = user.extra().clone();
+    map.insert(sc_auth::COL_ID.to_owned(), Value::Uuid(user.id()));
     map.insert(
         sc_auth::COL_ROLE.to_owned(),
-        Value::Int(i64::from(user.role)),
+        Value::Int(i64::from(user.role())),
     );
     map
 }
@@ -184,8 +183,7 @@ mod tests {
 
     fn user(role: Role, department: &str) -> User {
         let mut user = User::new(Uuid::new_v4(), role);
-        user.extra
-            .insert("department".into(), Value::Text(department.into()));
+        user = user.with_field("department", Value::Text(department.into()));
         user
     }
 
@@ -224,14 +222,14 @@ mod tests {
         else {
             panic!("an admin is let in");
         };
-        assert_eq!(admin.role, Role::of(20), "served as role 20");
+        assert_eq!(admin.role(), Role::of(20), "served as role 20");
         let Admission::Admitted(Some(staff)) =
             admit(&app, Some(user(Role::of(40), "")), None).await
         else {
             panic!("staff are let in");
         };
         assert_eq!(
-            staff.role,
+            staff.role(),
             Role::of(40),
             "a less privileged role is not raised"
         );

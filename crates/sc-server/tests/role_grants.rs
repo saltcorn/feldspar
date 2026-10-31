@@ -293,7 +293,7 @@ async fn people(catalog: &Catalog) -> sc_error::Result<uuid::Uuid> {
     Ok(
         create_user(catalog, "reader@example.com", "reader-pw", Role::of(80))
             .await?
-            .id,
+            .id(),
     )
 }
 
@@ -393,7 +393,7 @@ async fn a_grant_opens_a_table_within_the_ttl_and_its_end_closes_it_with_no_writ
     let (status, _) = admin
         .send(
             "POST",
-            &format!("/api/users/{}/role-grants/{id}/revoke", other.id),
+            &format!("/api/users/{}/role-grants/{id}/revoke", other.id()),
             None,
         )
         .await;

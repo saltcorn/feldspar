@@ -48,7 +48,7 @@ async fn grant(catalog: &Catalog, user: &User, amount: i64, key: &str) -> Result
     sc_auth::grant_credits(
         catalog,
         NewCreditGrant {
-            user_id: user.id,
+            user_id: user.id(),
             amount: Decimal::from(amount),
             source: "test".into(),
             key: key.into(),
@@ -64,11 +64,11 @@ async fn grant(catalog: &Catalog, user: &User, amount: i64, key: &str) -> Result
 }
 
 async fn balance(catalog: &Catalog, user: &User) -> Result<Decimal> {
-    Ok(sc_auth::credit_balance(catalog, user.id).await?.balance)
+    Ok(sc_auth::credit_balance(catalog, user.id()).await?.balance)
 }
 
 async fn debits(catalog: &Catalog, user: &User) -> Result<Vec<sc_auth::CreditEntry>> {
-    Ok(sc_auth::list_credit_entries(catalog, user.id, 100)
+    Ok(sc_auth::list_credit_entries(catalog, user.id(), 100)
         .await?
         .into_iter()
         .filter(|e| e.kind == sc_auth::ENTRY_DEBIT)

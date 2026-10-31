@@ -223,7 +223,7 @@ async fn answer(
 /// ([`csrf_cookie`]), so a cookie a sibling host tossed is never the one used.
 pub(crate) fn uploader_of(user: Option<&User>, jar: &CookieJar, secure: bool) -> Option<String> {
     if let Some(user) = user {
-        return Some(format!("user:{}", user.id));
+        return Some(format!("user:{}", user.id()));
     }
     let cookie = jar
         .get(SESSION_COOKIE)
@@ -724,7 +724,7 @@ async fn complete(
     }
     let mut meta = store.get_meta(&record.final_path).await.unwrap_or_default();
     meta = FileMeta {
-        owner: user.map(|u| u.id.to_string()).or(meta.owner),
+        owner: user.map(|u| u.id().to_string()).or(meta.owner),
         min_role: record
             .meta
             .get("min_role")

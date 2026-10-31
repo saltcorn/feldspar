@@ -211,10 +211,10 @@ async fn a_sign_out_closes_that_sessions_connections_and_no_others() {
     let bob_token = store.login(bob.clone()).await.unwrap();
 
     let (alice_conn, _) = hub
-        .connect(info("blog", Some(alice.id), Some(&alice_token)))
+        .connect(info("blog", Some(alice.id()), Some(&alice_token)))
         .unwrap();
     let (bob_conn, _) = hub
-        .connect(info("blog", Some(bob.id), Some(&bob_token)))
+        .connect(info("blog", Some(bob.id()), Some(&bob_token)))
         .unwrap();
     let mut alice_closed = alice_conn.close_signal();
     let mut bob_closed = bob_conn.close_signal();
@@ -232,7 +232,7 @@ async fn a_sign_out_closes_that_sessions_connections_and_no_others() {
     );
 
     // A forced sign-out of a user reaches every one of their connections.
-    store.end_user_sessions(bob.id).await.unwrap();
+    store.end_user_sessions(bob.id()).await.unwrap();
     let reason = tokio::time::timeout(Duration::from_secs(5), bob_closed.closed())
         .await
         .expect("bob's connection is closed when his sessions are ended");

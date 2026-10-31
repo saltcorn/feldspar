@@ -235,7 +235,7 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
     ok(
         c,
         "POST",
-        &format!("/api/users/{}/credits", admin.id),
+        &format!("/api/users/{}/credits", admin.id()),
         json!({ "amount": "5" }),
     )
     .await;
@@ -243,7 +243,7 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
     sc_auth::grant_role(
         &server.catalog,
         sc_auth::NewRoleGrant {
-            user_id: admin.id,
+            user_id: admin.id(),
             role: Role::of(60),
             source: "test".into(),
             source_ref: "one".into(),

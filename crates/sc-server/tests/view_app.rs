@@ -550,7 +550,7 @@ async fn a_triggered_run_needs_its_user_and_its_session_goes_with_the_run() -> R
                     "SELECT count(*) FROM {} WHERE user_id::text = $1",
                     sc_auth::SESSIONS_TABLE
                 ),
-                &[&env.bob.id.to_string()],
+                &[&env.bob.id().to_string()],
             )
             .await
             .unwrap();
@@ -768,11 +768,11 @@ async fn check_runs_the_applications_checklists_against_its_preview() -> Result<
         .await?
         .expect("the admin");
     let registry = sc_check::StepRegistry::builtin();
-    let editor = sc_check::Editor::Human(admin.id);
+    let editor = sc_check::Editor::Human(admin.id());
     let checklist = |name: &str, steps: Vec<sc_check::StepDraft>| {
         let mut input = sc_check::ChecklistInput::new(name);
         input.application = Some(app.id.0);
-        input.run_as = Some(env.alice.id);
+        input.run_as = Some(env.alice.id());
         // The page asks for /api/missing on purpose: not a clean page.
         input.attributes = json!({"implicit_clean": false, "timeout": 5})
             .as_object()

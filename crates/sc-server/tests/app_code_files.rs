@@ -358,7 +358,7 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<Server> {
             ROLE_MEMBER,
         )
         .await?;
-        users.insert(who, user.id.to_string());
+        users.insert(who, user.id().to_string());
     }
     create_user(&catalog, "admin@example.com", PASSWORD, Role::ADMIN).await?;
 

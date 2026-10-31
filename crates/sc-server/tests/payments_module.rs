@@ -1635,7 +1635,7 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
         .unwrap();
     let bob_id = create_user(catalog, "bob@example.com", "bob-password", Role::of(80))
         .await?
-        .id;
+        .id();
     let role_of = |user| async move {
         sc_auth::effective_role(catalog, user, Role::of(80))
             .await

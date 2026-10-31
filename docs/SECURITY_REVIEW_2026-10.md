@@ -470,6 +470,12 @@ app-issued sessions on admin routes; refuse admin paths in `call_api`.
 `call_api` always sends to an application's host, so it is refused too. Sessions are still not
 bound to a host.
 
+**Follow-up (code quality Q2):** every admin route now takes an `AdminSession`, whose only
+constructor checks the host, the session and the role together, and sessions are bound to the
+host scope that issued them: an application-issued session (token prefix `app-`) is no session on
+the admin host. Tokens issued before the change read as admin-host ones and lapse with their
+expiry.
+
 ### 16. High — non-admin file edits become admin-authority server code (verified)
 
 The #4 fix stops a non-admin caller from *running* scripts, checks and builds, but not from writing
@@ -1246,3 +1252,14 @@ caller type. They are not yet `Authority::System`:
 - **`sc_agent::RunCaller::system()`**: trigger-started agent runs (sc-core-traits `run_agent.rs`,
   sc-server `chat.rs`, sc-cli `eval.rs`). The run is marked triggered, so the server's own tools
   are withheld.
+
+**Admin authority handed to admin handlers without a browser session (Q2).** An admin endpoint's
+handler is called only with an `sc_server::Admin` (`crates/sc-server/src/admin_session.rs`). It
+comes from an `AdminSession` — admin host, live session issued on the admin host, admin role —
+or from `Admin::delegated(user, by)`, where an in-process tool layer vouches for its own check.
+Find them with `grep -rn 'Admin::delegated(' crates`:
+
+| Crate / file | `by` | The check that stands behind it |
+|---|---|---|
+| sc-server `mcp.rs` (`EndpointTool::call`) | `mcp endpoint tool` | `sc_api::mcp::check_caller`: admin role, the endpoint's own requirement, the tag's grant |
+| sc-server `mcp.rs` (`AdminHandlers::call_admin`) | `catalog admin host` | the `sc_app::mcp` admin tools that call `AdminHost` (`require_admin` on the tool surface); the user may be `None` for a system-run tool |

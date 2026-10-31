@@ -289,7 +289,7 @@ async fn a_therapist_invites_a_patient_into_the_patients_app() -> sc_error::Resu
     let pat = load_user_by_email(&fx.catalog, "pat@example.com")
         .await?
         .unwrap();
-    assert_eq!(pat.role, ROLE_PATIENT);
+    assert_eq!(pat.role(), ROLE_PATIENT);
     let mut patient = Client::new(&fx.router, PATIENTS).await;
     assert_eq!(
         patient.login("pat@example.com", "").await,
@@ -656,19 +656,19 @@ async fn the_users_table_shows_no_hash_and_hands_out_no_power() -> sc_error::Res
     // caller's, no; a peer's or an admin's account, not at all.
     let path = |id: uuid::Uuid| format!("/api/users/{id}");
     let (status, body) = client
-        .send("PUT", &path(pat.id), Some(json!({ "role": 90 })))
+        .send("PUT", &path(pat.id()), Some(json!({ "role": 90 })))
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body.get("password_hash").is_none());
     let (status, _) = client
         .send(
             "PUT",
-            &path(pat.id),
+            &path(pat.id()),
             Some(json!({ "role": ROLE_THERAPIST })),
         )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    for victim in [other.id, fx.admin.id] {
+    for victim in [other.id(), fx.admin.id()] {
         let (status, _) = client
             .send("PUT", &path(victim), Some(json!({ "language": "fr" })))
             .await;
@@ -679,7 +679,7 @@ async fn the_users_table_shows_no_hash_and_hands_out_no_power() -> sc_error::Res
     // An account's email is an admin's to change, even a weaker one's — else
     // a reset link for it would come to the caller (security review 2026-10
     // #8). Refused whoever the row is, so it says nothing about who exists.
-    for victim in [pat.id, ther.id, other.id] {
+    for victim in [pat.id(), ther.id(), other.id()] {
         let (status, _) = client
             .send(
                 "PUT",
@@ -693,17 +693,21 @@ async fn the_users_table_shows_no_hash_and_hands_out_no_power() -> sc_error::Res
     let (status, _) = client
         .send(
             "PUT",
-            &path(ther.id),
+            &path(ther.id()),
             Some(json!({ "role": ROLE_THERAPIST })),
         )
         .await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = client
-        .send("PUT", &path(ther.id), Some(json!({ "role": 1 })))
+        .send("PUT", &path(ther.id()), Some(json!({ "role": 1 })))
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) = client
-        .send("PUT", &path(pat.id), Some(json!({ "password_hash": "x" })))
+        .send(
+            "PUT",
+            &path(pat.id()),
+            Some(json!({ "password_hash": "x" })),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
@@ -711,9 +715,9 @@ async fn the_users_table_shows_no_hash_and_hands_out_no_power() -> sc_error::Res
     let admin = load_user_by_email(&fx.catalog, "admin@example.com")
         .await?
         .unwrap();
-    assert_eq!(admin.role, Role::ADMIN);
-    let other = sc_auth::load_user(&fx.catalog, other.id).await?.unwrap();
-    assert_eq!(other.role, ROLE_THERAPIST);
+    assert_eq!(admin.role(), Role::ADMIN);
+    let other = sc_auth::load_user(&fx.catalog, other.id()).await?.unwrap();
+    assert_eq!(other.role(), ROLE_THERAPIST);
     assert!(
         load_user_by_email(&fx.catalog, "mine@example.com")
             .await?

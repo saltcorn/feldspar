@@ -458,9 +458,12 @@ async fn apps_are_confined_to_their_subdomain_and_the_admin_is_still_reachable()
     Ok(())
 }
 
-/// The admin file and backup routes are the admin's host's alone: an admin's
-/// session sent to an application's host — by a script on that host, which can
-/// read the host's own CSRF cookie — reaches none of them (security review #15).
+/// The admin file and backup routes, and the admin sockets, are the admin's
+/// host's alone: an admin's session sent to an application's host — by a
+/// script on that host, which can read the host's own CSRF cookie — reaches
+/// none of them (security review #15). And a session the application issued is
+/// not an admin session on the admin's host either (code quality Q2.5): only a
+/// sign-in there is.
 #[tokio::test]
 async fn admin_file_and_backup_routes_are_nothing_on_an_application_host() -> sc_error::Result<()> {
     let tmp = TempDir::new("adminroutes");
@@ -485,6 +488,17 @@ async fn admin_file_and_backup_routes_are_nothing_on_an_application_host() -> sc
         ("POST", "/upload/apps/web/planted.js"),
         ("POST", "/backup/create"),
         ("POST", "/backup/upload"),
+        // The sockets: refused before any upgrade is looked at.
+        ("GET", "/ide/lsp/apps"),
+        ("GET", "/admin/agent-chat"),
+        (
+            "GET",
+            "/api/streams/00000000-0000-0000-0000-000000000001/observe",
+        ),
+        (
+            "GET",
+            "/api/model-instances/00000000-0000-0000-0000-000000000001/progress",
+        ),
     ] {
         let (status, _, _) = app.raw(method, path, None).await;
         assert_eq!(
@@ -495,10 +509,32 @@ async fn admin_file_and_backup_routes_are_nothing_on_an_application_host() -> sc
     }
     assert!(!tmp.path().join("web/planted.js").exists());
 
-    // The same session on the admin's host is an admin's: the refusal above is
-    // the host, not the session.
+    // The same session on the admin's host is not an admin's either: the
+    // application issued it, and an application's session is no session there
+    // (code quality Q2.5) — on the real routes and on the typed endpoints.
     let mut admin = Client::new(router, BASE_DOMAIN);
     admin.cookies = app.cookies.clone();
+    let (status, _, _) = admin.raw("GET", "/download/apps/web/build.sh", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = admin.send("GET", "/api/tables", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, body) = admin.send("GET", "/api/auth/status", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["current_user"], json!(null));
+
+    // Signing in on the admin's host makes an admin session, which reaches
+    // the route the application's session could not.
+    let mut admin = Client::new(admin.router.clone(), BASE_DOMAIN);
+    let (status, _, _) = admin.raw("GET", "/", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = admin
+        .send(
+            "POST",
+            "/api/login",
+            Some(json!({"email": "editor@example.com", "password": "correct-horse"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
     let (status, _, body) = admin.raw("GET", "/download/apps/web/build.sh", None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(String::from_utf8_lossy(&body).contains("mkdir -p dist/assets"));

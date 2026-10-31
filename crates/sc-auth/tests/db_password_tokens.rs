@@ -77,8 +77,8 @@ async fn an_invited_account_chooses_its_password_with_its_token_once() -> Result
     else {
         panic!("a new address is a new account");
     };
-    assert_eq!(user.role, Role::of(80));
-    assert!(!user_has_password(&f.catalog, user.id).await?);
+    assert_eq!(user.role(), Role::of(80));
+    assert!(!user_has_password(&f.catalog, user.id()).await?);
     assert!(
         authenticate(&f.catalog, "pat@example.com", "")
             .await?
@@ -107,7 +107,7 @@ async fn an_invited_account_chooses_its_password_with_its_token_once() -> Result
         panic!("a pending account is resent");
     };
     let redeemed = redeem_password_token(&f.catalog, &token, "pat-pw").await?;
-    assert_eq!(redeemed.map(|u| u.id), Some(user.id));
+    assert_eq!(redeemed.map(|u| u.id()), Some(user.id()));
     assert!(
         authenticate(&f.catalog, "pat@example.com", "pat-pw")
             .await?
@@ -137,17 +137,17 @@ async fn an_invited_account_chooses_its_password_with_its_token_once() -> Result
 async fn a_reset_ends_the_users_sessions_and_a_bad_token_is_just_none() -> Result<()> {
     let f = fixture().await?;
     let user = create_user(&f.catalog, "pat@example.com", "old-pw", Role::of(80)).await?;
-    create_session(&f.catalog, user.id, Duration::hours(1)).await?;
+    create_session(&f.catalog, user.id(), Duration::hours(1)).await?;
     assert_eq!(count(&f.catalog, SESSIONS_TABLE).await?, 1);
 
-    let token = issue_password_token(&f.catalog, user.id, PasswordTokenPurpose::Reset).await?;
+    let token = issue_password_token(&f.catalog, user.id(), PasswordTokenPurpose::Reset).await?;
     let within = Duration::seconds(60);
     assert!(
-        password_token_issued_within(&f.catalog, user.id, PasswordTokenPurpose::Reset, within)
+        password_token_issued_within(&f.catalog, user.id(), PasswordTokenPurpose::Reset, within)
             .await?
     );
     assert!(
-        !password_token_issued_within(&f.catalog, user.id, PasswordTokenPurpose::Invite, within)
+        !password_token_issued_within(&f.catalog, user.id(), PasswordTokenPurpose::Invite, within)
             .await?
     );
     assert!(
@@ -172,7 +172,7 @@ async fn a_reset_ends_the_users_sessions_and_a_bad_token_is_just_none() -> Resul
     );
 
     // A lapsed token is refused.
-    let lapsed = issue_password_token(&f.catalog, user.id, PasswordTokenPurpose::Reset).await?;
+    let lapsed = issue_password_token(&f.catalog, user.id(), PasswordTokenPurpose::Reset).await?;
     let expire = Update::new(
         PASSWORD_TOKENS_TABLE,
         vec![Assignment::new(
@@ -193,8 +193,8 @@ async fn a_reset_ends_the_users_sessions_and_a_bad_token_is_just_none() -> Resul
     );
 
     // So is a disabled account's.
-    let token = issue_password_token(&f.catalog, user.id, PasswordTokenPurpose::Reset).await?;
-    set_user_disabled(&f.catalog, user.id, true).await?;
+    let token = issue_password_token(&f.catalog, user.id(), PasswordTokenPurpose::Reset).await?;
+    set_user_disabled(&f.catalog, user.id(), true).await?;
     assert!(
         redeem_password_token(&f.catalog, &token, "x")
             .await?
@@ -243,30 +243,30 @@ async fn a_signup_is_unproven_until_a_link_is_redeemed_and_is_claimed_whole() ->
     let signed = sign_up_user(&f.catalog, "signed@example.com", "signed-pw", Role::of(80)).await?;
     assert!(signed.email_unproven());
     assert!(
-        load_user(&f.catalog, signed.id)
+        load_user(&f.catalog, signed.id())
             .await?
             .unwrap()
             .email_unproven()
     );
-    let token = issue_password_token(&f.catalog, signed.id, PasswordTokenPurpose::Reset).await?;
+    let token = issue_password_token(&f.catalog, signed.id(), PasswordTokenPurpose::Reset).await?;
     let redeemed = redeem_password_token(&f.catalog, &token, "new-pw")
         .await?
         .unwrap();
     assert!(!redeemed.email_unproven());
     assert!(
-        !load_user(&f.catalog, signed.id)
+        !load_user(&f.catalog, signed.id())
             .await?
             .unwrap()
             .email_unproven()
     );
 
     let squat = sign_up_user(&f.catalog, "squat@example.com", "squat-pw", Role::of(80)).await?;
-    create_session(&f.catalog, squat.id, Duration::hours(1)).await?;
-    issue_password_token(&f.catalog, squat.id, PasswordTokenPurpose::Reset).await?;
+    create_session(&f.catalog, squat.id(), Duration::hours(1)).await?;
+    issue_password_token(&f.catalog, squat.id(), PasswordTokenPurpose::Reset).await?;
     let claimed = claim_unproven_account(&f.catalog, squat.clone()).await?;
-    assert_eq!(claimed.id, squat.id);
+    assert_eq!(claimed.id(), squat.id());
     assert!(!claimed.email_unproven());
-    assert!(!user_has_password(&f.catalog, squat.id).await?);
+    assert!(!user_has_password(&f.catalog, squat.id()).await?);
     assert!(
         authenticate(&f.catalog, "squat@example.com", "squat-pw")
             .await?
@@ -276,7 +276,7 @@ async fn a_signup_is_unproven_until_a_link_is_redeemed_and_is_claimed_whole() ->
     assert_eq!(count(&f.catalog, PASSWORD_TOKENS_TABLE).await?, 0);
 
     let kept = claim_unproven_account(&f.catalog, made.clone()).await?;
-    assert!(user_has_password(&f.catalog, kept.id).await?);
+    assert!(user_has_password(&f.catalog, kept.id()).await?);
     Ok(())
 }
 
@@ -309,7 +309,7 @@ async fn a_failed_redemption_leaves_the_token_and_the_password_as_they_were() ->
             .is_err()
     );
     assert_eq!(count(&f.catalog, PASSWORD_TOKENS_TABLE).await?, 1);
-    assert!(!user_has_password(&f.catalog, user.id).await?);
+    assert!(!user_has_password(&f.catalog, user.id()).await?);
 
     // A restart puts the column back: bootstrap reconciles `users` additively.
     let driver = Arc::new(PgDriver::from_pool(f._db.pool().clone()));
@@ -318,7 +318,7 @@ async fn a_failed_redemption_leaves_the_token_and_the_password_as_they_were() ->
     assert!(users.field("email_verified").is_some());
 
     let redeemed = redeem_password_token(&catalog, &token, "pat-pw").await?;
-    assert_eq!(redeemed.map(|u| u.id), Some(user.id));
+    assert_eq!(redeemed.map(|u| u.id()), Some(user.id()));
     assert!(
         authenticate(&catalog, "pat@example.com", "pat-pw")
             .await?

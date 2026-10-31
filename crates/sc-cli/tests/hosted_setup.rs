@@ -319,7 +319,7 @@ async fn a_routes_only_token_reaches_module_routes_as_a_non_admin() -> sc_error:
 
     // A module route accepts it, as the role-80 user; the MCP server does not.
     let caller = sc_auth::authenticate_route_token(&catalog, secret).await?;
-    assert_eq!(caller.user.role, Role::of(80));
+    assert_eq!(caller.user.role(), Role::of(80));
     let refused = sc_auth::authenticate_api_token(&catalog, secret)
         .await
         .unwrap_err()

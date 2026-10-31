@@ -1279,7 +1279,7 @@ async fn save(ctx: &ToolContext<'_>, app: &Application, out: &mut Json) -> Resul
         out["notes"] = json!(notes);
         return Ok(saved);
     };
-    let user = ctx.user.map(|u| u.id);
+    let user = ctx.user.map(|u| u.id());
     let listed = host
         .call_admin(AdminCall::new("listApplications", Json::Null).user(user))
         .await?;

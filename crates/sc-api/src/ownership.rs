@@ -85,9 +85,9 @@ pub fn principal_at(role: Role, user: Option<&User>) -> Principal {
 /// [`FormulaCall`] consume, so the two evaluators see one user by construction.
 fn user_values(user: Option<&User>) -> Option<BTreeMap<String, Value>> {
     user.map(|u| {
-        let mut map = u.extra.clone();
-        map.insert(COL_ID.to_owned(), Value::Uuid(u.id));
-        map.insert(COL_ROLE.to_owned(), Value::Int(i64::from(u.role)));
+        let mut map = u.extra().clone();
+        map.insert(COL_ID.to_owned(), Value::Uuid(u.id()));
+        map.insert(COL_ROLE.to_owned(), Value::Int(i64::from(u.role())));
         map
     })
 }
@@ -623,8 +623,8 @@ fn owner_column<'f>(table: &Table, formula: &'f Formula) -> Option<&'f str> {
 /// type are not equal to a string.
 fn is_user_id(value: Option<&Value>, user: &User) -> bool {
     match value {
-        Some(Value::Uuid(id)) => *id == user.id,
-        Some(Value::Text(text)) => *text == user.id.hyphenated().to_string(),
+        Some(Value::Uuid(id)) => *id == user.id(),
+        Some(Value::Text(text)) => *text == user.id().hyphenated().to_string(),
         _ => false,
     }
 }

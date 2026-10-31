@@ -263,7 +263,7 @@ async fn sender(config: &Attrs, args: &Json, ctx: &TraitContext<'_>) -> Result<O
 
 /// A user's email, where the row has one.
 fn email_of(user: &User) -> Option<&str> {
-    match user.extra.get("email") {
+    match user.extra().get("email") {
         Some(sc_query::Value::Text(email)) => Some(email),
         _ => None,
     }
@@ -286,7 +286,7 @@ pub async fn call(config: &Attrs, args: &Json, ctx: &mut TraitContext<'_>) -> Re
         None => PUBLIC.to_owned(),
         Some(user) => email_of(user)
             .map(str::to_owned)
-            .unwrap_or_else(|| format!("user {}", user.id)),
+            .unwrap_or_else(|| format!("user {}", user.id())),
     };
     let response = ctx
         .require_requests()?
