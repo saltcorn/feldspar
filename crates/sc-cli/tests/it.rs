@@ -25,8 +25,6 @@ mod build_agent;
 mod build_app;
 #[path = "build_script.rs"]
 mod build_script;
-#[path = "build_static_deploy.rs"]
-mod build_static_deploy;
 #[path = "build_static_release.rs"]
 mod build_static_release;
 #[path = "check.rs"]
@@ -49,6 +47,8 @@ mod hosted_setup;
 mod i18n;
 #[path = "install_script.rs"]
 mod install_script;
+#[path = "install_tree.rs"]
+mod install_tree;
 #[path = "mcp_token.rs"]
 mod mcp_token;
 #[path = "repo_hygiene.rs"]
@@ -57,8 +57,6 @@ mod repo_hygiene;
 mod serve;
 #[path = "setup.rs"]
 mod setup;
-#[path = "setup_host.rs"]
-mod setup_host;
 #[path = "sqlite_primary.rs"]
 mod sqlite_primary;
 #[path = "users.rs"]

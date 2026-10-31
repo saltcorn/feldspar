@@ -7,7 +7,7 @@
 //! domains they read ([`i18n`]), the `cmdstan` commands' arguments and status
 //! report ([`cmdstan`]), parsing the `api` commands' flags
 //! ([`api`]), the `get-cfg`/`set-cfg` commands' arguments ([`config`]), the
-//! `mcp-token` commands ([`mcp_token`]), the `module` commands ([`module`]), the `add-user`/`modify-user`
+//! `mcp-token` commands ([`mcp_token`]), the `module` commands ([`module`]), `python check` ([`python`]), the `add-user`/`modify-user`
 //! commands' arguments and password prompt ([`users`]), the `backup`/`restore`
 //! password ([`backup_password`]), `feldspar setup` ([`setup`]), resolving an application's project
 //! directory for `app list` ([`app`]) and
@@ -29,6 +29,7 @@ pub mod eval;
 pub mod i18n;
 pub mod mcp_token;
 pub mod module;
+pub mod python;
 pub mod setup;
 pub mod users;
 
@@ -56,7 +57,7 @@ pub use db::{DbConfig, Serving};
 /// `unshare` and `chroot` that Chromium's sandbox makes inside the user
 /// namespace it creates, which the default allows only to a privileged
 /// container. Without it `view_app` cannot start its browser sandboxed, and is
-/// never started without the sandbox instead (README §2.9).
+/// never started without the sandbox instead (docs/OPERATIONS.md §12).
 pub const SECCOMP_PROFILE: &str = include_str!("../../../deploy/docker/seccomp.json");
 
 /// Apply the pending migrations to `driver`'s database, saying on stderr what

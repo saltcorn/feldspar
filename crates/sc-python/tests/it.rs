@@ -67,6 +67,10 @@ mod python_modules;
 mod python_runtime;
 
 #[cfg(feature = "python-host")]
+#[path = "python_self_check.rs"]
+mod python_self_check;
+
+#[cfg(feature = "python-host")]
 #[path = "python_triggers.rs"]
 mod python_triggers;
 

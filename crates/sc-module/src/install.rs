@@ -132,7 +132,7 @@ fn parse_version(version: &str) -> Option<(u64, u64, u64)> {
 /// and Ubuntu 24.04 all package npm **9.2.0**, so a host given Node from the
 /// distribution's own repository is on the wrong side of it, and every Install
 /// click on it failed with a semver error that named nothing an admin could
-/// act on. `scripts/setup-host.sh` installs Node from NodeSource for this
+/// act on. `feldspar setup` installs Node from NodeSource for this
 /// reason; a host set up by hand gets the sentence below instead.
 ///
 /// An npm that cannot be asked its version, or answers something unparseable,
@@ -148,7 +148,7 @@ fn check_npm_version(version: Option<&str>) -> Result<()> {
          install fails with `Invalid comparator: file:…` whatever is being installed. \
          npm {MIN_NPM_VERSION} or newer is needed. Debian and Ubuntu package npm 9.2.0, so \
          this is what `apt install npm` gives: install Node.js from NodeSource (which is \
-         what scripts/setup-host.sh does), or upgrade npm alone with \
+         what `feldspar setup --node` does), or upgrade npm alone with \
          `sudo npm install -g npm@latest`."
     )))
 }

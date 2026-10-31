@@ -9,7 +9,7 @@
 //! passes.
 //!
 //! **Skipped, saying so, where no Chromium is installed**: these tests need an
-//! external browser, which `scripts/setup-host.sh` installs on a server. The
+//! external browser, which `feldspar setup` installs on a server. The
 //! host without one is `sc-check`'s
 //! `browser_steps_on_a_host_without_chromium_make_the_run_incomplete`.
 

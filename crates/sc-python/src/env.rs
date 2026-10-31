@@ -166,6 +166,51 @@ fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
+/// The directory a release tree keeps its CPython in, beside `bin/`.
+const BUNDLED_DIR: &str = "python";
+
+/// The **bundled** CPython's home, for the binary at `exe`: `<exe>/../python`
+/// when that directory exists (TODO-portable-release §3).
+///
+/// The release tarball ships python-build-standalone there, and nothing on the
+/// host says where its standard library is — CPython's own search starts from
+/// the `python3` on the `PATH`, which on a host with no Python finds nothing and
+/// on one with a different Python finds the wrong one. A developer build and
+/// `cargo test` have no such directory and keep CPython's own search.
+#[must_use]
+pub fn bundled_python_home_for(exe: &Path) -> Option<PathBuf> {
+    let exe = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+    let home = exe.parent()?.parent()?.join(BUNDLED_DIR);
+    home.is_dir().then_some(home)
+}
+
+/// [`bundled_python_home_for`] this process's own executable, symlinks
+/// resolved — so `/usr/local/bin/feldspar` pointing into `/opt/feldspar/bin`
+/// finds `/opt/feldspar/python`.
+#[must_use]
+pub fn bundled_python_home() -> Option<PathBuf> {
+    bundled_python_home_for(&std::env::current_exe().ok()?)
+}
+
+/// The bundled interpreter under a home: `<home>/bin/python3`, if it is there.
+#[must_use]
+pub fn bundled_python_bin_in(home: &Path) -> Option<PathBuf> {
+    let bin = home.join("bin").join("python3");
+    bin.is_file().then_some(bin)
+}
+
+/// The interpreter `pip` runs under when `--python-bin` was not given: the
+/// bundled one when this binary has one beside it, so pip and the embedded
+/// interpreter are the same CPython and the ABI check cannot trip on a fresh
+/// host; `python3` on the `PATH` otherwise.
+#[must_use]
+pub fn default_python_bin() -> PathBuf {
+    bundled_python_home()
+        .as_deref()
+        .and_then(bundled_python_bin_in)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_PYTHON_BIN))
+}
+
 impl PythonEnv {
     /// The environment directory this server will use: `--python-dir`, else the
     /// platform's default.
@@ -182,12 +227,12 @@ impl PythonEnv {
     }
 
     /// The external interpreter `pip` runs under: `--python-bin`, else
-    /// `python3` on the PATH.
+    /// [`default_python_bin`] — the bundled one, or `python3` on the PATH.
     #[must_use]
     pub fn interpreter(&self) -> PathBuf {
         match &self.bin {
             Some(bin) => bin.clone(),
-            None => PathBuf::from(DEFAULT_PYTHON_BIN),
+            None => default_python_bin(),
         }
     }
 }
@@ -232,6 +277,23 @@ pub fn venv_version(dir: &Path) -> Option<(u32, u32)> {
         }
     }
     None
+}
+
+/// The directory of the interpreter a virtual environment was built from — the
+/// `home` line `venv` writes into `pyvenv.cfg` — or `None` without one.
+#[must_use]
+pub fn venv_home(dir: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(dir.join("pyvenv.cfg")).ok()?;
+    text.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "home").then(|| PathBuf::from(value.trim()))
+    })
+}
+
+/// Whether two paths name one directory, symlinks resolved where they can be.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let resolve = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    resolve(a) == resolve(b)
 }
 
 /// `3.13.2` → `(3, 13)`. The patch and anything after it is not this module's
@@ -353,6 +415,10 @@ pub struct PythonEnvironment {
     /// running. `None` means the ABI check cannot be made and is therefore not
     /// claimed — a build without the feature can still list what is installed.
     embedded: Option<(u32, u32)>,
+    /// The interpreter the release tree bundles beside this binary, if it has
+    /// one: what an environment built by the host's `python3` is moved onto
+    /// ([`PythonEnvironment::ensure`]).
+    bundled: Option<PathBuf>,
 }
 
 impl PythonEnvironment {
@@ -373,6 +439,9 @@ impl PythonEnvironment {
             dir,
             bin: env.interpreter(),
             embedded,
+            bundled: bundled_python_home()
+                .as_deref()
+                .and_then(bundled_python_bin_in),
         })
     }
 
@@ -457,6 +526,13 @@ impl PythonEnvironment {
     /// `Installer::ensure_project` is: an environment an operator deleted
     /// between two installs should be rebuilt rather than reported.
     ///
+    /// An environment that exists but was built by another interpreter of the
+    /// **same** minor version — Debian's `python3.13` on a host upgraded to the
+    /// release that bundles CPython 3.13 — is moved onto the bundled one first
+    /// ([`PythonEnvironment::repoint`]), so it stops depending on a `python3`
+    /// the operator may now remove. A different minor version is not moved: its
+    /// C extensions are built for that one, and the ABI check refuses it.
+    ///
     /// The ABI check is made against the environment's **own** interpreter and
     /// not against `--python-bin`, because that is the one pip will run and the
     /// one whose `site-packages` the embedded interpreter will import from. An
@@ -500,8 +576,115 @@ impl PythonEnvironment {
                     combined(&output)
                 )));
             }
+        } else {
+            self.repoint().await?;
         }
         self.check_abi()
+    }
+
+    /// Whether this environment should be moved onto the bundled interpreter:
+    /// there is one, it is the interpreter pip runs under (an operator's own
+    /// `--python-bin` is their choice and is left alone), the environment was
+    /// built by the same `major.minor` as the embedded interpreter, and by an
+    /// interpreter somewhere else — or its `bin/python` is a link to one, which
+    /// is what an interrupted move leaves, and an environment whose interpreter
+    /// the operator has since removed.
+    fn needs_repoint(&self) -> bool {
+        let Some(bundled) = &self.bundled else {
+            return false;
+        };
+        if *bundled != self.bin {
+            return false;
+        }
+        let (Some(embedded), Some(built)) = (self.embedded, self.version()) else {
+            return false;
+        };
+        if embedded != built {
+            return false;
+        }
+        let moved = match (venv_home(&self.dir), bundled.parent()) {
+            (Some(home), Some(bundled_home)) => same_dir(&home, bundled_home),
+            _ => true,
+        };
+        // A copied interpreter (`venv --copies`) is the environment's own, and
+        // never resolves to the bundle: only a link is followed.
+        let python = self.python();
+        let linked_elsewhere = python.is_symlink()
+            && match (std::fs::canonicalize(&python), std::fs::canonicalize(bundled)) {
+                (Ok(target), Ok(bundled)) => target != bundled,
+                _ => true,
+            };
+        !moved || linked_elsewhere
+    }
+
+    /// Remove the environment's interpreter links — `bin/python`, `python3`,
+    /// `python3.N` — so `venv --upgrade` makes them again: it leaves a link that
+    /// already exists alone, so without this the environment keeps running the
+    /// host's `python3` after its `pyvenv.cfg` has been moved.
+    fn unlink_interpreters(&self) -> Result<()> {
+        let bin = self.dir.join("bin");
+        let Ok(entries) = std::fs::read_dir(&bin) else {
+            return Ok(());
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let interpreter = name
+                .strip_prefix("python")
+                .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit() || c == '.'));
+            if interpreter && entry.path().is_symlink() {
+                std::fs::remove_file(entry.path()).map_err(|e| {
+                    Error::config(format!(
+                        "could not remove {} to move this server's Python environment onto {}: {e}",
+                        entry.path().display(),
+                        self.bin.display()
+                    ))
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `<bundled python3> -m venv --upgrade <dir>`, where
+    /// [`needs_repoint`](Self::needs_repoint) says so (TODO-portable-release
+    /// R1.6).
+    ///
+    /// `--upgrade` rewrites `pyvenv.cfg`, makes the `bin/python` links
+    /// [`unlink_interpreters`](Self::unlink_interpreters) removed, and leaves
+    /// `site-packages` alone, so every installed module stays
+    /// installed: what changes is only which program pip runs as. The embedded
+    /// interpreter imports from `site-packages` directly, so a server that
+    /// never installs again would not need this — but the first install after
+    /// the operator removes the host's `python3` would.
+    async fn repoint(&self) -> Result<()> {
+        if !self.needs_repoint() {
+            return Ok(());
+        }
+        self.unlink_interpreters()?;
+        let output = Command::new(&self.bin)
+            .arg("-m")
+            .arg("venv")
+            .arg("--upgrade")
+            .arg(&self.dir)
+            .output()
+            .await
+            .map_err(|e| {
+                Error::config(format!(
+                    "could not run `{} -m venv --upgrade {}`: {e}",
+                    self.bin.display(),
+                    self.dir.display()
+                ))
+            })?;
+        if !output.status.success() {
+            return Err(Error::config(format!(
+                "could not move this server's Python environment at {} onto {}: {}\n{}",
+                self.dir.display(),
+                self.bin.display(),
+                output.status,
+                combined(&output)
+            )));
+        }
+        Ok(())
     }
 
     /// Compare the embedded interpreter with the environment's, and refuse a
@@ -616,6 +799,9 @@ impl PythonEnvironment {
             // order to uninstall from it would be absurd.
             return Ok(String::new());
         }
+        // pip runs as the environment's own interpreter, which may be the
+        // host's `python3` an operator has since removed.
+        self.repoint().await?;
         self.pip(&["uninstall", "--disable-pip-version-check", "-y", name])
             .await
     }
@@ -848,6 +1034,219 @@ mod tests {
         )
         .unwrap();
         assert_eq!(venv_version(&dir), Some((3, 13)));
+        assert_eq!(venv_home(&dir), Some(PathBuf::from("/usr/bin")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sc-python-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_release_tree_has_its_python_home_beside_bin() {
+        let root = scratch("bundled-home");
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("bin/feldspar"), "").unwrap();
+        let exe = root.join("bin/feldspar");
+        assert_eq!(bundled_python_home_for(&exe), None, "no python/ yet");
+
+        std::fs::create_dir_all(root.join("python/bin")).unwrap();
+        let home = bundled_python_home_for(&exe).expect("python/ beside bin/");
+        assert!(same_dir(&home, &root.join("python")), "{home:?}");
+        assert_eq!(bundled_python_bin_in(&home), None, "no interpreter yet");
+        std::fs::write(root.join("python/bin/python3"), "").unwrap();
+        assert!(bundled_python_bin_in(&home).is_some_and(|b| b.ends_with("bin/python3")));
+
+        // A link to the binary finds the tree it points into.
+        #[cfg(unix)]
+        {
+            let link = root.join("feldspar-link");
+            std::os::unix::fs::symlink(&exe, &link).unwrap();
+            assert!(bundled_python_home_for(&link).is_some_and(|h| same_dir(&h, &home)));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_cargo_test_binary_has_no_bundled_python() {
+        // `target/debug/deps/<test>` → `target/debug/python`, which no build makes:
+        // a developer build starts CPython as it always has and pip runs `python3`.
+        assert_eq!(bundled_python_home(), None);
+        assert_eq!(default_python_bin(), PathBuf::from(DEFAULT_PYTHON_BIN));
+        assert_eq!(
+            PythonEnv::default().interpreter(),
+            PathBuf::from(DEFAULT_PYTHON_BIN)
+        );
+    }
+
+    /// A stand-in for the bundled `python3`: records its arguments, and does
+    /// what `-m venv --upgrade` does — points `pyvenv.cfg`'s `home` at itself,
+    /// and links `bin/python*` to itself, but only where no link is already
+    /// there (CPython's `symlink_or_copy`).
+    #[cfg(unix)]
+    fn fake_bundled(root: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = root.join("bundle/bin/python3");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\n\
+                 cfg=\"$4/pyvenv.cfg\"\n\
+                 sed 's,^home = .*,home = {home},' \"$cfg\" > \"$cfg.new\" && mv \"$cfg.new\" \"$cfg\"\n\
+                 for n in python python3 python3.13; do\n\
+                 [ -L \"$4/bin/$n\" ] || ln -s '{bin}' \"$4/bin/$n\"\n\
+                 done\n",
+                log = root.join("calls").display(),
+                home = bin.parent().unwrap().display(),
+                bin = bin.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        bin
+    }
+
+    /// An environment as `<home>/python3 -m venv` leaves it: `pyvenv.cfg`, and
+    /// `bin/python*` linked to a stand-in for that interpreter.
+    #[cfg(unix)]
+    fn environment_built_by(root: &Path, home: &str, version: &str) -> PathBuf {
+        let dir = root.join("venv");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(
+            dir.join("pyvenv.cfg"),
+            format!("home = {home}\ninclude-system-site-packages = false\nversion = {version}\n"),
+        )
+        .unwrap();
+        let host = root.join("host/python3");
+        std::fs::create_dir_all(host.parent().unwrap()).unwrap();
+        std::fs::write(&host, "").unwrap();
+        std::os::unix::fs::symlink(&host, dir.join("bin/python")).unwrap();
+        std::os::unix::fs::symlink("python", dir.join("bin/python3")).unwrap();
+        std::os::unix::fs::symlink("python", dir.join("bin/python3.13")).unwrap();
+        dir
+    }
+
+    /// Where the environment's `bin/python` leads.
+    #[cfg(unix)]
+    fn interpreter_of(dir: &Path) -> PathBuf {
+        std::fs::canonicalize(dir.join("bin/python")).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_environment_from_the_hosts_python_of_the_same_minor_is_moved_onto_the_bundled_one()
+    {
+        let root = scratch("repoint");
+        let bundled = fake_bundled(&root);
+        let dir = environment_built_by(&root, "/usr/bin", "3.13.5");
+        let environment = PythonEnvironment {
+            dir: dir.clone(),
+            bin: bundled.clone(),
+            embedded: Some((3, 13)),
+            bundled: Some(bundled.clone()),
+        };
+        environment.ensure().await.expect("repointed and accepted");
+        let calls = std::fs::read_to_string(root.join("calls")).unwrap();
+        assert_eq!(calls, format!("-m venv --upgrade {}\n", dir.display()));
+        assert!(same_dir(
+            &venv_home(&dir).unwrap(),
+            bundled.parent().unwrap()
+        ));
+        // And pip runs as the bundled interpreter: the host's links are gone.
+        for name in ["python", "python3", "python3.13"] {
+            assert_eq!(
+                std::fs::canonicalize(dir.join("bin").join(name)).unwrap(),
+                std::fs::canonicalize(&bundled).unwrap(),
+                "bin/{name}"
+            );
+        }
+
+        // Once moved, it is left alone — by an install and by an uninstall.
+        environment.ensure().await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("calls")).unwrap(),
+            calls,
+            "an environment already on the bundled interpreter is not upgraded again"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What an earlier move left behind: `pyvenv.cfg` names the bundle, but
+    /// `bin/python` is still the host's, because `venv --upgrade` keeps a link
+    /// that is already there. And the same with the host's `python3` removed,
+    /// so the link dangles.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_environment_whose_interpreter_still_links_to_the_host_is_moved() {
+        let root = scratch("half-moved");
+        let bundled = fake_bundled(&root);
+        let home = bundled.parent().unwrap().display().to_string();
+        for remove_host in [false, true] {
+            let dir = environment_built_by(&root, &home, "3.13.18");
+            if remove_host {
+                std::fs::remove_file(root.join("host/python3")).unwrap();
+            }
+            let environment = PythonEnvironment {
+                dir: dir.clone(),
+                bin: bundled.clone(),
+                embedded: Some((3, 13)),
+                bundled: Some(bundled.clone()),
+            };
+            assert!(environment.needs_repoint(), "host removed: {remove_host}");
+            environment.ensure().await.expect("repointed");
+            assert_eq!(
+                interpreter_of(&dir),
+                std::fs::canonicalize(&bundled).unwrap(),
+                "host removed: {remove_host}"
+            );
+            assert!(!environment.needs_repoint());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_different_minor_or_an_operators_own_interpreter_is_not_moved() {
+        let root = scratch("no-repoint");
+        let bundled = fake_bundled(&root);
+
+        // Built by a 3.12: its C extensions are 3.12's, so it is refused as before.
+        let dir = environment_built_by(&root, "/usr/bin", "3.12.3");
+        let environment = PythonEnvironment {
+            dir: dir.clone(),
+            bin: bundled.clone(),
+            embedded: Some((3, 13)),
+            bundled: Some(bundled.clone()),
+        };
+        let refused = environment.ensure().await.unwrap_err().to_string();
+        assert!(
+            refused.contains("3.12") && refused.contains("3.13"),
+            "{refused}"
+        );
+        assert!(
+            !root.join("calls").exists(),
+            "a 3.12 environment was upgraded"
+        );
+
+        // `--python-bin` naming another interpreter is the operator's choice.
+        let dir = environment_built_by(&root, "/usr/bin", "3.13.5");
+        let environment = PythonEnvironment {
+            dir: dir.clone(),
+            bin: PathBuf::from("/usr/bin/python3.13"),
+            embedded: Some((3, 13)),
+            bundled: Some(bundled),
+        };
+        environment.ensure().await.unwrap();
+        assert!(
+            !root.join("calls").exists(),
+            "an explicit --python-bin was overridden"
+        );
+        assert_eq!(venv_home(&dir), Some(PathBuf::from("/usr/bin")));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

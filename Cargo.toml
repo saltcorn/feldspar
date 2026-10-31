@@ -348,13 +348,17 @@ deno_core = "0.408"
 # CPython by *linking* it, so this dependency is what decides whether a build
 # needs `libpython` present to exec at all — which is why it is a feature that
 # is off by default and why `sc-server`'s shipped `+crt-static` artifact cannot
-# carry it (TODO phase 0.5a). `abi3-py311` is the stable-ABI floor: one build
-# runs against every CPython from 3.11 up.
+# carry it (TODO phase 0.5a). Not `abi3`: the limited API has no `PyConfig`,
+# which is how `sc-python` hands the interpreter its home inside the release
+# tree (TODO-portable-release R1.4), and an embedding binary links one versioned
+# `libpython` anyway — so the stable ABI bought nothing. The build is for the
+# CPython it finds (`PYO3_PYTHON`): the release's pinned 3.13, or a developer's
+# own `python3`.
 #
 # Costs, measured in phase 0 against the `deno_core` the workspace already
 # links: +7 crates in the lock file, +3.0 s of clean build, +0.5 MB of stripped
 # binary, and 6.5 MB of resident interpreter once it is initialised.
-pyo3 = { version = "0.29.2", features = ["abi3-py311"] }
+pyo3 = { version = "0.29.2" }
 # **Modules in-process** (TODO "Modules in-process", phase 1), behind
 # `sc-module`'s `deno-host` feature and linked by nothing else: `deno_runtime` is
 # `deno_core` plus Node — a module loader, `require`, `node:*`, and a permission

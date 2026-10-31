@@ -12,9 +12,9 @@
 #
 # What goes in
 # ------------
-# The **released** `debian13-python` artifact from the bucket, not a build from
-# source. That artifact is already the dynamically linked Debian 13 build with
-# Python (scripts/build-static.sh), which is exactly this base, and building it
+# The **released** x86_64 artifact from the bucket, not a build from source.
+# That artifact is already the dynamically linked build with its own Python
+# (scripts/build-static.sh), which runs on this base's glibc, and building it
 # again here would be the forty-minute, many-gigabyte V8 link that
 # scripts/static-build.Dockerfile already does, kept in step with it by hand.
 # The object has no version in its name yet, so a rebuild picks up the latest
@@ -66,24 +66,25 @@ RUN apt-get update \
         ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-# The bucket scripts/build-static.sh --release publishes to, the object its
-# Python variant is published as, and the prefix `crates/sc-cli/build.rs`
+# The bucket scripts/build-static.sh --release publishes to, the object the
+# x86_64 release is published as, and the prefix `crates/sc-cli/build.rs`
 # compiled the UI bundle paths into the binary with (`SC_BUNDLE_PREFIX`): the
 # tree has to be unpacked exactly there.
 WORKDIR /fetch
 RUN set -eu; \
     RELEASE_URL=https://feldspar-latest-static.saltcorn.com; \
-    RELEASE_OBJECT=feldspar-debian13-python.tar.gz; \
+    RELEASE_OBJECT=feldspar-linux-x86_64.tar.gz; \
     PREFIX=/opt/feldspar; \
     curl -fsSLO "${RELEASE_URL}/${RELEASE_OBJECT}"; \
     curl -fsSLO "${RELEASE_URL}/${RELEASE_OBJECT}.sha256"; \
     sha256sum -c "${RELEASE_OBJECT}.sha256"; \
     mkdir -p "${PREFIX}"; \
     tar -xzf "${RELEASE_OBJECT}" -C "${PREFIX}" --strip-components=1 --no-same-owner; \
-    test "$(cat "${PREFIX}/VARIANT")" = debian13-python; \
-    # The host installer and host setup are the systemd install's; nothing in
-    # a container runs them.
-    rm -f "${PREFIX}/install.sh" "${PREFIX}/setup-host.sh"; \
+    # Unpacked rather than installed, on a Debian 13 base, so the binaries stay
+    # on the image's own glibc.
+    [ "$(cat "${PREFIX}/VARIANT")" = linux ]; \
+    # The tree's installer is a host install's; nothing in a container runs it.
+    rm -f "${PREFIX}/install.sh"; \
     chmod -R go-w "${PREFIX}"
 
 # ---------------------------------------------------------------------------
@@ -91,7 +92,7 @@ RUN set -eu; \
 # ---------------------------------------------------------------------------
 FROM dhi.io/debian-base:trixie-debian13-dev
 
-# Node from NodeSource, at the major version scripts/setup-host.sh installs
+# Node from NodeSource, at the major version `feldspar setup` installs
 # (NODE_MAJOR). Not Debian's nodejs: Debian 13 packages npm 9.2.0, which cannot
 # install a module (`sc-module` needs 9.3.0 or newer).
 RUN set -eu; \

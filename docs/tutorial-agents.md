@@ -418,7 +418,7 @@ it opens the application **in a headless browser on the server** and reads the p
 It needs three things, and it will tell you which one is missing:
 
 1. **The `application` setting** — the one you filled in for `check`, above.
-2. **A headless browser on the server.** `scripts/setup-host.sh` installs one; the server says at
+2. **A headless browser on the server.** `feldspar setup --server` installs one; the server says at
    startup which it found, or that `view_app` is unavailable and why
    (`docs/OPERATIONS.md` §2.5, and the `browser` key in `feldspar.toml`). Without one, the
    checkbox is refused on save — a grant that cannot work is not a grant.

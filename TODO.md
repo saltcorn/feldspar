@@ -768,6 +768,16 @@ workflow) found what the first importer left behind. Fixture:
   as `setup-host.sh` does, so that it can replace that script.
 - [ ] **D1.4** An end-to-end run of `feldspar setup --server` on Alpine with OpenRC. Debian and
   Ubuntu have been run under systemd, and Alpine so far only through its plan.
+- [x] **D1.5** Three ways to get the executable and no more, for the general release: the curl
+  installer, the tarball by hand, and a source build that runs where it was built. The static
+  artifact is retired (TODO-portable-release R3.3) and `debian13-python` is no longer published;
+  `build-static.sh --deploy` and `--variant`, and the installer's `--variant`, are gone;
+  `scripts/setup-host.sh` is replaced by `feldspar setup`, which gained Fedora/RHEL, openSUSE
+  and Arch and the bundled Python's `SSL_CERT_FILE` check; the tarball's `install.sh` links
+  `feldspar` onto `PATH`. docs/OPERATIONS.md §1–§3 rewritten, §12 (Docker) and §13 (releases)
+  added. Still to do by hand: one real `feldspar setup --server` on Fedora (the old script's
+  run there does not cover the port), and deleting `feldspar-debian13-python.tar.gz` from the
+  bucket once no host fetches it.
 
 ## M1 — Migrations
 
