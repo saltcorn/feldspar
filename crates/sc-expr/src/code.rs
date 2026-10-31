@@ -13343,6 +13343,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_body_rebinding_db_does_not_reach_a_library_and_a_library_may_rebind_its_own() {
+        // As `code_api_js.md` says: a library gets the run's handles, not the
+        // importer's variables, and its own top-level `db = db.asAdmin()` holds
+        // for every function it exports.
+        let host = FakeHost::rows(json!([]));
+        let rt = CodeRuntime::with_workers(1);
+        let mut c = with_host(
+            r#"
+            db = db.asAdmin();
+            await db.books.rows();
+            await lib("plain").read();
+            await lib("admin").read();
+            return null;
+            "#,
+            &*host,
+        );
+        c.libraries = libraries(&[
+            ("plain", "exports.read = () => db.books.rows();"),
+            (
+                "admin",
+                "db = db.asAdmin(); exports.read = () => db.books.rows();",
+            ),
+        ]);
+        rt.run(c).await.unwrap();
+        let authorities: Vec<Json> = host
+            .plans()
+            .iter()
+            .map(|plan| plan["authority"].clone())
+            .collect();
+        assert_eq!(
+            authorities,
+            [json!("admin"), json!("default"), json!("admin")]
+        );
+    }
+
+    #[tokio::test]
     async fn a_library_has_no_handle_the_importing_body_lacks() {
         let rt = CodeRuntime::with_workers(1);
         let mut c = call(r#"return lib("net").get();"#);

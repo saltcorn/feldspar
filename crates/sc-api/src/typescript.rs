@@ -1063,6 +1063,16 @@ pub fn generate_app_client(
     if changes.iter().any(Option::is_some) {
         types.extend(["LiveChange", "LiveChangesStream", "LiveEnvelope"]);
     }
+    // A stream of changes to a table the client does not read (or one with no
+    // key column) types its key as the topic in general — which the
+    // re-export further down names but does not bring into scope.
+    if changes
+        .iter()
+        .flatten()
+        .any(|typing| typing.key_type == "LiveTopic")
+    {
+        types.push("LiveTopic");
+    }
     if loose.iter().any(|ep| ep.stream_output) {
         types.extend(["LiveOpenHandlers", "LiveOpenedSession"]);
     }

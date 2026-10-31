@@ -511,6 +511,22 @@ fn valid_role(role: u8) -> Result<()> {
     Ok(())
 }
 
+/// The server-log line for a file operation the access rules refused, or `None`
+/// when `err` is not a refusal (a missing file, a bad argument).
+fn refusal_warning(req: &FileRequest, caller: &FileCaller, err: &Error) -> Option<String> {
+    let message = err.auth_message()?;
+    let who = match &caller.user_id {
+        Some(id) => format!("user `{id}` (role {})", caller.role),
+        None if caller.role == sc_auth::ROLE_PUBLIC => "the public role".to_owned(),
+        None => format!("role {}", caller.role),
+    };
+    Some(format!(
+        "feldspar: warning: a code body's file `{}` of {:?} in store `{}`, as {who}, was \
+         refused: {message}",
+        req.op, req.path, req.store
+    ))
+}
+
 #[async_trait]
 impl FileHost for FileStoreHost<'_> {
     async fn files(&self, request: Json) -> Result<Json> {
@@ -520,7 +536,16 @@ impl FileHost for FileStoreHost<'_> {
             ))
         })?;
         req.authority = req.authority.resolve(&self.default_authority);
-        self.run(&req).await
+        let answer = self.run(&req).await;
+        // A refusal is the body's to catch, and cleanup code catches it without
+        // a word — a delete that left somebody else's upload behind, a shared
+        // file that stopped updating. The server log says so either way.
+        if let Err(err) = &answer
+            && let Some(warning) = refusal_warning(&req, &self.caller, err)
+        {
+            eprintln!("{warning}");
+        }
+        answer
     }
 
     fn store_names(&self) -> Vec<String> {
@@ -1168,5 +1193,27 @@ mod tests {
         assert!(!looser(Some(10), Some(40)), "tightening is allowed");
         assert!(!looser(Some(40), Some(40)), "unchanged is not looser");
         assert!(!looser(Some(40), None), "adding a rule is tightening");
+    }
+
+    #[test]
+    fn a_refused_operation_is_a_warning_and_nothing_else_is() {
+        let req: FileRequest = serde_json::from_value(serde_json::json!({
+            "op": "delete", "store": "uploads", "authority": "user", "path": "p/7/a.pdf",
+        }))
+        .unwrap();
+        let refused = Error::auth(r#"not permitted to access "p/7/a.pdf" in file store uploads"#);
+        let warning =
+            refusal_warning(&req, &FileCaller::new(80, Some("12".into())), &refused).unwrap();
+        assert_eq!(
+            warning,
+            "feldspar: warning: a code body's file `delete` of \"p/7/a.pdf\" in store \
+             `uploads`, as user `12` (role 80), was refused: not permitted to access \
+             \"p/7/a.pdf\" in file store uploads"
+        );
+        let anonymous = refusal_warning(&req, &FileCaller::anonymous(), &refused).unwrap();
+        assert!(anonymous.contains("as the public role"), "{anonymous}");
+        // Not a refusal: nothing to warn about.
+        let missing = Error::not_found("no such file");
+        assert!(refusal_warning(&req, &FileCaller::anonymous(), &missing).is_none());
     }
 }
