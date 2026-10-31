@@ -9,8 +9,13 @@
 //!   `feldspar serve`, and nothing runs as anybody but them.
 //! - **production** — a server. A `feldspar` system account, the configuration
 //!   in `/etc/feldspar/feldspar.toml` readable by that account and nobody else,
-//!   and a service started at boot: a systemd unit (Debian, Ubuntu), or an OpenRC
-//!   script (Alpine).
+//!   and a service started at boot: a systemd unit (Debian, Ubuntu, Fedora,
+//!   RHEL, openSUSE, Arch), or an OpenRC script (Alpine).
+//!
+//! The distribution is told apart by `/etc/os-release` — its `ID`, else the
+//! first family its `ID_LIKE` names, which covers Mint, MX, Alma, Rocky,
+//! CachyOS, Manjaro, EndeavourOS and the rest — and decides the package
+//! manager, PostgreSQL's first-run setup and the account tools.
 //!
 //! Either kind takes either database: a **SQLite** file, nothing to install; or
 //! **PostgreSQL**, on this machine (installed when it is not already running,
@@ -36,16 +41,25 @@
 //! The server needs two more programs to do everything it can: **Node.js**, with
 //! an npm of 9.3 or newer (building an application and installing a module run
 //! npm), and a **headless browser**, which the coding agent's `view_app` drives.
-//! A production setup installs both, as `scripts/setup-host.sh` does: Node from
-//! NodeSource on Debian and Ubuntu (their own npm is 9.2, which cannot install a
-//! module — README §2.1), apt's `chromium` on Debian, Google Chrome's apt
+//! A production setup installs both: Node from NodeSource on Debian and Ubuntu
+//! (their own npm is 9.2, which cannot install a module — README §2.1) and from
+//! the distribution elsewhere; apt's `chromium` on Debian, Google Chrome's apt
 //! repository on Ubuntu (whose `chromium-browser` is a snap, which does not run
-//! under a service account), and both from apk on Alpine. Whatever is already
-//! here and good enough is kept. The browser is then started once, headless, as
+//! under a service account), EPEL's on RHEL and its rebuilds, and the
+//! distribution's own Chromium on the rest. Whatever is already here and good
+//! enough is kept. The browser is then started once, headless, as
 //! the account that will run it, so a browser that cannot start is found now
 //! rather than at the agent's first `view_app`. A development setup leaves the
 //! desktop's packages alone unless asked (`--node`, `--browser`, or yes at the
 //! terminal), and says what is missing.
+//!
+//! The release's bundled CPython has its OpenSSL certificate path compiled in,
+//! and whether a distribution keeps its bundle there is that distribution's
+//! answer. So a production setup of a binary with a bundled `python/` beside it
+//! runs `feldspar python check` as the service account, and where its HTTPS
+//! request fails without `SSL_CERT_FILE` and passes with the distribution's
+//! bundle, it sets that variable for the service (a systemd drop-in, or
+//! `/etc/conf.d/feldspar` under OpenRC).
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -68,13 +82,24 @@ pub const SYSTEMD_UNIT: &str = "/etc/systemd/system/feldspar.service";
 pub const OPENRC_SCRIPT: &str = "/etc/init.d/feldspar";
 /// Where the OpenRC service's output goes; systemd has the journal.
 pub const OPENRC_LOG: &str = "/var/log/feldspar.log";
+/// The systemd drop-in that sets `SSL_CERT_FILE` for the service, when the
+/// bundled Python needs it.
+pub const SYSTEMD_TLS_DROPIN: &str = "/etc/systemd/system/feldspar.service.d/ssl-cert-file.conf";
+/// What OpenRC sources into the service's environment.
+pub const OPENRC_CONF: &str = "/etc/conf.d/feldspar";
+/// Where the distributions keep their certificate bundle: Debian, Ubuntu, Arch
+/// and Alpine; Fedora and RHEL; openSUSE.
+pub const CA_BUNDLES: [&str; 3] = [
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem",
+];
 
 const DEFAULT_SERVICE_USER: &str = "feldspar";
 const DEFAULT_DATABASE: &str = "feldspar";
 const DEFAULT_PORT: &str = "3032";
 
-/// The Node.js line installed from NodeSource; the same as `setup-host.sh` and
-/// the Docker image.
+/// The Node.js line installed from NodeSource; the same as the Docker image.
 pub const NODE_MAJOR: u32 = 26;
 /// The oldest npm that can install a module, as (major, minor).
 pub const MIN_NPM: (u32, u32) = (9, 3);
@@ -120,7 +145,7 @@ Instance:
 Node.js and a headless browser (installed for production when missing, left
 alone for development unless asked):
   --node / --no-node     install Node.js with npm 9.3+ (NodeSource on Debian
-                         and Ubuntu, apk on Alpine)
+                         and Ubuntu, the distribution's packages elsewhere)
   --browser / --no-browser
                          install a headless Chromium for the coding agent's
                          view_app, and check it starts as the account that
@@ -354,9 +379,29 @@ impl SetupArgs {
 pub enum Family {
     /// Debian and Ubuntu: apt, adduser, systemd.
     Debian,
+    /// Fedora, RHEL and its rebuilds: dnf, `postgresql-setup --initdb`.
+    Fedora,
+    /// openSUSE Leap and Tumbleweed: zypper.
+    Suse,
+    /// Arch and its derivatives: pacman, `initdb` by hand.
+    Arch,
     /// Alpine: apk, busybox's adduser, OpenRC.
     Alpine,
     Other,
+}
+
+impl Family {
+    /// The family an `/etc/os-release` `ID` (or one word of `ID_LIKE`) names.
+    fn of(id: &str) -> Option<Family> {
+        Some(match id {
+            "debian" | "ubuntu" => Family::Debian,
+            "fedora" | "rhel" | "centos" | "almalinux" | "rocky" => Family::Fedora,
+            "opensuse" | "opensuse-leap" | "opensuse-tumbleweed" | "sles" | "suse" => Family::Suse,
+            "arch" | "archarm" | "cachyos" | "manjaro" | "endeavouros" => Family::Arch,
+            "alpine" => Family::Alpine,
+            _ => return None,
+        })
+    }
 }
 
 /// What starts services at boot here.
@@ -374,6 +419,11 @@ pub struct Host {
     pub family: Family,
     /// `PRETTY_NAME` from `/etc/os-release`, for messages.
     pub os_name: String,
+    /// `ID` from `/etc/os-release`: which member of the family (`fedora` or
+    /// `rhel`, `opensuse-tumbleweed` or `opensuse-leap`).
+    pub os_id: String,
+    /// `VERSION_ID` from `/etc/os-release`.
+    pub version_id: String,
     pub root: bool,
     /// `sudo` or `doas`, when not root and one is installed.
     pub sudo: Option<String>,
@@ -400,6 +450,8 @@ impl Host {
         let release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
         let (family, os_name) = parse_os_release(&release);
         let ubuntu = ubuntu_like(&release);
+        let os_id = os_release_field(&release, "ID");
+        let version_id = os_release_field(&release, "VERSION_ID");
         // SAFETY: `geteuid` reads the process's credentials and cannot fail.
         let root = unsafe { libc::geteuid() } == 0;
         let sudo = if root {
@@ -436,6 +488,8 @@ impl Host {
         Host {
             family,
             os_name,
+            os_id,
+            version_id,
             root,
             sudo,
             services,
@@ -492,24 +546,24 @@ pub fn ubuntu_like(os_release: &str) -> bool {
     })
 }
 
-/// The family and display name out of an `/etc/os-release`.
+/// One field of an `/etc/os-release`, unquoted; empty when it is not there.
+pub fn os_release_field(text: &str, key: &str) -> String {
+    text.lines()
+        .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+        .map(|v| v.trim().trim_matches('"').trim_matches('\'').to_owned())
+        .unwrap_or_default()
+}
+
+/// The family and display name out of an `/etc/os-release`: the family of its
+/// `ID`, else of the first word of `ID_LIKE` that names one.
 pub fn parse_os_release(text: &str) -> (Family, String) {
-    let field = |key: &str| {
-        text.lines()
-            .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
-            .map(|v| v.trim().trim_matches('"').to_owned())
-            .unwrap_or_default()
-    };
+    let field = |key: &str| os_release_field(text, key);
     let id = field("ID");
     let like = field("ID_LIKE");
-    let is = |name: &str| id == name || like.split_whitespace().any(|l| l == name);
-    let family = if is("debian") || is("ubuntu") {
-        Family::Debian
-    } else if is("alpine") {
-        Family::Alpine
-    } else {
-        Family::Other
-    };
+    let family = std::iter::once(id.as_str())
+        .chain(like.split_whitespace())
+        .find_map(Family::of)
+        .unwrap_or(Family::Other);
     let name = Some(field("PRETTY_NAME"))
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| {
@@ -546,6 +600,9 @@ pub struct Choices {
     pub node: bool,
     /// Install a headless browser when there is none, and check that it starts.
     pub browser: bool,
+    /// The binary has the release's bundled CPython beside it (`../python`),
+    /// whose HTTPS certificates a production setup checks.
+    pub bundled_python: bool,
     pub force: bool,
 }
 
@@ -825,7 +882,7 @@ pub fn resolve(
         )));
     }
 
-    // Node.js and a browser: a server gets them, as setup-host.sh gives them; a
+    // Node.js and a browser: a server gets them; a
     // desktop's packages are its owner's, so there they are installed only when
     // asked — and asked about only when one is missing and setup knows how.
     let mut install = |flag: Option<bool>, missing: bool, question: &str| -> Result<bool> {
@@ -881,6 +938,10 @@ pub fn resolve(
         None => std::env::current_exe()
             .map_err(|e| Error::msg(format!("finding this executable: {e}")))?,
     };
+    let bundled_python = binary
+        .parent()
+        .and_then(Path::parent)
+        .is_some_and(|prefix| prefix.join("python/bin/python3").exists());
 
     Ok(Choices {
         mode,
@@ -894,6 +955,7 @@ pub fn resolve(
         start: !args.no_start,
         node,
         browser,
+        bundled_python,
         force: args.force,
     })
 }
@@ -957,6 +1019,16 @@ pub enum Step {
         /// Where `browser_sandbox = false` would go, for the advice.
         config: String,
     },
+    /// Run `binary python check` as `user` without `SSL_CERT_FILE`. Where its
+    /// HTTPS request fails, and passes with one of [`CA_BUNDLES`], write `file`
+    /// setting that variable for the service: a systemd drop-in, or (`openrc`)
+    /// OpenRC's `conf.d` file. Reported, never fatal.
+    CheckPythonTls {
+        binary: PathBuf,
+        user: String,
+        file: PathBuf,
+        openrc: bool,
+    },
 }
 
 fn run(argv: &[&str], root: bool) -> Step {
@@ -985,6 +1057,22 @@ fn apt_install(packages: &[&str]) -> Step {
     ];
     argv.extend_from_slice(packages);
     run(&argv, true)
+}
+
+/// The family's package manager installing `packages`, non-interactively.
+/// Arch updates its package database only with a full upgrade, which it
+/// requires of any install. Nothing for [`Family::Other`].
+fn pkg_install(family: Family, packages: &[&str]) -> Option<Step> {
+    let mut argv: Vec<&str> = match family {
+        Family::Debian => return Some(apt_install(packages)),
+        Family::Fedora => vec!["dnf", "install", "-y"],
+        Family::Suse => vec!["zypper", "--non-interactive", "install"],
+        Family::Arch => vec!["pacman", "-Syu", "--needed", "--noconfirm"],
+        Family::Alpine => vec!["apk", "add", "--no-cache"],
+        Family::Other => return None,
+    };
+    argv.extend_from_slice(packages);
+    Some(run(&argv, true))
 }
 
 /// A root-owned apt source or pin.
@@ -1055,14 +1143,24 @@ fn node_steps(steps: &mut Vec<Step>, host: &Host) {
             steps.push(run(&["apt-get", "update"], true));
             steps.push(apt_install(&["nodejs"]));
         }
-        Family::Alpine => {
-            steps.push(Step::Heading("installing Node.js and npm".into()));
-            steps.push(run(&["apk", "add", "--no-cache", "nodejs", "npm"], true));
-        }
         Family::Other => steps.push(Step::Note(format!(
             "setup cannot install Node.js on {}: install it, with npm {}.{} or newer",
             host.os_name, MIN_NPM.0, MIN_NPM.1
         ))),
+        // The others package a Node whose npm is new enough: Fedora and RHEL
+        // 10 (npm 10), openSUSE (under versioned names on Leap), Arch, Alpine.
+        family => {
+            let packages: &[&str] = match (family, host.os_id.as_str()) {
+                (Family::Suse, "opensuse-tumbleweed") => &["nodejs-default", "npm-default"],
+                (Family::Suse, _) => &["nodejs22", "npm22"],
+                _ => &["nodejs", "npm"],
+            };
+            steps.push(Step::Heading(format!(
+                "installing Node.js from {}'s packages",
+                host.os_name
+            )));
+            steps.extend(pkg_install(family, packages));
+        }
     }
 }
 
@@ -1118,9 +1216,25 @@ fn browser_steps(steps: &mut Vec<Step>, c: &Choices, host: &Host) -> bool {
             once(steps, run(&["apt-get", "update"], true));
             steps.push(apt_install(&["chromium"]));
         }
-        Family::Alpine => {
+        // RHEL and its rebuilds package Chromium in EPEL. Alma and Rocky carry
+        // `epel-release` in their own extras; RHEL itself fetches it from the
+        // Fedora project.
+        Family::Fedora if host.os_id != "fedora" => {
+            steps.push(Step::Heading("installing Chromium from EPEL".into()));
+            let epel = if host.os_id == "rhel" {
+                format!(
+                    "https://dl.fedoraproject.org/pub/epel/epel-release-latest-{}.noarch.rpm",
+                    host.version_id.split('.').next().unwrap_or_default()
+                )
+            } else {
+                "epel-release".to_owned()
+            };
+            steps.extend(pkg_install(host.family, &[&epel]));
+            steps.extend(pkg_install(host.family, &["chromium"]));
+        }
+        Family::Fedora | Family::Suse | Family::Arch | Family::Alpine => {
             steps.push(Step::Heading("installing Chromium".into()));
-            steps.push(run(&["apk", "add", "--no-cache", "chromium"], true));
+            steps.extend(pkg_install(host.family, &["chromium"]));
         }
         Family::Other => {
             steps.push(unavailable(format!(
@@ -1169,8 +1283,9 @@ pub fn plan(c: &Choices, host: &Host, existing_config: Option<&str>) -> Result<V
     if production {
         if host.family == Family::Other {
             return Err(Error::config(format!(
-                "feldspar setup --production knows Debian, Ubuntu and Alpine, and this is {}. \
-                 README §2 is the same setup by hand",
+                "feldspar setup --production knows Debian, Ubuntu, Fedora, RHEL, openSUSE, \
+                 Arch and Alpine (and what derives from them), and this is {}. README §2 is \
+                 the same setup by hand",
                 host.os_name
             )));
         }
@@ -1222,16 +1337,49 @@ pub fn plan(c: &Choices, host: &Host, existing_config: Option<&str>) -> Result<V
                         steps.push(run(&["systemctl", "enable", "--now", "postgresql"], true));
                     }
                 }
-                Family::Alpine => {
-                    steps.push(run(
+                // Fedora's package leaves the data directory to
+                // `postgresql-setup`, which refuses to run twice.
+                Family::Fedora => {
+                    steps.extend(pkg_install(
+                        host.family,
+                        &["postgresql-server", "postgresql"],
+                    ));
+                    steps.push(run_unless(
+                        &["postgresql-setup", "--initdb"],
+                        &["test", "-f", "/var/lib/pgsql/data/PG_VERSION"],
+                    ));
+                    steps.push(run(&["systemctl", "enable", "--now", "postgresql"], true));
+                }
+                // openSUSE's unit initialises its own data directory on first start.
+                Family::Suse => {
+                    steps.extend(pkg_install(
+                        host.family,
+                        &["postgresql-server", "postgresql"],
+                    ));
+                    steps.push(run(&["systemctl", "enable", "--now", "postgresql"], true));
+                }
+                // Arch's leaves `initdb` to the administrator, and its default
+                // authentication is `trust`, so peer on the socket is asked for.
+                Family::Arch => {
+                    steps.extend(pkg_install(host.family, &["postgresql"]));
+                    steps.push(run_unless(
                         &[
-                            "apk",
-                            "add",
-                            "--no-cache",
-                            "postgresql",
-                            "postgresql-client",
+                            "su",
+                            "-s",
+                            "/bin/sh",
+                            "postgres",
+                            "-c",
+                            "cd / && initdb --locale=C.UTF-8 --encoding=UTF8 --auth-local=peer \
+                             --auth-host=scram-sha-256 -D /var/lib/postgres/data",
                         ],
-                        true,
+                        &["test", "-f", "/var/lib/postgres/data/PG_VERSION"],
+                    ));
+                    steps.push(run(&["systemctl", "enable", "--now", "postgresql"], true));
+                }
+                Family::Alpine => {
+                    steps.extend(pkg_install(
+                        host.family,
+                        &["postgresql", "postgresql-client"],
                     ));
                     // Alpine's package leaves the cluster to `setup`, which
                     // refuses to run twice.
@@ -1245,8 +1393,9 @@ pub fn plan(c: &Choices, host: &Host, existing_config: Option<&str>) -> Result<V
                 Family::Other => {
                     return Err(Error::config(format!(
                         "no PostgreSQL is running on {POSTGRES_SOCKET_DIR}, and setup knows how to \
-                         install one on Debian, Ubuntu and Alpine but not on {}. Install and start \
-                         it, then run setup again — or choose --db sqlite",
+                         install one on Debian, Ubuntu, Fedora, RHEL, openSUSE, Arch and Alpine but \
+                         not on {}. Install and start it, then run setup again — or choose --db \
+                         sqlite",
                         host.os_name
                     )));
                 }
@@ -1348,6 +1497,28 @@ pub fn plan(c: &Choices, host: &Host, existing_config: Option<&str>) -> Result<V
         });
     }
 
+    // --- Certificates for the bundled Python ----------------------------------
+    // Before the service file and `daemon-reload`, so a drop-in written here is
+    // read with the unit.
+    if production && c.bundled_python && host.services != ServiceManager::None {
+        let openrc = host.services == ServiceManager::OpenRc;
+        steps.push(Step::Heading(format!(
+            "checking that the bundled Python makes a verified HTTPS request as {}",
+            c.service_user
+        )));
+        steps.push(Step::CheckPythonTls {
+            binary: c.binary.clone(),
+            user: c.service_user.clone(),
+            file: if openrc {
+                OPENRC_CONF
+            } else {
+                SYSTEMD_TLS_DROPIN
+            }
+            .into(),
+            openrc,
+        });
+    }
+
     // --- The service ----------------------------------------------------------
     if production {
         // Like the configuration file: the same file again is left alone, and
@@ -1428,8 +1599,23 @@ fn service_account(steps: &mut Vec<Step>, c: &Choices, host: &Host) {
                 &["id", "-u", user],
             ));
         }
-        _ => steps.push(run_unless(
+        Family::Debian => steps.push(run_unless(
             &["adduser", "--system", "--group", "--home", STATE_DIR, user],
+            &["id", "-u", user],
+        )),
+        // Everyone else's useradd says the same thing: a system account with a
+        // group of its own name, that home, no login shell.
+        _ => steps.push(run_unless(
+            &[
+                "useradd",
+                "--system",
+                "--user-group",
+                "--home-dir",
+                STATE_DIR,
+                "--shell",
+                "/usr/sbin/nologin",
+                user,
+            ],
             &["id", "-u", user],
         )),
     }
@@ -1783,6 +1969,19 @@ pub fn describe(steps: &[Step], host: &Host, out: &mut dyn Write) {
                 }
                 Ok(())
             }
+            Step::CheckPythonTls {
+                binary, user, file, ..
+            } => {
+                let argv = python_check_argv(binary, user, None);
+                let _ = writeln!(out, "    $ {}", shell_line(&with_sudo(&argv, true, host)));
+                writeln!(
+                    out,
+                    "      (reported, never fatal; where it fails and passes with one of {}, \
+                     {} sets SSL_CERT_FILE for the service)",
+                    CA_BUNDLES.join(", "),
+                    file.display()
+                )
+            }
             Step::CheckBrowser { browser, user, .. } => {
                 let shown = browser.clone().unwrap_or_else(|| "BROWSER".into());
                 let argv = browser_check_argv(&shown, user.as_deref(), true);
@@ -1828,6 +2027,7 @@ pub fn execute(steps: &[Step], host: &Host, out: &mut dyn Write) -> Result<()> {
     let needs_root = steps.iter().any(|s| match s {
         Step::Run { root, .. } | Step::Write { root, .. } => *root,
         Step::CheckBrowser { user, .. } => user.is_some(),
+        Step::CheckPythonTls { .. } => true,
         _ => false,
     });
     if needs_root && !host.root && host.sudo.is_none() {
@@ -1884,6 +2084,12 @@ pub fn execute(steps: &[Step], host: &Host, out: &mut dyn Write) -> Result<()> {
                 user,
                 config,
             } => check_browser(browser.as_deref(), user.as_deref(), config, host, out),
+            Step::CheckPythonTls {
+                binary,
+                user,
+                file,
+                openrc,
+            } => check_python_tls(binary, user, file, *openrc, host, out)?,
         }
     }
     Ok(())
@@ -1946,6 +2152,107 @@ fn check_browser(
             let _ = writeln!(out, "      | {line}");
         }
     }
+}
+
+/// `binary python check` as `user`, with no `SSL_CERT_FILE` or `SSL_CERT_DIR`
+/// but `bundle` — the service's environment, not this one's: a caller's
+/// `SSL_CERT_FILE` would make the check pass for a reason the service will not
+/// have.
+pub fn python_check_argv(binary: &Path, user: &str, bundle: Option<&str>) -> Vec<String> {
+    let script = format!(
+        "cd / && env -u SSL_CERT_FILE -u SSL_CERT_DIR {}{} python check",
+        bundle
+            .map(|b| format!("SSL_CERT_FILE={} ", shell_line(&[b.to_owned()])))
+            .unwrap_or_default(),
+        shell_line(&[binary.to_string_lossy().into_owned()])
+    );
+    ["su", "-s", "/bin/sh", user, "-c", &script]
+        .map(str::to_owned)
+        .to_vec()
+}
+
+/// What sets `SSL_CERT_FILE` to `bundle` for the service.
+pub fn tls_setting(bundle: &str, openrc: bool) -> String {
+    if openrc {
+        format!(
+            "# Written by `feldspar setup`: the bundled Python finds this host's\n\
+             # certificates only through it.\nexport SSL_CERT_FILE=\"{bundle}\"\n"
+        )
+    } else {
+        format!(
+            "# Written by `feldspar setup`: the bundled Python finds this host's\n\
+             # certificates only through it.\n[Service]\nEnvironment=SSL_CERT_FILE={bundle}\n"
+        )
+    }
+}
+
+/// [`Step::CheckPythonTls`], carried out.
+fn check_python_tls(
+    binary: &Path,
+    user: &str,
+    file: &Path,
+    openrc: bool,
+    host: &Host,
+    out: &mut dyn Write,
+) -> Result<()> {
+    let attempt = |bundle: Option<&str>| {
+        let argv = with_sudo(&python_check_argv(binary, user, bundle), true, host);
+        match Command::new(&argv[0])
+            .args(&argv[1..])
+            .stdin(Stdio::null())
+            .output()
+        {
+            Ok(o) => (
+                o.status.success(),
+                format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                ),
+            ),
+            Err(e) => (false, format!("running {}: {e}", argv[0])),
+        }
+    };
+    let (ok, output) = attempt(None);
+    if ok {
+        let _ = writeln!(out, "    it does");
+        return Ok(());
+    }
+    let Some(bundle) = CA_BUNDLES
+        .into_iter()
+        .filter(|b| Path::new(b).is_file())
+        .find(|b| attempt(Some(b)).0)
+    else {
+        let _ = writeln!(
+            out,
+            "    it does not, with this host's certificate bundle or without it. Python code \
+             that makes HTTPS requests will fail until this works (no network here?):"
+        );
+        let lines: Vec<&str> = output.lines().collect();
+        for line in &lines[lines.len().saturating_sub(5)..] {
+            let _ = writeln!(out, "      | {line}");
+        }
+        return Ok(());
+    };
+    let setting = tls_setting(bundle, openrc);
+    // OpenRC's conf.d file is the operator's as much as setup's.
+    if openrc && let Some(have) = std::fs::read_to_string(file).ok() {
+        if !have.contains("SSL_CERT_FILE=") {
+            let _ = writeln!(
+                out,
+                "    only with SSL_CERT_FILE={bundle}; add this line to {}:\n      \
+                 export SSL_CERT_FILE=\"{bundle}\"",
+                file.display()
+            );
+        }
+        return Ok(());
+    }
+    let _ = writeln!(
+        out,
+        "    only with SSL_CERT_FILE={bundle}; {} sets it",
+        file.display()
+    );
+    write_file(file, &setting, 0o644, None, true, host)
 }
 
 fn write_file(

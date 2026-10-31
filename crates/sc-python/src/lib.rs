@@ -145,8 +145,8 @@ pub use sc_expr::PYTHON;
 /// The environment's surface, re-exported: a caller installing a Python module
 /// names these and has no reason to know which file they live in.
 pub use env::{
-    DEFAULT_PYTHON_BIN, InstalledDistribution, PythonEnvironment, PythonSource, default_python_dir,
-    have_pip, have_python,
+    DEFAULT_PYTHON_BIN, InstalledDistribution, PythonEnvironment, PythonSource,
+    bundled_python_home, default_python_bin, default_python_dir, have_pip, have_python,
 };
 
 /// How many Python runs may be resident at once — code bodies and module calls
@@ -210,8 +210,9 @@ pub struct PythonEnv {
     /// The virtual environment this server owns and installs Python modules
     /// into. `None` is the platform's data directory, beside the modules root.
     pub dir: Option<std::path::PathBuf>,
-    /// The **external** interpreter `pip` runs under. `None` is `python3` on the
-    /// path. It is not the interpreter the code runs on — that one is linked in
+    /// The **external** interpreter `pip` runs under. `None` is the release
+    /// tree's bundled `python/bin/python3` where there is one, else `python3` on
+    /// the path ([`env::default_python_bin`]). It is not the interpreter the code runs on — that one is linked in
     /// — which is exactly why §9's ABI check compares the two.
     pub bin: Option<std::path::PathBuf>,
 }
@@ -254,6 +255,47 @@ pub struct PythonPackage {
     /// than left out — a package an admin can see is a package they can ask
     /// about.
     pub version: Option<String>,
+}
+
+/// What `feldspar python check` found (TODO-portable-release R1.7): the
+/// embedded interpreter's version and home, and one line per check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelfCheck {
+    /// `3.13.18`, as `sys.version_info` gives it.
+    pub version: String,
+    /// `sys.prefix`: where the standard library was found.
+    pub home: String,
+    /// `sys.executable`.
+    pub executable: String,
+    /// The `libc.so.6` this process has mapped — the host's, or the release's
+    /// bundled one on a musl host (TODO-portable-release R2.1). Empty where
+    /// there is no `/proc/self/maps` to read.
+    pub libc: String,
+    /// Whether this binary started CPython at a bundled home
+    /// ([`env::bundled_python_home`]) rather than by CPython's own search.
+    pub bundled: bool,
+    /// The imports (the four fixed ones, then any the caller named) and the
+    /// HTTPS request, in the order they ran.
+    pub checks: Vec<SelfCheckItem>,
+}
+
+/// One line of a [`SelfCheck`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelfCheckItem {
+    /// `import ssl`, `https`, …
+    pub name: String,
+    /// Whether it worked.
+    pub ok: bool,
+    /// What it found, or the exception that stopped it.
+    pub detail: String,
+}
+
+impl SelfCheck {
+    /// Whether every check passed.
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.checks.iter().all(|c| c.ok)
+    }
 }
 
 /// What Settings → Development shows about Python (phase 4.2).
@@ -554,6 +596,29 @@ impl PythonRuntime {
     #[must_use]
     pub fn max_stuck(&self) -> usize {
         self.max_stuck
+    }
+
+    /// Start the interpreter, without a database, and check that it can do
+    /// what a release on a foreign distribution is most likely to be unable
+    /// to: import `ssl`, `sqlite3`, `ctypes` and `zoneinfo`, and — given a
+    /// `url` — make a verified HTTPS request (`feldspar python check`).
+    /// Each of `imports` is imported after those four, from the environment's
+    /// `site-packages` as a run would find it: the release smoke test's check
+    /// that a wheel pip installed loads here (TODO-portable-release R2.4).
+    ///
+    /// Blocking: the request waits on the network, so an async caller runs
+    /// this on a blocking thread.
+    pub fn self_check(&self, url: Option<&str>, imports: &[String]) -> Result<SelfCheck> {
+        #[cfg(feature = "python-host")]
+        {
+            self.admit()?;
+            interp::self_check(&self.env, url, imports)
+        }
+        #[cfg(not(feature = "python-host"))]
+        {
+            let _ = (url, imports);
+            Err(not_built())
+        }
     }
 
     /// Run one Python body to its JSON result.

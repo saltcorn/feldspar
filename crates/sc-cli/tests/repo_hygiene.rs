@@ -637,11 +637,11 @@ fn the_readme_states_the_python_build_line() {
             "the README should state `{fragment}` about Python"
         );
     }
-    // The static artifact and the Python build are mutually exclusive, and §4.1
-    // is where somebody deciding how to deploy will look for it.
+    // The release is the build that needs nothing Python-related on the host,
+    // which is what somebody deciding between it and a source build looks for.
     assert!(
-        readme.contains("why it has no Python"),
-        "§4.1 should say that the packaged static artifact carries no Python"
+        readme.contains("The release (§2) brings its own CPython 3.13"),
+        "§3 should say that the release carries its own CPython"
     );
 }
 
@@ -1872,12 +1872,15 @@ fn readme_section_references_resolve() {
             continue;
         }
         // A sub-section number, or a reference the sentence attributes to the
-        // design document: not ours to resolve.
+        // design document or the operations manual: not ours to resolve.
         if rest[digits.len()..].starts_with('.') {
             continue;
         }
         let context = &readme[idx.saturating_sub(60)..idx];
-        if context.contains("design") || context.contains("TECHNICAL_DESIGN") {
+        if context.contains("design")
+            || context.contains("TECHNICAL_DESIGN")
+            || context.contains("OPERATIONS")
+        {
             continue;
         }
         let number: u32 = digits.parse().expect("digits");

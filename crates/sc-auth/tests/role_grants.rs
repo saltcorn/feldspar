@@ -138,7 +138,11 @@ async fn a_grant_in_force_is_the_role_every_load_serves_and_the_base_role_stays(
 async fn an_expired_grant_ends_access_with_no_write_even_through_a_cached_session() -> Result<()> {
     let f = fixture().await?;
     let user = create_user(&f.catalog, "m@example.com", "pw", 80).await?;
-    let ends = Utc::now() + Duration::milliseconds(1500);
+    // Generous: everything up to the first `user_for` (grant, login, sweep,
+    // user load) must land before the grant ends, and under a full parallel
+    // run against one database that has taken over 1.5s. The sleep below
+    // waits until just past `ends` rather than a fixed time.
+    let ends = Utc::now() + Duration::seconds(5);
     grant_role(
         &f.catalog,
         NewRoleGrant {
@@ -157,9 +161,15 @@ async fn an_expired_grant_ends_access_with_no_write_even_through_a_cached_sessio
         CACHE_CAPACITY,
     );
     let token = store.login(user.clone()).await?;
-    assert_eq!(store.user_for(&token).await?.unwrap().role, 60);
+    assert_eq!(
+        store.user_for(&token).await?.unwrap().role,
+        60,
+        "the grant is in force until {ends} (now {})",
+        Utc::now()
+    );
 
-    tokio::time::sleep(std::time::Duration::from_millis(1700)).await;
+    let until_ended = (ends - Utc::now() + Duration::milliseconds(200)).max(Duration::zero());
+    tokio::time::sleep(until_ended.to_std().expect("non-negative")).await;
     assert_eq!(
         store.user_for(&token).await?.unwrap().role,
         80,

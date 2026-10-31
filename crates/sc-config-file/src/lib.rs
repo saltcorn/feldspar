@@ -258,7 +258,7 @@ pub struct Environment {
     /// Whether that browser runs with its own sandbox — `false` is
     /// `--no-browser-sandbox`. On by default; off only for a kernel that refuses
     /// the unprivileged user namespaces the sandbox needs, which
-    /// `scripts/setup-host.sh` detects and names.
+    /// `feldspar setup` detects and names.
     pub browser_sandbox: Option<bool>,
     /// The CmdStan Stan models use — `--cmdstan` (Stan TODO §20). Unset, the
     /// server takes `$CMDSTAN`, else the newest `~/.cmdstan/cmdstan-*`.
@@ -715,7 +715,7 @@ fn env_var(name: &str) -> Option<String> {
 /// a file other people can read is worth a sentence, and the operator is the
 /// only one who can see it.
 ///
-/// "Other people" is the part worth being careful about. `scripts/setup-host.sh`
+/// "Other people" is the part worth being careful about. `feldspar setup`
 /// writes this file `root:feldspar 0640` on purpose: the server reads its
 /// configuration and never writes it, so leaving it to root means a compromised
 /// server cannot rewrite the file that decides what the next restart does. The
@@ -1153,7 +1153,7 @@ port = "5432"
 
     /// Which modes are worth a word on stderr.
     ///
-    /// `scripts/setup-host.sh` writes the file `root:feldspar 0640` on purpose —
+    /// `feldspar setup` writes the file `root:feldspar 0640` on purpose —
     /// the server reads its configuration and never writes it, so root keeps
     /// ownership and a compromised server cannot rewrite what the next restart
     /// connects to. Warning about that would be telling the operator to undo the
@@ -1162,7 +1162,7 @@ port = "5432"
     #[cfg(unix)]
     #[test]
     fn a_group_readable_config_is_only_a_problem_when_the_group_is_someone_else() {
-        // The setup-host.sh layout: root:feldspar 0640, read as feldspar.
+        // The `feldspar setup` layout: root:feldspar 0640, read as feldspar.
         assert!(!reachable_by_others(0o640, 42, 42));
         // The same mode, but the group is not the server's.
         assert!(reachable_by_others(0o640, 43, 42));

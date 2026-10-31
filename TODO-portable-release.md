@@ -1,4 +1,4 @@
-# Saltcorn v2 — One release for every Linux distribution, with Python (milestones R1–R4)
+# Saltcorn v2 — One release for every Linux distribution, with Python (milestones R1–R5)
 
 Today's release is two artifacts (`scripts/build-static.sh`): a **static** one with no Python
 that runs anywhere, Alpine included, and a **`debian13-python`** one that runs only on Debian 13.
@@ -10,8 +10,11 @@ This list replaces them with **one artifact, with working Python**, that runs on
 - openSUSE Leap 16 and Tumbleweed
 - Alpine
 
-on **x86_64 and aarch64**, plus a separate build for **macOS on Apple silicon** (R4). Windows is
-served by the Linux artifact under WSL2; the BSDs and 32-bit ARM are out of reach (D14).
+on **x86_64** (R1–R4), and later on **aarch64** too, plus a separate build for **macOS on Apple
+silicon** (R5). Windows is served by the Linux artifact under WSL2; the BSDs and 32-bit ARM are
+out of reach (D14).
+
+R1–R4 are one release: they go to production on their own. R5 waits until they have.
 
 The aim is the **least work per release**: per platform, one build, one tarball and one
 smoke-test run, each done by CI. The design comes first, then the decisions and why they were
@@ -284,7 +287,7 @@ Containers and emulators always use the host's page size, so the build asserts i
 
 ## R1 — The artifact
 
-- [ ] R1.1 `static-build.Dockerfile`: the Python variant builds on bookworm (D2), not trixie. Drop
+- [x] R1.1 `static-build.Dockerfile`: the Python variant builds on bookworm (D2), not trixie. Drop
       the `python3-dev` layer. Download the pinned PBS 3.13 `install_only_stripped` tarball for
       the target (D7) and check its SHA-256. Unpack it at `${PREFIX}/python` *inside the build
       container*, so build and run paths agree. Build with
@@ -292,48 +295,69 @@ Containers and emulators always use the host's page size, so the build asserts i
       `-C link-arg=-Wl,-rpath,$ORIGIN/../python/lib`. **Check first** that the PBS release ships
       a shared `libpython3.13.so` on Linux GNU. If it does not, link its PIC
       `libpython3.13.a` with `-rdynamic` and drop `python/lib` from the runtime picture.
-- [ ] R1.2 The `.glibc` copies (D3): copy `ld-linux-x86-64.so.2`, `libc.so.6`, `libm.so.6`,
+      *Done:* PBS `20261026` / CPython 3.13.18 ships `lib/libpython3.13.so.1.0`, so it is the
+      shared link. The bundling is `scripts/lib/python-bundle.sh`, which also rewrites PBS's
+      `/install` placeholder in `sysconfig` to `${PREFIX}/python`, and (since R2.4) compiles
+      the library's bytecode, which `install_only_stripped` does not ship. The Docker build
+      and its smoke run pass (R2.4).
+- [x] R1.2 The `.glibc` copies (D3): copy `ld-linux-x86-64.so.2`, `libc.so.6`, `libm.so.6`,
       `libgcc_s.so.1`, `libnss_compat.so.2` and `libnss_db.so.2` from the build image to
       `${PREFIX}/glibc` (aarch64: its own loader name). Make `bin/feldspar.glibc` and
       `python/bin/python3.glibc` with `patchelf --set-interpreter ${PREFIX}/glibc/ld-linux-… 
       --force-rpath --set-rpath ${PREFIX}/glibc:${PREFIX}/python/lib`. Check with `readelf` in
       the script that each copy has the expected `PT_INTERP` and `DT_RPATH`, the way
       `assert_python_linkage` checks linkage today.
-- [ ] R1.3 `build-static.sh`: the variants become `linux` (new) and `static` (kept until R3.3).
+      *Done:* the library set comes from `ldd` on the binary, the interpreter and libpython,
+      not a fixed list. PBS's libpython also needs `libpthread`, `libdl`, `libutil` and
+      `librt`. `libnss_db` is bundled only if the build image has it (a warning otherwise).
+- [x] R1.3 `build-static.sh`: the variants become `linux` (new) and `static` (kept until R3.3).
       `assert_python_linkage` asks for `libpython3.13.so` resolved from `$ORIGIN`, not from the
       host. Remove the generated libpython install step (`build-static.sh:769-790`).
-- [ ] R1.4 `sc-python`: start the interpreter with `PyConfig.home = <exe>/../python` when that
+- [x] R1.4 `sc-python`: start the interpreter with `PyConfig.home = <exe>/../python` when that
       directory exists (§3), without setting `PYTHONHOME` in the environment. Test: a test binary
       with a fake `python/` beside it gets that home. A plain `cargo test` build without one
       starts as today.
-- [ ] R1.5 `sc-python`: `--python-bin` defaults to the bundled interpreter when it exists (§3).
+- [x] R1.5 `sc-python`: `--python-bin` defaults to the bundled interpreter when it exists (§3).
       The `--help` text (`sc-cli/src/main.rs:3477`) and `docs/tutorial-python.md` say so. Test:
       the default resolves to the bundled path when present and to `python3` otherwise.
-- [ ] R1.6 An existing venv whose `pyvenv.cfg` `home` is not the bundled interpreter but has the
+- [x] R1.6 An existing venv whose `pyvenv.cfg` `home` is not the bundled interpreter but has the
       same minor version (D4: Debian's 3.13 on an upgraded host) is repointed with
       `<bundled python3> -m venv --upgrade <dir>`. That keeps its site-packages, so the venv no
       longer depends on the host's `python3` (which an operator may then remove). A different
       minor version still gets `abi_refusal`'s sentence. Test with a fake `pyvenv.cfg`.
-- [ ] R1.7 A self-check that starts the embedded interpreter without a database: an existing
+- [x] R1.7 A self-check that starts the embedded interpreter without a database: an existing
       `feldspar check` mode if one fits, else a small subcommand. It imports `ssl`, `sqlite3`,
       `ctypes` and `zoneinfo`, opens a verified HTTPS connection, and prints the interpreter's
       version and home. The smoke test (R2.4) and operators both use it.
+      *Done:* `feldspar python check [--url URL | --offline]`. `feldspar check` is checklists
+      and needs a database, so it did not fit.
 
 ## R2 — Installing on every distribution
 
-- [ ] R2.1 `install.sh`: detect musl (D6). On musl, or when the normal binary does not start, move
+- [x] R2.1 `install.sh`: detect musl (D6). On musl, or when the normal binary does not start, move
       the `.glibc` copies over the normal ones and log which libc this install uses. On glibc,
       delete the `.glibc` copies and `glibc/`, or keep them for a later host move (decide; keeping
       costs about 5 MB). Accept `ID`/`ID_LIKE` for Fedora, RHEL, SUSE and Arch, and install the
       few packages it needs there (ca-certificates, tar) with dnf, zypper and pacman. `--dry-run`
       shows the chosen libc.
-- [ ] R2.2 `setup-host.sh` (D9): a package table per family (Debian, Fedora/RHEL, SUSE, Arch) for
+      *Done:* the choice is made by the tarball's installer (`scripts/lib/install-tree.sh`, R2.6),
+      which writes it to `${PREFIX}/LIBC`; the curl installer prints a forecast. **Decided: keep**
+      the `.glibc` copies and `glibc/` on a glibc host, so the installed tree is the tarball. The
+      curl installer also gained `--variant static|linux` (default: the installed `VARIANT`), and
+      installs `findutils`/`gawk` where a minimal image lacks them.
+- [x] R2.2 `setup-host.sh` (D9): a package table per family (Debian, Fedora/RHEL, SUSE, Arch) for
       PostgreSQL, the client, ca-certificates, curl, Node and Chromium. PostgreSQL's first-run
       initialisation and service name per family. No Python packages anywhere. Keep accepting
       `VARIANT` = `static` or `debian13-python` from older installs.
-- [ ] R2.3 `setup-host.sh`: write `SSL_CERT_FILE` into the unit where the self-check's HTTPS call
+      *Done:* checked as `--dry-run` plans with the package managers stubbed; not run on a real
+      Fedora, openSUSE or Arch host. The openSUSE Node package names (`nodejs-default`/
+      `npm-default` on Tumbleweed, `nodejs22`/`npm22` on Leap) are the least certain part.
+- [x] R2.3 `setup-host.sh`: write `SSL_CERT_FILE` into the unit where the self-check's HTTPS call
       fails without it (D10), on whichever families the smoke test shows need it.
-- [ ] R2.4 The smoke test in `build-static.sh` runs the R1.7 self-check on `debian:13-slim`,
+      *Done:* decided per host rather than per family: `setup-host.sh` runs `feldspar python
+      check` as the service account and writes the line only when the check passes with the
+      host's bundle and fails without it. The smoke test reports `NEEDS SSL_CERT_FILE` per image.
+- [x] R2.4 The smoke test in `build-static.sh` runs the R1.7 self-check on `debian:13-slim`,
       `debian:12-slim`, `ubuntu:24.04`, `ubuntu:latest`, `fedora:latest`, `almalinux:10`,
       `archlinux:latest`, `opensuse/leap:16.0`, `opensuse/tumbleweed` and `alpine:3`, each after
       the tarball's own `install.sh`. It also checks:
@@ -346,10 +370,36 @@ Containers and emulators always use the host's page size, so the build asserts i
 
       Derivatives (Mint, MX, CachyOS, Manjaro, EndeavourOS, Rocky) are covered by `ID_LIKE`, not
       by images.
-- [ ] R2.5 SELinux: on a Fedora or Alma VM with SELinux enforcing, `setup-host.sh` then a Python
+      *Done:* `smoke_test_distros` and `scripts/lib/smoke-linux.sh` install through the curl
+      installer from a `file://` release. `build-static.sh --docker --variant linux` passes on
+      all ten images; none needs `SSL_CERT_FILE`. The first runs found four things, all fixed:
+      - **The stdlib had no bytecode.** PBS's `install_only_stripped` ships almost no `.pyc`
+        files (R1.1 assumed it did), so a root process wrote `__pycache__` into the installed
+        prefix and the service account recompiled the stdlib on every start. Caught by the
+        "second install changes nothing" check. `python-bundle.sh fetch` now compiles the whole
+        library with the bundled interpreter.
+      - **A second docker build had no UI.** sc-cli's build script builds `ui/*/dist` into the
+        source tree, which `.dockerignore` leaves out, and reruns only when UI sources change.
+        The Dockerfile now touches the watched `package.json` files before `cargo build`.
+      - **The `--upgrade` scenario's older server died at start** on `debian:13-slim`: the
+        server's HTTP client refuses to build with no CA certificates, and the older tree was
+        installed before the curl installer had added them. The smoke script installs
+        `ca-certificates` first, as the curl installer would have.
+      - **On Alpine, the old server's mapped libc** after the swap is
+        `${PREFIX}.old/glibc/libc.so.6` (the renamed tree it still runs from, as D11 intends),
+        not `${PREFIX}/glibc/…`, which is what the check expected.
+- [x] R2.5 SELinux: on a Fedora or Alma VM with SELinux enforcing, `setup-host.sh` then a Python
       trigger works. V8 and CPython both need writable and executable memory, from a binary under
       `/opt`. Note the result in `docs/OPERATIONS.md`; make a fix only if it fails.
-- [ ] R2.6 Install by swapping trees (D11). The tarball's `install.sh` (generated in
+      *Done, no fix needed:* a Fedora 44 VM (incus), `targeted` policy, enforcing. The curl
+      installer and `setup-host.sh --no-browser` ran through, the HTTPS self-check passed as the
+      service account, and the service runs in `unconfined_service_t` (the tree is `usr_t`). A
+      `startup` trigger with `run_python_code` ran in the service: `hashlib` (OpenSSL),
+      `decimal` and a module's compiled `markupsafe`, and its row was written. No AVC denials
+      except for the incus agent itself, so the VM was driven over ssh. AlmaLinux's incus image
+      needs `genisoimage` on the host, which this machine lacks, so Alma was not tried; RHEL 10
+      ships the same policy.
+- [x] R2.6 Install by swapping trees (D11). The tarball's `install.sh` (generated in
       `build-static.sh`):
       - copies the tree to `${PREFIX}.new` on the same filesystem, applies R2.1's libc choice
         there, and starts `${PREFIX}.new/bin/feldspar` with no arguments as a final check;
@@ -385,13 +435,43 @@ Containers and emulators always use the host's page size, so the build asserts i
         and the output names it in a warning;
       - running the installer a second time with the same tarball changes nothing but `.old`.
 
+      *Done:* `scripts/lib/install-tree.sh`, copied into every tarball as `install.sh`. The
+      stop/start lives there, between the copy and the swap, so the downtime is two renames and
+      a hand-run `sudo ./install.sh` gets it too. The final check of a bundled-glibc binary runs
+      after the swap (its loader path is under `${PREFIX}`), and a failure swaps back. Caches
+      and build output are dropped, not carried. Checked first, nothing writes into the prefix at
+      run time, with one exception found: pip's in-place build of a setuptools-based bundled
+      module (`plugins/markdown`, `plugins/sklearn`) writes `*.egg-info` there. Under the service
+      account that **fails**, so those modules cannot be installed from a tarball install today.
+      That is a module-installer bug (copy the directory before `pip install`), not fixed here.
+      The tests above run locally in `crates/sc-cli/tests/install_tree.rs`, and in the smoke
+      test on `debian:13-slim` and `alpine:3`, where they pass (R2.4).
+
 ## R3 — Release, documentation and retiring `static`
 
-- [ ] R3.1 `--release` publishes the new artifact as `feldspar-linux-<arch>.tar.gz` (D13) and, for
+- [x] R3.1 `--release` publishes the new artifact as `feldspar-linux-<arch>.tar.gz` (D13) and, for
       x86_64 and until R3.3, also as `feldspar-debian13-python.tar.gz` (D5). Upgrading a `debian13-python` host with the new
       tarball keeps its venv and its installed Python modules working (R1.6). Check this once by
       hand on a Debian 13 VM.
-- [ ] R3.2 Documentation:
+      *Done, apart from the check by hand:* `select_variant` gives each variant a list of
+      published names (`OBJECTS`), each uploaded with a `.sha256` naming it. The static artifact
+      keeps `feldspar.tar.gz`, and only an x86_64 build publishes it or the `debian13-python`
+      name. On aarch64, `both` means the linux artifact alone, and `--release --variant static`
+      is refused. The curl installer now fetches `feldspar-linux-x86_64.tar.gz`.
+      *Checked by hand* on a Debian 13 VM (incus): the published `debian13-python` tarball
+      (`efdb4fa0`) installed with its own `install.sh` and `setup-host.sh`, and a local module
+      that needs `markupsafe`'s compiled wheel installed with `feldspar module install`. The new
+      curl installer upgraded it, and the bundled 3.13.18 imported the module from the venv
+      Debian's 3.13.5 made. **It found a bug in R1.6:** `venv --upgrade` keeps an interpreter
+      link that already exists, so the venv's `bin/python3` still pointed at `/usr/bin/python3`
+      while `pyvenv.cfg` named the bundle, and the repoint failed in `ensurepip` (Debian's
+      interpreter). After that `needs_repoint` said it was done, so the venv would have stayed
+      on the host's Python. Fixed: the repoint removes the `bin/python*` links first, and
+      `needs_repoint` also answers yes for a link that does not resolve to the bundled
+      interpreter, which heals a half-moved venv (this VM was one, and was healed by the next
+      install). Then, with every host `python3*`/`libpython*` package purged, the service
+      restarted, the module loaded, and another install worked.
+- [x] R3.2 Documentation:
       - `docs/OPERATIONS.md` §1–§2: one download, the distribution list, which libc an install
         uses and why, and the CPython pin and how to bump it;
       - `README.md` §3–§4;
@@ -401,36 +481,81 @@ Containers and emulators always use the host's page size, so the build asserts i
 
       Tell the `~/feldspar-hosted` maintainers that its `ARCHITECTURE.md` lines 168 and 171 change
       (no `python3*` packages; a new tarball name, though the old one still works).
-- [ ] R3.3 After one or two releases with both: stop building `static`. `feldspar.tar.gz` and
+      *Done:* OPERATIONS §1 is rewritten (§1.1 distributions, §1.2 libc, §1.3 CPython and the
+      pin, §1.4 `debian13-python` hosts), and so are §2.1, §2.3's build options and §3.2/§3.4.
+      README §2 (the downloads, which pointed at the static artifact) changed too. The message
+      to the `~/feldspar-hosted` maintainers is for a human to send; that repository was not
+      edited. Its own scripts run `/usr/bin/python3`, so the host keeps a `python3` for those
+      even though feldspar no longer needs one.
+- [x] R3.3 After one or two releases with both: stop building `static`. `feldspar.tar.gz` and
       `feldspar-debian13-python.tar.gz` both become copies of `feldspar-linux-x86_64.tar.gz`. Remove
       the `static` paths (`assert_static`, the `+crt-static` flags) from the scripts.
-- [ ] R3.4 CHANGELOG entry: which distributions are supported, that Python needs nothing from the
+      *Done, ahead of the general release (TODO.md D1.5):* `build-static.sh` builds the one
+      artifact, `feldspar.tar.gz` is published as a copy of it (`~/feldspar-hosted` fetches that
+      name), and `feldspar-debian13-python.tar.gz` is **not** published any more: nothing in
+      this repository fetches it, and the curl installer has fetched the platform name since
+      R3.1. The object the last release left in the bucket goes stale and should be deleted.
+      The curl installer reads any `VARIANT` (`static`, `debian13-python`, `linux`) and fetches
+      the one release; it still accepts `--variant` and ignores it. `setup-host.sh` is gone too:
+      `feldspar setup` does what it did (D9, D10), on the same families.
+- [x] R3.4 CHANGELOG entry: which distributions are supported, that Python needs nothing from the
       host, and the upgrade note for `debian13-python` hosts.
 
-## R4 — aarch64 and macOS
+## R4 — Every platform gets the right answer
 
-- [ ] R4.1 `scripts/install.sh` picks the tarball by platform (D13): `uname -s` and `uname -m`
-      (`x86_64`/`amd64`, `aarch64`/`arm64`) map to `feldspar-linux-<arch>.tar.gz` or
-      `feldspar-macos-arm64.tar.gz`. Everything else gets D16's message for its platform and
-      exits non-zero. `--force` no longer lets it continue on an unknown architecture, because
-      there is nothing to download. On macOS: no package manager step, sudo for `/opt`, and no
-      `.glibc` handling. R2.6's tree swap works unchanged. A test runs the script with `uname`
-      stubbed for each case (Linux x86_64 and aarch64, armv7l, Darwin arm64 and x86_64,
-      FreeBSD, MINGW64) and `--dry-run`, and checks the URL or the message.
-- [ ] R4.2 Move the bucket upload, checksums and the post-build checks out of
-      `build-static.sh` into `scripts/lib/release.sh` (D15), with no change in behaviour: a
-      `--dry-run` release before and after prints the same commands.
-- [ ] R4.3 aarch64 Linux (D12): a CI job on `ubuntu-24.04-arm` runs
+The parts of the platform work that need neither an aarch64 nor a Mac build machine, so that
+R1–R4 can be released as a whole, and the larger refactor R5 builds on is done before it.
+
+- [x] R4.1 `scripts/install.sh` picks the tarball by platform (D13, D16): `uname -s` and
+      `uname -m` are checked first, before sudo or `/etc/os-release`. Linux on `x86_64`/`amd64`
+      gets `feldspar-linux-x86_64.tar.gz` (the object name is built from the architecture).
+      Everything else gets D16's message for its platform and exits non-zero: aarch64 Linux and
+      Apple-silicon macOS say their release is not published yet (and how to build one), Intel
+      Macs, 32-bit ARM, Windows outside WSL2, the BSDs and anything else get their own advice.
+      `--force` no longer gets past an unknown architecture, only an unknown distribution.
+      *Done:* tested in `install_script::the_platform_picks_the_tarball_or_says_what_to_do`, with
+      `uname` stubbed for Linux x86_64/amd64, aarch64/arm64, armv7l/armv6l, riscv64, Darwin arm64
+      and x86_64, FreeBSD, OpenBSD, MINGW64, Cygwin and SunOS.
+- [x] R4.2 Move the bucket upload and checksums out of `build-static.sh` into
+      `scripts/lib/release.sh` (D15), with no change in behaviour.
+      *Done:* `release.sh` holds the bucket and its public URL, `release_preflight` (empty
+      bucket, npx, `scripts/install.sh`), `release_checksum`, `release_warn_if_dirty`,
+      `release_upload TARBALL WORKDIR OBJECT...` and `release_upload_installer`.
+      `build-static.sh` sources it and keeps what is its own: which names a variant is published
+      under, the static artifact's aarch64 refusal, and the "what a new host runs" text, which
+      names `setup-host.sh`. The post-build checks stayed too: all of them (`assert_static`,
+      `assert_python_linkage`, `assert_glibc_copies`, the distro smoke test) are about ELF and
+      Linux, and the macOS build has its own (`otool -L`, R5.3). The script has no `--dry-run`,
+      so "no change" was checked with the stubbed release fixture instead: every run of the
+      `build_static_release` tests, before and after, printed the same output and made the same
+      `npx wrangler` calls (timestamps, temp paths and digests normalised). One detail did move:
+      the shared checks now run before the static-on-aarch64 refusal, so a run with both an
+      empty `--bucket` and that refusal reports the bucket first.
+- [x] R4.3 Documentation: the platform table in `docs/OPERATIONS.md` §1.1 (Linux x86_64,
+      Windows through WSL2, aarch64 and macOS not yet published, what is not supported and why),
+      a line in README §2, CHANGELOG entry.
+
+## R5 — aarch64 and macOS (after R1–R4 are in production)
+
+Each of these needs a build machine of that platform, which is why they wait.
+
+- [ ] R5.1 aarch64 Linux (D12): a CI job on `ubuntu-24.04-arm` runs
       `build-static.sh --target aarch64-unknown-linux-gnu --release`. Check that R1.1's PBS
       download, R1.2's loader name and libraries, and `assert_python_linkage` handle aarch64.
       Run R2.4's smoke images on arm64 (every one except `archlinux`, which has no arm64 image;
       Arch Linux ARM is untested, say so in `docs/OPERATIONS.md`).
-- [ ] R4.4 16 KB pages (D17): the build checks with `readelf -l` that every shipped ELF file's
+      **First** make `scripts/install.sh` map `aarch64`/`arm64` on Linux to
+      `feldspar-linux-aarch64.tar.gz` instead of R4.1's "not published yet" message: the smoke
+      test installs through the curl installer, so it fails on arm64 until then. Publish the
+      installer only after the aarch64 tarball, so the name exists when it is asked for. Update
+      the 32-bit ARM message, which says to wait for aarch64 releases, and the
+      `install_script` cases.
+- [ ] R5.2 16 KB pages (D17): the build checks with `readelf -l` that every shipped ELF file's
       `LOAD` segments are aligned to at least 16 KB, on aarch64. If PBS's files are not, find out
       whether a PBS build option or a relink fixes it; if neither does, document that 16 KB-page
       kernels run without Python. Once by hand: the R1.7 self-check on a Raspberry Pi 5 with
       its default kernel, or on Asahi.
-- [ ] R4.5 `scripts/build-macos.sh` (D15): build `sc-cli --features python` with
+- [ ] R5.3 `scripts/build-macos.sh` (D15): build `sc-cli --features python` with
       `SC_BUNDLE_PREFIX=/opt/feldspar` against the pinned PBS `aarch64-apple-darwin` build, the
       UI bundles as on Linux, and the same tree layout (`bin/`, `python/`, `ui/`, `plugins/`,
       `install.sh`, `VARIANT` = `macos`, no `setup-host.sh`). Rewrite the `libpython`
@@ -438,16 +563,21 @@ Containers and emulators always use the host's page size, so the build asserts i
       nothing outside `/usr/lib`, `/System` and the bundle is linked, then run the R1.7
       self-check from an unpacked copy at `/opt/feldspar`. R1.4's home lookup works the same
       (`current_exe`).
-- [ ] R4.6 A CI job on `macos-14` (Apple silicon) runs `build-macos.sh --release` and publishes
+      `--release` sources `scripts/lib/release.sh` (R4.2) for the uploads, so it publishes the
+      same way `build-static.sh` does.
+- [ ] R5.4 `scripts/install.sh` on macOS: Darwin `arm64` maps to `feldspar-macos-arm64.tar.gz`
+      instead of R4.1's "not published yet" message. No package manager step, sudo for `/opt`,
+      no `.glibc` handling, no `/etc/os-release` (the distribution check is Linux-only). R2.6's
+      tree swap works unchanged, except that its stop/start of systemd units does nothing there.
+      Extend the `install_script` platform test.
+- [ ] R5.5 A CI job on `macos-14` (Apple silicon) runs `build-macos.sh --release` and publishes
       `feldspar-macos-arm64.tar.gz` with its `.sha256`. Then `curl … | sh` on a clean Mac
       installs it, and `feldspar build-agent --once` reports the host ready without a Rust
       toolchain.
-- [ ] R4.7 Documentation:
-      - `docs/OPERATIONS.md`: a platform table (Linux x86_64 and aarch64, which distributions,
-        macOS arm64 for development and build hosts, Windows through WSL2, what is not
-        supported and why);
-      - README §4.2: the download as the first way to get `feldspar` on a Mac, building from
-        source as the second;
+- [ ] R5.6 Documentation:
+      - `docs/OPERATIONS.md` §1.1: the platform table's aarch64 and macOS rows become releases;
+        aarch64 joins the distribution table;
+      - README §2 and §4.2: the download as the first way to get `feldspar` on a Mac, building
+        from source as the second;
       - the build-host documentation: install with `curl … | sh` instead of building;
       - CHANGELOG entry.
-

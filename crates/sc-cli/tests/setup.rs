@@ -13,10 +13,10 @@ use std::process::Command;
 
 use sc_cli::config_file::ConfigFile;
 use sc_cli::setup::{
-    Choices, Database, DbKind, Family, Host, Merged, Mode, NODE_MAJOR, Prompter, RemotePostgres,
-    ServiceManager, SetupArgs, Step, browser_check_argv, describe, environment_section, execute,
-    merge_config, next_steps, npm_new_enough, parse_os_release, plan, resolve, systemd_unit,
-    ubuntu_like,
+    Choices, Database, DbKind, Family, Host, Merged, Mode, NODE_MAJOR, OPENRC_CONF, Prompter,
+    RemotePostgres, SYSTEMD_TLS_DROPIN, ServiceManager, SetupArgs, Step, browser_check_argv,
+    describe, environment_section, execute, merge_config, next_steps, npm_new_enough,
+    parse_os_release, plan, python_check_argv, resolve, systemd_unit, tls_setting, ubuntu_like,
 };
 
 fn args(list: &[&str]) -> SetupArgs {
@@ -28,6 +28,8 @@ fn host(family: Family, services: ServiceManager) -> Host {
     Host {
         family,
         os_name: "Test Linux".into(),
+        os_id: "testos".into(),
+        version_id: "1".into(),
         root: false,
         sudo: Some("sudo".into()),
         services,
@@ -57,11 +59,14 @@ fn alpine() -> Host {
 }
 
 /// `--binary` so the plan does not depend on where the test binary lives (a
-/// home directory, which a production plan rightly refuses).
+/// home directory, which a production plan rightly refuses) — nor on whether
+/// this machine happens to have a release installed there.
 fn server_choices(extra: &[&str], host: &Host) -> Choices {
     let mut list = vec!["--server", "--binary", "/opt/feldspar/bin/feldspar"];
     list.extend_from_slice(extra);
-    resolve(&args(&list), host, None).expect("resolve")
+    let mut choices = resolve(&args(&list), host, None).expect("resolve");
+    choices.bundled_python = false;
+    choices
 }
 
 /// Every command the plan runs, one line each, as `--dry-run` shows them.
@@ -165,7 +170,26 @@ fn os_release_decides_the_family() {
         parse_os_release("ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n").0,
         Family::Debian
     );
-    assert_eq!(parse_os_release("ID=fedora\n").0, Family::Other);
+    // The rest of the families, by ID and by the first ID_LIKE word that
+    // names one.
+    for (release, family) in [
+        ("ID=fedora\n", Family::Fedora),
+        (
+            "ID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\n",
+            Family::Fedora,
+        ),
+        ("ID=ol\nID_LIKE=\"fedora\"\n", Family::Fedora),
+        (
+            "ID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n",
+            Family::Suse,
+        ),
+        ("ID=\"opensuse-leap\"\n", Family::Suse),
+        ("ID=cachyos\nID_LIKE=arch\n", Family::Arch),
+        ("ID=garuda\nID_LIKE=arch\n", Family::Arch),
+        ("ID=gentoo\n", Family::Other),
+    ] {
+        assert_eq!(parse_os_release(release).0, family, "{release}");
+    }
 }
 
 /// `--server` on Debian: PostgreSQL from apt, the account, the role and
@@ -367,8 +391,8 @@ fn production_refuses_what_it_cannot_run() {
         .to_string();
     assert!(err.contains("systemd or OpenRC"), "{err}");
     // A distribution it does not know.
-    let fedora = host(Family::Other, ServiceManager::Systemd);
-    assert!(plan(&server_choices(&[], &fedora), &fedora, None).is_err());
+    let gentoo = host(Family::Other, ServiceManager::Systemd);
+    assert!(plan(&server_choices(&[], &gentoo), &gentoo, None).is_err());
     // Peer authentication: the local role has to be the service account.
     assert!(
         resolve(
@@ -651,19 +675,6 @@ fn npm_before_9_3_cannot_install_a_module() {
     assert!(ubuntu_like("ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n"));
     assert!(!ubuntu_like("ID=debian\n"));
     assert!(!ubuntu_like("ID=alpine\n"));
-}
-
-/// The Node line setup installs is the one `setup-host.sh` installs.
-#[test]
-fn the_node_major_agrees_with_setup_host() {
-    let script = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/setup-host.sh"),
-    )
-    .unwrap();
-    assert!(
-        script.contains(&format!("\nNODE_MAJOR={NODE_MAJOR}\n")),
-        "setup-host.sh installs a different Node.js line from setup.rs's NODE_MAJOR"
-    );
 }
 
 /// `--server` on a bare Debian: Node from NodeSource (keyring, source, pin),
@@ -986,4 +997,211 @@ fn the_browser_check_reports_and_never_fails() {
     assert_eq!(argv[..5], ["su", "-s", "/bin/sh", "feldspar", "-c"]);
     assert!(argv[5].contains("--no-sandbox") && argv[5].contains("rm -rf \"$d\""));
     fs::remove_dir_all(&dir).ok();
+}
+
+/// A distribution of `family` with this `ID`, systemd, and nothing installed.
+fn bare_on(family: Family, os_id: &str, version_id: &str) -> Host {
+    Host {
+        os_id: os_id.into(),
+        version_id: version_id.into(),
+        ..bare(host(family, ServiceManager::Systemd))
+    }
+}
+
+/// `--server` on Fedora/RHEL, openSUSE and Arch: its package
+/// manager, PostgreSQL's first-run setup where the package leaves it undone
+/// (and only when it is), Node.js and Chromium from the distribution, and
+/// `useradd` for the account.
+#[test]
+fn each_family_gets_its_own_packages_database_setup_and_account() {
+    let useradd = "useradd --system --user-group --home-dir /var/lib/feldspar --shell \
+                   /usr/sbin/nologin feldspar";
+    let cases: [(Host, &[&str]); 6] = [
+        (
+            bare_on(Family::Fedora, "fedora", "44"),
+            &[
+                "dnf install -y nodejs npm",
+                "dnf install -y chromium",
+                "dnf install -y postgresql-server postgresql",
+                "postgresql-setup --initdb",
+                "systemctl enable --now postgresql",
+                useradd,
+            ],
+        ),
+        (
+            bare_on(Family::Fedora, "almalinux", "10.0"),
+            &["dnf install -y epel-release", "dnf install -y chromium"],
+        ),
+        (
+            bare_on(Family::Fedora, "rhel", "10.0"),
+            &[
+                "dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm",
+                "dnf install -y chromium",
+            ],
+        ),
+        (
+            bare_on(Family::Suse, "opensuse-tumbleweed", "20261030"),
+            &[
+                "zypper --non-interactive install nodejs-default npm-default",
+                "zypper --non-interactive install chromium",
+                "zypper --non-interactive install postgresql-server postgresql",
+                "systemctl enable --now postgresql",
+                useradd,
+            ],
+        ),
+        (
+            bare_on(Family::Suse, "opensuse-leap", "16.0"),
+            &["zypper --non-interactive install nodejs22 npm22"],
+        ),
+        (
+            bare_on(Family::Arch, "arch", ""),
+            &[
+                "pacman -Syu --needed --noconfirm nodejs npm",
+                "pacman -Syu --needed --noconfirm chromium",
+                "pacman -Syu --needed --noconfirm postgresql",
+                "systemctl enable --now postgresql",
+                useradd,
+            ],
+        ),
+    ];
+    for (host, wanted) in cases {
+        let steps = plan(&server_choices(&[], &host), &host, None).expect("plan");
+        let ran = commands(&steps);
+        for want in wanted {
+            assert!(
+                ran.iter().any(|c| c == want),
+                "{} {}: no `{want}` in\n{}",
+                host.os_id,
+                host.version_id,
+                ran.join("\n")
+            );
+        }
+        assert!(
+            !ran.iter()
+                .any(|c| c.contains("apt-get") || c.contains("adduser")),
+            "{}: {ran:#?}",
+            host.os_id
+        );
+        // A systemd unit, as on Debian.
+        assert!(
+            contents(written(&steps, "/etc/systemd/system/feldspar.service"))
+                .contains("ExecStart=/opt/feldspar/bin/feldspar serve --environment production")
+        );
+    }
+
+    // The first-run setups are skipped where the data directory exists.
+    let unless = |host: &Host, cmd: &str| -> String {
+        plan(&server_choices(&[], host), host, None)
+            .unwrap()
+            .into_iter()
+            .find_map(|s| match s {
+                Step::Run {
+                    argv,
+                    unless: Some(probe),
+                    ..
+                } if argv.join(" ").contains(cmd) => Some(probe.join(" ")),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no guarded `{cmd}`"))
+    };
+    assert_eq!(
+        unless(&bare_on(Family::Fedora, "fedora", "44"), "postgresql-setup"),
+        "test -f /var/lib/pgsql/data/PG_VERSION"
+    );
+    let arch = bare_on(Family::Arch, "arch", "");
+    assert_eq!(
+        unless(&arch, "initdb"),
+        "test -f /var/lib/postgres/data/PG_VERSION"
+    );
+    // Arch's initdb is told peer authentication: its default is `trust`.
+    assert!(
+        commands(&plan(&server_choices(&[], &arch), &arch, None).unwrap())
+            .iter()
+            .any(|c| c.starts_with("su -s /bin/sh postgres -c") && c.contains("--auth-local=peer")),
+    );
+}
+
+/// A binary with the release's bundled CPython beside it gets its HTTPS
+/// certificates checked as the service account, before the service file is
+/// written and read; a source build (no `python/` beside it) does not.
+#[test]
+fn the_bundled_python_has_its_certificates_checked_before_the_service_starts() {
+    let deb = debian();
+    let mut c = server_choices(&[], &deb);
+    let without: Vec<Step> = plan(&c, &deb, None).unwrap();
+    assert!(
+        !without
+            .iter()
+            .any(|s| matches!(s, Step::CheckPythonTls { .. })),
+        "{without:#?}"
+    );
+
+    c.bundled_python = true;
+    let steps = plan(&c, &deb, None).unwrap();
+    let check = steps
+        .iter()
+        .position(|s| matches!(s, Step::CheckPythonTls { .. }))
+        .expect("a certificate check");
+    assert_eq!(
+        steps[check],
+        Step::CheckPythonTls {
+            binary: "/opt/feldspar/bin/feldspar".into(),
+            user: "feldspar".into(),
+            file: SYSTEMD_TLS_DROPIN.into(),
+            openrc: false,
+        }
+    );
+    let account = steps
+        .iter()
+        .position(|s| matches!(s, Step::Run { argv, .. } if argv[0] == "adduser"))
+        .unwrap();
+    let reload = steps
+        .iter()
+        .position(
+            |s| matches!(s, Step::Run { argv, .. } if argv.join(" ") == "systemctl daemon-reload"),
+        )
+        .unwrap();
+    assert!(account < check && check < reload, "{steps:#?}");
+
+    // Under OpenRC the setting goes where OpenRC sources it.
+    let alp = alpine();
+    let mut c = server_choices(&[], &alp);
+    c.bundled_python = true;
+    assert!(
+        plan(&c, &alp, None)
+            .unwrap()
+            .contains(&Step::CheckPythonTls {
+                binary: "/opt/feldspar/bin/feldspar".into(),
+                user: "feldspar".into(),
+                file: OPENRC_CONF.into(),
+                openrc: true,
+            })
+    );
+
+    // What it runs: the self-check as the account, with the caller's
+    // certificate settings removed and, on the retry, one bundle named.
+    let argv = python_check_argv(
+        Path::new("/opt/feldspar/bin/feldspar"),
+        "feldspar",
+        Some("/etc/pki/tls/certs/ca-bundle.crt"),
+    );
+    assert_eq!(argv[..5], ["su", "-s", "/bin/sh", "feldspar", "-c"]);
+    assert_eq!(
+        argv[5],
+        "cd / && env -u SSL_CERT_FILE -u SSL_CERT_DIR \
+         SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt /opt/feldspar/bin/feldspar python check"
+    );
+    let dropin = tls_setting("/etc/ssl/ca-bundle.pem", false);
+    assert!(dropin.contains("[Service]\nEnvironment=SSL_CERT_FILE=/etc/ssl/ca-bundle.pem\n"));
+    assert!(
+        tls_setting("/etc/ssl/ca-bundle.pem", true)
+            .contains("export SSL_CERT_FILE=\"/etc/ssl/ca-bundle.pem\"")
+    );
+    let mut shown = Vec::new();
+    describe(&steps, &deb, &mut shown);
+    let shown = String::from_utf8(shown).unwrap();
+    assert!(
+        shown.contains("python check") && shown.contains(SYSTEMD_TLS_DROPIN),
+        "{shown}"
+    );
 }

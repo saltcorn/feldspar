@@ -1,68 +1,47 @@
 #!/usr/bin/env bash
 #
-# Build a self-contained `feldspar` release that can be copied to another VM.
+# Build the `feldspar` release: the tarball `scripts/install.sh` downloads, and
+# that an operator can download and install by hand (docs/OPERATIONS.md §2).
 #
-# What "static" means here, and why
-# ---------------------------------
-# The artifact is a **statically linked glibc binary** (`x86_64-unknown-linux-gnu`
-# with `-C target-feature=+crt-static`, which rustc emits as a static-PIE). One
-# file, no shared-library dependencies, no interpreter — so it runs on Debian and
-# on Alpine from the same tarball, which is what this is for.
+# What it is
+# ----------
+# One artifact per architecture, dynamically linked, built on Debian 12
+# (bookworm, glibc 2.36) with `--features python` against a **bundled** CPython
+# 3.13 — python-build-standalone, pinned below by release and SHA-256 — that
+# ships in the tarball as `python/`. The binary finds it through
+# `$ORIGIN/../python/lib`, so the host needs nothing Python-related, and pip runs
+# that same interpreter. What comes from the host is glibc ≥ 2.36, which every
+# supported distribution but Alpine has. For Alpine (and older glibc) the
+# tarball also carries bookworm's glibc in `glibc/` and `.glibc` copies of the
+# two executables, whose loader and DT_RPATH point there
+# (`scripts/lib/python-bundle.sh`); the tarball's `install.sh` picks one.
 #
-# The obvious way to get an Alpine-compatible binary is a musl target, and that
-# way is closed: `deno_core` links **V8**, and V8 reaches this build as
-# `rusty_v8`'s prebuilt static archive, which upstream publishes for
-# `*-unknown-linux-gnu`, `*-apple-darwin` and Windows only — there is no musl
-# archive, and Deno itself ships no musl build for the same reason. Building V8
-# from source (`V8_FROM_SOURCE=1`) is hours of GN/ninja against a glibc sysroot,
-# unsupported on musl, and would have to be repeated for every V8 bump. So the
-# musl targets are refused by name below, with that message, rather than failing
-# forty minutes into a build.
+# Why there is no musl build: `deno_core` links **V8**, and V8 reaches this build
+# as `rusty_v8`'s prebuilt static archive, which upstream publishes for
+# `*-unknown-linux-gnu`, `*-apple-darwin` and Windows only. Building V8 from
+# source against musl is not a supported configuration, so the musl targets are
+# refused by name below rather than failing forty minutes into a build.
 #
-# Static glibc has one well-known sharp edge — `getaddrinfo` and NSS — and this
-# build does not rely on getting it right. `nss_files` and `nss_dns` have been
-# inside libc since glibc 2.34, but any *other* module on the `hosts:` line of
-# /etc/nsswitch.conf is still a `dlopen` of a shared object linked against the
-# shared glibc, which loads a second complete `libc.so.6` into this binary and
-# kills it. Debian and Ubuntu put `myhostname` on that line by default, so this
-# is the common case, not the exotic one — and it is invisible until the process
-# resolves its first hostname, which for this server is the ACME CA, seconds
-# after TLS is switched on. `crates/sc-dns` therefore resolves names in Rust and
-# `crates/sc-cli/build.rs` links it in front of glibc's resolver; nothing here
-# calls NSS. See README §4.1.
-#
-# The residual limit is `dlopen`, which a static binary cannot do: native Node
-# addons (`.node` files loaded through `deno_napi`) will not load. Nothing in the
-# server needs one; an application that ships one does.
-#
-# The second artifact: Debian 13 with Python
-# ------------------------------------------
-# The same `dlopen` limit is why the static binary has no Python. PyO3 embeds
-# CPython by linking `libpython`; under `+crt-static` that link fails outright
-# (Debian's `libpython3.x.a` is not position-independent), and even a binary that
-# linked could not load CPython's own `lib-dynload` extensions or any compiled
-# wheel. So Python needs a dynamically linked binary, and that is the second
-# variant this script builds:
-#
-#   debian13-python   no `+crt-static`, `--features python`, built on Debian 13
-#                     (trixie) against `libpython3.13`. V8 and every Rust crate
-#                     are still linked in; what comes from the host is glibc and
-#                     `libpython3.13.so.1.0`. It runs on Debian 13 with the
-#                     `libpython3.13` package installed — which its install.sh
-#                     sees to — and is not meant for anything else.
-#
-# `--variant static|python|both` picks; both is the default, and `--release`
-# publishes each one that was built.
+# Names are resolved by `crates/sc-dns`, in Rust, rather than by glibc's NSS, so
+# /etc/nsswitch.conf does not apply (README §4.1).
 #
 # What it produces
 # ----------------
-#   dist/feldspar-<version>-<target>.tar.gz                   the static artifact
-#   dist/feldspar-<version>-<target>-debian13-python.tar.gz   the Python one
-#   ...and a .sha256 beside each
+#   dist/feldspar-<version>-<target>.tar.gz   and a .sha256 beside it
+#
+# and, with `--release`, publishes it under names with no version but with the
+# platform, each from the build machine of its own architecture:
+#
+#   feldspar-linux-<arch>.tar.gz   the release
+#   feldspar.tar.gz                (x86_64) the same file, under the name the
+#                                  first releases had, which existing scripts
+#                                  and hosts fetch
 #
 # unpacking to the **install prefix** (`/opt/feldspar` by default):
 #
 #   /opt/feldspar/bin/feldspar        the binary
+#   /opt/feldspar/python/             the bundled CPython it links
+#   /opt/feldspar/glibc/              glibc for bin/*.glibc, for musl hosts
 #   /opt/feldspar/ui/admin/dist       the admin SPA it serves
 #   /opt/feldspar/ui/ide/dist         the file-store IDE it serves
 #   /opt/feldspar/ui/saltcorn-ui/dist Saltcorn UI's view runtime and assets
@@ -70,18 +49,17 @@
 #   /opt/feldspar/ui/analytics/dist   the Analytics UI, served under /analytics/
 #   /opt/feldspar/plugins/            the modules it ships with, installable in
 #                                     one click from Settings -> Modules
-#   /opt/feldspar/install.sh          copies the tree into place
-#   /opt/feldspar/setup-host.sh       sets the host up to run it (packages,
-#                                     database, config file, systemd unit)
+#   /opt/feldspar/install.sh          installs the tree by swapping it in
+#                                     (scripts/lib/install-tree.sh)
+#   /opt/feldspar/MANIFEST, LIBC      written by it: what it installed, and
+#                                     which glibc the install runs on
 #
-# so that a machine with nothing on it needs three commands and no checkout:
-# unpack, `./install.sh`, `/opt/feldspar/setup-host.sh`.
+# A new host then runs `sudo feldspar setup --server` (crates/sc-cli/src/setup.rs).
 #
-# The prefix is not cosmetic: `crates/sc-cli/build.rs` compiles the two bundle
-# paths into the binary, and the IDE's has no run-time flag to override it. This
-# script therefore builds with `SC_BUNDLE_PREFIX` set to the prefix the artifact
-# will be installed at, so the paths inside the binary describe the target
-# machine. Install somewhere else and pass `--prefix` when building.
+# The prefix is not cosmetic: `crates/sc-cli/build.rs` compiles the bundle paths
+# into the binary, and the IDE's has no run-time flag to override it. This script
+# therefore builds with `SC_BUNDLE_PREFIX` set to the prefix the artifact will be
+# installed at. Install somewhere else and pass `--prefix` when building.
 #
 # Usage
 # -----
@@ -91,14 +69,16 @@
 #   scripts/build-static.sh --target aarch64-unknown-linux-gnu
 #   scripts/build-static.sh --prefix /usr/local/feldspar
 #   scripts/build-static.sh --no-ui                  # no Node toolchain needed
-#   scripts/build-static.sh --deploy root@vm         # ...and install it there over ssh
 #   scripts/build-static.sh --release                # ...and publish it to the R2 bucket
-#   scripts/build-static.sh --variant python         # only the Debian 13 + Python one
-#   scripts/build-static.sh --deploy vm --deploy-variant python
 #
 set -euo pipefail
 
-readonly REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly REPO_ROOT
+# The upload half of --release, shared with the other platforms' build scripts:
+# the bucket, checksums and the uploads (TODO-portable-release D15).
+# shellcheck source-path=SCRIPTDIR source=lib/release.sh
+source "${REPO_ROOT}/scripts/lib/release.sh"
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -118,37 +98,29 @@ STRIP=1
 VERIFY=1
 RUST_VERSION="1.97"
 NODE_VERSION="22.14.0"
-DEPLOY_HOST=""
-REMOTE_TMP="/tmp"
-SSH_OPTS=()
 RELEASE=0
-# The bucket the published artifact lives in. The objects inside it are named
-# without a version — `feldspar.tar.gz` — because they are the *latest* build:
-# whatever fetches them wants the current one and has no version to ask for.
-readonly DEFAULT_R2_BUCKET="feldspar-latest-static"
+# The bucket the published artifact lives in (scripts/lib/release.sh).
 R2_BUCKET="${DEFAULT_R2_BUCKET}"
-R2_OBJECT="feldspar.tar.gz"
-# Which artifacts to build (`--variant`), and which of them `--deploy` installs.
-VARIANT_ARG="both"
-DEPLOY_VARIANT=""
-# The Python variant, which is one Debian release and one CPython: the suite it
-# is built on fixes both the glibc it needs and the `libpython` soname it asks
-# for, and the three names below have to agree with that suite.
-readonly PYTHON_VARIANT="debian13-python"
-readonly PYTHON_SUITE="trixie"
-readonly PYTHON_VERSION="3.13"
-readonly PYTHON_LIB="libpython3.13.so.1.0"
-readonly PYTHON_PACKAGE="libpython3.13"
-# The packages a Python-capable host wants beyond the library: an interpreter of
-# the same minor version for `pip` (--python-bin) and the venv module Debian
-# splits out of it. setup-host.sh installs these when it sees this variant.
-readonly PYTHON_HOST_PACKAGES="${PYTHON_PACKAGE} python3 python3-venv"
-# What that bucket is served as, and what the README tells an operator to
-# download. Printed after a publish so that what was uploaded and what people
-# fetch are visibly the same thing. A --bucket somewhere else has no such URL and
-# is not given one.
-readonly R2_PUBLIC_BASE="https://feldspar-latest-static.saltcorn.com"
-
+# The name the first releases were published under, before names carried a
+# platform. Scripts and hosts outside this repository still fetch it, so an
+# x86_64 release is published under it too. It has always been an x86_64
+# tarball, so only an x86_64 build publishes it.
+readonly LEGACY_OBJECT="feldspar.tar.gz"
+# The base every build runs on: its glibc (2.36) is the oldest a `linux` binary
+# asks of its host (D2).
+readonly BUILD_SUITE="bookworm"
+readonly BUILD_GLIBC="2.36"
+# The bundled CPython: python-build-standalone, pinned by release tag and the
+# SHA-256 of each architecture's `install_only_stripped` tarball (D7). Taking a
+# CPython security release is a change to these lines. The minor version stays
+# 3.13 (D4): environments made by Debian 13's python3.13 keep working, and a
+# new minor version is a release of its own.
+readonly PBS_RELEASE="20261026"
+readonly PBS_PYTHON="3.13.18"
+readonly PBS_SHA256_X86_64="df15fe60d3ff55bf9dcf25824b5572756bb8816ff93865a273d3301d7066a8b7"
+readonly PBS_SHA256_AARCH64="578d9da1983463ffb0c8c98ab0da2f18177f44069328eb0af847860c1eb05c3e"
+readonly PYTHON_VERSION="${PBS_PYTHON%.*}"
+readonly PYTHON_LIB="libpython${PYTHON_VERSION}.so.1.0"
 # The targets that have a prebuilt V8 archive and a glibc to link statically.
 readonly SUPPORTED_TARGETS=(
     "x86_64-unknown-linux-gnu"
@@ -157,29 +129,17 @@ readonly SUPPORTED_TARGETS=(
 
 usage() {
     cat <<EOF
-Build a self-contained, statically linked feldspar binary and package it for
-installation on another machine.
+Build the feldspar release tarball: dynamically linked on Debian 12
+(${BUILD_SUITE}), with Python ${PBS_PYTHON} bundled. It runs on any glibc >= ${BUILD_GLIBC}
+distribution, and on Alpine with the glibc it also bundles.
 
 Usage: scripts/build-static.sh [options]
-
-Artifacts
-      --variant V       Which artifacts to build (default both):
-                          static  statically linked, no Python, runs anywhere
-                          python  dynamically linked on Debian 13 (${PYTHON_SUITE})
-                                  with Python support; needs ${PYTHON_PACKAGE}
-                                  on the host, and runs on Debian 13 only
-                          both    one of each
-                        A static binary cannot embed CPython, which is why the
-                        Python-capable server is a second artifact.
 
 Target selection
   -t, --target TRIPLE   Rust target triple. Supported:
                           x86_64-unknown-linux-gnu   (default)
-                          aarch64-unknown-linux-gnu
-                        Both are built with +crt-static, which produces a binary
-                        with no dynamic dependencies: it runs on glibc distributions
-                        (Debian, Ubuntu, RHEL, ...) and on musl ones (Alpine) alike.
-                        The musl *targets* are not supported — V8 has no musl
+                          aarch64-unknown-linux-gnu  (on an aarch64 machine)
+                        The musl targets are not supported — V8 has no musl
                         prebuilt — and are rejected with an explanation.
 
 Build environment
@@ -189,11 +149,10 @@ Build environment
                         installed.
       --native          Build with this machine's toolchain — the default when
                         docker/buildx is not available. Needs: rustup target
-                        ${TARGET}, clang/libclang, cmake, a C compiler, libz.a
-                        (zlib1g-dev) and, unless --no-ui, node + npm. The python
-                        variant also needs python${PYTHON_VERSION} with python3-dev,
-                        and should only be built natively on Debian 13: it links
-                        this machine's glibc and libpython.
+                        ${TARGET}, clang/libclang, cmake, a C compiler, curl,
+                        patchelf and, unless --no-ui, node + npm. It bundles this
+                        machine's glibc: built natively anywhere newer than
+                        Debian 12, it needs that newer glibc on every host.
       --rust-version V  Rust image tag for --docker (default ${RUST_VERSION}).
       --node-version V  Node version fetched by --docker (default ${NODE_VERSION}).
   -j, --jobs N          Cargo parallelism. Lower it if the linker runs the machine
@@ -201,47 +160,25 @@ Build environment
 
 Packaging
       --prefix PATH     Absolute directory the artifact will be installed to.
-                        Compiled into the binary as the admin/IDE bundle location.
+                        Compiled into the binary as the bundle location.
                         (default ${PREFIX})
   -o, --output DIR      Where to write the tarball (default ${OUTPUT_DIR}).
       --no-ui           Skip the five front-end bundles (SC_BUILD_ADMIN=0).
                         The server then serves the API only, or a --static-dir
                         you point at a bundle yourself.
       --no-strip        Keep debug symbols (the binary is ~2x larger).
-      --no-verify       Skip the post-build checks (linkage, and a smoke run in
-                        Debian and Alpine containers — Debian 13 for python).
-
-Deployment
-      --deploy [USER@]HOST
-                        After packaging, copy the tarball to HOST over ssh, unpack
-                        it there and run its install.sh, so the artifact ends up
-                        installed at ${PREFIX} on that machine. HOST is anything
-                        ssh accepts, a ~/.ssh/config alias included. The remote
-                        side runs install.sh under sudo unless the login is root.
-                        A running feldspar.service is stopped just before the
-                        install and started again after it; a unit that is absent
-                        or already stopped is left alone.
-      --ssh-opt OPT     Extra option for the ssh invocations, e.g. --ssh-opt -p2222
-                        or --ssh-opt -oStrictHostKeyChecking=no. Repeatable; each
-                        occurrence is one argv element, so write a flag and its
-                        value together (-p2222, not -p 2222).
-      --remote-tmp DIR  Directory on the remote to copy and unpack into
-                        (default ${REMOTE_TMP}). Removed again afterwards.
-      --deploy-variant V
-                        Which built artifact --deploy installs: static or python
-                        (default static when it was built, python otherwise).
+      --no-verify       Skip the post-build checks (linkage, and an install in
+                        a container of each supported distribution).
 
 Publishing
-      --release         After packaging, upload each tarball and its .sha256 to the
-                        Cloudflare R2 bucket ${R2_BUCKET}. The object names
-                        carry no version, so each release overwrites the last and
-                        the download URLs never change:
-                          ${R2_PUBLIC_BASE}/${R2_OBJECT}
-                          ${R2_PUBLIC_BASE}/feldspar-${PYTHON_VARIANT}.tar.gz
-                        (and a .sha256 beside each), and then
-                        scripts/install.sh as ${R2_PUBLIC_BASE}/install.sh,
-                        the curl-to-sh installer that downloads the first.
-                        Runs
+      --release         After packaging, upload the tarball and its .sha256 to the
+                        Cloudflare R2 bucket ${R2_BUCKET} as
+                          ${R2_PUBLIC_BASE}/feldspar-linux-<arch>.tar.gz
+                        and, from an x86_64 build, also as
+                          ${R2_PUBLIC_BASE}/${LEGACY_OBJECT}
+                        (and a .sha256 beside each), then scripts/install.sh as
+                        ${R2_PUBLIC_BASE}/install.sh. The names carry no
+                        version, so each release overwrites the last. Runs
                         \`npx wrangler r2 object put --remote\`, so it needs npx on
                         PATH and a wrangler login with access to the bucket.
       --bucket NAME     Upload to this bucket instead (default ${R2_BUCKET}).
@@ -270,11 +207,12 @@ while [[ $# -gt 0 ]]; do
         --no-ui)           BUILD_UI=0; shift ;;
         --no-strip)        STRIP=0; shift ;;
         --no-verify)       VERIFY=0; shift ;;
-        --variant)         need_value "$@"; VARIANT_ARG="$2"; shift 2 ;;
-        --deploy)          need_value "$@"; DEPLOY_HOST="$2"; shift 2 ;;
-        --deploy-variant)  need_value "$@"; DEPLOY_VARIANT="$2"; shift 2 ;;
-        --ssh-opt)         need_value "$@"; SSH_OPTS+=("$2"); shift 2 ;;
-        --remote-tmp)      need_value "$@"; REMOTE_TMP="$2"; shift 2 ;;
+        # Removed options, named so a script that still passes one hears why.
+        --variant|--deploy|--deploy-variant|--ssh-opt|--remote-tmp)
+            echo "error: $1 is gone: there is one artifact now (with Python), and it" \
+                 "is installed with its own install.sh or scripts/install.sh" \
+                 "(docs/OPERATIONS.md §2)" >&2
+            exit 2 ;;
         --release)         RELEASE=1; shift ;;
         --bucket)          need_value "$@"; R2_BUCKET="$2"; shift 2 ;;
         -h|--help)         usage; exit 0 ;;
@@ -293,9 +231,8 @@ error: ${TARGET} is not supported.
   Building V8 from source against musl is not a supported configuration.
 
   You do not need a musl target for Alpine: the default
-  x86_64-unknown-linux-gnu build is linked with +crt-static, so it has no
-  interpreter and no shared libraries, and runs on Alpine unchanged. Run
-  scripts/build-static.sh with no --target at all.
+  x86_64-unknown-linux-gnu build carries its own glibc, which its install.sh
+  uses on a musl host. Run scripts/build-static.sh with no --target at all.
 EOF
         exit 2
         ;;
@@ -330,47 +267,16 @@ fi
 
 [[ "${PREFIX}" = /* ]] || { echo "error: --prefix must be absolute, got ${PREFIX}" >&2; exit 2; }
 
-case "${VARIANT_ARG}" in
-    both)          VARIANTS=(static python) ;;
-    static|python) VARIANTS=("${VARIANT_ARG}") ;;
-    *) echo "error: --variant must be static, python or both, got ${VARIANT_ARG}" >&2; exit 2 ;;
+# The architecture as published names spell it.
+case "${TARGET}" in
+    x86_64-*)  TARGET_ARCH="x86_64" ;;
+    aarch64-*) TARGET_ARCH="aarch64" ;;
+    *)         TARGET_ARCH="${TARGET%%-*}" ;;
 esac
-has_variant() { [[ " ${VARIANTS[*]} " == *" $1 "* ]]; }
 
-# Everything about --deploy that can be known before the build is checked before
-# the build: an option that cannot work, or a missing ssh, is otherwise found out
-# at the end of an hour of compiling V8, with the artifact built and nowhere to
-# put it.
-if [[ -n "${DEPLOY_HOST}" ]]; then
-    [[ "${REMOTE_TMP}" = /* ]] ||
-        { echo "error: --remote-tmp must be absolute, got ${REMOTE_TMP}" >&2; exit 2; }
-    command -v ssh >/dev/null ||
-        { echo "error: --deploy needs ssh, which is not on PATH" >&2; exit 1; }
-    if [[ -z "${DEPLOY_VARIANT}" ]]; then
-        DEPLOY_VARIANT="${VARIANTS[0]}"
-    fi
-    case "${DEPLOY_VARIANT}" in
-        static|python) ;;
-        *) echo "error: --deploy-variant must be static or python, got ${DEPLOY_VARIANT}" >&2; exit 2 ;;
-    esac
-    has_variant "${DEPLOY_VARIANT}" ||
-        { echo "error: --deploy-variant ${DEPLOY_VARIANT} is not being built (--variant ${VARIANT_ARG})" >&2; exit 2; }
-elif [[ -n "${DEPLOY_VARIANT}" ]]; then
-    echo "error: --deploy-variant without --deploy" >&2; exit 2
-fi
-
-# Likewise for --release: an absent npx, or a wrangler that cannot see the bucket,
-# is worth finding out now and not after the compile. The bucket listing is a
-# warning rather than an error — it costs a network round trip that can fail for
-# reasons that have nothing to do with the upload — but a missing npx cannot work
-# at all.
-if [[ ${RELEASE} -eq 1 ]]; then
-    [[ -n "${R2_BUCKET}" ]] || { echo "error: --bucket must not be empty" >&2; exit 2; }
-    command -v npx >/dev/null ||
-        { echo "error: --release needs npx (node), which is not on PATH" >&2; exit 1; }
-    [[ -f "${REPO_ROOT}/scripts/install.sh" ]] ||
-        { echo "error: scripts/install.sh is missing; --release publishes it" >&2; exit 1; }
-fi
+# An empty bucket, an absent npx or a missing installer (scripts/lib/release.sh)
+# is worth finding out now and not after the compile.
+[[ ${RELEASE} -eq 1 ]] && release_preflight
 
 # A container build needs both docker and its buildx plugin; `docker build` alone
 # cannot run the Dockerfile. Deciding here rather than inside `build_docker` keeps
@@ -383,26 +289,28 @@ if [[ "${MODE}" == "auto" ]]; then
     fi
 fi
 
-# A native Python build links *this* machine's libpython and glibc, so the
-# artifact is only what its name says when this machine is Debian 13 with
-# CPython 3.13. The interpreter's version is checked (a 3.11 here would produce a
-# binary asking for libpython3.11 under a debian13 name); the distribution is a
-# warning, since a container or a derivative can be the right one without
-# saying so in /etc/os-release.
-if [[ "${MODE}" == "native" ]] && has_variant python; then
-    command -v python3 >/dev/null ||
-        { echo "error: the python variant needs python3 (and python3-dev) here, or --docker" >&2; exit 1; }
-    found_python="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
-    if [[ "${found_python}" != "${PYTHON_VERSION}" ]]; then
-        cat >&2 <<EOF
-error: the python variant links libpython ${PYTHON_VERSION}, and this machine's python3
-       is ${found_python:-unusable}. Build it with --docker (a Debian 13 container),
-       or pass --variant static.
-EOF
-        exit 1
-    fi
-    if ! grep -qs '^VERSION_ID="13"' /etc/os-release; then
-        echo "warning: this is not Debian 13; a native python build links this machine's glibc" >&2
+# The bundled CPython for this target: its download and the SHA-256 it must have.
+case "${TARGET}" in
+    x86_64-*)  PBS_SHA256="${PBS_SHA256_X86_64}" ;;
+    aarch64-*) PBS_SHA256="${PBS_SHA256_AARCH64}" ;;
+esac
+readonly PBS_SHA256
+readonly PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/cpython-${PBS_PYTHON}+${PBS_RELEASE}-${TARGET}-install_only_stripped.tar.gz"
+readonly PYTHON_BUNDLE="${REPO_ROOT}/scripts/lib/python-bundle.sh"
+
+# A native build links and bundles *this* machine's glibc, so the floor it puts
+# on every host is this machine's glibc, not bookworm's. Still a correct
+# artifact for hosts at least that new, so a warning; the tools it cannot work
+# without are errors, before the build rather than after it.
+if [[ "${MODE}" == "native" ]]; then
+    for tool in curl patchelf ldd sha256sum; do
+        command -v "${tool}" >/dev/null ||
+            { echo "error: a --native build needs ${tool} here (or --docker)" >&2; exit 1; }
+    done
+    found_glibc="$(ldd --version 2>/dev/null | sed -n '1s/.* \([0-9][0-9.]*\)$/\1/p')"
+    if [[ -n "${found_glibc}" && "${found_glibc}" != "${BUILD_GLIBC}" ]]; then
+        echo "warning: this machine has glibc ${found_glibc}; a native build needs" \
+             "that on every host, where the --docker build needs ${BUILD_GLIBC}" >&2
     fi
 fi
 
@@ -436,52 +344,25 @@ if [[ -n "${GIT_DESC}" ]]; then
 fi
 export SC_BUILD_TIME SC_BUILD_COMMIT
 
-BASE_NAME="feldspar-${VERSION}${GIT_DESC:+-${GIT_DESC}}-${TARGET}"
+NAME="feldspar-${VERSION}${GIT_DESC:+-${GIT_DESC}}-${TARGET}"
 STAGE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/feldspar-package.XXXXXX")"
 trap 'rm -rf "${STAGE_ROOT}"' EXIT
-
-# Each variant has its own tarball name, bucket object and staging directory.
-# `select_variant` sets the globals the build, package and publish steps read:
-# VARIANT, NAME, OBJECT, STAGE, BINARY and TARBALL.
-select_variant() {
-    VARIANT="$1"
-    case "${VARIANT}" in
-        static)
-            NAME="${BASE_NAME}"
-            OBJECT="${R2_OBJECT}"
-            ;;
-        python)
-            NAME="${BASE_NAME}-${PYTHON_VARIANT}"
-            OBJECT="${R2_OBJECT%.tar.gz}-${PYTHON_VARIANT}.tar.gz"
-            ;;
-    esac
-    STAGE="${STAGE_ROOT}/${VARIANT}"
-    BINARY="${STAGE}/bin/feldspar"
-    TARBALL="${OUTPUT_DIR}/${NAME}.tar.gz"
-    mkdir -p "${STAGE}"
-}
+STAGE="${STAGE_ROOT}/tree"
+BINARY="${STAGE}/bin/feldspar"
+TARBALL="${OUTPUT_DIR}/${NAME}.tar.gz"
+mkdir -p "${STAGE}"
+# Every name the tarball is published under; the first is the one a new host
+# is pointed at.
+OBJECTS=("feldspar-linux-${TARGET_ARCH}.tar.gz")
+[[ "${TARGET_ARCH}" == x86_64 ]] && OBJECTS+=("${LEGACY_OBJECT}")
+OBJECT="${OBJECTS[0]}"
 
 log() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 
 log "feldspar ${VERSION}${GIT_DESC:+ (${GIT_DESC})}, built ${SC_BUILD_TIME}"
-log "target ${TARGET}, ${MODE} build, install prefix ${PREFIX}, variants: ${VARIANTS[*]}"
+log "target ${TARGET}, ${MODE} build, install prefix ${PREFIX}"
 [[ "${MODE}" == "native" ]] && ! command -v docker >/dev/null &&
     log "note: no docker/buildx here, so this is a build with the local toolchain"
-
-# `${SSH_OPTS[@]}` on its own would be an unbound variable under `set -u` when no
-# --ssh-opt was given, on bash before 4.4; this expansion is empty there instead.
-ssh_run() { ssh ${SSH_OPTS[@]+"${SSH_OPTS[@]}"} "$@"; }
-
-if [[ -n "${DEPLOY_HOST}" ]]; then
-    log "deploying the ${DEPLOY_VARIANT} artifact to ${DEPLOY_HOST} when the build finishes"
-    # A connection now, so a wrong host or a missing key shows up before the
-    # compile rather than after it. A warning and not an error, because a login
-    # that legitimately wants a passphrase looks the same from here as a broken
-    # one; BatchMode is for the probe only, since a probe that blocks on a prompt
-    # at the start of an unattended build is worse than one that fails.
-    ssh_run -o BatchMode=yes -o ConnectTimeout=10 "${DEPLOY_HOST}" true 2>/dev/null ||
-        log "warning: ${DEPLOY_HOST} did not answer without a prompt; the deploy may ask for one"
-fi
 
 # ---------------------------------------------------------------------------
 # Build
@@ -518,21 +399,17 @@ MSG
         aarch64-*) platform="linux/arm64" ;;
     esac
 
-    local docker_variant="static" suite="bookworm"
-    if [[ "${VARIANT}" == python ]]; then
-        docker_variant="${PYTHON_VARIANT}"
-        suite="${PYTHON_SUITE}"
-    fi
-
-    log "building the ${VARIANT} artifact in docker (${platform}, ${suite}); the first build compiles ~1000 crates and V8's bindings"
+    log "building in docker (${platform}, ${BUILD_SUITE}); the first build compiles ~1000 crates and V8's bindings"
     DOCKER_BUILDKIT=1 docker build \
         --platform "${platform}" \
         --file "${REPO_ROOT}/scripts/static-build.Dockerfile" \
         --target export \
         --output "type=local,dest=${STAGE}" \
         --build-arg "RUST_VERSION=${RUST_VERSION}" \
-        --build-arg "DEBIAN_SUITE=${suite}" \
-        --build-arg "VARIANT=${docker_variant}" \
+        --build-arg "DEBIAN_SUITE=${BUILD_SUITE}" \
+        --build-arg "PBS_URL=${PBS_URL}" \
+        --build-arg "PBS_SHA256=${PBS_SHA256}" \
+        --build-arg "STRIP=${STRIP}" \
         --build-arg "NODE_VERSION=${NODE_VERSION}" \
         --build-arg "TARGET=${TARGET}" \
         --build-arg "PREFIX=${PREFIX}" \
@@ -554,38 +431,50 @@ build_native() {
         exit 1
     fi
 
-    log "building the ${VARIANT} artifact with this machine's toolchain"
-    local built
-    if [[ "${VARIANT}" == static ]]; then
-        (
-            cd "${REPO_ROOT}"
-            # `SC_BUNDLE_PREFIX` re-roots the bundle paths compiled into the binary at
-            # the install prefix: the bundles are built here, but the binary is going
-            # somewhere this checkout does not exist.
-            SC_BUNDLE_PREFIX="${PREFIX}" \
-            SC_BUILD_ADMIN="${BUILD_UI}" \
-            RUSTFLAGS="-C target-feature=+crt-static${RUSTFLAGS:+ ${RUSTFLAGS}}" \
-                cargo build --release --target "${TARGET}" -p sc-cli ${JOBS:+--jobs "${JOBS}"}
-        )
-        built="${REPO_ROOT}/target/${TARGET}/release/feldspar"
-    else
-        # Its own target directory: different RUSTFLAGS and features, so sharing
-        # the static build's would rebuild the whole tree on every switch.
-        local target_dir="${REPO_ROOT}/target/${PYTHON_VARIANT}"
-        (
-            cd "${REPO_ROOT}"
-            SC_BUNDLE_PREFIX="${PREFIX}" \
-            SC_BUILD_ADMIN="${BUILD_UI}" \
-            CARGO_TARGET_DIR="${target_dir}" \
-            PYO3_PYTHON=python3 \
-                cargo build --release --target "${TARGET}" -p sc-cli --features python \
-                    ${JOBS:+--jobs "${JOBS}"}
-        )
-        built="${target_dir}/${TARGET}/release/feldspar"
-    fi
+    log "building with this machine's toolchain"
+    # The bundled CPython first, straight into the tree that ships: a download
+    # that does not match the pin stops the build before it starts. Its
+    # `sysconfig` names ${PREFIX}/python, where it will be installed, which is
+    # not where it is here — so PyO3 is configured by a file that names this
+    # copy, rather than by asking the interpreter.
+    sh "${PYTHON_BUNDLE}" fetch "${PBS_URL}" "${PBS_SHA256}" "${STAGE}" "${PREFIX}/python"
+    local pyo3_config="${STAGE_ROOT}/pyo3-config.txt"
+    cat > "${pyo3_config}" <<EOF
+implementation=CPython
+version=${PYTHON_VERSION}
+shared=true
+abi3=false
+lib_name=python${PYTHON_VERSION}
+lib_dir=${STAGE}/python/lib
+executable=${STAGE}/python/bin/python3
+pointer_width=64
+build_flags=
+suppress_build_script_link_lines=false
+EOF
+    # Its own target directory, where it has always been: different RUSTFLAGS
+    # and features from a developer's `cargo build`, so sharing that one would
+    # rebuild the whole tree on every switch.
+    local target_dir="${REPO_ROOT}/target/linux-python"
+    (
+        cd "${REPO_ROOT}"
+        # `SC_BUNDLE_PREFIX` re-roots the bundle paths compiled into the binary
+        # at the install prefix: the bundles are built here, but the binary is
+        # going somewhere this checkout does not exist.
+        SC_BUNDLE_PREFIX="${PREFIX}" \
+        SC_BUILD_ADMIN="${BUILD_UI}" \
+        CARGO_TARGET_DIR="${target_dir}" \
+        PYO3_CONFIG_FILE="${pyo3_config}" \
+        RUSTFLAGS="-C link-arg=-Wl,-rpath,\$ORIGIN/../python/lib${RUSTFLAGS:+ ${RUSTFLAGS}}" \
+            cargo build --release --target "${TARGET}" -p sc-cli --features python \
+                ${JOBS:+--jobs "${JOBS}"}
+    )
+    local built="${target_dir}/${TARGET}/release/feldspar"
 
     mkdir -p "${STAGE}/bin"
     cp "${built}" "${STAGE}/bin/feldspar"
+    # Stripped (or not) by the bundle step, because the `.glibc` copy it makes
+    # has to be a copy of the binary that ships.
+    sh "${PYTHON_BUNDLE}" glibc "${STAGE}" "${PREFIX}" "${STRIP}"
     stage_plugins
     if [[ ${BUILD_UI} -eq 1 ]]; then
         # Every bundle `crates/sc-cli/build.rs` builds (its `BUNDLES`), because the
@@ -627,8 +516,10 @@ stage_plugins() {
         -prune -exec rm -rf {} + 2>/dev/null || true
 }
 
-# Build the selected variant (`select_variant`) into ${STAGE}.
-build_variant() {
+# Build the tree into ${STAGE}. It is stripped where its `.glibc` copy is made,
+# in the container or by the bundle step: stripping only one of the pair here
+# would ship two different binaries.
+build_tree() {
     case "${MODE}" in
         docker) build_docker ;;
         native) build_native ;;
@@ -636,274 +527,218 @@ build_variant() {
 
     [[ -f "${BINARY}" ]] || { echo "error: the build produced no binary at ${BINARY}" >&2; exit 1; }
     chmod +x "${BINARY}"
-
-    if [[ ${STRIP} -eq 1 ]]; then
-        # A statically linked V8 carries a lot of symbol table. Stripping is what
-        # takes the artifact from ~200 MB to something worth copying to a VM. Best
-        # effort: a missing cross `strip` is not a reason to fail a good build.
-        local strip_tool="strip"
-        [[ "${TARGET}" == aarch64-* && "$(uname -m)" != aarch64 ]] && strip_tool="aarch64-linux-gnu-strip"
-        if command -v "${strip_tool}" >/dev/null; then
-            log "stripping symbols with ${strip_tool}"
-            "${strip_tool}" "${BINARY}"
-        else
-            log "warning: ${strip_tool} not found; shipping unstripped (--no-strip to silence)"
-        fi
-    fi
 }
 
 # ---------------------------------------------------------------------------
 # Verify
 # ---------------------------------------------------------------------------
 
-# Static linkage is the property this whole script exists to produce, so it is
-# checked rather than assumed — a stray `-C target-feature=-crt-static` in a
-# `.cargo/config.toml`, or a dependency that insists on a shared library, would
-# otherwise be discovered on the destination VM.
-assert_static() {
-    local described
-    described="$(file -b "${BINARY}")"
-    case "${described}" in
-        *"static-pie linked"*|*"statically linked"*) ;;
-        *)
-            echo "error: the binary is not statically linked:" >&2
-            echo "  ${described}" >&2
-            command -v ldd >/dev/null && ldd "${BINARY}" >&2 || true
-            exit 1
-            ;;
-    esac
-    log "linkage: ${described%%,*} — $(du -h "${BINARY}" | cut -f1)"
+# `readelf -d FILE`'s entries of one tag (NEEDED, RPATH, RUNPATH), one per line.
+dynamic_entries() {
+    readelf -d "$1" | sed -n "s/.*(${2}).*\[\(.*\)\].*/\1/p"
 }
 
-# The Python variant's linkage, which is the opposite claim: dynamic, and asking
-# for exactly the libpython the artifact's name promises. A binary that asked for
-# libpython3.11 would install cleanly on Debian 13 and fail at the dynamic
-# linker, so the soname is read out of the binary rather than trusted.
+# The binary's linkage: dynamic, asking for exactly the libpython the tree carries, and finding it in
+# the tree — through `$ORIGIN/../python/lib`, never through the host's library
+# path, where a different CPython's libpython may be (TODO-portable-release §1).
 assert_python_linkage() {
-    local described needed
+    command -v readelf >/dev/null ||
+        { echo "error: checking the artifact needs readelf (binutils), or --no-verify" >&2; exit 1; }
+    local described needed runpath
     described="$(file -b "${BINARY}")"
     case "${described}" in
         *"dynamically linked"*) ;;
         *)
-            echo "error: the python binary is not dynamically linked:" >&2
+            echo "error: the binary is not dynamically linked:" >&2
             echo "  ${described}" >&2
             exit 1
             ;;
     esac
-    if command -v readelf >/dev/null; then
-        needed="$(readelf -d "${BINARY}" | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p')"
-    else
-        needed="$(objdump -p "${BINARY}" | awk '$1 == "NEEDED" { print $2 }')"
-    fi
+    needed="$(dynamic_entries "${BINARY}" NEEDED)"
     if ! grep -qx "${PYTHON_LIB}" <<<"${needed}"; then
-        echo "error: the python binary does not link ${PYTHON_LIB}; it needs:" >&2
-        printf '  %s\n' ${needed} >&2
+        echo "error: the binary does not link ${PYTHON_LIB}; it needs:" >&2
+        while IFS= read -r lib; do printf '  %s\n' "${lib}"; done <<<"${needed}" >&2
         exit 1
     fi
-    log "linkage: dynamic, needs $(tr '\n' ' ' <<<"${needed}")— $(du -h "${BINARY}" | cut -f1)"
+    runpath="$(dynamic_entries "${BINARY}" RUNPATH; dynamic_entries "${BINARY}" RPATH)"
+    # shellcheck disable=SC2016  # the literal `$ORIGIN` the linker reads, not a variable
+    if ! tr ':' '\n' <<<"${runpath}" | grep -qx '$ORIGIN/../python/lib'; then
+        echo "error: the binary does not look for ${PYTHON_LIB} beside itself" \
+             "(\$ORIGIN/../python/lib); its search path is: ${runpath:-none}" >&2
+        exit 1
+    fi
+    [[ -f "${STAGE}/python/lib/${PYTHON_LIB}" ]] ||
+        { echo "error: the tree has no python/lib/${PYTHON_LIB} for the binary to find" >&2; exit 1; }
+    log "linkage: dynamic, needs $(tr '\n' ' ' <<<"${needed}")from \$ORIGIN/../python/lib — $(du -h "${BINARY}" | cut -f1)"
 }
 
-# The claim in this script's header, executed: the binary starts and prints its
-# usage on a glibc distribution and on a musl one — or, for the Python variant,
-# on Debian 13 once the one package its install.sh adds is there (which needs the
-# network for apt). Skipped when the target is not this machine's architecture
-# (nothing here would run it) or docker is absent.
+# The `.glibc` copies (D3): each one's loader is the bundled one, at its
+# installed path, and its search path is a DT_RPATH — which glibc applies to
+# everything the process loads, NSS modules and `ctypes` included, where a
+# RUNPATH would reach only the executable's own NEEDED. And every library the
+# tree's ELF files ask for is in the tree, so a host with no glibc of its own
+# has nothing left to provide.
+assert_glibc_copies() {
+    local loader
+    case "${TARGET}" in
+        x86_64-*)  loader="ld-linux-x86-64.so.2" ;;
+        aarch64-*) loader="ld-linux-aarch64.so.1" ;;
+    esac
+    local want_interp="${PREFIX}/glibc/${loader}"
+    local want_rpath="${PREFIX}/glibc:${PREFIX}/python/lib"
+    [[ -f "${STAGE}/glibc/${loader}" && -f "${STAGE}/glibc/libc.so.6" ]] ||
+        { echo "error: the tree's glibc/ has no ${loader} and libc.so.6" >&2; exit 1; }
+    local copy interp rpath runpath
+    for copy in "${STAGE}/bin/feldspar.glibc" "${STAGE}/python/bin/python3.glibc"; do
+        [[ -f "${copy}" ]] || { echo "error: ${copy#"${STAGE}/"} is missing" >&2; exit 1; }
+        interp="$(readelf -l "${copy}" | sed -n 's/.*Requesting program interpreter: \(.*\)\]/\1/p')"
+        rpath="$(dynamic_entries "${copy}" RPATH)"
+        runpath="$(dynamic_entries "${copy}" RUNPATH)"
+        if [[ "${interp}" != "${want_interp}" || "${rpath}" != "${want_rpath}" || -n "${runpath}" ]]; then
+            cat >&2 <<EOF
+error: ${copy#"${STAGE}/"} is not set up to run on the bundled glibc:
+  loader   ${interp:-none}   (want ${want_interp})
+  RPATH    ${rpath:-none}   (want ${want_rpath})
+  RUNPATH  ${runpath:-none}   (want none)
+EOF
+            exit 1
+        fi
+    done
+    local elf name missing=()
+    while IFS= read -r elf; do
+        while IFS= read -r name; do
+            # shellcheck disable=SC2016  # the literal `$ORIGIN`, as readelf prints it
+            case "${name}" in '$ORIGIN'*|libpython3.so) continue ;; esac
+            [[ -e "${STAGE}/glibc/${name}" || -e "${STAGE}/python/lib/${name}" ]] ||
+                missing+=("${elf#"${STAGE}/"} needs ${name}")
+        done < <(dynamic_entries "${elf}" NEEDED)
+    done < <(find "${STAGE}/bin" "${STAGE}/python/bin" "${STAGE}/python/lib" "${STAGE}/glibc" \
+                 -type f \( -name '*.so*' -o -perm -u+x \) -exec sh -c \
+                 'head -c4 "$1" | grep -q "ELF" && echo "$1"' _ {} \;)
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "error: the bundled glibc is incomplete:" >&2
+        printf '  %s\n' "${missing[@]}" >&2
+        exit 1
+    fi
+    log "glibc copies: loader ${want_interp}, RPATH ${want_rpath}; $(find "${STAGE}/glibc" -type f | wc -l) libraries in glibc/"
+}
+
+# The claim in this script's header, executed: the artifact installs and runs on
+# every distribution it is for. Skipped when the target is not this machine's
+# architecture (nothing here would run it) or docker is absent. It runs after
+# packaging, because what is tested is the tarball.
+#
+# The tarball is installed in each of SMOKE_IMAGES by the curl installer from a
+# file:// release, and `scripts/lib/smoke-linux.sh` then runs the self-check
+# (with its HTTPS request), checks which libc the process maps, and on Debian 13
+# and Alpine makes a venv, pip-installs a pure-Python package and a manylinux
+# wheel and imports both, and upgrades a running install by swapping trees
+# (TODO-portable-release R2.4, R2.6). Derivatives (Mint, MX, CachyOS,
+# Manjaro, EndeavourOS, Rocky) are covered by ID_LIKE, not by images.
+readonly SMOKE_IMAGES=(
+    debian:13-slim debian:12-slim ubuntu:24.04 ubuntu:latest
+    fedora:latest almalinux:10 archlinux:latest
+    opensuse/leap:16.0 opensuse/tumbleweed alpine:3
+)
+readonly SMOKE_SCRIPT="${REPO_ROOT}/scripts/lib/smoke-linux.sh"
+
 smoke_test_distros() {
     command -v docker >/dev/null || { log "skipping distro smoke test (no docker)"; return 0; }
-    local host_arch="$(uname -m)"
+    local host_arch
+    host_arch="$(uname -m)"
     case "${TARGET}" in
         x86_64-*)  [[ "${host_arch}" == "x86_64"  ]] || { log "skipping distro smoke test (foreign architecture)"; return 0; } ;;
         aarch64-*) [[ "${host_arch}" == "aarch64" ]] || { log "skipping distro smoke test (foreign architecture)"; return 0; } ;;
     esac
 
-    # The binary prints its usage on stderr and exits 0, so the output is held
-    # rather than streamed: it is a page of text per image, and it is only worth
-    # reading when the run fails.
+    # The output is held rather than streamed — a page of text per image —
+    # and shown when a run fails, or for the lines that say what it found.
     local image output
-    if [[ "${VARIANT}" == python ]]; then
-        image="debian:13-slim"
-        log "smoke test on ${image} with ${PYTHON_PACKAGE}"
+    # The release as the bucket holds it: the object name the curl
+        # installer fetches, and a checksum file naming that object.
+    local release="${STAGE_ROOT}/smoke-release"
+    rm -rf "${release}"
+    mkdir -p "${release}"
+    cp "${TARBALL}" "${release}/${OBJECT}"
+    printf '%s  %s\n' "$(cut -d' ' -f1 < "${TARBALL}.sha256")" "${OBJECT}" \
+        > "${release}/${OBJECT}.sha256"
+    local extra
+    for image in "${SMOKE_IMAGES[@]}"; do
+        extra=()
+        case "${image}" in debian:13-slim|alpine:3) extra=(--venv --upgrade) ;; esac
+        log "smoke test on ${image}${extra[*]:+ (${extra[*]})}"
         if ! output="$(docker run --rm \
-                -v "${BINARY}:/usr/local/bin/feldspar:ro" \
-                "${image}" sh -c "apt-get update -qq >/dev/null && \
-                    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ${PYTHON_PACKAGE} >/dev/null && \
-                    /usr/local/bin/feldspar" 2>&1)"; then
-            echo "error: the binary does not run on ${image}:" >&2
+                -v "${release}:/release:ro" \
+                -v "${REPO_ROOT}/scripts/install.sh:/install.sh:ro" \
+                -v "${SMOKE_SCRIPT}:/smoke.sh:ro" \
+                "${image}" sh /smoke.sh /release "${OBJECT}" "${PREFIX}" \
+                ${extra[@]+"${extra[@]}"} 2>&1)"; then
+            echo "error: the artifact failed its smoke test on ${image}:" >&2
             printf '%s\n' "${output}" >&2
             exit 1
         fi
-        return 0
-    fi
-    for image in debian:12-slim alpine:3.20; do
-        log "smoke test on ${image}"
-        if ! output="$(docker run --rm --network none \
-                -v "${BINARY}:/usr/local/bin/feldspar:ro" \
-                "${image}" /usr/local/bin/feldspar 2>&1)"; then
-            echo "error: the binary does not run on ${image}:" >&2
-            printf '%s\n' "${output}" >&2
-            exit 1
-        fi
+        grep -E '^smoke: (libc choice|maps|NEEDS)' <<<"${output}" | sed 's/^/    /' || true
     done
 }
 
-verify_variant() {
-    if [[ "${VARIANT}" == python ]]; then
-        assert_python_linkage
-    else
-        assert_static
-    fi
-    smoke_test_distros
+verify_tree() {
+    assert_python_linkage
+    assert_glibc_copies
 }
 
 # ---------------------------------------------------------------------------
 # Package
 # ---------------------------------------------------------------------------
 
-# The host-side installer travels inside the artifact. A machine that has just
-# downloaded a tarball has no checkout to fetch it from, and it is the second of
-# the two commands a new host needs — `install.sh` puts the tree at ${PREFIX},
-# `setup-host.sh` gives it a database, a service account and a unit. It is not
-# put on PATH: it is run once.
-readonly SETUP_HOST="${REPO_ROOT}/scripts/setup-host.sh"
+readonly INSTALL_TREE="${REPO_ROOT}/scripts/lib/install-tree.sh"
 
-package_variant() {
-[[ -f "${SETUP_HOST}" ]] ||
-    { echo "error: ${SETUP_HOST} is missing; it belongs in the artifact" >&2; exit 1; }
-cp "${SETUP_HOST}" "${STAGE}/setup-host.sh"
-chmod +x "${STAGE}/setup-host.sh"
+package_tree() {
+[[ -f "${INSTALL_TREE}" ]] ||
+    { echo "error: ${INSTALL_TREE} is missing; it belongs in the artifact" >&2; exit 1; }
 
-# Which artifact this is, installed beside the binary: setup-host.sh reads it to
-# decide whether the host needs the Python packages, and an operator reads it to
-# find out which of the two downloads a host is running.
-if [[ "${VARIANT}" == python ]]; then
-    echo "${PYTHON_VARIANT}" > "${STAGE}/VARIANT"
-else
-    echo "static" > "${STAGE}/VARIANT"
-fi
+# Which artifact this is, installed beside the binary, for an operator and for
+# the curl installer. There has been only one kind since the static artifact was
+# retired; older trees say `static` or `debian13-python`.
+echo "linux" > "${STAGE}/VARIANT"
 
-# The Python variant's one run-time library, which install.sh adds when it is
-# missing: without it the binary fails at the dynamic linker, and --deploy (which
-# starts the service and runs the binary right after install.sh) would leave a
-# host with a server that cannot start.
-python_install_step=""
-if [[ "${VARIANT}" == python ]]; then
-    python_install_step="
-# This build links ${PYTHON_LIB} (Debian 13's ${PYTHON_PACKAGE}); without it the
-# binary does not start at all, so it is installed here rather than left to
-# setup-host.sh, which an upgrade does not run.
-if ! { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q '${PYTHON_LIB}'; then
-    if command -v apt-get >/dev/null 2>&1; then
-        echo \"installing ${PYTHON_PACKAGE}, which this build of feldspar links\"
-        apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y ${PYTHON_PACKAGE}
-    else
-        echo \"install: this build needs ${PYTHON_LIB} (Debian 13's ${PYTHON_PACKAGE}), and there is no apt-get to install it\" >&2
-        exit 1
-    fi
-fi
-"
-fi
-
-cat > "${STAGE}/install.sh" <<EOF
-#!/usr/bin/env sh
-# Install this artifact at the prefix it was built for.
-#
-# The prefix is not a choice at install time: the binary carries \`${PREFIX}/ui/...\`
-# as the location of the admin UI and the IDE, compiled in. To install elsewhere,
-# rebuild with \`scripts/build-static.sh --prefix <path>\`.
-set -eu
-
-PREFIX="${PREFIX}"
-SRC="\$(cd -- "\$(dirname -- "\$0")" && pwd)"
-
-if [ "\$(id -u)" -ne 0 ] && [ ! -w "\$(dirname "\${PREFIX}")" ]; then
-    echo "install: \${PREFIX} needs root (re-run with sudo)" >&2
-    exit 1
-fi
-${python_install_step}
-# Contents, not directories: \`cp -r bin \${PREFIX}/\` would put the binary in
-# \${PREFIX}/bin/bin the second time this is run, which is the upgrade path.
-mkdir -p "\${PREFIX}/bin"
-cp -r "\${SRC}/bin/." "\${PREFIX}/bin/"
-if [ -d "\${SRC}/ui" ]; then
-    mkdir -p "\${PREFIX}/ui"
-    cp -r "\${SRC}/ui/." "\${PREFIX}/ui/"
-fi
-# The bundled modules. Copied over an existing tree rather than replacing it:
-# what an admin installed lives in the modules directory, not here, so this is
-# only ever the catalog this release ships.
-if [ -d "\${SRC}/plugins" ]; then
-    mkdir -p "\${PREFIX}/plugins"
-    cp -r "\${SRC}/plugins/." "\${PREFIX}/plugins/"
-fi
-chmod +x "\${PREFIX}/bin/feldspar"
-cp "\${SRC}/VARIANT" "\${PREFIX}/VARIANT"
-
-# Beside the tree rather than inside bin/: it is run once, by a person, and has
-# no business on PATH. Run from there it knows it is looking at an installed
-# artifact and does not offer to build one from source.
-cp "\${SRC}/setup-host.sh" "\${PREFIX}/setup-host.sh"
-chmod +x "\${PREFIX}/setup-host.sh"
-
-echo "installed \${PREFIX}/bin/feldspar"
-echo
-echo "next, set this host up to run it — packages, PostgreSQL, a service account,"
-echo "/etc/feldspar/feldspar.toml and a systemd unit:"
-echo "  sudo \${PREFIX}/setup-host.sh --domain example.com"
-echo "  sudo \${PREFIX}/setup-host.sh --help       # every option"
-echo "  sudo \${PREFIX}/setup-host.sh --dry-run    # what it would do, doing nothing"
-echo
-echo "that also puts feldspar on PATH. On a host that is already set up, only the"
-echo "service needs restarting:  sudo systemctl restart feldspar"
-EOF
+# The tree's installer (scripts/lib/install-tree.sh): it swaps the whole prefix
+# in by rename rather than copying over a running server's files, chooses the
+# libc, and stops and starts running feldspar units around the swap. The prefix
+# it installs to, and the glibc the binary was linked against, are this build's.
+sed -e "s|@PREFIX@|${PREFIX}|g" -e "s|@BUILD_GLIBC@|${BUILD_GLIBC}|g" \
+    "${INSTALL_TREE}" > "${STAGE}/install.sh"
 chmod +x "${STAGE}/install.sh"
 
-# The parts of the README that differ between the two artifacts.
-local readme_title readme_linkage readme_needs readme_limits
-if [[ "${VARIANT}" == python ]]; then
-    readme_title="${TARGET}, Debian 13 with Python"
-    readme_linkage="This binary is dynamically linked against Debian 13's glibc and
-${PYTHON_LIB} (the ${PYTHON_PACKAGE} package), so that it can run Python
-trigger bodies and install Python modules. It runs on Debian 13 and nothing else;
-install.sh installs ${PYTHON_PACKAGE} if it is missing. For any other
-distribution, or a server that needs no Python, use the static artifact
-(${R2_PUBLIC_BASE}/${R2_OBJECT})."
-    readme_needs="  ${PYTHON_PACKAGE}, to start at all (install.sh sees to it), and python3
-  with python3-venv to install Python modules (setup-host.sh installs both).
-  The python3 that pip runs under must be the ${PYTHON_VERSION} this binary links;
-  on Debian 13 it is."
-    readme_limits="Limits"
-else
-    readme_title="${TARGET}"
-    readme_linkage="This binary is statically linked: it has no shared-library dependencies and no
-interpreter, so it runs on glibc distributions (Debian, Ubuntu, RHEL) and on musl
-ones (Alpine) without anything installed alongside it. It has no Python support:
-that is the Debian 13 artifact,
-${R2_PUBLIC_BASE}/${R2_OBJECT%.tar.gz}-${PYTHON_VARIANT}.tar.gz"
-    readme_needs="  Nothing to run the server: this binary has no library dependencies, and none of
-  the build-time toolchain (libclang, cmake, a C compiler) is needed here."
-    readme_limits="Limits of a static binary
-  dlopen does not work, so native Node addons (.node, loaded through deno_napi)
-  cannot be loaded by modules. Nothing in the server itself needs one."
-fi
-
 cat > "${STAGE}/README" <<EOF
-feldspar ${VERSION}${GIT_DESC:+ (${GIT_DESC})} — ${readme_title}
+feldspar ${VERSION}${GIT_DESC:+ (${GIT_DESC})} — ${TARGET}
 
-${readme_linkage}
+This binary is dynamically linked, built on Debian 12, and carries its own
+CPython ${PBS_PYTHON} (python-build-standalone, ${PBS_RELEASE}) in python/, which it
+finds beside itself: it runs Python trigger bodies and installs Python modules
+with nothing Python-related on the host, and pip runs that same interpreter.
+
+From the host it needs glibc ${BUILD_GLIBC} or newer, which Debian 12+, Ubuntu
+24.04+, Fedora, RHEL 10, Arch and openSUSE all have. For a musl host (Alpine)
+the tarball also carries Debian 12's glibc in glibc/, and bin/feldspar.glibc
+and python/bin/python3.glibc: the same programs, set to run on it.
+\`${PREFIX}/bin/feldspar python check\` says which interpreter started and
+whether it can import ssl, sqlite3, ctypes and zoneinfo and reach PyPI.
 
 Install
   sudo ./install.sh
-      copies this tree to ${PREFIX}
-  sudo ${PREFIX}/setup-host.sh --domain example.com
-      sets this host up to run it: packages, PostgreSQL, the feldspar service
-      account, /etc/feldspar/feldspar.toml and a systemd unit. Once, on a new
-      host; --dry-run first if you would rather read it than run it.
-  ${PREFIX}/bin/feldspar
-      prints the available commands
+      installs this tree as ${PREFIX} and links feldspar onto PATH: copied
+      beside it, then swapped in by rename, so a running server is never
+      written over. Running feldspar units are stopped for the swap and
+      started again (--no-restart leaves them alone), and the previous tree is
+      kept as ${PREFIX}.old.
+  sudo feldspar setup --server --domain example.com
+      makes this host a server, once: PostgreSQL, Node.js, a headless browser,
+      the feldspar service account, /etc/feldspar/feldspar.toml and the
+      service. --dry-run prints what it would do; --help lists the options.
 
-On a host that already has a database, a service account and a unit, the first
-command is the whole upgrade — restart the service afterwards.
+On a host that already runs feldspar, the first command is the whole upgrade.
+Take a database dump first (docs/OPERATIONS.md §3); install.sh prints the
+command that puts the previous tree back.
 
 Where a newer one comes from
   ${R2_PUBLIC_BASE}/${OBJECT}
@@ -911,19 +746,15 @@ Where a newer one comes from
   That URL is always the latest build; it carries no version, so there is nothing
   to look up. \`sha256sum -c ${OBJECT}.sha256\` checks a download.
 
-Run
-  feldspar serve --database-url postgres://user:pass@host/db
-  feldspar serve --environment prod     # from feldspar.toml
-
-  Database settings can come from flags, the environment, or a feldspar.toml
-  read from /etc/feldspar/ or ~/.config/feldspar/.
-
 What is in the tarball
   bin/feldspar          the server and management CLI
-  setup-host.sh         the host setup, run once from ${PREFIX} after install.sh.
-                        Debian and Ubuntu; --dry-run prints what it would do.
-  plugins/              the modules this release ships with — an RSS table
-                        provider and a Markdown renderer today. They are not
+  bin/feldspar.glibc    the same, set to run on glibc/ (for a musl host);
+                        install.sh moves it over bin/feldspar where the host's
+                        glibc cannot run that, and says so (LIBC records it)
+  python/               CPython ${PBS_PYTHON}: what bin/feldspar embeds and pip runs
+  glibc/                Debian 12's glibc, used only by the .glibc copies
+  install.sh            the installer above
+  plugins/              the modules this release ships with. They are not
                         loaded until somebody installs one from Settings ->
                         Modules, which is one click; what each depends on is
                         fetched from npm or PyPI at that moment and is not in
@@ -950,18 +781,9 @@ The bundle paths are compiled into the binary as ${PREFIX}/ui/<name>/dist, which
 is why the tree has to be installed at ${PREFIX}. --static-dir overrides the admin
 bundle at run time; the IDE's and Saltcorn UI's paths have no flag.
 
-What the target machine still needs
-${readme_needs}
-  A database — Postgres, or a SQLite file.
-  npm and node, but only if applications are built or modules installed on this
-  machine: \`feldspar build-app\`, the admin UI's Build button and a module install
-  all run npm. A server that only serves an already-built application does not
-  need them.
-
-${readme_limits}
+Limits
   Hostnames are resolved by the binary's own resolver (/etc/resolv.conf and
-  /etc/hosts), not by glibc's NSS — which in a static binary would dlopen a
-  second libc and crash the process. /etc/nsswitch.conf does not affect this
+  /etc/hosts), not by glibc's NSS. /etc/nsswitch.conf does not affect this
   server: a name it must reach belongs in DNS or in /etc/hosts.
 EOF
 
@@ -969,213 +791,52 @@ mkdir -p "${OUTPUT_DIR}"
 
 # Packaged with the release name as the top-level directory, so unpacking in a
 # scratch directory does not scatter `bin/` and `ui/` over whatever is there.
-tar -czf "${TARBALL}" -C "${STAGE}" --transform "s,^\.,${NAME}," .
-(cd "${OUTPUT_DIR}" && sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
+# Owned by root in the archive, not by whoever built it: install.sh keeps
+# what it copies as it finds it (`cp -p`, for the .pyc timestamps), and a tree
+# unpacked as root would otherwise belong to the build account's uid.
+tar -czf "${TARBALL}" -C "${STAGE}" --owner=0 --group=0 --numeric-owner \
+    --transform "s,^\.,${NAME}," .
+release_checksum "${TARBALL}"
 
 log "wrote ${TARBALL} ($(du -h "${TARBALL}" | cut -f1))"
 }
 
-# One artifact after the other, each built, checked and packaged before the next
-# starts — so a failure in the second leaves the first on disk.
-TARBALLS=()
-for v in "${VARIANTS[@]}"; do
-    select_variant "${v}"
-    build_variant
-    [[ ${VERIFY} -eq 1 ]] && verify_variant
-    package_variant
-    TARBALLS+=("${TARBALL}")
-done
+build_tree
+[[ ${VERIFY} -eq 1 ]] && verify_tree
+package_tree
+[[ ${VERIFY} -eq 1 ]] && smoke_test_distros
 
 # ---------------------------------------------------------------------------
 # Publish
 # ---------------------------------------------------------------------------
 
-# Copy the artifact to the R2 bucket under a fixed, version-less name, so that an
-# installer can always fetch the same URL and get the newest build.
-publish_to_r2() {
-    if [[ "${GIT_DESC}" == *-dirty ]]; then
-        log "warning: publishing a build from a dirty checkout (${GIT_DESC})"
-    fi
-
-    # The checksum file written next to the tarball names the versioned file it
-    # was computed over, which is not the name it has in the bucket — a
-    # `sha256sum -c` after downloading would look for a file that is not there.
-    # The published copy therefore names the published object.
-    local published_sha="${STAGE}/${OBJECT}.sha256"
-    printf '%s  %s\n' \
-        "$(cut -d' ' -f1 < "${TARBALL}.sha256")" "${OBJECT}" > "${published_sha}"
-
-    log "uploading $(du -h "${TARBALL}" | cut -f1) to r2://${R2_BUCKET}/${OBJECT}"
-    (cd "${REPO_ROOT}" && npx wrangler r2 object put \
-        "${R2_BUCKET}/${OBJECT}" -f "${TARBALL}" --remote)
-
-    log "uploading r2://${R2_BUCKET}/${OBJECT}.sha256"
-    (cd "${REPO_ROOT}" && npx wrangler r2 object put \
-        "${R2_BUCKET}/${OBJECT}.sha256" -f "${published_sha}" --remote)
-
-    log "published ${NAME}.tar.gz as ${R2_BUCKET}/${OBJECT}"
-    if [[ "${R2_BUCKET}" == "${DEFAULT_R2_BUCKET}" ]]; then
+# Copy the artifact to the R2 bucket under each of its fixed, version-less
+# names, so that an installer can always fetch the same URL and get the newest
+# build; then the curl installer, last.
+if [[ ${RELEASE} -eq 1 ]]; then
+    release_warn_if_dirty "${GIT_DESC}"
+    release_upload "${TARBALL}" "${STAGE_ROOT}" "${OBJECTS[@]}"
+    if release_is_public; then
         cat <<EOF
 
-It is now what a new host downloads$( [[ "${VARIANT}" == python ]] && echo " for Debian 13 with Python"):
+It is now what a new host downloads:
 
   curl -fLO ${R2_PUBLIC_BASE}/${OBJECT}
   curl -fLO ${R2_PUBLIC_BASE}/${OBJECT}.sha256
-  sha256sum -c ${OBJECT}.sha256
-  tar -xzf ${OBJECT} && sudo feldspar-*/install.sh
-  sudo ${PREFIX}/setup-host.sh --domain example.com
 EOF
+        for older in "${OBJECTS[@]:1}"; do
+            echo
+            echo "It is also what a host that fetches its older name gets: ${R2_PUBLIC_BASE}/${older}"
+        done
     fi
-}
-
-# The curl-to-sh installer, beside the artifact it downloads. Uploaded after the
-# tarballs rather than before: it fetches the version-less object, so for the
-# moment between the two uploads a new installer would be fetching an old
-# release, which is the less surprising of the two orders to land half-way.
-publish_installer() {
-    log "uploading r2://${R2_BUCKET}/install.sh"
-    (cd "${REPO_ROOT}" && npx wrangler r2 object put \
-        "${R2_BUCKET}/install.sh" -f "${REPO_ROOT}/scripts/install.sh" \
-        --content-type "text/x-shellscript" --remote)
-    if [[ "${R2_BUCKET}" == "${DEFAULT_R2_BUCKET}" ]]; then
-        cat <<EOF
-
-The installer is published too; on a new host:
-
-  curl -fsSL ${R2_PUBLIC_BASE}/install.sh | sh
-EOF
-    fi
-}
-
-if [[ ${RELEASE} -eq 1 ]]; then
-    for v in "${VARIANTS[@]}"; do
-        select_variant "${v}"
-        publish_to_r2
-    done
-    publish_installer
-fi
-
-# ---------------------------------------------------------------------------
-# Deploy
-# ---------------------------------------------------------------------------
-
-# The three commands this script prints when --deploy is *not* given, run for
-# you: copy, unpack, install. The tarball goes over the ssh connection itself
-# rather than through scp, because
-# scp and ssh spell their options differently (-P against -p for a port) and one
-# --ssh-opt has to mean the same thing in both places.
-deploy_to_host() {
-    local remote_tarball="${REMOTE_TMP}/${NAME}.tar.gz"
-    local remote_script="${REMOTE_TMP}/${NAME}.deploy.sh"
-
-    log "copying $(du -h "${TARBALL}" | cut -f1) to ${DEPLOY_HOST}:${remote_tarball}"
-    ssh_run "${DEPLOY_HOST}" \
-        "mkdir -p '${REMOTE_TMP}' && cat > '${remote_tarball}'" < "${TARBALL}"
-
-    # The remote side is a *file* on the remote rather than a command line or a
-    # script on stdin: the quoting is then decided here once, and — the reason it
-    # is a file and not stdin — the remote's stdin stays free for sudo to read a
-    # password from. It is `sh`, not bash: the destination is whatever the
-    # artifact runs on, Alpine included.
-    ssh_run "${DEPLOY_HOST}" "cat > '${remote_script}'" <<REMOTE
-set -eu
-
-tarball="${remote_tarball}"
-tree="${REMOTE_TMP}/${NAME}"
-
-# What an interrupted deploy of this same version left behind; unpacking over it
-# would mix two trees.
-rm -rf "\${tree}"
-tar -xzf "\${tarball}" -C "${REMOTE_TMP}"
-
-if [ "\$(id -u)" -eq 0 ]; then
-    sudo=""
-elif command -v sudo >/dev/null 2>&1; then
-    sudo="sudo"
+    release_upload_installer
 else
-    echo "error: installing to ${PREFIX} needs root, and this login is neither root nor has sudo" >&2
-    exit 1
-fi
-
-# A running server holds ${PREFIX}/bin/feldspar open, and the kernel refuses to
-# write over the executable of a live process ("Text file busy"), so the unit has
-# to be stopped before install.sh copies the binary in. This is as late as it can
-# be — the tarball is already here and unpacked — so the downtime is the install
-# and nothing more.
-#
-# Only a unit that is *running* is stopped and started again: on a machine with
-# no systemd, no feldspar.service, or a service deliberately left down, the
-# install happens exactly as it did before and nothing is started behind the
-# operator's back.
-restart_unit=""
-if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet feldspar 2>/dev/null; then
-    echo "stopping feldspar.service"
-    if \${sudo} systemctl stop feldspar; then
-        restart_unit="yes"
-    else
-        echo "warning: could not stop feldspar.service; installing anyway" >&2
-    fi
-fi
-
-\${sudo} "\${tree}/install.sh"
-
-if [ -n "\${restart_unit}" ]; then
-    echo "starting feldspar.service"
-    \${sudo} systemctl start feldspar
-fi
-
-# The installed binary, run where it now lives: it prints its usage and exits 0,
-# which is the claim this whole script exists to make — one file that runs on
-# this machine with nothing installed beside it.
-"${PREFIX}/bin/feldspar" >/dev/null
-
-rm -rf "\${tree}" "\${tarball}" "${remote_script}"
-REMOTE
-
-    log "unpacking and installing on ${DEPLOY_HOST}"
-    # -t so that sudo can prompt on the terminal this was started from; asked for
-    # only when there is one, or ssh warns about a pty it cannot allocate.
-    local tty=()
-    [[ -t 0 && -t 1 ]] && tty=(-t)
-    ssh_run "${tty[@]+"${tty[@]}"}" "${DEPLOY_HOST}" "sh '${remote_script}'"
-
-    log "installed ${PREFIX}/bin/feldspar on ${DEPLOY_HOST}"
-}
-
-if [[ -n "${DEPLOY_HOST}" ]]; then
-    select_variant "${DEPLOY_VARIANT}"
-    deploy_to_host
     cat <<EOF
 
-Installed on ${DEPLOY_HOST}. If this is a host that has never run feldspar, give
-it a database, a service account and a unit — once:
+To install it on another machine of the same architecture:
 
-  ssh -t ${DEPLOY_HOST} 'sudo ${PREFIX}/setup-host.sh --domain example.com'
-
-Otherwise it is already running the new binary, or run it by hand with:
-
-  ssh ${DEPLOY_HOST} '${PREFIX}/bin/feldspar serve --environment prod'
-EOF
-else
-    for v in "${VARIANTS[@]}"; do
-        select_variant "${v}"
-        if [[ "${v}" == python ]]; then
-            echo; echo "The Debian 13 + Python artifact goes on a Debian 13 VM with:"
-        else
-            echo; echo "The static artifact goes on any VM with:"
-        fi
-        cat <<EOF
-
-  scp ${TARBALL} vm:/tmp/
-  ssh vm 'tar -xzf /tmp/${NAME}.tar.gz -C /tmp && sudo /tmp/${NAME}/install.sh'
-  ssh vm 'sudo ${PREFIX}/setup-host.sh --domain example.com'   # first time only
-EOF
-    done
-    cat <<EOF
-
-or have this script do it next time:
-
-  scripts/build-static.sh --deploy vm                            # the static one
-  scripts/build-static.sh --deploy vm --deploy-variant python    # Debian 13 + Python
+  scp ${TARBALL} host:/tmp/
+  ssh -t host 'tar -xzf /tmp/${NAME}.tar.gz -C /tmp && sudo /tmp/${NAME}/install.sh'
+  ssh -t host 'sudo feldspar setup --server --domain example.com'   # a new host only
 EOF
 fi
