@@ -487,9 +487,17 @@ Containers and emulators always use the host's page size, so the build asserts i
       to the `~/feldspar-hosted` maintainers is for a human to send; that repository was not
       edited. Its own scripts run `/usr/bin/python3`, so the host keeps a `python3` for those
       even though feldspar no longer needs one.
-- [ ] R3.3 After one or two releases with both: stop building `static`. `feldspar.tar.gz` and
+- [x] R3.3 After one or two releases with both: stop building `static`. `feldspar.tar.gz` and
       `feldspar-debian13-python.tar.gz` both become copies of `feldspar-linux-x86_64.tar.gz`. Remove
       the `static` paths (`assert_static`, the `+crt-static` flags) from the scripts.
+      *Done, ahead of the general release (TODO.md D1.5):* `build-static.sh` builds the one
+      artifact, `feldspar.tar.gz` is published as a copy of it (`~/feldspar-hosted` fetches that
+      name), and `feldspar-debian13-python.tar.gz` is **not** published any more: nothing in
+      this repository fetches it, and the curl installer has fetched the platform name since
+      R3.1. The object the last release left in the bucket goes stale and should be deleted.
+      The curl installer reads any `VARIANT` (`static`, `debian13-python`, `linux`) and fetches
+      the one release; it still accepts `--variant` and ignores it. `setup-host.sh` is gone too:
+      `feldspar setup` does what it did (D9, D10), on the same families.
 - [x] R3.4 CHANGELOG entry: which distributions are supported, that Python needs nothing from the
       host, and the upgrade note for `debian13-python` hosts.
 

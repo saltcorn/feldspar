@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# The `linux` artifact's smoke test, run as root inside one distribution image
+# The release tarball's smoke test, run as root inside one distribution image
 # by `scripts/build-static.sh` (TODO-portable-release R2.4, R2.6):
 #
 #   smoke-linux.sh RELEASE_DIR OBJECT PREFIX [--venv] [--upgrade]
@@ -14,7 +14,7 @@
 # Then, on every image:
 #   - `feldspar python check` passes, the HTTPS request included. Where that
 #     needs SSL_CERT_FILE to pass, it is reported (`NEEDS SSL_CERT_FILE`) and
-#     not failed: setup-host.sh writes it into the unit on such a host (D10).
+#     not failed: `feldspar setup` sets it for the service on such a host.
 #   - the process maps the host's libc.so.6 on a glibc image, and the bundle's
 #     on a musl one (the self-check's `libc` line is read off /proc/self/maps).
 # With --venv: the bundled `python3 -m venv` and `pip install` of a pure-Python
@@ -99,7 +99,7 @@ fi
 
 say "installing with the curl installer from file://${release}"
 if [ "${prefix}" = /opt/feldspar ]; then
-    sh /install.sh --base-url "file://${release}" --variant linux > "${work}/install.log" 2>&1 ||
+    sh /install.sh --base-url "file://${release}" > "${work}/install.log" 2>&1 ||
         { cat "${work}/install.log" >&2; fail "the curl installer failed"; }
 else
     # The curl installer knows only /opt/feldspar; another prefix gets the
@@ -187,7 +187,7 @@ if [ "${upgrade}" -eq 1 ]; then
 
     snapshot "${prefix}" > "${work}/before"
     say "installing the same tarball again"
-    sh /install.sh --base-url "file://${release}" --variant linux > "${work}/again.log" 2>&1 ||
+    sh /install.sh --base-url "file://${release}" > "${work}/again.log" 2>&1 ||
         { cat "${work}/again.log" >&2; fail "the second install failed"; }
     snapshot "${prefix}" > "${work}/after"
     diff "${work}/before" "${work}/after" ||

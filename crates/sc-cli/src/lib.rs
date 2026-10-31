@@ -57,7 +57,7 @@ pub use db::{DbConfig, Serving};
 /// `unshare` and `chroot` that Chromium's sandbox makes inside the user
 /// namespace it creates, which the default allows only to a privileged
 /// container. Without it `view_app` cannot start its browser sandboxed, and is
-/// never started without the sandbox instead (README §2.9).
+/// never started without the sandbox instead (docs/OPERATIONS.md §12).
 pub const SECCOMP_PROFILE: &str = include_str!("../../../deploy/docker/seccomp.json");
 
 /// Apply the pending migrations to `driver`'s database, saying on stderr what

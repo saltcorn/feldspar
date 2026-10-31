@@ -3,7 +3,7 @@
 //!
 //! The image is built from what other files decide — the bucket and object
 //! name `scripts/build-static.sh --release` publishes to, the prefix the binary
-//! was compiled for, the Node major `scripts/setup-host.sh` installs — and
+//! was compiled for, the Node major `feldspar setup` installs — and
 //! nothing would notice one of those moving without it. So the fast tests here
 //! hold the Dockerfile to them, and hold the seccomp profile to its one
 //! deliberate difference from Docker's default.
@@ -42,20 +42,21 @@ fn shell_value(script: &str, name: &str) -> String {
 
 /// The Dockerfile downloads exactly what the release publishes, unpacks it at
 /// the prefix the binary was built for, and installs the Node that
-/// setup-host.sh would.
+/// `feldspar setup` would.
 #[test]
 fn the_image_installs_the_published_python_artifact_at_its_prefix() {
     let dockerfile = read("deploy/docker/Dockerfile");
     let build = read("scripts/build-static.sh");
-    let setup = read("scripts/setup-host.sh");
 
     let url = shell_value(&read("scripts/lib/release.sh"), "R2_PUBLIC_BASE");
-    let object = shell_value(&build, "R2_OBJECT").replace(
-        ".tar.gz",
-        &format!("-{}.tar.gz", shell_value(&build, "PYTHON_VARIANT")),
-    );
     assert_eq!(shell_value(&dockerfile, "RELEASE_URL"), url);
-    assert_eq!(shell_value(&dockerfile, "RELEASE_OBJECT"), object);
+    // The x86_64 release's own name, which the build publishes from
+    // `feldspar-linux-${TARGET_ARCH}.tar.gz`.
+    assert_eq!(
+        shell_value(&dockerfile, "RELEASE_OBJECT"),
+        "feldspar-linux-x86_64.tar.gz"
+    );
+    assert!(build.contains(r#"OBJECTS=("feldspar-linux-${TARGET_ARCH}.tar.gz")"#));
     assert_eq!(
         shell_value(&dockerfile, "PREFIX"),
         shell_value(&build, "PREFIX")
@@ -69,7 +70,7 @@ fn the_image_installs_the_published_python_artifact_at_its_prefix() {
     );
     assert_eq!(
         shell_value(&dockerfile, "NODE_MAJOR"),
-        shell_value(&setup, "NODE_MAJOR")
+        sc_cli::setup::NODE_MAJOR.to_string()
     );
 
     // Both stages on the hardened Debian 13 base, and nothing overridable: the

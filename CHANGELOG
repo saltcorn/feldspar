@@ -2,6 +2,66 @@
 
 Changes in reverse chronological order.
 
+## Deployment: three ways to get the executable, one way to set a host up (TODO D1.5)
+
+Before the general release, the deployment options are cut down to the ones that are needed.
+There are now three ways to get `feldspar`: the curl installer, the release tarball downloaded
+and installed by hand, and a source build that runs on the machine that built it. After any of
+them, `feldspar setup` makes the machine an instance.
+
+- **One release artifact.** The static artifact (no Python) is retired (TODO-portable-release
+  R3.3). `scripts/build-static.sh` builds only the dynamically linked tarball with its own
+  CPython and glibc, as `dist/feldspar-<version>-<target>.tar.gz`. `--release` publishes it as
+  `feldspar-linux-<arch>.tar.gz` and, from x86_64, also as `feldspar.tar.gz`, the name the first
+  releases had, which `~/feldspar-hosted` still downloads. `feldspar-debian13-python.tar.gz` is
+  no longer published, because nothing fetches it. `static-build.Dockerfile` lost its `static`
+  variant; its cargo cache directory is unchanged.
+- **`build-static.sh --deploy` is gone**, with `--deploy-variant`, `--ssh-opt`, `--remote-tmp`
+  and `--variant`. Each one is refused with a sentence that says why. Install the published
+  release on a host, or copy a tarball there and run its `install.sh`.
+- **The curl installer needs no options.** `curl -fsSL …/install.sh | sh` installs or upgrades
+  the one release, whatever `/opt/feldspar/VARIANT` says. A static or `debian13-python` host
+  moves to it at its next upgrade. `--variant` is still accepted and ignored, so an old command
+  line keeps working.
+- **`scripts/setup-host.sh` is removed. `feldspar setup` replaces it.** The two did the same
+  job, and `feldspar setup` is inside the binary, so it works the same after all three ways of
+  getting it. It now knows every family the script knew, by `ID` or `ID_LIKE`:
+  - Fedora and RHEL: dnf, with `postgresql-setup --initdb`, and Chromium from EPEL on RHEL,
+    AlmaLinux and Rocky.
+  - openSUSE: zypper, with Node from `nodejs-default`/`npm-default` on Tumbleweed and
+    `nodejs22`/`npm22` on Leap.
+  - Arch: pacman, with `initdb` set to peer authentication.
+
+  `useradd` creates the service account on these families. The script's certificate check is
+  ported too. When the binary has the release's `python/` beside it, a production setup runs
+  `feldspar python check` as the service account. If the HTTPS request fails without
+  `SSL_CERT_FILE` and passes with the distribution's bundle, setup sets that variable in a
+  systemd drop-in (`feldspar.service.d/ssl-cert-file.conf`), or in `/etc/conf.d/feldspar` under
+  OpenRC. Existing hosts set up by the script keep their unit and configuration, and an upgrade
+  removes the old `/opt/feldspar/setup-host.sh` with the rest of the old tree.
+- **The tarball's `install.sh` links `/usr/local/bin/feldspar`.** Only the curl installer (and
+  `setup-host.sh`) used to create this link, so a hand install now also ends with `feldspar` on
+  `PATH`, ready for `feldspar setup`.
+- **Docs.** docs/OPERATIONS.md §1–§3 are rewritten around the three ways. §3.1 replaces "the
+  prototype does not migrate" with what the migration system does, and why a dump is still
+  needed before an upgrade: an older binary refuses a migrated database. The Docker image moves
+  from README §2.9 to OPERATIONS §12. Building and publishing a release, the CPython pin and the
+  smoke test move to a new §13. README §2 now begins with the three ways, and the by-hand steps
+  after them are runtime-only (the build packages are in §3–§4). README §4.1 points at §13.
+  `docs/tutorial-python.md`, `tutorial-agents.md`, `tutorial-modules.md` and TECHNICAL_DESIGN
+  §15.2 are updated to match.
+- **Tests.** `setup_host.rs` and `build_static_deploy.rs` are removed with what they tested.
+  `setup::each_family_gets_its_own_packages_database_setup_and_account` and
+  `setup::the_bundled_python_has_its_certificates_checked_before_the_service_starts` cover the
+  port. `build_static_release` checks the two published names and the refused options.
+  `install_script` checks that every `--variant` gets the one release. `install_tree` checks
+  the `PATH` link.
+- **shellcheck.** `build-static.sh`, `install.sh`, `scripts/lib/*.sh` and `deploy/alpine-musl/*.sh`
+  pass `shellcheck -x` (0.11) with no findings. The fixes don't change behaviour: assignments
+  split from `readonly`/`local`, the `source` directive made resolvable, the missing-library
+  list printed line by line instead of word-split, `find` instead of `ls | wc -l`, a `shell=sh`
+  directive for the sourced `env.sh`, and the two intentional literal `$ORIGIN`s annotated.
+
 ## Portable release R2.4, R2.5, R3.1: the checks that needed docker and VMs, and what they found
 
 The parts of `TODO-portable-release.md` that the machine that wrote R1–R4 could not run: the

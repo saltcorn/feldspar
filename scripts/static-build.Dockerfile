@@ -19,31 +19,24 @@
 # `--target export --output type=local`, so the result is a directory on the
 # host and no image is left behind.
 #
-# Two variants come out of this one file, chosen by `VARIANT`, both on Debian 12
-# (bookworm, glibc 2.36):
-#
-#   static  `+crt-static`: one file, no shared libraries, runs on any glibc or
-#           musl distribution. No Python. Published until the linux one has
-#           replaced it (TODO-portable-release D8).
-#   linux   dynamically linked, with `--features python` against a bundled
-#           CPython — python-build-standalone, pinned by release and SHA-256 in
-#           `scripts/build-static.sh` and unpacked at `${PREFIX}/python` — so it
-#           runs on every glibc ≥ 2.36 distribution with nothing Python-related
-#           on the host. It also carries bookworm's glibc and `.glibc` copies of
-#           the two executables that use it, for musl hosts (Alpine). See
-#           TODO-portable-release.md §2 and `scripts/lib/python-bundle.sh`.
-#           Published as `feldspar-linux-<arch>.tar.gz` (docs/OPERATIONS.md §1).
+# What comes out is the one release artifact, built on Debian 12 (bookworm,
+# glibc 2.36): dynamically linked, with `--features python` against a bundled
+# CPython — python-build-standalone, pinned by release and SHA-256 in
+# `scripts/build-static.sh` and unpacked at `${PREFIX}/python` — so it runs on
+# every glibc ≥ 2.36 distribution with nothing Python-related on the host. It
+# also carries bookworm's glibc and `.glibc` copies of the two executables that
+# use it, for musl hosts (Alpine). See `scripts/lib/python-bundle.sh` and
+# docs/OPERATIONS.md §1. Published as `feldspar-linux-<arch>.tar.gz`.
 
 ARG RUST_VERSION=1.97
 ARG DEBIAN_SUITE=bookworm
-ARG VARIANT=static
 
 FROM rust:${RUST_VERSION}-${DEBIAN_SUITE} AS builder
-ARG VARIANT
 
 # The C-side build requirements, in the order the crates that need them appear
-# in the dependency graph. `zlib1g-dev` is the one that is easy to miss: a
-# `+crt-static` link needs `libz.a`, and the shared library alone is not enough.
+# in the dependency graph. `patchelf` makes the `.glibc` copies. The
+# distribution's Python is only a build tool here: the binary links the bundled
+# one.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         clang \
         libclang-dev \
@@ -56,14 +49,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         xz-utils \
         curl \
         ca-certificates \
+        patchelf \
     && rm -rf /var/lib/apt/lists/*
-
-# `patchelf` makes the `linux` variant's `.glibc` copies. The distribution's
-# Python is not wanted: the variant links the bundled one.
-RUN if [ "${VARIANT}" = linux ]; then \
-        apt-get update && apt-get install -y --no-install-recommends patchelf \
-        && rm -rf /var/lib/apt/lists/*; \
-    fi
 
 # Node from nodejs.org rather than the distribution: the UI bundles are built by
 # Vite 5, whose floor is Node 18, and a Debian stable's Node is whatever that
@@ -87,7 +74,7 @@ RUN rustup target add "${TARGET}"
 # ends up in a build artifact.
 ARG PREFIX=/opt/feldspar
 
-# The `linux` variant's CPython, at `${PREFIX}/python` — inside this container,
+# The bundled CPython, at `${PREFIX}/python` — inside this container,
 # so the interpreter PyO3 configures the build from, the library it links and
 # the tree that ships are one directory at the path it is installed at. Before
 # the source is copied, so a source change does not download it again. The pin
@@ -97,10 +84,8 @@ ARG PBS_URL=""
 ARG PBS_SHA256=""
 COPY scripts/lib/python-bundle.sh /usr/local/bin/feldspar-python-bundle
 RUN set -eu; \
-    if [ "${VARIANT}" = linux ]; then \
-        [ -n "${PBS_URL}" ] || { echo "the linux variant needs PBS_URL and PBS_SHA256 (scripts/build-static.sh passes them)" >&2; exit 1; }; \
-        feldspar-python-bundle fetch "${PBS_URL}" "${PBS_SHA256}" "${PREFIX}" "${PREFIX}/python"; \
-    fi
+    [ -n "${PBS_URL}" ] || { echo "the build needs PBS_URL and PBS_SHA256 (scripts/build-static.sh passes them)" >&2; exit 1; }; \
+    feldspar-python-bundle fetch "${PBS_URL}" "${PBS_SHA256}" "${PREFIX}" "${PREFIX}/python"
 
 WORKDIR ${PREFIX}
 COPY . ${PREFIX}
@@ -114,18 +99,15 @@ ARG SC_BUILD_ADMIN=1
 ARG SC_BUILD_TIME=""
 ARG SC_BUILD_COMMIT=""
 ARG JOBS=
-# The `linux` variant strips here rather than on the host, because its
+# Stripped here rather than on the host, because the
 # `.glibc` copy has to be made from the stripped binary.
 ARG STRIP=1
 ENV SC_BUNDLE_PREFIX=${PREFIX}
 
-# `+crt-static` is what makes the static artifact one file that runs on both a
-# glibc distribution and a musl one — see the header of `scripts/build-static.sh`
-# for why that, and not a musl target, is the way there. The `linux` variant is
-# linked dynamically instead, built with the `python` feature against the
-# bundled CPython, and finds its `libpython` through a RUNPATH of
-# `$ORIGIN/../python/lib` — beside the binary wherever the tree is, never the
-# host's. (RUSTFLAGS reach no shell: `$ORIGIN` arrives at the linker as written.)
+# Linked dynamically, with the `python` feature against the bundled CPython,
+# finding its `libpython` through a RUNPATH of `$ORIGIN/../python/lib` — beside
+# the binary wherever the tree is, never the host's. (RUSTFLAGS reach no shell:
+# `$ORIGIN` arrives at the linker as written.)
 #
 # The two cache mounts make a second build of a changed tree minutes rather than
 # an hour. `target` is `sharing=locked` because two concurrent builds writing one
@@ -133,10 +115,8 @@ ENV SC_BUNDLE_PREFIX=${PREFIX}
 # `CARGO_TARGET_DIR` is a fixed path rather than `${PREFIX}/target` so the cache
 # mount's target is a literal: build-arg expansion inside a `--mount` flag is not
 # something to rely on, and a cache mount that silently does not apply is a
-# forty-minute rebuild that looks like a cache miss. Each variant builds in its
-# own subdirectory of it: they differ in RUSTFLAGS, features and base image, and
-# sharing one target directory would rebuild everything on every switch — or
-# worse, link objects compiled against one Debian's headers into the other.
+# forty-minute rebuild that looks like a cache miss. (Its `linux` subdirectory
+# is where the build has always gone, so an existing cache still applies.)
 #
 # The UI bundles are built by sc-cli's build script into `ui/*/dist` of this
 # source tree, which `.dockerignore` keeps out of the context, so every build
@@ -148,31 +128,21 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     set -eu; \
     export SC_BUILD_ADMIN="${SC_BUILD_ADMIN}"; \
     export SC_BUILD_TIME="${SC_BUILD_TIME}" SC_BUILD_COMMIT="${SC_BUILD_COMMIT}"; \
-    export CARGO_TARGET_DIR="/build/target/${VARIANT}"; \
+    export CARGO_TARGET_DIR="/build/target/linux"; \
     case "${SC_BUILD_ADMIN}" in 0|false|False|FALSE) ;; *) touch ui/*/package.json ;; esac; \
-    case "${VARIANT}" in \
-        static) \
-            export RUSTFLAGS="-C target-feature=+crt-static${RUSTFLAGS:+ ${RUSTFLAGS}}"; \
-            features="" ;; \
-        linux) \
-            export PYO3_PYTHON="${PREFIX}/python/bin/python3"; \
-            export RUSTFLAGS='-C link-arg=-Wl,-rpath,$ORIGIN/../python/lib'"${RUSTFLAGS:+ ${RUSTFLAGS}}"; \
-            features="--features python" ;; \
-        *) echo "unknown VARIANT ${VARIANT}" >&2; exit 1 ;; \
-    esac; \
-    cargo build --release --target "${TARGET}" -p sc-cli ${features} ${JOBS:+--jobs "${JOBS}"}; \
+    export PYO3_PYTHON="${PREFIX}/python/bin/python3"; \
+    export RUSTFLAGS='-C link-arg=-Wl,-rpath,$ORIGIN/../python/lib'"${RUSTFLAGS:+ ${RUSTFLAGS}}"; \
+    cargo build --release --target "${TARGET}" -p sc-cli --features python ${JOBS:+--jobs "${JOBS}"}; \
     mkdir -p /out/bin; \
     cp "${CARGO_TARGET_DIR}/${TARGET}/release/feldspar" /out/bin/feldspar
 
-# The `linux` variant's runtime: the CPython it linked, then bookworm's glibc
+# The runtime: the CPython it linked, then bookworm's glibc
 # and the `.glibc` copies made from this image's libraries — this image, because
 # they are the ones the binary was linked against.
 RUN set -eu; \
-    if [ "${VARIANT}" = linux ]; then \
-        cp -a "${PREFIX}/python" /out/python; \
-        case "${STRIP}" in 0|false|False|FALSE) strip=0 ;; *) strip=1 ;; esac; \
-        feldspar-python-bundle glibc /out "${PREFIX}" "${strip}"; \
-    fi
+    cp -a "${PREFIX}/python" /out/python; \
+    case "${STRIP}" in 0|false|False|FALSE) strip=0 ;; *) strip=1 ;; esac; \
+    feldspar-python-bundle glibc /out "${PREFIX}" "${strip}"
 
 # Staged separately from the build so the cache mount above is not held open
 # while the (large) copies happen.

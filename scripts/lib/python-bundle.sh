@@ -167,7 +167,7 @@ cmd_glibc() {
             --force-rpath --set-rpath "${rpath}" "${copy}"
         chmod 755 "${copy}"
     done
-    echo "python-bundle: bundled $(ls "${glibc}" | wc -l) libraries in glibc/; loader ${prefix}/glibc/${loader}"
+    echo "python-bundle: bundled $(find "${glibc}" -mindepth 1 -maxdepth 1 | wc -l) libraries in glibc/; loader ${prefix}/glibc/${loader}"
 }
 
 case "${1:-}" in

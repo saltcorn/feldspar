@@ -64,121 +64,71 @@ What is still out of scope, and what each milestone since the MVP added, is in
 
 ---
 
-## 2. Quick start: a production install on Debian 13
+## 2. Installing
 
-A complete deployment, from a clean Debian 13 ("trixie") machine to a service that
-starts at boot: PostgreSQL, a Rust toolchain, a build from source, a
-`feldspar.toml`, and a systemd unit. Each step links to the section that explains
-it properly — read those when something does not fit your box. If you only want to
-*try* Saltcorn, skip this and follow §3–§8 instead (on a Mac, §4.2 is the short version).
+There are three ways to get the `feldspar` executable onto a machine, and one command
+that makes the machine an instance afterwards.
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md) §1–§3 is the operator's version of this
+section: where each runs, what lands where, and how each is upgraded.
 
-Everything below assumes a `sudo`-capable login, and uses `example.com` as the
-domain applications will be served under.
-[`docs/OPERATIONS.md`](docs/OPERATIONS.md) is the same ground as an operator's
-manual — the two installation modes side by side, the upgrade path for each, the
-configuration file and every environment variable, the reload signal, and running
-a coding agent against the installation.
-
-**The shortest way: one line, then `feldspar setup`.** On Debian, Ubuntu, Fedora,
-RHEL, openSUSE, Arch or Alpine (x86_64):
+**1. The curl installer** — on Debian, Ubuntu, Fedora, RHEL, openSUSE, Arch or Alpine
+(x86_64), or Windows under WSL2:
 
 ```bash
-curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh -s -- --variant linux
-sudo feldspar setup --server --domain example.com   # PostgreSQL here, a system service
+curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh
 ```
 
-The first line installs the `feldspar` executable and nothing else: it downloads the
-release below, checks its checksum, puts the tree at `/opt/feldspar` and links
-`feldspar` onto `PATH`. Beside it, it installs only what it needs to download and unpack
-(`curl` or `wget`, `tar`) and what the binary needs at run time (`ca-certificates`); the
-binary brings its own CPython. Without `--variant linux` a new install gets the static
-artifact, which has no Python. It asks for `sudo` when it is not run as root;
-`sh -s -- --dry-run` prints what it would do, and `--help` lists the options. Run it again
-to upgrade: it swaps the new tree in by rename, stops running feldspar units for the swap
-and starts them again, and keeps the previous tree as `/opt/feldspar.old`
-(docs/OPERATIONS.md §3.2). On Windows it runs inside WSL2. On a platform with no release
+It downloads the latest release, checks its checksum, puts the tree at `/opt/feldspar`
+and links `feldspar` onto `PATH`. Beside it, it installs only what it needs to download
+and unpack (`curl` or `wget`, `tar`) and what the binary needs at run time
+(`ca-certificates`); the binary brings its own CPython. It asks for `sudo` when it is not
+run as root. To give it an option, `sh -s -- --dry-run` (`-s` makes `sh` read the script
+from the pipe and pass it what follows `--`); `--dry-run` prints what it would do, and
+`--help` lists the rest. Run it again to upgrade (§2.8). On a platform with no release
 (aarch64 and macOS for now, 32-bit ARM, the BSDs) it says what to do instead and exits
 (docs/OPERATIONS.md §1.1).
 
-The second line makes the machine an instance (§7, "Setting up an instance"):
-
-| | |
-| --- | --- |
-| `sudo feldspar setup --server` | production: PostgreSQL installed and run on this host, a `feldspar` system account, `/etc/feldspar/feldspar.toml`, and a systemd unit (OpenRC on Alpine), started |
-| `feldspar setup --dev` | development: a SQLite file and `~/.config/feldspar/feldspar.toml`; you start `feldspar serve` yourself |
-| `feldspar setup` | asks which, and which database — SQLite, PostgreSQL here, or PostgreSQL elsewhere |
-
-`--database-url` (or `--db-host`, `--db-user`, `--db-password`, `--db-name`) uses a
-PostgreSQL on another host instead, and `--dry-run` prints every command and file first.
-It also installs Node.js (npm 9.3 or newer, from NodeSource on Debian and Ubuntu) and a
-headless browser for the coding agent's `view_app`, as `setup-host.sh` below does
-(`--no-node` and `--no-browser` leave them out). Continue at §2.7.
-
-**The short way: download the built binary.** There is a prebuilt artifact of the
-latest build, with its own CPython, that runs on Debian, Ubuntu, Fedora, RHEL,
-openSUSE, Arch and Alpine (docs/OPERATIONS.md §1.1). It needs no Rust, no C
-toolchain, no Python and no checkout: it is all of §2 with the build taken out.
+**2. The release tarball, by hand** — the same release, with nothing piped into a shell:
 
 ```bash
 curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz
 curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz.sha256
-sha256sum -c feldspar-linux-x86_64.tar.gz.sha256        # optional, and quick
+sha256sum -c feldspar-linux-x86_64.tar.gz.sha256
 tar -xzf feldspar-linux-x86_64.tar.gz
-sudo feldspar-*/install.sh                              # the tree at /opt/feldspar
-sudo /opt/feldspar/setup-host.sh --domain example.com   # packages, database, unit
+sudo feldspar-*/install.sh                              # the tree at /opt/feldspar, feldspar on PATH
 ```
 
-The tarball carries `setup-host.sh`, so the second command puts it at
-`/opt/feldspar/setup-host.sh` and the third runs it from there — it finds the binary
-beside it, and does everything §2.1–§2.6 does except build (PostgreSQL, the
-`feldspar` service account, the role and database, `/etc/feldspar/feldspar.toml`,
-the systemd unit, and `feldspar` on `PATH`). `--dry-run` prints all of it without
-doing any of it, and `--help` lists the options. Then continue at §2.7, which is DNS,
-the first admin user and TLS.
+Those URLs carry no version: they are always the latest release. It runs on the same
+distributions as the curl installer and needs no Rust, no C toolchain, no Python and no
+checkout.
 
-Those URLs carry no version: they are always the *latest* build, which is also how a
-host is upgraded (§2.8). Everything else in this README applies to it unchanged.
-`feldspar.tar.gz` from the same place is the older **static** artifact: one
-statically linked file, without Python or native Node addons in modules (§4.1),
-published beside this one until it is retired (docs/OPERATIONS.md §1).
+**3. Compiled from source**, to run on the machine that compiled it: §3 and §4 are the
+prerequisites and the build. The binary is linked against this machine's glibc, and reads
+its UI bundles from the checkout it was built in, so the checkout stays where it is.
 
-**Or run it as a script.** `scripts/setup-host.sh` is this section — packages, the
-service account, the role and database, `feldspar.toml`, the unit — and it can be
-fetched and run on a bare host:
+**Then make the machine an instance**, whichever way the binary came:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/saltcorn/feldspar/main/scripts/setup-host.sh \
-  | sh -s -- --domain example.com            # builds from source here, as §2.4 does
-```
+| | |
+| --- | --- |
+| `sudo feldspar setup --server` | production: PostgreSQL installed and run on this host, Node.js and a headless browser, a `feldspar` system account, `/etc/feldspar/feldspar.toml`, and a systemd unit (OpenRC on Alpine), started |
+| `feldspar setup --dev` | development: a SQLite file and `~/.config/feldspar/feldspar.toml`; you start `feldspar serve` yourself |
+| `feldspar setup` | asks which, and which database — SQLite, PostgreSQL here, or PostgreSQL elsewhere |
 
-That is the from-source route. The download above skips it: run from inside an
-installed artifact, `setup-host.sh` finds the binary beside it and takes `--static`
-as its default, so there is nothing to build and no flag to remember. The same
-artifact can be built and pushed from a workstation instead of downloaded (§4.1) —
+`--domain example.com` names the domain applications are served under, `--database-url`
+(or `--db-host`, `--db-user`, `--db-password`, `--db-name`) uses a PostgreSQL on another
+host instead, and `--dry-run` prints every command and file first. Continue at §2.7.
 
-```bash
-scripts/build-static.sh --deploy root@host   # build, copy, unpack, install
-```
-
-— and then `sudo /opt/feldspar/setup-host.sh --domain example.com` on the host.
-Fetched on its own rather than out of a tarball, the script still needs the flag:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/saltcorn/feldspar/main/scripts/setup-host.sh \
-  | sh -s -- --static --domain example.com
-```
-
-Either order works, `wget -qO-` does as well as curl, `--dry-run` prints every
-command and file first, and `--help` lists the rest (an external database with
-`--database-url`, a different listen address, a second run that keeps what is
-already there). Read on to know what it did.
+The rest of this section is what `feldspar setup --server` does, step by step, on Debian
+13 ("trixie") — read it to know what it did, or follow it to do the same by hand. Everything
+below assumes a `sudo`-capable login, and uses `example.com` as the domain applications
+will be served under. If you only want to *try* Saltcorn, `feldspar setup --dev` is enough
+(on a Mac, §4.2 is the short version).
 
 ### 2.1 Packages
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential pkg-config git curl ca-certificates \
-                    libclang-dev postgresql postgresql-client
+sudo apt install -y ca-certificates curl postgresql postgresql-client chromium
 
 # Node.js from NodeSource, *not* from Debian — see the note below
 sudo install -d -m 0755 /etc/apt/keyrings
@@ -190,45 +140,36 @@ https://deb.nodesource.com/node_26.x nodistro main" \
 sudo apt update && sudo apt install -y nodejs
 ```
 
-- **`build-essential` / `pkg-config`** — a C toolchain and linker for the Rust build.
-  No TLS libraries are needed: the server links rustls, not OpenSSL.
-- **`libclang-dev`** — a **build-time** requirement of the module runtime. The server
-  links `deno_runtime`, several of whose extensions reach `rusqlite`'s session feature
-  and so `bindgen`, which needs libclang. There is no feature knob that turns it off,
-  and it is needed only to build: the binary it produces does not use libclang.
 - **`postgresql`** on trixie is PostgreSQL 17; the package starts the server and
   enables it at boot for you.
-- **`nodejs` / `npm`** — needed **twice**: once at build time, for the two front-end
-  bundles (§6), and again at run time — the server itself runs `npm` whenever an
-  application is installed or built, from the admin UI's **Build** button or from
-  `feldspar build-app` (§7), and whenever a module is installed. It never runs
-  `node`: an application's bundle is built by npm, and a module runs on a
-  JavaScript worker inside the `feldspar` process.
+- **`chromium`** is the headless browser the coding agent's `view_app` drives. On
+  Ubuntu it has to be Google Chrome from Google's own apt repository instead, because
+  Ubuntu's `chromium-browser` is a snap, which does not run under a service account
+  (docs/OPERATIONS.md §2.5).
+- **`nodejs` / `npm`** — the server runs `npm` whenever an application is installed or
+  built, from the admin UI's **Build** button or from `feldspar build-app` (§7), and
+  whenever a module is installed. It never runs `node`: an application's bundle is built
+  by npm, and a module runs on a JavaScript worker inside the `feldspar` process. A
+  source build needs it to build the front-end bundles too (§6).
 
   **From NodeSource rather than from Debian**, because `apt install npm` is npm
   **9.2.0** on bookworm, trixie and Ubuntu 24.04 alike, and npm before 9.3.0 cannot
   install a *module*: the modules directory depends on the v1 API stub packages at a
   `file:` path and overrides the same names, and an npm that old hands the path to
   semver and fails the install — any install, whatever it depends on — with
-  `Invalid comparator: file:/…/v1-api-stub/saltcorn-data`. `scripts/setup-host.sh`
-  does the same thing, and leaves an existing npm alone when it is 9.3.0 or newer.
-  Upgrading npm on its own (`sudo npm install -g npm@latest`) works too.
+  `Invalid comparator: file:/…/v1-api-stub/saltcorn-data`. `feldspar setup` does the
+  same thing, and leaves an existing npm alone when it is 9.3.0 or newer. Upgrading npm
+  on its own (`sudo npm install -g npm@latest`) works too.
 
-The build needs outbound network for cargo's crates and a prebuilt V8, but nothing
-listens on the internet until §2.7.
+### 2.2 A service account
 
-### 2.2 A service account and a place to live
-
-Run the server as its own unprivileged system user, and keep the checkout somewhere
-that user can read:
+Run the server as its own unprivileged system user:
 
 ```bash
 sudo adduser --system --group --home /var/lib/feldspar feldspar
-sudo install -d -o "$USER" -g "$USER" /opt/feldspar/src
 ```
 
-The checkout is built and owned by *you* and is only ever read by the service; the
-service's writable state (disk file stores, application source trees and their
+The service's writable state (disk file stores, application source trees and their
 `node_modules`, npm's cache) lives in `/var/lib/feldspar`, which the systemd unit in
 §2.6 creates.
 
@@ -249,14 +190,6 @@ consequences worth knowing —
   sudo -u feldspar git config --global user.name  "Saltcorn"
   sudo -u feldspar git config --global user.email "feldspar@example.com"
   ```
-
-> **The built binary keeps a path back into its checkout.** `cargo build` records the
-> absolute paths of `ui/admin/dist` and `ui/ide/dist` in the binary (§6), which is how
-> `feldspar serve` serves the admin UI and the IDE with no flags at all. That path has
-> to keep existing: build in the directory you intend to keep, not in `/tmp` or a home
-> directory you will clean out. Copying or installing the *binary* elsewhere is fine —
-> the recorded paths are absolute. If you do need to separate the two, pass
-> `--static-dir` (§6).
 
 ### 2.3 The database
 
@@ -283,29 +216,24 @@ For a Postgres on another host, give the role a password instead
 (`sudo -u postgres psql -c "CREATE ROLE feldspar LOGIN PASSWORD 'change-me'"`) and put
 a `url` in the configuration file below rather than a socket path.
 
-### 2.4 Rust, and the build
+### 2.4 The binary
 
-Install rustup as your own login user — the toolchain is only needed to build, and
-the service never uses it:
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-. "$HOME/.cargo/env"
-rustc --version    # must be >= 1.85, for edition 2024
-```
-
-Then clone and build. This compiles the workspace in release mode *and* runs
-`npm ci && npm run build` in both `ui/admin` and `ui/ide` (§6), so it takes a while
-and wants a few GB of RAM — on a small VM, add swap first (§11 explains why the
-build is heavy):
+One of the three at the top of this section. After the curl installer or the tarball,
+`/usr/local/bin/feldspar` is a link to `/opt/feldspar/bin/feldspar`. After a source
+build (§4), install it there yourself:
 
 ```bash
-git clone <this-repo-url> /opt/feldspar/src
-cd /opt/feldspar/src
-cargo build --release -p sc-cli
 sudo install -m 0755 target/release/feldspar /usr/local/bin/feldspar
 feldspar                       # prints the usage summary and the config paths it searches
 ```
+
+> **A source-built binary keeps a path back into its checkout.** `cargo build` records
+> the absolute paths of the UI bundles in the binary (§6), which is how `feldspar
+> serve` serves the admin UI and the IDE with no flags at all. That path has to keep
+> existing, and for a service it has to be **outside `/home`**: the unit below runs
+> with `ProtectHome=true`, which hides home directories from it. Build in the
+> directory you intend to keep, such as `/opt/feldspar-src`. The release has no such
+> path: its bundles are under `/opt/feldspar`.
 
 ### 2.5 The configuration file
 
@@ -500,41 +428,35 @@ naming the target, rather than booting half-working (§10).
 
 ### 2.8 Updating
 
-The project is a **prototype**: it does not migrate databases created by older builds,
-so take a dump before you upgrade one.
+A release — from the curl installer or the tarball — is updated by installing a newer
+one, the same way it was installed:
 
 ```bash
-sudo -u feldspar pg_dump -h /var/run/postgresql feldspar > ~/feldspar-$(date +%F).sql
+curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh
+# or: download the newer tarball as in §2, then  sudo feldspar-*/install.sh
+```
 
-cd /opt/feldspar/src && git pull
-cargo build --release -p sc-cli
+Only the release tree changes: `feldspar setup` is not run again, and the database,
+`feldspar.toml` and the unit are left alone. `install.sh` copies the tree beside
+`/opt/feldspar` and swaps it in by rename, so a running server is never written over;
+it stops running feldspar units for the swap and starts them again, and keeps the
+previous tree as `/opt/feldspar.old` (docs/OPERATIONS.md §3.2).
+
+A source build is updated by building again:
+
+```bash
+cd /opt/feldspar-src && git pull
+cargo build --release -p sc-cli          # with the same --features as before
 sudo install -m 0755 target/release/feldspar /usr/local/bin/feldspar
 sudo systemctl restart feldspar
 ```
 
-A host installed from a downloaded artifact is updated by installing a newer one. Only
-the release tree changes — `setup-host.sh` is not run again, the database,
-`feldspar.toml` and the unit are left alone. On the host, from the same version-less
-URL as the install:
+Either way, the new release migrates the database on its first start, and an older
+binary refuses a database a newer one has migrated. Going back therefore needs the
+database as it was, so take a dump before upgrading (docs/OPERATIONS.md §3.1):
 
 ```bash
-curl -fLO https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz
-tar -xzf feldspar-linux-x86_64.tar.gz
-sudo feldspar-*/install.sh
-```
-
-(`feldspar.tar.gz` on a host that runs the static artifact; `cat /opt/feldspar/VARIANT`
-says which. A host on the older Debian 13 only build, `debian13-python`, takes the
-Linux artifact and keeps its Python modules: docs/OPERATIONS.md §1.4.)
-
-`install.sh` copies the tree beside `/opt/feldspar` and swaps it in by rename, so a
-running server is never written over; it stops running feldspar units for the swap and
-starts them again, and keeps the previous tree as `/opt/feldspar.old`
-(docs/OPERATIONS.md §3.2). The curl installer does the same in one line, and so does a
-build pushed from the workstation:
-
-```bash
-scripts/build-static.sh --deploy root@host
+sudo -u feldspar pg_dump -h /var/run/postgresql feldspar > ~/feldspar-$(date +%F).sql
 ```
 
 The restart rebuilds and remounts every stored application; one that fails to build is
@@ -548,78 +470,14 @@ feldspar build-app blog --environment production
 That command mounts nothing, so it is safe to run against the live deployment's
 database (§7).
 
-### 2.9 The Docker image (an alternative)
+### 2.9 The Docker image
 
-`deploy/docker` holds a production image, a compose file and the seccomp profile it
-runs under. It is a second way to deploy, not a replacement for §2.1–2.8.
-
-- **What is in it.** The released Linux artifact from the bucket, under its older name
-  `feldspar-debian13-python.tar.gz` (the same tarball §2.8 installs, with Python),
-  checked against its `.sha256` and
-  unpacked at `/opt/feldspar`. It is not built from source. Chromium for `view_app`,
-  Node and npm from NodeSource, git, Python 3.13 and `tini` are installed with it.
-- **The base** is Docker Hardened Images' Debian 13 (`dhi.io/debian-base`, the `-dev`
-  variant, which has apt). Pulling it needs a free Docker account: run
-  `docker login dhi.io` once before the first build.
-- **How it runs.** As uid 10001, never root, on plain HTTP port 8080. The only writable
-  path is the `/var/lib/feldspar` volume (file stores, npm's cache, the secrets key).
-  Everything else can be read-only.
-- **TLS is the proxy's.** The image sets `FELDSPAR_SSL_MODE=proxy` (see HTTPS in §7): the
-  public URLs are `https://`, the session cookie is `Secure`, no certificate is ordered,
-  and the admin UI has no SSL / TLS tab. Put a TLS-terminating proxy in front that sends
-  the base domain **and** `*.<base domain>` to port 8080.
-
-```bash
-docker login dhi.io
-cp deploy/docker/env.example deploy/docker/.env      # set FELDSPAR_BASE_DOMAIN, POSTGRES_PASSWORD
-docker compose -f deploy/docker/compose.yml up -d --build
-```
-
-Then open the base domain and create the first user (§2.7: whoever gets there first
-becomes the admin).
-
-**The database** comes from the environment: `DATABASE_URL`, or `PGHOST`, `PGPORT`,
-`PGUSER`, `PGPASSWORD`, `PGDATABASE`. The compose file uses the `PG*` variables and its
-own `postgres:17`. To keep the password out of `docker inspect`, mount a `feldspar.toml`
-instead (for example as a Docker secret) and point `FELDSPAR_CONFIG` at it. Do not add
-`--environment` to the command line: naming an environment makes the file outrank the
-variables (§7).
-
-**Server flags** go after the image name, because the entrypoint is `feldspar serve
---bind 0.0.0.0:8080`. The compose file passes `--base-domain` this way.
-
-**The seccomp profile.** Chromium keeps its sandbox, and the server never starts it
-without one. The sandbox needs to create a user namespace, which Docker's default
-seccomp profile forbids. `deploy/docker/seccomp.json` is Docker's default profile with
-one entry added that allows `clone`, `unshare` and `chroot`. It needs no change on the
-host, only a run flag. The compose file already uses it. With plain `docker run`, get
-the profile from the image itself:
-
-```bash
-docker run --rm --entrypoint feldspar feldspar seccomp-profile > feldspar-seccomp.json
-docker run -d -p 8080:8080 -v feldspar-data:/var/lib/feldspar \
-  --security-opt seccomp=feldspar-seccomp.json --security-opt no-new-privileges:true \
-  --cap-drop ALL --read-only --tmpfs /tmp --shm-size 512m \
-  -e DATABASE_URL=postgres://feldspar:…@db.internal/feldspar \
-  feldspar --base-domain example.com
-```
-
-Without the profile the server still starts and serves everything else. It logs
-`view_app is unavailable`, with the flag to add, and the coding agent cannot look at
-the applications it builds. On an Ubuntu 23.10+ host with AppArmor's restriction on
-unprivileged user namespaces switched on, `--security-opt apparmor=unconfined` may also
-be needed. This has not been tested.
-
-**Updating.** The bucket holds only the latest release, and Docker caches the download.
-Rebuild without that cache, then recreate the container:
-
-```bash
-docker compose -f deploy/docker/compose.yml build --pull --no-cache
-docker compose -f deploy/docker/compose.yml up -d
-```
-
-The volume and the database survive. The prototype caveat of §2.8 applies: take a
-`pg_dump` first.
+`deploy/docker` holds a production image of the release, a compose file and the seccomp
+profile it runs under, for a host that runs containers rather than services. It serves
+plain HTTP on 8080 as an unprivileged user, behind a TLS-terminating proxy
+(`FELDSPAR_SSL_MODE=proxy`), and keeps Chromium's sandbox through a seccomp profile with
+one entry added to Docker's default. docs/OPERATIONS.md §12 is how to build, run and
+update it.
 
 ---
 
@@ -631,7 +489,7 @@ The volume and the database survive. The prototype caveat of §2.8 applies: take
 | **PostgreSQL** | 13 or newer (16 recommended) | the primary data store — *or* SQLite, see §5 Option C |
 | **libclang** (`libclang-dev`) | any recent | building the module runtime (`deno_runtime` → `bindgen`); build time only |
 | **npm** (and the Node.js it ships with) | **npm 9.3.0+** (Node 18+) | building the four front-end bundles — the admin UI, the IDE, Saltcorn UI and its builder (optional; see §6), **and** *installing* modules (Settings → Modules). Debian's and Ubuntu's own package is npm 9.2.0, which cannot install a module at all — install Node from NodeSource (§2.1) or `npm install -g npm@latest` |
-| **CPython** + `pip`, and `python3-dev` to build against | 3.11+ | **only** for a source build that runs Python trigger bodies or installs Python modules, with the `python` feature (below). The downloaded Linux artifact brings its own CPython 3.13 and needs none of this |
+| **CPython** + `pip`, and `python3-dev` to build against | 3.11+ | **only** for a source build that runs Python trigger bodies or installs Python modules, with the `python` feature (below). The release (§2) brings its own CPython 3.13 and needs none of this |
 | **CmdStan**, `make` and a C++ compiler (`g++` or `clang++`) | CmdStan 2.33+ | **only** for Bayesian models with the Stan provider; `feldspar cmdstan install` fetches and builds CmdStan (below) |
 
 **The built-in model providers are a cargo feature, and it is on.** `sc-model`'s
@@ -739,10 +597,8 @@ cargo build --release -p sc-cli --features python  # the only way to get Python 
 The reason is linkage rather than policy. Python is *embedded*: the build links
 `libpython3.x.so` into the binary, so a binary built with the feature **will not start
 at all** on a host that has no matching library — a dynamic-linker error before the
-server prints anything — and **the static artifact of §4.1 cannot carry it**, being a
-static binary with no shared-library dependencies by design. So a Python-capable server
-is a dynamically-linked build: either this one, or the prebuilt **Linux artifact**
-(`feldspar-linux-x86_64.tar.gz`, built by `scripts/build-static.sh`). That one carries
+server prints anything. The **release** (`feldspar-linux-x86_64.tar.gz`, §2, built by
+`scripts/build-static.sh`) is built with the feature, and carries
 its own CPython 3.13 ([python-build-standalone](https://github.com/astral-sh/python-build-standalone),
 pinned by the build) in `/opt/feldspar/python`, links its `libpython` from there, and so
 needs nothing Python-related on the host, on any of the distributions in
@@ -751,14 +607,14 @@ newer), so that `libpython` must be present on the host.
 
 At run time such a server wants one more thing, and only when Python is actually used:
 a `python3` with `pip` available (that is what *installs* a Python module, into a
-virtual environment the server owns and creates — `--python-dir`). The Linux artifact
-has one beside the binary. The interpreter that runs your code is the one linked in,
+virtual environment the server owns and creates — `--python-dir`). The release has one
+beside the binary. The interpreter that runs your code is the one linked in,
 and it is not started until the first Python body or module asks for it. `--python off`
 keeps it that way for good.
 
 **The interpreter `pip` runs under must match the one linked in**, to the minor version.
 `--python-bin` names it (default: `python/bin/python3` beside the binary when there is
-one, as in the Linux artifact, else `python3`); on a mismatch the server refuses to put the
+one, as in the release, else `python3`); on a mismatch the server refuses to put the
 environment on its import path and says so on Settings → Development, naming both
 versions — because a compiled extension built against one version and loaded into
 another does not reliably fail, it reads the wrong memory in silence.
@@ -796,86 +652,31 @@ still *offers* the `run_python_code` action — it fails at fire time saying the
 built without Python support, so a trigger's configuration keeps its meaning across
 deployments.
 
-### 4.1 Building for a machine that will not have a toolchain
+### 4.1 Building the release tarball
 
 Everything above builds *here*, and the binary it produces belongs here: it is
-linked against this machine's glibc and carries this checkout's paths to the admin
-UI and IDE bundles. To deploy to a VM without repeating §2.1 and §3 on it, build a
-packaged artifact instead:
+linked against this machine's glibc and carries this checkout's paths to the UI
+bundles. The release tarball that §2 downloads is built by a script instead, in a
+container with a pinned toolchain, on Debian 12 (glibc 2.36), with a bundled CPython
+3.13 and, for Alpine, a bundled glibc:
 
 ```bash
-scripts/build-static.sh                    # both artifacts, into dist/
-scripts/build-static.sh --deploy root@vm   # ...and install one on that machine
-scripts/build-static.sh --release          # ...and publish them to the R2 bucket
+scripts/build-static.sh                    # dist/feldspar-<version>-<target>.tar.gz
+scripts/build-static.sh --release          # ...and publish it to the R2 bucket
 scripts/build-static.sh --help             # targets, install prefix, options
 ```
 
-It builds two artifacts (`--variant static|linux|both`, default both):
+That is for whoever publishes a release, and docs/OPERATIONS.md §13 is its manual: the
+build options, what is published under which name, the CPython pin and the smoke test
+that installs the tarball on every supported distribution. To put feldspar on another
+machine, install the published release there (§2) rather than building one.
 
-- **linux** (`dist/feldspar-<version>-<target>-python.tar.gz`): dynamically linked,
-  built on Debian 12 (glibc 2.36), with a bundled CPython 3.13 in `python/` that the
-  binary finds beside itself. It runs on the host's glibc where that is 2.36 or newer,
-  and on a glibc it carries in `glibc/` on Alpine (or an older glibc); its `install.sh`
-  chooses (docs/OPERATIONS.md §1.2). Python triggers and modules, with nothing
-  Python-related on the host.
-- **static** (`dist/feldspar-<version>-<target>.tar.gz`): statically linked
-  (`+crt-static`), so it has no shared-library dependencies and no interpreter, and
-  runs on the same distributions. **That is also why it has no Python** — embedding
-  CPython means linking `libpython`, which a static binary cannot do (and could not
-  `dlopen` a C-extension wheel even if it did). It is published until the Linux
-  artifact has replaced it (docs/OPERATIONS.md §1).
-
-Each carries the admin SPA and the IDE beside it, an `install.sh` that
-puts the tree at `/opt/feldspar` — the prefix compiled into the binary, which
-`--prefix` changes at build time — and a copy of `setup-host.sh`, installed at
-`/opt/feldspar/setup-host.sh`. So a machine with nothing on it takes three commands
-and no checkout: unpack, `install.sh`, `setup-host.sh` (§2.2). The last of those is
-run once and is deliberately not on `PATH`.
-
-The destination then needs no Rust, no `libclang` and no C toolchain. It still needs
-a database, and it still needs `npm` if applications will be *built* on it (§7).
-
-`--deploy [user@]host` finishes the job over ssh: the tarball is copied to the host,
-unpacked in `/tmp` (`--remote-tmp` elsewhere), installed with its own `install.sh`
-under `sudo` unless the login is root, and the staging copy removed again. The host
-is anything ssh accepts, a `~/.ssh/config` alias included, and `--ssh-opt` (repeatable,
-one argv element each, e.g. `--ssh-opt -p2222`) passes options through. It is checked
-that the host answers *before* the build starts rather than after it. Nothing is
-restarted: an already-running server keeps serving the binary it started with until
-you restart the unit (`sudo systemctl restart feldspar`, §2.6).
-
-The host still needs a database, a service account and a unit, which is the other
-half of the two-step install: `scripts/setup-host.sh --static` on the host, in
-either order with the deploy (§2).
-
-`--release` publishes instead of deploying: each tarball and its `.sha256` go to the
-Cloudflare R2 bucket `feldspar-latest-static` (`--bucket` for another) through
-`npx wrangler r2 object put --remote`. That bucket is what §2 downloads:
-
-```
-https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz      linux
-https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz.sha256
-https://feldspar-latest-static.saltcorn.com/feldspar-debian13-python.tar.gz   the same, older name
-https://feldspar-latest-static.saltcorn.com/feldspar-debian13-python.tar.gz.sha256
-https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz                   static
-https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz.sha256
-```
-
-The object names carry no version — this is the *latest*
-build, and a machine fetching it has no version to ask for — so each release
-overwrites the last and the download URL never changes. They carry the platform, and
-a build publishes only its own: an aarch64 build publishes
-`feldspar-linux-aarch64.tar.gz` alone, because the two older names have always been
-the x86_64 tarballs. Each published checksum file names its own object rather than the
-versioned file it was computed over, so `sha256sum -c` works on what was downloaded. It needs a `wrangler` login with access
-to the bucket; that `npx` is on `PATH` is checked before the build starts.
-
-**Name resolution does not go through glibc.** A statically linked binary that calls
-`getaddrinfo` gets glibc's NSS machinery, which `dlopen`s a shared object for every
-module on the `hosts:` line of `/etc/nsswitch.conf` — `myhostname` is on Debian's and
-Ubuntu's by default — and each of those links the *shared* glibc, so the first hostname
-the process resolves loads a second `libc.so.6` beside the static one and the process
-dies. This binary therefore resolves names itself (`crates/sc-dns`): the linker puts a
+**Name resolution does not go through glibc.** glibc's `getaddrinfo` goes through its
+NSS machinery, which `dlopen`s a shared object for every module on the `hosts:` line of
+`/etc/nsswitch.conf` — `myhostname` is on Debian's and Ubuntu's by default — and in a
+binary that may run on a glibc other than the host's (the release on Alpine), that is a
+library built against another glibc loaded into the process. This binary therefore
+resolves names itself (`crates/sc-dns`): the linker puts a
 `hickory-resolver` implementation of `getaddrinfo` in front of glibc's, reading
 `/etc/resolv.conf` and `/etc/hosts` with no `dlopen` anywhere. Two things follow for a
 deployment: `/etc/nsswitch.conf` no longer affects how this process resolves anything,
@@ -885,7 +686,7 @@ and a name it must reach has to be in DNS or in `/etc/hosts` — mDNS (`.local`)
 ### 4.2 Development on macOS
 
 A development setup on a Mac (Apple silicon or Intel), from a clean machine to `feldspar
-serve`. It needs no `install.sh` and no `setup-host.sh`: those are for a Linux server.
+serve`. It needs no `install.sh`: that is for a Linux release.
 
 ```bash
 # 1. Tools: Xcode's command line tools, then Homebrew's Postgres and Node, and Rust
@@ -1219,8 +1020,9 @@ what that configuration needs:
   becomes its role, reached over the socket with no password.
 - **Production** (`--server`, or `--production`): a `feldspar` system account with
   `/var/lib/feldspar` as its home, `/etc/feldspar/feldspar.toml` (`root:feldspar`,
-  0640), and a service: the §2.6 systemd unit on Debian and Ubuntu, or an OpenRC script
-  under `supervise-daemon` on Alpine. The service is enabled and (re)started, unless
+  0640), and a service: the §2.6 systemd unit on Debian, Ubuntu, Fedora, RHEL, openSUSE
+  and Arch (and what `/etc/os-release` says derives from them), or an OpenRC script under
+  `supervise-daemon` on Alpine. The service is enabled and (re)started, unless
   you pass `--no-start`. `bind` defaults to `0.0.0.0:80`, and `--domain` sets
   `base_domain`. The unit runs the executable `setup` was run as, unless you pass
   `--binary`.
@@ -1229,18 +1031,27 @@ what that configuration needs:
 install a module, and the coding agent's `view_app` drives a headless Chromium. A
 production setup installs whichever is missing (`--no-node` and `--no-browser` skip
 them). Node comes from NodeSource on Debian and Ubuntu, because their own npm is 9.2 and
-cannot install a module (§2.1), and from apk on Alpine. The browser is apt's `chromium`
-on Debian, Google Chrome from Google's apt repository on Ubuntu x86_64 (Ubuntu's
-`chromium-browser` is a snap, which does not run under a service account), and apk's
-`chromium` on Alpine. An npm of 9.3 or newer, or a browser on `PATH` that is not a snap,
+cannot install a module (§2.1), and from the distribution's packages elsewhere. The
+browser is apt's `chromium` on Debian, Google Chrome from Google's apt repository on
+Ubuntu x86_64 (Ubuntu's `chromium-browser` is a snap, which does not run under a service
+account), EPEL's on RHEL and its rebuilds, and the distribution's `chromium` elsewhere. An npm of 9.3 or newer, or a browser on `PATH` that is not a snap,
 is kept. The browser is then started once, headless, as the `feldspar` account. If it
 starts only without its sandbox, setup tells you to add `browser_sandbox = false`. If it
 does not start, setup prints the browser's error. Neither stops the setup. A development
 setup installs neither unless you pass `--node` or `--browser`, or answer yes at the
 terminal. It says what is missing at the end.
 
+**Certificates for the bundled Python.** The release's CPython has its certificate path
+compiled in. A production setup of the release therefore runs `feldspar python check` as
+the `feldspar` account, and where its HTTPS request fails without `SSL_CERT_FILE` and
+passes with the distribution's bundle, it sets that for the service: a systemd drop-in
+(`/etc/systemd/system/feldspar.service.d/ssl-cert-file.conf`), or `/etc/conf.d/feldspar`
+under OpenRC. A source build uses the host's own Python and skips the check.
+
 The database is `--db sqlite|postgres|remote-postgres`. A **local PostgreSQL** is
-installed (apt, or apk plus `rc-service postgresql setup`) only when nothing is listening
+installed (with the distribution's package manager, and its first-run step:
+`postgresql-setup --initdb` on Fedora and RHEL, `initdb` on Arch, `rc-service postgresql
+setup` on Alpine) only when nothing is listening
 on `/var/run/postgresql` already. Its role and database are created when they are
 missing. A **remote one** is `--database-url URL`, or `--db-host`/`--db-port`/`--db-user`/
 `--db-password`/`--db-name`, and is written into the file as given. `--sqlite PATH` names

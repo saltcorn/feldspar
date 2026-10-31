@@ -1,15 +1,15 @@
 //! `scripts/build-static.sh --release`: the upload step that runs after the
 //! tarball is written.
 //!
-//! Same shape as `build_static_deploy.rs` and for the same reason — compiling V8
-//! to check two `wrangler` invocations would be absurd. The script runs inside a
+//! Compiling V8 to check a few `wrangler` invocations would be absurd, so the
+//! script runs inside a
 //! throwaway "repository" (itself, plus the `Cargo.toml` it reads the version
 //! from) with a `PATH` in front of it holding stubs for `cargo`, `rustup` and
 //! `npx`. The `npx` stub records its argv and keeps a copy of every file it was
 //! asked to upload, so the assertions are about what would actually have landed
 //! in the bucket: the object names, and the contents of the checksum file.
 //!
-//! The `linux` variant's bundle step runs for real (`scripts/lib/python-bundle.sh`)
+//! The bundle step runs for real (`scripts/lib/python-bundle.sh`)
 //! over a fake python-build-standalone tarball, with `curl`, `ldd` and
 //! `patchelf` stubbed: what is under test is the tree it assembles and the
 //! commands it would have run, not CPython or the dynamic linker.
@@ -79,21 +79,14 @@ fn fixture(name: &str, npx_status: i32) -> Fixture {
         repo.join("scripts/build-static.sh"),
     )
     .expect("copy build-static.sh");
-    // The packaging step puts this in the artifact, so the throwaway repository
-    // has to have one.
-    fs::copy(
-        root.join("scripts/setup-host.sh"),
-        repo.join("scripts/setup-host.sh"),
-    )
-    .expect("copy setup-host.sh");
-    // And the curl-to-sh installer, which --release publishes beside it.
+    // The curl-to-sh installer, which --release publishes beside it.
     fs::copy(
         root.join("scripts/install.sh"),
         repo.join("scripts/install.sh"),
     )
     .expect("copy install.sh");
-    // And the bundle step the linux variant runs, the tree installer every
-    // artifact ships as its install.sh, and the upload half of --release.
+    // And the bundle step, the tree installer the artifact ships as its
+    // install.sh, and the upload half of --release.
     fs::create_dir_all(repo.join("scripts/lib")).unwrap();
     for lib in ["python-bundle.sh", "install-tree.sh", "release.sh"] {
         fs::copy(
@@ -306,7 +299,6 @@ impl Fixture {
             ])
             .arg("--output")
             .arg(self.dir.join("dist"))
-            .args(self.variant(extra))
             .args(extra)
             .env("PATH", &path)
             .output()
@@ -314,16 +306,6 @@ impl Fixture {
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         (output, stdout, stderr)
-    }
-
-    /// `--variant static` unless the test chose one: the tests below that predate
-    /// the Python artifact are about one tarball and two uploads.
-    fn variant(&self, extra: &[&str]) -> &'static [&'static str] {
-        if extra.contains(&"--variant") {
-            &[]
-        } else {
-            &["--variant", "static"]
-        }
     }
 
     /// What the npx stub recorded, in the order it was called.
@@ -350,44 +332,41 @@ impl Fixture {
     }
 }
 
+/// The x86_64 tarball goes up under its own platform name and under the name
+/// the first releases had, each with a checksum naming that object, and the
+/// installer goes up last.
 #[test]
 fn release_uploads_the_tarball_and_checksum_under_version_less_names() {
     let f = fixture("ok", 0);
+    f.fake_python_build_standalone(true);
     let (output, stdout, stderr) = f.release(&[]);
     assert!(
         output.status.success(),
         "--release failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
-    let calls = f.npx_calls();
-    assert_eq!(
-        calls.len(),
-        3,
-        "expected one upload each for the tarball, the checksum and the installer, got {calls:?}"
-    );
-
-    // The tarball, sent under a name that carries no version.
     let tarball = f.tarball();
     assert!(tarball.is_file(), "the build wrote no {tarball:?}");
     assert_eq!(
+        f.objects(),
+        [
+            "feldspar-latest-static/feldspar-linux-x86_64.tar.gz",
+            "feldspar-latest-static/feldspar-linux-x86_64.tar.gz.sha256",
+            "feldspar-latest-static/feldspar.tar.gz",
+            "feldspar-latest-static/feldspar.tar.gz.sha256",
+            "feldspar-latest-static/install.sh",
+        ]
+    );
+    let calls = f.npx_calls();
+    assert_eq!(
         calls[0],
         format!(
-            "wrangler r2 object put feldspar-latest-static/feldspar.tar.gz -f {} --remote",
+            "wrangler r2 object put feldspar-latest-static/feldspar-linux-x86_64.tar.gz -f {} --remote",
             tarball.display()
         ),
     );
-    assert!(
-        calls[1].starts_with(
-            "wrangler r2 object put feldspar-latest-static/feldspar.tar.gz.sha256 -f "
-        )
-    );
-    assert!(calls[1].ends_with(" --remote"), "{}", calls[1]);
-    // Last, the installer that fetches it — byte for byte the checkout's.
-    assert!(
-        calls[2].starts_with("wrangler r2 object put feldspar-latest-static/install.sh -f "),
-        "{}",
-        calls[2]
-    );
+    assert!(calls.iter().all(|c| c.ends_with(" --remote")), "{calls:?}");
+    // The installer that fetches it — byte for byte the checkout's.
     assert_eq!(
         fs::read(f.uploads.join("install.sh")).expect("the uploaded installer"),
         fs::read(f.repo.join("scripts/install.sh")).unwrap(),
@@ -397,8 +376,38 @@ fn release_uploads_the_tarball_and_checksum_under_version_less_names() {
         "a publish should print the one-line install:\n{stdout}"
     );
 
-    // What is inside it: the host installer, so the machine that downloads this
-    // from the bucket needs no checkout to set itself up.
+    // Both names hold the same tarball, and each checksum file names its own
+    // object rather than the versioned file, so `sha256sum -c` works on
+    // either download.
+    let local = fs::read_to_string(format!("{}.sha256", tarball.display())).unwrap();
+    let digest = local.split_whitespace().next().unwrap();
+    for object in ["feldspar-linux-x86_64.tar.gz", "feldspar.tar.gz"] {
+        assert_eq!(
+            fs::read(f.uploads.join(object)).unwrap(),
+            fs::read(&tarball).unwrap(),
+            "{object}"
+        );
+        assert_eq!(
+            fs::read_to_string(f.uploads.join(format!("{object}.sha256"))).unwrap(),
+            format!("{digest}  {object}\n"),
+        );
+        assert!(
+            stdout.contains(&format!(
+                "https://feldspar-latest-static.saltcorn.com/{object}"
+            )),
+            "{stdout}"
+        );
+    }
+    // The curl installer that was published fetches the platform's name, with
+    // the architecture filled in (`install_script` checks it resolves).
+    let installer = fs::read_to_string(f.uploads.join("install.sh")).unwrap();
+    assert!(
+        installer.contains("OBJECT=\"feldspar-linux-${ARCH}.tar.gz\""),
+        "{installer}"
+    );
+
+    // The tarball has no host setup script any more: `feldspar setup` is in the
+    // binary.
     let listing = Command::new("tar")
         .arg("-tzf")
         .arg(&tarball)
@@ -406,45 +415,27 @@ fn release_uploads_the_tarball_and_checksum_under_version_less_names() {
         .unwrap();
     let listing = String::from_utf8_lossy(&listing.stdout);
     assert!(
-        listing.lines().any(|l| l.ends_with("/setup-host.sh")),
-        "the published tarball carries no setup-host.sh:\n{listing}"
+        !listing.lines().any(|l| l.ends_with("/setup-host.sh")),
+        "{listing}"
     );
 
-    // What the bucket now holds: the tarball itself, byte for byte...
-    assert_eq!(
-        fs::read(f.uploads.join("feldspar.tar.gz")).expect("the uploaded tarball"),
-        fs::read(&tarball).unwrap(),
-    );
-    // ...and a checksum file naming the *published* object rather than the
-    // versioned one, so `sha256sum -c` works on what was downloaded.
-    let published = fs::read_to_string(f.uploads.join("feldspar.tar.gz.sha256"))
-        .expect("the uploaded checksum");
-    let local = fs::read_to_string(format!("{}.sha256", tarball.display())).unwrap();
-    let digest = local.split_whitespace().next().unwrap();
-    assert_eq!(published, format!("{digest}  feldspar.tar.gz\n"));
-
-    assert!(
-        stdout.contains("published") && stdout.contains("feldspar-latest-static/feldspar.tar.gz"),
-        "the run said nothing about publishing:\n{stdout}"
-    );
-    // And it names the URL that artifact is now served at — the one README §2
-    // tells an operator to download, so the two cannot drift apart unnoticed.
-    let public = "https://feldspar-latest-static.saltcorn.com/feldspar.tar.gz";
-    assert!(
-        stdout.contains(public),
-        "a publish should print where the artifact can now be fetched:\n{stdout}"
-    );
-    let readme = fs::read_to_string(workspace_root().join("README.md")).expect("README.md");
-    assert!(
-        readme.contains(public) && readme.contains(&format!("{public}.sha256")),
-        "README should document the published download URLs"
-    );
+    // README §2 and the operations manual tell an operator to download the
+    // published URLs, so the two cannot drift apart unnoticed.
+    let public = "https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz";
+    for doc in ["README.md", "docs/OPERATIONS.md"] {
+        let text = fs::read_to_string(workspace_root().join(doc)).unwrap();
+        assert!(
+            text.contains(public) && text.contains(&format!("{public}.sha256")),
+            "{doc} should document the published download URLs"
+        );
+    }
     fs::remove_dir_all(&f.dir).ok();
 }
 
 #[test]
 fn bucket_overrides_the_destination() {
     let f = fixture("bucket", 0);
+    f.fake_python_build_standalone(true);
     let (output, stdout, stderr) = f.release(&["--bucket", "feldspar-staging"]);
     assert!(
         output.status.success(),
@@ -453,8 +444,8 @@ fn bucket_overrides_the_destination() {
 
     let calls = f.npx_calls();
     assert!(
-        calls[0].contains("feldspar-staging/feldspar.tar.gz -f")
-            && calls[1].contains("feldspar-staging/feldspar.tar.gz.sha256 -f"),
+        calls[0].contains("feldspar-staging/feldspar-linux-x86_64.tar.gz -f")
+            && calls[1].contains("feldspar-staging/feldspar-linux-x86_64.tar.gz.sha256 -f"),
         "{calls:?}"
     );
     // A bucket somewhere else is not served at the public URL, so it is not
@@ -470,6 +461,7 @@ fn bucket_overrides_the_destination() {
 fn a_failed_upload_fails_the_run() {
     // wrangler exiting non-zero must not be reported as a published release.
     let f = fixture("fail", 1);
+    f.fake_python_build_standalone(true);
     let (output, stdout, stderr) = f.release(&[]);
     assert!(
         !output.status.success(),
@@ -569,75 +561,19 @@ fn member(tarball: &Path, path: &str) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// The tree that ships: the pinned CPython, linked beside the binary, the
+/// bundled glibc and the `.glibc` copies that use it, the tree installer, and
+/// a README that says what it needs from the host.
 #[test]
-fn the_default_release_builds_and_publishes_the_static_and_the_linux_artifact() {
-    let f = fixture("both", 0);
+fn the_release_bundles_python_and_glibc() {
+    let f = fixture("tree", 0);
     f.fake_python_build_standalone(true);
-    let (output, stdout, stderr) = f.release(&["--variant", "both"]);
+    let (output, stdout, stderr) = f.release(&[]);
     assert!(
         output.status.success(),
         "stdout:\n{stdout}\nstderr:\n{stderr}"
     );
-
-    let static_tarball = f.tarball();
-    let linux_tarball = PathBuf::from(
-        static_tarball
-            .display()
-            .to_string()
-            .replace(".tar.gz", "-python.tar.gz"),
-    );
-    assert!(static_tarball.is_file() && linux_tarball.is_file());
-
-    // Seven uploads: each tarball and its checksum under version-less names that
-    // tell the two apart — the linux one under its own name, which carries the
-    // platform (TODO-portable-release D13), and again under the name the Debian
-    // 13 build had, which existing hosts fetch (D5) — and the installer.
-    assert_eq!(
-        f.objects(),
-        [
-            "feldspar-latest-static/feldspar.tar.gz",
-            "feldspar-latest-static/feldspar.tar.gz.sha256",
-            "feldspar-latest-static/feldspar-linux-x86_64.tar.gz",
-            "feldspar-latest-static/feldspar-linux-x86_64.tar.gz.sha256",
-            "feldspar-latest-static/feldspar-debian13-python.tar.gz",
-            "feldspar-latest-static/feldspar-debian13-python.tar.gz.sha256",
-            "feldspar-latest-static/install.sh",
-        ]
-    );
-    // Both names hold the same tarball, and each checksum file names its own
-    // object, so `sha256sum -c` works on either download.
-    let digest = fs::read_to_string(format!("{}.sha256", linux_tarball.display())).unwrap();
-    let digest = digest.split_whitespace().next().unwrap();
-    for object in [
-        "feldspar-linux-x86_64.tar.gz",
-        "feldspar-debian13-python.tar.gz",
-    ] {
-        assert_eq!(
-            fs::read(f.uploads.join(object)).unwrap(),
-            fs::read(&linux_tarball).unwrap(),
-            "{object}"
-        );
-        assert_eq!(
-            fs::read_to_string(f.uploads.join(format!("{object}.sha256"))).unwrap(),
-            format!("{digest}  {object}\n"),
-        );
-        assert!(
-            stdout.contains(&format!(
-                "https://feldspar-latest-static.saltcorn.com/{object}"
-            )),
-            "{stdout}"
-        );
-    }
-    // The curl installer that was published fetches the new name, with the
-    // architecture filled in (`install_script` checks it resolves to x86_64).
-    let installer = fs::read_to_string(f.uploads.join("install.sh")).unwrap();
-    assert!(
-        installer.contains("OBJECT=\"feldspar-linux-${ARCH}.tar.gz\""),
-        "{installer}"
-    );
-
-    // Each artifact says which it is, for setup-host.sh to read.
-    assert_eq!(member(&static_tarball, "VARIANT"), "static\n");
+    let linux_tarball = f.tarball();
     assert_eq!(member(&linux_tarball, "VARIANT"), "linux\n");
 
     // The pinned CPython was fetched for this target...
@@ -693,7 +629,6 @@ fn the_default_release_builds_and_publishes_the_static_and_the_linux_artifact() 
         !listing.contains("libtcl"),
         "Tcl/Tk was not trimmed:\n{listing}"
     );
-    assert!(!static_tarball_lists(&static_tarball, "/python/"));
     // ...and both copies point at the bundled loader, through a DT_RPATH.
     let patched = tools.matches(
         "patchelf --set-interpreter /opt/feldspar/glibc/ld-linux-x86-64.so.2 \
@@ -713,11 +648,9 @@ fn the_default_release_builds_and_publishes_the_static_and_the_linux_artifact() 
         .unwrap()
         .replace("@PREFIX@", "/opt/feldspar")
         .replace("@BUILD_GLIBC@", "2.36");
-    for tarball in [&linux_tarball, &static_tarball] {
-        let install = member(tarball, "install.sh");
-        assert_eq!(install, installer, "{tarball:?}");
-        assert!(!install.contains("apt-get"), "{install}");
-    }
+    let install = member(&linux_tarball, "install.sh");
+    assert_eq!(install, installer);
+    assert!(!install.contains("apt-get"), "{install}");
     // Owned by root in the archive, whoever built it: install.sh keeps what it
     // copies as it is (`cp -p`), so a tree unpacked as root would otherwise
     // belong to the build account's uid.
@@ -738,33 +671,35 @@ fn the_default_release_builds_and_publishes_the_static_and_the_linux_artifact() 
     assert!(readme.contains("glibc 2.36 or newer"), "{readme}");
     assert!(readme.contains("feldspar python check"), "{readme}");
     assert!(
-        readme.contains("https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz")
-            && readme.contains("also published as feldspar-debian13-python.tar.gz"),
+        readme.contains("https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz"),
         "{readme}"
     );
-    let static_readme = member(&static_tarball, "README");
-    assert!(
-        static_readme
-            .contains("https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz"),
-        "the static README should point at the artifact with Python:\n{static_readme}"
-    );
-
-    // The download URL the operations manual gives is the one published.
-    let ops = fs::read_to_string(workspace_root().join("docs/OPERATIONS.md")).unwrap();
-    assert!(
-        ops.contains("https://feldspar-latest-static.saltcorn.com/feldspar-linux-x86_64.tar.gz"),
-        "docs/OPERATIONS.md should document the Python artifact's download URL"
-    );
+    assert!(readme.contains("sudo feldspar setup --server"), "{readme}");
     fs::remove_dir_all(&f.dir).ok();
 }
 
-fn static_tarball_lists(tarball: &Path, fragment: &str) -> bool {
-    let listing = Command::new("tar")
-        .arg("-tzf")
-        .arg(tarball)
-        .output()
-        .unwrap();
-    String::from_utf8_lossy(&listing.stdout).contains(fragment)
+/// The options that chose between two artifacts, or pushed one over ssh, are
+/// gone; a script that still passes one is told why before anything is built.
+#[test]
+fn removed_options_are_refused_with_a_reason() {
+    let f = fixture("removed", 0);
+    for option in [
+        &["--deploy", "root@vm"][..],
+        &["--variant", "linux"],
+        &["--deploy-variant", "linux"],
+        &["--ssh-opt", "-p2222"],
+        &["--remote-tmp", "/tmp"],
+    ] {
+        let (output, _stdout, stderr) = f.release(option);
+        assert_eq!(output.status.code(), Some(2), "{option:?}: {stderr}");
+        assert!(
+            stderr.contains(&format!("{} is gone", option[0])) && stderr.contains("OPERATIONS.md"),
+            "{option:?}: {stderr}"
+        );
+    }
+    assert!(f.npx_calls().is_empty());
+    assert!(!f.dir.join("cargo.log").exists(), "cargo ran anyway");
+    fs::remove_dir_all(&f.dir).ok();
 }
 
 #[test]
@@ -772,8 +707,7 @@ fn a_python_download_that_does_not_match_the_pin_is_refused_before_the_build() {
     let f = fixture("wrong-pbs", 0);
     // The real pin, which the fake tarball does not match.
     f.fake_python_build_standalone(false);
-    // `python` is the variant's old name, and still means `linux`.
-    let (output, _stdout, stderr) = f.release(&["--variant", "python"]);
+    let (output, _stdout, stderr) = f.release(&[]);
     assert!(!output.status.success());
     assert!(stderr.contains("not the pinned"), "{stderr}");
     assert!(f.npx_calls().is_empty());
@@ -787,13 +721,12 @@ fn a_python_download_that_does_not_match_the_pin_is_refused_before_the_build() {
 
 #[test]
 fn an_aarch64_release_publishes_only_its_own_name() {
-    // On an aarch64 build machine (D12), the default `both` is the linux
-    // artifact alone: the static one's name has no architecture in it, and
-    // the old names are the x86_64 tarball's (D13).
+    // On an aarch64 build machine the release goes up under its own name
+    // only: the old name has always been the x86_64 tarball's.
     let f = fixture("aarch64", 0);
     f.pretend_machine("aarch64");
     f.fake_python_build_standalone_for("AARCH64", true);
-    let (output, stdout, stderr) = f.release(&["--target", AARCH64, "--variant", "both"]);
+    let (output, stdout, stderr) = f.release(&["--target", AARCH64]);
     assert!(
         output.status.success(),
         "stdout:\n{stdout}\nstderr:\n{stderr}"
@@ -819,26 +752,7 @@ fn an_aarch64_release_publishes_only_its_own_name() {
         "{}",
         f.tool_calls()
     );
-    let dist: Vec<String> = fs::read_dir(f.dir.join("dist"))
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    assert!(
-        dist.iter().all(|n| n.contains("-python.tar.gz")),
-        "no static tarball should have been built: {dist:?}"
-    );
-
-    // Asking for the static one in an aarch64 release is refused before the
-    // build, rather than replacing the x86_64 feldspar.tar.gz.
-    let g = fixture("aarch64-static", 0);
-    g.pretend_machine("aarch64");
-    let (output, _stdout, stderr) = g.release(&["--target", AARCH64, "--variant", "static"]);
-    assert!(!output.status.success());
-    assert!(stderr.contains("published for x86_64 only"), "{stderr}");
-    assert!(g.npx_calls().is_empty());
-    assert!(!g.dir.join("cargo.log").exists(), "cargo ran anyway");
     fs::remove_dir_all(&f.dir).ok();
-    fs::remove_dir_all(&g.dir).ok();
 }
 
 /// `scripts/lib/release.sh` on its own, sourced by a script that is not

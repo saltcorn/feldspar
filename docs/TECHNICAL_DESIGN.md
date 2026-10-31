@@ -66,7 +66,7 @@ feldspar/
 │  │                              #    `test` environment, by the integration-test harness
 │  ├─ sc-dns/                     # 0. the process's resolver: a hickory-backed getaddrinfo
 │  │                              #    linked in front of glibc's, so no NSS module is
-│  │                              #    dlopened into the static binary (§13.5)
+│  │                              #    dlopened into the process (§13.5)
 │  ├─ sc-ratelimit/               # 0. in-memory token-bucket rate limiter keyed by string,
 │  │                              #    and the client-IP rule (queries, logins, code bodies)
 │  ├─ sc-i18n/                    # 0. Locale, negotiation, the Catalog, the message format,
@@ -13497,19 +13497,14 @@ still **registers `run_python_code`** and fails at fire time saying the server w
 Python support, because registering it either way is what keeps a trigger's configuration
 meaningful across deployments.
 
-**Why the feature is off by default**, which is a statement about artifacts rather than a retreat
+**Why the feature is off by default**, which is a statement about builds rather than a retreat
 from in-process: a binary linked against `libpython3.x.so` fails at the **dynamic linker**, before
-`main`, on a host that has no such library — and, decisively, this project's shipped artifact is a
-`+crt-static` static-PIE binary, under which the Python link does not succeed at all (rustc
-selects a static `libpython` archive that is not PIC, and a `+crt-static` binary could not
-`dlopen` the `lib-dynload` extensions or any C-extension wheel even if it linked). Default-on
-would not degrade the release build, it would break it. **So the static tarball has no Python,
-and a Python-capable server is a separate dynamically-linked build.** `scripts/build-static.sh`
-ships one such build beside the static artifact: `--variant linux` (built by default along with
-the static one) produces the **Linux artifact**, published as `feldspar-linux-<arch>.tar.gz` (and,
-for x86_64, also under the name of the Debian 13 only build it replaced,
-`feldspar-debian13-python.tar.gz`). It is built on Debian 12 (glibc 2.36) with no `+crt-static`,
-against a **bundled** CPython 3.13 (python-build-standalone, pinned by tag and SHA-256) that ships
+`main`, on a host that has no such library, so a plain `cargo build` should not demand one. (The
+first releases were also a `+crt-static` static-PIE binary, under which the Python link does not
+succeed at all; that artifact has been retired.) **The release is built with the feature.**
+`scripts/build-static.sh` produces it, published as `feldspar-linux-<arch>.tar.gz` (and, for
+x86_64, also as `feldspar.tar.gz`, the name the first releases had). It is built on Debian 12
+(glibc 2.36), dynamically linked, against a **bundled** CPython 3.13 (python-build-standalone, pinned by tag and SHA-256) that ships
 in the tarball as `python/` and is linked through `$ORIGIN/../python/lib`. The host needs nothing
 Python-related; for musl hosts (Alpine) the tarball also carries Debian 12's glibc and `.glibc`
 copies of the executables, chosen by its `install.sh` (TODO-portable-release.md §2, D3;

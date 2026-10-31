@@ -2,9 +2,9 @@
 #
 # The release tarball's own installer: `sudo ./install.sh` in an unpacked
 # tree. `scripts/build-static.sh` copies this file into every artifact as
-# `install.sh`, with @PREFIX@ and @BUILD_GLIBC@ filled in, and the curl
-# installer (`scripts/install.sh`) and `build-static.sh --deploy` both run it,
-# so there is one way a tree gets installed (TODO-portable-release R2.1, R2.6).
+# `install.sh`, with @PREFIX@ and @BUILD_GLIBC@ filled in. An operator runs it
+# after downloading the tarball by hand, and the curl installer
+# (`scripts/install.sh`) runs it too, so there is one way a tree gets installed.
 #
 # It never writes over the installed tree (D11). A running server holds
 # bin/feldspar open, and with the `linux` artifact libpython and (on a musl host)
@@ -33,6 +33,8 @@
 #      (unless --no-restart), ${PREFIX} is renamed to ${PREFIX}.old and
 #      ${PREFIX}.new to ${PREFIX}, and the units are started again. The
 #      downtime is two renames.
+#   7. ${PREFIX}/bin/feldspar is linked onto PATH as /usr/local/bin/feldspar,
+#      so `feldspar setup` is the next command whichever way the tree came.
 #
 # A process left running (--no-restart) keeps the old inodes until it restarts.
 # An interrupted install leaves the old tree whole, and the previous one stays
@@ -50,6 +52,9 @@ PREFIX="@PREFIX@"
 # The glibc the normal executables were linked against: the oldest host glibc
 # they start on (TODO-portable-release D2).
 BUILD_GLIBC="@BUILD_GLIBC@"
+# Where the binary is linked onto PATH. Settable only so the tests can keep it
+# inside their own directory.
+LINK="${FELDSPAR_LINK:-/usr/local/bin/feldspar}"
 
 usage() {
     cat <<EOF
@@ -355,11 +360,14 @@ fi
 
 start_stopped
 
+mkdir -p "$(dirname "${LINK}")"
+ln -sfn "${PREFIX}/bin/feldspar" "${LINK}"
+
 # ---------------------------------------------------------------------------
 # What happened
 # ---------------------------------------------------------------------------
 
-log "installed ${PREFIX}: $(version_of "${PREFIX}/bin/feldspar")"
+log "installed ${PREFIX}: $(version_of "${PREFIX}/bin/feldspar"), on PATH as ${LINK}"
 [ "${CARRIED}" -eq 0 ] || note "${CARRIED} path(s) carried over from the previous tree; see the warnings above"
 if [ "${HAD_OLD}" -eq 1 ]; then
     if [ -n "${STOPPED}" ]; then
@@ -374,13 +382,16 @@ fi
 if [ "${NEXT_STEPS}" -eq 1 ] && [ "${UPGRADE}" -eq 0 ]; then
     cat <<EOF
 
-next, set this host up to run it — packages, PostgreSQL, a service account,
-/etc/feldspar/feldspar.toml and a systemd unit:
-  sudo ${PREFIX}/setup-host.sh --domain example.com
-  sudo ${PREFIX}/setup-host.sh --help       # every option
-  sudo ${PREFIX}/setup-host.sh --dry-run    # what it would do, doing nothing
+next, make this machine an instance — either of:
+  sudo feldspar setup --server --domain example.com
+                                a production server: PostgreSQL, Node.js, a
+                                headless browser, a feldspar system account,
+                                /etc/feldspar/feldspar.toml and a service
+  feldspar setup --dev          a development instance: SQLite, and you start
+                                \`feldspar serve\` yourself
+\`feldspar setup --help\` lists the options; --dry-run prints what it would do.
 
-that also puts feldspar on PATH. To upgrade later, run the install.sh of a newer
-tarball the same way: it stops and starts running feldspar units itself.
+To upgrade later, run the install.sh of a newer tarball the same way: it stops
+and starts running feldspar units itself.
 EOF
 fi

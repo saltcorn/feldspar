@@ -6,9 +6,8 @@
 //! a test may not write. Under the stub, a recorded `install.sh` call *is* the
 //! install.
 //!
-//! Every run names `--variant`: without it the script reads the installed
-//! `/opt/feldspar/VARIANT`, which on the machine running the tests is whatever
-//! that machine has. Another distribution is stood in for with
+//! The release is named after the machine's architecture, so the runs that use
+//! the real `uname` need an x86_64 machine. Another distribution is stood in for with
 //! `FELDSPAR_OS_RELEASE`, and a machine missing a tool with a `PATH` of links
 //! that leaves it out.
 
@@ -40,8 +39,8 @@ fn write_executable(path: &Path, contents: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// A release directory as the bucket holds it: `feldspar.tar.gz` (a
-/// `feldspar-<version>/` tree with an install.sh) and its checksum.
+/// A release directory as the bucket holds it: `feldspar-linux-x86_64.tar.gz`
+/// (a `feldspar-<version>/` tree with an install.sh) and its checksum.
 fn fake_release(dir: &Path) -> PathBuf {
     let tree = dir.join("build/feldspar-0.1.0-test");
     write_executable(&tree.join("bin/feldspar"), "#!/bin/sh\necho feldspar\n");
@@ -50,7 +49,7 @@ fn fake_release(dir: &Path) -> PathBuf {
     fs::create_dir_all(&release).unwrap();
     let ok = Command::new("tar")
         .arg("-czf")
-        .arg(release.join("feldspar.tar.gz"))
+        .arg(release.join(OBJECT))
         .arg("-C")
         .arg(dir.join("build"))
         .arg("feldspar-0.1.0-test")
@@ -59,12 +58,24 @@ fn fake_release(dir: &Path) -> PathBuf {
         .success();
     assert!(ok);
     let sum = Command::new("sha256sum")
-        .arg("feldspar.tar.gz")
+        .arg(OBJECT)
         .current_dir(&release)
         .output()
         .unwrap();
-    fs::write(release.join("feldspar.tar.gz.sha256"), sum.stdout).unwrap();
+    fs::write(release.join(format!("{OBJECT}.sha256")), sum.stdout).unwrap();
     release
+}
+
+/// What the installer fetches on an x86_64 machine.
+const OBJECT: &str = "feldspar-linux-x86_64.tar.gz";
+
+fn on_x86_64() -> bool {
+    Command::new("uname").arg("-m").output().is_ok_and(|o| {
+        matches!(
+            String::from_utf8_lossy(&o.stdout).trim(),
+            "x86_64" | "amd64"
+        )
+    })
 }
 
 /// Run the installer with a recording `sudo` first on PATH.
@@ -82,8 +93,6 @@ fn install(dir: &Path, release: &Path, extra: &[&str]) -> (Output, String) {
             "--base-url",
             &format!("file://{}", release.display()),
             "--no-packages",
-            "--variant",
-            "static",
         ])
         .args(extra)
         .env("PATH", path)
@@ -117,9 +126,9 @@ fn on_a_known_distribution() -> bool {
 }
 
 #[test]
-fn installs_the_downloaded_tree_and_links_feldspar_onto_path() {
-    if as_root() || !on_a_known_distribution() {
-        eprintln!("skipped: needs a non-root run on Debian, Ubuntu or Alpine");
+fn installs_the_downloaded_tree_with_its_own_installer() {
+    if as_root() || !on_a_known_distribution() || !on_x86_64() {
+        eprintln!("skipped: needs a non-root run on x86_64 Debian, Ubuntu or Alpine");
         return;
     }
     let dir = scratch("ok");
@@ -131,19 +140,14 @@ fn installs_the_downloaded_tree_and_links_feldspar_onto_path() {
         "install.sh failed\nstdout:\n{stdout}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // Only the tarball's own installer, out of the unpacked tree — which links
+    // feldspar onto PATH (`install_tree`) and prints its own outcome, and leaves
+    // the next step to this script.
     let calls: Vec<&str> = sudo.lines().collect();
-    assert_eq!(calls.len(), 3, "{calls:#?}");
-    // The tarball's own installer, out of the unpacked tree — which prints its
-    // own outcome, and leaves the next step to this script...
+    assert_eq!(calls.len(), 1, "{calls:#?}");
     assert!(
         calls[0].ends_with("/feldspar-0.1.0-test/install.sh --no-next-steps"),
         "{calls:#?}"
-    );
-    // ...and the link onto PATH.
-    assert_eq!(calls[1], "mkdir -p /usr/local/bin");
-    assert_eq!(
-        calls[2],
-        "ln -sfn /opt/feldspar/bin/feldspar /usr/local/bin/feldspar"
     );
     assert!(stdout.contains("checksum ok"));
     // It points at the next step — or, where /opt/feldspar already holds an
@@ -172,15 +176,15 @@ fn installs_the_downloaded_tree_and_links_feldspar_onto_path() {
 
 #[test]
 fn a_download_that_does_not_match_its_checksum_installs_nothing() {
-    if as_root() || !on_a_known_distribution() {
-        eprintln!("skipped: needs a non-root run on Debian, Ubuntu or Alpine");
+    if as_root() || !on_a_known_distribution() || !on_x86_64() {
+        eprintln!("skipped: needs a non-root run on x86_64 Debian, Ubuntu or Alpine");
         return;
     }
     let dir = scratch("bad-sum");
     let release = fake_release(&dir);
     fs::write(
-        release.join("feldspar.tar.gz.sha256"),
-        format!("{}  feldspar.tar.gz\n", "0".repeat(64)),
+        release.join(format!("{OBJECT}.sha256")),
+        format!("{}  {OBJECT}\n", "0".repeat(64)),
     )
     .unwrap();
     let (out, sudo) = install(&dir, &release, &[]);
@@ -195,8 +199,8 @@ fn a_download_that_does_not_match_its_checksum_installs_nothing() {
 
 #[test]
 fn dry_run_downloads_and_installs_nothing() {
-    if as_root() || !on_a_known_distribution() {
-        eprintln!("skipped: needs a non-root run on Debian, Ubuntu or Alpine");
+    if as_root() || !on_a_known_distribution() || !on_x86_64() {
+        eprintln!("skipped: needs a non-root run on x86_64 Debian, Ubuntu or Alpine");
         return;
     }
     let dir = scratch("dry");
@@ -208,7 +212,10 @@ fn dry_run_downloads_and_installs_nothing() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(sudo.is_empty(), "{sudo}");
-    assert!(stdout.contains("ln -sfn /opt/feldspar/bin/feldspar /usr/local/bin/feldspar"));
+    assert!(
+        stdout.contains(&format!("{OBJECT} -> ")) && stdout.contains("install.sh --no-next-steps"),
+        "{stdout}"
+    );
     fs::remove_dir_all(&dir).ok();
 }
 
@@ -328,7 +335,7 @@ fn each_family_installs_what_is_missing_with_its_own_package_manager() {
     ];
     for (os_release, expected) in cases {
         let dir = scratch("family");
-        let out = dry_run_as(&dir, os_release, BASE_TOOLS, &["--variant", "static"]);
+        let out = dry_run_as(&dir, os_release, BASE_TOOLS, &[]);
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             out.status.success(),
@@ -351,7 +358,7 @@ fn each_family_installs_what_is_missing_with_its_own_package_manager() {
         .filter(|t| *t != "find" && *t != "awk")
         .chain(["curl"])
         .collect();
-    let out = dry_run_as(&dir, "ID=fedora\n", &tools, &["--variant", "static"]);
+    let out = dry_run_as(&dir, "ID=fedora\n", &tools, &[]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("dnf install -y -q findutils gawk"),
@@ -361,7 +368,7 @@ fn each_family_installs_what_is_missing_with_its_own_package_manager() {
 
     // And what it does not know is refused, naming what it does.
     let dir = scratch("family-unknown");
-    let out = dry_run_as(&dir, "ID=gentoo\n", BASE_TOOLS, &["--variant", "static"]);
+    let out = dry_run_as(&dir, "ID=gentoo\n", BASE_TOOLS, &[]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -371,22 +378,18 @@ fn each_family_installs_what_is_missing_with_its_own_package_manager() {
     fs::remove_dir_all(&dir).ok();
 }
 
-/// `--variant linux` fetches the artifact with Python, and the plan says which
-/// libc it will run on; `--no-restart` reaches the tarball's installer.
+/// The one release is fetched, whatever an older host has installed, and the
+/// plan says which libc it will run on; `--no-restart` reaches the tarball's
+/// installer.
 #[test]
-fn the_linux_variant_is_fetched_and_its_libc_forecast() {
+fn the_release_is_fetched_and_its_libc_forecast() {
     if as_root() {
         eprintln!("skipped: needs a non-root run");
         return;
     }
     let dir = scratch("linux");
     let tools: Vec<&str> = BASE_TOOLS.iter().copied().chain(["curl", "ldd"]).collect();
-    let out = dry_run_as(
-        &dir,
-        "ID=debian\n",
-        &tools,
-        &["--variant", "linux", "--no-restart"],
-    );
+    let out = dry_run_as(&dir, "ID=debian\n", &tools, &["--no-restart"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}");
     assert!(
@@ -412,22 +415,24 @@ fn the_linux_variant_is_fetched_and_its_libc_forecast() {
     let ldd = dir.join("tools/ldd");
     fs::remove_file(&ldd).ok();
     write_executable(&ldd, "#!/bin/sh\necho 'musl libc (x86_64)' >&2\nexit 1\n");
-    let out = dry_run_as(&dir, "ID=alpine\n", &tools, &["--variant", "linux"]);
+    let out = dry_run_as(&dir, "ID=alpine\n", &tools, &[]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("libc: the bundled glibc (this is a musl host)"),
         "{stdout}"
     );
 
-    // The static one needs none, and an unknown variant is refused.
-    let out = dry_run_as(&dir, "ID=debian\n", &tools, &["--variant", "static"]);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("feldspar.tar.gz -> ") && stdout.contains("libc: none needed"),
-        "{stdout}"
-    );
-    let out = dry_run_as(&dir, "ID=debian\n", &tools, &["--variant", "musl"]);
-    assert!(!out.status.success());
+    // `--variant`, which chose between the releases there used to be, is still
+    // accepted from an old command line, and changes nothing.
+    for variant in ["static", "linux"] {
+        let out = dry_run_as(&dir, "ID=debian\n", &tools, &["--variant", variant]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{stdout}");
+        assert!(
+            stdout.contains("feldspar-linux-x86_64.tar.gz -> "),
+            "{variant}: {stdout}"
+        );
+    }
     fs::remove_dir_all(&dir).ok();
 }
 
@@ -435,8 +440,8 @@ fn the_linux_variant_is_fetched_and_its_libc_forecast() {
 /// test — and works with busybox's wget alone, which cannot fetch one.
 #[test]
 fn a_file_url_release_installs_with_wget_alone() {
-    if as_root() {
-        eprintln!("skipped: needs a non-root run");
+    if as_root() || !on_x86_64() {
+        eprintln!("skipped: needs a non-root run on x86_64");
         return;
     }
     let dir = scratch("file-url");
@@ -448,7 +453,7 @@ fn a_file_url_release_installs_with_wget_alone() {
         .chain(["cp", "sha256sum", "wget"])
         .collect();
     // Builds the PATH of links (and checks that the plan runs on it).
-    let out = dry_run_as(&dir, "ID=alpine\n", &tools, &["--variant", "static"]);
+    let out = dry_run_as(&dir, "ID=alpine\n", &tools, &[]);
     assert!(
         out.status.success(),
         "{}",
@@ -462,7 +467,7 @@ fn a_file_url_release_installs_with_wget_alone() {
     let out = Command::new(dir.join("tools/sh"))
         .arg(script())
         .args(["--base-url", &format!("file://{}", release.display())])
-        .args(["--no-packages", "--variant", "static"])
+        .arg("--no-packages")
         .env("PATH", dir.join("tools"))
         .env("FELDSPAR_OS_RELEASE", dir.join("os-release"))
         .env("TMPDIR", &dir)
@@ -513,7 +518,7 @@ fn the_platform_picks_the_tarball_or_says_what_to_do() {
     };
 
     for arch in ["x86_64", "amd64"] {
-        let (ok, stdout, stderr) = run("Linux", arch, &["--variant", "linux"]);
+        let (ok, stdout, stderr) = run("Linux", arch, &[]);
         assert!(ok, "{arch}: {stdout}{stderr}");
         assert!(
             stdout.contains("/feldspar-linux-x86_64.tar.gz -> "),
@@ -536,7 +541,7 @@ fn the_platform_picks_the_tarball_or_says_what_to_do() {
         ("SunOS", "i86pc", "no release for SunOS on i86pc"),
     ];
     for (os, arch, message) in refused {
-        let (ok, stdout, stderr) = run(os, arch, &["--variant", "linux", "--force"]);
+        let (ok, stdout, stderr) = run(os, arch, &["--force"]);
         assert!(!ok, "{os} {arch} was not refused: {stdout}");
         assert!(stderr.contains(message), "{os} {arch}: {stderr}");
         // Refused before anything was planned, let alone downloaded.

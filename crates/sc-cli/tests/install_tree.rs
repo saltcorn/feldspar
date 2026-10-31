@@ -114,7 +114,6 @@ impl Fixture {
     fn tree(&self, name: &str, linux: bool) -> PathBuf {
         let tree = self.dir.join(format!("unpacked/feldspar-{name}"));
         fake_binary(&tree.join("bin/feldspar"), name, true);
-        write_executable(&tree.join("setup-host.sh"), "#!/bin/sh\n");
         fs::create_dir_all(tree.join("ui/admin/dist")).unwrap();
         fs::write(tree.join("ui/admin/dist/index.html"), name).unwrap();
         fs::create_dir_all(tree.join("plugins/rss")).unwrap();
@@ -173,8 +172,15 @@ impl Fixture {
             .args(args)
             .env("PATH", path)
             .env("TMPDIR", &self.dir)
+            .env("FELDSPAR_LINK", self.link())
             .output()
             .expect("run install.sh")
+    }
+
+    /// Where the installer links the binary onto PATH, inside the test's
+    /// directory.
+    fn link(&self) -> PathBuf {
+        self.dir.join("usr/local/bin/feldspar")
     }
 
     fn installed(&self, path: &str) -> String {
@@ -287,10 +293,16 @@ fn a_first_install_puts_the_tree_at_the_prefix_and_lists_it() {
     assert!(!f.dir.join("opt/feldspar.old").exists());
     assert!(!f.dir.join("opt/feldspar.new").exists());
     assert!(
-        stdout.contains("setup-host.sh --domain example.com"),
+        stdout.contains("sudo feldspar setup --server --domain example.com"),
         "{stdout}"
     );
     assert!(stdout.contains("installed"), "{stdout}");
+    // On PATH, through the prefix, so an upgrade's swap keeps it pointing at
+    // the installed release.
+    assert_eq!(
+        fs::read_link(f.link()).unwrap(),
+        f.prefix.join("bin/feldspar")
+    );
     // No unit was running, so none was touched.
     assert!(f.units().is_empty(), "{:?}", f.units());
     fs::remove_dir_all(&f.dir).ok();
@@ -416,7 +428,7 @@ fn an_upgrade_swaps_the_tree_under_a_running_server_and_keeps_an_operators_files
     assert!(stdout.contains("database dump"), "{stdout}");
     assert!(stdout.contains("--no-restart"), "{stdout}");
     assert!(
-        !stdout.contains("setup-host.sh --domain"),
+        !stdout.contains("feldspar setup --server"),
         "an upgrade is not told to set the host up again:\n{stdout}"
     );
     fs::remove_dir_all(&f.dir).ok();
@@ -476,6 +488,8 @@ fn a_prefix_from_before_the_manifest_is_read_against_the_old_layout() {
     assert!(!f.prefix.join("ui/admin/dist/old.js").exists());
     assert!(!f.prefix.join("plugins/rss/old.js").exists());
     assert!(!f.prefix.join("python.old").exists());
+    // Older trees shipped setup-host.sh; this one does not, and it goes.
+    assert!(!f.prefix.join("setup-host.sh").exists());
     assert!(
         !f.prefix.join("python").exists(),
         "the static tree has no python/"

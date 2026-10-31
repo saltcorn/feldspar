@@ -7,7 +7,7 @@
 //! server's own driver, its loopback listener, and a session for the caller.
 //!
 //! **Skipped, saying so, where no Chromium is installed**: these tests need an
-//! external browser, which `scripts/setup-host.sh` installs on a server.
+//! external browser, which `feldspar setup` installs on a server.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

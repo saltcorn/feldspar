@@ -7,18 +7,16 @@
 #     wget -qO-  https://feldspar-latest-static.saltcorn.com/install.sh | sh
 #
 # It is the first of two steps. This one puts the release tree at /opt/feldspar
-# (the binary, and the admin UI bundles whose paths are compiled into it) and
-# links `feldspar` onto PATH; the second turns the machine into an instance:
+# (the binary, its own CPython and glibc, and the admin UI bundles whose paths
+# are compiled into it) and links `feldspar` onto PATH; the second turns the
+# machine into an instance:
 #
-#     feldspar setup --dev          # SQLite, `feldspar serve` started by hand
 #     sudo feldspar setup --server  # PostgreSQL here, a system service
+#     feldspar setup --dev          # SQLite, `feldspar serve` started by hand
 #     feldspar setup                # asks
 #
-# Which release: `--variant static` (no Python, a static binary) or `--variant
-# linux` (with its own CPython, and its own glibc for Alpine). An upgrade
-# fetches the one /opt/feldspar/VARIANT names, so a host keeps what it has;
-# `debian13-python` (the Python build before `linux`) means `linux`. A new
-# install gets `static` unless told otherwise.
+# There is one release per architecture. A host on an older one — the static
+# build, or the Debian 13 only `debian13-python` — gets it at its next upgrade.
 #
 # Running it again is the upgrade. The tarball's own install.sh does the
 # install (scripts/lib/install-tree.sh): it copies the tree beside
@@ -32,7 +30,7 @@
 # unpack the release and what the binary needs to *run*: ca-certificates (the
 # server makes outbound TLS connections — ACME, LLM providers, SMTP), a
 # downloader, tar, gzip, find and awk. PostgreSQL, Node.js and a browser are
-# `feldspar setup`'s business, or scripts/setup-host.sh's.
+# `feldspar setup`'s business.
 #
 # Debian, Ubuntu, Fedora, RHEL (Alma, Rocky), openSUSE, Arch and Alpine on
 # x86_64, and what /etc/os-release says derives from them (ID_LIKE): Mint, MX,
@@ -44,8 +42,9 @@
 #
 # Plain POSIX sh, not bash: Alpine's /bin/sh is busybox ash, and bash is one of
 # the things it does not have. Everything after `sh -s --` is an option of this
-# script; `--help` lists them, and `--dry-run` prints the commands without
-# running any.
+# script — `sh -s` makes sh read the script from stdin and pass it the words
+# after `--` as its arguments. None is needed; `--help` lists them, and
+# `--dry-run` prints the commands without running any.
 #
 set -eu
 
@@ -63,7 +62,6 @@ OS_RELEASE="${FELDSPAR_OS_RELEASE:-/etc/os-release}"
 DRY_RUN=0
 FORCE=0
 SKIP_PACKAGES=0
-VARIANT=""
 RESTART=1
 
 usage() {
@@ -72,8 +70,6 @@ Install the feldspar executable from the latest release, or upgrade it.
 
 Usage: curl -fsSL ${BASE_URL}/install.sh | sh -s -- [options]
 
-      --variant V       static (no Python) or linux (with Python; on Alpine too).
-                        Default: what ${PREFIX}/VARIANT names, else static.
       --base-url URL    Where to download the release from (default ${BASE_URL},
                         or \$FELDSPAR_BASE_URL). A file:// URL reads a directory.
       --no-restart      Do not stop running feldspar units for the upgrade or
@@ -93,9 +89,11 @@ EOF
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        # Gone with the static release; accepted so that a command line
+        # written for an older installer still works.
         --variant)
             [ $# -ge 2 ] || { echo "error: --variant needs a value" >&2; exit 2; }
-            VARIANT="$2"; shift 2 ;;
+            shift 2 ;;
         --base-url)
             [ $# -ge 2 ] || { echo "error: --base-url needs a value" >&2; exit 2; }
             BASE_URL="$2"; shift 2 ;;
@@ -135,8 +133,8 @@ case "${OS}" in
             # (TODO-portable-release R5).
             aarch64|arm64)
                 die "there is no aarch64 Linux release yet; only x86_64 is published.
-  An aarch64 machine can build its own with scripts/build-static.sh from a
-  checkout (docs/OPERATIONS.md §2.3)." ;;
+  An aarch64 machine can compile feldspar from a checkout and run it there
+  (docs/OPERATIONS.md §2.3)." ;;
             armv*|armhf|arm)
                 die "this is 32-bit ARM (${ARCH}), which has no release: V8 has no
   prebuilt build for it. Every Raspberry Pi from the 3 onward runs a 64-bit OS;
@@ -191,19 +189,12 @@ run_root() {
 # Which release
 # ---------------------------------------------------------------------------
 
+# What is installed now, if anything: `linux`, or on a host installed before
+# there was one release, `static` or `debian13-python`. Either way the upgrade
+# is the same tarball.
 INSTALLED="$(cat "${PREFIX}/VARIANT" 2>/dev/null || true)"
-[ "${INSTALLED}" = debian13-python ] && INSTALLED="linux"
-if [ -z "${VARIANT}" ]; then
-    VARIANT="${INSTALLED:-static}"
-fi
-case "${VARIANT}" in
-    static) OBJECT="feldspar.tar.gz" ;;
-    # Its name carries the platform (TODO-portable-release D13), ${ARCH} as
-    # checked above; the release also publishes the x86_64 tarball as
-    # feldspar-debian13-python.tar.gz, for older installers.
-    linux|python|debian13-python) VARIANT="linux"; OBJECT="feldspar-linux-${ARCH}.tar.gz" ;;
-    *) die "--variant must be static or linux, got ${VARIANT}" ;;
-esac
+# Its name carries the platform, ${ARCH} as checked above.
+OBJECT="feldspar-linux-${ARCH}.tar.gz"
 
 # ---------------------------------------------------------------------------
 # Is this a machine the release runs on?
@@ -241,14 +232,10 @@ if [ -z "${FAMILY}" ]; then
     SKIP_PACKAGES=1
 fi
 
-# What the linux artifact will run on here — the tarball's install.sh decides,
+# What the release will run on here — the tarball's install.sh decides,
 # by the same tests and by starting the binary; this is the forecast, for the
 # log and for --dry-run.
 libc_forecast() {
-    if [ "${VARIANT}" != linux ]; then
-        echo "none needed: the static binary links no libc"
-        return 0
-    fi
     if ldd --version 2>&1 | grep -qi musl; then
         echo "the bundled glibc (this is a musl host)"
         return 0
@@ -269,10 +256,11 @@ libc_forecast() {
 }
 
 if [ -n "${INSTALLED}" ]; then
-    log "upgrading feldspar (${INSTALLED}) from ${BASE_URL} (${ID:-unknown} ${ARCH})"
-    [ "${INSTALLED}" = "${VARIANT}" ] || note "switching from the ${INSTALLED} release to ${VARIANT}"
+    log "upgrading feldspar from ${BASE_URL} (${ID:-unknown} ${ARCH})"
+    [ "${INSTALLED}" = linux ] ||
+        note "this host has the older ${INSTALLED} release; it moves to the one release, which has Python"
 else
-    log "installing feldspar (${VARIANT}) from ${BASE_URL} (${ID:-unknown} ${ARCH})"
+    log "installing feldspar from ${BASE_URL} (${ID:-unknown} ${ARCH})"
 fi
 note "libc: $(libc_forecast)"
 [ "${DRY_RUN}" -eq 1 ] && log "dry run: nothing below is executed"
@@ -381,15 +369,13 @@ fi
 log "installing to ${PREFIX}"
 # The tarball's own installer: it knows the tree's layout, chooses the libc,
 # swaps the tree in and restarts what was running — so the two install paths
-# cannot drift apart. Its closing advice is about setup-host.sh; ours follows
-# below.
+# cannot drift apart. It also links feldspar onto PATH. Its closing advice
+# is for a hand install; ours follows below.
 if [ "${RESTART}" -eq 1 ]; then
     run_root "${TREE}/install.sh" --no-next-steps
 else
     run_root "${TREE}/install.sh" --no-next-steps --no-restart
 fi
-run_root mkdir -p "$(dirname "${LINK}")"
-run_root ln -sfn "${PREFIX}/bin/feldspar" "${LINK}"
 
 if [ "${DRY_RUN}" -eq 1 ]; then
     log "dry run finished; nothing above was executed"
@@ -405,17 +391,17 @@ if [ -n "${INSTALLED}" ]; then
         echo "The upgrade is done. --no-restart left running feldspar processes on the old release"
         echo "until they are restarted."
     fi
-    echo "Nothing else needs to run again: setup-host.sh and \`feldspar setup\` are for a new host."
+    echo "Nothing else needs to run again: \`feldspar setup\` is for a new host."
     exit 0
 fi
 cat <<EOF
 
 Next, make this machine an instance — either of:
 
-  feldspar setup --dev          a development instance: SQLite, and you start
-                                \`feldspar serve\` yourself
   sudo feldspar setup --server  a production server: PostgreSQL on this host, a
                                 feldspar system account and a service started at boot
+  feldspar setup --dev          a development instance: SQLite, and you start
+                                \`feldspar serve\` yourself
   feldspar setup                asks which, and which database
 
 \`feldspar setup --help\` lists the options (a PostgreSQL elsewhere, a domain).

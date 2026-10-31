@@ -35,7 +35,7 @@ pub(crate) fn detect_in(
         if let Some(why) = snap(path) {
             return Err(format!(
                 "the `browser` setting names `{}`, which {why}; a snap does not run under \
-                 a service user, so install a non-snap Chromium (scripts/setup-host.sh does)",
+                 a service user, so install a non-snap Chromium (`feldspar setup --browser` does)",
                 path.display()
             ));
         }
@@ -65,7 +65,7 @@ pub(crate) fn detect_in(
         ));
     }
     reason.push_str(
-        "; install Chromium (scripts/setup-host.sh does) or set `browser` in feldspar.toml",
+        "; install Chromium (`feldspar setup --browser` does) or set `browser` in feldspar.toml",
     );
     Err(reason)
 }

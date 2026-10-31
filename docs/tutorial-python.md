@@ -34,13 +34,13 @@ Go to **Settings → Development**. There is a **Python** panel, and it says one
 interpreter is *linked* into the binary by the build, so a server without it cannot grow one at
 run time.
 
-**The easy way is the release's Linux artifact**, which has Python and needs **nothing
+**The easy way is the release**, which has Python and needs **nothing
 Python-related on the host**: no `python3`, no `libpython`, no `python3-venv`, on any of the
 distributions it supports (Debian, Ubuntu, Fedora, RHEL, openSUSE, Arch, Alpine;
 docs/OPERATIONS.md §1.1):
 
 ```bash
-curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh -s -- --variant linux
+curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh
 feldspar python check                   # the interpreter starts, imports ssl, reaches PyPI
 ```
 
@@ -50,9 +50,8 @@ check` starts it without a database and says where it found its standard library
 process runs on, and whether `ssl`, `sqlite3`, `ctypes` and `zoneinfo` load and PyPI answers
 over HTTPS.
 
-The other release artifact, the **static** one (`feldspar.tar.gz`, the installer's default
-without `--variant linux`), has no Python: it is a static binary with no shared-library
-dependencies at all, and a linked `libpython` is exactly a shared-library dependency.
+A host still on the static release that came before has no Python; running the installer
+again moves it to the release above (docs/OPERATIONS.md §3.2).
 
 **Building it yourself** is the other way:
 
