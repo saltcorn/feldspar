@@ -846,7 +846,7 @@ mod tests {
     /// left out — and survives being stored.
     #[test]
     fn include_all_covers_what_was_created_later() {
-        use crate::backup::Item;
+        use crate::Item;
         let s = BackupSchedule {
             include: BackupPreferences {
                 exclude_tables: vec!["secrets".into()],

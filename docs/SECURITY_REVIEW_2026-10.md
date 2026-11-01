@@ -1241,9 +1241,10 @@ old `Option<&CallerContext>` with `None` silently failed closed on such a table,
 | sc-live `docroom.rs` | live document: load the stored state; persist merged state (after the join's access check) (`Unchecked::system`) |
 | sc-llm `storage.rs` | LLM usage and conversation storage |
 | sc-module `credits.rs` | module credits: grant / revoke / set low-balance threshold (the module's declared permission) |
-| sc-server `backup/restore.rs` | backup restore: read the accounts already here (`Unchecked::system`) |
-| sc-server `backup/write.rs` | backup: count rows (`Unchecked::system`) |
-| sc-server `lib.rs` (`ADMIN_TASKS`) | an administrator's task on the primary database or a raw file store, each behind an admin session: backup and restore (rows and store files), clear all, table rename, the user and checklist-user lists, system info, an application's translation catalogues |
+| sc-backup `restore.rs` | backup restore: read the accounts already here (`Unchecked::system`) |
+| sc-backup `write.rs` | backup: count rows (`Unchecked::system`) |
+| sc-backup `lib.rs` (`BACKUP_TASKS`) | writing or restoring a backup — every row and every stored file — for an administrator (behind an admin session) or their backup schedule (moved out of sc-server's `ADMIN_TASKS` with the backup code, Q5.5) |
+| sc-server `lib.rs` (`ADMIN_TASKS`) | an administrator's task on the primary database or a raw file store, each behind an admin session: clear all, table rename, the user and checklist-user lists, system info, an application's translation catalogues |
 | sc-server `models.rs` | Stan: read a model's program from its store (the raw file store) |
 | sc-server `oauth.rs` | OAuth: store the tokens of a consent flow (`Unchecked::system`) |
 | sc-viewpattern `library.rs`, `store.rs` | apply library updates; write view-pattern definitions |
@@ -1259,10 +1260,10 @@ caller type. They are not yet `Authority::System`:
   handles: sc-api `code_host/mod.rs` (`admin`, `Actor::Admin`, through a `Scoped`), which a
   model write-back from a body shares (`models::write_posterior` takes the body's `Scoped`). They
   write as admin, but the change log and events name the user who caused the run. The admin
-  API's write-back (sc-server `handlers.rs`) hands it the signed-in admin's `Scoped`.
+  API's write-back (sc-server `handlers/models.rs`) hands it the signed-in admin's `Scoped`.
 - **An admin's own request at an explicit role.** `sc_access::principal_at(Role::ADMIN, user)` in
-  sc-server `handlers.rs` (admin row endpoints, CSV and geo import / export, a trigger's test
-  run), sc-server `public_datasets.rs`, sc-viewpattern `configure.rs`, sc-api `undo.rs`. A
+  sc-server `handlers/` (`admin_caller` in `mod.rs`: the admin row endpoints, CSV and geo import
+  / export, a trigger's test run), sc-server `public_datasets.rs`, sc-viewpattern `configure.rs`, sc-api `undo.rs`. A
   signed-in admin is the caller here, so these are `Caller`.
 
 Where one of these reaches the unchecked row layer it goes through `sc_access::admin_access`
@@ -1329,7 +1330,7 @@ Find them with `grep -rn 'Admin::delegated(' crates`:
 | Crate / file | `by` | The check that stands behind it |
 |---|---|---|
 | sc-server `mcp.rs` (`EndpointTool::call`) | `mcp endpoint tool` | `sc_api::mcp::check_caller`: admin role, the endpoint's own requirement, the tag's grant |
-| sc-server `mcp.rs` (`AdminHandlers::call_admin`) | `catalog admin host` | the `sc_app::mcp` admin tools that call `AdminHost` (`require_admin` on the tool surface); the user may be `None` for a system-run tool |
+| sc-server `mcp.rs` (`AdminHandlers::request`, behind every typed `AdminHost` method) | `catalog admin host` | the `sc_app::mcp` admin tools (and `admin_copilot`'s publish) that call `AdminHost` (`require_admin` on the tool surface); the user may be `None` for a system-run tool |
 
 **Trust-boundary newtypes (TODO-code-quality Q4).** Values that cross a trust boundary are
 types that only a named constructor makes; each constructor below is a promise the type cannot

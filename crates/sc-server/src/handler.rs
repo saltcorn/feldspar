@@ -31,6 +31,18 @@
 //! [`check_gates`](HandlerRegistry::check_gates), which the router runs at
 //! startup, refuses an endpoint set in which an `admin()` endpoint names a
 //! handler registered behind a weaker gate.
+//!
+//! # Typed handlers
+//!
+//! [`typed`] adapts an `async fn(HandlerState, HandlerCtx<W>, In) -> Result<Out>` to
+//! the shape a gate registers: the body is deserialized into `In` before the
+//! function runs (a body that does not fit is an `invalid` error naming what
+//! did not), and `Out` is serialized as the response. The function is handed
+//! the server's [`HandlerState`](crate::handlers::HandlerState) rather than capturing
+//! clones of the catalog and the mount registry, and, being a named function,
+//! it can be called directly as well — which is how the catalog's
+//! [`AdminHost`](sc_catalog::AdminHost) runs the handlers the admin tools
+//! reach. Handlers move to it as they are touched.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -47,6 +59,58 @@ pub use crate::admin_session::{Admin, AdminSession, AnalyticsCaller, Caller, Who
 
 /// A boxed, `Send` future — the return shape every handler produces.
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+
+/// Adapt a typed handler to the shape a gate registers (module docs, "Typed
+/// handlers"): `reg.register_admin("deleteStream", typed(&state, delete_stream))`.
+///
+/// `In` is read from the request's JSON body — `()` for an endpoint with none,
+/// which reads `null` — and the body is moved out of the context the function
+/// is handed. `Out` is the response: a [`HandlerResponse`] as it is, any
+/// other [`Reply`] as a `200` with its JSON.
+pub(crate) fn typed<W, In, Out, F, Fut>(
+    state: &crate::handlers::HandlerState,
+    handler: F,
+) -> impl Fn(HandlerCtx<W>) -> BoxFuture<Result<HandlerResponse>> + Send + Sync + 'static
+where
+    W: Send + 'static,
+    In: serde::de::DeserializeOwned + Send + 'static,
+    Out: Reply + 'static,
+    F: Fn(crate::handlers::HandlerState, HandlerCtx<W>, In) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<Out>> + Send + 'static,
+{
+    let state = state.clone();
+    let handler = Arc::new(handler);
+    move |mut ctx: HandlerCtx<W>| {
+        let state = state.clone();
+        let handler = Arc::clone(&handler);
+        Box::pin(async move {
+            let input: In = serde_json::from_value(std::mem::take(&mut ctx.body))
+                .map_err(|e| Error::invalid(format!("the request body does not fit: {e}")))?;
+            handler(state, ctx, input).await?.into_response()
+        })
+    }
+}
+
+/// What a typed handler answers: a whole [`HandlerResponse`] (a status, a
+/// session change, a download), or a value serialized as a `200`'s body.
+pub(crate) trait Reply {
+    /// The response this answer is.
+    fn into_response(self) -> Result<HandlerResponse>;
+}
+
+impl Reply for HandlerResponse {
+    fn into_response(self) -> Result<HandlerResponse> {
+        Ok(self)
+    }
+}
+
+impl<T: serde::Serialize> Reply for T {
+    fn into_response(self) -> Result<HandlerResponse> {
+        let body = serde_json::to_value(self)
+            .map_err(|e| Error::msg(format!("the response could not be written: {e}")))?;
+        Ok(HandlerResponse::ok(body))
+    }
+}
 
 /// A registered handler: given a [`HandlerCtx`], produce a [`HandlerResponse`].
 ///
@@ -101,7 +165,7 @@ pub struct HandlerCtx<W = Caller> {
     /// because the context is cloneable; the file is deleted when the last
     /// holder lets go of it, which is how a handler keeps one (an upload waiting
     /// to be restored) or lets it be cleaned up (anything else).
-    pub raw_file: Option<std::sync::Arc<crate::backup::SpoolFile>>,
+    pub raw_file: Option<std::sync::Arc<sc_backup::SpoolFile>>,
     /// The address the request came from (TODO F4.2): what login throttling
     /// counts per IP. `None` where there was no socket.
     pub client_ip: Option<std::net::IpAddr>,
@@ -222,13 +286,13 @@ pub struct SpooledFile {
     len: u64,
     /// Deletes the file once the response is done with it, where the platform
     /// would not let it be unlinked while open.
-    guard: Option<std::sync::Arc<crate::backup::SpoolFile>>,
+    guard: Option<std::sync::Arc<sc_backup::SpoolFile>>,
 }
 
 impl SpooledFile {
     /// Serve the file `spool` names, `len` bytes long: open it, and let go of
     /// its name.
-    pub fn open(spool: crate::backup::SpoolFile, len: u64) -> sc_error::Result<SpooledFile> {
+    pub fn open(spool: sc_backup::SpoolFile, len: u64) -> sc_error::Result<SpooledFile> {
         let file = std::fs::File::open(spool.path()).map_err(|e| {
             sc_error::Error::file(format!("opening `{}`: {e}", spool.path().display()))
         })?;
@@ -254,10 +318,7 @@ impl SpooledFile {
     /// The open file and what keeps it alive, once.
     pub(crate) fn take(
         &self,
-    ) -> Option<(
-        std::fs::File,
-        Option<std::sync::Arc<crate::backup::SpoolFile>>,
-    )> {
+    ) -> Option<(std::fs::File, Option<std::sync::Arc<sc_backup::SpoolFile>>)> {
         let file = self.file.lock().ok()?.take()?;
         Some((file, self.guard.clone()))
     }

@@ -51,7 +51,7 @@ use super::values;
 use super::{
     Available, Item, MANIFEST_FILE, MANIFEST_SECRETS_KEY, SECRETS_KEY_FILE, SSL_SECTION, Selection,
 };
-use crate::handlers::{
+use crate::codec::{
     agent_json, application_json, backup_db_connection_json, backup_file_meta_json,
     backup_llm_provider_json, backup_model_json, backup_module_json, backup_store_def_json,
     backup_stream_json, constraint_json, field_json, library_item_json, page_json, role_json,
@@ -462,7 +462,7 @@ async fn write_entries<W: Write + Seek>(
         // A defined store that is not connected right now backs up as its
         // definition and no files, rather than failing the whole backup: the
         // definition is the part that is hard to recreate by hand.
-        if let Ok(store) = catalog.require_file_store(&def.name, crate::ADMIN_TASKS) {
+        if let Ok(store) = catalog.require_file_store(&def.name, crate::BACKUP_TASKS) {
             for (path, size) in walk(store.as_ref()).await? {
                 let written = copy_file(
                     store.as_ref(),
@@ -624,7 +624,7 @@ async fn write_entries<W: Write + Seek>(
         let servers: Vec<Json> = stored_mcp_servers(catalog)
             .await?
             .iter()
-            .map(crate::mcp_servers::backup_server_json)
+            .map(crate::codec::backup_server_json)
             .collect();
         contents.llm_providers += i64::try_from(servers.len()).unwrap_or(i64::MAX);
         zip.json("mcp-servers.json", &Json::Array(servers))?;
@@ -827,7 +827,7 @@ async fn write_analytics<W: Write + Seek>(
         let workspaces: Vec<Json> = sc_analytics::list_workspaces(catalog)
             .await?
             .iter()
-            .map(crate::analytics::workspace_json)
+            .map(crate::codec::workspace_json)
             .collect();
         contents.workspaces = count(workspaces.len());
         zip.json("analytics/workspaces.json", &Json::Array(workspaces))?;
@@ -987,7 +987,11 @@ enum RowSource<'a> {
 impl<'a> RowSource<'a> {
     async fn open(catalog: &'a Catalog) -> Result<RowSource<'a>> {
         Ok(
-            match catalog.primary(crate::ADMIN_TASKS).begin_snapshot().await? {
+            match catalog
+                .primary(crate::BACKUP_TASKS)
+                .begin_snapshot()
+                .await?
+            {
                 Some(tx) => RowSource::Snapshot(tx),
                 None => RowSource::Direct(catalog),
             },
@@ -998,7 +1002,10 @@ impl<'a> RowSource<'a> {
         let rows = match self {
             RowSource::Snapshot(tx) => tx.query(statement).await?,
             RowSource::Direct(catalog) => {
-                catalog.primary(crate::ADMIN_TASKS).query(statement).await?
+                catalog
+                    .primary(crate::BACKUP_TASKS)
+                    .query(statement)
+                    .await?
             }
         };
         rows.try_collect().await
@@ -1333,8 +1340,8 @@ async fn stored_llm_providers(catalog: &Catalog) -> Result<Vec<sc_llm::LlmProvid
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backup::archive::Archive;
-    use crate::backup::spool::SpoolFile;
+    use crate::archive::Archive;
+    use crate::spool::SpoolFile;
 
     #[test]
     fn a_file_is_stored_when_its_name_says_it_is_compressed_already() {

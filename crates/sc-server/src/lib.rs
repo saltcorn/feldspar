@@ -25,9 +25,9 @@
 /// session), listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
 /// inventory. Crate-private, so nothing outside the crate borrows it.
 pub(crate) const ADMIN_TASKS: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
-    "sc-server: an administrator's task on the primary database or a raw file store (backup and \
-         restore, clear all, table rename, the user and checklist-user lists, system info, an \
-         application's translation catalogues)",
+    "sc-server: an administrator's task on the primary database or a raw file store (clear all, \
+         table rename, the user and checklist-user lists, system info, an application's \
+         translation catalogues)",
 );
 
 mod admin_host;
@@ -38,7 +38,6 @@ mod analytics;
 mod analytics_app;
 mod app_agents;
 mod apps;
-mod backup;
 mod browser;
 mod build_agent;
 mod build_archive;
@@ -71,6 +70,7 @@ mod observe;
 mod posterior;
 mod reload;
 mod requests;
+mod restore_host;
 mod router;
 mod security;
 mod serve;
@@ -90,25 +90,25 @@ mod webhooks;
 pub use admin_host::{AdminHost, HANDOFF_ROUTE, HANDOFF_TTL};
 pub use agents::{AgentServices, install_agents, install_agents_on};
 pub use apps::{AppMounts, MountedApp, build_and_mount, mount_all, subdomain_in, subdomain_of};
-pub use backup::{
-    Available as BackupContents, BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE, BackupPreferences,
-    BackupScheduler, RestoreReport, Selection as BackupSelection, available as backup_available,
-    inspect as inspect_backup, is_encrypted as backup_is_encrypted, restore_backup,
-    start_backup_scheduler, write_backup_stream, write_backup_to,
-};
 pub use oauth::{
     BINDING_COOKIE as OAUTH_BINDING_COOKIE, CALLBACK_ROUTE as OAUTH_CALLBACK_ROUTE,
     COMPLETE_ROUTE as OAUTH_COMPLETE_ROUTE, CONSENT_ROUTE as OAUTH_CONSENT_ROUTE,
     PROVIDERS_ROUTE as OAUTH_PROVIDERS_ROUTE,
 };
+pub use sc_backup::{
+    Available as BackupContents, BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE, BackupPreferences,
+    BackupScheduler, RestoreReport, Selection as BackupSelection, available as backup_available,
+    inspect as inspect_backup, is_encrypted as backup_is_encrypted, restore_backup,
+    start_backup_scheduler, write_backup_stream, write_backup_to,
+};
 // The S3 request signer, for the fake S3 server the automated-backup tests
 // check every request's signature against.
-pub use backup::s3::{Signing as S3Signing, authorization as s3_authorization};
 pub use browser::{
     BROWSER_NAMES, ChromiumDriver, DriverConfig, check_browser_sandbox, detect_browser,
 };
 pub use chat::AGENT_CHAT_ROUTE;
 pub use sc_agent::{ProviderConnector, StoredProviders};
+pub use sc_backup::s3::{Signing as S3Signing, authorization as s3_authorization};
 
 /// The server's JavaScript evaluator: the `deno_core`-backed engine ownership
 /// formulas' reified path runs on (§7.3). Constructed once at boot and shared —

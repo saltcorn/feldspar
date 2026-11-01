@@ -14,10 +14,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sc_access::rows::require_object;
+use sc_backup::codec::{server_from_body, server_json};
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
-use sc_mcp::{McpServerDef, McpServerDefId, McpTransport};
-use serde_json::{Map, Value as Json, json};
+use sc_mcp::{McpServerDef, McpServerDefId};
+use serde_json::{Value as Json, json};
 
 use crate::handler::{HandlerRegistry, HandlerResponse};
 
@@ -158,79 +159,6 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
             }
         }
     });
-}
-
-/// A definition as the API returns it, its header values redacted.
-pub(crate) fn server_json(def: &McpServerDef) -> Json {
-    with_headers(&def.redacted())
-}
-
-/// A definition for a **backup**, its header values included: the backup
-/// carries them as it carries an LLM provider's API key.
-pub(crate) fn backup_server_json(def: &McpServerDef) -> Json {
-    with_headers(def)
-}
-
-fn with_headers(def: &McpServerDef) -> Json {
-    json!({
-        "id": def.id.0,
-        "name": def.name,
-        "description": def.description,
-        "url": def.url,
-        "transport": def.transport.as_str(),
-        "headers": def
-            .headers
-            .iter()
-            .map(|(name, value)| json!({ "name": name, "value": value }))
-            .collect::<Vec<_>>(),
-        "allow_private_network": def.allow_private_network,
-        "timeout_secs": def.timeout_secs,
-    })
-}
-
-/// Rebuild a definition from a create, update, test or restore body, the
-/// sentinel in a header value resolved against `stored`.
-pub(crate) fn server_from_body(
-    id: McpServerDefId,
-    body: &Json,
-    stored: &BTreeMap<String, String>,
-) -> Result<McpServerDef> {
-    let obj = require_object(body)?;
-    let text = |key: &str| obj.get(key).and_then(Json::as_str).unwrap_or("").to_owned();
-    let mut headers = BTreeMap::new();
-    for header in obj
-        .get("headers")
-        .and_then(Json::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-    {
-        let name = header
-            .get("name")
-            .and_then(Json::as_str)
-            .unwrap_or("")
-            .trim();
-        if name.is_empty() {
-            continue;
-        }
-        let value = header.get("value").and_then(Json::as_str).unwrap_or("");
-        if headers.insert(name.to_owned(), value.to_owned()).is_some() {
-            return Err(Error::invalid(format!("header `{name}` is given twice")));
-        }
-    }
-    Ok(McpServerDef {
-        id,
-        name: text("name").trim().to_owned(),
-        description: text("description"),
-        url: text("url").trim().to_owned(),
-        transport: McpTransport::parse(&text("transport"))?,
-        headers: sc_mcp::merge_headers(stored, &headers)?,
-        allow_private_network: obj
-            .get("allow_private_network")
-            .and_then(Json::as_bool)
-            .unwrap_or(false),
-        timeout_secs: obj.get("timeout_secs").and_then(Json::as_u64).unwrap_or(0),
-        attributes: Map::new(),
-    })
 }
 
 /// A test's or a listing's answer: what was found, or the refusal.

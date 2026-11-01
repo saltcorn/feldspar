@@ -24,8 +24,9 @@ use sc_test_harness::TestDb;
 use tower::ServiceExt;
 
 /// What one test would build — the agents, models and triggers, the workflow
-/// engine, the mount registry, the router — exercised once, and the weak ends
-/// of the catalog and the evaluator handed back.
+/// engine, the streams (whose registry is a typed extension on the catalog),
+/// the mount registry, the router — exercised once, and the weak ends of the
+/// catalog and the evaluator handed back.
 async fn a_server_test(teardown: bool) -> Result<(Weak<Catalog>, Weak<dyn sc_expr::JsEvaluator>)> {
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
@@ -42,12 +43,20 @@ async fn a_server_test(teardown: bool) -> Result<(Weak<Catalog>, Weak<dyn sc_exp
     let weak_evaluator = Arc::downgrade(&evaluator);
     let dispatcher = install_triggers(&catalog, evaluator.clone(), &agents, &models).await?;
     let (_engine, _handle) = start_workflow_engine(&catalog, &dispatcher);
+    let streams =
+        sc_server::install_streams(&catalog, &dispatcher, sc_stream::StreamConfig::default())
+            .await?;
+    assert!(
+        catalog.extension::<sc_stream::StreamRegistry>().is_some(),
+        "the streams installed their registry on the catalog"
+    );
     let apps = Arc::new(
         AppMounts::new(catalog.clone())
             .with_evaluator(evaluator)
             .with_triggers(dispatcher.clone())
             .with_agents(agents)
-            .with_models(models),
+            .with_models(models)
+            .with_streams(streams),
     );
     let router = build_router_with_apps(
         &sc_api::admin_endpoints(),
@@ -62,6 +71,14 @@ async fn a_server_test(teardown: bool) -> Result<(Weak<Catalog>, Weak<dyn sc_exp
         .map_err(|e| sc_error::Error::msg(e.to_string()))?;
     let _ = router.oneshot(request).await;
     let _ = catalog.formula_evaluator();
+    if teardown {
+        // What the hook will run; once more when the test ends is harmless.
+        catalog.teardown();
+        assert!(
+            catalog.extension::<sc_stream::StreamRegistry>().is_none(),
+            "teardown empties the extensions with the other services"
+        );
+    }
     Ok((Arc::downgrade(&catalog), weak_evaluator))
 }
 

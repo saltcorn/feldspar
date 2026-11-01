@@ -45,7 +45,7 @@ use sc_api::mcp::{
     AdminTool, Area, ToolContext, arguments, optional_bool, optional_string, require_grant,
 };
 use sc_api::schema_edit::{GRANT_EDIT, Grants};
-use sc_catalog::{AdminCall, AdminHost, Catalog};
+use sc_catalog::{AdminHost, Catalog, TranslationsOf};
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
 
@@ -156,6 +156,16 @@ impl AdminTool for DescribeTranslations {
 enum Target {
     Application(Box<Application>),
     Instance,
+}
+
+impl Target {
+    /// Whose translations, as the admin host names them.
+    fn of(&self) -> TranslationsOf {
+        match self {
+            Target::Application(app) => TranslationsOf::Application(app.id.0),
+            Target::Instance => TranslationsOf::Instance,
+        }
+    }
 }
 
 /// The `scope` parameter, as both tools declare it.
@@ -413,19 +423,12 @@ impl AdminTool for SaveTranslations {
             merged.insert(key.clone(), value.clone());
         }
 
-        let call = match &target {
-            Target::Application(app) => {
-                AdminCall::new("saveTranslations", json!({ "messages": merged }))
-                    .param("id", app.id.to_string())
-            }
-            Target::Instance => {
-                AdminCall::new("saveInstanceTranslations", json!({ "messages": merged }))
-            }
-        };
         let mut out = host(ctx)?
-            .call_admin(
-                call.param("locale", locale.clone())
-                    .user(ctx.user.map(|u| u.id())),
+            .save_translations(
+                ctx.user.map(|u| u.id()),
+                target.of(),
+                locale.clone(),
+                merged,
             )
             .await?;
         out["written"] = json!(changes.values().filter(|v| !v.is_null()).count());
@@ -463,14 +466,8 @@ fn current_translations(screen: &Json, locale: &str) -> Map<String, Json> {
 }
 
 async fn get_translations(ctx: &ToolContext<'_>, target: &Target) -> Result<Json> {
-    let call = match target {
-        Target::Application(app) => {
-            AdminCall::new("getTranslations", Json::Null).param("id", app.id.to_string())
-        }
-        Target::Instance => AdminCall::new("getInstanceTranslations", Json::Null),
-    };
     host(ctx)?
-        .call_admin(call.user(ctx.user.map(|u| u.id())))
+        .translations(ctx.user.map(|u| u.id()), target.of())
         .await
 }
 

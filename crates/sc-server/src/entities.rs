@@ -31,10 +31,8 @@ use serde_json::{Value as Json, json};
 
 use crate::apps::AppMounts;
 use crate::handler::{HandlerRegistry, HandlerResponse};
-use crate::handlers::{
-    agent_json, agents_of, application_api_json, field_json, file_store_json, stream_json,
-    streams_of, table_json, trigger_json_with, triggers_of,
-};
+use crate::handlers::{agents_of, application_api_json, stream_json, streams_of, triggers_of};
+use sc_backup::codec::{agent_json, field_json, file_store_json, table_json, trigger_json_with};
 
 /// Register `listEntities` on `reg`.
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: Arc<AppMounts>) {

@@ -379,7 +379,7 @@ uncalled until event types are supported.
   "3 updates available" badge and no version pinning UI beyond what the admin types into the
   specifier.
 - **Modules in a backup.** `_sc_modules` is not one of the things
-  [`Selection`](./crates/sc-server/src/backup/mod.rs) offers, so a backup carries the
+  [`Selection`](../crates/sc-backup/src/lib.rs) offers, so a backup carries the
   *triggers* that name a module's actions and not the module itself; restoring one into a fresh
   installation lists those triggers as broken until the modules are installed again by hand. The
   reason it is not here is that a module is a row **and a package**, so "restore the modules"

@@ -51,13 +51,12 @@ use super::{
     AGENT_MEMORY_FILE, Available, CREDIT_ROWS_FILES, MANIFEST_FILE, ROLE_GRANT_ROWS_FILE,
     SSL_SECTION, Selection, USER_ROWS_FILE, USERS_FILE,
 };
-use crate::apps::AppMounts;
-use crate::handlers::{
-    agent_from_body, agents_of, application_from_body, backup_file_meta_from_json,
-    create_backend_resources, dataset_shape, db_connection_from_body, field_spec_from_body,
-    file_store_from_body, library_item_from_body, llm_model_from_body, llm_provider_from_body,
-    model_from_body, models_of, module_from_backup, modules_of, page_from_body, stream_from_body,
-    streams_of, table_settings_from_body, trigger_from_body, trigger_table, triggers_of,
+use crate::RestoreHost;
+use crate::codec::{
+    agent_from_body, application_from_body, backup_file_meta_from_json, create_backend_resources,
+    db_connection_from_body, field_spec_from_body, file_store_from_body, library_item_from_body,
+    llm_model_from_body, llm_provider_from_body, model_from_body, module_from_backup,
+    page_from_body, stream_from_body, table_settings_from_body, trigger_from_body, trigger_table,
     view_from_body, workflow_from_document,
 };
 
@@ -107,7 +106,7 @@ pub fn inspect(path: &Path, password: Option<&str>) -> Result<(Available, Json)>
 /// is until this returns. `password` decrypts a password-protected backup.
 pub async fn restore_backup(
     catalog: &Catalog,
-    apps: &AppMounts,
+    apps: &dyn RestoreHost,
     path: &Path,
     password: Option<&str>,
     selection: &Selection,
@@ -613,7 +612,7 @@ async fn restore_user_references(
                 let update = sc_query::Update::new(table.name.clone(), assignments)
                     .filter(Expr::col(sc_auth::COL_ID).eq(Expr::lit(id)));
                 catalog
-                    .primary(crate::ADMIN_TASKS)
+                    .primary(crate::BACKUP_TASKS)
                     .query(&Statement::from(update))
                     .await?
                     .try_collect()
@@ -1373,7 +1372,7 @@ async fn rewind_identities(catalog: &Catalog, table: &Table, report: &mut Restor
             generator: Some(ColumnGenerator::Identity),
         };
         if let Err(e) = catalog
-            .primary(crate::ADMIN_TASKS)
+            .primary(crate::BACKUP_TASKS)
             .apply_schema(&change)
             .await
         {
@@ -1671,7 +1670,7 @@ async fn insert_batch(catalog: &Catalog, table: &Table, batch: &[Json]) -> Resul
         rows,
         ..Insert::row(table.name.clone(), columns, Vec::new())
     });
-    let driver = catalog.primary(crate::ADMIN_TASKS);
+    let driver = catalog.primary(crate::BACKUP_TASKS);
     if !driver.capabilities().change_triggers {
         driver.query(&insert).await?.try_collect().await?;
         return Ok(());
@@ -1791,7 +1790,7 @@ async fn restore_file_store(
             }
         }
     } else {
-        match catalog.require_file_store(name, crate::ADMIN_TASKS) {
+        match catalog.require_file_store(name, crate::BACKUP_TASKS) {
             Ok(store) => store,
             Err(_) => {
                 report.skipped(format!(
@@ -2039,7 +2038,7 @@ async fn define_store(
 /// ([`import_application`]).
 async fn restore_application(
     catalog: &Catalog,
-    apps: &AppMounts,
+    apps: &dyn RestoreHost,
     archive: &Archive,
     key: &str,
     selection: &Selection,
@@ -2083,7 +2082,7 @@ async fn restore_application(
     // Build button, so "build it once its source is in place" would send the
     // admin looking for both.
     let builds = sc_app::framework_factory(&app.framework.name).is_none();
-    match crate::apps::build_and_mount(apps, app).await {
+    match apps.build_and_mount(app).await {
         Ok(_) if !builds => report.did(format!("application `{subdomain}` serving")),
         Ok(built) => report.did(format!(
             "application `{subdomain}` built and serving{}",
@@ -2575,7 +2574,7 @@ async fn restore_mcp_servers(catalog: &Catalog, archive: &Archive, report: &mut 
                 .and_then(Json::as_str)
                 .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
                 .map(sc_mcp::McpServerDefId);
-            let mut def = crate::mcp_servers::server_from_body(
+            let mut def = crate::codec::server_from_body(
                 backed_up.unwrap_or_default(),
                 &value,
                 &std::collections::BTreeMap::new(),
@@ -2713,7 +2712,7 @@ async fn restore_code_libraries(catalog: &Catalog, archive: &Archive, report: &m
 /// is reported.
 async fn restore_agents(
     catalog: &Catalog,
-    apps: &AppMounts,
+    apps: &dyn RestoreHost,
     archive: &Archive,
     retry: Option<&[String]>,
     report: &mut RestoreReport,
@@ -2726,14 +2725,13 @@ async fn restore_agents(
             return refused;
         }
     };
-    let services = match agents_of(apps) {
-        Ok(services) => services,
+    let registry = match apps.agent_registry() {
+        Ok(registry) => registry,
         Err(e) => {
             report.skipped(format!("agents: {}", e.causes()));
             return refused;
         }
     };
-    let registry = services.registry();
     for value in array_list(&document) {
         let name = value
             .get("name")
@@ -2886,7 +2884,7 @@ async fn restore_agent_memory(
 /// returned, to be tried again once those agents are here.
 async fn restore_triggers(
     catalog: &Catalog,
-    apps: &AppMounts,
+    apps: &dyn RestoreHost,
     archive: &Archive,
     selection: &Selection,
     pass: TriggerPass<'_>,
@@ -2900,7 +2898,7 @@ async fn restore_triggers(
             return refused;
         }
     };
-    let dispatcher = match triggers_of(apps) {
+    let dispatcher = match apps.trigger_dispatcher() {
         Ok(dispatcher) => dispatcher,
         Err(e) => {
             report.skipped(format!("triggers: {}", e.causes()));
@@ -3085,7 +3083,7 @@ async fn restore_workflow(
 /// package name — is kept as it is.** One reload for the batch, so what they
 /// supply is live before anything below names it.
 async fn restore_modules(
-    apps: &AppMounts,
+    apps: &dyn RestoreHost,
     catalog: &Catalog,
     archive: &Archive,
     report: &mut RestoreReport,
@@ -3097,13 +3095,10 @@ async fn restore_modules(
             return;
         }
     };
-    let services = match modules_of(apps) {
-        Ok(services) => services,
-        Err(e) => {
-            report.skipped(format!("modules: {}", e.causes()));
-            return;
-        }
-    };
+    if let Err(e) = apps.modules_installed() {
+        report.skipped(format!("modules: {}", e.causes()));
+        return;
+    }
     let mut any = false;
     for value in array_list(&document) {
         let name = value
@@ -3119,8 +3114,8 @@ async fn restore_modules(
             {
                 return Ok(None);
             }
-            let package = services
-                .install_package(module.language, module.source, &module.location)
+            let package = apps
+                .install_module_package(module.language, module.source, &module.location)
                 .await?;
             if sc_module::load_module(catalog, module.id).await?.is_some() {
                 module.id = sc_module::ModuleId::new();
@@ -3142,7 +3137,7 @@ async fn restore_modules(
             Err(e) => report.skipped(format!("module `{name}`: {}", e.causes())),
         }
     }
-    if any && let Err(e) = services.reload().await {
+    if any && let Err(e) = apps.reload_modules().await {
         report.skipped(format!(
             "the restored modules are installed but not loaded yet: {}",
             e.causes()
@@ -3247,7 +3242,7 @@ async fn restore_db_connections(
 /// defined here by name is kept.** One reload for the batch.
 async fn restore_streams(
     catalog: &Catalog,
-    apps: &AppMounts,
+    apps: &dyn RestoreHost,
     archive: &Archive,
     report: &mut RestoreReport,
 ) {
@@ -3258,14 +3253,13 @@ async fn restore_streams(
             return;
         }
     };
-    let services = match streams_of(apps) {
-        Ok(services) => services,
+    let registry = match apps.stream_registry() {
+        Ok(registry) => registry,
         Err(e) => {
             report.skipped(format!("streams: {}", e.causes()));
             return;
         }
     };
-    let registry = services.registry();
     let mut any = false;
     for value in array_list(&document) {
         let name = value
@@ -3302,7 +3296,7 @@ async fn restore_streams(
             Err(e) => report.skipped(format!("stream `{name}`: {}", e.causes())),
         }
     }
-    if any && let Err(e) = services.reload(catalog).await {
+    if any && let Err(e) = apps.reload_streams(catalog).await {
         report.skipped(format!(
             "the restored streams are saved but not running yet: {}",
             e.causes()
@@ -3366,7 +3360,7 @@ async fn restore_translations(
 /// are not added to it.
 async fn restore_analytics(
     catalog: &Catalog,
-    apps: &AppMounts,
+    apps: &dyn RestoreHost,
     archive: &Archive,
     selection: &Selection,
     report: &mut RestoreReport,
@@ -3430,7 +3424,7 @@ async fn restore_datasets(
             if sc_dataset::load_dataset(catalog, id).await?.is_some() {
                 id = sc_dataset::DatasetId::new();
             }
-            let def = crate::analytics::def_from_input(&value, id)?;
+            let def = crate::codec::dataset_def_from_input(&value, id)?;
             sc_dataset::save_dataset(catalog, &def).await?;
             ids.insert(backed_up.clone(), id.to_string());
             Ok(true)
@@ -3448,7 +3442,7 @@ async fn restore_datasets(
 
 async fn restore_models(
     catalog: &Catalog,
-    apps: &AppMounts,
+    apps: &dyn RestoreHost,
     archive: &Archive,
     datasets: &BTreeMap<String, String>,
     created: &mut BTreeMap<String, uuid::Uuid>,
@@ -3461,14 +3455,13 @@ async fn restore_models(
             return;
         }
     };
-    let services = match models_of(apps) {
-        Ok(services) => services,
+    let registry = match apps.model_registry() {
+        Ok(registry) => registry,
         Err(e) => {
             report.skipped(format!("models: {}", e.causes()));
             return;
         }
     };
-    let registry = services.registry();
     for mut value in array_list(&document) {
         let name = value
             .get("name")
@@ -3518,7 +3511,7 @@ async fn restore_models(
                 .as_object()
                 .ok_or_else(|| Error::invalid("a model must be an object"))?;
             let model = model_from_body(catalog, obj).await?;
-            let shape = dataset_shape(&services, &model.dataset).await;
+            let shape = apps.dataset_shape(&model.dataset).await;
             sc_model::save_model(catalog, &registry, &model, shape.as_ref()).await?;
             if let Some(Json::Object(view_state)) = value.get("view_state")
                 && !view_state.is_empty()

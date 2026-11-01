@@ -92,6 +92,7 @@ use sc_log::Verbosity;
 use serde_json::{Value as Json, json};
 
 use crate::handler::{Admin, Caller, HandlerCtx, HandlerRegistry};
+use crate::handlers::{self, HandlerState};
 use crate::router::AppState;
 
 /// The route the server listens for MCP on.
@@ -743,67 +744,190 @@ fn resolve(handlers: &HandlerRegistry, endpoint: &Endpoint) -> Result<crate::han
 /// The bearer credential this request presents, if it presents one.
 ///
 /// A cookie is not consulted, here or anywhere on this route.
-/// The admin handlers, offered to the administrative tools through the
+/// The admin operations, offered to the administrative tools through the
 /// catalog (see [`sc_catalog::AdminHost`]): how `create_application` — whether
 /// the chat copilot or an MCP client called it — runs the same handler the
-/// admin's Create button does.
+/// admin's Create button does. Each method calls that handler's function, not
+/// an endpoint looked up by name.
 ///
-/// Holds the registry **weakly**: the catalog outlives every router, and a
-/// strong handle here would be a cycle through the handlers' own clones of the
-/// catalog.
+/// Holds the catalog and the mount registry **weakly**: the catalog outlives
+/// every router, and a strong handle here would be a cycle through the
+/// services' own clones of the catalog.
 pub(crate) struct AdminHandlers {
-    handlers: std::sync::Weak<HandlerRegistry>,
     catalog: std::sync::Weak<Catalog>,
+    apps: std::sync::Weak<crate::apps::AppMounts>,
 }
 
 impl AdminHandlers {
-    /// Install `handlers` on `catalog`.
-    pub(crate) fn install(catalog: &Arc<Catalog>, handlers: &Arc<HandlerRegistry>) -> Result<()> {
+    /// Install the operations of the server around `apps` on `catalog`.
+    pub(crate) fn install(
+        catalog: &Arc<Catalog>,
+        apps: &Arc<crate::apps::AppMounts>,
+    ) -> Result<()> {
         catalog.set_admin_host(Arc::new(AdminHandlers {
-            handlers: Arc::downgrade(handlers),
             catalog: Arc::downgrade(catalog),
+            apps: Arc::downgrade(apps),
         }))
     }
-}
 
-#[async_trait::async_trait]
-impl sc_catalog::AdminHost for AdminHandlers {
-    async fn call_admin(&self, call: sc_catalog::AdminCall) -> Result<Json> {
-        let handlers = self.handlers.upgrade().ok_or_else(|| {
+    /// The handlers' state and a request as `user`, with `params` bound — what
+    /// the router would hand the handler after the admin check passed.
+    async fn request(
+        &self,
+        user: sc_catalog::AdminUser,
+        params: &[(&str, String)],
+    ) -> Result<(HandlerState, HandlerCtx<Admin>)> {
+        let catalog = self
+            .catalog
+            .upgrade()
+            .ok_or_else(|| Error::config("the server's catalog has been dropped"))?;
+        let apps = self.apps.upgrade().ok_or_else(|| {
             Error::config("the server that installed the admin handlers has stopped")
         })?;
-        let handler = handlers.get(&call.endpoint).cloned().ok_or_else(|| {
-            Error::config(format!(
-                "this process registers no handler for `{}`",
-                call.endpoint
-            ))
-        })?;
-        drop(handlers);
-        let user = match call.user {
-            Some(id) => {
-                let catalog = self
-                    .catalog
-                    .upgrade()
-                    .ok_or_else(|| Error::config("the server's catalog has been dropped"))?;
-                sc_auth::load_user(&catalog, id).await?
-            }
+        let user = match user {
+            Some(id) => sc_auth::load_user(&catalog, id).await?,
             None => None,
         };
-        let response = handler(HandlerCtx {
-            path_params: call.path_params.into_iter().collect(),
+        let ctx = HandlerCtx {
+            path_params: params
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), value.clone()))
+                .collect(),
             query: Vec::new(),
-            body: call.body,
+            body: Json::Null,
             // The admin tools behind `AdminHost` (`sc_app::mcp`) are reached
             // only by a caller that passed their admin check.
-            who: Caller::Admin(Admin::delegated(user, "catalog admin host")),
+            who: Admin::delegated(user, "catalog admin host"),
             raw_body: None,
             raw_file: None,
             analytics_app: None,
             client_ip: None,
             locale: sc_i18n::active().default_locale().clone(),
-        })
-        .await?;
-        Ok(response.body)
+        };
+        Ok((HandlerState { catalog, apps }, ctx))
+    }
+}
+
+/// The body of a handler's answer.
+fn answer(response: Result<crate::handler::HandlerResponse>) -> Result<Json> {
+    Ok(response?.body)
+}
+
+#[async_trait::async_trait]
+impl sc_catalog::AdminHost for AdminHandlers {
+    async fn backend_operation(
+        &self,
+        user: sc_catalog::AdminUser,
+        op: sc_catalog::BackendOperation,
+    ) -> Result<Json> {
+        let (state, ctx) = self
+            .request(
+                user,
+                &[("backend", op.backend), ("operation", op.operation)],
+            )
+            .await?;
+        let body = json!({ "name": op.name, "config": op.config, "input": {} });
+        answer(handlers::file_stores::backend_operation(state, ctx, body).await)
+    }
+
+    async fn create_file_store(
+        &self,
+        user: sc_catalog::AdminUser,
+        store: sc_catalog::NewFileStore,
+    ) -> Result<Json> {
+        let (state, ctx) = self.request(user, &[]).await?;
+        let body = json!({
+            "name": store.name,
+            "backend": store.backend,
+            "description": store.description,
+            "config": store.config,
+        });
+        answer(handlers::file_stores::create_file_store(state, ctx, body).await)
+    }
+
+    async fn create_application(
+        &self,
+        user: sc_catalog::AdminUser,
+        application: Json,
+    ) -> Result<Json> {
+        let (state, ctx) = self.request(user, &[]).await?;
+        answer(handlers::applications::create_application(state, ctx, application).await)
+    }
+
+    async fn list_applications(&self, user: sc_catalog::AdminUser) -> Result<Vec<Json>> {
+        let (state, ctx) = self.request(user, &[]).await?;
+        match answer(handlers::applications::list_all_applications(state, ctx, Json::Null).await)? {
+            Json::Array(apps) => Ok(apps),
+            other => Err(Error::msg(format!(
+                "listing the applications answered {other} rather than a list"
+            ))),
+        }
+    }
+
+    async fn update_application(
+        &self,
+        user: sc_catalog::AdminUser,
+        id: uuid::Uuid,
+        application: Json,
+    ) -> Result<Json> {
+        let (state, ctx) = self.request(user, &[("id", id.to_string())]).await?;
+        answer(handlers::applications::update_application(state, ctx, application).await)
+    }
+
+    async fn build_application(&self, user: sc_catalog::AdminUser, id: uuid::Uuid) -> Result<Json> {
+        let (state, ctx) = self.request(user, &[("id", id.to_string())]).await?;
+        answer(handlers::applications::build_application(state, ctx, Json::Null).await)
+    }
+
+    async fn translations(
+        &self,
+        user: sc_catalog::AdminUser,
+        of: sc_catalog::TranslationsOf,
+    ) -> Result<Json> {
+        match of {
+            sc_catalog::TranslationsOf::Application(id) => {
+                let (state, ctx) = self.request(user, &[("id", id.to_string())]).await?;
+                answer(handlers::translations::get_translations(state, ctx, Json::Null).await)
+            }
+            sc_catalog::TranslationsOf::Instance => {
+                let (state, ctx) = self.request(user, &[]).await?;
+                answer(
+                    handlers::translations::get_instance_translations(state, ctx, Json::Null).await,
+                )
+            }
+        }
+    }
+
+    async fn save_translations(
+        &self,
+        user: sc_catalog::AdminUser,
+        of: sc_catalog::TranslationsOf,
+        locale: String,
+        messages: serde_json::Map<String, Json>,
+    ) -> Result<Json> {
+        let body = json!({ "messages": messages });
+        match of {
+            sc_catalog::TranslationsOf::Application(id) => {
+                let (state, ctx) = self
+                    .request(user, &[("id", id.to_string()), ("locale", locale)])
+                    .await?;
+                answer(handlers::translations::save_translations(state, ctx, body).await)
+            }
+            sc_catalog::TranslationsOf::Instance => {
+                let (state, ctx) = self.request(user, &[("locale", locale)]).await?;
+                answer(handlers::translations::save_instance_translations(state, ctx, body).await)
+            }
+        }
+    }
+
+    async fn save_stream(&self, user: sc_catalog::AdminUser, stream: Json) -> Result<Json> {
+        let (state, ctx) = self.request(user, &[]).await?;
+        answer(handlers::streams::save_stream(state, ctx, stream).await)
+    }
+
+    async fn delete_stream(&self, user: sc_catalog::AdminUser, id: uuid::Uuid) -> Result<Json> {
+        let (state, ctx) = self.request(user, &[("id", id.to_string())]).await?;
+        answer(handlers::streams::delete_stream(state, ctx, Json::Null).await)
     }
 }
 

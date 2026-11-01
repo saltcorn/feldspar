@@ -42,7 +42,7 @@ use sc_api::mcp::{
     AdminTool, Area, ToolContext, arguments, optional_bool, optional_string, require_grant,
 };
 use sc_api::schema_edit::{GRANT_CREATE, Grants};
-use sc_catalog::{AdminCall, AdminHost, Catalog, NEW_LOCAL_FILE_STORE};
+use sc_catalog::{AdminHost, BackendOperation, Catalog, NEW_LOCAL_FILE_STORE, NewFileStore};
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
 
@@ -196,14 +196,14 @@ impl AdminTool for CreateStore {
                 // Where the admin's "Suggest a directory" would put it: under
                 // the server's data directory, named after the store.
                 let suggested = host
-                    .call_admin(
-                        AdminCall::new(
-                            "runBackendOperation",
-                            json!({ "name": name, "config": {}, "input": {} }),
-                        )
-                        .param("backend", sc_files::LOCAL_BACKEND)
-                        .param("operation", sc_files::OP_SUGGEST_DIR)
-                        .user(user),
+                    .backend_operation(
+                        user,
+                        BackendOperation {
+                            backend: sc_files::LOCAL_BACKEND.to_owned(),
+                            operation: sc_files::OP_SUGGEST_DIR.to_owned(),
+                            name: name.to_string(),
+                            config: Map::new(),
+                        },
                     )
                     .await?;
                 suggested
@@ -223,14 +223,14 @@ impl AdminTool for CreateStore {
                 }
                 if optional_bool(&args, ARG_GENERATE_KEY)? == Some(true) {
                     let generated = host
-                        .call_admin(
-                            AdminCall::new(
-                                "runBackendOperation",
-                                json!({ "name": name, "config": config, "input": {} }),
-                            )
-                            .param("backend", sc_files::GIT_BACKEND)
-                            .param("operation", sc_files::OP_GENERATE_KEY)
-                            .user(user),
+                        .backend_operation(
+                            user,
+                            BackendOperation {
+                                backend: sc_files::GIT_BACKEND.to_owned(),
+                                operation: sc_files::OP_GENERATE_KEY.to_owned(),
+                                name: name.to_string(),
+                                config: config.clone(),
+                            },
                         )
                         .await?;
                     let config = generated.get("config").cloned().unwrap_or(Json::Null);
@@ -263,18 +263,19 @@ impl AdminTool for CreateStore {
             }
         };
 
+        let config = match config {
+            Json::Object(config) => config,
+            _ => Map::new(),
+        };
         let created = host
-            .call_admin(
-                AdminCall::new(
-                    "createFileStore",
-                    json!({
-                        "name": name,
-                        "backend": backend,
-                        "description": description,
-                        "config": config,
-                    }),
-                )
-                .user(user),
+            .create_file_store(
+                user,
+                NewFileStore {
+                    name: name.to_string(),
+                    backend: backend.clone(),
+                    description,
+                    config,
+                },
             )
             .await?;
         let directory = store_dir(ctx.catalog, &name, "")
@@ -436,7 +437,7 @@ impl AdminTool for CreateApp {
             "apis": [{ "provider": DEFAULT_API_PROVIDER, "mount": DEFAULT_API_MOUNT }],
         });
         let created = host
-            .call_admin(AdminCall::new("createApplication", body).user(ctx.user.map(|u| u.id())))
+            .create_application(ctx.user.map(|u| u.id()), body)
             .await?;
 
         let app = crate::load_application_by_subdomain(ctx.catalog, &subdomain)

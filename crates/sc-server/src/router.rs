@@ -43,7 +43,6 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use crate::admin_host::HANDOFF_ROUTE;
 use crate::admin_session::{AdminSession, Caller, Who};
 use crate::apps::{AppMounts, MountedApp, subdomain_in};
-use crate::backup::{BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE};
 use crate::chat::{AGENT_CHAT_ROUTE, agent_chat_upgrade};
 use crate::config::ServerConfig;
 use crate::fit_progress::{FIT_PROGRESS_ROUTE, fit_progress_upgrade};
@@ -57,6 +56,7 @@ use crate::security::{
     admin_content_security_policy, build_cookie, csrf_middleware, is_native_client,
     upgrade_origin_allowed, upgrade_origin_refused,
 };
+use sc_backup::{BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE};
 
 /// A WebSocket upgrade, **if this request is one** — the extractor the fallback
 /// needs and axum does not provide (TODO "Streams" §10, task 8.2).
@@ -282,7 +282,7 @@ pub fn build_router_with_apps(
     // The administrative tools create applications and file stores through
     // these same handlers (§13.6), so the router that serves them installs them.
     if let Some(catalog) = apps.catalog() {
-        crate::mcp::AdminHandlers::install(catalog, &handlers)?;
+        crate::mcp::AdminHandlers::install(catalog, &apps)?;
     }
     let state = AppState {
         routes,
@@ -652,7 +652,7 @@ pub(crate) async fn read_body(
     Ok(out.freeze())
 }
 
-/// Stream a request body into a spool file ([`crate::backup::SpoolFile`]),
+/// Stream a request body into a spool file ([`sc_backup::SpoolFile`]),
 /// refusing it once it passes `limit` bytes — [`read_body`] for a body that is
 /// a file and may be larger than is sensible to hold in memory: an uploaded
 /// backup. The file is deleted if anything goes wrong on the way, by its guard.
@@ -660,7 +660,7 @@ pub(crate) async fn spool_body(
     body: Body,
     limit: u64,
     flag: &str,
-) -> std::result::Result<crate::backup::SpoolFile, Box<Response>> {
+) -> std::result::Result<sc_backup::SpoolFile, Box<Response>> {
     use futures::StreamExt;
     use tokio::io::AsyncWriteExt;
     let failed = |e: String| {
@@ -669,7 +669,7 @@ pub(crate) async fn spool_body(
             format!("could not keep the upload: {e}"),
         ))
     };
-    let spool = crate::backup::SpoolFile::new("upload");
+    let spool = sc_backup::SpoolFile::new("upload");
     let file = spool.create().map_err(|e| failed(e.to_string()))?;
     let mut file = tokio::fs::File::from_std(file);
     let mut stream = body.into_data_stream();
@@ -2935,7 +2935,7 @@ async fn apply_response(
                 };
                 use futures::StreamExt;
                 let reader: sc_files::BoxAsyncRead = Box::new(tokio::fs::File::from_std(handle));
-                let body = axum::body::Body::from_stream(crate::file_response::chunks(reader).map(
+                let body = axum::body::Body::from_stream(sc_files::read_chunks(reader).map(
                     move |chunk| {
                         let _keep = &guard;
                         chunk

@@ -62,7 +62,7 @@ use std::sync::Arc;
 
 use sc_api::mcp::{AdminTool, Area, ToolContext, arguments, optional_string, require_grant};
 use sc_api::schema_edit::{GRANT_ACCESS_CHANGES, GRANT_EDIT, Grants};
-use sc_catalog::{AdminCall, Catalog, FileStoreId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
 
@@ -1275,14 +1275,11 @@ async fn save(ctx: &ToolContext<'_>, app: &Application, out: &mut Json) -> Resul
         return Ok(saved);
     };
     let user = ctx.user.map(|u| u.id());
-    let listed = host
-        .call_admin(AdminCall::new("listApplications", Json::Null).user(user))
-        .await?;
+    let listed = host.list_applications(user).await?;
     let id = app.id.to_string();
     let mut body = listed
-        .as_array()
-        .and_then(|apps| apps.iter().find(|a| a["id"] == json!(id)))
-        .cloned()
+        .into_iter()
+        .find(|a| a["id"] == json!(id))
         .ok_or_else(|| {
             Error::msg(format!(
                 "application `{}` is stored but the server did not list it",
@@ -1316,13 +1313,7 @@ async fn save(ctx: &ToolContext<'_>, app: &Application, out: &mut Json) -> Resul
     body["access_if"] = json!(app.access_if);
     // Where the locales live (§9's column-vs-attributes rule).
     body["attributes"] = Json::Object(app.attributes.clone());
-    let updated = host
-        .call_admin(
-            AdminCall::new("updateApplication", body)
-                .param("id", id)
-                .user(user),
-        )
-        .await?;
+    let updated = host.update_application(user, app.id.0, body).await?;
     for key in ["mounted", "mount_error"] {
         if let Some(value) = updated.get(key) {
             out[key] = value.clone();

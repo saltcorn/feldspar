@@ -65,7 +65,9 @@ pub use search::{
 pub use serve::ServeFile;
 pub use store::{CONTENT_TYPE_ATTRIBUTE, Entry, FILENAME_ATTRIBUTE, FileMeta, FileStat, FileStore};
 pub use store_path::{AsStorePath, StorePath, in_git_dir};
-pub use stream::{BoxAsyncRead, BoxAsyncWrite, check_range, read_to_bytes};
+pub use stream::{
+    BoxAsyncRead, BoxAsyncWrite, READ_CHUNK, check_range, read_chunks, read_to_bytes,
+};
 
 #[cfg(test)]
 mod tests {

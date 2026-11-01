@@ -697,11 +697,9 @@ async fn publish_application(args: &Json, ctx: &mut TraitContext<'_>) -> Result<
             ctx.agent
         ))
     })?;
-    let call = sc_catalog::AdminCall::new("buildApplication", Json::Null)
-        .param("id", app.id.0.to_string())
-        .user(ctx.caller.user.as_ref().map(|u| u.id()));
+    let user = ctx.caller.user.as_ref().map(|u| u.id());
     // A failed build is news about the application, so it is a result.
-    Ok(match host.call_admin(call).await {
+    Ok(match host.build_application(user, app.id.0).await {
         Ok(mut body) => {
             let log = body
                 .get("log")

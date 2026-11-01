@@ -26,10 +26,7 @@ use std::ops::Range;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use sc_files::{BoxAsyncRead, CONTENT_TYPE_ATTRIBUTE, FILENAME_ATTRIBUTE, ServeFile};
-
-/// How much of the file one body frame carries.
-const CHUNK: usize = 64 * 1024;
+use sc_files::{CONTENT_TYPE_ATTRIBUTE, FILENAME_ATTRIBUTE, ServeFile};
 
 /// The default `Cache-Control`: always revalidated (the ETag makes that cheap)
 /// and never kept by a shared cache, since who may read a file depends on who
@@ -357,23 +354,12 @@ pub(crate) async fn serve(
             return missing();
         }
     };
-    (status, out, Body::from_stream(chunks(reader))).into_response()
-}
-
-/// A reader as a stream of body frames of at most [`CHUNK`] bytes.
-pub(crate) fn chunks(
-    reader: BoxAsyncRead,
-) -> impl futures::Stream<Item = std::io::Result<bytes::Bytes>> + Send + 'static {
-    futures::stream::try_unfold(reader, |mut reader| async move {
-        use tokio::io::AsyncReadExt;
-        let mut buffer = vec![0u8; CHUNK];
-        let read = reader.read(&mut buffer).await?;
-        if read == 0 {
-            return Ok(None);
-        }
-        buffer.truncate(read);
-        Ok(Some((bytes::Bytes::from(buffer), reader)))
-    })
+    (
+        status,
+        out,
+        Body::from_stream(sc_files::read_chunks(reader)),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -581,7 +567,7 @@ mod tests {
             &self,
             _path: &sc_files::StorePath,
             range: Option<Range<u64>>,
-        ) -> sc_error::Result<BoxAsyncRead> {
+        ) -> sc_error::Result<sc_files::BoxAsyncRead> {
             let remaining = range.map_or(self.size, |r| r.end - r.start);
             Ok(Box::new(Lazy { remaining }))
         }
@@ -729,7 +715,7 @@ mod tests {
     }
 
     /// 50 MB served, and never held: the store's whole-file `read` is not
-    /// called, and no body frame is larger than [`CHUNK`].
+    /// called, and no body frame is larger than [`sc_files::READ_CHUNK`].
     #[tokio::test]
     async fn a_large_file_is_streamed_rather_than_read_whole() {
         use futures::StreamExt;
@@ -749,7 +735,10 @@ mod tests {
             largest = largest.max(data.len());
         }
         assert_eq!(total, size);
-        assert!(largest <= CHUNK, "a frame of {largest} bytes");
+        assert!(
+            largest <= sc_files::READ_CHUNK,
+            "a frame of {largest} bytes"
+        );
         assert_eq!(store.whole_reads.load(Ordering::SeqCst), 0, "read whole");
     }
 }

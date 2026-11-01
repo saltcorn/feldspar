@@ -11,7 +11,6 @@
 //! (single process for the MVP), so a simple `RwLock` guards the cache here.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use sc_db::{DatabaseDriver, SchemaChange};
@@ -22,6 +21,7 @@ use sc_query::{Select, Source, Statement};
 use crate::field::{DataField, DbId};
 use crate::field_meta::{FIELD_META_TABLE, list_field_meta};
 use crate::provider::{DriverTableProvider, TableProvider};
+use crate::services::Services;
 use crate::table::{FieldMergeIssue, Table};
 use crate::table_meta::{TABLE_META_TABLE, list_table_meta};
 
@@ -51,20 +51,12 @@ pub struct Catalog {
     /// the same arrangement, for the same reason, as
     /// [`file_store_errors`](Catalog::file_store_errors).
     database_errors: RwLock<HashMap<String, String>>,
-    /// Tables a connection offered that the catalog did **not** adopt, keyed by
-    /// connection name, because a table of that name was already there.
-    ///
-    /// The catalog keys tables by name, so two databases offering `orders` can
-    /// only produce one `orders`. The primary always wins and the loser is
-    /// **named** rather than dropped in silence: an admin who connects a
-    /// database and cannot find one of its tables has to be able to read why,
-    /// and "it clashed with a table you already had" is the whole answer.
-    ///
-    /// Rebuilt from scratch on every [`reload`](Catalog::reload), like
-    /// [`field_overlay_issues`](Catalog::field_overlay_issues).
-    shadowed_tables: RwLock<HashMap<String, Vec<String>>>,
-    /// Cache of tables keyed by id, rebuilt from introspection.
-    cache: RwLock<HashMap<String, Table>>,
+    /// The schema as of the last [`reload`](Catalog::reload): the tables, what
+    /// did not merge, which tables a connection lost to a name clash, and the
+    /// generation stamp — one immutable value, replaced whole by the reload that
+    /// built the next one, so a reader never sees half of one reload and half of
+    /// another (TODO-code-quality Q5.2). See [`CatalogSchema`].
+    schema: RwLock<Arc<CatalogSchema>>,
     /// Connected file stores, keyed by their [`name`](FileStore::name). Only the
     /// store handles live here (files keep no database row, design §9); the bytes
     /// and per-file metadata stay in the store itself.
@@ -78,108 +70,20 @@ pub struct Catalog {
     /// attempted"; the definition list plus [`file_store`](Self::file_store)
     /// distinguishes those.
     file_store_errors: RwLock<HashMap<String, String>>,
-    /// Who observes row writes (§10.2's emit seam): `sc-action`'s trigger
-    /// dispatcher, and the live hub's row-topic re-checks (TODO.md "Live
-    /// updates" §5) — empty in a process that has neither (a build tool, a
-    /// test), where every write is simply unobserved.
-    ///
-    /// A **list**, because there is more than one kind of observer and
-    /// installing the second must not switch the first off: a trigger that
-    /// stopped firing the day live updates were turned on would be a silent
-    /// outage. A write asks every listener whether it observes and hands the
-    /// event only to those that do.
-    ///
-    /// The catalog holds them because it is what the row layer (layer 8),
-    /// `sc-action` (layer 6) and `sc-live` (layer 7) all already have: the write
-    /// cannot name any of them without inverting the layering, and this is the
-    /// inversion.
-    table_events: RwLock<Vec<(String, Arc<dyn crate::events::TableEvents>)>>,
-    /// The `_fd_fields` overlay rows that did not cleanly merge on the last
-    /// [`reload`](Self::reload) (design §3.2) — a dangling row, a rich type that
-    /// does not fit its column, a `Key` with no foreign key behind it. Rebuilt
-    /// every reload from scratch, so it always reflects the current schema and
-    /// overlay; surfaced to the admin UI by [`field_overlay_issues`](Self::field_overlay_issues).
-    field_overlay_issues: RwLock<Vec<FieldMergeIssue>>,
-    /// Who observes **schema** changes (Phase 7's seam), installed once at boot
-    /// with `sc-server`'s mount registry — `None` in a process that has none.
-    ///
-    /// Held here for the reason [`table_events`](Catalog::add_table_events) is:
-    /// the schema editor (layer 8) and the mount registry (layer 10) cannot name
-    /// each other, and the catalog is what they both already hold.
-    schema_observer: RwLock<Option<Arc<dyn crate::observer::SchemaObserver>>>,
-    /// What follows a table being renamed into the rows other crates own; see
-    /// [`TableRenameHook`](crate::TableRenameHook).
-    rename_hook: RwLock<Option<Arc<dyn crate::observer::TableRenameHook>>>,
-    /// The **module functions** a formula may hoist and a code body may call
-    /// (TODO "Modules in-process", §4a) — `None` in a process with no modules
-    /// installed, or none at all.
-    ///
-    /// Held here for the reason [`table_events`](Catalog::add_table_events) is,
-    /// and it is the same inversion. What implements it is `sc-module`'s worker
-    /// pool; what needs it is [`prefetch_bindings`](crate::prefetch_bindings)
-    /// — which resolves a formula's hoisted calls and is called from three
-    /// crates, none of which can name `sc-module` — and `run_js_code`, in a
-    /// fourth. The catalog is what all four already hold.
-    module_functions: RwLock<Option<Arc<dyn sc_expr::ModuleFnHost>>>,
-    /// Live updates' publishing side (TODO.md "Live updates" §7) — `None` in a
-    /// process with no live hub (a build tool, most tests), where `live` is not
-    /// bound in a code body and the `publish` action says there is nothing to
-    /// publish to.
-    ///
-    /// Held here for the reason the module functions are: the `publish` action
-    /// (layer 8), a JavaScript body's op (layer 3's runtime) and a Python body
-    /// all need it, and what implements it is `sc-live`'s hub, which none of
-    /// them can name.
-    live_host: RwLock<Option<Arc<dyn sc_expr::LiveHost>>>,
+    /// The services the layers above install: the write and schema observers,
+    /// the module, live, model and admin hosts, the formula evaluator, the table
+    /// providers and the typed extensions. One value, so
+    /// [`teardown`](Catalog::teardown) empties all of it (see [`Services`]).
+    services: RwLock<Services>,
     /// The code libraries a body may import (TODO F3), as last loaded from
     /// `_fd_code_libraries` — `None` in a process that never loaded them. See
     /// [`crate::code_libraries`].
     pub(crate) code_libraries: RwLock<Option<Arc<crate::code_libraries::LoadedLibraries>>>,
-    /// The **models** a formula's `predict("…")` and a code body's model handle
-    /// reach (milestone 31 §4) — `None` in a process with no model support.
-    ///
-    /// Held here for [`module_functions`](Catalog::set_module_functions)'
-    /// reason: what implements it is `sc-server`'s `ModelServices`, over
-    /// `sc-model`, which sits above this crate; what needs it is
-    /// [`prefetch_bindings`](crate::prefetch_bindings), the read path and the
-    /// code host, which all hold a `Catalog`.
-    model_host: RwLock<Option<Arc<dyn crate::model_host::ModelHost>>>,
-    /// The server's admin handlers, which the administrative tools create an
-    /// application or a file store through (§13.6) — `None` in a process that
-    /// built no router. See [`crate::AdminHost`].
-    admin_host: RwLock<Option<Arc<dyn crate::admin_host::AdminHost>>>,
-    /// The formula evaluator the **read path** computes a calculated field
-    /// with when it does not translate to SQL (milestone 31 §4) — a
-    /// `predict("…")`, a module function call. Installed by whoever built the
-    /// server's evaluator; `None` in a process that never did, where such a
-    /// field fails its read naming itself.
-    formula_evaluator: RwLock<Option<Arc<dyn sc_expr::JsEvaluator>>>,
-    /// What supplies **table providers** (§8.3) — `None` in a process with no
-    /// modules, which is what a `sc-catalog` test and a server with nothing
-    /// installed both are.
-    ///
-    /// Held here for [`module_functions`](Catalog::set_module_functions)'
-    /// reason: the implementation is `sc-module`'s worker pool (layer 6) and
-    /// what needs it is [`reload`](Catalog::reload) and
-    /// [`provider`](Catalog::provider) (layer 4), so the trait is declared here
-    /// and installed from above.
-    table_providers: RwLock<Option<Arc<dyn crate::provider::TableProviderHost>>>,
     /// Which tables the installed modules **declared** (TODO-imap M4.3), and
     /// which of their fields — what refuses dropping them, and what the table
     /// list badges. Installed whole on every module reload, like the table
     /// providers; empty in a process with no such module.
     module_tables: RwLock<Arc<crate::module_tables::ModuleTables>>,
-    /// Why a stored provided table is not the table an admin expected, keyed by
-    /// table name: a module that is not installed, a provider it does not
-    /// supply, a `fields(cfg)` that threw.
-    ///
-    /// The same arrangement as [`field_overlay_issues`] and for the same reason:
-    /// a provided table whose module is down must still be *in* the tables list,
-    /// with no fields and a sentence saying why, rather than vanishing from the
-    /// admin UI that is the only place it can be fixed from.
-    ///
-    /// [`field_overlay_issues`]: Catalog::field_overlay_issues
-    provided_table_issues: RwLock<Vec<ProvidedTableIssue>>,
     /// Where this deployment's applications are reachable in a browser
     /// (`crate::origin`), set once at boot by the process that knows — the
     /// server from its command line, a command-line build from its
@@ -196,30 +100,6 @@ pub struct Catalog {
     /// boot by the process that read the file, and read by `sc-config`, which
     /// is what gives the values their meaning; empty where nothing is pinned.
     host_config: RwLock<sc_types::Attrs>,
-    /// The LLM provider this **host** supplies — an `[environments.*]`
-    /// section's `llm_provider` in `feldspar.toml` — held here and never in
-    /// `_fd_llm_providers`. Opaque at this layer, like the hosts above it: `sc-llm`
-    /// sets it and is the only reader that knows its type.
-    host_llm_provider: RwLock<Option<Arc<dyn std::any::Any + Send + Sync>>>,
-    /// The stream provider registry of the server this catalog serves. Opaque
-    /// here for the same reason: `sc-app` stores it and reads it back, so an
-    /// app's streams are typed against *this* server's providers and not
-    /// whichever server in the process installed its registry last.
-    stream_registry: RwLock<Option<Arc<dyn std::any::Any + Send + Sync>>>,
-    /// How many times this catalog has been (re)loaded — the **generation
-    /// stamp**, bumped by [`reload`](Catalog::reload) and by nothing else.
-    ///
-    /// It exists so that "does this isolate already have the schema?" is one
-    /// integer comparison (TODO "the v1 `Table` API" §2). A guest that answers
-    /// v1's synchronous `Table.findOne` has to hold the whole schema *before*
-    /// its run starts, and the alternative to a stamp is hashing a megabyte of
-    /// JSON on every firing of every trigger to discover that nothing changed.
-    ///
-    /// Monotonic, never reset, and no part of any identity: it says *when*, not
-    /// *what*. Two catalogs of the same database in the same process have
-    /// generations of their own, which is right — an isolate is told by the
-    /// catalog whose snapshot it holds.
-    generation: AtomicU64,
     /// The serialised schema snapshot for [`generation`](Catalog::generation),
     /// built once and shared by every run at that generation.
     ///
@@ -262,6 +142,66 @@ pub struct ProvidedTableIssue {
     pub table: String,
     /// What is wrong, in a sentence an admin can act on.
     pub problem: String,
+}
+
+/// The schema a catalog presents, as one [`reload`](Catalog::reload) built it.
+///
+/// Immutable: a reload builds a new one and swaps it in whole, so the tables,
+/// the merge issues, the shadowed names and the generation a reader is handed
+/// all come from the same reload. [`Catalog::schema`] hands out the current
+/// one; a caller that needs two of its parts to agree reads both from it.
+#[derive(Debug, Clone, Default)]
+pub struct CatalogSchema {
+    /// The tables, keyed by name.
+    tables: HashMap<String, Table>,
+    /// The `_fd_fields` overlay rows that did not cleanly merge (design §3.2).
+    field_overlay_issues: Vec<FieldMergeIssue>,
+    /// Tables a connection offered that the catalog did not adopt, keyed by
+    /// connection name, because a table of that name was already there. The
+    /// primary always wins and the loser is named rather than dropped in
+    /// silence.
+    shadowed_tables: HashMap<String, Vec<String>>,
+    /// Why a stored provided table is not the table an admin expected.
+    provided_table_issues: Vec<ProvidedTableIssue>,
+    /// How many times the catalog had been loaded when this was built — the
+    /// **generation stamp**: one integer comparison answers "does this isolate
+    /// already have the schema?" (TODO "the v1 `Table` API" §2). Monotonic,
+    /// never reset, and no part of any identity: it says *when*, not *what*.
+    generation: u64,
+}
+
+impl CatalogSchema {
+    /// The table called `name`, if there is one.
+    pub fn get(&self, name: &str) -> Option<&Table> {
+        self.tables.get(name)
+    }
+
+    /// Every table, sorted by name. Includes system (`_fd_*`) tables.
+    pub fn tables(&self) -> Vec<&Table> {
+        let mut tables: Vec<&Table> = self.tables.values().collect();
+        tables.sort_by(|a, b| a.name.cmp(&b.name));
+        tables
+    }
+
+    /// The `_fd_fields` overlay rows that did not cleanly merge.
+    pub fn field_overlay_issues(&self) -> &[FieldMergeIssue] {
+        &self.field_overlay_issues
+    }
+
+    /// The tables the connection `name` offered and the catalog did not adopt.
+    pub fn shadowed_tables(&self, name: &str) -> &[String] {
+        self.shadowed_tables.get(name).map_or(&[], Vec::as_slice)
+    }
+
+    /// What went wrong building the provided tables.
+    pub fn provided_table_issues(&self) -> &[ProvidedTableIssue] {
+        &self.provided_table_issues
+    }
+
+    /// The generation this schema was built at.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
 }
 
 /// The configuration a provided table's provider is called with — the
@@ -356,32 +296,18 @@ impl Catalog {
             primary_db: DbId::primary(),
             databases: RwLock::new(HashMap::new()),
             database_errors: RwLock::new(HashMap::new()),
-            shadowed_tables: RwLock::new(HashMap::new()),
-            cache: RwLock::new(HashMap::new()),
             file_stores: RwLock::new(HashMap::new()),
             file_store_errors: RwLock::new(HashMap::new()),
-            field_overlay_issues: RwLock::new(Vec::new()),
-            schema_observer: RwLock::new(None),
-            rename_hook: RwLock::new(None),
-            module_functions: RwLock::new(None),
-            live_host: RwLock::new(None),
             code_libraries: RwLock::new(None),
-            model_host: RwLock::new(None),
-            admin_host: RwLock::new(None),
-            formula_evaluator: RwLock::new(None),
-            table_providers: RwLock::new(None),
             module_tables: RwLock::new(Arc::new(crate::module_tables::ModuleTables::new())),
-            provided_table_issues: RwLock::new(Vec::new()),
             public_origin: RwLock::new(None),
             production: std::sync::atomic::AtomicBool::new(false),
             host_config: RwLock::new(sc_types::Attrs::new()),
-            host_llm_provider: RwLock::new(None),
-            stream_registry: RwLock::new(None),
-            table_events: RwLock::new(Vec::new()),
-            generation: AtomicU64::new(0),
             code_schema: RwLock::new(None),
             run_wakeups: crate::RunWakeups::new(),
             secret_key: RwLock::new(None),
+            schema: RwLock::new(Arc::new(CatalogSchema::default())),
+            services: RwLock::new(Services::default()),
         };
         // Whether the database has PostGIS (analytics TODO A5.1). Asking is not
         // installing it — `bootstrap_spatial` does that, on a server's boot —
@@ -563,7 +489,6 @@ impl Catalog {
                 }
             }
         }
-        self.set_provided_table_issues(provided_issues)?;
 
         // Then the `_fd_fields` overlay, onto the fields the table now has. Same
         // "only when the table exists" guard and same bootstrapping reason as
@@ -651,38 +576,33 @@ impl Catalog {
             }
         }
 
-        // The DB I/O is done; take the locks only to swap in the new snapshots so
-        // they are never held across an await.
-        let mut guard = self
-            .cache
-            .write()
-            .map_err(|_| Error::msg("catalog cache lock poisoned"))?;
-        *guard = map;
-        drop(guard);
-        let mut issues = self
-            .field_overlay_issues
-            .write()
-            .map_err(|_| Error::msg("catalog field-overlay issue lock poisoned"))?;
-        *issues = field_issues;
-        drop(issues);
-        let mut guard = self
-            .shadowed_tables
-            .write()
-            .map_err(|_| Error::msg("catalog shadowed-table lock poisoned"))?;
-        *guard = shadowed;
-        drop(guard);
-        // Last, and after every swap above: a run that reads the generation and
-        // then the tables must never get a number older than what it goes on to
-        // read. The snapshot built at the old number is dropped here rather than
-        // left to be recognised as stale, so a reloaded catalog is not also
-        // holding a megabyte of the schema it used to have.
+        // The DB I/O is done; take the lock only to swap the new schema in, so
+        // it is never held across an await. The generation is the previous
+        // one's plus one, read under the same lock, so two reloads racing each
+        // other still number their results in the order they were swapped in.
+        {
+            let mut guard = self
+                .schema
+                .write()
+                .map_err(|_| Error::msg("catalog schema lock poisoned"))?;
+            let generation = guard.generation + 1;
+            *guard = Arc::new(CatalogSchema {
+                tables: map,
+                field_overlay_issues: field_issues,
+                shadowed_tables: shadowed,
+                provided_table_issues: provided_issues,
+                generation,
+            });
+        }
+        // The code-schema snapshot built at the old generation is dropped here
+        // rather than left to be recognised as stale, so a reloaded catalog is
+        // not also holding a megabyte of the schema it used to have. One built
+        // across the swap carries the old stamp and is never handed out.
         let mut schema = self
             .code_schema
             .write()
             .map_err(|_| Error::msg("catalog code-schema lock poisoned"))?;
         *schema = None;
-        drop(schema);
-        self.generation.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -701,7 +621,18 @@ impl Catalog {
     /// (see [`generation`](Catalog::generation)). One past the last reload, and
     /// therefore never 0 on a catalog that [`init`](Catalog::init) built.
     pub fn generation(&self) -> u64 {
-        self.generation.load(Ordering::SeqCst)
+        self.schema().generation
+    }
+
+    /// The schema as the last [`reload`](Catalog::reload) built it — one
+    /// immutable value, so everything read from it comes from the same reload.
+    /// A poisoned lock reads as the empty schema of generation 0, which no
+    /// table lookup mistakes for a table.
+    pub fn schema(&self) -> Arc<CatalogSchema> {
+        match self.schema.read() {
+            Ok(guard) => Arc::clone(&guard),
+            Err(_) => Arc::new(CatalogSchema::default()),
+        }
     }
 
     /// The schema snapshot for the **current** generation, or `None` when
@@ -733,11 +664,7 @@ impl Catalog {
     /// when every stored field overlay applied cleanly, which is the ordinary
     /// case.
     pub fn field_overlay_issues(&self) -> Result<Vec<FieldMergeIssue>> {
-        let guard = self
-            .field_overlay_issues
-            .read()
-            .map_err(|_| Error::msg("catalog field-overlay issue lock poisoned"))?;
-        Ok(guard.clone())
+        Ok(self.schema().field_overlay_issues.clone())
     }
 
     /// The catalog described as an `sc_expr` [`SchemaShape`] — what formula
@@ -746,11 +673,7 @@ impl Catalog {
     /// that keeps `sc-expr` below the catalog in the dependency graph: the
     /// catalog describes tables *to* it, never the other way around.
     pub fn schema_shape(&self) -> Result<sc_expr::SchemaShape> {
-        let guard = self
-            .cache
-            .read()
-            .map_err(|_| Error::msg("catalog cache lock poisoned"))?;
-        Ok(self.with_module_functions(schema_shape_of(&guard)))
+        Ok(self.with_module_functions(schema_shape_of(&self.schema().tables)))
     }
 
     /// The module functions installed on this catalog, as `(function, module)`
@@ -796,11 +719,7 @@ impl Catalog {
 
     /// The cached table with the given name, if present.
     pub fn get(&self, name: &str) -> Result<Option<Table>> {
-        let guard = self
-            .cache
-            .read()
-            .map_err(|_| Error::msg("catalog cache lock poisoned"))?;
-        Ok(guard.get(name).cloned())
+        Ok(self.schema().tables.get(name).cloned())
     }
 
     /// The cached table with the given name, or a [`NotFound`](Error::NotFound)
@@ -813,13 +732,7 @@ impl Catalog {
     /// All cached tables, sorted by name. Includes system (`_fd_*`) tables; use
     /// [`Table::is_system`] to filter.
     pub fn tables(&self) -> Result<Vec<Table>> {
-        let guard = self
-            .cache
-            .read()
-            .map_err(|_| Error::msg("catalog cache lock poisoned"))?;
-        let mut tables: Vec<Table> = guard.values().cloned().collect();
-        tables.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(tables)
+        Ok(self.schema().tables().into_iter().cloned().collect())
     }
 
     /// Create a table with the given fields, then reload the cache and return the
@@ -1090,30 +1003,20 @@ impl Catalog {
     /// Replaces any previous one rather than refusing: a process installs
     /// exactly one, and a test that installs a second means the second.
     pub fn set_schema_observer(&self, observer: Arc<dyn crate::observer::SchemaObserver>) {
-        if let Ok(mut guard) = self.schema_observer.write() {
-            *guard = Some(observer);
-        }
+        self.install(|services| services.schema_observer = Some(observer));
     }
 
     /// Install what follows a table rename into the rows other crates own —
     /// `sc-server`'s, once, at boot.
     pub fn set_table_rename_hook(&self, hook: Arc<dyn crate::observer::TableRenameHook>) {
-        if let Ok(mut guard) = self.rename_hook.write() {
-            *guard = Some(hook);
-        }
+        self.install(|services| services.rename_hook = Some(hook));
     }
 
     /// Tell the installed rename hook, if any, that `from` is now `to`, and hand
     /// back its notes. A process with none rewrites nothing beyond the catalog's
     /// own rows and says nothing.
     pub async fn notify_table_renamed(&self, from: &str, to: &str) -> Result<Vec<String>> {
-        let hook = {
-            let guard = self
-                .rename_hook
-                .read()
-                .map_err(|_| Error::msg("catalog rename-hook lock poisoned"))?;
-            guard.clone()
-        };
+        let hook = self.service(|services| services.rename_hook.clone())?;
         match hook {
             Some(hook) => hook.table_renamed(self, from, to).await,
             None => Ok(Vec::new()),
@@ -1132,13 +1035,7 @@ impl Catalog {
         &self,
         change: &crate::observer::SchemaChanged,
     ) -> Result<Vec<crate::observer::ReprojectedApp>> {
-        let observer = {
-            let guard = self
-                .schema_observer
-                .read()
-                .map_err(|_| Error::msg("catalog schema-observer lock poisoned"))?;
-            guard.clone()
-        };
+        let observer = self.service(|services| services.schema_observer.clone())?;
         match observer {
             Some(observer) => observer.schema_changed(self, change),
             None => Ok(Vec::new()),
@@ -1205,34 +1102,20 @@ impl Catalog {
             .unwrap_or_default()
     }
 
-    /// Replace the LLM provider this host supplies, or remove it with `None`.
-    ///
-    /// Not checked here: `sc_llm::set_host_llm_provider` is the way to call
-    /// this, and what it stores is that crate's type.
-    pub fn set_host_llm_provider(&self, provider: Option<Arc<dyn std::any::Any + Send + Sync>>) {
-        if let Ok(mut guard) = self.host_llm_provider.write() {
-            *guard = provider;
-        }
+    /// Store `value` as this catalog's `T`, or remove it with `None` — a
+    /// service of a crate above this one whose type no trait here describes
+    /// (see [`Extensions`](crate::Extensions)). `sc_llm::set_host_llm_provider`
+    /// stores the host's LLM provider this way, `sc_app::install_stream_registry`
+    /// the stream provider registry.
+    pub fn set_extension<T: Send + Sync + 'static>(&self, value: Option<Arc<T>>) {
+        self.install(|services| services.extensions.set(value));
     }
 
-    /// The LLM provider this host supplies, if it supplies one.
-    pub fn host_llm_provider(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
-        self.host_llm_provider.read().ok()?.clone()
-    }
-
-    /// Replace the stream provider registry this catalog's server runs.
-    ///
-    /// Not checked here: `sc_app::install_stream_registry` is the way to call
-    /// this, and what it stores is `sc-stream`'s registry.
-    pub fn set_stream_registry(&self, registry: Arc<dyn std::any::Any + Send + Sync>) {
-        if let Ok(mut guard) = self.stream_registry.write() {
-            *guard = Some(registry);
-        }
-    }
-
-    /// The stream provider registry this catalog's server runs, if one was set.
-    pub fn stream_registry(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
-        self.stream_registry.read().ok()?.clone()
+    /// This catalog's `T`, if one was stored.
+    pub fn extension<T: Send + Sync + 'static>(&self) -> Option<Arc<T>> {
+        self.service(|services| services.extensions.get::<T>())
+            .ok()
+            .flatten()
     }
 
     /// What this process believes about workflow runs that want the engine.
@@ -1510,16 +1393,14 @@ impl Catalog {
         &self,
         providers: Arc<dyn crate::provider::TableProviderHost>,
     ) -> Result<()> {
-        *self
-            .table_providers
-            .write()
-            .map_err(|_| Error::msg("catalog table-providers lock poisoned"))? = Some(providers);
-        Ok(())
+        self.try_install(|services| services.table_providers = Some(providers))
     }
 
     /// What supplies table providers, or `None` where nothing does.
     pub fn table_providers(&self) -> Option<Arc<dyn crate::provider::TableProviderHost>> {
-        self.table_providers.read().ok()?.clone()
+        self.service(|services| services.table_providers.clone())
+            .ok()
+            .flatten()
     }
 
     /// Every provider every loaded module supplies — what the "new table" screen
@@ -1533,18 +1414,7 @@ impl Catalog {
     /// [`reload`](Self::reload), for the admin UI to show on the table it is
     /// about.
     pub fn provided_table_issues(&self) -> Vec<ProvidedTableIssue> {
-        self.provided_table_issues
-            .read()
-            .map(|guard| guard.clone())
-            .unwrap_or_default()
-    }
-
-    fn set_provided_table_issues(&self, issues: Vec<ProvidedTableIssue>) -> Result<()> {
-        *self
-            .provided_table_issues
-            .write()
-            .map_err(|_| Error::msg("catalog provided-table issues lock poisoned"))? = issues;
-        Ok(())
+        self.schema().provided_table_issues.clone()
     }
 
     /// The driver of the database hosting `table` — the primary, or the
@@ -1728,11 +1598,7 @@ impl Catalog {
     /// [`shadowed_tables`](Catalog::shadowed_tables)). Sorted; empty is the
     /// ordinary case.
     pub fn shadowed_tables(&self, name: &str) -> Result<Vec<String>> {
-        let guard = self
-            .shadowed_tables
-            .read()
-            .map_err(|_| Error::msg("catalog shadowed-table lock poisoned"))?;
-        Ok(guard.get(name).cloned().unwrap_or_default())
+        Ok(self.schema().shadowed_tables(name).to_vec())
     }
 
     /// Connect a named file store, making it resolvable by
@@ -1822,32 +1688,36 @@ impl Catalog {
         key: &str,
         events: Arc<dyn crate::events::TableEvents>,
     ) -> Result<()> {
-        let mut guard = self
-            .table_events
-            .write()
-            .map_err(|_| Error::msg("catalog table-events lock poisoned"))?;
-        match guard.iter_mut().find(|(existing, _)| existing == key) {
-            Some(slot) => slot.1 = events,
-            None => guard.push((key.to_owned(), events)),
-        }
-        Ok(())
+        self.try_install(|services| {
+            match services
+                .table_events
+                .iter_mut()
+                .find(|(existing, _)| existing == key)
+            {
+                Some(slot) => slot.1 = events,
+                None => services.table_events.push((key.to_owned(), events)),
+            }
+        })
     }
 
     /// Take the listener under `key` off the seam again. `false` when there
     /// was none.
     pub fn remove_table_events(&self, key: &str) -> bool {
-        let Ok(mut guard) = self.table_events.write() else {
+        let Ok(mut services) = self.services.write() else {
             return false;
         };
-        let before = guard.len();
-        guard.retain(|(existing, _)| existing != key);
-        guard.len() != before
+        let before = services.table_events.len();
+        services
+            .table_events
+            .retain(|(existing, _)| existing != key);
+        services.table_events.len() != before
     }
 
-    /// Empty every slot a layer above fills with a service — the table-event
+    /// Empty the [`Services`] a layer above installed — the table-event
     /// listeners, the observer and rename hook, the module, live, model and
-    /// admin hosts, the formula evaluator, the table providers, the host LLM
-    /// provider, the stream registry and the file stores.
+    /// admin hosts, the formula evaluator, the table providers and the
+    /// extensions (the host LLM provider, the stream registry) — and the file
+    /// stores.
     ///
     /// Those services hold an `Arc<Catalog>` of their own (the trigger
     /// dispatcher through its mailer, `ModelServices`, `AppMounts` …), so a
@@ -1859,44 +1729,56 @@ impl Catalog {
     /// on their `TestDb` (`db.on_teardown(catalog.teardown_hook())`), which runs
     /// it when the test ends.
     ///
-    /// Each table-event listener's own [`teardown`](crate::TableEvents::teardown)
-    /// runs first, for the cycles that do not pass through the catalog (the
-    /// trigger dispatcher and the workflow engine hold each other).
+    /// The services are one value, replaced by an empty one, so a service added
+    /// to [`Services`] is cleared here with nothing to remember. Each table-event
+    /// listener's own [`teardown`](crate::TableEvents::teardown) runs first, for
+    /// the cycles that do not pass through the catalog (the trigger dispatcher
+    /// and the workflow engine hold each other).
     ///
     /// The catalog still answers schema questions afterwards; it just has
     /// nothing installed, as if freshly [`init`](Catalog::init)ed.
     pub fn teardown(&self) {
-        fn clear<T>(slot: &RwLock<Option<T>>) {
-            let taken = match slot.write() {
-                Ok(mut guard) => guard.take(),
-                Err(poisoned) => poisoned.into_inner().take(),
-            };
-            // Dropped outside the lock: a service's own drop may reach back in.
-            drop(taken);
-        }
-        let events = match self.table_events.write() {
+        let services = match self.services.write() {
             Ok(mut guard) => std::mem::take(&mut *guard),
             Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
         };
-        for (_, listener) in &events {
+        for (_, listener) in &services.table_events {
             listener.teardown();
         }
-        drop(events);
+        // Dropped outside the lock: a service's own drop may reach back in.
+        drop(services);
         let stores = match self.file_stores.write() {
             Ok(mut guard) => std::mem::take(&mut *guard),
             Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
         };
         drop(stores);
-        clear(&self.schema_observer);
-        clear(&self.rename_hook);
-        clear(&self.module_functions);
-        clear(&self.live_host);
-        clear(&self.model_host);
-        clear(&self.admin_host);
-        clear(&self.formula_evaluator);
-        clear(&self.table_providers);
-        clear(&self.host_llm_provider);
-        clear(&self.stream_registry);
+    }
+
+    /// Change the installed [`Services`]. A poisoned lock installs nothing,
+    /// for the setters that have no error to report.
+    fn install(&self, change: impl FnOnce(&mut Services)) {
+        if let Ok(mut services) = self.services.write() {
+            change(&mut services);
+        }
+    }
+
+    /// [`install`](Catalog::install), with a poisoned lock an error.
+    fn try_install(&self, change: impl FnOnce(&mut Services)) -> Result<()> {
+        let mut services = self
+            .services
+            .write()
+            .map_err(|_| Error::msg("catalog services lock poisoned"))?;
+        change(&mut services);
+        Ok(())
+    }
+
+    /// Read something out of the installed [`Services`].
+    fn service<T>(&self, read: impl FnOnce(&Services) -> T) -> Result<T> {
+        let services = self
+            .services
+            .read()
+            .map_err(|_| Error::msg("catalog services lock poisoned"))?;
+        Ok(read(&services))
     }
 
     /// [`teardown`](Catalog::teardown) as a closure that owns a handle to this
@@ -1913,12 +1795,7 @@ impl Catalog {
     /// Replaces any previous one rather than refusing: the module set is
     /// rebuilt whole on every change, so the second install *is* the answer.
     pub fn set_module_functions(&self, functions: Arc<dyn sc_expr::ModuleFnHost>) -> Result<()> {
-        let mut guard = self
-            .module_functions
-            .write()
-            .map_err(|_| Error::msg("catalog module-functions lock poisoned"))?;
-        *guard = Some(functions);
-        Ok(())
+        self.try_install(|services| services.module_functions = Some(functions))
     }
 
     /// The installed module functions, cloned out of the lock — `None` where
@@ -1929,7 +1806,9 @@ impl Catalog {
     /// write paths, where the honest answer to "is the module registry broken"
     /// is a formula that fails naming its call rather than every query failing.
     pub fn module_functions(&self) -> Option<Arc<dyn sc_expr::ModuleFnHost>> {
-        self.module_functions.read().ok()?.clone()
+        self.service(|services| services.module_functions.clone())
+            .ok()
+            .flatten()
     }
 
     /// Install the tables the modules declare (TODO-imap M4.3) — `sc-server`'s
@@ -1959,19 +1838,16 @@ impl Catalog {
     /// Replaces any previous one: a process has one hub, and a test that
     /// installs a second means the second.
     pub fn set_live_host(&self, host: Arc<dyn sc_expr::LiveHost>) -> Result<()> {
-        let mut guard = self
-            .live_host
-            .write()
-            .map_err(|_| Error::msg("catalog live-host lock poisoned"))?;
-        *guard = Some(host);
-        Ok(())
+        self.try_install(|services| services.live_host = Some(host))
     }
 
     /// The installed live host, cloned out of the lock — `None` where nobody
     /// installed one. A poisoned lock reads as "there is none", for
     /// [`module_functions`](Catalog::module_functions)' reason.
     pub fn live_host(&self) -> Option<Arc<dyn sc_expr::LiveHost>> {
-        self.live_host.read().ok()?.clone()
+        self.service(|services| services.live_host.clone())
+            .ok()
+            .flatten()
     }
 
     /// Install the models — `sc-server`'s `ModelServices`, at startup and
@@ -1980,12 +1856,7 @@ impl Catalog {
     /// Replaces any previous one, for
     /// [`set_module_functions`](Catalog::set_module_functions)' reason.
     pub fn set_model_host(&self, host: Arc<dyn crate::model_host::ModelHost>) -> Result<()> {
-        let mut guard = self
-            .model_host
-            .write()
-            .map_err(|_| Error::msg("catalog model-host lock poisoned"))?;
-        *guard = Some(host);
-        Ok(())
+        self.try_install(|services| services.model_host = Some(host))
     }
 
     /// The installed models, cloned out of the lock — `None` where nobody
@@ -1995,24 +1866,23 @@ impl Catalog {
     /// A poisoned lock reads as "there are none", for
     /// [`module_functions`](Catalog::module_functions)' reason.
     pub fn model_host(&self) -> Option<Arc<dyn crate::model_host::ModelHost>> {
-        self.model_host.read().ok()?.clone()
+        self.service(|services| services.model_host.clone())
+            .ok()
+            .flatten()
     }
 
     /// Install the server's admin handlers (§13.6) — `sc-server`, when it
     /// builds its router. Replaces any previous one.
     pub fn set_admin_host(&self, host: Arc<dyn crate::admin_host::AdminHost>) -> Result<()> {
-        let mut guard = self
-            .admin_host
-            .write()
-            .map_err(|_| Error::msg("catalog admin-host lock poisoned"))?;
-        *guard = Some(host);
-        Ok(())
+        self.try_install(|services| services.admin_host = Some(host))
     }
 
     /// The installed admin handlers, or `None` where no server installed any
     /// (a CLI command, a test with no router).
     pub fn admin_host(&self) -> Option<Arc<dyn crate::admin_host::AdminHost>> {
-        self.admin_host.read().ok()?.clone()
+        self.service(|services| services.admin_host.clone())
+            .ok()
+            .flatten()
     }
 
     /// Install the formula evaluator the read path computes an untranslatable
@@ -2021,18 +1891,15 @@ impl Catalog {
     /// Replaces any previous one, for
     /// [`set_module_functions`](Catalog::set_module_functions)' reason.
     pub fn set_formula_evaluator(&self, evaluator: Arc<dyn sc_expr::JsEvaluator>) -> Result<()> {
-        let mut guard = self
-            .formula_evaluator
-            .write()
-            .map_err(|_| Error::msg("catalog formula-evaluator lock poisoned"))?;
-        *guard = Some(evaluator);
-        Ok(())
+        self.try_install(|services| services.formula_evaluator = Some(evaluator))
     }
 
     /// The installed formula evaluator, cloned out of the lock — `None` where
     /// nobody installed one.
     pub fn formula_evaluator(&self) -> Option<Arc<dyn sc_expr::JsEvaluator>> {
-        self.formula_evaluator.read().ok()?.clone()
+        self.service(|services| services.formula_evaluator.clone())
+            .ok()
+            .flatten()
     }
 
     /// Whether anything listens for `op` on `table` — the question the row layer
@@ -2043,8 +1910,11 @@ impl Catalog {
     /// path, where the honest answer to "is the listener registry broken" is to
     /// let the write proceed unobserved rather than to fail it.
     pub fn observes_writes(&self, table: &str, op: crate::events::WriteOp) -> bool {
-        match self.table_events.read() {
-            Ok(guard) => guard.iter().any(|(_, events)| events.observes(table, op)),
+        match self.services.read() {
+            Ok(services) => services
+                .table_events
+                .iter()
+                .any(|(_, events)| events.observes(table, op)),
             Err(_) => false,
         }
     }
@@ -2078,11 +1948,13 @@ impl Catalog {
     /// which write rows, which come back here — so the guard must not be held
     /// across the await.
     fn listeners(&self) -> Result<Vec<Arc<dyn crate::events::TableEvents>>> {
-        let guard = self
-            .table_events
-            .read()
-            .map_err(|_| Error::msg("catalog table-events lock poisoned"))?;
-        Ok(guard.iter().map(|(_, events)| Arc::clone(events)).collect())
+        self.service(|services| {
+            services
+                .table_events
+                .iter()
+                .map(|(_, events)| Arc::clone(events))
+                .collect()
+        })
     }
 
     /// The connected file store with the given name, if any — the raw store,

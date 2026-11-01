@@ -25,6 +25,26 @@ use crate::store_path::StorePath;
 /// body can outlive the request that opened it.
 pub type BoxAsyncRead = Box<dyn AsyncRead + Send + Unpin + 'static>;
 
+/// How many bytes [`read_chunks`] reads at a time.
+pub const READ_CHUNK: usize = 64 * 1024;
+
+/// A reader as a stream of chunks of at most [`READ_CHUNK`] bytes — a file
+/// served as a response body, or sent as an upload's body.
+pub fn read_chunks(
+    reader: BoxAsyncRead,
+) -> impl futures::Stream<Item = std::io::Result<Bytes>> + Send + 'static {
+    futures::stream::try_unfold(reader, |mut reader| async move {
+        use tokio::io::AsyncReadExt;
+        let mut buffer = vec![0u8; READ_CHUNK];
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            return Ok(None);
+        }
+        buffer.truncate(read);
+        Ok(Some((Bytes::from(buffer), reader)))
+    })
+}
+
 /// Somewhere to append a file's bytes. It borrows the store it writes to.
 ///
 /// **Shut it down** (`AsyncWriteExt::shutdown`) when done: a driver that

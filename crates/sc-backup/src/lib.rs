@@ -5,7 +5,8 @@
 //! carries — a table's settings and fields, an application, an agent, a trigger,
 //! a role — is written in exactly the shape the admin endpoint that lists it
 //! returns, and read back through exactly the parser the endpoint that creates it
-//! uses ([`crate::handlers`]'s `*_json` / `*_from_body` pairs). That is the point:
+//! uses ([`codec`]'s `*_json` / `*_from_body` pairs, which `sc-server`'s admin handlers answer
+//! and accept). That is the point:
 //! a second serialisation of an application would be a second thing to keep in
 //! step with the first, and the failure would be silent — a field added to the
 //! form and forgotten here, restored as its default a year later. Table *rows*
@@ -89,9 +90,10 @@
 //! the same ones a Feldspar backup goes through.
 
 mod archive;
+pub mod codec;
 pub mod destination;
 mod restore;
-pub(crate) mod s3;
+pub mod s3;
 pub mod schedule;
 mod sftp;
 mod spool;
@@ -109,6 +111,113 @@ use uuid::Uuid;
 pub use restore::{RestoreReport, inspect, restore_backup};
 pub use schedule::BackupScheduler;
 pub use spool::SpoolFile;
+
+/// The token backup and restore reach the primary database and the raw file
+/// stores with: writing a backup reads every row and every stored file, and a
+/// restore writes them back. Each is started by an administrator (behind an
+/// admin session) or by the administrator's backup schedule. Listed in
+/// docs/SECURITY_REVIEW_2026-10.md's system-authority inventory; crate-private,
+/// so nothing outside the crate borrows it.
+pub(crate) const BACKUP_TASKS: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
+    "sc-backup: writing or restoring a backup (rows and store files), for an administrator or \
+     their backup schedule",
+);
+
+/// The running server's services a restore writes into: the registries an
+/// agent, trigger, stream or model is checked against on its way back in, and
+/// what installs a module and builds and mounts an application.
+///
+/// Implemented by `sc-server`'s mount registry. A service the server does not
+/// run is an `Err`, and the restore skips that part with the reason.
+#[async_trait::async_trait]
+pub trait RestoreHost: Send + Sync {
+    /// The agent trait registry agents are checked against.
+    fn agent_registry(&self) -> Result<Arc<sc_agent::AgentRegistry>>;
+
+    /// The trigger dispatcher triggers are saved through.
+    fn trigger_dispatcher(&self) -> Result<Arc<sc_action::TriggerDispatcher>>;
+
+    /// Whether this server runs modules at all.
+    fn modules_installed(&self) -> Result<()>;
+
+    /// Install a module's package from where it came from.
+    async fn install_module_package(
+        &self,
+        language: sc_module::ModuleLanguage,
+        source: sc_module::ModuleSource,
+        location: &str,
+    ) -> Result<sc_module::InstalledPackage>;
+
+    /// Load the installed modules again.
+    async fn reload_modules(&self) -> Result<()>;
+
+    /// The stream provider registry streams are checked against.
+    fn stream_registry(&self) -> Result<Arc<sc_stream::StreamRegistry>>;
+
+    /// Start the streams again; whether anything changed.
+    async fn reload_streams(&self, catalog: &sc_catalog::Catalog) -> Result<bool>;
+
+    /// The model provider registry models are checked against.
+    fn model_registry(&self) -> Result<Arc<sc_model::ModelRegistry>>;
+
+    /// The shape of a model's dataset, when it can be read.
+    async fn dataset_shape(&self, dataset: &sc_model::Dataset) -> Option<sc_model::DatasetShape>;
+
+    /// Build an application and mount it.
+    async fn build_and_mount(&self, app: sc_app::Application) -> Result<sc_app::BuildReport>;
+}
+
+/// A shared host is a host: a caller holding the server's mount registry in an
+/// `Arc` hands it as it is.
+#[async_trait::async_trait]
+impl<T: RestoreHost + ?Sized> RestoreHost for Arc<T> {
+    fn agent_registry(&self) -> Result<Arc<sc_agent::AgentRegistry>> {
+        (**self).agent_registry()
+    }
+
+    fn trigger_dispatcher(&self) -> Result<Arc<sc_action::TriggerDispatcher>> {
+        (**self).trigger_dispatcher()
+    }
+
+    fn modules_installed(&self) -> Result<()> {
+        (**self).modules_installed()
+    }
+
+    async fn install_module_package(
+        &self,
+        language: sc_module::ModuleLanguage,
+        source: sc_module::ModuleSource,
+        location: &str,
+    ) -> Result<sc_module::InstalledPackage> {
+        (**self)
+            .install_module_package(language, source, location)
+            .await
+    }
+
+    async fn reload_modules(&self) -> Result<()> {
+        (**self).reload_modules().await
+    }
+
+    fn stream_registry(&self) -> Result<Arc<sc_stream::StreamRegistry>> {
+        (**self).stream_registry()
+    }
+
+    async fn reload_streams(&self, catalog: &sc_catalog::Catalog) -> Result<bool> {
+        (**self).reload_streams(catalog).await
+    }
+
+    fn model_registry(&self) -> Result<Arc<sc_model::ModelRegistry>> {
+        (**self).model_registry()
+    }
+
+    async fn dataset_shape(&self, dataset: &sc_model::Dataset) -> Option<sc_model::DatasetShape> {
+        (**self).dataset_shape(dataset).await
+    }
+
+    async fn build_and_mount(&self, app: sc_app::Application) -> Result<sc_app::BuildReport> {
+        (**self).build_and_mount(app).await
+    }
+}
 
 /// Start the automated backups' task (see [`schedule`]).
 ///
@@ -174,7 +283,7 @@ pub fn password_from_body(body: &Json) -> Result<Option<String>> {
 /// Where a browser posts a selection and gets a zip back.
 ///
 /// Outside the typed endpoint set, because the response is bytes; see the route's
-/// own comment in [`crate::router`].
+/// own comment in `sc-server`'s router.
 pub const BACKUP_CREATE_ROUTE: &str = "/backup/create";
 
 /// Where a browser hands over a backup file to be inspected. The restore itself is

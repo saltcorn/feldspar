@@ -1045,3 +1045,53 @@ async fn a_build_with_after_build_checks_records_a_run() -> sc_error::Result<()>
     assert_eq!(report["checks"], Value::Null, "{report}");
     Ok(())
 }
+
+/// The administrative tools reach the admin handlers through the catalog's
+/// [`AdminHost`](sc_catalog::AdminHost), one typed method per operation
+/// (TODO-code-quality Q5.3): each runs the handler's own function, so it
+/// answers what the endpoint answers rather than "no handler registered".
+#[tokio::test]
+async fn the_admin_host_runs_each_operation_through_its_handler() -> sc_error::Result<()> {
+    let tmp = TempDir::new("admin-host");
+    let (_router, catalog, _db) = setup(&tmp).await?;
+    let host = catalog
+        .admin_host()
+        .expect("building the router installs the admin host");
+
+    assert!(host.list_applications(None).await?.is_empty());
+
+    let suggested = host
+        .backend_operation(
+            None,
+            sc_catalog::BackendOperation {
+                backend: sc_files::LOCAL_BACKEND.to_owned(),
+                operation: sc_files::OP_SUGGEST_DIR.to_owned(),
+                name: "notes".to_owned(),
+                config: serde_json::Map::new(),
+            },
+        )
+        .await?;
+    assert!(
+        suggested["config"].is_object(),
+        "a suggested directory comes back as the store's settings: {suggested}"
+    );
+
+    let missing = uuid::Uuid::new_v4();
+    let err = host
+        .update_application(None, missing, json!({ "name": "x" }))
+        .await
+        .expect_err("there is no such application");
+    assert!(
+        !err.to_string().contains("no handler"),
+        "the handler answered, not a lookup: {err}"
+    );
+    let err = host
+        .build_application(None, missing)
+        .await
+        .expect_err("there is no such application");
+    assert!(
+        !err.to_string().contains("no handler"),
+        "the handler answered, not a lookup: {err}"
+    );
+    Ok(())
+}

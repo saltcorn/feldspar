@@ -183,7 +183,7 @@ able to say so in one checkbox rather than in a reverse proxy.
 
 ### 6. The tool surface: three tiers, and why it is not 110
 
-[`admin_endpoints()`](../crates/sc-api/src/admin.rs) is 110 endpoints. Projecting all of them
+[`admin_endpoints()`](../crates/sc-api/src/admin/mod.rs) is 110 endpoints. Projecting all of them
 would be mechanical and wrong: a coding agent pays for every tool in its context on every turn,
 and most of those endpoints are the SPA's plumbing.
 
@@ -235,7 +235,7 @@ The requirement "the catalog must be reloaded on edits, and if edits affect an a
 should be rebuilt" needs **no new machinery**, and the reason is worth stating so nobody builds
 it twice.
 
-[`handlers.rs`](../crates/sc-server/src/handlers.rs) installs a `SchemaObserver` on the catalog
+[`handlers`](../crates/sc-server/src/handlers/mod.rs) installs a `SchemaObserver` on the catalog
 and a `TriggerObserver` on the dispatcher, at the one place a server holds both. Its own
 comment says why: the per-handler `refresh_table` calls "worked only while an HTTP request was
 the only way to change a schema; an agent can now change one too". So a schema edit made

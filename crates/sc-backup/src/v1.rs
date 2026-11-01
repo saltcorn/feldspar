@@ -75,7 +75,7 @@ use sc_viewpattern::{CFG_SITE_NAME, MENU_CONFIG_KEY, SALTCORN_UI_FRAMEWORK, salt
 
 use super::archive::Entries;
 use super::{Available, Item, MANIFEST_FILE};
-use crate::handlers::csp_json;
+use crate::codec::csp_json;
 
 mod actions;
 mod agents;
@@ -2665,7 +2665,7 @@ mod tests {
         let document = document(&out, "applications/booksdb.json");
         // No id: the restore matches an import by its name (8.6).
         assert!(document.get("id").is_none(), "{document}");
-        let app = crate::handlers::application_from_body(sc_app::AppId::new(), &document)
+        let app = crate::codec::application_from_body(sc_app::AppId::new(), &document)
             .expect("the admin API's parser reads it");
         assert_eq!(app.name, "BooksDB");
         assert_eq!(app.subdomain, "booksdb");
@@ -2715,7 +2715,7 @@ mod tests {
             .expect("views")
             .iter()
             .map(|v| {
-                crate::handlers::view_from_body(sc_viewpattern::ViewId::new(), id, v)
+                crate::codec::view_from_body(sc_viewpattern::ViewId::new(), id, v)
                     .expect("the parser reads it")
             })
             .collect();
@@ -2739,7 +2739,7 @@ mod tests {
         assert_eq!(chat.attributes["default_render_page"], json!("Home"));
 
         let pages = document(&out, "applications/booksdb/pages.json");
-        let page = crate::handlers::page_from_body(sc_viewpattern::PageId::new(), id, &pages[0])
+        let page = crate::codec::page_from_body(sc_viewpattern::PageId::new(), id, &pages[0])
             .expect("the parser reads it");
         assert_eq!(page.name, "Home");
         assert_eq!(page.title, "Welcome");
@@ -2937,12 +2937,8 @@ mod tests {
             .iter()
             .map(|item| {
                 let id = Uuid::parse_str(item["id"].as_str().expect("an id")).expect("a UUID");
-                crate::handlers::library_item_from_body(
-                    sc_viewpattern::LibraryItemId(id),
-                    app,
-                    item,
-                )
-                .expect("the parser reads it")
+                crate::codec::library_item_from_body(sc_viewpattern::LibraryItemId(id), app, item)
+                    .expect("the parser reads it")
             })
             .collect();
         assert_eq!(items.len(), 2);
@@ -3037,10 +3033,10 @@ mod tests {
     }
 
     /// A real v1 backup with an agent using every skill of v1's agents plugin
-    /// (`tests/fixtures/make-v1-agents-fixture.py`).
+    /// (`sc-server`'s `tests/fixtures/make-v1-agents-fixture.py`).
     fn every_skill_archive() -> Entries {
         let bytes: &[u8] =
-            include_bytes!("../../tests/fixtures/saltcorn-v1-feldsparimport-agents.zip");
+            include_bytes!("../../sc-server/tests/fixtures/saltcorn-v1-feldsparimport-agents.zip");
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("a zip");
         let mut entries = Entries::new();
         for i in 0..zip.len() {

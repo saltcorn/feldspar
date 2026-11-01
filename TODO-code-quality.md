@@ -323,20 +323,81 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## Q5 — Structure (§1, §2, §3)
 
-- [ ] Q5.1 Replace the `Catalog` host slots with a typed `Services` struct (or a builder that
+- [x] Q5.1 Replace the `Catalog` host slots with a typed `Services` struct (or a builder that
       requires every host at construction). Remove both `Arc<dyn Any>` slots
       (`host_llm_provider`, `stream_registry`). Check `crates/sc-server/tests/catalog_teardown.rs`
       still passes and update the CLAUDE.md teardown note if it becomes simpler.
-- [ ] Q5.2 Schema state in one immutable snapshot swapped atomically, so `reload()` cannot expose a
+      (`sc_catalog::Services` (`services.rs`): one typed value behind one lock holding the
+      table-event listeners, schema observer, rename hook, module functions, live, model and
+      admin hosts, formula evaluator, table providers and the extensions. A builder was not
+      possible: most services hold an `Arc<Catalog>` and are made after it. The setters and
+      getters kept their names and read or write a field of it; `teardown` replaces the whole
+      value with `Services::default()`, so a new field is cleared without being listed. The two
+      `Any` slots are gone: sc-llm's `HostLlmProvider` and sc-stream's `StreamRegistry` are typed
+      **extensions** (`Catalog::set_extension::<T>` / `extension::<T>`), keyed by their own type,
+      because sc-catalog cannot name either and no trait here could describe them. Internally
+      that is a `TypeId` map, so no caller downcasts and a value of the wrong type cannot be stored
+      under a key; it is not a field per service. `catalog_teardown.rs` now installs the streams
+      (an extension) and checks teardown empties it; the CLAUDE.md note says where a new service
+      goes. Tests: `services::*` (sc-catalog unit and `tests/services.rs`).)
+- [x] Q5.2 Schema state in one immutable snapshot swapped atomically, so `reload()` cannot expose a
       mixed state (`catalog.rs:595-624`).
-- [ ] Q5.3 `AdminHost`: typed calls instead of endpoint-name lookup with JSON in and out, or move
+      (`sc_catalog::CatalogSchema`: the tables, field-overlay issues, shadowed tables,
+      provided-table issues and the generation, built by `reload` and swapped in whole under one
+      lock as an `Arc`; the generation is the previous one's plus one, read under the same lock.
+      `Catalog::schema()` hands out the current one for a caller that needs two parts to agree;
+      `get`, `tables`, `generation` … read from it. The code-schema snapshot stays separate and
+      stamped. Test: `services::a_schema_handed_out_is_not_changed_by_a_later_reload`.)
+- [x] Q5.3 `AdminHost`: typed calls instead of endpoint-name lookup with JSON in and out, or move
       the handlers it reaches below sc-app.
-- [ ] Q5.4 Split `sc-server/src/handlers.rs` and `sc-api/src/admin.rs` per domain, each with
+      (Choice: **typed calls.** Moving the handlers down is not possible for most of them: creating,
+      updating and building an application need the mount registry and the agents, translations
+      the view runtime, streams the supervisor — all sc-server. `AdminCall` and `call_admin` are
+      gone; `AdminHost` has one method per operation (`backend_operation`, `create_file_store`,
+      `create_application`, `list_applications`, `update_application`, `build_application`,
+      `translations`, `save_translations`, `save_stream`, `delete_stream`) with typed arguments
+      (`BackendOperation`, `NewFileStore`, `TranslationsOf`, ids as `Uuid`). sc-server's
+      `AdminHandlers` implements each by calling the handler's named function (moved to the typed
+      adapter for this), so a missing operation is a compile error, not a 501-like refusal. An
+      application or a stream is still passed as the admin API's JSON document, because those
+      types are above sc-catalog and the handler parses that document anyway; answers are the
+      handler's JSON, passed on to the agent, except `list_applications` (`Vec<Json>`). Test:
+      `admin_applications_api::the_admin_host_runs_each_operation_through_its_handler`.)
+- [x] Q5.4 Split `sc-server/src/handlers.rs` and `sc-api/src/admin.rs` per domain, each with
       `fn register(set, reg)`, declarations next to handlers. Add a typed
       `Handler<In: Deserialize, Out: Serialize>` adapter taking `&AppState`, and move handlers to
       it as they are touched.
-- [ ] Q5.5 Move the entity JSON codecs out of `handlers.rs`, then move `sc-server/src/backup/` to a
+      (`sc-server/src/handlers/` and `sc-api/src/admin/`: one module per domain under the same
+      name in both (auth, tables, fields, table_rows / rows, connections, file_stores, files,
+      llm, modules, agents, code_libraries, triggers, models, streams, settings, backup,
+      applications, views, translations, users; sc-api also has entities, mcp_servers,
+      agent_memory and checklists, whose handlers already had their own sc-server modules). Each
+      has `register(reg, state)` / `register(set)` and the helpers only it uses; shared helpers
+      stay in `mod.rs`. Declarations and handlers are in two crates, so "next to" is the
+      mirrored module, not the same file. The endpoint set now lists endpoints grouped by domain
+      (the order changed; routing is by path, not order; the checked-in `client.ts` files were
+      regenerated, the same lines reordered). `handler::typed` adapts an
+      `async fn(HandlerState, HandlerCtx<W>, In) -> Result<Out>` (`In: DeserializeOwned`, `Out`
+      a `Reply`: a `HandlerResponse` as is, anything `Serialize` as a 200). The state is
+      `handlers::HandlerState` (catalog + mount registry), named so because `router::AppState`
+      is the axum state; it is handed by value (two `Arc`s) rather than `&`, which an async
+      handler cannot borrow across its await without boxing. The twelve handlers `AdminHost`
+      reaches moved to it; the rest move as they are touched. Tests: `handlers::typed_tests`.)
+- [x] Q5.5 Move the entity JSON codecs out of `handlers.rs`, then move `sc-server/src/backup/` to a
       new `sc-backup` crate.
+      (`crates/sc-backup`: the former `backup/` (files moved, not rewritten) and `codec.rs` — the
+      `*_json` / `*_from_body` functions a backup writes and reads and the helpers they are built
+      from (≈75 items, including the MCP server and Analytics dataset/workspace codecs that were
+      in `mcp_servers.rs` / `analytics.rs`); the handlers import them from there. What a restore
+      needs of the running server (the agent, stream and model registries, the trigger
+      dispatcher, module install and reload, a dataset's shape, build and mount) is the
+      `sc_backup::RestoreHost` trait, implemented for `AppMounts` in `sc-server/src/restore_host.rs`.
+      The backup's database and store access is sc-backup's own `BACKUP_TASKS` token (out of
+      sc-server's `ADMIN_TASKS`; security review inventory updated). `file_response::chunks` became
+      `sc_files::read_chunks`, which the S3 upload and the file responses share. sc-server
+      re-exports what it exported before, so callers did not change. TECHNICAL_DESIGN §2's tree,
+      graph and table updated. The existing backup tests (sc-server `backup_*`, sc-backup's unit
+      tests) cover it.)
 - [ ] Q5.6 Merge `sc-browser` into sc-agent, and `sc-help` into sc-docs.
 - [ ] Q5.7 Collapse the six `*Asks` traits in `sc-module/src/host.rs` into one `Ask` trait, or use
       the concrete types; replace the bag of `Option<&dyn …>` parameters with a struct.

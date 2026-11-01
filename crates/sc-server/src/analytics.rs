@@ -24,6 +24,7 @@ use sc_analytics::selection;
 use sc_analytics::stats;
 use sc_analytics::tools;
 use sc_analytics::{Workspace, WorkspaceId, WorkspaceKind};
+use sc_backup::codec::{dataset_def_from_input, workspace_json};
 use sc_catalog::Catalog;
 use sc_dataset::{
     Base, Caller, Compilation, DatasetDef, DatasetId, Library, OpStatus, Operation, Options, Page,
@@ -305,7 +306,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
             async move {
                 let access = Access::of(&ctx);
                 access.check_editor()?;
-                let def = def_from_input(&ctx.body, DatasetId::new())?;
+                let def = dataset_def_from_input(&ctx.body, DatasetId::new())?;
                 access.check_base(&catalog, &def.base).await?;
                 sc_dataset::save_dataset(&catalog, &def).await?;
                 owned_by_caller(&catalog, &access, def.id).await?;
@@ -323,7 +324,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                 let id = dataset_id(&ctx)?;
                 let (stored, sharing) = access.dataset(&catalog, id).await?;
                 access.check_change_dataset(&stored, &sharing)?;
-                let def = def_from_input(&ctx.body, id)?;
+                let def = dataset_def_from_input(&ctx.body, id)?;
                 sc_dataset::save_dataset(&catalog, &def).await?;
                 Ok(HandlerResponse::ok(detail(&catalog, &access, &def).await?))
             }
@@ -1352,33 +1353,6 @@ fn optional_usize(body: &Json, key: &str) -> Option<usize> {
     body.get(key).and_then(Json::as_u64).map(|n| n as usize)
 }
 
-/// A definition from `createDataset`'s or `updateDataset`'s body, under `id`.
-pub(crate) fn def_from_input(body: &Json, id: DatasetId) -> Result<DatasetDef> {
-    let base: Base = serde_json::from_value(
-        body.get("base")
-            .cloned()
-            .ok_or_else(|| Error::invalid("`base` is required"))?,
-    )
-    .map_err(|e| Error::invalid(format!("`base` is not a table or a dataset: {e}")))?;
-    let operations: Vec<Operation> = match body.get("operations") {
-        None | Some(Json::Null) => Vec::new(),
-        Some(ops) => serde_json::from_value(ops.clone()).map_err(|e| {
-            Error::invalid(format!("`operations` is not a list of operations: {e}"))
-        })?,
-    };
-    Ok(DatasetDef {
-        id,
-        name: text(body, "name")?.trim().to_owned(),
-        description: body
-            .get("description")
-            .and_then(Json::as_str)
-            .unwrap_or_default()
-            .to_owned(),
-        base,
-        operations,
-    })
-}
-
 /// The `dataset` of a read endpoint's body: a whole definition, stored or not.
 fn def_from_body(body: &Json) -> Result<DatasetDef> {
     let value = body
@@ -1449,19 +1423,6 @@ fn report(schema: &Schema, access: &Access, compiled: &Compilation) -> Json {
             .collect::<Vec<_>>(),
         "tables": tables,
         "children": children,
-    })
-}
-
-pub(crate) fn workspace_json(ws: &Workspace) -> Json {
-    json!({
-        "id": ws.id.0,
-        "name": ws.name,
-        "kind": ws.kind.as_str(),
-        "state": ws.state,
-        "created_by": ws.created_by,
-        "updated_at": ws.updated_at,
-        "share_role": ws.share_role,
-        "application": ws.application,
     })
 }
 

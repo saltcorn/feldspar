@@ -12,8 +12,6 @@ export type CreateFirstUserResponse = { id: string; email: string; role: number 
 export type LoginRequest = { email: string; password: string };
 export type LoginResponse = { id: string; email: string; role: number };
 export type ListTablesResponse = Array<{ name: string; label: string; description: string; min_role_read: number; min_role_write: number; ownership_formula: string; rls_enabled: boolean; sync_enabled: boolean; history_enabled: boolean; history_min_role?: number | null; history_keep_days?: number | null; configured: boolean; ownership_error?: string | null; rls_available: boolean; sync_available: boolean; history_available: boolean; database: string; metadata: boolean; module?: string | null; module_fields: Array<string>; provider?: { module: string; provider: string; configuration: unknown; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; option_labels?: Array<string> | null; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; writes: { insert: boolean; update: boolean; delete: boolean }; issues: Array<string> } | null }>;
-export type ListEntitiesQuery = { deep?: boolean };
-export type ListEntitiesResponse = Array<{ kind: string; id: string; name: string; description: string; details: Array<string>; access: string; updated_at?: string | null; runnable: boolean; subdomain?: string | null; channel?: string | null; definition?: string | null }>;
 export type CreateTableRequest = { name: string; database?: string | null };
 export type CreateTableResponse = { name: string; label: string; description: string; min_role_read: number; min_role_write: number; ownership_formula: string; rls_enabled: boolean; sync_enabled: boolean; history_enabled: boolean; history_min_role?: number | null; history_keep_days?: number | null; configured: boolean; ownership_error?: string | null; rls_available: boolean; sync_available: boolean; history_available: boolean; database: string; metadata: boolean; module?: string | null; module_fields: Array<string>; provider?: { module: string; provider: string; configuration: unknown; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; option_labels?: Array<string> | null; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; writes: { insert: boolean; update: boolean; delete: boolean }; issues: Array<string> } | null };
 export type CreateTableFromCsvRequest = { name: string; csv: string; database?: string | null };
@@ -35,10 +33,36 @@ export type UpdateProvidedTableRequest = { configuration: unknown };
 export type UpdateProvidedTableResponse = { name: string; label: string; description: string; min_role_read: number; min_role_write: number; ownership_formula: string; rls_enabled: boolean; sync_enabled: boolean; history_enabled: boolean; history_min_role?: number | null; history_keep_days?: number | null; configured: boolean; ownership_error?: string | null; rls_available: boolean; sync_available: boolean; history_available: boolean; database: string; metadata: boolean; module?: string | null; module_fields: Array<string>; provider?: { module: string; provider: string; configuration: unknown; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; option_labels?: Array<string> | null; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; writes: { insert: boolean; update: boolean; delete: boolean }; issues: Array<string> } | null };
 export type DeleteTableSettingsResponse = { deleted: boolean };
 export type ListOrphanTableSettingsResponse = Array<{ name: string; label: string; description: string; min_role_read: number; min_role_write: number; ownership_formula: string; rls_enabled: boolean; sync_enabled: boolean; history_enabled: boolean; history_min_role?: number | null; history_keep_days?: number | null }>;
+export type ListEntitiesQuery = { deep?: boolean };
+export type ListEntitiesResponse = Array<{ kind: string; id: string; name: string; description: string; details: Array<string>; access: string; updated_at?: string | null; runnable: boolean; subdomain?: string | null; channel?: string | null; definition?: string | null }>;
 export type ListRolesResponse = Array<{ role: number; name: string; description: string; builtin: boolean }>;
 export type CreateRoleRequest = { role: number; name: string; description: string };
 export type CreateRoleResponse = { role: number; name: string; description: string; builtin: boolean };
 export type DeleteRoleResponse = { deleted: boolean };
+export type ListUsersResponse = Array<{ id: string; email: string; role: number; disabled: boolean; language?: string | null; check_user: boolean; extra: unknown }>;
+export type CreateUserRequest = { email: string; password?: string | null; role: number; language?: string | null; extra?: unknown | null };
+export type CreateUserResponse = { user: { id: string; email: string; role: number; disabled: boolean; language?: string | null; check_user: boolean; extra: unknown }; generated_password?: string | null };
+export type UpdateUserRequest = { email: string; password?: string | null; role: number; language?: string | null; extra?: unknown | null };
+export type UpdateUserResponse = { id: string; email: string; role: number; disabled: boolean; language?: string | null; check_user: boolean; extra: unknown };
+export type DeleteUserResponse = { deleted: boolean };
+export type SetUserDisabledRequest = { disabled: boolean };
+export type SetUserDisabledResponse = { id: string; email: string; role: number; disabled: boolean; language?: string | null; check_user: boolean; extra: unknown };
+export type ForceLogoutUserResponse = { ok: boolean };
+export type BecomeUserResponse = { id: string; email: string; role: number };
+export type SetRandomPasswordResponse = { email: string; password: string };
+export type ListUserRoleGrantsResponse = { base_role: number; effective_role: number; grants: Array<{ id: string; role: number; source: string; source_ref: string; starts_at: string; expires_at?: string | null; revoked_at?: string | null; note?: string | null; in_force: boolean }> };
+export type GrantUserRoleRequest = { role: number; expires_in_days?: number | null; note?: string | null };
+export type GrantUserRoleResponse = { id: string; role: number; source: string; source_ref: string; starts_at: string; expires_at?: string | null; revoked_at?: string | null; note?: string | null; in_force: boolean };
+export type RevokeUserRoleGrantResponse = { id: string; role: number; source: string; source_ref: string; starts_at: string; expires_at?: string | null; revoked_at?: string | null; note?: string | null; in_force: boolean };
+export type GetUserCreditsResponse = { balance: string; available: string; debt: string; next_expiry?: string | null; low_balance_threshold?: string | null; buckets: Array<{ id: string; amount: string; remaining: string; kind: string; source: string; key: string; expires_at?: string | null; note?: string | null; created_at: string; live: boolean }>; entries: Array<{ id: string; kind: string; amount: string; balance: string; source: string; key: string; run?: string | null; agent?: string | null; model?: string | null; input_tokens?: number | null; output_tokens?: number | null; cost?: string | null; note?: string | null; created_at: string }> };
+export type GrantUserCreditsRequest = { amount: string; expires_in_days?: number | null; note?: string | null };
+export type GrantUserCreditsResponse = { balance: string; available: string; debt: string; next_expiry?: string | null; low_balance_threshold?: string | null; buckets: Array<{ id: string; amount: string; remaining: string; kind: string; source: string; key: string; expires_at?: string | null; note?: string | null; created_at: string; live: boolean }>; entries: Array<{ id: string; kind: string; amount: string; balance: string; source: string; key: string; run?: string | null; agent?: string | null; model?: string | null; input_tokens?: number | null; output_tokens?: number | null; cost?: string | null; note?: string | null; created_at: string }> };
+export type SetUserCreditThresholdRequest = { threshold?: string | null };
+export type SetUserCreditThresholdResponse = { balance: string; available: string; debt: string; next_expiry?: string | null; low_balance_threshold?: string | null; buckets: Array<{ id: string; amount: string; remaining: string; kind: string; source: string; key: string; expires_at?: string | null; note?: string | null; created_at: string; live: boolean }>; entries: Array<{ id: string; kind: string; amount: string; balance: string; source: string; key: string; run?: string | null; agent?: string | null; model?: string | null; input_tokens?: number | null; output_tokens?: number | null; cost?: string | null; note?: string | null; created_at: string }> };
+export type ListApiTokensResponse = Array<{ id: string; user_id: string; label: string; grants: unknown; created_at: string; expires_at?: string | null; last_used_at?: string | null; revoked_at?: string | null; live: boolean }>;
+export type CreateApiTokenRequest = { label: string; grants?: { allow_create?: boolean | null; allow_edit?: boolean | null; allow_drop?: boolean | null; allow_access_changes?: boolean | null; allow_triggers?: boolean | null; allow_applications?: boolean | null; allow_modules?: boolean | null; allow_history?: boolean | null; allow_all?: boolean | null } | null; expires_in_days?: number | null };
+export type CreateApiTokenResponse = { token: { id: string; user_id: string; label: string; grants: unknown; created_at: string; expires_at?: string | null; last_used_at?: string | null; revoked_at?: string | null; live: boolean }; secret: string };
+export type RevokeApiTokenResponse = { revoked: boolean };
 export type ListFieldsResponse = Array<{ name: string; label: string; description: string; sql_type: string; type: string; nullable: boolean; required: boolean; unique: boolean; primary_key: boolean; generated: boolean; default_expression: string; kind: unknown; attributes: unknown }>;
 export type ListInboundKeysResponse = Array<{ table: string; field: string }>;
 export type CreateFieldRequest = { name: string; type?: string | null; kind?: unknown | null; attributes?: unknown | null; label?: string | null; description?: string | null; required?: boolean | null; unique?: boolean | null; primary_key?: boolean | null; default_expression?: string | null };
@@ -193,8 +217,6 @@ export type FindFilesRequest = { query: string; dir?: string | null; max_results
 export type FindFilesResponse = { entries: Array<{ name: string; path: string; is_dir: boolean; size?: number | null; modified?: string | null; owner?: string | null; min_role?: number | null; effective_min_role?: number | null }>; truncated: boolean };
 export type ListStoreFilesQuery = { extensions?: string };
 export type ListStoreFilesResponse = { paths: Array<string>; truncated: boolean };
-export type GetHelpQuery = { table?: string; event?: string };
-export type GetHelpResponse = { title: string; html: string };
 export type SearchFilesRequest = { pattern: string; regex?: boolean | null; case_sensitive?: boolean | null; whole_word?: boolean | null; glob?: string | null; dir?: string | null; max_results?: number | null };
 export type SearchFilesResponse = { matches: Array<{ path: string; line: number; column: number; length: number; text: string }>; files_searched: number; truncated: boolean };
 export type ReadFileRequest = { path: string };
@@ -211,6 +233,25 @@ export type GetFileMetaRequest = { path: string };
 export type GetFileMetaResponse = { path: string; min_role?: number | null; effective_min_role?: number | null; attributes: unknown };
 export type SetFileMetaRequest = { path: string; min_role?: number | null; attributes: unknown };
 export type SetFileMetaResponse = { path: string; min_role?: number | null; effective_min_role?: number | null; attributes: unknown };
+export type GetHelpQuery = { table?: string; event?: string };
+export type GetHelpResponse = { title: string; html: string };
+export type GetSettingsResponse = { sections: Array<{ name: string; label: string; description: string; fields: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; option_labels?: Array<string> | null; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }>; help: string }> }>; values: unknown; host_keys: Array<string> };
+export type UpdateSettingsRequest = { values: unknown };
+export type UpdateSettingsResponse = { sections: Array<{ name: string; label: string; description: string; fields: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; option_labels?: Array<string> | null; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }>; help: string }> }>; values: unknown; host_keys: Array<string> };
+export type ListOAuthProvidersResponse = Array<{ name: string; label: string; preset: string; enabled: boolean; config: unknown }>;
+export type GetOAuthProviderSpecResponse = { fields: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; option_labels?: Array<string> | null; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; callback_path: string };
+export type CreateOAuthProviderRequest = { config: unknown };
+export type CreateOAuthProviderResponse = { name: string; label: string; preset: string; enabled: boolean; config: unknown };
+export type UpdateOAuthProviderRequest = { config: unknown };
+export type UpdateOAuthProviderResponse = { name: string; label: string; preset: string; enabled: boolean; config: unknown };
+export type DeleteOAuthProviderResponse = { deleted: boolean };
+export type GetAdminAddressResponse = { base_domain?: string | null; admin_subdomain?: string | null; admin_host?: string | null; ready: boolean; certificate?: { state: string; message?: string | null } | null };
+export type CreateAdminHandoffResponse = { host: string; path: string };
+export type SendTestEmailRequest = { to?: string | null };
+export type SendTestEmailResponse = { sent_to: string };
+export type GetPythonStatusResponse = { state: string; version?: string | null; explanation: string; dir?: string | null; site_packages?: string | null; bin?: string | null; packages: Array<{ name: string; version?: string | null }>; max_inflight: number; resident: number; threads: number; stuck: number; max_stuck: number; env_error?: string | null };
+export type GetSystemInfoResponse = { version: string; version_line: string; build_time?: string | null; commit?: string | null; platform: string; pid: number; started_at: string; uptime_seconds: number; database: { product?: string | null; version?: string | null; error?: string | null }; memory?: { process_bytes?: number | null; total_bytes?: number | null; available_bytes?: number | null } | null; cpu?: { process_percent: number; system_percent: number; cores: number; load_average: Array<number> } | null; disk?: { path: string; total_bytes: number; available_bytes: number } | null };
+export type RestartServerResponse = { restarting: boolean };
 export type ListApplicationsResponse = Array<{ id: string; name: string; description: string; subdomain: string; framework: { name: string; config: unknown }; extra_frameworks: Array<{ name: string; config: unknown }>; tables: Array<string>; api_tables: Array<string>; file_stores: Array<string>; triggers: Array<string>; streams: Array<string>; apis: Array<{ provider: string; mount: string; config: unknown }>; static_dirs: Array<{ mount: string; store: string; path: string }>; uploads: Array<{ name: string; store: string; folder: string; min_role: number; max_bytes: number; mime_allow: Array<string>; hook?: string | null }>; agents: Array<{ name: string; chat: boolean; prompt: boolean; anonymous: boolean; tools: string; prompt_template?: string | null }>; csp: unknown; attributes: unknown; min_role: number; max_role: number; access_if: string; source?: { store: string; path: string } | null; builds: boolean; installs: boolean; has_views: boolean; targets: Array<{ name: string; label: string; readiness: { ready: boolean; missing: Array<string>; from_environment: Array<string>; build_host?: string | null } }> }>;
 export type CreateApplicationRequest = { name: string; description: string; subdomain: string; framework: { name: string; config: unknown }; extra_frameworks: Array<{ name: string; config: unknown }>; tables: Array<string>; api_tables: Array<string>; file_stores: Array<string>; triggers: Array<string>; streams: Array<string>; apis: Array<{ provider: string; mount: string; config: unknown }>; static_dirs: Array<{ mount: string; store: string; path: string }>; uploads: Array<{ name: string; store: string; folder: string; min_role: number; max_bytes: number; mime_allow: Array<string>; hook?: string | null }>; agents: Array<{ name: string; chat: boolean; prompt: boolean; anonymous: boolean; tools: string; prompt_template?: string | null }>; csp: unknown; attributes: unknown; min_role: number; max_role: number; access_if: string };
 export type CreateApplicationResponse = { id: string; name: string; description: string; subdomain: string; framework: { name: string; config: unknown }; extra_frameworks: Array<{ name: string; config: unknown }>; tables: Array<string>; api_tables: Array<string>; file_stores: Array<string>; triggers: Array<string>; streams: Array<string>; apis: Array<{ provider: string; mount: string; config: unknown }>; static_dirs: Array<{ mount: string; store: string; path: string }>; uploads: Array<{ name: string; store: string; folder: string; min_role: number; max_bytes: number; mime_allow: Array<string>; hook?: string | null }>; agents: Array<{ name: string; chat: boolean; prompt: boolean; anonymous: boolean; tools: string; prompt_template?: string | null }>; csp: unknown; attributes: unknown; min_role: number; max_role: number; access_if: string; source?: { store: string; path: string } | null; builds: boolean; installs: boolean; has_views: boolean; targets: Array<{ name: string; label: string; readiness: { ready: boolean; missing: Array<string>; from_environment: Array<string>; build_host?: string | null } }>; scaffolded?: string | null; scaffold_error?: string | null; agent?: string | null; agent_error?: string | null; building?: boolean | null; created_file_stores?: Array<string> | null };
@@ -227,6 +268,16 @@ export type GetApplicationTargetBuildResponse = { target: string; label: string;
 export type UpdateApplicationClientResponse = { scaffolded: boolean; files: Array<string>; log: string };
 export type RunApplicationGraphqlRequest = { query: string; variables?: unknown | null; operationName?: string | null };
 export type RunApplicationGraphqlResponse = unknown;
+export type ListFrameworksResponse = Array<{ name: string; label: string; description: string; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; option_labels?: Array<string> | null; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; has_views: boolean; file_store_settings: Array<string>; file_settings: Array<{ name: string; extensions: Array<string> }>; targets: Array<{ name: string; label: string; options: Array<string>; operations: Array<{ name: string; label: string; description: string; show_if: Array<{ name: string; values: Array<unknown> }> }> }> }>;
+export type ListApiProvidersResponse = Array<{ name: string; label: string; description: string; default_mount: string; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; option_labels?: Array<string> | null; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; supports_custom_queries: boolean }>;
+export type DescribeCustomQueryRequest = { name: string; description?: string | null; method: string; path: string; language?: string | null; code: string; params: Array<{ name: string; type: string; required?: boolean | null }>; min_role?: number | null; body_type?: string | null; response_type?: string | null; returns?: unknown | null; rate_limit?: { per_ip?: string | null; per_user?: string | null } | null; tables?: Array<string> | null };
+export type DescribeCustomQueryResponse = { columns: Array<{ name: string; type: string }> };
+export type ListBuildHostsResponse = Array<{ id: string; name: string; targets: Array<string>; created_at: string; last_seen_at?: string | null; online: boolean; report?: unknown | null }>;
+export type CreateBuildHostRequest = { name: string; targets: Array<string> };
+export type CreateBuildHostResponse = { host: { id: string; name: string; targets: Array<string>; created_at: string; last_seen_at?: string | null; online: boolean; report?: unknown | null }; token: string };
+export type UpdateBuildHostRequest = { name: string; targets: Array<string> };
+export type UpdateBuildHostResponse = { id: string; name: string; targets: Array<string>; created_at: string; last_seen_at?: string | null; online: boolean; report?: unknown | null };
+export type DeleteBuildHostResponse = { deleted: boolean };
 export type ListViewsResponse = Array<{ id: string; name: string; description: string; viewpattern: string; table_name?: string | null; configuration: unknown; min_role: number; slug?: unknown | null; attributes: unknown }>;
 export type GetViewResponse = { id: string; name: string; description: string; viewpattern: string; table_name?: string | null; configuration: unknown; min_role: number; slug?: unknown | null; attributes: unknown };
 export type SaveViewRequest = { name: string; description: string; viewpattern: string; table_name?: string | null; configuration: unknown; min_role: number; slug?: unknown | null; attributes: unknown };
@@ -257,16 +308,6 @@ export type SaveLibraryUpdatesRequest = { libraryUpdates: Array<{ library_id: st
 export type SaveLibraryUpdatesResponse = { updated: number };
 export type DeleteLibraryItemQuery = { confirm?: boolean };
 export type DeleteLibraryItemResponse = { deleted: boolean; references: { views: Array<string>; pages: Array<string>; library: Array<string> } };
-export type GetTranslationsResponse = unknown;
-export type SetApplicationLocalesRequest = { locales: Array<string>; default_locale?: string | null };
-export type SetApplicationLocalesResponse = unknown;
-export type SaveTranslationsRequest = { messages: unknown };
-export type SaveTranslationsResponse = unknown;
-export type TranslateMissingResponse = unknown;
-export type GetInstanceTranslationsResponse = unknown;
-export type SaveInstanceTranslationsRequest = { messages: unknown };
-export type SaveInstanceTranslationsResponse = unknown;
-export type TranslateInstanceMissingResponse = unknown;
 export type BuilderFieldPreviewRequest = { table: string; field: string; fieldview: string; configuration?: unknown | null; row_id?: unknown | null };
 export type BuilderFieldPreviewResponse = { html: string };
 export type BuilderFieldviewConfigFormRequest = { table: string; field_name?: string | null; fieldview?: string | null; type?: string | null; join_field?: string | null; join_fieldview?: string | null; agg_outcome_type?: string | null; agg_fieldview?: string | null; agg_field?: string | null; mode?: string | null; _columndef?: string | null };
@@ -278,40 +319,16 @@ export type BuilderPagePreviewResponse = { html: string };
 export type BuilderDistinctValuesResponse = { success: unknown };
 export type ListViewPatternsResponse = Array<{ name: string; label: string; description: string; table_required: boolean; view_quantity?: string | null; routes: Array<string>; steps: Array<string>; module?: string | null }>;
 export type BuilderStatusResponse = { available: boolean };
-export type ListFrameworksResponse = Array<{ name: string; label: string; description: string; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; option_labels?: Array<string> | null; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; has_views: boolean; file_store_settings: Array<string>; file_settings: Array<{ name: string; extensions: Array<string> }>; targets: Array<{ name: string; label: string; options: Array<string>; operations: Array<{ name: string; label: string; description: string; show_if: Array<{ name: string; values: Array<unknown> }> }> }> }>;
-export type ListApiProvidersResponse = Array<{ name: string; label: string; description: string; default_mount: string; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; option_labels?: Array<string> | null; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; supports_custom_queries: boolean }>;
-export type DescribeCustomQueryRequest = { name: string; description?: string | null; method: string; path: string; language?: string | null; code: string; params: Array<{ name: string; type: string; required?: boolean | null }>; min_role?: number | null; body_type?: string | null; response_type?: string | null; returns?: unknown | null; rate_limit?: { per_ip?: string | null; per_user?: string | null } | null; tables?: Array<string> | null };
-export type DescribeCustomQueryResponse = { columns: Array<{ name: string; type: string }> };
-export type ListUsersResponse = Array<{ id: string; email: string; role: number; disabled: boolean; language?: string | null; check_user: boolean; extra: unknown }>;
-export type CreateUserRequest = { email: string; password?: string | null; role: number; language?: string | null; extra?: unknown | null };
-export type CreateUserResponse = { user: { id: string; email: string; role: number; disabled: boolean; language?: string | null; check_user: boolean; extra: unknown }; generated_password?: string | null };
-export type UpdateUserRequest = { email: string; password?: string | null; role: number; language?: string | null; extra?: unknown | null };
-export type UpdateUserResponse = { id: string; email: string; role: number; disabled: boolean; language?: string | null; check_user: boolean; extra: unknown };
-export type DeleteUserResponse = { deleted: boolean };
-export type SetUserDisabledRequest = { disabled: boolean };
-export type SetUserDisabledResponse = { id: string; email: string; role: number; disabled: boolean; language?: string | null; check_user: boolean; extra: unknown };
-export type ForceLogoutUserResponse = { ok: boolean };
-export type BecomeUserResponse = { id: string; email: string; role: number };
-export type SetRandomPasswordResponse = { email: string; password: string };
-export type ListUserRoleGrantsResponse = { base_role: number; effective_role: number; grants: Array<{ id: string; role: number; source: string; source_ref: string; starts_at: string; expires_at?: string | null; revoked_at?: string | null; note?: string | null; in_force: boolean }> };
-export type GrantUserRoleRequest = { role: number; expires_in_days?: number | null; note?: string | null };
-export type GrantUserRoleResponse = { id: string; role: number; source: string; source_ref: string; starts_at: string; expires_at?: string | null; revoked_at?: string | null; note?: string | null; in_force: boolean };
-export type RevokeUserRoleGrantResponse = { id: string; role: number; source: string; source_ref: string; starts_at: string; expires_at?: string | null; revoked_at?: string | null; note?: string | null; in_force: boolean };
-export type GetUserCreditsResponse = { balance: string; available: string; debt: string; next_expiry?: string | null; low_balance_threshold?: string | null; buckets: Array<{ id: string; amount: string; remaining: string; kind: string; source: string; key: string; expires_at?: string | null; note?: string | null; created_at: string; live: boolean }>; entries: Array<{ id: string; kind: string; amount: string; balance: string; source: string; key: string; run?: string | null; agent?: string | null; model?: string | null; input_tokens?: number | null; output_tokens?: number | null; cost?: string | null; note?: string | null; created_at: string }> };
-export type GrantUserCreditsRequest = { amount: string; expires_in_days?: number | null; note?: string | null };
-export type GrantUserCreditsResponse = { balance: string; available: string; debt: string; next_expiry?: string | null; low_balance_threshold?: string | null; buckets: Array<{ id: string; amount: string; remaining: string; kind: string; source: string; key: string; expires_at?: string | null; note?: string | null; created_at: string; live: boolean }>; entries: Array<{ id: string; kind: string; amount: string; balance: string; source: string; key: string; run?: string | null; agent?: string | null; model?: string | null; input_tokens?: number | null; output_tokens?: number | null; cost?: string | null; note?: string | null; created_at: string }> };
-export type SetUserCreditThresholdRequest = { threshold?: string | null };
-export type SetUserCreditThresholdResponse = { balance: string; available: string; debt: string; next_expiry?: string | null; low_balance_threshold?: string | null; buckets: Array<{ id: string; amount: string; remaining: string; kind: string; source: string; key: string; expires_at?: string | null; note?: string | null; created_at: string; live: boolean }>; entries: Array<{ id: string; kind: string; amount: string; balance: string; source: string; key: string; run?: string | null; agent?: string | null; model?: string | null; input_tokens?: number | null; output_tokens?: number | null; cost?: string | null; note?: string | null; created_at: string }> };
-export type ListApiTokensResponse = Array<{ id: string; user_id: string; label: string; grants: unknown; created_at: string; expires_at?: string | null; last_used_at?: string | null; revoked_at?: string | null; live: boolean }>;
-export type CreateApiTokenRequest = { label: string; grants?: { allow_create?: boolean | null; allow_edit?: boolean | null; allow_drop?: boolean | null; allow_access_changes?: boolean | null; allow_triggers?: boolean | null; allow_applications?: boolean | null; allow_modules?: boolean | null; allow_history?: boolean | null; allow_all?: boolean | null } | null; expires_in_days?: number | null };
-export type CreateApiTokenResponse = { token: { id: string; user_id: string; label: string; grants: unknown; created_at: string; expires_at?: string | null; last_used_at?: string | null; revoked_at?: string | null; live: boolean }; secret: string };
-export type RevokeApiTokenResponse = { revoked: boolean };
-export type ListBuildHostsResponse = Array<{ id: string; name: string; targets: Array<string>; created_at: string; last_seen_at?: string | null; online: boolean; report?: unknown | null }>;
-export type CreateBuildHostRequest = { name: string; targets: Array<string> };
-export type CreateBuildHostResponse = { host: { id: string; name: string; targets: Array<string>; created_at: string; last_seen_at?: string | null; online: boolean; report?: unknown | null }; token: string };
-export type UpdateBuildHostRequest = { name: string; targets: Array<string> };
-export type UpdateBuildHostResponse = { id: string; name: string; targets: Array<string>; created_at: string; last_seen_at?: string | null; online: boolean; report?: unknown | null };
-export type DeleteBuildHostResponse = { deleted: boolean };
+export type GetTranslationsResponse = unknown;
+export type SetApplicationLocalesRequest = { locales: Array<string>; default_locale?: string | null };
+export type SetApplicationLocalesResponse = unknown;
+export type SaveTranslationsRequest = { messages: unknown };
+export type SaveTranslationsResponse = unknown;
+export type TranslateMissingResponse = unknown;
+export type GetInstanceTranslationsResponse = unknown;
+export type SaveInstanceTranslationsRequest = { messages: unknown };
+export type SaveInstanceTranslationsResponse = unknown;
+export type TranslateInstanceMissingResponse = unknown;
 export type ListTriggersResponse = Array<{ id: string; name: string; description: string; when: string; channel?: string | null; only_if?: string | null; body?: string | null; action?: string | null; configuration?: unknown | null; min_role?: number | null; enabled: boolean; minute?: number | null; hour?: number | null; day_of_week?: number | null; error?: string | null; last_run_at?: string | null; workflow_version?: number | null; workflow_steps?: number | null }>;
 export type CreateTriggerRequest = { name: string; description: string; when: string; channel?: string | null; only_if?: string | null; body?: string | null; action?: string | null; configuration?: unknown | null; min_role?: number | null; enabled: boolean; minute?: number | null; hour?: number | null; day_of_week?: number | null };
 export type CreateTriggerResponse = { id: string; name: string; description: string; when: string; channel?: string | null; only_if?: string | null; body?: string | null; action?: string | null; configuration?: unknown | null; min_role?: number | null; enabled: boolean; minute?: number | null; hour?: number | null; day_of_week?: number | null; error?: string | null; last_run_at?: string | null; workflow_version?: number | null; workflow_steps?: number | null };
@@ -383,23 +400,6 @@ export type SaveStreamRequest = { id?: string | null; name: string; description?
 export type SaveStreamResponse = { id: string; name: string; description: string; provider: string; configuration: unknown; min_role?: number | null; attributes: unknown; enabled: boolean; element_type?: unknown | null; error?: string | null; status?: unknown | null; counters?: unknown | null; topics?: unknown | null; subscribers: number; changes?: unknown | null };
 export type DeleteStreamResponse = { deleted: boolean };
 export type StreamStatusResponse = { id: string; name: string; running: boolean; status?: unknown | null; counters?: unknown | null; element_type?: unknown | null; listeners: number; subscribers: number; changes?: unknown | null };
-export type GetSettingsResponse = { sections: Array<{ name: string; label: string; description: string; fields: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; option_labels?: Array<string> | null; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }>; help: string }> }>; values: unknown; host_keys: Array<string> };
-export type UpdateSettingsRequest = { values: unknown };
-export type UpdateSettingsResponse = { sections: Array<{ name: string; label: string; description: string; fields: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; option_labels?: Array<string> | null; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }>; help: string }> }>; values: unknown; host_keys: Array<string> };
-export type ListOAuthProvidersResponse = Array<{ name: string; label: string; preset: string; enabled: boolean; config: unknown }>;
-export type GetOAuthProviderSpecResponse = { fields: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; option_labels?: Array<string> | null; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; callback_path: string };
-export type CreateOAuthProviderRequest = { config: unknown };
-export type CreateOAuthProviderResponse = { name: string; label: string; preset: string; enabled: boolean; config: unknown };
-export type UpdateOAuthProviderRequest = { config: unknown };
-export type UpdateOAuthProviderResponse = { name: string; label: string; preset: string; enabled: boolean; config: unknown };
-export type DeleteOAuthProviderResponse = { deleted: boolean };
-export type GetAdminAddressResponse = { base_domain?: string | null; admin_subdomain?: string | null; admin_host?: string | null; ready: boolean; certificate?: { state: string; message?: string | null } | null };
-export type CreateAdminHandoffResponse = { host: string; path: string };
-export type SendTestEmailRequest = { to?: string | null };
-export type SendTestEmailResponse = { sent_to: string };
-export type GetPythonStatusResponse = { state: string; version?: string | null; explanation: string; dir?: string | null; site_packages?: string | null; bin?: string | null; packages: Array<{ name: string; version?: string | null }>; max_inflight: number; resident: number; threads: number; stuck: number; max_stuck: number; env_error?: string | null };
-export type GetSystemInfoResponse = { version: string; version_line: string; build_time?: string | null; commit?: string | null; platform: string; pid: number; started_at: string; uptime_seconds: number; database: { product?: string | null; version?: string | null; error?: string | null }; memory?: { process_bytes?: number | null; total_bytes?: number | null; available_bytes?: number | null } | null; cpu?: { process_percent: number; system_percent: number; cores: number; load_average: Array<number> } | null; disk?: { path: string; total_bytes: number; available_bytes: number } | null };
-export type RestartServerResponse = { restarting: boolean };
 export type GetBackupOptionsResponse = { available: { tables: Array<{ name: string; label: string; count?: number | null }>; applications: Array<{ name: string; label: string; count?: number | null }>; file_stores: Array<{ name: string; label: string; count?: number | null }>; users: number; modules: number; db_connections: number; streams: number; datasets: number; models: number; workspaces: number; fits: number; llm_providers: number; agents: number; code_libraries: number; triggers: number; views: number; pages: number; ssl: boolean; settings: boolean }; include: { tables: Array<string>; table_data: Array<string>; applications: Array<string>; file_stores: Array<string>; users: boolean; modules: boolean; db_connections: boolean; streams: boolean; analytics: boolean; fits: boolean; llm_providers: boolean; agents: boolean; code_libraries: boolean; triggers: boolean; views: boolean; pages: boolean; ssl: boolean; settings: boolean } };
 export type UnlockBackupRequest = { id: string; password: string };
 export type UnlockBackupResponse = { id: string; encrypted: boolean; locked: boolean; created_at?: string | null; source?: string | null; available: { tables: Array<{ name: string; label: string; count?: number | null }>; applications: Array<{ name: string; label: string; count?: number | null }>; file_stores: Array<{ name: string; label: string; count?: number | null }>; users: number; modules: number; db_connections: number; streams: number; datasets: number; models: number; workspaces: number; fits: number; llm_providers: number; agents: number; code_libraries: number; triggers: number; views: number; pages: number; ssl: boolean; settings: boolean }; include: { tables: Array<string>; table_data: Array<string>; applications: Array<string>; file_stores: Array<string>; users: boolean; modules: boolean; db_connections: boolean; streams: boolean; analytics: boolean; fits: boolean; llm_providers: boolean; agents: boolean; code_libraries: boolean; triggers: boolean; views: boolean; pages: boolean; ssl: boolean; settings: boolean } };
@@ -502,7 +502,6 @@ export interface ApiClient {
   login(body: LoginRequest): Promise<LoginResponse>;
   logout(): Promise<void>;
   listTables(): Promise<ListTablesResponse>;
-  listEntities(query?: ListEntitiesQuery): Promise<ListEntitiesResponse>;
   createTable(body: CreateTableRequest): Promise<CreateTableResponse>;
   createTableFromCsv(body: CreateTableFromCsvRequest): Promise<CreateTableFromCsvResponse>;
   createTableFromGeoFile(body: CreateTableFromGeoFileRequest): Promise<CreateTableFromGeoFileResponse>;
@@ -516,9 +515,27 @@ export interface ApiClient {
   updateProvidedTable(table: string, body: UpdateProvidedTableRequest): Promise<UpdateProvidedTableResponse>;
   deleteTableSettings(table: string): Promise<DeleteTableSettingsResponse>;
   listOrphanTableSettings(): Promise<ListOrphanTableSettingsResponse>;
+  listEntities(query?: ListEntitiesQuery): Promise<ListEntitiesResponse>;
   listRoles(): Promise<ListRolesResponse>;
   createRole(body: CreateRoleRequest): Promise<CreateRoleResponse>;
   deleteRole(role: number): Promise<DeleteRoleResponse>;
+  listUsers(): Promise<ListUsersResponse>;
+  createUser(body: CreateUserRequest): Promise<CreateUserResponse>;
+  updateUser(id: string, body: UpdateUserRequest): Promise<UpdateUserResponse>;
+  deleteUser(id: string): Promise<DeleteUserResponse>;
+  setUserDisabled(id: string, body: SetUserDisabledRequest): Promise<SetUserDisabledResponse>;
+  forceLogoutUser(id: string): Promise<ForceLogoutUserResponse>;
+  becomeUser(id: string): Promise<BecomeUserResponse>;
+  setRandomPassword(id: string): Promise<SetRandomPasswordResponse>;
+  listUserRoleGrants(id: string): Promise<ListUserRoleGrantsResponse>;
+  grantUserRole(id: string, body: GrantUserRoleRequest): Promise<GrantUserRoleResponse>;
+  revokeUserRoleGrant(id: string, grant: string): Promise<RevokeUserRoleGrantResponse>;
+  getUserCredits(id: string): Promise<GetUserCreditsResponse>;
+  grantUserCredits(id: string, body: GrantUserCreditsRequest): Promise<GrantUserCreditsResponse>;
+  setUserCreditThreshold(id: string, body: SetUserCreditThresholdRequest): Promise<SetUserCreditThresholdResponse>;
+  listApiTokens(): Promise<ListApiTokensResponse>;
+  createApiToken(body: CreateApiTokenRequest): Promise<CreateApiTokenResponse>;
+  revokeApiToken(id: string): Promise<RevokeApiTokenResponse>;
   listFields(table: string): Promise<ListFieldsResponse>;
   listInboundKeys(table: string): Promise<ListInboundKeysResponse>;
   createField(table: string, body: CreateFieldRequest): Promise<CreateFieldResponse>;
@@ -621,7 +638,6 @@ export interface ApiClient {
   browseFiles(store: string, body: BrowseFilesRequest): Promise<BrowseFilesResponse>;
   findFiles(store: string, body: FindFilesRequest): Promise<FindFilesResponse>;
   listStoreFiles(store: string, query?: ListStoreFilesQuery): Promise<ListStoreFilesResponse>;
-  getHelp(topic: string, query?: GetHelpQuery): Promise<GetHelpResponse>;
   searchFiles(store: string, body: SearchFilesRequest): Promise<SearchFilesResponse>;
   readFile(store: string, body: ReadFileRequest): Promise<ReadFileResponse>;
   writeFile(store: string, body: WriteFileRequest): Promise<WriteFileResponse>;
@@ -630,6 +646,20 @@ export interface ApiClient {
   renameFile(store: string, body: RenameFileRequest): Promise<RenameFileResponse>;
   getFileMeta(store: string, body: GetFileMetaRequest): Promise<GetFileMetaResponse>;
   setFileMeta(store: string, body: SetFileMetaRequest): Promise<SetFileMetaResponse>;
+  getHelp(topic: string, query?: GetHelpQuery): Promise<GetHelpResponse>;
+  getSettings(): Promise<GetSettingsResponse>;
+  updateSettings(body: UpdateSettingsRequest): Promise<UpdateSettingsResponse>;
+  listOAuthProviders(): Promise<ListOAuthProvidersResponse>;
+  getOAuthProviderSpec(): Promise<GetOAuthProviderSpecResponse>;
+  createOAuthProvider(body: CreateOAuthProviderRequest): Promise<CreateOAuthProviderResponse>;
+  updateOAuthProvider(name: string, body: UpdateOAuthProviderRequest): Promise<UpdateOAuthProviderResponse>;
+  deleteOAuthProvider(name: string): Promise<DeleteOAuthProviderResponse>;
+  getAdminAddress(): Promise<GetAdminAddressResponse>;
+  createAdminHandoff(): Promise<CreateAdminHandoffResponse>;
+  sendTestEmail(body: SendTestEmailRequest): Promise<SendTestEmailResponse>;
+  getPythonStatus(): Promise<GetPythonStatusResponse>;
+  getSystemInfo(): Promise<GetSystemInfoResponse>;
+  restartServer(): Promise<RestartServerResponse>;
   listApplications(): Promise<ListApplicationsResponse>;
   createApplication(body: CreateApplicationRequest): Promise<CreateApplicationResponse>;
   updateApplication(id: string, body: UpdateApplicationRequest): Promise<UpdateApplicationResponse>;
@@ -641,6 +671,13 @@ export interface ApiClient {
   getApplicationTargetBuild(id: string, target: string): Promise<GetApplicationTargetBuildResponse>;
   updateApplicationClient(id: string): Promise<UpdateApplicationClientResponse>;
   runApplicationGraphql(id: string, body: RunApplicationGraphqlRequest): Promise<RunApplicationGraphqlResponse>;
+  listFrameworks(): Promise<ListFrameworksResponse>;
+  listApiProviders(): Promise<ListApiProvidersResponse>;
+  describeCustomQuery(body: DescribeCustomQueryRequest): Promise<DescribeCustomQueryResponse>;
+  listBuildHosts(): Promise<ListBuildHostsResponse>;
+  createBuildHost(body: CreateBuildHostRequest): Promise<CreateBuildHostResponse>;
+  updateBuildHost(id: string, body: UpdateBuildHostRequest): Promise<UpdateBuildHostResponse>;
+  deleteBuildHost(id: string): Promise<DeleteBuildHostResponse>;
   listViews(id: string): Promise<ListViewsResponse>;
   getView(id: string, name: string): Promise<GetViewResponse>;
   saveView(id: string, name: string, body: SaveViewRequest): Promise<SaveViewResponse>;
@@ -661,13 +698,6 @@ export interface ApiClient {
   saveLibraryItem(id: string, item: string, body: SaveLibraryItemRequest): Promise<SaveLibraryItemResponse>;
   saveLibraryUpdates(id: string, body: SaveLibraryUpdatesRequest): Promise<SaveLibraryUpdatesResponse>;
   deleteLibraryItem(id: string, item: string, query?: DeleteLibraryItemQuery): Promise<DeleteLibraryItemResponse>;
-  getTranslations(id: string): Promise<GetTranslationsResponse>;
-  setApplicationLocales(id: string, body: SetApplicationLocalesRequest): Promise<SetApplicationLocalesResponse>;
-  saveTranslations(id: string, locale: string, body: SaveTranslationsRequest): Promise<SaveTranslationsResponse>;
-  translateMissing(id: string, locale: string): Promise<TranslateMissingResponse>;
-  getInstanceTranslations(): Promise<GetInstanceTranslationsResponse>;
-  saveInstanceTranslations(locale: string, body: SaveInstanceTranslationsRequest): Promise<SaveInstanceTranslationsResponse>;
-  translateInstanceMissing(locale: string): Promise<TranslateInstanceMissingResponse>;
   builderFieldPreview(id: string, body: BuilderFieldPreviewRequest): Promise<BuilderFieldPreviewResponse>;
   builderFieldviewConfigForm(id: string, body: BuilderFieldviewConfigFormRequest): Promise<BuilderFieldviewConfigFormResponse>;
   builderViewPreview(id: string, body: BuilderViewPreviewRequest): Promise<BuilderViewPreviewResponse>;
@@ -675,30 +705,13 @@ export interface ApiClient {
   builderDistinctValues(id: string, table: string, field: string): Promise<BuilderDistinctValuesResponse>;
   listViewPatterns(): Promise<ListViewPatternsResponse>;
   builderStatus(): Promise<BuilderStatusResponse>;
-  listFrameworks(): Promise<ListFrameworksResponse>;
-  listApiProviders(): Promise<ListApiProvidersResponse>;
-  describeCustomQuery(body: DescribeCustomQueryRequest): Promise<DescribeCustomQueryResponse>;
-  listUsers(): Promise<ListUsersResponse>;
-  createUser(body: CreateUserRequest): Promise<CreateUserResponse>;
-  updateUser(id: string, body: UpdateUserRequest): Promise<UpdateUserResponse>;
-  deleteUser(id: string): Promise<DeleteUserResponse>;
-  setUserDisabled(id: string, body: SetUserDisabledRequest): Promise<SetUserDisabledResponse>;
-  forceLogoutUser(id: string): Promise<ForceLogoutUserResponse>;
-  becomeUser(id: string): Promise<BecomeUserResponse>;
-  setRandomPassword(id: string): Promise<SetRandomPasswordResponse>;
-  listUserRoleGrants(id: string): Promise<ListUserRoleGrantsResponse>;
-  grantUserRole(id: string, body: GrantUserRoleRequest): Promise<GrantUserRoleResponse>;
-  revokeUserRoleGrant(id: string, grant: string): Promise<RevokeUserRoleGrantResponse>;
-  getUserCredits(id: string): Promise<GetUserCreditsResponse>;
-  grantUserCredits(id: string, body: GrantUserCreditsRequest): Promise<GrantUserCreditsResponse>;
-  setUserCreditThreshold(id: string, body: SetUserCreditThresholdRequest): Promise<SetUserCreditThresholdResponse>;
-  listApiTokens(): Promise<ListApiTokensResponse>;
-  createApiToken(body: CreateApiTokenRequest): Promise<CreateApiTokenResponse>;
-  revokeApiToken(id: string): Promise<RevokeApiTokenResponse>;
-  listBuildHosts(): Promise<ListBuildHostsResponse>;
-  createBuildHost(body: CreateBuildHostRequest): Promise<CreateBuildHostResponse>;
-  updateBuildHost(id: string, body: UpdateBuildHostRequest): Promise<UpdateBuildHostResponse>;
-  deleteBuildHost(id: string): Promise<DeleteBuildHostResponse>;
+  getTranslations(id: string): Promise<GetTranslationsResponse>;
+  setApplicationLocales(id: string, body: SetApplicationLocalesRequest): Promise<SetApplicationLocalesResponse>;
+  saveTranslations(id: string, locale: string, body: SaveTranslationsRequest): Promise<SaveTranslationsResponse>;
+  translateMissing(id: string, locale: string): Promise<TranslateMissingResponse>;
+  getInstanceTranslations(): Promise<GetInstanceTranslationsResponse>;
+  saveInstanceTranslations(locale: string, body: SaveInstanceTranslationsRequest): Promise<SaveInstanceTranslationsResponse>;
+  translateInstanceMissing(locale: string): Promise<TranslateInstanceMissingResponse>;
   listTriggers(): Promise<ListTriggersResponse>;
   createTrigger(body: CreateTriggerRequest): Promise<CreateTriggerResponse>;
   updateTrigger(id: string, body: UpdateTriggerRequest): Promise<UpdateTriggerResponse>;
@@ -743,19 +756,6 @@ export interface ApiClient {
   saveStream(body: SaveStreamRequest): Promise<SaveStreamResponse>;
   deleteStream(id: string): Promise<DeleteStreamResponse>;
   streamStatus(id: string): Promise<StreamStatusResponse>;
-  getSettings(): Promise<GetSettingsResponse>;
-  updateSettings(body: UpdateSettingsRequest): Promise<UpdateSettingsResponse>;
-  listOAuthProviders(): Promise<ListOAuthProvidersResponse>;
-  getOAuthProviderSpec(): Promise<GetOAuthProviderSpecResponse>;
-  createOAuthProvider(body: CreateOAuthProviderRequest): Promise<CreateOAuthProviderResponse>;
-  updateOAuthProvider(name: string, body: UpdateOAuthProviderRequest): Promise<UpdateOAuthProviderResponse>;
-  deleteOAuthProvider(name: string): Promise<DeleteOAuthProviderResponse>;
-  getAdminAddress(): Promise<GetAdminAddressResponse>;
-  createAdminHandoff(): Promise<CreateAdminHandoffResponse>;
-  sendTestEmail(body: SendTestEmailRequest): Promise<SendTestEmailResponse>;
-  getPythonStatus(): Promise<GetPythonStatusResponse>;
-  getSystemInfo(): Promise<GetSystemInfoResponse>;
-  restartServer(): Promise<RestartServerResponse>;
   getBackupOptions(): Promise<GetBackupOptionsResponse>;
   unlockBackup(body: UnlockBackupRequest): Promise<UnlockBackupResponse>;
   restoreBackup(body: RestoreBackupRequest): Promise<RestoreBackupResponse>;
@@ -877,17 +877,6 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       if (!res.ok) throw await clientError("listTables", res);
       return (await res.json()) as ListTablesResponse;
     },
-    async listEntities(query) {
-      const search = new URLSearchParams();
-      if (query?.deep !== undefined && query?.deep !== null) search.append("deep", String(query?.deep));
-      const qs = search.toString();
-      const res = await doFetch(`${baseUrl}/api/entities${qs ? `?${qs}` : ""}`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("listEntities", res);
-      return (await res.json()) as ListEntitiesResponse;
-    },
     async createTable(body) {
       const res = await doFetch(`${baseUrl}/api/tables`, {
         method: "POST",
@@ -1000,6 +989,17 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       if (!res.ok) throw await clientError("listOrphanTableSettings", res);
       return (await res.json()) as ListOrphanTableSettingsResponse;
     },
+    async listEntities(query) {
+      const search = new URLSearchParams();
+      if (query?.deep !== undefined && query?.deep !== null) search.append("deep", String(query?.deep));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/entities${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listEntities", res);
+      return (await res.json()) as ListEntitiesResponse;
+    },
     async listRoles() {
       const res = await doFetch(`${baseUrl}/api/roles`, {
         method: "GET",
@@ -1024,6 +1024,149 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("deleteRole", res);
       return (await res.json()) as DeleteRoleResponse;
+    },
+    async listUsers() {
+      const res = await doFetch(`${baseUrl}/api/users`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listUsers", res);
+      return (await res.json()) as ListUsersResponse;
+    },
+    async createUser(body) {
+      const res = await doFetch(`${baseUrl}/api/users`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("createUser", res);
+      return (await res.json()) as CreateUserResponse;
+    },
+    async updateUser(id, body) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("updateUser", res);
+      return (await res.json()) as UpdateUserResponse;
+    },
+    async deleteUser(id) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("deleteUser", res);
+      return (await res.json()) as DeleteUserResponse;
+    },
+    async setUserDisabled(id, body) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/disabled`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("setUserDisabled", res);
+      return (await res.json()) as SetUserDisabledResponse;
+    },
+    async forceLogoutUser(id) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/force-logout`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("forceLogoutUser", res);
+      return (await res.json()) as ForceLogoutUserResponse;
+    },
+    async becomeUser(id) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/become`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("becomeUser", res);
+      return (await res.json()) as BecomeUserResponse;
+    },
+    async setRandomPassword(id) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/random-password`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("setRandomPassword", res);
+      return (await res.json()) as SetRandomPasswordResponse;
+    },
+    async listUserRoleGrants(id) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/role-grants`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listUserRoleGrants", res);
+      return (await res.json()) as ListUserRoleGrantsResponse;
+    },
+    async grantUserRole(id, body) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/role-grants`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("grantUserRole", res);
+      return (await res.json()) as GrantUserRoleResponse;
+    },
+    async revokeUserRoleGrant(id, grant) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/role-grants/${encodeURIComponent(grant)}/revoke`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("revokeUserRoleGrant", res);
+      return (await res.json()) as RevokeUserRoleGrantResponse;
+    },
+    async getUserCredits(id) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/credits`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getUserCredits", res);
+      return (await res.json()) as GetUserCreditsResponse;
+    },
+    async grantUserCredits(id, body) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/credits`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("grantUserCredits", res);
+      return (await res.json()) as GrantUserCreditsResponse;
+    },
+    async setUserCreditThreshold(id, body) {
+      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/credits/threshold`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("setUserCreditThreshold", res);
+      return (await res.json()) as SetUserCreditThresholdResponse;
+    },
+    async listApiTokens() {
+      const res = await doFetch(`${baseUrl}/api/api-tokens`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listApiTokens", res);
+      return (await res.json()) as ListApiTokensResponse;
+    },
+    async createApiToken(body) {
+      const res = await doFetch(`${baseUrl}/api/api-tokens`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("createApiToken", res);
+      return (await res.json()) as CreateApiTokenResponse;
+    },
+    async revokeApiToken(id) {
+      const res = await doFetch(`${baseUrl}/api/api-tokens/${encodeURIComponent(id)}/revoke`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("revokeApiToken", res);
+      return (await res.json()) as RevokeApiTokenResponse;
     },
     async listFields(table) {
       const res = await doFetch(`${baseUrl}/api/tables/${encodeURIComponent(table)}/fields`, {
@@ -1937,18 +2080,6 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       if (!res.ok) throw await clientError("listStoreFiles", res);
       return (await res.json()) as ListStoreFilesResponse;
     },
-    async getHelp(topic, query) {
-      const search = new URLSearchParams();
-      if (query?.table !== undefined && query?.table !== null) search.append("table", String(query?.table));
-      if (query?.event !== undefined && query?.event !== null) search.append("event", String(query?.event));
-      const qs = search.toString();
-      const res = await doFetch(`${baseUrl}/api/help/${encodeURIComponent(topic)}${qs ? `?${qs}` : ""}`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("getHelp", res);
-      return (await res.json()) as GetHelpResponse;
-    },
     async searchFiles(store, body) {
       const res = await doFetch(`${baseUrl}/api/file-stores/${encodeURIComponent(store)}/search`, {
         method: "POST",
@@ -2020,6 +2151,126 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("setFileMeta", res);
       return (await res.json()) as SetFileMetaResponse;
+    },
+    async getHelp(topic, query) {
+      const search = new URLSearchParams();
+      if (query?.table !== undefined && query?.table !== null) search.append("table", String(query?.table));
+      if (query?.event !== undefined && query?.event !== null) search.append("event", String(query?.event));
+      const qs = search.toString();
+      const res = await doFetch(`${baseUrl}/api/help/${encodeURIComponent(topic)}${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getHelp", res);
+      return (await res.json()) as GetHelpResponse;
+    },
+    async getSettings() {
+      const res = await doFetch(`${baseUrl}/api/settings`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getSettings", res);
+      return (await res.json()) as GetSettingsResponse;
+    },
+    async updateSettings(body) {
+      const res = await doFetch(`${baseUrl}/api/settings`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("updateSettings", res);
+      return (await res.json()) as UpdateSettingsResponse;
+    },
+    async listOAuthProviders() {
+      const res = await doFetch(`${baseUrl}/api/oauth-providers`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listOAuthProviders", res);
+      return (await res.json()) as ListOAuthProvidersResponse;
+    },
+    async getOAuthProviderSpec() {
+      const res = await doFetch(`${baseUrl}/api/oauth-provider-spec`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getOAuthProviderSpec", res);
+      return (await res.json()) as GetOAuthProviderSpecResponse;
+    },
+    async createOAuthProvider(body) {
+      const res = await doFetch(`${baseUrl}/api/oauth-providers`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("createOAuthProvider", res);
+      return (await res.json()) as CreateOAuthProviderResponse;
+    },
+    async updateOAuthProvider(name, body) {
+      const res = await doFetch(`${baseUrl}/api/oauth-providers/${encodeURIComponent(name)}`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("updateOAuthProvider", res);
+      return (await res.json()) as UpdateOAuthProviderResponse;
+    },
+    async deleteOAuthProvider(name) {
+      const res = await doFetch(`${baseUrl}/api/oauth-providers/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("deleteOAuthProvider", res);
+      return (await res.json()) as DeleteOAuthProviderResponse;
+    },
+    async getAdminAddress() {
+      const res = await doFetch(`${baseUrl}/api/settings/admin-address`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getAdminAddress", res);
+      return (await res.json()) as GetAdminAddressResponse;
+    },
+    async createAdminHandoff() {
+      const res = await doFetch(`${baseUrl}/api/settings/admin-address/handoff`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("createAdminHandoff", res);
+      return (await res.json()) as CreateAdminHandoffResponse;
+    },
+    async sendTestEmail(body) {
+      const res = await doFetch(`${baseUrl}/api/settings/email/test`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("sendTestEmail", res);
+      return (await res.json()) as SendTestEmailResponse;
+    },
+    async getPythonStatus() {
+      const res = await doFetch(`${baseUrl}/api/python`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getPythonStatus", res);
+      return (await res.json()) as GetPythonStatusResponse;
+    },
+    async getSystemInfo() {
+      const res = await doFetch(`${baseUrl}/api/system`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getSystemInfo", res);
+      return (await res.json()) as GetSystemInfoResponse;
+    },
+    async restartServer() {
+      const res = await doFetch(`${baseUrl}/api/system/restart`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("restartServer", res);
+      return (await res.json()) as RestartServerResponse;
     },
     async listApplications() {
       const res = await doFetch(`${baseUrl}/api/applications`, {
@@ -2115,6 +2366,65 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("runApplicationGraphql", res);
       return (await res.json()) as RunApplicationGraphqlResponse;
+    },
+    async listFrameworks() {
+      const res = await doFetch(`${baseUrl}/api/frameworks`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listFrameworks", res);
+      return (await res.json()) as ListFrameworksResponse;
+    },
+    async listApiProviders() {
+      const res = await doFetch(`${baseUrl}/api/api-providers`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listApiProviders", res);
+      return (await res.json()) as ListApiProvidersResponse;
+    },
+    async describeCustomQuery(body) {
+      const res = await doFetch(`${baseUrl}/api/custom-queries/describe`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("describeCustomQuery", res);
+      return (await res.json()) as DescribeCustomQueryResponse;
+    },
+    async listBuildHosts() {
+      const res = await doFetch(`${baseUrl}/api/build-hosts`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listBuildHosts", res);
+      return (await res.json()) as ListBuildHostsResponse;
+    },
+    async createBuildHost(body) {
+      const res = await doFetch(`${baseUrl}/api/build-hosts`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("createBuildHost", res);
+      return (await res.json()) as CreateBuildHostResponse;
+    },
+    async updateBuildHost(id, body) {
+      const res = await doFetch(`${baseUrl}/api/build-hosts/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("updateBuildHost", res);
+      return (await res.json()) as UpdateBuildHostResponse;
+    },
+    async deleteBuildHost(id) {
+      const res = await doFetch(`${baseUrl}/api/build-hosts/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("deleteBuildHost", res);
+      return (await res.json()) as DeleteBuildHostResponse;
     },
     async listViews(id) {
       const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/views`, {
@@ -2288,65 +2598,6 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       if (!res.ok) throw await clientError("deleteLibraryItem", res);
       return (await res.json()) as DeleteLibraryItemResponse;
     },
-    async getTranslations(id) {
-      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/translations`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("getTranslations", res);
-      return (await res.json()) as GetTranslationsResponse;
-    },
-    async setApplicationLocales(id, body) {
-      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/locales`, {
-        method: "PUT",
-        headers: requestHeaders("PUT", true),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw await clientError("setApplicationLocales", res);
-      return (await res.json()) as SetApplicationLocalesResponse;
-    },
-    async saveTranslations(id, locale, body) {
-      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/translations/${encodeURIComponent(locale)}`, {
-        method: "PUT",
-        headers: requestHeaders("PUT", true),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw await clientError("saveTranslations", res);
-      return (await res.json()) as SaveTranslationsResponse;
-    },
-    async translateMissing(id, locale) {
-      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/translations/${encodeURIComponent(locale)}/fill`, {
-        method: "POST",
-        headers: requestHeaders("POST", false),
-      });
-      if (!res.ok) throw await clientError("translateMissing", res);
-      return (await res.json()) as TranslateMissingResponse;
-    },
-    async getInstanceTranslations() {
-      const res = await doFetch(`${baseUrl}/api/translations`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("getInstanceTranslations", res);
-      return (await res.json()) as GetInstanceTranslationsResponse;
-    },
-    async saveInstanceTranslations(locale, body) {
-      const res = await doFetch(`${baseUrl}/api/translations/${encodeURIComponent(locale)}`, {
-        method: "PUT",
-        headers: requestHeaders("PUT", true),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw await clientError("saveInstanceTranslations", res);
-      return (await res.json()) as SaveInstanceTranslationsResponse;
-    },
-    async translateInstanceMissing(locale) {
-      const res = await doFetch(`${baseUrl}/api/translations/${encodeURIComponent(locale)}/fill`, {
-        method: "POST",
-        headers: requestHeaders("POST", false),
-      });
-      if (!res.ok) throw await clientError("translateInstanceMissing", res);
-      return (await res.json()) as TranslateInstanceMissingResponse;
-    },
     async builderFieldPreview(id, body) {
       const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/builder/field-preview`, {
         method: "POST",
@@ -2407,207 +2658,64 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       if (!res.ok) throw await clientError("builderStatus", res);
       return (await res.json()) as BuilderStatusResponse;
     },
-    async listFrameworks() {
-      const res = await doFetch(`${baseUrl}/api/frameworks`, {
+    async getTranslations(id) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/translations`, {
         method: "GET",
         headers: requestHeaders("GET", false),
       });
-      if (!res.ok) throw await clientError("listFrameworks", res);
-      return (await res.json()) as ListFrameworksResponse;
+      if (!res.ok) throw await clientError("getTranslations", res);
+      return (await res.json()) as GetTranslationsResponse;
     },
-    async listApiProviders() {
-      const res = await doFetch(`${baseUrl}/api/api-providers`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("listApiProviders", res);
-      return (await res.json()) as ListApiProvidersResponse;
-    },
-    async describeCustomQuery(body) {
-      const res = await doFetch(`${baseUrl}/api/custom-queries/describe`, {
-        method: "POST",
-        headers: requestHeaders("POST", true),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw await clientError("describeCustomQuery", res);
-      return (await res.json()) as DescribeCustomQueryResponse;
-    },
-    async listUsers() {
-      const res = await doFetch(`${baseUrl}/api/users`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("listUsers", res);
-      return (await res.json()) as ListUsersResponse;
-    },
-    async createUser(body) {
-      const res = await doFetch(`${baseUrl}/api/users`, {
-        method: "POST",
-        headers: requestHeaders("POST", true),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw await clientError("createUser", res);
-      return (await res.json()) as CreateUserResponse;
-    },
-    async updateUser(id, body) {
-      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}`, {
+    async setApplicationLocales(id, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/locales`, {
         method: "PUT",
         headers: requestHeaders("PUT", true),
         body: JSON.stringify(body),
       });
-      if (!res.ok) throw await clientError("updateUser", res);
-      return (await res.json()) as UpdateUserResponse;
+      if (!res.ok) throw await clientError("setApplicationLocales", res);
+      return (await res.json()) as SetApplicationLocalesResponse;
     },
-    async deleteUser(id) {
-      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}`, {
-        method: "DELETE",
-        headers: requestHeaders("DELETE", false),
-      });
-      if (!res.ok) throw await clientError("deleteUser", res);
-      return (await res.json()) as DeleteUserResponse;
-    },
-    async setUserDisabled(id, body) {
-      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/disabled`, {
-        method: "POST",
-        headers: requestHeaders("POST", true),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw await clientError("setUserDisabled", res);
-      return (await res.json()) as SetUserDisabledResponse;
-    },
-    async forceLogoutUser(id) {
-      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/force-logout`, {
-        method: "POST",
-        headers: requestHeaders("POST", false),
-      });
-      if (!res.ok) throw await clientError("forceLogoutUser", res);
-      return (await res.json()) as ForceLogoutUserResponse;
-    },
-    async becomeUser(id) {
-      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/become`, {
-        method: "POST",
-        headers: requestHeaders("POST", false),
-      });
-      if (!res.ok) throw await clientError("becomeUser", res);
-      return (await res.json()) as BecomeUserResponse;
-    },
-    async setRandomPassword(id) {
-      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/random-password`, {
-        method: "POST",
-        headers: requestHeaders("POST", false),
-      });
-      if (!res.ok) throw await clientError("setRandomPassword", res);
-      return (await res.json()) as SetRandomPasswordResponse;
-    },
-    async listUserRoleGrants(id) {
-      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/role-grants`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("listUserRoleGrants", res);
-      return (await res.json()) as ListUserRoleGrantsResponse;
-    },
-    async grantUserRole(id, body) {
-      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/role-grants`, {
-        method: "POST",
-        headers: requestHeaders("POST", true),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw await clientError("grantUserRole", res);
-      return (await res.json()) as GrantUserRoleResponse;
-    },
-    async revokeUserRoleGrant(id, grant) {
-      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/role-grants/${encodeURIComponent(grant)}/revoke`, {
-        method: "POST",
-        headers: requestHeaders("POST", false),
-      });
-      if (!res.ok) throw await clientError("revokeUserRoleGrant", res);
-      return (await res.json()) as RevokeUserRoleGrantResponse;
-    },
-    async getUserCredits(id) {
-      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/credits`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("getUserCredits", res);
-      return (await res.json()) as GetUserCreditsResponse;
-    },
-    async grantUserCredits(id, body) {
-      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/credits`, {
-        method: "POST",
-        headers: requestHeaders("POST", true),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw await clientError("grantUserCredits", res);
-      return (await res.json()) as GrantUserCreditsResponse;
-    },
-    async setUserCreditThreshold(id, body) {
-      const res = await doFetch(`${baseUrl}/api/users/${encodeURIComponent(id)}/credits/threshold`, {
-        method: "POST",
-        headers: requestHeaders("POST", true),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw await clientError("setUserCreditThreshold", res);
-      return (await res.json()) as SetUserCreditThresholdResponse;
-    },
-    async listApiTokens() {
-      const res = await doFetch(`${baseUrl}/api/api-tokens`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("listApiTokens", res);
-      return (await res.json()) as ListApiTokensResponse;
-    },
-    async createApiToken(body) {
-      const res = await doFetch(`${baseUrl}/api/api-tokens`, {
-        method: "POST",
-        headers: requestHeaders("POST", true),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw await clientError("createApiToken", res);
-      return (await res.json()) as CreateApiTokenResponse;
-    },
-    async revokeApiToken(id) {
-      const res = await doFetch(`${baseUrl}/api/api-tokens/${encodeURIComponent(id)}/revoke`, {
-        method: "POST",
-        headers: requestHeaders("POST", false),
-      });
-      if (!res.ok) throw await clientError("revokeApiToken", res);
-      return (await res.json()) as RevokeApiTokenResponse;
-    },
-    async listBuildHosts() {
-      const res = await doFetch(`${baseUrl}/api/build-hosts`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("listBuildHosts", res);
-      return (await res.json()) as ListBuildHostsResponse;
-    },
-    async createBuildHost(body) {
-      const res = await doFetch(`${baseUrl}/api/build-hosts`, {
-        method: "POST",
-        headers: requestHeaders("POST", true),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw await clientError("createBuildHost", res);
-      return (await res.json()) as CreateBuildHostResponse;
-    },
-    async updateBuildHost(id, body) {
-      const res = await doFetch(`${baseUrl}/api/build-hosts/${encodeURIComponent(id)}`, {
+    async saveTranslations(id, locale, body) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/translations/${encodeURIComponent(locale)}`, {
         method: "PUT",
         headers: requestHeaders("PUT", true),
         body: JSON.stringify(body),
       });
-      if (!res.ok) throw await clientError("updateBuildHost", res);
-      return (await res.json()) as UpdateBuildHostResponse;
+      if (!res.ok) throw await clientError("saveTranslations", res);
+      return (await res.json()) as SaveTranslationsResponse;
     },
-    async deleteBuildHost(id) {
-      const res = await doFetch(`${baseUrl}/api/build-hosts/${encodeURIComponent(id)}`, {
-        method: "DELETE",
-        headers: requestHeaders("DELETE", false),
+    async translateMissing(id, locale) {
+      const res = await doFetch(`${baseUrl}/api/applications/${encodeURIComponent(id)}/translations/${encodeURIComponent(locale)}/fill`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
       });
-      if (!res.ok) throw await clientError("deleteBuildHost", res);
-      return (await res.json()) as DeleteBuildHostResponse;
+      if (!res.ok) throw await clientError("translateMissing", res);
+      return (await res.json()) as TranslateMissingResponse;
+    },
+    async getInstanceTranslations() {
+      const res = await doFetch(`${baseUrl}/api/translations`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getInstanceTranslations", res);
+      return (await res.json()) as GetInstanceTranslationsResponse;
+    },
+    async saveInstanceTranslations(locale, body) {
+      const res = await doFetch(`${baseUrl}/api/translations/${encodeURIComponent(locale)}`, {
+        method: "PUT",
+        headers: requestHeaders("PUT", true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw await clientError("saveInstanceTranslations", res);
+      return (await res.json()) as SaveInstanceTranslationsResponse;
+    },
+    async translateInstanceMissing(locale) {
+      const res = await doFetch(`${baseUrl}/api/translations/${encodeURIComponent(locale)}/fill`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("translateInstanceMissing", res);
+      return (await res.json()) as TranslateInstanceMissingResponse;
     },
     async listTriggers() {
       const res = await doFetch(`${baseUrl}/api/triggers`, {
@@ -3015,114 +3123,6 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("streamStatus", res);
       return (await res.json()) as StreamStatusResponse;
-    },
-    async getSettings() {
-      const res = await doFetch(`${baseUrl}/api/settings`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("getSettings", res);
-      return (await res.json()) as GetSettingsResponse;
-    },
-    async updateSettings(body) {
-      const res = await doFetch(`${baseUrl}/api/settings`, {
-        method: "POST",
-        headers: requestHeaders("POST", true),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw await clientError("updateSettings", res);
-      return (await res.json()) as UpdateSettingsResponse;
-    },
-    async listOAuthProviders() {
-      const res = await doFetch(`${baseUrl}/api/oauth-providers`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("listOAuthProviders", res);
-      return (await res.json()) as ListOAuthProvidersResponse;
-    },
-    async getOAuthProviderSpec() {
-      const res = await doFetch(`${baseUrl}/api/oauth-provider-spec`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("getOAuthProviderSpec", res);
-      return (await res.json()) as GetOAuthProviderSpecResponse;
-    },
-    async createOAuthProvider(body) {
-      const res = await doFetch(`${baseUrl}/api/oauth-providers`, {
-        method: "POST",
-        headers: requestHeaders("POST", true),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw await clientError("createOAuthProvider", res);
-      return (await res.json()) as CreateOAuthProviderResponse;
-    },
-    async updateOAuthProvider(name, body) {
-      const res = await doFetch(`${baseUrl}/api/oauth-providers/${encodeURIComponent(name)}`, {
-        method: "PUT",
-        headers: requestHeaders("PUT", true),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw await clientError("updateOAuthProvider", res);
-      return (await res.json()) as UpdateOAuthProviderResponse;
-    },
-    async deleteOAuthProvider(name) {
-      const res = await doFetch(`${baseUrl}/api/oauth-providers/${encodeURIComponent(name)}`, {
-        method: "DELETE",
-        headers: requestHeaders("DELETE", false),
-      });
-      if (!res.ok) throw await clientError("deleteOAuthProvider", res);
-      return (await res.json()) as DeleteOAuthProviderResponse;
-    },
-    async getAdminAddress() {
-      const res = await doFetch(`${baseUrl}/api/settings/admin-address`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("getAdminAddress", res);
-      return (await res.json()) as GetAdminAddressResponse;
-    },
-    async createAdminHandoff() {
-      const res = await doFetch(`${baseUrl}/api/settings/admin-address/handoff`, {
-        method: "POST",
-        headers: requestHeaders("POST", false),
-      });
-      if (!res.ok) throw await clientError("createAdminHandoff", res);
-      return (await res.json()) as CreateAdminHandoffResponse;
-    },
-    async sendTestEmail(body) {
-      const res = await doFetch(`${baseUrl}/api/settings/email/test`, {
-        method: "POST",
-        headers: requestHeaders("POST", true),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw await clientError("sendTestEmail", res);
-      return (await res.json()) as SendTestEmailResponse;
-    },
-    async getPythonStatus() {
-      const res = await doFetch(`${baseUrl}/api/python`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("getPythonStatus", res);
-      return (await res.json()) as GetPythonStatusResponse;
-    },
-    async getSystemInfo() {
-      const res = await doFetch(`${baseUrl}/api/system`, {
-        method: "GET",
-        headers: requestHeaders("GET", false),
-      });
-      if (!res.ok) throw await clientError("getSystemInfo", res);
-      return (await res.json()) as GetSystemInfoResponse;
-    },
-    async restartServer() {
-      const res = await doFetch(`${baseUrl}/api/system/restart`, {
-        method: "POST",
-        headers: requestHeaders("POST", false),
-      });
-      if (!res.ok) throw await clientError("restartServer", res);
-      return (await res.json()) as RestartServerResponse;
     },
     async getBackupOptions() {
       const res = await doFetch(`${baseUrl}/api/backup`, {

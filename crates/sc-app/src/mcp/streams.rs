@@ -42,7 +42,7 @@ use sc_api::mcp::{
     arguments, optional_bool, optional_role, optional_string, require_grant, setting_json,
 };
 use sc_api::schema_edit::Grants;
-use sc_catalog::{AdminCall, Catalog};
+use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_stream::{Stream, StreamRegistry};
 use serde_json::{Map, Value as Json, json};
@@ -255,8 +255,7 @@ async fn edit_streams(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Re
     for plan in &planned {
         match &host {
             Some(host) => {
-                host.call_admin(AdminCall::new("saveStream", save_body(plan)).user(user))
-                    .await?;
+                host.save_stream(user, save_body(plan)).await?;
             }
             None => sc_stream::save_stream(ctx.catalog, &registry, &plan.stream).await?,
         }
@@ -264,12 +263,7 @@ async fn edit_streams(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Re
     for stream in &doomed {
         match &host {
             Some(host) => {
-                host.call_admin(
-                    AdminCall::new("deleteStream", Json::Null)
-                        .param("id", stream.id.0.to_string())
-                        .user(user),
-                )
-                .await?;
+                host.delete_stream(user, stream.id.0).await?;
             }
             None => {
                 sc_stream::delete_stream(ctx.catalog, stream.id, &[]).await?;

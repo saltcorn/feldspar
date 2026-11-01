@@ -124,8 +124,10 @@ sc-i18n = { workspace = true, features = ["extract"] }
 sc-email.workspace = true
 
 tokio.workspace = true
-# The backup archive (`backup`): an installation's metadata, rows and files as one
-# zip an admin downloads and hands back.
+# Backup and restore, and the entity JSON codecs the admin handlers answer
+# with (a backup is the admin API's JSON in a zip).
+sc-backup.workspace = true
+# Zip archives: a project handed to a build host, a model run's download.
 zip.workspace = true
 axum.workspace = true
 # TLS termination (§13.5). `axum-server` is the acceptor seam both certificate

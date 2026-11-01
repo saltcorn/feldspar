@@ -10,11 +10,18 @@
 //! offers them. A second implementation of that sequence for the tools would be
 //! the drift `sc_api::mcp`'s module comment was written to prevent.
 //!
-//! So the tools **call the handler the button calls**, by its endpoint name,
-//! through this trait — declared here, speaking JSON, because a [`Catalog`] is
-//! what every caller already holds, and installed by `sc-server` when it builds
-//! its router: the arrangement [`ModelHost`](crate::ModelHost) already has, for
-//! the same reason.
+//! So the tools **call the handler the button calls**, through this trait —
+//! declared here because a [`Catalog`] is what every caller already holds, and
+//! installed by `sc-server` when it builds its router: the arrangement
+//! [`ModelHost`](crate::ModelHost) already has, for the same reason.
+//!
+//! **One method per operation** (TODO-code-quality Q5.3). Each is implemented
+//! by calling the handler's own function, not by looking an endpoint up by
+//! name, so a missing or renamed operation is a compile error. The arguments
+//! are typed; an application or a stream is passed as the admin API's JSON
+//! document, because their types live in crates above this one and the
+//! handler parses that document anyway. What comes back is the handler's
+//! answer, which the tools pass on to the agent.
 //!
 //! **Authorization is the caller's.** The host runs a handler the way the
 //! router would after the endpoint's `AuthRequirement` passed; every tool that
@@ -25,50 +32,90 @@
 
 use async_trait::async_trait;
 use sc_error::Result;
-use serde_json::Value as Json;
+use serde_json::{Map, Value as Json};
 use uuid::Uuid;
 
-/// One call of one admin API endpoint.
+/// Who an operation runs as: the user's id, or `None` for a system run.
+pub type AdminUser = Option<Uuid>;
+
+/// A file store backend's operation (`runBackendOperation`), run on the
+/// settings a store would be created with.
 #[derive(Debug, Clone, PartialEq)]
-pub struct AdminCall {
-    /// The endpoint's name, as the admin API declares it (`createApplication`).
-    pub endpoint: String,
-    /// Its path parameters, by name.
-    pub path_params: Vec<(String, String)>,
-    /// The JSON body (`null` for none).
-    pub body: Json,
-    /// The user the call runs as, by id; `None` for a system run.
-    pub user: Option<Uuid>,
+pub struct BackendOperation {
+    /// The backend (`local`, `git`).
+    pub backend: String,
+    /// The operation (`suggest_dir`, `generate_key`).
+    pub operation: String,
+    /// The store's name.
+    pub name: String,
+    /// The store's settings so far.
+    pub config: Map<String, Json>,
 }
 
-impl AdminCall {
-    /// A call of `endpoint` with `body`, as nobody in particular.
-    pub fn new(endpoint: impl Into<String>, body: Json) -> AdminCall {
-        AdminCall {
-            endpoint: endpoint.into(),
-            path_params: Vec::new(),
-            body,
-            user: None,
-        }
-    }
-
-    /// Bind a path parameter.
-    pub fn param(mut self, name: impl Into<String>, value: impl Into<String>) -> AdminCall {
-        self.path_params.push((name.into(), value.into()));
-        self
-    }
-
-    /// Run as this user.
-    pub fn user(mut self, user: Option<Uuid>) -> AdminCall {
-        self.user = user;
-        self
-    }
+/// A file store to create (`createFileStore`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewFileStore {
+    /// Its name.
+    pub name: String,
+    /// Its backend.
+    pub backend: String,
+    /// A description; empty for none.
+    pub description: String,
+    /// The backend's settings.
+    pub config: Map<String, Json>,
 }
 
-/// The server's admin handlers, by endpoint name.
+/// Whose translations: one application's, or the instance's shared catalogue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranslationsOf {
+    /// The application with this id.
+    Application(Uuid),
+    /// The instance's shared catalogue.
+    Instance,
+}
+
+/// The server's admin operations the administrative tools reach.
 #[async_trait]
 pub trait AdminHost: Send + Sync {
-    /// Run the endpoint's handler and return its response body. An `Err` is the
-    /// handler's own refusal, in the words the admin UI would have shown.
-    async fn call_admin(&self, call: AdminCall) -> Result<Json>;
+    /// Run a file store backend's operation; the answer carries the settings
+    /// it produced under `config`.
+    async fn backend_operation(&self, user: AdminUser, op: BackendOperation) -> Result<Json>;
+
+    /// Create a file store; the answer is the store as the admin API shows it.
+    async fn create_file_store(&self, user: AdminUser, store: NewFileStore) -> Result<Json>;
+
+    /// Create an application from the admin API's application document.
+    async fn create_application(&self, user: AdminUser, application: Json) -> Result<Json>;
+
+    /// Every application, as the admin API lists them.
+    async fn list_applications(&self, user: AdminUser) -> Result<Vec<Json>>;
+
+    /// Update the application `id` from the admin API's application document.
+    async fn update_application(
+        &self,
+        user: AdminUser,
+        id: Uuid,
+        application: Json,
+    ) -> Result<Json>;
+
+    /// Build the application `id`.
+    async fn build_application(&self, user: AdminUser, id: Uuid) -> Result<Json>;
+
+    /// The translations screen of an application or of the instance.
+    async fn translations(&self, user: AdminUser, of: TranslationsOf) -> Result<Json>;
+
+    /// Save one locale's messages for an application or the instance.
+    async fn save_translations(
+        &self,
+        user: AdminUser,
+        of: TranslationsOf,
+        locale: String,
+        messages: Map<String, Json>,
+    ) -> Result<Json>;
+
+    /// Save a stream from the admin API's stream document.
+    async fn save_stream(&self, user: AdminUser, stream: Json) -> Result<Json>;
+
+    /// Delete the stream `id`.
+    async fn delete_stream(&self, user: AdminUser, id: Uuid) -> Result<Json>;
 }

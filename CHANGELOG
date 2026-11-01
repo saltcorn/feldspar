@@ -2,6 +2,84 @@
 
 Changes in reverse chronological order.
 
+## Code quality Q5 (part 1): services, schema snapshots, typed admin host, handler split, sc-backup
+
+The first half of the sixth milestone of `TODO-code-quality.md` (§1, §2, §3.1 of the review):
+Q5.1 to Q5.5. Nothing changes on the wire, in stored data or in the schema. The behaviour changes
+are listed under each part.
+
+**`sc_catalog::Services` (Q5.1).** The ten late-bound host slots of `Catalog` (each its own
+`RwLock<Option<Arc<dyn …>>>`) are one typed `Services` value behind one lock: the table-event
+listeners, schema observer, rename hook, module functions, live, model and admin hosts, formula
+evaluator and table providers. The setters and getters kept their names. `teardown` replaces the
+whole value with an empty one, so a service added to `Services` is cleared with nothing to
+remember; the CLAUDE.md teardown note says so. A builder that required every host at
+construction was not possible: most services hold an `Arc<Catalog>` and are made after it. The two
+`Arc<dyn Any>` slots are gone. sc-llm's host LLM provider and sc-stream's provider registry are
+types sc-catalog cannot name, so they are **typed extensions**: `catalog.set_extension(Some(arc))`
+and `catalog.extension::<T>()`, keyed by `T` itself. No caller downcasts, and nothing of another
+type can be stored under a key. `catalog_teardown.rs` now installs the streams, whose registry is
+an extension, and checks that teardown empties it.
+
+**One schema snapshot (Q5.2).** `reload` used to swap the table cache, field-overlay issues,
+shadowed tables and provided-table issues under four locks and bump the generation separately.
+They are now one immutable `CatalogSchema`, swapped in whole as an `Arc`, with the generation
+inside it (the previous generation plus one, read under the same lock). `Catalog::schema()` hands
+the current one to a caller that needs two parts to agree. `get`, `tables`, `generation`,
+`field_overlay_issues`, `shadowed_tables` and `provided_table_issues` read from it.
+
+**Typed `AdminHost` (Q5.3).** The administrative tools (`sc_app::mcp`, `admin_copilot`'s
+publish) called the server's handlers by endpoint name with JSON in and out (`AdminCall`,
+`call_admin`). That is replaced by one method per operation with typed arguments:
+`backend_operation(BackendOperation)`, `create_file_store(NewFileStore)`, `create_application`,
+`list_applications`, `update_application(id, …)`, `build_application(id)`,
+`translations(TranslationsOf)`, `save_translations`, `save_stream` and `delete_stream(id)`.
+sc-server implements each by calling the handler's own function, so a missing operation is a
+compile error. Moving the handlers below sc-app was the other option; it was not taken because
+most of them need the mount registry, the agents, the view runtime or the stream supervisor. An
+application or a stream is still passed as the admin API's JSON document, since their types are
+above sc-catalog.
+
+**Handlers and endpoints per domain (Q5.4).** `sc-server/src/handlers.rs` (12.9k lines, one
+7.4k-line function) is now `handlers/`, with one module per domain: auth, tables, fields,
+table_rows, connections, file_stores, files, llm, modules, agents, code_libraries, triggers,
+models, streams, settings, backup, applications, views, translations and users. Each module has
+`register(reg, state)` and the helpers only it uses. `sc-api/src/admin.rs` (8.7k lines) is now
+`admin/`, with modules of the same names, each with `register(set)` and its schemas. The split
+was mechanical: handler bodies are unchanged. A domain reaches the catalog and the mount registry
+through `handlers::HandlerState`. `handler::typed` adapts an
+`async fn(HandlerState, HandlerCtx<W>, In) -> Result<Out>`: the body is deserialized into `In`,
+and `Out` is the response (a `HandlerResponse` as it is, anything `Serialize` as a 200). The
+twelve handlers `AdminHost` reaches use it; the others move to it as they are touched.
+- **Behaviour change:** `admin_endpoints()` lists its endpoints grouped by domain, so the order
+  changed, and with it the order in the generated admin client and in the administration MCP
+  server's `tools/list` for the tagged endpoints. Routing matches by path, not by order, and no
+  endpoint was added, removed or changed. The MCP census test lists the tags in the new order,
+  and the four checked-in clients (`ui/{admin,ide,builder,analytics}/src/client.ts`) were
+  regenerated: the same lines, reordered.
+- A typed handler whose body does not deserialize answers an `invalid` error naming what did not
+  fit. None of the twelve converted handlers declares a typed `In` yet (they take the body as
+  JSON), so nothing a client sends is refused that was accepted before.
+
+**`sc-backup` (Q5.5).** The entity JSON codecs moved out of the handlers into
+`sc_backup::codec`: every `*_json` / `*_from_body` a backup writes and reads, the helpers they are
+built from, and the MCP server and Analytics dataset/workspace codecs. The admin handlers import
+them, so the admin API and a backup still have one wire shape. Then `sc-server/src/backup/`
+moved into the new `crates/sc-backup` (files moved, not rewritten). A restore reaches the running
+server through `sc_backup::RestoreHost`, implemented for `AppMounts`: the agent, stream and model
+registries, the trigger dispatcher, module install and reload, a dataset's shape, and build and
+mount. Backup and restore reach the database and the raw stores with sc-backup's own
+`BACKUP_TASKS` token, which was part of sc-server's `ADMIN_TASKS`; the security review's
+inventory is updated. `file_response::chunks` became `sc_files::read_chunks`, shared by the file
+responses and the S3 upload. sc-server re-exports what it exported before. TECHNICAL_DESIGN §2's
+crate tree, graph and dependency table are updated.
+
+Tests: `services::*` (sc-catalog: the extension map, teardown frees a catalog its services hold,
+a schema handed out is not changed by a later reload), `handlers::typed_tests` (sc-server: the
+input read, the output written, a bad body refused, a response's status kept),
+`admin_applications_api::the_admin_host_runs_each_operation_through_its_handler`, and
+`catalog_teardown` extended.
+
 ## Code quality Q4: trust-boundary newtypes
 
 The fifth milestone of `TODO-code-quality.md` (§4.6, §3.5 of the review). Each value that crosses

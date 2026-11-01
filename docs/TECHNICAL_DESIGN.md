@@ -193,6 +193,10 @@ feldspar/
 │  │                              #    policy and the agent tools the copilot and the MCP
 │  │                              #    server share
 │  ├─ sc-copilot/                 # 9. copilot agent + AppConstructor stages
+│  ├─ sc-backup/                  # 9. backup and restore (the zip, automated backups, S3 and
+│  │                              #    SFTP destinations, Saltcorn 1 import) and the entity JSON
+│  │                              #    codecs the admin API and a backup share; a restore writes
+│  │                              #    into the server's services through `RestoreHost`
 │  ├─ sc-server/                  # 9. HTTP server: admin routes, user routes, auth, CSP, sockets
 │  └─ sc-cli/                     # 10. `feldspar` binary (serve, user/app mgmt, backup/restore)
 ├─ ui/
@@ -229,7 +233,8 @@ graph TD
   cli --> cfgfile["sc-config-file"]
   cli --> dns["sc-dns"]
   server --> coreact["sc-core-actions"]
-  server --> coretraits["sc-core-traits"]
+  server --> backup["sc-backup"]
+  backup --> coretraits["sc-core-traits"]
   server --> pg["sc-db-postgres"]
   server --> migrate["sc-migrate"]
   migrate --> db
@@ -248,10 +253,10 @@ graph TD
   mcp --> net["sc-net"]
   mcp --> catalog
   coreact --> api["sc-api"]
-  server --> module["sc-module"]
+  backup --> module["sc-module"]
   viewpattern["sc-viewpattern"] --> app
   server --> model["sc-model"]
-  server --> analytics["sc-analytics"]
+  backup --> analytics["sc-analytics"]
   cli --> analytics
   analytics --> catalog
   model --> dataset["sc-dataset"]
@@ -275,7 +280,7 @@ graph TD
   python --> coreact
   module --> coreact
   module --> viewpattern
-  server --> workflow["sc-workflow"]
+  backup --> workflow["sc-workflow"]
   workflow --> agent
   module --> action["sc-action"]
   app --> api
@@ -363,7 +368,8 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-python` | `sc-action` `sc-catalog` `sc-core-actions` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
 | `sc-check` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-browser` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
 | `sc-core-traits` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-query` `sc-repomap` `sc-types` |
-| `sc-server` | `sc-access` `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-help` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-traits` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-server` | `sc-access` `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-help` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:

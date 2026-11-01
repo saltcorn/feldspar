@@ -9141,6 +9141,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-backup"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "csv",
+ "reqwest",
+ "russh",
+ "russh-sftp",
+ "rust_decimal",
+ "sc-access",
+ "sc-action",
+ "sc-agent",
+ "sc-analytics",
+ "sc-api",
+ "sc-app",
+ "sc-auth",
+ "sc-catalog",
+ "sc-config",
+ "sc-core-traits",
+ "sc-dataset",
+ "sc-db",
+ "sc-db-postgres",
+ "sc-db-sqlite",
+ "sc-error",
+ "sc-expr",
+ "sc-files",
+ "sc-i18n",
+ "sc-llm",
+ "sc-log",
+ "sc-mcp",
+ "sc-model",
+ "sc-module",
+ "sc-query",
+ "sc-stream",
+ "sc-test-harness",
+ "sc-types",
+ "sc-viewpattern",
+ "sc-workflow",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "uuid",
+ "zip",
+]
+
+[[package]]
 name = "sc-browser"
 version = "0.1.0"
 dependencies = [
@@ -9512,6 +9561,7 @@ dependencies = [
  "bytes",
  "chrono",
  "fsquirrel",
+ "futures",
  "mime_guess",
  "regex-lite",
  "sc-error",
@@ -9806,6 +9856,7 @@ dependencies = [
  "sc-api",
  "sc-app",
  "sc-auth",
+ "sc-backup",
  "sc-catalog",
  "sc-check",
  "sc-config",

@@ -119,7 +119,7 @@ impl S3Client {
         let hash = hex(&hasher.finalize());
         let reader: sc_files::BoxAsyncRead = Box::new(open().await?);
         let body = Payload {
-            body: reqwest::Body::wrap_stream(crate::file_response::chunks(reader)),
+            body: reqwest::Body::wrap_stream(sc_files::read_chunks(reader)),
             length: Some(length),
         };
         self.send("PUT", Some(key), &[], body, &hash).await?;

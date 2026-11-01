@@ -52,6 +52,7 @@ mod rename;
 pub mod retention;
 mod rls;
 pub mod secrets;
+mod services;
 mod spatial;
 mod sync;
 mod table;
@@ -60,12 +61,12 @@ mod tx;
 mod vector;
 mod wakeups;
 
-pub use admin_host::{AdminCall, AdminHost};
+pub use admin_host::{AdminHost, AdminUser, BackendOperation, NewFileStore, TranslationsOf};
 pub use caller::{
     Authority, CallingApp, Origin, Principal, SystemReason, TaskScope, UNTRUSTED_ORIGIN, Unchecked,
     current_origin, is_untrusted_chain, spawn_scoped, untrusted_chain, with_origin,
 };
-pub use catalog::{Catalog, DriverInfo, ProvidedTableIssue, SchemaStep};
+pub use catalog::{Catalog, CatalogSchema, DriverInfo, ProvidedTableIssue, SchemaStep};
 pub use change_log::{
     CHANGES_TABLE, ChangeLogFeature, as_text_sql, bootstrap_change_log, change_log_enabled,
     change_log_key, disable_change_log_sql, enable_change_log_sql, history_enabled,
@@ -129,6 +130,7 @@ pub use rls::{
     enable_rls_sql, run_in_context, run_in_context_read_only, set_caller_context,
 };
 pub use secrets::SecretKey;
+pub use services::{Extensions, Services};
 pub use spatial::bootstrap_spatial;
 pub use sync::{
     ChangedEntry, SYNC_CLIENTS_TABLE, SYNC_KEYS_TABLE, SyncWatermark, changed_entries,
