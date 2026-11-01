@@ -41,7 +41,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use futures::{SinkExt, StreamExt};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, FieldMeta, TableId, save_field_meta};
+use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, FieldMeta, save_field_meta};
 use sc_db::{ColumnGenerator, DatabaseDriver};
 use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
@@ -231,7 +231,7 @@ fn note_body() -> Stream {
 fn app() -> Application {
     Application::new("Notes", "notes", FrameworkRef::new("code"))
         .with_api(ApiConfig::new("rest", "/api"))
-        .with_table(TableId("notes".to_owned()))
+        .with_table("notes".to_owned())
         .with_stream(StreamRef::new("note_body"))
 }
 
@@ -285,7 +285,7 @@ async fn setup() -> Result<Server> {
                 id(),
                 DataField {
                     kind: DataFieldKind::Key {
-                        target_table: TableId("notes".to_owned()),
+                        target_table: "notes".to_owned(),
                         target_field: FieldId("id".to_owned()),
                         summary_field: None,
                     },

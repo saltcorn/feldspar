@@ -2,6 +2,107 @@
 
 Changes in reverse chronological order.
 
+## Code quality Q4: trust-boundary newtypes
+
+The fifth milestone of `TODO-code-quality.md` (§4.6, §3.5 of the review). Each value that crosses
+a trust boundary is a type that only a named constructor makes; the constructors are listed in
+docs/SECURITY_REVIEW_2026-10.md ("Trust-boundary newtypes"). Nothing changes in stored data, in
+backups or in the schema; the behaviour changes are listed under each part.
+
+**`sc_files::StorePath` (Q4.1).** One validator for a store-relative path: `StorePath::parse`
+refuses `..`, `\`, `:`, NUL and a segment of dots and spaces (Windows trims it to `..`), drops
+empty and `.` segments (`"/a//b/"` is `a/b`, `""` is the root), and records whether the path is
+inside a `.git` in any case, with trailing dots or spaces, or as the 8.3 name `git~N`. Every
+`FileStore` method takes a `&StorePath` (`concat` a `&[StorePath]`), so no backend is handed a
+path nobody checked; `CheckedStore`, its `Readable` / `Writable` grants (which hold one),
+`ServeFile` and the access helpers take `impl AsStorePath` and parse a route's text once.
+`LocalFileStore` keeps `beneath_root` and `lands_outside_git` for what is on disk; writes into
+`.git` are still refused by the backend and reads below admin by `check_access`, from the flag.
+A `File` field's value (`validate_file_path`) and the coding trait's paths
+(`FileScope::resolve_path`) use the same validator. The fixed spellings in tests became
+`StorePath::from_static`.
+- **Behaviour change:** a path is refused before any store is asked, so a bad path is an
+  `invalid` error from the route rather than from the backend — same kind, same message.
+  Backup restore skips an archive entry the validator refuses (it was skipped at the write
+  before).
+
+**`TrustedHost` and `PublicBaseUrl` (Q4.2, sc-catalog).** A host this deployment serves:
+`TrustedHost::configured` (base domain, admin host, `PublicOrigin::base_url_for`) or
+`TrustedHost::served` (a `Host` the router matched to a served application or the admin host).
+Both refuse what is not a plain `host[:port]`; `sc_catalog::is_valid_host` is now also the
+router's `Host` check. Every server function that builds an absolute link builds it from a
+`PublicBaseUrl`: password-reset and invitation links (`AppDirectory::own_origin` /
+`app_origin` answer one), OAuth's callback `redirect_uri`, its error redirect and the hand-off to
+`/complete` (a pending flow keeps a `TrustedHost`), an application request's `base_url` and an
+event's `app.url` — what a code body's email or webhook builds its links from — and the
+builder's application address.
+- **Behaviour change:** an application request whose `Host` is not a valid host has an empty
+  `base_url` / `app.url` (it was `http://` followed by whatever was sent); the router already
+  refuses such requests, so none reaches an application.
+
+**`sc-net` (Q4.3).** A new layer-0 crate with the one SSRF rule: `is_public` (moved from
+sc-email), `PublicAddr` (only `PublicAddr::check` and the resolvers make one),
+`resolve_public` (the public addresses among a name's answers), `resolve_every_public` (every
+address public, or refused — an SMTP override's rule), `PublicResolver` and `PublicClient`, an
+HTTP client that resolves names through it and checks an address literal on the request and on
+every redirect it follows. The agent's `http` trait, the `fetch` action with a templated host and
+an MCP server without the private network send with a `PublicClient`; `SmtpMailer::pinned` takes
+a `PublicAddr`. The four copies (`sc-core-traits` `http/guard.rs`, `sc-core-actions` `fetch.rs`,
+`sc-mcp` `guard.rs`, `sc-email` `relay.rs`) are gone; allow-lists and private-network switches
+are unchanged and the refusals read as before. sc-mcp and sc-core-traits depend on sc-net
+instead of sc-email. A test pins a transport to its own listener with
+`PublicAddr::test_listener` (feature `test-listener`, dev-dependencies only). TECHNICAL_DESIGN
+§2's crate tree, graph and table are updated.
+
+**`sc_error::Secret<T>` (Q4.4).** `Debug` prints `Secret([redacted])`, there is no `Serialize`,
+`Deserialize` is the wrapped value's, and the value is read with `expose()` / `expose_str()`.
+In-repo rather than `secrecy`: it is all of it, and the lowest crates holding one
+(sc-config-file, sc-db-postgres) depend on nothing but sc-error. The review's 19 password /
+client secret / private key / API key fields hold one (OAuth and module-consent client secrets,
+the TLS private key, the passwords of email settings, database connections, Postgres connect
+parameters, MQTT, SFTP destinations, backup schedules and uploads and the zip writer, a new user
+and a user update, `feldspar.toml` and the CLI; `feldspar.toml`'s and an LLM endpoint's API key),
+plus the S3 secret key. Storage and backups built their JSON by hand and call `expose()` there,
+so stored settings and backups are byte-for-byte what they were; `secret::expose` /
+`expose_option` are the `serialize_with` functions for a struct that derives `Serialize`.
+- **Behaviour change:** `{:?}` of `PgConnectParams`, `DbConnectionDef`, `OAuthProvider`,
+  `SslSettings`, an SFTP destination, a backup schedule, `NewUser`, `UserUpdate`,
+  `feldspar.toml`'s sections and the CLI's database options no longer shows the secret.
+
+**`SafeHtml` and one escape (Q4.5, `sc_expr::html`).** `escape_html` is the one function,
+`escape` answers a `SafeHtml`, and `SafeHtml::trusted` takes a literal. It replaces five
+escapers — the four the review named and a plugin's asset tags. Three escaped `& < > " '` with
+the same entities; OAuth's hand-off page and the plugin tags left `'` alone, which was safe only
+because their values sat in double-quoted attributes. No context needed a different set, so all
+five share the five-character escape (correct for text and for either quote). JSON inside the
+builder's script keeps its own escape, a different context.
+- **Behaviour change:** the OAuth hand-off page and a plugin's `<script>` / `<link>` tags now
+  write `'` as `&#39;`, which a browser reads the same.
+
+**`sc_query::TrustedSql` (Q4.6).** `Statement::Raw`'s text. Made from a `&'static str`, by
+`TrustedSql::admin_authored` (a custom SQL query, a code body's `db.sql()`) or by
+`TrustedSql::composed` — the program's own SQL around identifiers it quoted, for the change log,
+sync, retention, history, undo, geo import, the analytics demo and migrations. The third
+constructor is a deviation from the item's "only admin-authored and `&'static str`": those
+statements interpolate quoted table names the AST does not express; each was checked to put
+values in binds.
+- **Behaviour change:** a `Raw` statement is never deserialised (`skip_deserializing`); it
+  still serialises as its text. Nothing in the server deserialised one.
+
+**`TableId` deleted (Q4.7).** Decided before starting, against adopting a `TableName` at the
+catalog API: `TableId` held no invariant (a public `String`) and duplicated `Table.name` (every
+table was built with `id == name`), while a `TableName` would have meant about 170 signatures
+across 20 crates and a conversion at every caller for a type that can check nothing a lookup's
+`not_found` does not. `Table.id` is gone (use `name`); `DataFieldKind::Key::target_table`, the
+catalog's table cache and `Application::tables` / `api_tables` are `String`s.
+
+Tests: `store_path::tests` (sc-files), `origin::tests` (sc-catalog), sc-net's unit tests,
+`guard::tests` (sc-mcp), `secret::tests` (sc-error),
+`db_connections::tests::the_target_string_never_carries_the_password` (sc-catalog),
+`html::tests` (sc-expr), `tests::a_raw_statement_renders_verbatim_with_its_binds` (sc-query).
+The traversal, Windows and `.git` tests in sc-files assert the validator; the existing tests
+moved to the new signatures.
+
 ## Code quality Q3: `sc-access` and capability handles
 
 The fourth milestone of `TODO-code-quality.md` (§2, §4.4 of the review). Nothing changes on the

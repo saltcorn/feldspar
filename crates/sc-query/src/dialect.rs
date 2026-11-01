@@ -196,7 +196,7 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
                         "a raw statement is rendered on its own, not nested inside another",
                     ));
                 }
-                self.push(sql);
+                self.push(sql.as_str());
                 self.binds.extend(binds.iter().cloned());
                 Ok(())
             }

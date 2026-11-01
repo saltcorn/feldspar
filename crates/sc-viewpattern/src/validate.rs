@@ -73,13 +73,11 @@ pub(crate) fn check_view_shape(
             "view `{}` has no table, and the `{}` pattern needs one",
             view.name, pattern.name
         ))),
-        (Some(table), _) if !app.tables.iter().any(|t| t.0 == *table) => {
-            Err(Error::invalid(format!(
-                "view `{}` is over the table `{table}`, which is not in application `{}`'s \
+        (Some(table), _) if !app.tables.iter().any(|t| t == table) => Err(Error::invalid(format!(
+            "view `{}` is over the table `{table}`, which is not in application `{}`'s \
                  table subset; add it to the application first",
-                view.name, app.name
-            )))
-        }
+            view.name, app.name
+        ))),
         _ => Ok(()),
     }
 }
@@ -310,7 +308,6 @@ mod tests {
     use super::*;
     use crate::patterns::builtin_patterns;
     use sc_app::FrameworkRef;
-    use sc_catalog::TableId;
 
     #[test]
     fn a_v1_name_with_spaces_is_a_name() {
@@ -332,7 +329,7 @@ mod tests {
     #[test]
     fn a_view_may_run_the_view_actions_and_the_applications_triggers_and_nothing_else() {
         let app = Application::new("Books", "books", FrameworkRef::new("saltcorn-ui"))
-            .with_table(TableId("books".to_owned()))
+            .with_table("books".to_owned())
             .with_trigger(sc_app::TriggerRef::new("TrimPages"));
         let configuration = serde_json::json!({
             "columns": [
@@ -404,7 +401,7 @@ mod tests {
     #[test]
     fn a_tableless_view_of_a_pattern_that_needs_a_table_is_refused() {
         let app = Application::new("Books", "books", FrameworkRef::new("saltcorn-ui"))
-            .with_table(TableId("books".to_owned()));
+            .with_table("books".to_owned());
         let mut view = View::new(app.id, "List Books", "List", "books");
         assert!(check_view_shape(&view, &app, &builtin_patterns()).is_ok());
         view.table_name = None;

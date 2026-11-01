@@ -269,9 +269,7 @@ async fn an_external_agent_builds_an_application_from_a_sentence() -> sc_error::
             .await?
             .unwrap()
             .api_tables
-            .iter()
-            .map(|t| t.0.clone())
-            .collect::<Vec<_>>(),
+            .to_vec(),
         Vec::<String>::new()
     );
     let connected = call(

@@ -14,15 +14,17 @@
 //!   private ranges, link-local (which is where a cloud's metadata endpoint
 //!   lives, and its credentials with it), CGNAT, multicast and the reserved
 //!   blocks are refused. An address *literal* is checked here, before anything
-//!   is sent; a *name* is checked by [`PublicResolver`] as it is resolved, so a
-//!   public name that resolves to `127.0.0.1` is refused too, and the address
-//!   checked is the address connected to.
-
-use std::net::{IpAddr, SocketAddr};
+//!   is sent; a *name* is checked as it is resolved by the client's
+//!   [`sc_net::PublicClient`], so a public name that resolves to `127.0.0.1` is
+//!   refused too, and the address checked is the address connected to. The
+//!   rule itself is `sc-net`'s, shared with the `fetch` action, MCP and an SMTP
+//!   override (TODO-code-quality Q4.3).
 
 use reqwest::Url;
-use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use sc_error::{Error, Result};
+
+/// What a refusal of this guard ends with.
+pub(crate) const REFUSAL: &str = ", which this agent may not reach";
 
 /// The longest URL a model may ask for. Longer than any documentation link, and
 /// short enough that a URL is not a channel for a page of the conversation.
@@ -97,11 +99,10 @@ impl HostPolicy {
             )));
         }
         if !self.private_network
-            && let Some(ip) = literal_ip(url)
-            && !is_public(ip)
+            && let Some(ip) = sc_net::private_literal(url)
         {
             return Err(Error::auth(format!(
-                "`{ip}` is a private or reserved address, which this agent may not reach"
+                "`{ip}` is a private or reserved address{REFUSAL}"
             )));
         }
         Ok(())
@@ -153,63 +154,6 @@ pub fn parse_allowed_hosts(text: &str) -> Result<Vec<String>> {
         }
     }
     Ok(hosts)
-}
-
-/// The address a URL names literally, if it names one.
-fn literal_ip(url: &Url) -> Option<IpAddr> {
-    // The URL parser has already normalised the host: an IPv4 literal in any
-    // of its spellings (`0x7f.1`, `2130706433`) is dotted-quad by now, and an
-    // IPv6 one is bracketed.
-    let host = url.host_str()?;
-    host.trim_start_matches('[')
-        .trim_end_matches(']')
-        .parse()
-        .ok()
-}
-
-/// Whether `ip` is an address on the public internet — the one definition,
-/// shared with an SMTP override's check (`sc-email`), so "public" means the
-/// same thing to an agent's fetch and a trigger's mail.
-pub use sc_email::is_public;
-
-/// A resolver that answers with public addresses only.
-///
-/// Installed on the client a public-only policy sends with, so the address
-/// checked is the address the connection is made to: checking a name and then
-/// letting the client resolve it again would let a DNS server that answers
-/// differently the second time choose where the request goes.
-///
-/// Resolution itself is the process's (`tokio::net::lookup_host`, which is
-/// `getaddrinfo`, which `sc-dns` intercepts in a static build) — this filters
-/// the answer and does not second-guess the lookup.
-pub struct PublicResolver;
-
-impl Resolve for PublicResolver {
-    fn resolve(&self, name: Name) -> Resolving {
-        let host = name.as_str().to_owned();
-        Box::pin(async move {
-            let found: Vec<SocketAddr> =
-                tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
-            let public: Vec<SocketAddr> = found
-                .iter()
-                .copied()
-                .filter(|addr| is_public(addr.ip()))
-                .collect();
-            if public.is_empty() {
-                let message = if found.is_empty() {
-                    format!("`{host}` did not resolve to any address")
-                } else {
-                    format!(
-                        "`{host}` resolves only to private or reserved addresses, \
-                         which this agent may not reach"
-                    )
-                };
-                return Err(message.into());
-            }
-            let addrs: Addrs = Box::new(public.into_iter());
-            Ok(addrs)
-        })
-    }
 }
 
 #[cfg(test)]

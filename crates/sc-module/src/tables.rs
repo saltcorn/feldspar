@@ -54,7 +54,7 @@ use std::collections::BTreeSet;
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation, TableSettings};
 use sc_catalog::{
     Attrs, Catalog, ConstraintKind, DataField, DataFieldKind, FILE_STORES_TABLE, FieldId,
-    FileStoreId, ModuleTables, Table, TableConstraint, TableId, connect_file_store_def,
+    FileStoreId, ModuleTables, Table, TableConstraint, connect_file_store_def,
     load_file_store_by_name, save_file_store,
 };
 use sc_error::{Error, Result};
@@ -147,7 +147,7 @@ impl FieldDecl {
     fn kind(&self) -> DataFieldKind {
         if let Some(target) = &self.references {
             DataFieldKind::Key {
-                target_table: TableId(target.trim().to_owned()),
+                target_table: target.trim().to_owned(),
                 target_field: FieldId(String::new()),
                 summary_field: None,
             }
@@ -602,7 +602,7 @@ fn mismatch(existing: &DataField, decl: &FieldDecl) -> Option<String> {
             DataFieldKind::Key {
                 target_table: have, ..
             } if *have == target_table => return None,
-            _ => format!("a reference to `{}`", target_table.0),
+            _ => format!("a reference to `{}`", target_table),
         },
         DataFieldKind::Secret if matches!(existing.kind, DataFieldKind::Secret) => return None,
         DataFieldKind::File { store, .. } => match &existing.kind {
@@ -617,7 +617,7 @@ fn mismatch(existing: &DataField, decl: &FieldDecl) -> Option<String> {
 fn describe(kind: &DataFieldKind, type_name: Option<&str>) -> String {
     match kind {
         DataFieldKind::Plain => format!("`{}`", type_name.unwrap_or("?")),
-        DataFieldKind::Key { target_table, .. } => format!("a reference to `{}`", target_table.0),
+        DataFieldKind::Key { target_table, .. } => format!("a reference to `{}`", target_table),
         DataFieldKind::File { store, .. } => format!("a file in the store `{}`", store.0),
         DataFieldKind::Calc { .. } => "a calculated field".to_owned(),
         DataFieldKind::Secret => "a secret".to_owned(),

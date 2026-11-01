@@ -233,7 +233,7 @@ pub struct SslSettings {
     /// The PEM chain, in [`Custom`](SslMode::Custom) mode.
     pub certificate: String,
     /// The PEM private key, in [`Custom`](SslMode::Custom) mode.
-    pub private_key: String,
+    pub private_key: sc_error::Secret<String>,
     /// The ACME account contact, in [`LetsEncrypt`](SslMode::LetsEncrypt) mode.
     pub contact_email: String,
     /// The ACME directory URL.
@@ -249,7 +249,7 @@ impl Default for SslSettings {
         SslSettings {
             mode: SslMode::Off,
             certificate: String::new(),
-            private_key: String::new(),
+            private_key: sc_error::Secret::default(),
             contact_email: String::new(),
             directory_url: LETSENCRYPT_PRODUCTION.to_owned(),
             extra_domains: Vec::new(),
@@ -288,7 +288,7 @@ impl SslSettings {
                         "`{SSL_MODE}` is `{MODE_CUSTOM}`, so `{SSL_CERTIFICATE}` is required"
                     )));
                 }
-                if self.private_key.trim().is_empty() {
+                if self.private_key.expose().trim().is_empty() {
                     return Err(Error::invalid(format!(
                         "`{SSL_MODE}` is `{MODE_CUSTOM}`, so `{SSL_PRIVATE_KEY}` is required"
                     )));
@@ -337,7 +337,7 @@ pub fn ssl_settings_from(config: &Attrs) -> Result<SslSettings> {
     Ok(SslSettings {
         mode,
         certificate: text(SSL_CERTIFICATE),
-        private_key: text(SSL_PRIVATE_KEY),
+        private_key: text(SSL_PRIVATE_KEY).into(),
         contact_email: text(ACME_CONTACT_EMAIL).trim().to_owned(),
         directory_url,
         extra_domains: parse_domains(&text(SSL_EXTRA_DOMAINS)),

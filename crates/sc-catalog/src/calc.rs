@@ -25,18 +25,17 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use sc_expr::{Formula, SchemaShape};
 
-use crate::field::TableId;
 use crate::table::{FieldMergeIssue, Table};
 
 /// Validate and order every table's calculated fields against `shape` (which
 /// already includes them as fields), dropping the invalid ones and leaving the
 /// survivors in dependency order. Returns one issue per dropped field.
 pub(crate) fn merge_calc_fields(
-    map: &mut HashMap<TableId, Table>,
+    map: &mut HashMap<String, Table>,
     shape: &SchemaShape,
 ) -> Vec<FieldMergeIssue> {
     let mut issues = Vec::new();
-    let ids: Vec<TableId> = map.keys().cloned().collect();
+    let ids: Vec<String> = map.keys().cloned().collect();
     for id in ids {
         let table = &map[&id];
         if table.is_system() {
@@ -224,7 +223,6 @@ mod tests {
 
     fn table(name: &str, fields: Vec<DataField>) -> Table {
         Table {
-            id: TableId(name.into()),
             name: name.into(),
             database: DbId::primary(),
             source: TableSource::Database,
@@ -255,7 +253,7 @@ mod tests {
     fn run(mut t: Table) -> (Table, Vec<FieldMergeIssue>) {
         let shape = shape_of(&t);
         let mut map = HashMap::new();
-        let id = t.id.clone();
+        let id = t.name.clone();
         map.insert(id.clone(), std::mem::replace(&mut t, table("_tmp", vec![])));
         let issues = merge_calc_fields(&mut map, &shape);
         (map.remove(&id).unwrap(), issues)

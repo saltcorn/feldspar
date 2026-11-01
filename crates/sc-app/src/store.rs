@@ -19,7 +19,7 @@
 //! defaulted field: an app is its row, so a half-understood row is a
 //! misconfigured app the admin needs told about, not one to serve approximately.
 
-use sc_catalog::{Attrs, Catalog, FileStoreId, TableId};
+use sc_catalog::{Attrs, Catalog, FileStoreId};
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Value};
@@ -70,7 +70,7 @@ async fn validate_change_streams(catalog: &Catalog, app: &Application) -> Result
             ),
             _ => continue,
         };
-        if !app.can_access_table(&TableId(table.clone())) {
+        if !app.can_access_table(&table) {
             return Err(Error::invalid(format!(
                 "application `{}` exposes stream `{}`, which carries {carries} `{table}` — a \
                  table the application does not include; add `{table}` to its tables, or stop \
@@ -329,8 +329,8 @@ fn app_values(app: &Application) -> Result<Vec<Value>> {
         Value::Json(Json::Array(
             app.extra_frameworks.iter().map(framework_to_json).collect(),
         )),
-        Value::Json(names_to_json(app.tables.iter().map(|t| &t.0))),
-        Value::Json(names_to_json(app.api_tables.iter().map(|t| &t.0))),
+        Value::Json(names_to_json(app.tables.iter())),
+        Value::Json(names_to_json(app.api_tables.iter())),
         Value::Json(names_to_json(app.file_stores.iter().map(|s| &s.0))),
         // Written as `[]` rather than left NULL, so a row this version saves is
         // never one the tolerant read below has to forgive.
@@ -413,15 +413,11 @@ pub(crate) fn application_from_row(row: &Row) -> Result<Application> {
             .iter()
             .map(|v| framework_from_json(v.clone(), COL_EXTRA_FRAMEWORKS))
             .collect::<Result<_>>()?,
-        tables: names_from_json(row, COL_TABLES)?
-            .into_iter()
-            .map(TableId)
-            .collect(),
+        tables: names_from_json(row, COL_TABLES)?.into_iter().collect(),
         // Read leniently for `NULL`/absent, as the triggers are: the column
         // arrived after the table did.
         api_tables: optional_names_from_json(row, COL_API_TABLES)?
             .into_iter()
-            .map(TableId)
             .collect(),
         file_stores: names_from_json(row, COL_FILE_STORES)?
             .into_iter()

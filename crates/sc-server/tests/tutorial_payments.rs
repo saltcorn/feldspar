@@ -24,7 +24,7 @@ use sc_action::{EventKind, Trigger, TriggerDispatcher, save_trigger};
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation, TableSettings};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, TriggerRef};
 use sc_auth::{SessionStore, create_user};
-use sc_catalog::{Catalog, DataFieldKind, FieldId, FileStoreId, TableId};
+use sc_catalog::{Catalog, DataFieldKind, FieldId, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_email::{Mailer, RecordingMailer, parse_mailbox};
@@ -127,7 +127,7 @@ fn field(name: &str, type_name: &str) -> FieldSpec {
 fn key(name: &str, target: &str) -> FieldSpec {
     FieldSpec {
         kind: DataFieldKind::Key {
-            target_table: TableId(target.to_owned()),
+            target_table: target.to_owned(),
             target_field: FieldId(String::new()),
             summary_field: None,
         },
@@ -585,7 +585,7 @@ async fn setup(tag: &str) -> sc_error::Result<Shop> {
         .with_trigger(TriggerRef::new("checkout"))
         .attribute(sc_app::GUEST_SESSIONS_ATTRIBUTE, true);
     for table in ["products", "orders", "order_lines", "downloads"] {
-        app = app.with_table(TableId(table.to_owned()));
+        app = app.with_table(table.to_owned());
     }
     apps.mount(MountedApp::new_with(
         app,

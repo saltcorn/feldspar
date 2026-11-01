@@ -249,7 +249,7 @@ async fn northwind_is_installed_with_its_references_and_a_dataset() -> Result<()
             summary_field,
             ..
         } => {
-            assert_eq!(target_table.0, "northwind_products");
+            assert_eq!(target_table, "northwind_products");
             assert_eq!(summary_field.as_ref().map(|f| f.0.as_str()), Some("name"));
         }
         other => panic!("product_id is not a key: {other:?}"),

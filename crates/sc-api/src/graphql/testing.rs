@@ -9,8 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use sc_catalog::{
-    AccessRules, Catalog, DataField, DataFieldKind, DbId, FieldId, FileStoreId, Table, TableId,
-    TableSource,
+    AccessRules, Catalog, DataField, DataFieldKind, DbId, FieldId, FileStoreId, Table, TableSource,
 };
 use sc_db::{
     DatabaseDriver, DbCapabilities, ForeignKey, PhysicalTable, RowStream, SchemaChange, Transaction,
@@ -27,7 +26,6 @@ pub fn table_of(name: &str, fields: Vec<DataField>) -> Table {
         .map(|f| f.base.name.clone())
         .collect();
     Table {
-        id: TableId(name.to_owned()),
         name: name.to_owned(),
         database: DbId::primary(),
         source: TableSource::Database,
@@ -66,7 +64,7 @@ pub fn id_field() -> DataField {
 pub fn key_field(name: &str, target_table: &str, target_field: &str) -> DataField {
     let mut field = DataField::plain(name, TypeRef::Basic(BasicType::Int));
     field.kind = DataFieldKind::Key {
-        target_table: TableId(target_table.to_owned()),
+        target_table: target_table.to_owned(),
         target_field: FieldId(target_field.to_owned()),
         summary_field: None,
     };

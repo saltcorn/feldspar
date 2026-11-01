@@ -449,10 +449,9 @@ mod tests {
 
     /// `forecasts(day date, at timestamptz)`.
     fn forecasts() -> Table {
-        use sc_catalog::{AccessRules, DataField, DbId, TableId, TableSource};
+        use sc_catalog::{AccessRules, DataField, DbId, TableSource};
         use sc_types::TypeRef;
         Table {
-            id: TableId("forecasts".into()),
             name: "forecasts".into(),
             database: DbId::primary(),
             source: TableSource::Database,

@@ -185,12 +185,12 @@ async fn setup(
     let site = Arc::new(LocalFileStore::new("site", tmp.path())?);
     catalog.connect_file_store(site.clone())?;
     site.write(
-        "public/index.html",
+        &sc_files::StorePath::from_static("public/index.html"),
         bytes::Bytes::from_static(b"<!doctype html><h1>Landing</h1>"),
     )
     .await?;
     site.write(
-        "public/style.css",
+        &sc_files::StorePath::from_static("public/style.css"),
         bytes::Bytes::from_static(b"h1 { color: teal }"),
     )
     .await?;

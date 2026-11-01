@@ -821,7 +821,7 @@ fn repoint_users(
         .iter()
         .filter(|field| {
             matches!(&field.kind, DataFieldKind::Key { target_table, .. }
-                if target_table.0 == sc_auth::USERS_TABLE)
+                if target_table == sc_auth::USERS_TABLE)
         })
         .map(|field| field.base.name.as_str())
         .collect();
@@ -1324,9 +1324,9 @@ fn order_by_references(catalog: &Catalog, tables: &[String]) -> Vec<String> {
             let ready = match catalog.get(&name) {
                 Ok(Some(table)) => table.fields.iter().all(|field| match &field.kind {
                     DataFieldKind::Key { target_table, .. } => {
-                        target_table.0 == name
-                            || !tables.contains(&target_table.0)
-                            || done.contains(&target_table.0)
+                        *target_table == name
+                            || !tables.contains(target_table)
+                            || done.contains(target_table)
                     }
                     _ => true,
                 }),
@@ -1824,6 +1824,12 @@ async fn restore_file_store(
             ));
             continue;
         }
+        let Ok(at) = sc_files::StorePath::parse(path) else {
+            report.skipped(format!(
+                "file `{path}` of `{name}`: the path is not one a file store holds"
+            ));
+            continue;
+        };
         if keep_existing_git && is_git_path(path) {
             kept_git = true;
             continue;
@@ -1834,10 +1840,10 @@ async fn restore_file_store(
             .and_then(Json::as_u64)
             .and_then(|mode| u32::try_from(mode).ok());
         if mode.is_some() {
-            make_writable(store.as_ref(), path);
+            make_writable(store.as_ref(), &at);
         }
         match archive
-            .copy_into(&format!("{prefix}{path}"), store.as_ref(), path)
+            .copy_into(&format!("{prefix}{path}"), store.as_ref(), &at)
             .await
         {
             Ok(_) => written += 1,
@@ -1847,7 +1853,7 @@ async fn restore_file_store(
             }
         }
         if let Some(mode) = mode
-            && let Err(e) = set_mode(store.as_ref(), path, mode)
+            && let Err(e) = set_mode(store.as_ref(), &at, mode)
         {
             report.skipped(format!(
                 "permissions of `{path}` in `{name}`: {}",
@@ -1858,7 +1864,7 @@ async fn restore_file_store(
         if let Some(value) = metadata.get(path)
             && let Ok((_, meta)) = backup_file_meta_from_json(value)
             && (meta.min_role.is_some() || !meta.attributes.is_empty())
-            && let Err(e) = store.set_meta(path, &meta).await
+            && let Err(e) = store.set_meta(&at, &meta).await
         {
             report.skipped(format!("metadata of `{path}` in `{name}`: {}", e.causes()));
         }
@@ -1892,7 +1898,7 @@ async fn restore_file_store(
 /// something a zip somebody handed us gets to set. A store with no directory on
 /// disk, or a platform without Unix modes, has nothing to set.
 #[cfg(unix)]
-fn set_mode(store: &dyn sc_files::FileStore, path: &str, mode: u32) -> Result<()> {
+fn set_mode(store: &dyn sc_files::FileStore, path: &sc_files::StorePath, mode: u32) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let Some(local) = store.local_path(path)? else {
         return Ok(());
@@ -1902,7 +1908,11 @@ fn set_mode(store: &dyn sc_files::FileStore, path: &str, mode: u32) -> Result<()
 }
 
 #[cfg(not(unix))]
-fn set_mode(_store: &dyn sc_files::FileStore, _path: &str, _mode: u32) -> Result<()> {
+fn set_mode(
+    _store: &dyn sc_files::FileStore,
+    _path: &sc_files::StorePath,
+    _mode: u32,
+) -> Result<()> {
     Ok(())
 }
 
@@ -1914,7 +1924,7 @@ fn set_mode(_store: &dyn sc_files::FileStore, _path: &str, _mode: u32) -> Result
 /// one. The backup's own mode is put back straight after the write. Best-effort:
 /// a file this cannot change is reported by the write that follows.
 #[cfg(unix)]
-fn make_writable(store: &dyn sc_files::FileStore, path: &str) {
+fn make_writable(store: &dyn sc_files::FileStore, path: &sc_files::StorePath) {
     use std::os::unix::fs::PermissionsExt;
     let Ok(Some(local)) = store.local_path(path) else {
         return;
@@ -1931,7 +1941,7 @@ fn make_writable(store: &dyn sc_files::FileStore, path: &str) {
 }
 
 #[cfg(not(unix))]
-fn make_writable(_store: &dyn sc_files::FileStore, _path: &str) {}
+fn make_writable(_store: &dyn sc_files::FileStore, _path: &sc_files::StorePath) {}
 
 /// Whether a store-relative path is in (or is) a repository's `.git` — a
 /// directory in an ordinary checkout, a file in a worktree.

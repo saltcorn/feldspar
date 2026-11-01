@@ -1233,7 +1233,11 @@ async fn remove_deleted_files(
             let store = store.clone();
             let path = path.to_owned();
             let remove = async move {
-                if let Err(e) = store.delete(&path).await {
+                let removed = match sc_files::StorePath::parse(&path) {
+                    Ok(at) => store.delete(&at).await,
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = removed {
                     eprintln!(
                         "feldspar: removing `{path}` after its row was deleted: {}",
                         sc_error::format_chain(&e)

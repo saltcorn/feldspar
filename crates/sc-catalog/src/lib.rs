@@ -97,7 +97,7 @@ pub use edited::{
 pub use events::{LIVE_EVENTS, TRIGGER_EVENTS, TableEvents, TableWrite, WriteOp};
 pub use field::{
     Attrs, BaseField, DataField, DataFieldKind, DbId, FieldId, FileOnConflict, FileOnDelete,
-    FileStoreId, TableId,
+    FileStoreId,
 };
 pub use field_meta::{
     FIELD_META_TABLE, FieldMeta, FieldMetaId, KIND_CALC, KIND_FILE, KIND_KEY, KIND_PLAIN,
@@ -116,7 +116,7 @@ pub use file_stores::{
 pub use model_host::{ModelHost, ModelSummary, PredictRows, check_model_calls};
 pub use module_tables::{ModuleTableClaim, ModuleTables};
 pub use observer::{ReprojectedApp, SchemaChanged, SchemaObserver, TableRenameHook};
-pub use origin::PublicOrigin;
+pub use origin::{PublicBaseUrl, PublicOrigin, TrustedHost, is_valid_host};
 pub use prefetch::prefetch_bindings;
 pub use projection::SchemaProjection;
 pub use provider::{
@@ -235,7 +235,6 @@ mod tests {
     #[test]
     fn table_from_physical_maps_pk_types_and_nullability() {
         let table = Table::from_physical(DbId::primary(), &physical_with_fk());
-        assert_eq!(table.id, TableId("book".into()));
         assert_eq!(table.name, "book");
         assert_eq!(table.database, DbId::primary());
         assert_eq!(table.source, TableSource::Database);
@@ -260,7 +259,7 @@ mod tests {
         assert_eq!(
             author.kind,
             DataFieldKind::Key {
-                target_table: TableId("person".into()),
+                target_table: "person".into(),
                 target_field: FieldId("id".into()),
                 summary_field: None,
             }
@@ -311,7 +310,6 @@ mod tests {
         // Untouched: everything the database is the authority on. The merge has
         // no conflict semantics because the two sets do not intersect, and this
         // is what asserts they still don't.
-        assert_eq!(table.id, plain.id);
         assert_eq!(table.name, plain.name);
         assert_eq!(table.fields, plain.fields);
         assert_eq!(table.primary_key, plain.primary_key);

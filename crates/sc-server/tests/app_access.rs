@@ -21,7 +21,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, TableId, TableMeta, bootstrap_table_meta, save_table_meta};
+use sc_catalog::{Catalog, TableMeta, bootstrap_table_meta, save_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
@@ -118,8 +118,8 @@ fn app(name: &str, subdomain: &str) -> Application {
         .with("store", "site")
         .with("source", subdomain);
     Application::new(name, subdomain, framework)
-        .with_table(TableId("notice".to_owned()))
-        .with_table(TableId("ledger".to_owned()))
+        .with_table("notice".to_owned())
+        .with_table("ledger".to_owned())
         .with_api(ApiConfig::new("rest", "/api"))
 }
 

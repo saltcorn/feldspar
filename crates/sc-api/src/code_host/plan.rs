@@ -1154,7 +1154,10 @@ pub(crate) fn statement(cat: &Catalog, plan: &SqlPlan) -> Result<Statement> {
         )));
     }
     let binds = plan.params.iter().map(value_from_json).collect();
-    Ok(Statement::raw(plan.sql.clone(), binds))
+    Ok(Statement::raw(
+        sc_query::TrustedSql::admin_authored(plan.sql.clone()),
+        binds,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1517,7 +1520,7 @@ impl<'a> Lowering<'a> {
                     table.name
                 )));
             };
-            let target = self.catalog.require(&target_table.0)?;
+            let target = self.catalog.require(target_table)?;
             match ownership::join_guard(&target, self.role)? {
                 JoinAccess::Unrestricted => {}
                 JoinAccess::InContext => self.in_caller_context.set(true),

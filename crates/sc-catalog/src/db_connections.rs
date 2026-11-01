@@ -146,7 +146,7 @@ pub struct DbConnectionDef {
     pub username: String,
     /// That role's password; empty means "no password", which is a real state
     /// for a socket connection using peer authentication.
-    pub password: String,
+    pub password: sc_error::Secret<String>,
     /// The one schema whose tables this connection presents.
     pub schema: String,
     /// For a SQLite connection: the file store holding the database file.
@@ -179,7 +179,7 @@ impl DbConnectionDef {
             port: DEFAULT_PORT,
             database: database.into(),
             username: String::new(),
-            password: String::new(),
+            password: sc_error::Secret::default(),
             schema: DEFAULT_SCHEMA.to_owned(),
             file_store: String::new(),
             file_path: String::new(),
@@ -523,7 +523,7 @@ fn sqlite_path(catalog: &Catalog, def: &DbConnectionDef) -> Result<std::path::Pa
         ))
     })?;
     store
-        .local_path(def.file_path.trim())?
+        .local_path(&sc_files::StorePath::parse(def.file_path.trim())?)?
         .ok_or_else(|| {
             Error::invalid(format!(
                 "file store `{store_name}` has no local files, so the SQLite database                  `{}` cannot be opened from it — SQLite reads a file, not an API",
@@ -588,7 +588,7 @@ fn connection_values(def: &DbConnectionDef) -> Vec<Value> {
         Value::Int(i64::from(def.port)),
         Value::Text(def.database.trim().to_owned()),
         Value::Text(def.username.trim().to_owned()),
-        Value::Text(def.password.clone()),
+        Value::Text(def.password.expose().clone()),
         Value::Text(def.schema.trim().to_owned()),
         Value::Text(def.backend.trim().to_owned()),
         Value::Text(def.file_store.trim().to_owned()),
@@ -624,7 +624,7 @@ fn connection_from_row(row: &Row) -> Result<DbConnectionDef> {
         port,
         database: text(row, COL_DATABASE)?,
         username: text(row, COL_USERNAME)?,
-        password: optional_text(row, COL_PASSWORD)?,
+        password: optional_text(row, COL_PASSWORD)?.into(),
         schema: text(row, COL_SCHEMA)?,
         file_store: optional_text(row, COL_FILE_STORE)?,
         file_path: optional_text(row, COL_FILE_PATH)?,
@@ -754,5 +754,10 @@ mod tests {
         assert!(target.contains("reader@db.example.com:5432/analytics"));
         assert!(target.contains("schema public"));
         assert!(!target.contains("hunter2"));
+        // Nor does a `{:?}` of the definition or of what it dials with
+        // (TODO-code-quality Q4.4): the password is a `Secret`.
+        assert!(!format!("{def:?}").contains("hunter2"));
+        assert!(!format!("{:?}", def.connect_params()).contains("hunter2"));
+        assert_eq!(def.password.expose(), "hunter2");
     }
 }

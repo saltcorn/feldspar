@@ -45,7 +45,7 @@ pub struct S3Client {
     bucket: String,
     region: String,
     access_key: String,
-    secret_key: String,
+    secret_key: sc_error::Secret<String>,
 }
 
 impl S3Client {
@@ -77,7 +77,7 @@ impl S3Client {
             bucket: bucket.to_owned(),
             region: region.to_owned(),
             access_key: access_key.to_owned(),
-            secret_key: secret_key.to_owned(),
+            secret_key: secret_key.into(),
         })
     }
 
@@ -197,7 +197,7 @@ impl S3Client {
             headers: &headers,
             payload_hash,
             access_key: &self.access_key,
-            secret_key: &self.secret_key,
+            secret_key: self.secret_key.expose(),
             region: &self.region,
             at: now,
         });

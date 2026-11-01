@@ -102,7 +102,11 @@ pub async fn run_target_operation(
                  inside the file store"
             )));
         }
-        if store.stat(&clean).await?.is_some() {
+        if store
+            .stat(&sc_files::StorePath::parse(&clean)?)
+            .await?
+            .is_some()
+        {
             return Err(Error::invalid(format!(
                 "`{clean}` already exists in file store `{}` and was not replaced; if it is \
                  a key an app is already signed with, replacing it would stop that app from \
@@ -124,7 +128,9 @@ pub async fn run_target_operation(
     // operation again simply makes it.
     let saved = save_application(cat, &updated).await?;
     for ((_, bytes), path) in answer.files.iter().zip(&files) {
-        store.write(path, bytes.clone().into()).await?;
+        store
+            .write(&sc_files::StorePath::parse(path)?, bytes.clone().into())
+            .await?;
     }
     Ok(OperationOutcome {
         message: answer.message,

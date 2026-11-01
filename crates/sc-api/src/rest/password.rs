@@ -36,7 +36,7 @@ use sc_auth::{
     InviteOutcome, NewUser, PasswordTokenPurpose, User, invite_user, issue_password_token,
     load_user_by_email, password_token_issued_within, redeem_password_token, user_email,
 };
-use sc_catalog::Catalog;
+use sc_catalog::{Catalog, PublicBaseUrl};
 use sc_email::{Email, Mailer, parse_mailbox};
 use sc_error::{Error, Result};
 use sc_query::Value;
@@ -232,7 +232,7 @@ pub(crate) async fn invite(
 
     let new = NewUser {
         email,
-        password: String::new(),
+        password: sc_error::Secret::default(),
         role,
         language,
         extra,
@@ -358,21 +358,23 @@ pub(crate) async fn set_password(req: &ApiRequest, cat: &Catalog) -> Result<ApiR
     }
 }
 
-/// The link a token travels in.
-fn link(origin: &str, token: &str) -> String {
-    format!("{origin}{SET_PASSWORD_PAGE}#token={token}")
+/// The link a token travels in: on a [`PublicBaseUrl`], which only the
+/// configuration and the router's host table make (TODO-code-quality Q4.2).
+fn link(origin: &PublicBaseUrl, token: &str) -> String {
+    origin.join(&format!("{SET_PASSWORD_PAGE}#token={token}"))
 }
 
 /// The origin a link opens: this application's, or the one served on `app`.
-fn link_origin(req: &ApiRequest, app: Option<&str>) -> Result<String> {
-    let links = req.links.as_ref().ok_or_else(|| {
+fn link_origin(req: &ApiRequest, app: Option<&str>) -> Result<PublicBaseUrl> {
+    let no_address = || {
         Error::config(
             "this request did not arrive at an application, so there is no \
              address to build a link to",
         )
-    })?;
+    };
+    let links = req.links.as_ref().ok_or_else(no_address)?;
     match app.map(str::trim).filter(|a| !a.is_empty()) {
-        None => Ok(links.0.own_origin()),
+        None => links.0.own_origin().ok_or_else(no_address),
         Some(app) => links.0.app_origin(app).ok_or_else(|| {
             Error::invalid(format!(
                 "`app`: no application is served on the subdomain `{app}`"

@@ -33,6 +33,8 @@
 //! Rust out of the options). §12's allow-list is about which toolbox the builder
 //! draws, and `mode` is the key that decides it.
 
+// Text for an HTML element or a quoted attribute: the one escape (Q4.5).
+use sc_expr::html::escape;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
@@ -223,7 +225,7 @@ pub(crate) async fn redirect_file(
         return not_here("this server has no base domain, so the application has no address");
     };
     let path = uri.path_and_query().map_or(uri.path(), |p| p.as_str());
-    Redirect::temporary(&format!("{origin}{path}")).into_response()
+    Redirect::temporary(&origin.join(path)).into_response()
 }
 
 /// What a builder document builds.
@@ -437,7 +439,12 @@ async fn document(
         obj.insert("applicationName".into(), json!(app.name));
         obj.insert(
             "applicationOrigin".into(),
-            json!(origin.clone().unwrap_or_default()),
+            json!(
+                origin
+                    .as_ref()
+                    .map(sc_catalog::PublicBaseUrl::as_str)
+                    .unwrap_or_default()
+            ),
         );
         obj.insert("csrfToken".into(), json!(csrf));
         obj.insert("lightmode".into(), json!("light"));
@@ -452,7 +459,8 @@ async fn document(
     }
     let html = render_document(&app, &page, &boot, csrf, &bundle_tag(bundle));
     let mut response = Html(html).into_response();
-    let csp = builder_content_security_policy(origin.as_deref());
+    let csp =
+        builder_content_security_policy(origin.as_ref().map(sc_catalog::PublicBaseUrl::as_str));
     if let Ok(value) = HeaderValue::from_str(&csp) {
         response
             .headers_mut()
@@ -514,28 +522,29 @@ fn builder_mode(options: &Json, allowed: &[&str]) -> std::result::Result<String,
 }
 
 /// Where the application is served: the catalog's public origin, else this
-/// request's host's port under the base domain. `None` without a base domain.
+/// request's host's port under the base domain — configuration either way, a
+/// [`sc_catalog::PublicBaseUrl`] (TODO-code-quality Q4.2). `None` without a base
+/// domain.
 fn application_origin(
     env: &BuilderEnv<'_>,
     headers: &HeaderMap,
     app: &Application,
-) -> Option<String> {
+) -> Option<sc_catalog::PublicBaseUrl> {
     if let Some(origin) = env.apps.catalog().and_then(|c| c.public_origin()) {
-        return Some(origin.url_for(&app.subdomain));
+        return origin.base_url_for(&app.subdomain).ok();
     }
     let base = env.base_domain?;
-    let scheme = if env.secure { "https" } else { "http" };
-    let port = headers
+    let host = sc_catalog::PublicOrigin::new(base, 0).host_for(&app.subdomain);
+    let host = sc_catalog::TrustedHost::configured(&host).ok()?;
+    let host = match headers
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
-        .and_then(|host| host.rsplit_once(':'))
-        .map(|(_, port)| port)
-        .filter(|port| port.parse::<u16>().is_ok());
-    let host = sc_catalog::PublicOrigin::new(base, 0).host_for(&app.subdomain);
-    Some(match port {
-        Some(port) => format!("{scheme}://{host}:{port}"),
-        None => format!("{scheme}://{host}"),
-    })
+        .and_then(|h| sc_catalog::TrustedHost::served(h).ok())
+    {
+        Some(request) => host.on_port_of(&request),
+        None => host,
+    };
+    Some(sc_catalog::PublicBaseUrl::new(env.secure, &host))
 }
 
 /// The application id in the referring builder document's URL, if the request
@@ -695,15 +704,6 @@ fn script_json(value: &Json) -> String {
         .replace('&', "\\u0026")
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029")
-}
-
-/// Text for an HTML element or a quoted attribute.
-fn escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 /// `encodeURIComponent`, which is how the admin UI's hash routes spell a name

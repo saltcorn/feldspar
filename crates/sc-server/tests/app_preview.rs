@@ -16,7 +16,7 @@ use sc_app::{
     ApiConfig, Application, FrameworkRef, app_source_from_config, bootstrap, save_application,
 };
 use sc_auth::{SessionStore, User};
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -70,7 +70,7 @@ fn blog_app() -> Application {
         .with("command", "sh build.sh")
         .with("client", "web/src/client.ts");
     Application::new("Blog", "blog", framework)
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_file_store(FileStoreId("apps".to_owned()))
         .with_api(ApiConfig::new("rest", "/api"))
 }

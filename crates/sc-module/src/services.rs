@@ -573,7 +573,7 @@ impl TableScope {
                         let DataFieldKind::Key { target_table, .. } = &field.kind else {
                             break;
                         };
-                        current = target_table.0.clone();
+                        current = target_table.clone();
                         self.reads.insert(current.clone());
                     }
                 }
@@ -705,7 +705,7 @@ impl ScopedTables<'_> {
             let DataFieldKind::Key { target_table, .. } = &field.kind else {
                 return Ok(());
             };
-            current = target_table.0.clone();
+            current = target_table.clone();
             self.own(&current, Some(path), reading)?;
         }
         Ok(())

@@ -36,10 +36,12 @@ async fn an_owned_file_is_served_to_its_owner_and_not_found_to_anyone_else() -> 
     let store = Arc::new(LocalFileStore::new("media", &dir)?);
     catalog.connect_file_store(store.clone())?;
 
-    store.mkdir("private").await?;
+    store
+        .mkdir(&sc_files::StorePath::from_static("private"))
+        .await?;
     store
         .set_meta(
-            "private",
+            &sc_files::StorePath::from_static("private"),
             &FileMeta {
                 min_role: Some(Role::ADMIN),
                 ..Default::default()
@@ -47,7 +49,10 @@ async fn an_owned_file_is_served_to_its_owner_and_not_found_to_anyone_else() -> 
         )
         .await?;
     store
-        .write("private/ada.png", Bytes::from_static(b"png"))
+        .write(
+            &sc_files::StorePath::from_static("private/ada.png"),
+            Bytes::from_static(b"png"),
+        )
         .await?;
     let ada = User::new(uuid::Uuid::new_v4(), Role::of(80));
     let bob = User::new(uuid::Uuid::new_v4(), Role::of(80));

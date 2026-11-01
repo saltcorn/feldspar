@@ -20,7 +20,7 @@ use crate::schema_edit::{
 };
 use sc_catalog::{
     ATTR_OWNERSHIP_FORMULA, Catalog, DataFieldKind, FieldId, FileOnConflict, FileOnDelete,
-    FileStoreId, Table, TableId,
+    FileStoreId, Table,
 };
 use sc_error::{Error, Result};
 use sc_types::Attrs;
@@ -194,7 +194,7 @@ fn describe_table(table: &Table, all: &[Table], rls_available: bool) -> Json {
                 ..
             } => Some(json!({
                 "field": f.base.name,
-                "target_table": target_table.0,
+                "target_table": target_table,
                 "target_field": target_field.0,
             })),
             _ => None,
@@ -208,7 +208,7 @@ fn describe_table(table: &Table, all: &[Table], rls_available: bool) -> Json {
                     target_table,
                     target_field,
                     ..
-                } if target_table.0 == table.name => Some(json!({
+                } if *target_table == table.name => Some(json!({
                     "table": other.name,
                     "field": f.base.name,
                     "target_field": target_field.0,
@@ -261,7 +261,7 @@ fn describe_field(field: &sc_catalog::DataField) -> Json {
             target_field,
             summary_field,
         } => {
-            out.insert("references".to_owned(), json!(target_table.0));
+            out.insert("references".to_owned(), json!(target_table));
             out.insert("references_field".to_owned(), json!(target_field.0));
             if let Some(summary) = summary_field {
                 out.insert("summary_field".to_owned(), json!(summary.0));
@@ -1127,7 +1127,7 @@ fn field_kind(obj: &Map<String, Json>) -> Result<Option<DataFieldKind>> {
             "a field is either a reference or a calculated expression, not both",
         )),
         (Some(target), None) => Ok(Some(DataFieldKind::Key {
-            target_table: TableId(target.trim().to_owned()),
+            target_table: target.trim().to_owned(),
             // Empty: the schema editor resolves it to the target's primary key,
             // so the model never has to know (or guess) the column's name.
             target_field: FieldId(String::new()),
@@ -1202,7 +1202,7 @@ mod tests {
                 target_field,
                 ..
             } => {
-                assert_eq!(target_table.0, "clients");
+                assert_eq!(target_table, "clients");
                 assert!(target_field.0.is_empty());
             }
             other => panic!("a key, got {other:?}"),

@@ -199,7 +199,7 @@ pub fn field_note(field: &DataField) -> String {
     }
     match &field.kind {
         DataFieldKind::Key { target_table, .. } => {
-            note.push_str(&format!(", references {}", target_table.0));
+            note.push_str(&format!(", references {}", target_table));
         }
         // A calculated field is computed on read and has no column, so it comes
         // back with every row but cannot be filtered, ordered or written — and

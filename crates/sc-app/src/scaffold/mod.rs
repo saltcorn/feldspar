@@ -104,7 +104,10 @@ pub async fn scaffold_app(
     for file in &generated {
         let path = project_path(&project, &file.path);
         store
-            .write(&path, Bytes::from(file.contents.clone().into_bytes()))
+            .write(
+                &sc_files::StorePath::parse(&path)?,
+                Bytes::from(file.contents.clone().into_bytes()),
+            )
             .await
             .with_context(|| format!("scaffolding {path}"))?;
         written.push(path);
@@ -115,7 +118,13 @@ pub async fn scaffold_app(
         // create a nested one, which is a worse state than the one we are in.
         false
     } else {
-        init_git_repo(&source, store.local_path(&project)?.as_deref()).await?
+        init_git_repo(
+            &source,
+            store
+                .local_path(&sc_files::StorePath::parse(&project)?)?
+                .as_deref(),
+        )
+        .await?
     };
 
     Ok(ScaffoldReport {
@@ -363,6 +372,9 @@ async fn require_auth_endpoints_for_source(
     // is a store problem the write that follows will report far better than a
     // check could.
     let auth_path = project_path(project, AUTH_SOURCE);
+    let Ok(auth_path) = sc_files::StorePath::parse(&auth_path) else {
+        return Ok(());
+    };
     let Ok(source) = store.read(&auth_path).await else {
         return Ok(());
     };
@@ -413,7 +425,10 @@ pub async fn emit_app_runtime(
     for file in generate(cat, app, &set, source, dispatcher, FilePhase::Runtime).await? {
         let path = project_path(project, &file.path);
         store
-            .write(&path, Bytes::from(file.contents.into_bytes()))
+            .write(
+                &sc_files::StorePath::parse(&path)?,
+                Bytes::from(file.contents.into_bytes()),
+            )
             .await
             .with_context(|| format!("generating {path}"))?;
         written.push(path);
@@ -528,7 +543,11 @@ const GIT_DIR: &str = ".git";
 /// would refuse to scaffold into exactly the empty repository the feature is for,
 /// while losing nothing the admin wrote.
 async fn is_empty_dir(store: &dyn sc_files::FileStore, dir: &str) -> Result<bool> {
-    match store.list(dir).await {
+    let listed = match sc_files::StorePath::parse(dir) {
+        Ok(dir) => store.list(&dir).await,
+        Err(e) => Err(e),
+    };
+    match listed {
         Ok(entries) => Ok(entries.iter().all(|e| e.name == GIT_DIR)),
         // The store cannot distinguish "no such directory" in its error type; a
         // path that cannot be listed holds nothing this can destroy.

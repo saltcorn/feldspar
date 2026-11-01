@@ -20,7 +20,7 @@ use futures::{SinkExt, StreamExt};
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation, TableSettings};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -254,7 +254,7 @@ async fn setup() -> Result<(Router, std::net::SocketAddr, TestDb)> {
     );
     let app = Application::new("Shop", "shop", FrameworkRef::new("code"))
         .with_api(ApiConfig::new("rest", "/api"))
-        .with_table(TableId("baskets".to_owned()))
+        .with_table("baskets".to_owned())
         .with_stream(StreamRef::new("basket_changes"))
         .attribute(sc_app::GUEST_SESSIONS_ATTRIBUTE, true);
     apps.mount(sc_server::MountedApp::new_with(

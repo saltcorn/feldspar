@@ -639,14 +639,17 @@ impl<'a> Reverser<'a> {
                 continue;
             };
             let text = json_text(value);
-            let found = match self.catalog.get(&target_table.0)? {
+            let found = match self.catalog.get(target_table)? {
                 Some(target) => {
                     let sql = format!(
                         "SELECT 1 AS found FROM {target} t WHERE {column} = $1 LIMIT 1",
                         target = quote(&target.name),
                         column = sc_catalog::as_text_sql(&format!("t.{}", quote(&target_field.0))),
                     );
-                    let stmt = Statement::raw(sql, vec![Value::Text(text.clone())]);
+                    let stmt = Statement::raw(
+                        sc_query::TrustedSql::composed(sql),
+                        vec![Value::Text(text.clone())],
+                    );
                     let checking = self.checking();
                     !tx.run(sc_access::admin_access(&checking)?, &stmt)
                         .await?
@@ -658,7 +661,7 @@ impl<'a> Reverser<'a> {
                 return Err(Error::invalid(format!(
                     "`{}.{name}` refers to row {text} of `{}`, which no longer exists; \
                      restore that row first",
-                    table.name, target_table.0
+                    table.name, target_table
                 )));
             }
         }
@@ -714,7 +717,10 @@ async fn current_row(
     let found = tx
         .run(
             sc_access::admin_access(context)?,
-            &Statement::raw(sql, vec![Value::Text(key.to_owned())]),
+            &Statement::raw(
+                sc_query::TrustedSql::composed(sql),
+                vec![Value::Text(key.to_owned())],
+            ),
         )
         .await?;
     Ok(found.first().and_then(|row| match row.get("row") {
@@ -787,8 +793,8 @@ fn fk_depths<'t>(
                 t.fields
                     .iter()
                     .filter_map(|f| match &f.kind {
-                        DataFieldKind::Key { target_table, .. } if target_table.0 != name => {
-                            Some(target_table.0.clone())
+                        DataFieldKind::Key { target_table, .. } if target_table != name => {
+                            Some(target_table.clone())
                         }
                         _ => None,
                     })

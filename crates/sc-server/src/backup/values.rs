@@ -109,13 +109,12 @@ mod tests {
     use super::*;
     use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
     use rust_decimal::Decimal;
-    use sc_catalog::{AccessRules, DataField, DbId, TableId, TableSource};
+    use sc_catalog::{AccessRules, DataField, DbId, TableSource};
     use sc_types::{Attrs, TypeRef};
     use std::str::FromStr;
 
     fn table(columns: &[(&str, BasicType)]) -> Table {
         Table {
-            id: TableId("t".to_owned()),
             name: "t".to_owned(),
             database: DbId::primary(),
             source: TableSource::Database,

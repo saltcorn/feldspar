@@ -157,7 +157,7 @@ pub async fn call(
             }
             n => {
                 // The search opened this file already, as this caller.
-                let bytes = store.read(path).await?;
+                let bytes = store.read(&sc_files::StorePath::parse(path)?).await?;
                 let text = String::from_utf8_lossy(&bytes);
                 with_context(&mut out, &rel, &text, lines, n);
             }

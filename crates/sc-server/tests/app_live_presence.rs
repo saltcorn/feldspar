@@ -37,7 +37,7 @@ use axum::http::{HeaderValue, Request, StatusCode, header};
 use futures::{SinkExt, StreamExt};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -247,7 +247,7 @@ fn streams() -> Vec<Stream> {
 fn app() -> Application {
     let mut app = Application::new("Boards", "boards", FrameworkRef::new("code"))
         .with_api(ApiConfig::new("rest", "/api"))
-        .with_table(TableId("boards".to_owned()));
+        .with_table("boards".to_owned());
     for stream in streams() {
         app = app.with_stream(StreamRef::new(&stream.name));
     }

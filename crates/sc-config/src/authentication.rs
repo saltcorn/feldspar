@@ -378,7 +378,7 @@ pub struct OAuthProvider {
     pub label: String,
     pub preset: String,
     pub client_id: String,
-    pub client_secret: String,
+    pub client_secret: sc_error::Secret<String>,
     pub authorization_url: String,
     pub token_url: String,
     pub userinfo_url: String,
@@ -495,7 +495,7 @@ impl OAuthProvider {
         Ok(OAuthProvider {
             label: text(PROVIDER_LABEL),
             client_id: text(PROVIDER_CLIENT_ID),
-            client_secret: text(PROVIDER_CLIENT_SECRET),
+            client_secret: text(PROVIDER_CLIENT_SECRET).into(),
             name,
             preset,
             authorization_url,

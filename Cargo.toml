@@ -18,6 +18,10 @@ members = [
     # Name resolution for the whole process, glibc's NSS taken out of the path
     # (§13.5): layer 0 because it is linked in front of libc rather than called.
     "crates/sc-dns",
+    # Outbound connections to the public internet only (code-quality Q4.3): the
+    # one SSRF rule, `PublicAddr`, and the HTTP client that connects to one.
+    # Layer 0: it knows addresses and `reqwest`, nothing of the catalog.
+    "crates/sc-net",
     # The admin UI's help topics (v1's `help/*.tmd`): markdown templates filled
     # in with what the screen is about and rendered to HTML. Layer 0 because it
     # is handed plain JSON and knows nothing of the catalog.
@@ -175,6 +179,7 @@ sc-config-file = { path = "crates/sc-config-file" }
 # pair of C symbols the linker puts in front of glibc's, which is a property of
 # the *link*, not of any caller.
 sc-dns = { path = "crates/sc-dns" }
+sc-net = { path = "crates/sc-net" }
 sc-query = { path = "crates/sc-query" }
 # `default-features = false` at the workspace level so members choose: the
 # catalog takes the parse/validate/translate half only; the server adds

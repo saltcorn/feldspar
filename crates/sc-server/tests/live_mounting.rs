@@ -19,7 +19,7 @@ use sc_app::{
     ApiConfig, Application, FrameworkRef, bootstrap, delete_application, save_application,
 };
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -102,7 +102,7 @@ fn code_framework() -> FrameworkRef {
 
 fn blog_app() -> Application {
     Application::new("Blog", "blog", code_framework())
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_file_store(FileStoreId("apps".to_owned()))
         .with_api(ApiConfig::new("rest", "/api"))
 }
@@ -278,7 +278,7 @@ async fn a_reload_serves_what_was_built_on_disk_without_building_anything() -> s
         )
         .await
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
-    let edited = app.clone().with_table(TableId("comments".to_owned()));
+    let edited = app.clone().with_table("comments".to_owned());
     save_application(&catalog, &edited).await?;
 
     // Any build now fails, which is how this test proves a reload runs none: if
@@ -313,7 +313,7 @@ async fn a_reload_serves_what_was_built_on_disk_without_building_anything() -> s
     // them: the app now declares `comments`, so its REST provider projects it.
     let mounted = apps.get("blog").expect("blog is mounted");
     assert!(
-        mounted.app.tables.contains(&TableId("comments".to_owned())),
+        mounted.app.tables.contains(&"comments".to_owned()),
         "the stored row should have been re-read"
     );
     let provider = mounted

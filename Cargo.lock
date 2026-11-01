@@ -9307,6 +9307,7 @@ dependencies = [
  "sc-expr",
  "sc-files",
  "sc-model",
+ "sc-net",
  "sc-query",
  "sc-test-harness",
  "sc-types",
@@ -9342,13 +9343,13 @@ dependencies = [
  "sc-db",
  "sc-db-postgres",
  "sc-docs",
- "sc-email",
  "sc-error",
  "sc-expr",
  "sc-files",
  "sc-llm",
  "sc-log",
  "sc-mcp",
+ "sc-net",
  "sc-query",
  "sc-repomap",
  "sc-test-harness",
@@ -9464,6 +9465,7 @@ dependencies = [
  "sc-catalog",
  "sc-config",
  "sc-error",
+ "sc-net",
  "sc-test-harness",
  "serde_json",
  "tokio",
@@ -9473,6 +9475,10 @@ dependencies = [
 [[package]]
 name = "sc-error"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "sc-expr"
@@ -9609,8 +9615,8 @@ dependencies = [
  "reqwest",
  "sc-catalog",
  "sc-db",
- "sc-email",
  "sc-error",
+ "sc-net",
  "sc-query",
  "sc-types",
  "serde",
@@ -9701,6 +9707,15 @@ dependencies = [
  "sys_traits",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "sc-net"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "sc-error",
+ "tokio",
 ]
 
 [[package]]

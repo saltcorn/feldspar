@@ -39,6 +39,9 @@ serde_json.workspace = true
 # transport itself is handed to the action through `ActionContext`, so this
 # dependency is for the *message*, not for a way to send one.
 sc-email.workspace = true
+# The public-only client a templated host is fetched with, and the one rule
+# for an SMTP override's literal host (TODO-code-quality Q4.3).
+sc-net.workspace = true
 # `fit_model` (milestone 31 §2): the provider registry a fit is validated
 # against, the `FitStarter` seam a fit is started through, and the instance it
 # reads back. This crate is layer 9 and `sc-model` is layer 6, so the

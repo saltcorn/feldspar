@@ -257,7 +257,7 @@ impl Archive {
         &self,
         path: &str,
         store: &dyn sc_files::FileStore,
-        store_path: &str,
+        store_path: &sc_files::StorePath,
     ) -> Result<u64> {
         let (tx, mut rx) = mpsc::channel::<Result<Bytes>>(2);
         let archive = self.clone();
@@ -585,14 +585,22 @@ mod tests {
         let store = sc_files::LocalFileStore::new("s", &root).unwrap();
         assert_eq!(
             archive
-                .copy_into("small.txt", &store, "a/small.txt")
+                .copy_into(
+                    "small.txt",
+                    &store,
+                    &sc_files::StorePath::from_static("a/small.txt")
+                )
                 .await
                 .unwrap(),
             5
         );
         assert_eq!(
             archive
-                .copy_into("large.bin", &store, "b/large.bin")
+                .copy_into(
+                    "large.bin",
+                    &store,
+                    &sc_files::StorePath::from_static("b/large.bin")
+                )
                 .await
                 .unwrap(),
             large.len() as u64
@@ -601,14 +609,23 @@ mod tests {
         assert!(std::fs::read(root.join("b/large.bin")).unwrap() == large);
         // A second copy replaces the first rather than appending to it.
         archive
-            .copy_into("large.bin", &store, "b/large.bin")
+            .copy_into(
+                "large.bin",
+                &store,
+                &sc_files::StorePath::from_static("b/large.bin"),
+            )
             .await
             .unwrap();
         assert_eq!(
             std::fs::metadata(root.join("b/large.bin")).unwrap().len(),
             large.len() as u64
         );
-        assert!(archive.copy_into("absent", &store, "c").await.is_err());
+        assert!(
+            archive
+                .copy_into("absent", &store, &sc_files::StorePath::from_static("c"))
+                .await
+                .is_err()
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

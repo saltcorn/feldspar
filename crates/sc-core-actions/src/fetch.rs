@@ -60,7 +60,7 @@ pub struct Fetch {
     /// server's own network (`169.254.169.254`'s cloud credentials) would make
     /// the server read it for them (security review #27). A URL whose host the
     /// admin wrote is the admin's, and reaches what the server can reach.
-    public: reqwest::Client,
+    public: sc_net::PublicClient,
 }
 
 impl Fetch {
@@ -80,72 +80,15 @@ impl Fetch {
 /// The most redirects the public-only client follows.
 const MAX_REDIRECTS: usize = 10;
 
-/// A client that reaches only the public internet: names resolved through
-/// [`PublicOnly`], and every redirect's address literal checked, so neither a
-/// name nor a hop can lead it inside.
-fn public_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .dns_resolver(std::sync::Arc::new(PublicOnly))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= MAX_REDIRECTS {
-                return attempt.error(format!("more than {MAX_REDIRECTS} redirects"));
-            }
-            match private_literal(attempt.url()) {
-                Some(ip) => attempt.error(format!(
-                    "a redirect to {ip}, a private or reserved address, which a URL whose \
-                     host comes from data may not reach"
-                )),
-                None => attempt.follow(),
-            }
-        }))
-        .build()
-        .map_err(|e| Error::config(format!("could not build the HTTP client: {e}")))
-}
-
-/// The private or reserved address a URL names literally, if it does.
-fn private_literal(url: &reqwest::Url) -> Option<std::net::IpAddr> {
-    // The parser has normalised the host: an IPv4 literal in any spelling
-    // (`0x7f.1`, `2130706433`) is dotted-quad by now, an IPv6 one bracketed.
-    let ip: std::net::IpAddr = url
-        .host_str()?
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .parse()
-        .ok()?;
-    (!sc_email::is_public(ip)).then_some(ip)
-}
-
-/// A resolver that answers with public addresses only, so the address
-/// checked is the address connected to (`sc-core-traits`' `PublicResolver`,
-/// for an agent's fetch, is the same rule).
-struct PublicOnly;
-
-impl reqwest::dns::Resolve for PublicOnly {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let host = name.as_str().to_owned();
-        Box::pin(async move {
-            let found: Vec<std::net::SocketAddr> =
-                tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
-            let public: Vec<std::net::SocketAddr> = found
-                .iter()
-                .copied()
-                .filter(|addr| sc_email::is_public(addr.ip()))
-                .collect();
-            if public.is_empty() {
-                let message = if found.is_empty() {
-                    format!("`{host}` did not resolve to any address")
-                } else {
-                    format!(
-                        "`{host}` resolves only to private or reserved addresses, which a \
-                         URL whose host comes from data may not reach"
-                    )
-                };
-                return Err(message.into());
-            }
-            let addrs: reqwest::dns::Addrs = Box::new(public.into_iter());
-            Ok(addrs)
-        })
-    }
+/// A client that reaches only the public internet ([`sc_net::PublicClient`]):
+/// names resolved to public addresses only, and every redirect's address
+/// literal checked, so neither a name nor a hop can lead it inside.
+fn public_client() -> Result<sc_net::PublicClient> {
+    sc_net::PublicClient::new(
+        reqwest::Client::builder(),
+        ", which a URL whose host comes from data may not reach",
+        sc_net::Redirects::Follow(MAX_REDIRECTS),
+    )
 }
 
 /// Whether a token of the URL template can decide where the request goes: one
@@ -253,8 +196,8 @@ impl Action for Fetch {
         let method = method(ctx.config)?;
         let headers = headers(ctx.config)?;
         let timeout = timeout(ctx.config)?;
-        let client = if host_is_templated(url_template(ctx.config)?.source()) {
-            if let Some(ip) = private_literal(&url) {
+        let request = if host_is_templated(url_template(ctx.config)?.source()) {
+            if let Some(ip) = sc_net::private_literal(&url) {
                 return Err(Error::invalid(format!(
                     "trigger `{}`: `{CFG_URL}` came to {url}, and {ip} is a private or \
                      reserved address; a URL whose host comes from data may only reach the \
@@ -262,12 +205,11 @@ impl Action for Fetch {
                     ctx.trigger
                 )));
             }
-            &self.public
+            self.public.request(method.clone(), url.clone())?
         } else {
-            &self.client
+            self.client.request(method.clone(), url.clone())
         };
-
-        let mut request = client.request(method.clone(), url.clone()).timeout(timeout);
+        let mut request = request.timeout(timeout);
         let mut sent_body = Json::Null;
         if takes_body(&method) {
             // The default body is the event itself: the common case is "tell that
@@ -580,6 +522,7 @@ mod tests {
 
     #[test]
     fn a_private_address_literal_is_named() {
+        use sc_net::private_literal;
         let url = |s: &str| reqwest::Url::parse(s).unwrap();
         assert!(private_literal(&url("http://169.254.169.254/latest")).is_some());
         assert!(private_literal(&url("http://[::1]/")).is_some());

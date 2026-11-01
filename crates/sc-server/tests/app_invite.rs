@@ -31,7 +31,7 @@ use axum::http::{Request, StatusCode, header};
 use sc_action::{ActionRegistry, TriggerDispatcher};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
 use sc_auth::{RoleDef, SessionStore, User, create_user, load_user_by_email, save_role};
-use sc_catalog::{AccessRules, Catalog, TableId, TableMeta, save_table_meta};
+use sc_catalog::{AccessRules, Catalog, TableMeta, save_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_email::{Email, Mailer, RecordingMailer, parse_mailbox};
@@ -122,7 +122,7 @@ impl Client {
 fn app(name: &str, subdomain: &str, api: ApiConfig, tables: &[&str]) -> Application {
     let mut app = Application::new(name, subdomain, FrameworkRef::new("code")).with_api(api);
     for table in tables {
-        app = app.with_table(TableId((*table).to_owned()));
+        app = app.with_table((*table).to_owned());
     }
     app
 }

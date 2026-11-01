@@ -1330,3 +1330,17 @@ Find them with `grep -rn 'Admin::delegated(' crates`:
 |---|---|---|
 | sc-server `mcp.rs` (`EndpointTool::call`) | `mcp endpoint tool` | `sc_api::mcp::check_caller`: admin role, the endpoint's own requirement, the tag's grant |
 | sc-server `mcp.rs` (`AdminHandlers::call_admin`) | `catalog admin host` | the `sc_app::mcp` admin tools that call `AdminHost` (`require_admin` on the tool surface); the user may be `None` for a system-run tool |
+
+**Trust-boundary newtypes (TODO-code-quality Q4).** Values that cross a trust boundary are
+types that only a named constructor makes; each constructor below is a promise the type cannot
+check, so a new call is a decision to review. Find them with
+`grep -rn 'TrustedHost::\(served\|configured\)\|TrustedSql::\(admin_authored\|composed\)\|PublicAddr::test_listener' crates`:
+
+| Type (crate) | Made by | Where |
+|---|---|---|
+| `StorePath` (sc-files) | `StorePath::parse` — the one validator; `from_static` for a literal (panics on a bad one) | every `FileStore` method takes one; a route's text is parsed by `CheckedStore` / the access helpers (`AsStorePath`) |
+| `TrustedHost` / `PublicBaseUrl` (sc-catalog) | `TrustedHost::configured` (base domain, admin host, `PublicOrigin`); `TrustedHost::served` (a `Host` the router matched: `router::served_host` behind `resolve_app`, `served_request_host` behind `is_served_host`) | password-reset and invitation links (`AppDirectory`), OAuth's callback and hand-off, an app request's `base_url` and an event's `app.url`, the builder's application address |
+| `PublicAddr` (sc-net) | `PublicAddr::check`, `resolve_public`, `resolve_every_public`, `PublicResolver`; `PublicAddr::test_listener` only with the `test-listener` feature, which only dev-dependencies enable | `PublicClient` (the agent's `http` trait, `fetch` with a templated host, MCP without the private network); `SmtpMailer::pinned` (an SMTP override) |
+| `Secret<T>` (sc-error) | deserialising, `Secret::new` / `From` at config and DB load | read with `expose()` where the credential is used and where storage or a backup writes it (`to_json`, `backup_db_connection_json`, the settings rows): grep `\.expose()` |
+| `SafeHtml` (sc-expr) | `html::escape` (the one escape), `SafeHtml::trusted` for a literal | the template engine's HTML mode, the Saltcorn UI pages, the builder document, OAuth's hand-off page, plugin asset tags |
+| `TrustedSql` (sc-query) | a `&'static str`; `TrustedSql::admin_authored` (a custom SQL query, `rest/custom.rs`; a code body's `db.sql()`, `code_host/plan.rs`); `TrustedSql::composed` (the program's own SQL around identifiers it quoted: sc-catalog `retention.rs`, `history.rs`, `sync.rs`; sc-api `history.rs`, `undo.rs`, `sync/push.rs`, `geo_import`; sc-analytics `demo.rs`; sc-migrate's runner and `ctx.query`) | `Statement::Raw`, which is never deserialised |

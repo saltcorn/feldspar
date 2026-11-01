@@ -2163,7 +2163,7 @@ async fn app_tables_command(args: &[String], api: bool) -> Result<()> {
         true => &app.api_tables,
         false => &app.tables,
     };
-    let tables: Vec<&str> = listed.iter().map(|t| t.0.as_str()).collect();
+    let tables: Vec<&str> = listed.iter().map(|t| t.as_str()).collect();
     if parsed.json {
         println!(
             "{}",
@@ -2379,7 +2379,7 @@ async fn modify_user_command(args: &[String]) -> Result<()> {
         user.id(),
         sc_auth::UserUpdate {
             role: role.as_ref().map(|r| r.role),
-            password: password.clone(),
+            password: password.clone().map(sc_error::Secret::new),
             ..Default::default()
         },
     )

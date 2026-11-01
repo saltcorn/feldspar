@@ -13,6 +13,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::store::FileStore;
+use crate::store_path::StorePath;
 
 /// Which file to serve, and how.
 #[derive(Clone)]
@@ -22,7 +23,7 @@ pub struct ServeFile {
     /// grant for one path, and its operations below reach that path only.
     store: Arc<dyn FileStore>,
     /// Its store-relative path.
-    path: String,
+    path: StorePath,
     /// The name to give it in `Content-Disposition`, in place of the file's own
     /// (`attributes.filename`, else the storage basename).
     pub filename: Option<String>,
@@ -40,7 +41,7 @@ pub struct ServeFile {
 impl ServeFile {
     /// The file's store-relative path.
     pub fn path(&self) -> &str {
-        &self.path
+        self.path.as_str()
     }
 
     /// The name of the store the file is in.
@@ -67,10 +68,10 @@ impl ServeFile {
     }
 
     /// Serve `path` from `store`, named and typed as the file itself says.
-    pub fn new(store: Arc<dyn FileStore>, path: impl Into<String>) -> ServeFile {
+    pub fn new(store: Arc<dyn FileStore>, path: StorePath) -> ServeFile {
         ServeFile {
             store,
-            path: path.into(),
+            path,
             filename: None,
             download: false,
             content_type: None,

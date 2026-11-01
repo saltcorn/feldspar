@@ -23,7 +23,7 @@
 //! sparse value goes in the JSON bag. Whatever the first such setting turns out
 //! to be, it needs no schema change to arrive.
 
-use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, Table, TableId};
+use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, Table};
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Value};
@@ -124,7 +124,7 @@ fn roles_fields() -> Vec<DataField> {
 pub(crate) fn user_role_field() -> DataField {
     DataField {
         kind: DataFieldKind::Key {
-            target_table: TableId(ROLES_TABLE.to_owned()),
+            target_table: ROLES_TABLE.to_owned(),
             target_field: FieldId(COL_ROLE.to_owned()),
             summary_field: Some(FieldId(COL_NAME.to_owned())),
         },
@@ -443,7 +443,7 @@ mod tests {
         assert_eq!(
             field.kind,
             DataFieldKind::Key {
-                target_table: TableId(ROLES_TABLE.to_owned()),
+                target_table: ROLES_TABLE.to_owned(),
                 target_field: FieldId(COL_ROLE.to_owned()),
                 summary_field: Some(FieldId(COL_NAME.to_owned())),
             }

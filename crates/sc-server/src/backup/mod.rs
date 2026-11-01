@@ -276,7 +276,7 @@ struct Pending {
     /// The password of a protected backup, once it has been given and
     /// checked ([`PendingUploads::unlock`]) — held for the restore, so it is
     /// asked for once.
-    password: Option<String>,
+    password: Option<sc_error::Secret<String>>,
 }
 
 impl PendingUploads {
@@ -319,7 +319,7 @@ impl PendingUploads {
         let mut held = self.lock()?;
         match held.iter_mut().find(|pending| pending.id == id) {
             Some(pending) => {
-                pending.password = Some(password);
+                pending.password = Some(password.into());
                 Ok(())
             }
             None => Err(no_longer_held()),
@@ -349,7 +349,10 @@ impl PendingUploads {
         match held.iter().position(|pending| pending.id == id) {
             Some(index) => {
                 let pending = held.remove(index);
-                Ok((pending.file, pending.password))
+                Ok((
+                    pending.file,
+                    pending.password.map(sc_error::Secret::into_exposed),
+                ))
             }
             None => Err(no_longer_held()),
         }

@@ -60,10 +60,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use sc_catalog::{
     ATTR_OWNERSHIP_FORMULA, Attrs, Catalog, ChangeLogFeature, ConstraintKind, DataField,
     DataFieldKind, DbId, FIELD_META_TABLE, FieldId, FieldMeta, ReprojectedApp, SchemaChanged,
-    SchemaProjection, SchemaStep, Table, TableConstraint, TableId, TableMeta,
-    create_constraint_steps, disable_rls_sql, drop_constraint_steps, enable_rls_sql,
-    formula_fields, load_field_meta_by_field, load_table_meta_by_name, save_field_meta_row,
-    save_table_meta_row, validate_formula,
+    SchemaProjection, SchemaStep, Table, TableConstraint, TableMeta, create_constraint_steps,
+    disable_rls_sql, drop_constraint_steps, enable_rls_sql, formula_fields,
+    load_field_meta_by_field, load_table_meta_by_name, save_field_meta_row, save_table_meta_row,
+    validate_formula,
 };
 use sc_db::{ColumnGenerator, ColumnRef, SchemaChange};
 use sc_error::{Error, Result};
@@ -1805,7 +1805,7 @@ impl Plan {
                     target_table,
                     target_field,
                     ..
-                } => Some((target_table.0.as_str(), target_field.0.as_str())),
+                } => Some((target_table.as_str(), target_field.0.as_str())),
                 _ => None,
             }
         }
@@ -1816,10 +1816,8 @@ impl Plan {
         let field = &existing.base.name;
         let references = match wanted {
             Some((target_table, target_field)) => {
-                let storage = self.key_storage_type(
-                    &TableId(target_table.to_owned()),
-                    &FieldId(target_field.to_owned()),
-                )?;
+                let storage =
+                    self.key_storage_type(target_table, &FieldId(target_field.to_owned()))?;
                 let column = TypeRef::from_sql_type(existing.base.type_.sql_type());
                 if storage.sql_type() != column.sql_type() {
                     return Err(Error::invalid(format!(
@@ -2165,7 +2163,6 @@ impl Plan {
 
         let mut renamed = projected;
         renamed.name = to.to_owned();
-        renamed.id = sc_catalog::TableId(to.to_owned());
         for constraint in &mut renamed.constraints {
             if constraint.name == TableConstraint::derived_name(table, &constraint.kind, "")
                 && matches!(constraint.kind, ConstraintKind::FullTextSearch { .. })
@@ -2187,9 +2184,9 @@ impl Plan {
             };
             for field in &mut other.fields {
                 if let DataFieldKind::Key { target_table, .. } = &mut field.kind
-                    && target_table.0 == table
+                    && target_table == table
                 {
-                    *target_table = sc_catalog::TableId(to.to_owned());
+                    *target_table = to.to_owned();
                 }
             }
         }
@@ -2591,11 +2588,11 @@ impl Plan {
         else {
             return Ok(kind.clone());
         };
-        let target = self.projection.get(&target_table.0).ok_or_else(|| {
+        let target = self.projection.get(target_table).ok_or_else(|| {
             Error::invalid(format!(
                 "field `{table}.{field}` references table `{}`, which does not exist; \
                  the tables are {}",
-                target_table.0,
+                target_table,
                 quoted(&self.table_names())
             ))
         })?;
@@ -2606,7 +2603,7 @@ impl Plan {
                     return Err(Error::invalid(format!(
                         "field `{table}.{field}` references `{}`, which has no single-column \
                          primary key to point at",
-                        target_table.0
+                        target_table
                     )));
                 }
             }
@@ -2614,7 +2611,7 @@ impl Plan {
             if target.field(&target_field.0).is_none() {
                 return Err(Error::invalid(format!(
                     "field `{table}.{field}` references `{}.{}`, which does not exist",
-                    target_table.0, target_field.0
+                    target_table, target_field.0
                 )));
             }
             target_field.clone()
@@ -2624,7 +2621,7 @@ impl Plan {
         {
             return Err(Error::invalid(format!(
                 "field `{table}.{field}` names summary field `{}`, which `{}` does not have",
-                summary.0, target_table.0
+                summary.0, target_table
             )));
         }
         Ok(DataFieldKind::Key {
@@ -2637,15 +2634,15 @@ impl Plan {
     /// The storage type a foreign key takes: the target column's, never the
     /// caller's — a key whose type disagrees with what it points at is a column
     /// Postgres refuses, and the caller has no reason to know the answer.
-    fn key_storage_type(&self, target_table: &TableId, target_field: &FieldId) -> Result<TypeRef> {
+    fn key_storage_type(&self, target_table: &str, target_field: &FieldId) -> Result<TypeRef> {
         let target = self
             .projection
-            .get(&target_table.0)
-            .ok_or_else(|| Error::invalid(format!("table `{}` does not exist", target_table.0)))?;
+            .get(target_table)
+            .ok_or_else(|| Error::invalid(format!("table `{}` does not exist", target_table)))?;
         let field = target.field(&target_field.0).ok_or_else(|| {
             Error::invalid(format!(
                 "`{}.{}` does not exist",
-                target_table.0, target_field.0
+                target_table, target_field.0
             ))
         })?;
         // The *storage* type, so a rich-typed key is referenced by the column
@@ -3436,7 +3433,7 @@ fn keys_targeting(projection: &SchemaProjection, table: &str, field: &str) -> Ve
                 target_field,
                 ..
             } = &f.kind
-                && target_table.0 == table
+                && target_table == table
                 && target_field.0 == field
                 && !(other.name == table && f.base.name == field)
             {

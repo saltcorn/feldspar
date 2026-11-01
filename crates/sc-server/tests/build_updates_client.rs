@@ -32,7 +32,7 @@ use sc_app::{
     bootstrap, install_frameworks, load_application, save_application,
 };
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_expr::Template;
@@ -322,7 +322,7 @@ async fn build_scaffolds_an_empty_project_and_regenerates_its_code_before_buildi
             .with("store", "apps")
             .with("project", "site"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     save_application(&catalog, &app).await?;
@@ -381,7 +381,7 @@ async fn deep_clean_reinstalls_the_dependencies_and_builds() -> sc_error::Result
             .with("store", "apps")
             .with("project", "shop"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     save_application(&catalog, &app).await?;
@@ -435,7 +435,7 @@ async fn deep_clean_reinstalls_the_dependencies_and_builds() -> sc_error::Result
             .with("store", "apps")
             .with("project", "plain"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     save_application(&catalog, &plain).await?;

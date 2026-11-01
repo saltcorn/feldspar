@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use sc_app::{ApiConfig, Application, FrameworkRef, save_application, scaffold_app};
 use sc_auth::{User, create_user};
-use sc_catalog::{Catalog, DataField, FileStoreId, TableId};
+use sc_catalog::{Catalog, DataField, FileStoreId};
 use sc_check::{
     CheckEnv, ChecklistInput, Editor, Outcome, RunStatus, StepDraft, StepRegistry, edit,
     run_checklist,
@@ -109,7 +109,7 @@ fn todo_app() -> Application {
             .with("store", "apps")
             .with("project", "todo"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"))
 }

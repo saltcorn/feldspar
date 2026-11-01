@@ -622,7 +622,7 @@ async fn renaming_a_table_moves_what_names_it() -> sc_error::Result<()> {
                 .with("output", "web/dist")
                 .with("command", "sh build.sh"),
         )
-        .with_table(sc_catalog::TableId("books".to_owned())),
+        .with_table("books".to_owned()),
     )
     .await?;
     let (status, body) = server
@@ -739,7 +739,7 @@ async fn renaming_a_table_moves_what_names_it() -> sc_error::Result<()> {
         .into_iter()
         .find(|a| a.subdomain == "shelf")
         .unwrap();
-    let tables: Vec<&str> = app.tables.iter().map(|t| t.0.as_str()).collect();
+    let tables: Vec<&str> = app.tables.iter().map(|t| t.as_str()).collect();
     assert_eq!(tables, vec!["titles"]);
 
     // Refused: a name that is taken, a built-in table, and a rename in a batch

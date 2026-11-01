@@ -1354,6 +1354,20 @@ pub(crate) fn resolve_app(
     }
 }
 
+/// The request's `Host` as a [`sc_catalog::TrustedHost`], when it is one this
+/// server serves ([`is_served_host`]) — what a flow that sends a token back to
+/// where it began (OAuth) may link to (TODO-code-quality Q4.2).
+pub(crate) fn served_request_host(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    jar: &CookieJar,
+) -> Option<sc_catalog::TrustedHost> {
+    if !is_served_host(state, headers, jar) {
+        return None;
+    }
+    served_host(headers)
+}
+
 /// Whether the request's `Host` is one this server serves **by name**: an
 /// application's host, or the admin UI's own (under the base domain or an extra
 /// one).
@@ -1993,7 +2007,7 @@ async fn dispatch_analytics_api(
         app.app.id.0,
         &app.app.name,
         &app.app.framework.config,
-        app.app.tables.iter().map(|t| t.0.clone()),
+        app.app.tables.iter().cloned(),
     )
     .await
     {
@@ -2641,15 +2655,6 @@ fn app_request(
     } else {
         sc_app::RequestBody::Empty
     };
-    let host = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-    let scheme = if state.secure_cookies {
-        "https"
-    } else {
-        "http"
-    };
     let mut req = AppRequest::new(method, uri.path());
     req.query = parse_query(uri).into_iter().collect();
     req.body = body;
@@ -2661,11 +2666,10 @@ fn app_request(
         })
         .collect();
     req.user = user;
-    req.base_url = if host.is_empty() {
-        String::new()
-    } else {
-        format!("{scheme}://{host}")
-    };
+    // The application's own origin: a served host (TODO-code-quality Q4.2).
+    req.base_url = served_host(headers)
+        .map(|host| sc_catalog::PublicBaseUrl::new(state.secure_cookies, &host).into())
+        .unwrap_or_default();
     Ok(req)
 }
 
@@ -2693,7 +2697,9 @@ fn request_origin(
     sc_catalog::Origin {
         app: Some(sc_catalog::CallingApp {
             id: app.app.id.0,
-            url: sc_api::AppDirectory::own_origin(&links),
+            url: sc_api::AppDirectory::own_origin(&links)
+                .map(String::from)
+                .unwrap_or_default(),
             scheme,
         }),
         session: None,
@@ -2705,11 +2711,13 @@ fn request_origin(
 /// application this server serves, reached the way this request was — same
 /// scheme, same base domain, same port.
 ///
-/// Only a **served** subdomain has an origin, so a link is never built to a host
-/// a caller made up.
+/// Only built for a request [`resolve_app`] matched to a served application,
+/// so its `Host` is one of the served hosts ([`sc_catalog::TrustedHost::served`]),
+/// and only a **served** subdomain has an origin: a link is never built to a
+/// host a caller made up (TODO-code-quality Q4.2).
 struct RequestLinks {
-    scheme: &'static str,
-    host: String,
+    secure: bool,
+    host: Option<sc_catalog::TrustedHost>,
     base_domain: Option<Arc<String>>,
     apps: Arc<AppMounts>,
 }
@@ -2717,44 +2725,43 @@ struct RequestLinks {
 impl RequestLinks {
     fn new(state: &AppState, headers: &axum::http::HeaderMap) -> RequestLinks {
         RequestLinks {
-            scheme: if state.secure_cookies {
-                "https"
-            } else {
-                "http"
-            },
-            host: headers
-                .get(header::HOST)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or_default()
-                .to_owned(),
+            secure: state.secure_cookies,
+            host: served_host(headers),
             base_domain: state.base_domain.clone(),
             apps: state.apps.clone(),
         }
     }
 }
 
+/// The `Host` of a request [`resolve_app`] matched to an application this
+/// server serves, as a [`sc_catalog::TrustedHost`]; `None` when it has none.
+fn served_host(headers: &axum::http::HeaderMap) -> Option<sc_catalog::TrustedHost> {
+    headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|host| sc_catalog::TrustedHost::served(host).ok())
+}
+
 impl sc_api::AppDirectory for RequestLinks {
-    fn own_origin(&self) -> String {
-        format!("{}://{}", self.scheme, self.host)
+    fn own_origin(&self) -> Option<sc_catalog::PublicBaseUrl> {
+        let host = self.host.as_ref()?;
+        Some(sc_catalog::PublicBaseUrl::new(self.secure, host))
     }
 
-    fn app_origin(&self, subdomain: &str) -> Option<String> {
+    fn app_origin(&self, subdomain: &str) -> Option<sc_catalog::PublicBaseUrl> {
         let base = self.base_domain.as_deref()?;
         self.apps.get(subdomain)?;
-        let port = self
-            .host
-            .rsplit_once(':')
-            .map(|(_, port)| port)
-            .filter(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()));
-        let host = if subdomain == sc_config::ROOT_SUBDOMAIN {
+        let name = if subdomain == sc_config::ROOT_SUBDOMAIN {
             base.to_owned()
         } else {
             format!("{subdomain}.{base}")
         };
-        Some(match port {
-            Some(port) => format!("{}://{host}:{port}", self.scheme),
-            None => format!("{}://{host}", self.scheme),
-        })
+        let host = sc_catalog::TrustedHost::configured(&name).ok()?;
+        let host = match &self.host {
+            Some(own) => host.on_port_of(own),
+            None => host,
+        };
+        Some(sc_catalog::PublicBaseUrl::new(self.secure, &host))
     }
 }
 

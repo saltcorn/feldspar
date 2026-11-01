@@ -87,7 +87,7 @@ pub enum TlsSettings {
         /// The PEM chain: server certificate first, then intermediates.
         certificate: String,
         /// The PEM private key (PKCS#8, PKCS#1 or SEC1).
-        private_key: String,
+        private_key: sc_error::Secret<String>,
         /// The port TLS is served on.
         port: u16,
         /// Whether the plain-HTTP listener redirects here.
@@ -183,7 +183,7 @@ impl TlsSettings {
             // plain HTTP to it.
             SslMode::Off | SslMode::Proxy => Ok(TlsSettings::Off),
             SslMode::Custom => {
-                check_certificate(&settings.certificate, &settings.private_key)?;
+                check_certificate(&settings.certificate, settings.private_key.expose())?;
                 Ok(TlsSettings::Custom {
                     certificate: settings.certificate.clone(),
                     private_key: settings.private_key.clone(),
@@ -378,7 +378,7 @@ pub async fn serve_https(
             private_key,
             ..
         } => {
-            let config = certificate_config(certificate, private_key)?;
+            let config = certificate_config(certificate, private_key.expose())?;
             let acceptor = RustlsAcceptor::new(RustlsConfig::from_config(Arc::new(config)));
             axum_server::from_tcp(listener)
                 .map_err(|e| Error::msg(format!("serving TLS: {e}")))?

@@ -22,7 +22,7 @@ use sc_app::{
     ApiConfig, Application, FrameworkRef, app_source_from_config, build_application,
     emit_app_runtime, scaffold_app,
 };
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -84,8 +84,8 @@ fn staff_app(apis: Vec<ApiConfig>) -> Application {
             .with("store", "apps")
             .with("project", "staff"),
     )
-    .with_table(TableId("departments".to_owned()))
-    .with_table(TableId("employees".to_owned()))
+    .with_table("departments".to_owned())
+    .with_table("employees".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()));
     for api in apis {
         app = app.with_api(api);

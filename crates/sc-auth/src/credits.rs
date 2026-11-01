@@ -52,7 +52,7 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use sc_catalog::{
     Authority, Catalog, DataField, DataFieldKind, FieldId, SharedTx, Table, TableConstraint,
-    TableId, TableMeta, TableWrite, WriteOp, load_table_meta_by_name, save_table_meta_row,
+    TableMeta, TableWrite, WriteOp, load_table_meta_by_name, save_table_meta_row,
 };
 use sc_db::{Row, SchemaChange};
 use sc_error::{Error, Result};
@@ -346,7 +346,7 @@ fn timestamp() -> TypeRef {
 fn user_key() -> DataField {
     DataField {
         kind: DataFieldKind::Key {
-            target_table: TableId(USERS_TABLE.to_owned()),
+            target_table: USERS_TABLE.to_owned(),
             target_field: FieldId(COL_USER_ID_TARGET.to_owned()),
             summary_field: Some(FieldId(COL_EMAIL.to_owned())),
         },
@@ -386,7 +386,7 @@ fn entry_fields() -> Vec<DataField> {
         DataField::plain(COL_CREDIT_KEY, text()).required(),
         DataField {
             kind: DataFieldKind::Key {
-                target_table: TableId(CREDIT_BUCKETS_TABLE.to_owned()),
+                target_table: CREDIT_BUCKETS_TABLE.to_owned(),
                 target_field: FieldId(COL_CREDIT_ID.to_owned()),
                 summary_field: Some(FieldId(COL_CREDIT_KIND.to_owned())),
             },

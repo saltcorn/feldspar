@@ -894,7 +894,10 @@ async fn a_raw_statement_runs_with_its_named_parameters() -> Result<()> {
     assert_eq!(named.params, vec!["least"]);
     let found = rows(
         &driver,
-        Statement::raw(named.sql.clone(), vec![Value::Int(250)]),
+        Statement::raw(
+            sc_query::TrustedSql::admin_authored(named.sql.clone()),
+            vec![Value::Int(250)],
+        ),
     )
     .await?;
     assert_eq!(found.len(), 1);
@@ -991,7 +994,7 @@ async fn a_transaction_local_setting_lives_as_long_as_its_transaction() -> Resul
     .await?;
     tx.commit().await?;
 
-    let read = |sql: String| Statement::raw(sql, Vec::new());
+    let read = |sql: String| Statement::raw(sc_query::TrustedSql::composed(sql), Vec::new());
     let mut tx = driver.begin().await?;
     tx.set_local("sc.changeset", "{\"id\":\"a\"}").await?;
     tx.set_local("sc.changeset", "{\"id\":\"b\"}").await?;

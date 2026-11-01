@@ -75,31 +75,31 @@ impl FileStore for ObjectStore {
     fn name(&self) -> &str {
         &self.name
     }
-    async fn read(&self, _path: &str) -> Result<Bytes> {
+    async fn read(&self, _path: &sc_files::StorePath) -> Result<Bytes> {
         no_bytes("read")
     }
-    async fn write(&self, _path: &str, _data: Bytes) -> Result<()> {
+    async fn write(&self, _path: &sc_files::StorePath, _data: Bytes) -> Result<()> {
         no_bytes("write")
     }
-    async fn list(&self, _dir: &str) -> Result<Vec<Entry>> {
+    async fn list(&self, _dir: &sc_files::StorePath) -> Result<Vec<Entry>> {
         Ok(Vec::new())
     }
-    async fn mkdir(&self, _path: &str) -> Result<()> {
+    async fn mkdir(&self, _path: &sc_files::StorePath) -> Result<()> {
         no_bytes("mkdir")
     }
-    async fn delete(&self, _path: &str) -> Result<bool> {
+    async fn delete(&self, _path: &sc_files::StorePath) -> Result<bool> {
         no_bytes("delete")
     }
-    async fn rename(&self, _from: &str, _to: &str) -> Result<()> {
+    async fn rename(&self, _from: &sc_files::StorePath, _to: &sc_files::StorePath) -> Result<()> {
         no_bytes("rename")
     }
     fn is_git_repo(&self) -> bool {
         false
     }
-    async fn get_meta(&self, _path: &str) -> Result<FileMeta> {
+    async fn get_meta(&self, _path: &sc_files::StorePath) -> Result<FileMeta> {
         Ok(FileMeta::default())
     }
-    async fn set_meta(&self, _path: &str, _meta: &FileMeta) -> Result<()> {
+    async fn set_meta(&self, _path: &sc_files::StorePath, _meta: &FileMeta) -> Result<()> {
         no_bytes("set_meta")
     }
 }

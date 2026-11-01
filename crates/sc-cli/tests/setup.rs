@@ -358,7 +358,10 @@ fn server_with_a_remote_postgres_installs_no_database() {
     assert_eq!(env.port, Some(6432));
     assert_eq!(env.user.as_deref(), Some("app"));
     // Quoted and escaped, so a password with a `"` in it survives.
-    assert_eq!(env.password.as_deref(), Some("s3cr\"t"));
+    assert_eq!(
+        env.password.as_ref().map(sc_error::Secret::expose_str),
+        Some("s3cr\"t")
+    );
     assert_eq!(env.database.as_deref(), Some("prod"));
 
     let url = server_choices(&["--database-url", "postgres://app:pw@db/prod"], &host);

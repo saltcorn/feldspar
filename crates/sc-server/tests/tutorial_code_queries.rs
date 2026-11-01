@@ -18,7 +18,7 @@ use axum::http::{Request, StatusCode, header};
 use sc_api::{CustomQuery, Method, QueryLanguage, set_custom_queries};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, TableId, TableMeta, bootstrap_table_meta, save_table_meta};
+use sc_catalog::{Catalog, TableMeta, bootstrap_table_meta, save_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
@@ -209,8 +209,8 @@ async fn setup() -> sc_error::Result<(Router, TestDb)> {
     let mut api = ApiConfig::new("rest", "/api");
     set_custom_queries(&mut api.config, &tutorial_queries())?;
     let app = Application::new("Library", "library", FrameworkRef::new("code"))
-        .with_table(TableId("authors".to_owned()))
-        .with_table(TableId("books".to_owned()))
+        .with_table("authors".to_owned())
+        .with_table("books".to_owned())
         .with_api(api);
 
     let evaluator = default_js_evaluator();

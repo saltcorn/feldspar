@@ -27,6 +27,9 @@
 //!
 //! The [`bail!`] and [`ensure!`] macros cover the common early-return cases.
 
+pub mod secret;
+pub use secret::Secret;
+
 use std::backtrace::{Backtrace, BacktraceStatus};
 use std::fmt;
 use std::panic::Location;

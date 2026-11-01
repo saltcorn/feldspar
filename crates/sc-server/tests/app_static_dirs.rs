@@ -33,7 +33,7 @@ use sc_app::{
     build_application,
 };
 use sc_auth::{SessionStore, create_user};
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::{FileMeta, FileStore, LocalFileStore};
@@ -211,7 +211,7 @@ fn code_framework() -> FrameworkRef {
 /// never let win (§2).
 fn blog_app() -> Application {
     Application::new("Blog", "blog", code_framework())
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_file_store(FileStoreId("apps".to_owned()))
         .with_file_store(FileStoreId("assets".to_owned()))
         .with_api(ApiConfig::new("rest", "/api"))
@@ -267,23 +267,29 @@ async fn setup(
     catalog.connect_file_store(assets.clone())?;
 
     assets
-        .write("media/hero.png", bytes::Bytes::from_static(HERO))
+        .write(
+            &sc_files::StorePath::from_static("media/hero.png"),
+            bytes::Bytes::from_static(HERO),
+        )
         .await?;
     assets
         .write(
-            "media/private/plans.txt",
+            &sc_files::StorePath::from_static("media/private/plans.txt"),
             bytes::Bytes::from_static(b"the secret plans"),
         )
         .await?;
     // What the `/api` directory would serve if it were ever reached: the API
     // provider answers `/api/posts`, so these bytes must never appear.
     assets
-        .write("media/posts", bytes::Bytes::from_static(b"STATIC"))
+        .write(
+            &sc_files::StorePath::from_static("media/posts"),
+            bytes::Bytes::from_static(b"STATIC"),
+        )
         .await?;
     // And what a directory traversal would reach if `..` escaped the mount.
     assets
         .write(
-            "outside.txt",
+            &sc_files::StorePath::from_static("outside.txt"),
             bytes::Bytes::from_static(b"not under the mount"),
         )
         .await?;
@@ -396,7 +402,7 @@ async fn a_static_directory_serves_its_files_and_nothing_else() -> sc_error::Res
     // The folder is closed to everyone below role 40; the mount does not open it.
     assets
         .set_meta(
-            "media/private",
+            &sc_files::StorePath::from_static("media/private"),
             &FileMeta {
                 min_role: Some(Role::of(40)),
                 ..Default::default()
@@ -430,7 +436,12 @@ async fn a_static_directory_serves_its_files_and_nothing_else() -> sc_error::Res
         .raw("PUT", "/img/hero.png", &[], Some(b"replacement".to_vec()))
         .await;
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
-    assert_eq!(&assets.read("media/hero.png").await?[..], HERO);
+    assert_eq!(
+        &assets
+            .read(&sc_files::StorePath::from_static("media/hero.png"))
+            .await?[..],
+        HERO
+    );
 
     Ok(())
 }
@@ -447,7 +458,7 @@ async fn an_owned_file_is_served_to_its_owner_alone() -> sc_error::Result<()> {
 
     assets
         .set_meta(
-            "media/private",
+            &sc_files::StorePath::from_static("media/private"),
             &FileMeta {
                 min_role: Some(Role::ADMIN),
                 ..Default::default()
@@ -455,7 +466,10 @@ async fn an_owned_file_is_served_to_its_owner_alone() -> sc_error::Result<()> {
         )
         .await?;
     assets
-        .write("media/private/ada.png", bytes::Bytes::from_static(HERO))
+        .write(
+            &sc_files::StorePath::from_static("media/private/ada.png"),
+            bytes::Bytes::from_static(HERO),
+        )
         .await?;
     sc_files::record_owner(
         assets.as_ref(),
@@ -582,7 +596,7 @@ async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()
     // Closed to everyone below role 40 — the same folder the serving half uses.
     assets
         .set_meta(
-            "media/private",
+            &sc_files::StorePath::from_static("media/private"),
             &FileMeta {
                 min_role: Some(Role::of(40)),
                 ..Default::default()

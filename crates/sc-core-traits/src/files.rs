@@ -36,7 +36,7 @@ use std::sync::Arc;
 use sc_agent::{RunCaller, TraitCheck, TraitContext};
 use sc_catalog::{Catalog, load_file_store_by_name};
 use sc_error::{Error, Result};
-use sc_files::{CheckedStore, FileCaller, FileStore};
+use sc_files::{CheckedStore, FileCaller, FileStore, StorePath};
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Map, Value as Json};
 
@@ -175,17 +175,23 @@ impl FileScope {
     /// send a path inside, whereas a silently clamped path would have it editing
     /// a file it did not mean.
     pub fn resolve(&self, rel: &str) -> Result<String> {
-        let rel = normalise_path(rel).map_err(|_| {
+        self.resolve_path(rel).map(String::from)
+    }
+
+    /// [`resolve`](FileScope::resolve), parsed: what a raw store operation
+    /// takes.
+    pub fn resolve_path(&self, rel: &str) -> Result<StorePath> {
+        let outside = || {
             Error::invalid(format!(
-                "`{rel}` is outside {}; paths are relative to it and cannot contain `..`",
+                "`{rel}` is outside {}; paths are relative to it and cannot contain `..` \
+                 (or a `\\`, a `:`)",
                 self.label()
             ))
-        })?;
-        Ok(match (self.root.is_empty(), rel.is_empty()) {
-            (true, _) => rel,
-            (false, true) => self.root.clone(),
-            (false, false) => format!("{}/{rel}", self.root),
-        })
+        };
+        let rel = StorePath::parse(rel.trim()).map_err(|_| outside())?;
+        StorePath::parse(&self.root)
+            .and_then(|root| root.join(rel.as_str()))
+            .map_err(|_| outside())
     }
 
     /// The path a tool **reports**, given a store-relative one: the inverse of
@@ -370,15 +376,9 @@ pub fn check_tool_name(name: &str) -> Result<()> {
 /// wrote it meant something, and telling it the rule is more useful than
 /// silently agreeing with a path it did not intend.
 fn normalise_path(path: &str) -> std::result::Result<String, ()> {
-    let mut out: Vec<&str> = Vec::new();
-    for segment in path.trim().split('/') {
-        match segment {
-            "" | "." => continue,
-            ".." => return Err(()),
-            other => out.push(other),
-        }
-    }
-    Ok(out.join("/"))
+    StorePath::parse(path.trim())
+        .map(String::from)
+        .map_err(|_| ())
 }
 
 /// A string argument, required.

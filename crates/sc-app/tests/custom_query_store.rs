@@ -25,7 +25,7 @@ use sc_app::{
     ApiConfig, Application, FrameworkRef, app_client, app_endpoints, bootstrap, load_application,
     save_application,
 };
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -61,7 +61,7 @@ fn library(queries: &[CustomQuery]) -> Application {
             .with("output", "web/dist")
             .with("command", "sh build.sh"),
     )
-    .with_table(TableId("books".to_owned()))
+    .with_table("books".to_owned())
     .with_api(ApiConfig::new(sc_api::REST_PROVIDER, "/api").with_config(config))
 }
 

@@ -406,11 +406,10 @@ mod tests {
     /// (live updates L5.1): saving its configuration says so.
     #[test]
     fn an_action_cannot_write_a_document() {
-        use sc_catalog::{DataField, DbId, TableId, TableSource};
+        use sc_catalog::{DataField, DbId, TableSource};
         use sc_types::{BasicType, RichTypeRef, TypeRef};
         let doc = TypeRef::rich(RichTypeRef::resolve(sc_types::COLLAB_DOC).unwrap());
         let table = Table {
-            id: TableId("notes".into()),
             name: "notes".into(),
             database: DbId::primary(),
             source: TableSource::Database,

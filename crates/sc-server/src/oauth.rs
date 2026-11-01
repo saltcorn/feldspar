@@ -50,14 +50,15 @@ use axum_extra::extract::cookie::{Cookie, SameSite};
 use base64::Engine;
 use sc_api::SessionAction;
 use sc_auth::User;
+use sc_catalog::{PublicBaseUrl, TrustedHost};
 use sc_config::OAuthProvider;
 use sc_module::consent::ConsentFlow;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::router::{
-    AppState, Resolved, SessionClient, apply_session, is_served_host, log_failure, parse_query,
-    refuse_sign_in, resolve_app, session_user,
+    AppState, Resolved, SessionClient, apply_session, log_failure, parse_query, refuse_sign_in,
+    resolve_app, served_request_host, session_user,
 };
 
 /// Where every route of the flow lives.
@@ -111,8 +112,9 @@ enum Purpose {
 struct Pending {
     purpose: Purpose,
     verifier: String,
-    /// The host it started on (with its port), which it finishes on.
-    host: String,
+    /// The host it started on (with its port), which it finishes on: a host
+    /// this server serves (TODO-code-quality Q4.2).
+    host: TrustedHost,
     return_to: String,
     binding: String,
     redirect_uri: String,
@@ -133,7 +135,7 @@ enum Outcome {
 /// A flow the provider answered, waiting for its host.
 struct Completion {
     outcome: Outcome,
-    host: String,
+    host: TrustedHost,
     return_to: String,
     binding: String,
     expires: Instant,
@@ -266,8 +268,9 @@ fn authorization_address(
     format!("{}{sep}{}", request.url, form(&pairs))
 }
 
-/// The request's `Host`, as sent (with its port).
-fn request_host(headers: &axum::http::HeaderMap) -> String {
+/// The request's `Host`, as sent (with its port) — compared with a flow's
+/// [`TrustedHost`], and never a link.
+fn sent_host(headers: &axum::http::HeaderMap) -> String {
     headers
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
@@ -275,26 +278,22 @@ fn request_host(headers: &axum::http::HeaderMap) -> String {
         .to_ascii_lowercase()
 }
 
-fn scheme(state: &AppState) -> &'static str {
-    if state.secure_cookies {
-        "https"
-    } else {
-        "http"
+/// The host the callback is on: the admin UI's (configuration), on the port
+/// this request came in on; without a base domain, the only host there is.
+fn callback_host(state: &AppState, host: &TrustedHost) -> TrustedHost {
+    match state
+        .apps
+        .admin_host()
+        .and_then(|admin| TrustedHost::configured(&admin).ok())
+    {
+        Some(admin) => admin.on_port_of(host),
+        None => host.clone(),
     }
 }
 
-/// The host the callback is on: the admin UI's, on the port this request
-/// came in on; without a base domain, the only host there is.
-fn callback_host(state: &AppState, host: &str) -> String {
-    let Some(admin) = state.apps.admin_host() else {
-        return host.to_owned();
-    };
-    match host.rsplit_once(':') {
-        Some((_, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
-            format!("{admin}:{port}")
-        }
-        _ => admin,
-    }
+/// An absolute link to `path` on `host`.
+fn link(state: &AppState, host: &TrustedHost, path: &str) -> String {
+    PublicBaseUrl::new(state.secure_cookies, host).join(path)
 }
 
 /// Whether `provider` is offered on a host of this kind.
@@ -372,15 +371,10 @@ pub(crate) async fn start(
     };
     // The flow ends by sending the browser, with a token worth a session, back
     // to the host it started on: that must be a host this server serves.
-    if !is_served_host(&state, &headers, &jar) {
+    let Some(host) = served_request_host(&state, &headers, &jar) else {
         return unserved_host();
-    }
-    let host = request_host(&headers);
-    let redirect_uri = format!(
-        "{}://{}{CALLBACK_ROUTE}",
-        scheme(&state),
-        callback_host(&state, &host)
-    );
+    };
+    let redirect_uri = link(&state, &callback_host(&state, &host), CALLBACK_ROUTE);
     let flow_state = crate::security::new_csrf_token();
     let verifier = crate::security::new_csrf_token();
     let binding = crate::security::new_csrf_token();
@@ -446,15 +440,10 @@ pub(crate) async fn consent(
         ))
         .into_response();
     }
-    if !is_served_host(&state, &headers, &jar) {
+    let Some(host) = served_request_host(&state, &headers, &jar) else {
         return unserved_host();
-    }
-    let host = request_host(&headers);
-    let redirect_uri = format!(
-        "{}://{}{CALLBACK_ROUTE}",
-        scheme(&state),
-        callback_host(&state, &host)
-    );
+    };
+    let redirect_uri = link(&state, &callback_host(&state, &host), CALLBACK_ROUTE);
     let flow_state = crate::security::new_csrf_token();
     let verifier = crate::security::new_csrf_token();
     let binding = crate::security::new_csrf_token();
@@ -534,11 +523,10 @@ pub(crate) async fn callback(State(state): State<AppState>, uri: Uri) -> Respons
         .into_response();
     };
     let back = |message: &str| {
-        Redirect::to(&format!(
-            "{}://{}{}",
-            scheme(&state),
-            pending.host,
-            with_error(&pending.return_to, message)
+        Redirect::to(&link(
+            &state,
+            &pending.host,
+            &with_error(&pending.return_to, message),
         ))
         .into_response()
     };
@@ -571,7 +559,7 @@ pub(crate) async fn callback(State(state): State<AppState>, uri: Uri) -> Respons
             let client = Client {
                 token_url: &flow.token_url,
                 client_id: &flow.client_id,
-                client_secret: &flow.client_secret,
+                client_secret: flow.client_secret.expose(),
             };
             match exchange(&client, code, &pending).await {
                 Ok((_, tokens)) => Outcome::Consent {
@@ -589,10 +577,10 @@ pub(crate) async fn callback(State(state): State<AppState>, uri: Uri) -> Respons
         binding: pending.binding.clone(),
         expires: Instant::now() + COMPLETION_TTL,
     });
-    Redirect::to(&format!(
-        "{}://{}{COMPLETE_ROUTE}?token={token}",
-        scheme(&state),
-        pending.host
+    Redirect::to(&link(
+        &state,
+        &pending.host,
+        &format!("{COMPLETE_ROUTE}?token={token}"),
     ))
     .into_response()
 }
@@ -661,7 +649,7 @@ async fn signed_in_email(
     let as_client = Client {
         token_url: &provider.token_url,
         client_id: &provider.client_id,
-        client_secret: &provider.client_secret,
+        client_secret: provider.client_secret.expose(),
     };
     let (client, token) = exchange(&as_client, code, pending).await?;
     let access_token = token
@@ -760,7 +748,7 @@ async fn account_for(
                 email: email.to_owned(),
                 // A password nobody is told: this account signs in through the
                 // provider, or sets one with a forgotten-password link.
-                password: String::new(),
+                password: sc_error::Secret::default(),
                 role: provider.new_user_role,
                 ..Default::default()
             };
@@ -807,9 +795,9 @@ pub(crate) async fn complete(
     let token = parse_query(&uri)
         .into_iter()
         .find_map(|(k, v)| (k == "token").then_some(v));
-    let host = request_host(&headers);
+    let host = sent_host(&headers);
     let completion = token.and_then(|token| state.apps.oauth().redeem(&token));
-    let Some(completion) = completion.filter(|c| c.host == host) else {
+    let Some(completion) = completion.filter(|c| c.host.as_str() == host) else {
         return Redirect::to(&with_error("/", "the sign-in could not be completed"))
             .into_response();
     };
@@ -880,7 +868,7 @@ pub(crate) async fn complete(
 /// end of a chain that began at the provider. Leaving from a page on this host
 /// is same-site.
 fn leave_for(target: &str) -> Response {
-    let target = html_escape(target);
+    let target = sc_expr::html::escape(target);
     let mut out = (
         StatusCode::OK,
         Html(format!(
@@ -936,13 +924,6 @@ async fn store_tokens(
     .await
     .map_err(failed)?;
     Ok(())
-}
-
-fn html_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 #[cfg(test)]
@@ -1019,7 +1000,7 @@ mod tests {
                 admin: false,
             },
             verifier: "v".into(),
-            host: "h".into(),
+            host: TrustedHost::served("h").unwrap(),
             return_to: "/".into(),
             binding: "b".into(),
             redirect_uri: "r".into(),
@@ -1030,7 +1011,7 @@ mod tests {
         assert!(flows.take("s").is_none());
         let token = flows.complete(Completion {
             outcome: Outcome::SignIn(User::new(uuid::Uuid::new_v4(), Role::ADMIN)),
-            host: "h".into(),
+            host: TrustedHost::served("h").unwrap(),
             return_to: "/".into(),
             binding: "b".into(),
             expires: Instant::now() + COMPLETION_TTL,

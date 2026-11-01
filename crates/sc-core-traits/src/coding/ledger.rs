@@ -257,8 +257,9 @@ pub async fn diff_ledger(
         ..RunDiff::default()
     };
     for (path, before) in &ledger.files {
-        let now = match store.stat(path).await? {
-            Some(stat) if !stat.is_dir => Some(store.read(path).await?),
+        let at = sc_files::StorePath::parse(path)?;
+        let now = match store.stat(&at).await? {
+            Some(stat) if !stat.is_dir => Some(store.read(&at).await?),
             _ => None,
         };
         let rel = scope.relative(path);

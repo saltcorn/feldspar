@@ -325,7 +325,7 @@ async fn editing_repoints_live_and_renaming_disconnects_the_old_name() -> sc_err
 
     let before = catalog
         .require_file_store("docs", sc_catalog::Unchecked::system("test"))?
-        .read("marker.txt")
+        .read(&sc_files::StorePath::from_static("marker.txt"))
         .await?;
     assert_eq!(&before[..], b"old");
 
@@ -349,7 +349,7 @@ async fn editing_repoints_live_and_renaming_disconnects_the_old_name() -> sc_err
     // The new name serves the new directory, immediately.
     let after = catalog
         .require_file_store("handbook", sc_catalog::Unchecked::system("test"))?
-        .read("marker.txt")
+        .read(&sc_files::StorePath::from_static("marker.txt"))
         .await?;
     assert_eq!(&after[..], b"new");
 

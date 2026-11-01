@@ -70,14 +70,14 @@ async fn setup(db: &TestDb, tag: &str) -> Result<(Catalog, PathBuf)> {
 fn fired() -> Event {
     Event::new(EventKind::None)
         .payload(json!({}))
-        .caller(1, Some(json!({ "email": "admin@example.com" })))
+        .caller(Role::ADMIN, Some(json!({ "email": "admin@example.com" })))
 }
 
 /// The same, fired by an ordinary user — what `as_user()` delegates to.
 fn fired_by_a_user() -> Event {
     Event::new(EventKind::None)
         .payload(json!({}))
-        .caller(80, Some(json!({ "email": "ada@example.com" })))
+        .caller(Role::of(80), Some(json!({ "email": "ada@example.com" })))
 }
 
 fn adapters() -> BTreeMap<String, Arc<dyn CodeAdapter>> {
@@ -338,9 +338,11 @@ return file.meta()
     assert_eq!(out["attributes"]["origin"], json!("trigger"));
     // The same metadata the store itself reads: a body's `set_meta` is not a
     // second place rules are kept.
-    let store = catalog.require_file_store("docs")?;
-    let meta = store.get_meta("secret.txt").await?;
-    assert_eq!(meta.min_role, Some(10));
+    let store = catalog.require_file_store("docs", sc_catalog::Unchecked::system("test"))?;
+    let meta = store
+        .get_meta(&sc_files::StorePath::from_static("secret.txt"))
+        .await?;
+    assert_eq!(meta.min_role, Some(sc_types::Role::of(10)));
     assert_eq!(
         meta.attributes.get("origin").map(String::as_str),
         Some("trigger")
@@ -359,10 +361,10 @@ async fn a_delegated_body_obeys_the_folder_rule_and_the_trigger_does_not() -> Re
     std::fs::write(dir.join("open.txt"), "public").unwrap();
     // Admin-only, on the *folder* — the file below it carries no rule of its own,
     // which is the whole point of the rule being path-cumulative.
-    let store = catalog.require_file_store("docs")?;
+    let store = catalog.require_file_store("docs", sc_catalog::Unchecked::system("test"))?;
     store
         .set_meta(
-            "private",
+            &sc_files::StorePath::from_static("private"),
             &FileMeta {
                 min_role: Some(Role::ADMIN),
                 ..Default::default()
@@ -414,7 +416,7 @@ async fn a_delegated_body_obeys_the_stores_own_floor() -> Result<()> {
     // The floor lives in the store's *definition*, not beside the bytes: the
     // outermost entry on every path in the store (§1.1).
     let mut def = FileStoreDef::local("docs", dir.to_string_lossy());
-    def.min_role = Some(1);
+    def.min_role = Some(Role::ADMIN);
     save_file_store(&catalog, &def).await?;
 
     let out = run(

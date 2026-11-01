@@ -28,7 +28,7 @@ use sc_auth::{
     CACHE_CAPACITY, NewRoleGrant, RoleDef, SessionStore, create_user, find_role_grant, grant_role,
     save_role,
 };
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -198,7 +198,7 @@ fn code_framework() -> FrameworkRef {
 
 fn blog_app() -> Application {
     Application::new("Blog", "blog", code_framework())
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_file_store(FileStoreId("apps".to_owned()))
         .with_api(ApiConfig::new("rest", "/api"))
 }

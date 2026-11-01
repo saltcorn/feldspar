@@ -264,11 +264,25 @@ async fn section_8_names_the_datasets_of_old_models_on_sqlite_and_twice_is_once(
     let statements = sqlite_statements();
     assert_eq!(statements.len(), 6, "{statements:#?}");
     for statement in &statements {
-        run(&cat, Statement::raw(statement.clone(), Vec::new())).await?;
+        run(
+            &cat,
+            Statement::raw(
+                sc_query::TrustedSql::composed(statement.clone()),
+                Vec::new(),
+            ),
+        )
+        .await?;
     }
     let once = state(&cat).await?;
     for statement in &statements {
-        run(&cat, Statement::raw(statement.clone(), Vec::new())).await?;
+        run(
+            &cat,
+            Statement::raw(
+                sc_query::TrustedSql::composed(statement.clone()),
+                Vec::new(),
+            ),
+        )
+        .await?;
     }
     assert_eq!(state(&cat).await?, once);
     assert_eq!(once.len(), 5, "three datasets and two models: {once:#?}");
@@ -332,9 +346,15 @@ async fn section_10_gives_models_a_view_state_on_sqlite() -> Result<()> {
     let upgrade = sqlite_statements();
     without_view_states(&cat, async || {
         for statement in &upgrade {
-            run(&cat, Statement::raw(statement.clone(), Vec::new()))
-                .await
-                .expect("section 8");
+            run(
+                &cat,
+                Statement::raw(
+                    sc_query::TrustedSql::composed(statement.clone()),
+                    Vec::new(),
+                ),
+            )
+            .await
+            .expect("section 8");
         }
     })
     .await?;
@@ -347,9 +367,23 @@ async fn section_10_gives_models_a_view_state_on_sqlite() -> Result<()> {
         .collect();
     assert_eq!(statements.len(), 2, "{statements:#?}");
     // The column once, as the section says; the update is safe to repeat.
-    run(&cat, Statement::raw(statements[0].clone(), Vec::new())).await?;
+    run(
+        &cat,
+        Statement::raw(
+            sc_query::TrustedSql::composed(statements[0].clone()),
+            Vec::new(),
+        ),
+    )
+    .await?;
     for _ in 0..2 {
-        run(&cat, Statement::raw(statements[1].clone(), Vec::new())).await?;
+        run(
+            &cat,
+            Statement::raw(
+                sc_query::TrustedSql::composed(statements[1].clone()),
+                Vec::new(),
+            ),
+        )
+        .await?;
     }
     cat.reload().await?;
     let states = view_states(&cat).await?;

@@ -147,7 +147,8 @@ pub async fn project(
     // the caller's read: an agent whose user cannot see the project cannot
     // learn what scripts it declares either.
     sc_files::check_access(store.as_ref(), floor, &manifest_path, caller).await?;
-    let manifest = store.read(&manifest_path).await.map_err(|_| {
+    let manifest_at = sc_files::StorePath::parse(&manifest_path)?;
+    let manifest = store.read(&manifest_at).await.map_err(|_| {
         Error::invalid(format!(
             "{} has no `package.json`, so it declares no scripts to run",
             scope.label()
@@ -159,7 +160,7 @@ pub async fn project(
     // an external process handed a working directory, so the store must have
     // one. An object store cannot host a project that runs.
     let dir = store
-        .local_path(&manifest_path)?
+        .local_path(&manifest_at)?
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .ok_or_else(|| {
             Error::config(format!(

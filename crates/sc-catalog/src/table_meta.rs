@@ -170,8 +170,8 @@ impl ProvidedTableDef {
 
 /// Identifies a stored table-overlay row.
 ///
-/// Distinct from [`TableId`](crate::TableId), which is a table's *name* and is
-/// what everything else references. This id is the row's identity, so an overlay
+/// Distinct from the table's *name*, which is what everything else
+/// references. This id is the row's identity, so an overlay
 /// keeps its identity across edits — and, when table renaming eventually exists,
 /// across a rename.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -399,7 +399,7 @@ pub fn reveal_join_value(
         else {
             return Ok(());
         };
-        current = catalog.require(&target_table.0)?;
+        current = catalog.require(target_table)?;
     }
     if !is_secret_column(&current, last) {
         return Ok(());

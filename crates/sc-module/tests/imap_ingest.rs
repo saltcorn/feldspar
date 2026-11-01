@@ -527,7 +527,11 @@ await db.mail_log.insert({
             .require_file_store("mail_files", sc_catalog::Unchecked::system("test"))
             .unwrap();
         assert_eq!(
-            store.read(&pdf).await.unwrap().as_ref(),
+            store
+                .read(&sc_files::StorePath::parse(&pdf).unwrap())
+                .await
+                .unwrap()
+                .as_ref(),
             b"%PDF-1.4 order 1"
         );
         let log = query(
@@ -711,7 +715,11 @@ await db.mail_log.insert({
         assert_eq!(fetched["stored"], json!(true), "{fetched}");
         let path = fetched["file"].as_str().unwrap();
         assert_eq!(
-            store.read(path).await.unwrap().as_ref(),
+            store
+                .read(&sc_files::StorePath::parse(path).unwrap())
+                .await
+                .unwrap()
+                .as_ref(),
             b"%PDF-1.4 order 1"
         );
 

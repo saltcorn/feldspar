@@ -430,9 +430,17 @@ async fn a_python_modules_action_fires_from_a_trigger_and_writes_through_db() ->
     save_trigger(&catalog, &registry, &trigger).await?;
     dispatcher.reload(&catalog).await?;
 
-    let caller = Principal::new(1, Some(json!({ "email": "ada@example.com" })));
+    let caller = Principal::new(
+        sc_types::Role::ADMIN,
+        Some(json!({ "email": "ada@example.com" })),
+    );
     let result = dispatcher
-        .run_trigger(&catalog, "note it", json!({ "who": "ada" }), Some(&caller))
+        .run_trigger(
+            &catalog,
+            "note it",
+            json!({ "who": "ada" }),
+            sc_catalog::Authority::Caller(&caller),
+        )
         .await?;
 
     // What the plugin returned: its own configured setting, the **module's**
@@ -548,7 +556,12 @@ return {
     save_trigger(&catalog, &registry, &trigger).await?;
     dispatcher.reload(&catalog).await?;
     let result = dispatcher
-        .run_trigger(&catalog, "shout", json!({ "what": "quiet" }), None)
+        .run_trigger(
+            &catalog,
+            "shout",
+            json!({ "what": "quiet" }),
+            sc_catalog::Authority::system("test"),
+        )
         .await?;
     assert_eq!(result["short"], json!("QUIET!"));
     assert_eq!(result["named"], json!(5));
@@ -617,7 +630,7 @@ async fn a_table_backed_by_a_python_provider_is_read_filtered_and_written() -> R
     // And it is writable, because the class defines all three write methods.
     assert_eq!(table.provided_writes(), ProvidedWrites::ALL);
 
-    let provider = catalog.provider(&table)?;
+    let provider = catalog.provider(&table, sc_catalog::Unchecked::system("test"))?;
 
     // --- read, filtered ----------------------------------------------------
     let mut select = Select::from(Source::table("fixtures"));

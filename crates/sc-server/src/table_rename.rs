@@ -203,7 +203,7 @@ impl Rename<'_> {
         }
         // Read back through the store, so what is mounted is what is stored.
         for app in sc_app::list_applications(catalog).await? {
-            if app.tables.iter().any(|t| t.0 == self.to) {
+            if app.tables.iter().any(|t| t == self.to) {
                 changed.push(app);
             }
         }

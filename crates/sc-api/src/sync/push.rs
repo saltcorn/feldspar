@@ -331,7 +331,10 @@ impl Device<'_> {
         let claimed = tx
             .run(
                 Unchecked::vouched(self.context, OWN_DEVICE),
-                &Statement::raw(sql, vec![Value::Int(mutation), Value::Uuid(self.id)]),
+                &Statement::raw(
+                    sc_query::TrustedSql::composed(sql),
+                    vec![Value::Int(mutation), Value::Uuid(self.id)],
+                ),
             )
             .await?;
         Ok(!claimed.is_empty())
@@ -396,7 +399,7 @@ impl Device<'_> {
             let Some(offline_key) = row.get(&field.base.name).and_then(temp_key) else {
                 continue;
             };
-            let target = cat.require(&target_table.0)?;
+            let target = cat.require(target_table)?;
             let target_pk = rows::single_pk(&target)?;
             if !issues_keys(&target, &target_pk) {
                 continue;
@@ -505,10 +508,10 @@ impl Device<'_> {
             .run(
                 Unchecked::vouched(self.context, OWN_DEVICE),
                 &Statement::raw(
-                    format!(
+                    sc_query::TrustedSql::composed(format!(
                         "SELECT row_key FROM \"{SYNC_KEYS_TABLE}\" \
                          WHERE client_id = $1 AND mutation = $2 AND table_name = $3"
-                    ),
+                    )),
                     vec![
                         Value::Uuid(self.id),
                         Value::Int(mutation),
@@ -540,7 +543,7 @@ impl Device<'_> {
         tx.run(
             Unchecked::vouched(self.context, OWN_DEVICE),
             &Statement::raw(
-                sql,
+                sc_query::TrustedSql::composed(sql),
                 vec![
                     Value::Uuid(self.id),
                     Value::Int(change.mutation),

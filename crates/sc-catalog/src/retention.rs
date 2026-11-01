@@ -109,7 +109,7 @@ fn removable(
 async fn query(catalog: &Catalog, sql: String, binds: Vec<Value>) -> Result<Vec<sc_db::Row>> {
     catalog
         .primary_driver()
-        .query(&Statement::raw(sql, binds))
+        .query(&Statement::raw(sc_query::TrustedSql::composed(sql), binds))
         .await?
         .try_collect()
         .await
@@ -221,7 +221,11 @@ pub async fn clean_change_log(catalog: &Catalog, now: DateTime<Utc>) -> Result<C
         let Ok(Some(store)) = catalog.raw_file_store(store) else {
             continue;
         };
-        match store.delete(path).await {
+        let removed = match sc_files::StorePath::parse(path) {
+            Ok(at) => store.delete(&at).await,
+            Err(e) => Err(e),
+        };
+        match removed {
             Ok(_) => done.files += 1,
             Err(e) => eprintln!(
                 "feldspar: removing `{path}`, whose row's history expired: {}",
@@ -284,10 +288,10 @@ async fn file_referenced(
         )
     };
     let row = Statement::raw(
-        format!(
+        sc_query::TrustedSql::composed(format!(
             "SELECT 1 FROM {quoted_table} WHERE {} = $1 LIMIT 1",
             crate::change_log::as_text_sql(&quoted_column)
-        ),
+        )),
         vec![Value::Text(path.to_owned())],
     );
     // Row-level security must not hide a row from the question.

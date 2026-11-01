@@ -247,11 +247,14 @@ async fn setup(tmp: &TempDir, tag: &str) -> sc_error::Result<Server> {
     let store = Arc::new(LocalFileStore::new("files", &files_dir)?);
     catalog.connect_file_store(store.clone())?;
     store
-        .write("alice/notes.txt", Bytes::from_static(b"alice's notes"))
+        .write(
+            &sc_files::StorePath::from_static("alice/notes.txt"),
+            Bytes::from_static(b"alice's notes"),
+        )
         .await?;
     store
         .set_meta(
-            "alice/notes.txt",
+            &sc_files::StorePath::from_static("alice/notes.txt"),
             &FileMeta {
                 min_role: Some(Role::ADMIN),
                 owner: Some(ids["alice"].to_string()),

@@ -15,7 +15,7 @@ use sc_db::PhysicalTable;
 use sc_types::{BaseField, BasicType, RichTypeRef, TypeRef};
 
 use crate::constraint::TableConstraint;
-use crate::field::{Attrs, DataField, DataFieldKind, DbId, FieldId, TableId};
+use crate::field::{Attrs, DataField, DataFieldKind, DbId, FieldId};
 use crate::field_meta::FieldMeta;
 use crate::provider::ProvidedWrites;
 use crate::table_meta::{TableMeta, TableMetaId};
@@ -115,8 +115,6 @@ impl Default for AccessRules {
 /// A table as the catalog knows it (technical design §8.2).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Table {
-    /// Stable identity (the table name in the MVP).
-    pub id: TableId,
     /// The (unqualified) table name.
     pub name: String,
     /// The database that hosts it.
@@ -188,7 +186,7 @@ impl Table {
                 let is_pk = pk.contains(col.name.as_str());
                 let kind = single_column_fk_target(physical, &col.name)
                     .map(|(table, field)| DataFieldKind::Key {
-                        target_table: TableId(table),
+                        target_table: table,
                         target_field: FieldId(field),
                         summary_field: None,
                     })
@@ -197,7 +195,6 @@ impl Table {
             })
             .collect();
         Table {
-            id: TableId(physical.name.clone()),
             name: physical.name.clone(),
             database,
             source: TableSource::Database,
@@ -236,7 +233,6 @@ impl Table {
     ) -> Table {
         let name = name.into();
         Table {
-            id: TableId(name.clone()),
             label: name.clone(),
             name,
             database,
@@ -283,7 +279,6 @@ impl Table {
             .map(|f| f.base.name.clone())
             .collect();
         Table {
-            id: TableId(name.clone()),
             label: name.clone(),
             name,
             database,
@@ -686,7 +681,6 @@ mod tests {
     /// A two-column `books` table: a `text` `title` and a `text` `cover`.
     fn books() -> Table {
         Table {
-            id: TableId("books".into()),
             name: "books".into(),
             database: DbId::primary(),
             source: TableSource::Database,
@@ -818,7 +812,7 @@ mod tests {
         // into another database). It applies rather than being rejected.
         let mut table = books();
         let key = DataFieldKind::Key {
-            target_table: TableId("authors".into()),
+            target_table: "authors".into(),
             target_field: FieldId("id".into()),
             summary_field: Some(FieldId("name".into())),
         };
@@ -834,13 +828,13 @@ mod tests {
         // database's target and adds only the summary field.
         let mut table = books();
         table.fields[0].kind = DataFieldKind::Key {
-            target_table: TableId("authors".into()),
+            target_table: "authors".into(),
             target_field: FieldId("id".into()),
             summary_field: None,
         };
         let meta = FieldMeta::new("books", "title").kind(DataFieldKind::Key {
             // A different target here must be ignored — the database is authority.
-            target_table: TableId("wrong".into()),
+            target_table: "wrong".into(),
             target_field: FieldId("wrong".into()),
             summary_field: Some(FieldId("name".into())),
         });
@@ -850,7 +844,7 @@ mod tests {
         assert_eq!(
             table.field("title").unwrap().kind,
             DataFieldKind::Key {
-                target_table: TableId("authors".into()),
+                target_table: "authors".into(),
                 target_field: FieldId("id".into()),
                 summary_field: Some(FieldId("name".into())),
             }

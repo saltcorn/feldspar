@@ -436,7 +436,7 @@ async fn a_directory_the_caller_may_not_open_is_neither_listed_nor_searched() ->
         .require_file_store("code", sc_catalog::Unchecked::system("test"))?;
     store
         .set_meta(
-            "private",
+            &sc_files::StorePath::from_static("private"),
             &FileMeta {
                 min_role: Some(Role::ADMIN),
                 ..FileMeta::default()

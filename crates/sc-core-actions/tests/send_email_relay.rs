@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use sc_action::{ActionContext, Event, EventKind, Trigger, validate_trigger};
 use sc_catalog::{
-    Catalog, DataField, DataFieldKind, FieldId, FieldMeta, SecretKey, TableId,
-    bootstrap_field_meta, save_field_meta,
+    Catalog, DataField, DataFieldKind, FieldId, FieldMeta, SecretKey, bootstrap_field_meta,
+    save_field_meta,
 };
 use sc_core_actions::builtin_actions;
 use sc_db::DatabaseDriver;
@@ -72,7 +72,7 @@ async fn mailroom(db: &TestDb) -> Result<Arc<Catalog>> {
     .await?;
     let mut account = DataField::plain("account", int());
     account.kind = DataFieldKind::Key {
-        target_table: TableId("mail_accounts".to_owned()),
+        target_table: "mail_accounts".to_owned(),
         target_field: FieldId("id".to_owned()),
         summary_field: None,
     };
@@ -187,7 +187,7 @@ async fn the_accounts_server_is_used_with_its_password_revealed_for_the_template
     assert_eq!(server.security, SmtpSecurity::Tls);
     assert_eq!(server.username, "orders@example.com");
     // The column holds the envelope; the template got the plaintext.
-    assert_eq!(server.password, PLAINTEXT);
+    assert_eq!(server.password.expose(), PLAINTEXT);
     // …and the settings' own debug output does not.
     assert!(!format!("{server:?}").contains(PLAINTEXT));
     assert_eq!(result["smtp_host"], json!("smtp.example.com"));
@@ -352,7 +352,7 @@ async fn a_trigger_on_the_account_table_reads_its_own_secret() -> Result<()> {
         .servers()
         .remove(0)
         .expect("sent through the override");
-    assert_eq!(server.password, PLAINTEXT);
+    assert_eq!(server.password.expose(), PLAINTEXT);
     // No port given and no security given: submission over STARTTLS.
     assert_eq!(
         (server.port, server.security),

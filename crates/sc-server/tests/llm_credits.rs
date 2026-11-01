@@ -17,7 +17,7 @@ use rust_decimal::Decimal;
 use sc_action::{EventKind, Trigger, save_trigger};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
 use sc_auth::{CreditDebit, RoleDef, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
@@ -155,8 +155,8 @@ async fn setup() -> sc_error::Result<(Router, Arc<Catalog>, TestDb)> {
             .with_triggers(dispatcher.clone()),
     );
     let app = Application::new("Agents", "agents", FrameworkRef::new("code"))
-        .with_table(TableId(sc_auth::CREDIT_BUCKETS_TABLE.to_owned()))
-        .with_table(TableId(sc_auth::CREDIT_ENTRIES_TABLE.to_owned()))
+        .with_table(sc_auth::CREDIT_BUCKETS_TABLE.to_owned())
+        .with_table(sc_auth::CREDIT_ENTRIES_TABLE.to_owned())
         .with_api(ApiConfig::new("rest", "/api"));
     let framework = Arc::new(CodeFramework::new(
         "code",

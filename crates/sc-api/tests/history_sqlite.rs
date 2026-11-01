@@ -75,7 +75,10 @@ async fn edit(catalog: &Catalog, op: schema_edit::Operation) -> Result<()> {
 async fn rows_of(catalog: &Catalog, sql: &str) -> Result<Vec<sc_db::Row>> {
     catalog
         .primary(sc_catalog::Unchecked::system("test"))
-        .query(&Statement::raw(sql, Vec::new()))
+        .query(&Statement::raw(
+            sc_query::TrustedSql::composed(sql),
+            Vec::new(),
+        ))
         .await?
         .try_collect()
         .await

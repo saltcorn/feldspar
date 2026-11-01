@@ -34,6 +34,7 @@ use crate::access::{
 };
 use crate::serve::ServeFile;
 use crate::store::{Entry, FileMeta, FileStat, FileStore};
+use crate::store_path::{AsStorePath, StorePath};
 use crate::stream::{BoxAsyncRead, BoxAsyncWrite};
 
 /// A store, its store-wide floor and the caller every operation is decided
@@ -86,36 +87,32 @@ impl CheckedStore {
                 self.store.name()
             )));
         }
-        self.store.local_path("")
+        self.store.local_path(&StorePath::root())
     }
 
     /// Refused unless the caller may read `path`.
-    pub async fn check_read(&self, path: &str) -> Result<()> {
+    pub async fn check_read(&self, path: impl AsStorePath) -> Result<()> {
         check_access(self.store.as_ref(), self.floor, path, &self.caller).await
     }
 
     /// Refused unless the caller may write (create, replace, delete, rename,
     /// re-rule) `path`.
-    pub async fn check_write(&self, path: &str) -> Result<()> {
+    pub async fn check_write(&self, path: impl AsStorePath) -> Result<()> {
         check_write(self.store.as_ref(), self.floor, path, &self.caller).await
     }
 
     /// `path`, once the caller may read it.
-    pub async fn readable(&self, path: &str) -> Result<Readable<'_>> {
-        self.check_read(path).await?;
-        Ok(Readable {
-            store: self,
-            path: path.to_owned(),
-        })
+    pub async fn readable(&self, path: impl AsStorePath) -> Result<Readable<'_>> {
+        let path = path.store_path()?.into_owned();
+        self.check_read(&path).await?;
+        Ok(Readable { store: self, path })
     }
 
     /// `path`, once the caller may write it.
-    pub async fn writable(&self, path: &str) -> Result<Writable<'_>> {
-        self.check_write(path).await?;
-        Ok(Writable {
-            store: self,
-            path: path.to_owned(),
-        })
+    pub async fn writable(&self, path: impl AsStorePath) -> Result<Writable<'_>> {
+        let path = path.store_path()?.into_owned();
+        self.check_write(&path).await?;
+        Ok(Writable { store: self, path })
     }
 
     /// `path`, for a caller whose **route** already decided they may deposit a
@@ -127,72 +124,70 @@ impl CheckedStore {
     /// Only for a route with a rule of its own that admits the caller (a
     /// `File` field's table write rule, an upload slot's issuer), which is the
     /// caller's to name in the system-authority inventory.
-    pub async fn deposit(&self, path: &str) -> Result<Writable<'_>> {
-        if self.store.stat(path).await?.is_some() {
-            self.check_write(path).await?;
+    pub async fn deposit(&self, path: impl AsStorePath) -> Result<Writable<'_>> {
+        let path = path.store_path()?.into_owned();
+        if self.store.stat(&path).await?.is_some() {
+            self.check_write(&path).await?;
         }
-        Ok(Writable {
-            store: self,
-            path: path.to_owned(),
-        })
+        Ok(Writable { store: self, path })
     }
 
     /// The first free spelling of `path` (`name_1.ext`, …): an existence probe
     /// a [`deposit`](CheckedStore::deposit) that keeps what is there needs.
     /// It answers a name, never what is stored under one.
-    pub async fn free_path(&self, path: &str) -> Result<String> {
+    pub async fn free_path(&self, path: impl AsStorePath) -> Result<String> {
         crate::reference::free_path(self.store.as_ref(), path).await
     }
 
     /// The rule that reaches `path`: the store's floor tightened by every
     /// directory above it and by the entry's own. Metadata, not content, and
     /// what a caller deciding whether a change only tightens it compares.
-    pub async fn effective_min_role(&self, path: &str) -> Result<Option<Role>> {
+    pub async fn effective_min_role(&self, path: impl AsStorePath) -> Result<Option<Role>> {
         effective_min_role(self.store.as_ref(), self.floor, path).await
     }
 
     /// The bytes of `path`.
-    pub async fn read(&self, path: &str) -> Result<Bytes> {
+    pub async fn read(&self, path: impl AsStorePath) -> Result<Bytes> {
         self.readable(path).await?.read().await
     }
 
     /// A stream over `path` (or a byte range of it).
     pub async fn open_read(
         &self,
-        path: &str,
+        path: impl AsStorePath,
         range: Option<std::ops::Range<u64>>,
     ) -> Result<BoxAsyncRead> {
         self.readable(path).await?.open_read(range).await
     }
 
     /// What is at `path`, if anything.
-    pub async fn stat(&self, path: &str) -> Result<Option<FileStat>> {
+    pub async fn stat(&self, path: impl AsStorePath) -> Result<Option<FileStat>> {
         self.readable(path).await?.stat().await
     }
 
     /// The metadata of `path`.
-    pub async fn get_meta(&self, path: &str) -> Result<FileMeta> {
+    pub async fn get_meta(&self, path: impl AsStorePath) -> Result<FileMeta> {
         self.readable(path).await?.get_meta().await
     }
 
     /// `path` served by the transport's file builder (streamed, ranged), once
     /// the caller may read it.
-    pub async fn serve(&self, path: &str) -> Result<ServeFile> {
+    pub async fn serve(&self, path: impl AsStorePath) -> Result<ServeFile> {
         Ok(self.readable(path).await?.serve())
     }
 
     /// The entries of `dir` the caller may see (the rule filters a listing
     /// rather than refusing it; see [`list_visible`]).
-    pub async fn list(&self, dir: &str) -> Result<Vec<VisibleEntry>> {
+    pub async fn list(&self, dir: impl AsStorePath) -> Result<Vec<VisibleEntry>> {
         list_visible(self.store.as_ref(), self.floor, dir, &self.caller).await
     }
 
     /// [`list`](CheckedStore::list) as bare entries — for an administrator,
     /// the store's own listing, without reading every entry's metadata to
     /// reach the foregone conclusion that they may see it.
-    pub async fn list_entries(&self, dir: &str) -> Result<Vec<Entry>> {
+    pub async fn list_entries(&self, dir: impl AsStorePath) -> Result<Vec<Entry>> {
         if self.caller.is_admin() {
-            return self.store.list(dir).await;
+            return self.store.list(&*dir.store_path()?).await;
         }
         Ok(self.list(dir).await?.into_iter().map(|v| v.entry).collect())
     }
@@ -218,7 +213,10 @@ impl CheckedStore {
         .await?;
         let mut out = Vec::with_capacity(found.entries.len());
         for entry in found.entries {
-            let meta = self.store.get_meta(&entry.path).await.unwrap_or_default();
+            let meta = match StorePath::parse(&entry.path) {
+                Ok(path) => self.store.get_meta(&path).await.unwrap_or_default(),
+                Err(_) => FileMeta::default(),
+            };
             let effective_min_role = self.effective_min_role(&entry.path).await?;
             out.push(VisibleEntry {
                 entry,
@@ -256,29 +254,29 @@ impl CheckedStore {
     }
 
     /// Write `data` to `path`, creating or replacing it.
-    pub async fn write(&self, path: &str, data: Bytes) -> Result<()> {
+    pub async fn write(&self, path: impl AsStorePath, data: Bytes) -> Result<()> {
         self.writable(path).await?.write(data).await
     }
 
     /// Make the directory `path`.
-    pub async fn mkdir(&self, path: &str) -> Result<()> {
+    pub async fn mkdir(&self, path: impl AsStorePath) -> Result<()> {
         self.writable(path).await?.mkdir().await
     }
 
     /// Delete `path`, answering whether there was anything there.
-    pub async fn delete(&self, path: &str) -> Result<bool> {
+    pub async fn delete(&self, path: impl AsStorePath) -> Result<bool> {
         self.writable(path).await?.delete().await
     }
 
     /// Move `from` to `to`: both ends are writes.
-    pub async fn rename(&self, from: &str, to: &str) -> Result<()> {
+    pub async fn rename(&self, from: impl AsStorePath, to: impl AsStorePath) -> Result<()> {
         let from = self.writable(from).await?;
         let to = self.writable(to).await?;
         from.rename_to(&to).await
     }
 
     /// Replace the metadata of `path` (its rule, its owner).
-    pub async fn set_meta(&self, path: &str, meta: &FileMeta) -> Result<()> {
+    pub async fn set_meta(&self, path: impl AsStorePath, meta: &FileMeta) -> Result<()> {
         self.writable(path).await?.set_meta(meta).await
     }
 }
@@ -287,12 +285,17 @@ impl CheckedStore {
 /// [`check_access`] passed, and the operations that reach that path only.
 pub struct Readable<'s> {
     store: &'s CheckedStore,
-    path: String,
+    path: StorePath,
 }
 
 impl Readable<'_> {
     /// The path this grant is for.
     pub fn path(&self) -> &str {
+        self.path.as_str()
+    }
+
+    /// The path this grant is for, parsed.
+    pub fn store_path(&self) -> &StorePath {
         &self.path
     }
 
@@ -333,12 +336,17 @@ impl Readable<'_> {
 /// only.
 pub struct Writable<'s> {
     store: &'s CheckedStore,
-    path: String,
+    path: StorePath,
 }
 
 impl Writable<'_> {
     /// The path this grant is for.
     pub fn path(&self) -> &str {
+        self.path.as_str()
+    }
+
+    /// The path this grant is for, parsed.
+    pub fn store_path(&self) -> &StorePath {
         &self.path
     }
 
@@ -371,7 +379,7 @@ impl Writable<'_> {
     /// Join `parts` — each a path its caller may read, of this store — in
     /// order, into this file, replacing it; answers the size written.
     pub async fn concat(&self, parts: &[Readable<'_>]) -> Result<u64> {
-        let paths: Vec<String> = parts.iter().map(|p| p.path.clone()).collect();
+        let paths: Vec<StorePath> = parts.iter().map(|p| p.path.clone()).collect();
         self.store.store.concat(&paths, &self.path).await
     }
 

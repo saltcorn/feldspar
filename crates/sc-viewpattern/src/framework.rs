@@ -41,6 +41,8 @@
 //! surfaces a call carries are built from the request's user, exactly as a code
 //! body's are built from its event's caller (§11).
 
+// Text for HTML content and attribute values: the one escape (Q4.5).
+use sc_expr::html::escape;
 use sc_types::Role;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -764,7 +766,7 @@ impl SaltcornUiFramework {
                 self.app.name
             )))
         };
-        if !self.app.tables.iter().any(|t| t.0 == table_name) {
+        if !self.app.tables.iter().any(|t| t == table_name) {
             return no_table();
         }
         let Some(table) = cat.get(table_name)? else {
@@ -1841,15 +1843,6 @@ fn percent_encode(s: &str) -> String {
         }
     }
     out
-}
-
-/// Escape text for HTML content and attribute values.
-fn escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 fn poisoned() -> Error {

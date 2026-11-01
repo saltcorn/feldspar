@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use sc_files::{CheckedStore, FileCaller, FileMeta, FileStore, LocalFileStore};
+use sc_files::{CheckedStore, FileCaller, FileMeta, FileStore, LocalFileStore, StorePath};
 use sc_types::Role;
 
 /// A fresh unique temp directory for one test.
@@ -29,10 +29,13 @@ fn temp_dir(tag: &str) -> PathBuf {
 async fn store(tag: &str) -> (Arc<dyn FileStore>, PathBuf) {
     let dir = temp_dir(tag);
     let store: Arc<dyn FileStore> = Arc::new(LocalFileStore::new("docs", &dir).unwrap());
-    store.mkdir("private").await.unwrap();
+    store
+        .mkdir(&StorePath::from_static("private"))
+        .await
+        .unwrap();
     store
         .set_meta(
-            "private",
+            &StorePath::from_static("private"),
             &FileMeta {
                 min_role: Some(Role::ADMIN),
                 ..FileMeta::default()
@@ -41,12 +44,15 @@ async fn store(tag: &str) -> (Arc<dyn FileStore>, PathBuf) {
         .await
         .unwrap();
     store
-        .write("private/a.txt", Bytes::from_static(b"ada's"))
+        .write(
+            &StorePath::from_static("private/a.txt"),
+            Bytes::from_static(b"ada's"),
+        )
         .await
         .unwrap();
     store
         .set_meta(
-            "private/a.txt",
+            &StorePath::from_static("private/a.txt"),
             &FileMeta {
                 owner: Some("ada".to_owned()),
                 ..FileMeta::default()
@@ -55,7 +61,10 @@ async fn store(tag: &str) -> (Arc<dyn FileStore>, PathBuf) {
         .await
         .unwrap();
     store
-        .write("open.txt", Bytes::from_static(b"anyone"))
+        .write(
+            &StorePath::from_static("open.txt"),
+            Bytes::from_static(b"anyone"),
+        )
         .await
         .unwrap();
     (store, dir)
@@ -105,7 +114,11 @@ async fn the_drop_box_takes_a_new_file_and_refuses_to_replace_another_s() {
     dropped.write(Bytes::from_static(b"bob's")).await.unwrap();
     dropped.claim().await;
     assert_eq!(
-        raw.get_meta("private/b.txt").await.unwrap().owner.as_deref(),
+        raw.get_meta(&StorePath::from_static("private/b.txt"))
+            .await
+            .unwrap()
+            .owner
+            .as_deref(),
         Some("bob")
     );
     // Replacing somebody else's file is a write, and is checked as one.
@@ -127,13 +140,21 @@ async fn a_rename_stays_in_one_store_and_a_root_is_an_administrator_s() {
 
     let from = here.writable("open.txt").await.unwrap();
     let to = there.writable("open.txt").await.unwrap();
-    assert!(from.rename_to(&to).await.is_err(), "no rename across stores");
+    assert!(
+        from.rename_to(&to).await.is_err(),
+        "no rename across stores"
+    );
     // The same store bound twice is one store: the server's temporary file
     // moved to where a caller deposits it.
     let bob = as_user(&raw, "bob");
     let deposit = bob.deposit("moved.txt").await.unwrap();
     from.rename_to(&deposit).await.unwrap();
-    assert!(raw.stat("moved.txt").await.unwrap().is_some());
+    assert!(
+        raw.stat(&StorePath::from_static("moved.txt"))
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     // Only an administrator's binding answers the directory a process (the
     // IDE's language server) would be given.

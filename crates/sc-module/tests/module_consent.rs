@@ -94,7 +94,7 @@ mod deno {
             flow.authorization_url,
             "https://login.example.com/authorize"
         );
-        assert_eq!(flow.client_secret, "csecret");
+        assert_eq!(flow.client_secret.expose(), "csecret");
         assert_eq!(flow.return_to, "/settings/mail");
         assert!(
             flow.params

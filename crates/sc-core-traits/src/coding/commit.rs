@@ -49,8 +49,12 @@ pub fn enabled(config: &Attrs) -> bool {
 /// inside a git work tree that lies within the store's own directory.
 pub async fn work_tree(scope: &FileScope, catalog: &Catalog) -> Option<PathBuf> {
     let (store, _) = scope.connect(catalog).await.ok()?;
-    let store_dir = store.local_path("").ok()??.canonicalize().ok()?;
-    let dir = store.local_path(&scope.resolve("").ok()?).ok()??;
+    let store_dir = store
+        .local_path(&sc_files::StorePath::root())
+        .ok()??
+        .canonicalize()
+        .ok()?;
+    let dir = store.local_path(&scope.resolve_path("").ok()?).ok()??;
     if !dir.is_dir() {
         return None;
     }
@@ -109,7 +113,7 @@ pub async fn commit(
     let mut paths: Vec<String> = Vec::new();
     for rel in rels {
         let absolute = store
-            .local_path(&scope.resolve(rel)?)?
+            .local_path(&scope.resolve_path(rel)?)?
             .ok_or_else(|| Error::invalid("the store has no local directory to commit in"))?;
         let path = absolute.to_string_lossy().into_owned();
         if !paths.contains(&path) {

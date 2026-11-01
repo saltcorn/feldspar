@@ -420,13 +420,12 @@ fn like_match(text: &str, pattern: &str, fold: bool, rules: LikeRules) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use sc_catalog::{AccessRules, DataField, DbId, TableId, TableSource};
+    use sc_catalog::{AccessRules, DataField, DbId, TableSource};
     use sc_types::{Attrs, TypeRef};
     use serde_json::json;
 
     pub(crate) fn table(name: &str, columns: &[(&str, BasicType)]) -> Table {
         Table {
-            id: TableId(name.to_owned()),
             name: name.to_owned(),
             database: DbId::primary(),
             source: TableSource::Database,

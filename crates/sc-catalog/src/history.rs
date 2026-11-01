@@ -195,7 +195,7 @@ fn in_tables(catalog: &Catalog, n: usize) -> String {
 async fn query(catalog: &Catalog, sql: String, binds: Vec<Value>) -> Result<Vec<sc_db::Row>> {
     catalog
         .primary_driver()
-        .query(&Statement::raw(sql, binds))
+        .query(&Statement::raw(sc_query::TrustedSql::composed(sql), binds))
         .await?
         .try_collect()
         .await

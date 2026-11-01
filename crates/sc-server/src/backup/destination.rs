@@ -47,7 +47,7 @@ pub struct SftpDestination {
     pub host: String,
     pub port: u16,
     pub username: String,
-    pub password: String,
+    pub password: sc_error::Secret<String>,
     /// Absolute, or relative to the login's directory; empty for the login's
     /// directory itself. No trailing `/`.
     pub directory: String,
@@ -65,7 +65,7 @@ pub struct S3Destination {
     /// As entered; empty means [`DEFAULT_REGION`].
     pub region: String,
     pub access_key: String,
-    pub secret_key: String,
+    pub secret_key: sc_error::Secret<String>,
 }
 
 impl S3Destination {
@@ -91,7 +91,7 @@ impl S3Destination {
             &self.bucket,
             self.region(),
             &self.access_key,
-            &self.secret_key,
+            self.secret_key.expose(),
         )
     }
 }
@@ -102,7 +102,7 @@ impl SftpDestination {
             host: &self.host,
             port: self.port,
             username: &self.username,
-            password: &self.password,
+            password: self.password.expose(),
             host_key: self.host_key.as_deref(),
         }
     }
@@ -178,7 +178,7 @@ impl Destination {
                     username: required("username", "user name")?,
                     // Not trimmed: a password is whatever was typed.
                     password: match obj.get("password").and_then(Json::as_str) {
-                        Some(p) if !p.is_empty() => p.to_owned(),
+                        Some(p) if !p.is_empty() => p.into(),
                         _ => return Err(Error::invalid("`password`: enter the password")),
                     },
                     directory: normalise_remote_directory(&text("directory"))?,
@@ -217,7 +217,7 @@ impl Destination {
                     region: text("region"),
                     access_key: required("access_key", "access key")?,
                     secret_key: match obj.get("secret_key").and_then(Json::as_str) {
-                        Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
+                        Some(k) if !k.trim().is_empty() => k.trim().into(),
                         _ => return Err(Error::invalid("`secret_key`: enter the secret key")),
                     },
                 }))
@@ -237,7 +237,7 @@ impl Destination {
                 "host": d.host,
                 "port": d.port,
                 "username": d.username,
-                "password": d.password,
+                "password": d.password.expose(),
                 "directory": d.directory,
                 "host_key": d.host_key,
             }),
@@ -247,7 +247,7 @@ impl Destination {
                 "bucket": d.bucket,
                 "region": d.region,
                 "access_key": d.access_key,
-                "secret_key": d.secret_key,
+                "secret_key": d.secret_key.expose(),
             }),
         }
     }
@@ -272,16 +272,20 @@ impl Destination {
     /// make a schedule that looks configured and can never log in.
     pub fn keep_secrets(mut self, previous: Option<&Destination>) -> Result<Destination> {
         match (&mut self, previous) {
-            (Destination::Sftp(d), Some(Destination::Sftp(p))) if d.password == SECRET_SENTINEL => {
+            (Destination::Sftp(d), Some(Destination::Sftp(p)))
+                if d.password.expose() == SECRET_SENTINEL =>
+            {
                 d.password = p.password.clone();
             }
-            (Destination::S3(d), Some(Destination::S3(p))) if d.secret_key == SECRET_SENTINEL => {
+            (Destination::S3(d), Some(Destination::S3(p)))
+                if d.secret_key.expose() == SECRET_SENTINEL =>
+            {
                 d.secret_key = p.secret_key.clone();
             }
-            (Destination::Sftp(d), _) if d.password == SECRET_SENTINEL => {
+            (Destination::Sftp(d), _) if d.password.expose() == SECRET_SENTINEL => {
                 return Err(Error::invalid("`password`: enter the password"));
             }
-            (Destination::S3(d), _) if d.secret_key == SECRET_SENTINEL => {
+            (Destination::S3(d), _) if d.secret_key.expose() == SECRET_SENTINEL => {
                 return Err(Error::invalid("`secret_key`: enter the secret key"));
             }
             _ => {}

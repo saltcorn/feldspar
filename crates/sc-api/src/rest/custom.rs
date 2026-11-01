@@ -955,7 +955,11 @@ pub(crate) fn custom_statement(
         .iter()
         .map(|name| bind(query, req, name))
         .collect::<Result<Vec<Value>>>()?;
-    Ok(Statement::raw_typed(named.sql, binds, types))
+    Ok(Statement::raw_typed(
+        sc_query::TrustedSql::admin_authored(named.sql),
+        binds,
+        types,
+    ))
 }
 
 /// One argument, read off the request and coerced to its declared type.

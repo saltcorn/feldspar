@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sc_auth::User;
-use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, TableId, TableMeta};
+use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, TableMeta};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
@@ -215,7 +215,7 @@ async fn updating_a_row_topic_is_the_tables_update_rule() -> Result<()> {
         .await?;
     let board_key = DataField {
         kind: DataFieldKind::Key {
-            target_table: TableId("boards".to_owned()),
+            target_table: "boards".to_owned(),
             target_field: FieldId("id".to_owned()),
             summary_field: None,
         },

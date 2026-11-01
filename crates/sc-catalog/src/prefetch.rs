@@ -296,7 +296,7 @@ async fn resolve_join_value(
                 current.name
             )));
         };
-        let target = cat.require(&target_table.0)?;
+        let target = cat.require(target_table)?;
         let next = &segments[i];
         let select = Select::from(Source::table(target.name.clone()))
             .columns(vec![Projection::expr(Expr::col(next.clone()))])

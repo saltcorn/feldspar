@@ -24,7 +24,7 @@ use sc_app::{
     save_application,
 };
 use sc_auth::{RoleDef, SessionStore, User, create_user, save_role};
-use sc_catalog::{Catalog, FileStoreId, TableId, TableMeta, save_table_meta};
+use sc_catalog::{Catalog, FileStoreId, TableMeta, save_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -88,7 +88,7 @@ fn framework() -> FrameworkRef {
 
 fn notes_app() -> Application {
     Application::new("Notes", "notes", framework())
-        .with_table(TableId("notes".to_owned()))
+        .with_table("notes".to_owned())
         .with_file_store(FileStoreId("apps".to_owned()))
         .with_api(ApiConfig::new("rest", "/api"))
 }

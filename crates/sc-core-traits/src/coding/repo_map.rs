@@ -109,12 +109,14 @@ pub async fn source_files(
                 .size
                 .is_none_or(|size| size <= MAX_PARSED_BYTES as u64);
         let tags = match parsed {
-            true => match store.read(&entry.path).await {
-                Ok(bytes) => cache.tags(&rel, &bytes),
-                // A file that vanished or cannot be read mid-walk is listed by
-                // name, like any other the map cannot parse.
-                Err(_) => Arc::default(),
-            },
+            true => {
+                match async { store.read(&sc_files::StorePath::parse(&entry.path)?).await }.await {
+                    Ok(bytes) => cache.tags(&rel, &bytes),
+                    // A file that vanished or cannot be read mid-walk is listed by
+                    // name, like any other the map cannot parse.
+                    Err(_) => Arc::default(),
+                }
+            }
             false => Arc::default(),
         };
         files.push(SourceFile { path: rel, tags });

@@ -55,7 +55,7 @@ pub struct UserUpdate {
     /// **Blank is not a password** — an empty string here is an error, because
     /// "no password" and "do not change the password" are different intentions
     /// and only one of them can be a blank box on a form.
-    pub password: Option<String>,
+    pub password: Option<sc_error::Secret<String>>,
     /// The language this account reads the product in. **Two levels of
     /// optional, and both mean something**: `None` leaves it as it was, and
     /// `Some(None)` clears it back to "whatever the request negotiates". A form
@@ -96,7 +96,7 @@ pub async fn update_user(catalog: &Catalog, id: Uuid, update: UserUpdate) -> Res
         }
         assignments.push(Assignment::new(
             COL_PASSWORD_HASH,
-            Expr::lit(hash_password(password)?),
+            Expr::lit(hash_password(password.expose())?),
         ));
     }
     if let Some(language) = &update.language {

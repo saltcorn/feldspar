@@ -26,7 +26,7 @@ use sc_action::{EventKind, Trigger, save_trigger};
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation as SchemaOp, TableSettings};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, TriggerRef};
 use sc_auth::{SessionStore, create_user};
-use sc_catalog::{Catalog, DataFieldKind, FieldId, TableId};
+use sc_catalog::{Catalog, DataFieldKind, FieldId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
@@ -199,7 +199,7 @@ fn field(name: &str, type_name: &str) -> FieldSpec {
 fn key(name: &str, target: &str) -> FieldSpec {
     FieldSpec {
         kind: DataFieldKind::Key {
-            target_table: TableId(target.to_owned()),
+            target_table: target.to_owned(),
             target_field: FieldId(String::new()),
             summary_field: None,
         },
@@ -568,9 +568,9 @@ async fn setup(tag: &str) -> sc_error::Result<(Server, Value)> {
     dispatcher.reload(&catalog).await?;
     let mut app = Application::new("Shop", "shop", FrameworkRef::new("code"))
         .with_api(ApiConfig::new("rest", "/api"))
-        .with_table(TableId("orders".to_owned()))
+        .with_table("orders".to_owned())
         // A subscriber reads their own subscription from the mirror (P4.4).
-        .with_table(TableId("pay_objects".to_owned()))
+        .with_table("pay_objects".to_owned())
         .attribute(sc_app::GUEST_SESSIONS_ATTRIBUTE, true);
     for name in [
         "try_account",

@@ -45,7 +45,7 @@ impl MigrationCtx {
     /// spelling) and collect its rows.
     pub async fn query(&mut self, sql: &str, binds: Vec<Value>) -> Result<Vec<Row>> {
         self.tx
-            .query(&Statement::raw(sql, binds))
+            .query(&Statement::raw(sc_query::TrustedSql::composed(sql), binds))
             .await?
             .try_collect()
             .await

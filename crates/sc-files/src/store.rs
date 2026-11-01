@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use crate::store_path::StorePath;
 use crate::stream::{BoxAsyncRead, BoxAsyncWrite};
 
 /// One entry returned by [`FileStore::list`]: a file or sub-directory directly
@@ -132,30 +133,32 @@ pub const CONTENT_TYPE_ATTRIBUTE: &str = "content_type";
 
 /// A named directory/object store (technical design §14.1).
 ///
-/// Paths passed to every method are **relative to the store root** and use `/`
-/// as the separator; drivers must reject absolute paths and any `..` traversal
-/// that would escape the root.
+/// Paths passed to every method are [`StorePath`]s: relative to the store root,
+/// `/`-separated, and already through the one validator (no `..`, `\`, `:`,
+/// NUL, or segment of dots and spaces). A driver with a disk still checks what
+/// the spelling cannot see — a symbolic link out of the root — as
+/// [`crate::LocalFileStore`] does.
 #[async_trait]
 pub trait FileStore: Send + Sync {
     /// The store's name (as connected to the catalog).
     fn name(&self) -> &str;
 
     /// Read a file's full contents.
-    async fn read(&self, path: &str) -> Result<Bytes>;
+    async fn read(&self, path: &StorePath) -> Result<Bytes>;
 
     /// Write (creating or replacing) a file, creating parent directories as
     /// needed.
-    async fn write(&self, path: &str, data: Bytes) -> Result<()>;
+    async fn write(&self, path: &StorePath, data: Bytes) -> Result<()>;
 
     /// List the direct children of a directory (`""` or `"/"` is the root).
-    async fn list(&self, dir: &str) -> Result<Vec<Entry>>;
+    async fn list(&self, dir: &StorePath) -> Result<Vec<Entry>>;
 
     /// Create a directory, and any missing parents.
     ///
     /// Creating one that already exists is **not** an error: the caller wanted a
     /// directory there and there is one. Creating one where a *file* already sits
     /// is, since that is a genuine conflict the caller must resolve.
-    async fn mkdir(&self, path: &str) -> Result<()>;
+    async fn mkdir(&self, path: &StorePath) -> Result<()>;
 
     /// Delete a file, or a directory and everything in it.
     ///
@@ -163,7 +166,7 @@ pub trait FileStore: Send + Sync {
     /// "removed" from "already gone" without a prior existence check — the check
     /// would race anyway. Deleting the store root is refused: a store's root is
     /// the store, and removing it would leave a definition pointing at nothing.
-    async fn delete(&self, path: &str) -> Result<bool>;
+    async fn delete(&self, path: &StorePath) -> Result<bool>;
 
     /// Move or rename a file or directory within the store.
     ///
@@ -171,7 +174,7 @@ pub trait FileStore: Send + Sync {
     /// used to move data out of the store. Refuses to overwrite an existing
     /// destination: a rename that silently replaced a file would destroy data the
     /// caller never named.
-    async fn rename(&self, from: &str, to: &str) -> Result<()>;
+    async fn rename(&self, from: &StorePath, to: &StorePath) -> Result<()>;
 
     /// Whether this store is (rooted at) a git repository.
     fn is_git_repo(&self) -> bool;
@@ -188,7 +191,7 @@ pub trait FileStore: Send + Sync {
     /// host a buildable app, and callers must say so rather than pretend
     /// otherwise. Traversal that would escape the store root is an error, exactly
     /// as it is for the byte-level methods.
-    fn local_path(&self, _rel: &str) -> Result<Option<std::path::PathBuf>> {
+    fn local_path(&self, _rel: &StorePath) -> Result<Option<std::path::PathBuf>> {
         Ok(None)
     }
 
@@ -204,23 +207,19 @@ pub trait FileStore: Send + Sync {
     /// gains `exists()` without implementing anything. A backend with a cheaper
     /// answer (and a modification time to report) should override it, as
     /// [`crate::LocalFileStore`] does.
-    async fn stat(&self, path: &str) -> Result<Option<FileStat>> {
-        let trimmed = path.trim_matches('/');
+    async fn stat(&self, path: &StorePath) -> Result<Option<FileStat>> {
         // The root is the store, and the store is there.
-        if trimmed.is_empty() || trimmed == "." {
+        let Some(parent) = path.parent() else {
             return Ok(Some(FileStat {
                 size: 0,
                 is_dir: true,
                 modified: None,
             }));
-        }
-        let (parent, name) = match trimmed.rsplit_once('/') {
-            Some((parent, name)) => (parent, name),
-            None => ("", trimmed),
         };
+        let name = path.name();
         // A parent that cannot be listed (it does not exist, or it is a file)
         // means the entry is not there either — which is what was asked.
-        let Ok(entries) = self.list(parent).await else {
+        let Ok(entries) = self.list(&parent).await else {
             return Ok(None);
         };
         Ok(entries
@@ -241,7 +240,7 @@ pub trait FileStore: Send + Sync {
     /// 50 MB in this process. The default reads the whole file and slices it,
     /// which is correct for any backend and streams nothing; a backend with a
     /// cheaper answer overrides it, as [`crate::LocalFileStore`] does.
-    async fn open_read(&self, path: &str, range: Option<Range<u64>>) -> Result<BoxAsyncRead> {
+    async fn open_read(&self, path: &StorePath, range: Option<Range<u64>>) -> Result<BoxAsyncRead> {
         crate::stream::read_by_slicing(self, path, range).await
     }
 
@@ -251,7 +250,7 @@ pub trait FileStore: Send + Sync {
     /// writer down** when done: the default buffers what is written and writes
     /// the joined file back only then, so a backend with nothing but
     /// `read`/`write` can still take an upload.
-    async fn open_append<'a>(&'a self, path: &str) -> Result<BoxAsyncWrite<'a>> {
+    async fn open_append<'a>(&'a self, path: &StorePath) -> Result<BoxAsyncWrite<'a>> {
         Ok(Box::new(crate::stream::BufferedAppend::new(self, path)))
     }
 
@@ -262,14 +261,14 @@ pub trait FileStore: Send + Sync {
     /// A missing part fails **without leaving a partial target**: the join is
     /// either all there or not written. The default reads every part before
     /// writing anything.
-    async fn concat(&self, parts: &[String], to: &str) -> Result<u64> {
+    async fn concat(&self, parts: &[StorePath], to: &StorePath) -> Result<u64> {
         crate::stream::concat_in_memory(self, parts, to).await
     }
 
     /// Read a file's metadata, returning [`FileMeta::default`] when none has been
     /// set.
-    async fn get_meta(&self, path: &str) -> Result<FileMeta>;
+    async fn get_meta(&self, path: &StorePath) -> Result<FileMeta>;
 
     /// Replace a file's metadata.
-    async fn set_meta(&self, path: &str, meta: &FileMeta) -> Result<()>;
+    async fn set_meta(&self, path: &StorePath, meta: &FileMeta) -> Result<()>;
 }

@@ -25,7 +25,7 @@ use axum::http::{Request, StatusCode, header};
 use sc_api::admin_endpoints;
 use sc_app::{ApiConfig, Application, CodeFramework, FrameworkRef, bootstrap, save_application};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -223,7 +223,7 @@ async fn mount_blog(h: &Harness) -> sc_error::Result<()> {
         .with("command", "sh build.sh")
         .with("client", "web/src/client.ts");
     let app = Application::new("Blog", "blog", framework_ref)
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_file_store(FileStoreId("apps".to_owned()))
         .with_api(ApiConfig::new("rest", "/api"));
     save_application(&h.catalog, &app).await?;

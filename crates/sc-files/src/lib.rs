@@ -11,8 +11,10 @@
 //!   [`FileMeta`], round-tripped via [`FileStore::get_meta`] /
 //!   [`FileStore::set_meta`]; for on-disk stores it is kept beside the bytes in
 //!   cross-platform extended attributes (see [`xattr`]).
-//! - **Paths are confined to the store root.** Absolute paths and `..`
-//!   traversal are rejected before any I/O.
+//! - **Paths are confined to the store root.** Every [`FileStore`] method takes
+//!   a [`StorePath`], which only the one validator makes: `..`, `\`, `:`, NUL
+//!   and Windows-trimmed segments are refused before any backend sees the path,
+//!   and `.git` in any spelling is known (TODO-code-quality Q4.1).
 
 mod access;
 mod backend;
@@ -26,6 +28,7 @@ mod reference;
 mod search;
 mod serve;
 mod store;
+mod store_path;
 mod stream;
 pub mod xattr;
 
@@ -51,7 +54,7 @@ pub use git::{
     clone_path, generate_deploy_key, git_operations, key_dir, parse_change, record_clone_path,
     record_deploy_key,
 };
-pub use local::{LocalFileStore, OP_SUGGEST_DIR, in_git_dir, local_operations};
+pub use local::{LocalFileStore, OP_SUGGEST_DIR, local_operations};
 pub use paths::{DATA_DIR_ENV, data_dir, local_store_dir, suggest_local_dir};
 pub use reference::{free_path, mime_for_path, suffixed_path, validate_file_path};
 pub use search::{
@@ -61,6 +64,7 @@ pub use search::{
 };
 pub use serve::ServeFile;
 pub use store::{CONTENT_TYPE_ATTRIBUTE, Entry, FILENAME_ATTRIBUTE, FileMeta, FileStat, FileStore};
+pub use store_path::{AsStorePath, StorePath, in_git_dir};
 pub use stream::{BoxAsyncRead, BoxAsyncWrite, check_range, read_to_bytes};
 
 #[cfg(test)]
@@ -96,10 +100,16 @@ mod tests {
         let (_base, store) = temp_store();
         assert_eq!(store.name(), "test");
         store
-            .write("a/b/hello.txt", Bytes::from_static(b"hello world"))
+            .write(
+                &StorePath::from_static("a/b/hello.txt"),
+                Bytes::from_static(b"hello world"),
+            )
             .await
             .unwrap();
-        let got = store.read("a/b/hello.txt").await.unwrap();
+        let got = store
+            .read(&StorePath::from_static("a/b/hello.txt"))
+            .await
+            .unwrap();
         assert_eq!(&got[..], b"hello world");
     }
 
@@ -107,12 +117,15 @@ mod tests {
     async fn stat_answers_the_entrys_own_facts_and_none_for_what_is_not_there() {
         let (_base, store) = temp_store();
         store
-            .write("docs/a.txt", Bytes::from_static(b"12345"))
+            .write(
+                &StorePath::from_static("docs/a.txt"),
+                Bytes::from_static(b"12345"),
+            )
             .await
             .unwrap();
 
         let file = store
-            .stat("docs/a.txt")
+            .stat(&StorePath::from_static("docs/a.txt"))
             .await
             .unwrap()
             .expect("it is there");
@@ -126,17 +139,47 @@ mod tests {
             "{modified}"
         );
 
-        let dir = store.stat("docs").await.unwrap().expect("it is there");
+        let dir = store
+            .stat(&StorePath::from_static("docs"))
+            .await
+            .unwrap()
+            .expect("it is there");
         assert!(dir.is_dir);
         assert_eq!(dir.size, 0, "a directory has no size to report");
-        assert!(store.stat("").await.unwrap().unwrap().is_dir, "the root is");
+        assert!(
+            store
+                .stat(&StorePath::root())
+                .await
+                .unwrap()
+                .unwrap()
+                .is_dir,
+            "the root is"
+        );
 
         // Nothing there is an answer rather than an error — which is what makes
         // `exists()` a question instead of a `catch`. Including the case where a
         // *file* is in the middle of the path.
-        assert!(store.stat("docs/gone.txt").await.unwrap().is_none());
-        assert!(store.stat("nowhere/at/all").await.unwrap().is_none());
-        assert!(store.stat("docs/a.txt/deeper").await.unwrap().is_none());
+        assert!(
+            store
+                .stat(&StorePath::from_static("docs/gone.txt"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .stat(&StorePath::from_static("nowhere/at/all"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .stat(&StorePath::from_static("docs/a.txt/deeper"))
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -151,31 +194,31 @@ mod tests {
             fn name(&self) -> &str {
                 self.0.name()
             }
-            async fn read(&self, path: &str) -> sc_error::Result<Bytes> {
+            async fn read(&self, path: &StorePath) -> sc_error::Result<Bytes> {
                 self.0.read(path).await
             }
-            async fn write(&self, path: &str, data: Bytes) -> sc_error::Result<()> {
+            async fn write(&self, path: &StorePath, data: Bytes) -> sc_error::Result<()> {
                 self.0.write(path, data).await
             }
-            async fn list(&self, dir: &str) -> sc_error::Result<Vec<Entry>> {
+            async fn list(&self, dir: &StorePath) -> sc_error::Result<Vec<Entry>> {
                 self.0.list(dir).await
             }
-            async fn mkdir(&self, path: &str) -> sc_error::Result<()> {
+            async fn mkdir(&self, path: &StorePath) -> sc_error::Result<()> {
                 self.0.mkdir(path).await
             }
-            async fn delete(&self, path: &str) -> sc_error::Result<bool> {
+            async fn delete(&self, path: &StorePath) -> sc_error::Result<bool> {
                 self.0.delete(path).await
             }
-            async fn rename(&self, from: &str, to: &str) -> sc_error::Result<()> {
+            async fn rename(&self, from: &StorePath, to: &StorePath) -> sc_error::Result<()> {
                 self.0.rename(from, to).await
             }
             fn is_git_repo(&self) -> bool {
                 false
             }
-            async fn get_meta(&self, path: &str) -> sc_error::Result<FileMeta> {
+            async fn get_meta(&self, path: &StorePath) -> sc_error::Result<FileMeta> {
                 self.0.get_meta(path).await
             }
-            async fn set_meta(&self, path: &str, meta: &FileMeta) -> sc_error::Result<()> {
+            async fn set_meta(&self, path: &StorePath, meta: &FileMeta) -> sc_error::Result<()> {
                 self.0.set_meta(path, meta).await
             }
         }
@@ -183,11 +226,18 @@ mod tests {
         let (_base, inner) = temp_store();
         let store = ListOnly(inner);
         store
-            .write("docs/a.txt", Bytes::from_static(b"123"))
+            .write(
+                &StorePath::from_static("docs/a.txt"),
+                Bytes::from_static(b"123"),
+            )
             .await
             .unwrap();
 
-        let file = store.stat("docs/a.txt").await.unwrap().expect("listed");
+        let file = store
+            .stat(&StorePath::from_static("docs/a.txt"))
+            .await
+            .unwrap()
+            .expect("listed");
         assert_eq!(file.size, 3);
         assert!(!file.is_dir);
         // The modification time now comes from the listing too — a backend
@@ -196,32 +246,70 @@ mod tests {
         // that does not record it, rather than an invented time.
         assert_eq!(
             file.modified,
-            store.0.stat("docs/a.txt").await.unwrap().unwrap().modified
+            store
+                .0
+                .stat(&StorePath::from_static("docs/a.txt"))
+                .await
+                .unwrap()
+                .unwrap()
+                .modified
         );
         assert!(file.modified.is_some());
-        assert!(store.stat("docs").await.unwrap().unwrap().is_dir);
-        assert!(store.stat("").await.unwrap().unwrap().is_dir);
-        assert!(store.stat("docs/gone.txt").await.unwrap().is_none());
-        assert!(store.stat("nowhere/at/all").await.unwrap().is_none());
+        assert!(
+            store
+                .stat(&StorePath::from_static("docs"))
+                .await
+                .unwrap()
+                .unwrap()
+                .is_dir
+        );
+        assert!(
+            store
+                .stat(&StorePath::root())
+                .await
+                .unwrap()
+                .unwrap()
+                .is_dir
+        );
+        assert!(
+            store
+                .stat(&StorePath::from_static("docs/gone.txt"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .stat(&StorePath::from_static("nowhere/at/all"))
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
     async fn list_returns_sorted_children_with_sizes() {
         let (_base, store) = temp_store();
         store
-            .write("z.txt", Bytes::from_static(b"12345"))
+            .write(
+                &StorePath::from_static("z.txt"),
+                Bytes::from_static(b"12345"),
+            )
             .await
             .unwrap();
         store
-            .write("a.txt", Bytes::from_static(b"x"))
+            .write(&StorePath::from_static("a.txt"), Bytes::from_static(b"x"))
             .await
             .unwrap();
         store
-            .write("sub/c.txt", Bytes::from_static(b"y"))
+            .write(
+                &StorePath::from_static("sub/c.txt"),
+                Bytes::from_static(b"y"),
+            )
             .await
             .unwrap();
 
-        let root = store.list("").await.unwrap();
+        let root = store.list(&StorePath::root()).await.unwrap();
         let names: Vec<_> = root.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["a.txt", "sub", "z.txt"]);
 
@@ -238,7 +326,7 @@ mod tests {
         assert_eq!(z.size, Some(5));
 
         // Listing a sub-directory yields paths relative to the root.
-        let children = store.list("sub").await.unwrap();
+        let children = store.list(&StorePath::from_static("sub")).await.unwrap();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].path, "sub/c.txt");
     }
@@ -246,13 +334,26 @@ mod tests {
     #[tokio::test]
     async fn path_traversal_is_rejected() {
         let (_base, store) = temp_store();
-        let err = store.read("../secret").await.unwrap_err();
+        // Refused by the one validator, before any backend is reached.
+        let err = StorePath::parse("../secret").unwrap_err();
         assert!(matches!(err.repr(), sc_error::Repr::Invalid(_)));
-        let err = store
-            .write("a/../../b", Bytes::from_static(b"x"))
+        let err = StorePath::parse("a/../../b").unwrap_err();
+        assert!(matches!(err.repr(), sc_error::Repr::Invalid(_)));
+        // The root is the store, whichever way it is spelled.
+        store
+            .write(
+                &StorePath::from_static("in-root.txt"),
+                Bytes::from_static(b"x"),
+            )
             .await
-            .unwrap_err();
-        assert!(matches!(err.repr(), sc_error::Repr::Invalid(_)));
+            .unwrap();
+        assert_eq!(
+            &store
+                .read(&StorePath::from_static("/./in-root.txt"))
+                .await
+                .unwrap()[..],
+            b"x"
+        );
     }
 
     /// Security review #13: on Windows `PathBuf::push` reads `\` as a separator
@@ -270,15 +371,8 @@ mod tests {
             "uploads/...",
             "uploads/a\0b",
         ] {
-            let err = store.read(bad).await.unwrap_err();
-            assert!(
-                matches!(err.repr(), sc_error::Repr::Invalid(_)),
-                "{bad:?}: {err}"
-            );
-            let err = store
-                .write(bad, Bytes::from_static(b"x"))
-                .await
-                .unwrap_err();
+            // No backend is ever handed one: there is no `StorePath` to hand.
+            let err = StorePath::parse(bad).unwrap_err();
             assert!(
                 matches!(err.repr(), sc_error::Repr::Invalid(_)),
                 "{bad:?}: {err}"
@@ -286,10 +380,19 @@ mod tests {
         }
         // Dots inside a name are still a name.
         store
-            .write("a..b/c.d.txt", Bytes::from_static(b"x"))
+            .write(
+                &StorePath::from_static("a..b/c.d.txt"),
+                Bytes::from_static(b"x"),
+            )
             .await
             .unwrap();
-        assert_eq!(&store.read("a..b/c.d.txt").await.unwrap()[..], b"x");
+        assert_eq!(
+            &store
+                .read(&StorePath::from_static("a..b/c.d.txt"))
+                .await
+                .unwrap()[..],
+            b"x"
+        );
     }
 
     /// Security review #12: a symlink out of the store (`uploads -> /etc`,
@@ -307,21 +410,41 @@ mod tests {
         std::os::unix::fs::symlink(outside.join("secret.txt"), base.join("leak.txt")).unwrap();
         std::os::unix::fs::symlink(outside.join("new.txt"), base.join("dangling.txt")).unwrap();
         store
-            .write("inside/real.txt", Bytes::from_static(b"ok"))
+            .write(
+                &StorePath::from_static("inside/real.txt"),
+                Bytes::from_static(b"ok"),
+            )
             .await
             .unwrap();
         std::os::unix::fs::symlink(base.join("inside"), base.join("alias")).unwrap();
 
         for path in ["uploads/secret.txt", "leak.txt"] {
-            let err = store.read(path).await.unwrap_err();
+            let err = store
+                .read(&StorePath::parse(path).unwrap())
+                .await
+                .unwrap_err();
             assert!(
                 matches!(err.repr(), sc_error::Repr::Invalid(_)),
                 "{path}: {err}"
             );
-            assert!(store.open_read(path, None).await.is_err(), "{path}");
-            assert!(store.stat(path).await.is_err(), "{path}");
+            assert!(
+                store
+                    .open_read(&StorePath::parse(path).unwrap(), None)
+                    .await
+                    .is_err(),
+                "{path}"
+            );
+            assert!(
+                store.stat(&StorePath::parse(path).unwrap()).await.is_err(),
+                "{path}"
+            );
         }
-        assert!(store.list("uploads").await.is_err());
+        assert!(
+            store
+                .list(&StorePath::from_static("uploads"))
+                .await
+                .is_err()
+        );
         for path in [
             "uploads/new.txt",
             "uploads/sub/new.txt",
@@ -329,7 +452,10 @@ mod tests {
             "leak.txt",
         ] {
             assert!(
-                store.write(path, Bytes::from_static(b"x")).await.is_err(),
+                store
+                    .write(&StorePath::parse(path).unwrap(), Bytes::from_static(b"x"))
+                    .await
+                    .is_err(),
                 "{path}"
             );
         }
@@ -341,9 +467,20 @@ mod tests {
         );
 
         // Inside the store, a link is just another way to the same file.
-        assert_eq!(&store.read("alias/real.txt").await.unwrap()[..], b"ok");
+        assert_eq!(
+            &store
+                .read(&StorePath::from_static("alias/real.txt"))
+                .await
+                .unwrap()[..],
+            b"ok"
+        );
         // And the escaping link itself can be removed, without touching its target.
-        assert!(store.delete("uploads").await.unwrap());
+        assert!(
+            store
+                .delete(&StorePath::from_static("uploads"))
+                .await
+                .unwrap()
+        );
         assert!(outside.join("secret.txt").exists());
 
         std::fs::remove_dir_all(&outside).ok();
@@ -405,11 +542,14 @@ mod tests {
             .unwrap()
             .writing_git_dir();
         store
-            .write(".git/config", Bytes::from_static(b"[remote]"))
+            .write(
+                &StorePath::from_static(".git/config"),
+                Bytes::from_static(b"[remote]"),
+            )
             .await
             .unwrap();
         store
-            .write("a.txt", Bytes::from_static(b"a"))
+            .write(&StorePath::from_static("a.txt"), Bytes::from_static(b"a"))
             .await
             .unwrap();
         let staff = FileCaller::new(Role::of(40), Some("u1".into()));
@@ -448,12 +588,18 @@ mod tests {
     async fn meta_round_trips_and_defaults() {
         let (_base, store) = temp_store();
         store
-            .write("doc.md", Bytes::from_static(b"# hi"))
+            .write(
+                &StorePath::from_static("doc.md"),
+                Bytes::from_static(b"# hi"),
+            )
             .await
             .unwrap();
 
         // No metadata set yet → defaults.
-        let meta = store.get_meta("doc.md").await.unwrap();
+        let meta = store
+            .get_meta(&StorePath::from_static("doc.md"))
+            .await
+            .unwrap();
         assert_eq!(meta, FileMeta::default());
 
         let mut m = FileMeta {
@@ -461,14 +607,20 @@ mod tests {
             ..Default::default()
         };
         m.attributes.insert("mime".into(), "text/markdown".into());
-        store.set_meta("doc.md", &m).await.unwrap();
+        store
+            .set_meta(&StorePath::from_static("doc.md"), &m)
+            .await
+            .unwrap();
 
-        let got = store.get_meta("doc.md").await.unwrap();
+        let got = store
+            .get_meta(&StorePath::from_static("doc.md"))
+            .await
+            .unwrap();
         assert_eq!(got, m);
 
         // Metadata lives in an extended attribute, so it never shows as a file.
         let names: Vec<_> = store
-            .list("")
+            .list(&StorePath::root())
             .await
             .unwrap()
             .into_iter()
@@ -481,7 +633,7 @@ mod tests {
     async fn set_meta_requires_the_file_to_exist() {
         let (_base, store) = temp_store();
         let err = store
-            .set_meta("missing.txt", &FileMeta::default())
+            .set_meta(&StorePath::from_static("missing.txt"), &FileMeta::default())
             .await
             .unwrap_err();
         assert!(matches!(err.repr(), sc_error::Repr::NotFound(_)));
@@ -511,53 +663,100 @@ mod tests {
             ".GIT/config",
             ".git./config",
             "sub/.git/hooks/pre-commit",
-            "a\\.git\\config",
+            "GIT~1/config",
         ] {
-            assert!(store.write(path, evil.clone()).await.is_err(), "{path}");
+            let path = StorePath::parse(path).unwrap();
+            assert!(path.in_git_dir(), "{path}");
+            assert!(store.write(&path, evil.clone()).await.is_err(), "{path}");
         }
-        assert!(store.mkdir(".git/hooks").await.is_err());
-        assert!(store.delete(".git/config").await.is_err());
-        assert!(store.rename("ok.txt", ".git/config").await.is_err());
-        assert!(store.open_append(".git/config").await.is_err());
+        // A backslash spelling never becomes a path at all.
+        assert!(StorePath::parse("a\\.git\\config").is_err());
+        assert!(
+            store
+                .mkdir(&StorePath::from_static(".git/hooks"))
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .delete(&StorePath::from_static(".git/config"))
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .rename(
+                    &StorePath::from_static("ok.txt"),
+                    &StorePath::from_static(".git/config")
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .open_append(&StorePath::from_static(".git/config"))
+                .await
+                .is_err()
+        );
         assert_eq!(
             std::fs::read_to_string(base.join(".git/config")).unwrap(),
             "[core]\n",
             "the repository's config is untouched"
         );
         // Reading is not writing, and a file merely *named* like it is fine.
-        assert!(store.read(".git/config").await.is_ok());
+        assert!(
+            store
+                .read(&StorePath::from_static(".git/config"))
+                .await
+                .is_ok()
+        );
         store
-            .write("docs/.gitignore", Bytes::from_static(b"x"))
+            .write(
+                &StorePath::from_static("docs/.gitignore"),
+                Bytes::from_static(b"x"),
+            )
             .await
             .unwrap();
         store
-            .write("dot.git/x", Bytes::from_static(b"x"))
+            .write(
+                &StorePath::from_static("dot.git/x"),
+                Bytes::from_static(b"x"),
+            )
             .await
             .unwrap();
 
         let restoring = LocalFileStore::new("t", &base).unwrap().writing_git_dir();
-        restoring.write(".git/config", evil).await.unwrap();
+        restoring
+            .write(&StorePath::from_static(".git/config"), evil)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     async fn mkdir_is_idempotent_but_refuses_to_shadow_a_file() {
         let (_base, store) = temp_store();
 
-        store.mkdir("a/b/c").await.unwrap();
-        let entries = store.list("a/b").await.unwrap();
+        store.mkdir(&StorePath::from_static("a/b/c")).await.unwrap();
+        let entries = store.list(&StorePath::from_static("a/b")).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert!(entries[0].is_dir);
 
         // Asking again for a directory that is already there is not an error —
         // the caller wanted one there and there is one.
-        store.mkdir("a/b/c").await.unwrap();
+        store.mkdir(&StorePath::from_static("a/b/c")).await.unwrap();
 
         // But a file already occupying the name is a real conflict.
         store
-            .write("a/file.txt", Bytes::from_static(b"x"))
+            .write(
+                &StorePath::from_static("a/file.txt"),
+                Bytes::from_static(b"x"),
+            )
             .await
             .unwrap();
-        let err = store.mkdir("a/file.txt").await.unwrap_err();
+        let err = store
+            .mkdir(&StorePath::from_static("a/file.txt"))
+            .await
+            .unwrap_err();
         assert!(matches!(err.repr(), sc_error::Repr::Invalid(_)));
     }
 
@@ -565,74 +764,144 @@ mod tests {
     async fn delete_reports_whether_anything_was_there() {
         let (_base, store) = temp_store();
         store
-            .write("dir/file.txt", Bytes::from_static(b"x"))
+            .write(
+                &StorePath::from_static("dir/file.txt"),
+                Bytes::from_static(b"x"),
+            )
             .await
             .unwrap();
 
-        assert!(store.delete("dir/file.txt").await.unwrap());
+        assert!(
+            store
+                .delete(&StorePath::from_static("dir/file.txt"))
+                .await
+                .unwrap()
+        );
         // Already gone is `false`, not an error: a caller would otherwise have
         // to race an existence check against the delete.
-        assert!(!store.delete("dir/file.txt").await.unwrap());
+        assert!(
+            !store
+                .delete(&StorePath::from_static("dir/file.txt"))
+                .await
+                .unwrap()
+        );
 
         // A directory goes with everything in it.
         store
-            .write("dir/nested/deep.txt", Bytes::from_static(b"y"))
+            .write(
+                &StorePath::from_static("dir/nested/deep.txt"),
+                Bytes::from_static(b"y"),
+            )
             .await
             .unwrap();
-        assert!(store.delete("dir").await.unwrap());
-        assert!(store.list("").await.unwrap().is_empty());
+        assert!(store.delete(&StorePath::from_static("dir")).await.unwrap());
+        assert!(store.list(&StorePath::root()).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn delete_refuses_the_store_root() {
         let (base, store) = temp_store();
         store
-            .write("keep.txt", Bytes::from_static(b"x"))
+            .write(
+                &StorePath::from_static("keep.txt"),
+                Bytes::from_static(b"x"),
+            )
             .await
             .unwrap();
 
         // Every spelling of "the root" is refused — a store's root *is* the
         // store, and removing it would leave a definition pointing at nothing.
         for root in ["", "/", "."] {
-            let err = store.delete(root).await.unwrap_err();
+            let err = store
+                .delete(&StorePath::parse(root).unwrap())
+                .await
+                .unwrap_err();
             assert!(matches!(err.repr(), sc_error::Repr::Invalid(_)), "{root:?}");
         }
         assert!(base.is_dir());
-        assert_eq!(store.list("").await.unwrap().len(), 1);
+        assert_eq!(store.list(&StorePath::root()).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
     async fn rename_moves_within_the_store_and_never_clobbers() {
         let (_base, store) = temp_store();
         store
-            .write("a/one.txt", Bytes::from_static(b"first"))
+            .write(
+                &StorePath::from_static("a/one.txt"),
+                Bytes::from_static(b"first"),
+            )
             .await
             .unwrap();
         store
-            .write("b/two.txt", Bytes::from_static(b"second"))
+            .write(
+                &StorePath::from_static("b/two.txt"),
+                Bytes::from_static(b"second"),
+            )
             .await
             .unwrap();
 
         // Moving into a directory that does not exist yet creates it.
-        store.rename("a/one.txt", "c/moved.txt").await.unwrap();
-        assert_eq!(&store.read("c/moved.txt").await.unwrap()[..], b"first");
-        assert!(store.list("a").await.unwrap().is_empty());
+        store
+            .rename(
+                &StorePath::from_static("a/one.txt"),
+                &StorePath::from_static("c/moved.txt"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            &store
+                .read(&StorePath::from_static("c/moved.txt"))
+                .await
+                .unwrap()[..],
+            b"first"
+        );
+        assert!(
+            store
+                .list(&StorePath::from_static("a"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         // Refusing to overwrite is the important part: a silent replace on a
         // file manager's drag-and-drop is a lost file with no undo.
-        let err = store.rename("b/two.txt", "c/moved.txt").await.unwrap_err();
+        let err = store
+            .rename(
+                &StorePath::from_static("b/two.txt"),
+                &StorePath::from_static("c/moved.txt"),
+            )
+            .await
+            .unwrap_err();
         assert!(matches!(err.repr(), sc_error::Repr::Invalid(_)));
-        assert_eq!(&store.read("c/moved.txt").await.unwrap()[..], b"first");
-        assert_eq!(&store.read("b/two.txt").await.unwrap()[..], b"second");
+        assert_eq!(
+            &store
+                .read(&StorePath::from_static("c/moved.txt"))
+                .await
+                .unwrap()[..],
+            b"first"
+        );
+        assert_eq!(
+            &store
+                .read(&StorePath::from_static("b/two.txt"))
+                .await
+                .unwrap()[..],
+            b"second"
+        );
 
         // A source that is not there is a not-found, not a silent success.
-        let err = store.rename("nope.txt", "x.txt").await.unwrap_err();
+        let err = store
+            .rename(
+                &StorePath::from_static("nope.txt"),
+                &StorePath::from_static("x.txt"),
+            )
+            .await
+            .unwrap_err();
         assert!(matches!(err.repr(), sc_error::Repr::NotFound(_)));
 
         // And traversal is rejected on both sides, so this cannot move data out
         // of the store.
-        assert!(store.rename("b/two.txt", "../escaped.txt").await.is_err());
-        assert!(store.rename("../secret", "here.txt").await.is_err());
+        assert!(StorePath::parse("../escaped.txt").is_err());
+        assert!(StorePath::parse("../secret").is_err());
     }
 
     /// The path-cumulative rule `FileMeta` has documented since the MVP, now
@@ -641,19 +910,28 @@ mod tests {
     async fn access_is_cumulative_along_the_path() {
         let (_base, store) = temp_store();
         store
-            .write("public/open.txt", Bytes::from_static(b"x"))
+            .write(
+                &StorePath::from_static("public/open.txt"),
+                Bytes::from_static(b"x"),
+            )
             .await
             .unwrap();
         store
-            .write("private/secret.txt", Bytes::from_static(b"y"))
+            .write(
+                &StorePath::from_static("private/secret.txt"),
+                Bytes::from_static(b"y"),
+            )
             .await
             .unwrap();
 
         // Restrict the *directory* only; the file inside carries no rule.
-        store.mkdir("private").await.unwrap();
+        store
+            .mkdir(&StorePath::from_static("private"))
+            .await
+            .unwrap();
         store
             .set_meta(
-                "private",
+                &StorePath::from_static("private"),
                 &FileMeta {
                     min_role: Some(Role::ADMIN),
                     ..Default::default()
@@ -703,17 +981,20 @@ mod tests {
     async fn a_nested_rule_can_only_tighten_and_the_store_floor_applies_first() {
         let (_base, store) = temp_store();
         store
-            .write("dir/file.txt", Bytes::from_static(b"x"))
+            .write(
+                &StorePath::from_static("dir/file.txt"),
+                Bytes::from_static(b"x"),
+            )
             .await
             .unwrap();
-        store.mkdir("dir").await.unwrap();
+        store.mkdir(&StorePath::from_static("dir")).await.unwrap();
 
         // A permissive rule inside a restricted directory must NOT widen access:
         // otherwise restricting a folder would not restrict it, since anything
         // inside could opt back out.
         store
             .set_meta(
-                "dir",
+                &StorePath::from_static("dir"),
                 &FileMeta {
                     min_role: Some(Role::of(20)),
                     ..Default::default()
@@ -723,7 +1004,7 @@ mod tests {
             .unwrap();
         store
             .set_meta(
-                "dir/file.txt",
+                &StorePath::from_static("dir/file.txt"),
                 &FileMeta {
                     min_role: Some(Role::PUBLIC),
                     ..Default::default()
@@ -760,16 +1041,22 @@ mod tests {
     async fn listings_hide_entries_the_caller_may_not_open() {
         let (_base, store) = temp_store();
         store
-            .write("open.txt", Bytes::from_static(b"x"))
+            .write(
+                &StorePath::from_static("open.txt"),
+                Bytes::from_static(b"x"),
+            )
             .await
             .unwrap();
         store
-            .write("secret.txt", Bytes::from_static(b"y"))
+            .write(
+                &StorePath::from_static("secret.txt"),
+                Bytes::from_static(b"y"),
+            )
             .await
             .unwrap();
         store
             .set_meta(
-                "secret.txt",
+                &StorePath::from_static("secret.txt"),
                 &FileMeta {
                     min_role: Some(Role::ADMIN),
                     ..Default::default()
@@ -778,7 +1065,7 @@ mod tests {
             .await
             .unwrap();
 
-        let all = store.list("").await.unwrap();
+        let all = store.list(&StorePath::root()).await.unwrap();
         assert_eq!(all.len(), 2);
 
         // A listing must be filtered rather than merely refused: showing a name
@@ -802,10 +1089,10 @@ mod tests {
     #[tokio::test]
     async fn the_owner_may_read_and_write_what_nobody_else_at_their_role_may() {
         let (_base, store) = temp_store();
-        store.mkdir("drops").await.unwrap();
+        store.mkdir(&StorePath::from_static("drops")).await.unwrap();
         store
             .set_meta(
-                "drops",
+                &StorePath::from_static("drops"),
                 &FileMeta {
                     min_role: Some(Role::ADMIN),
                     ..Default::default()
@@ -814,7 +1101,10 @@ mod tests {
             .await
             .unwrap();
         for (path, owner) in [("drops/a.png", "user-a"), ("drops/b.png", "user-b")] {
-            store.write(path, Bytes::from_static(b"x")).await.unwrap();
+            store
+                .write(&StorePath::parse(path).unwrap(), Bytes::from_static(b"x"))
+                .await
+                .unwrap();
             record_owner(&store, path, owner).await;
         }
         let a = FileCaller::new(Role::of(80), Some("user-a".into()));
@@ -842,7 +1132,10 @@ mod tests {
         );
         // An owned file is the owner's even where the floor is public.
         store
-            .write("open.txt", Bytes::from_static(b"o"))
+            .write(
+                &StorePath::from_static("open.txt"),
+                Bytes::from_static(b"o"),
+            )
             .await
             .unwrap();
         record_owner(&store, "open.txt", "user-a").await;
@@ -850,18 +1143,27 @@ mod tests {
         assert!(check_write(&store, None, "open.txt", &b).await.is_err());
         // An unowned file keeps the path rule for writes.
         store
-            .write("shared.txt", Bytes::from_static(b"s"))
+            .write(
+                &StorePath::from_static("shared.txt"),
+                Bytes::from_static(b"s"),
+            )
             .await
             .unwrap();
         assert!(check_write(&store, None, "shared.txt", &b).await.is_ok());
         // A folder holding somebody else's file is theirs to keep: deleting it
         // would delete the file.
         store
-            .write("mixed/mine.txt", Bytes::from_static(b"m"))
+            .write(
+                &StorePath::from_static("mixed/mine.txt"),
+                Bytes::from_static(b"m"),
+            )
             .await
             .unwrap();
         store
-            .write("mixed/theirs.txt", Bytes::from_static(b"t"))
+            .write(
+                &StorePath::from_static("mixed/theirs.txt"),
+                Bytes::from_static(b"t"),
+            )
             .await
             .unwrap();
         record_owner(&store, "mixed/theirs.txt", "user-a").await;
@@ -900,13 +1202,18 @@ mod tests {
     async fn recording_an_owner_keeps_the_first_one() {
         let (_base, store) = temp_store();
         store
-            .write("f.txt", Bytes::from_static(b"x"))
+            .write(&StorePath::from_static("f.txt"), Bytes::from_static(b"x"))
             .await
             .unwrap();
         record_owner(&store, "f.txt", "first").await;
         record_owner(&store, "f.txt", "second").await;
         assert_eq!(
-            store.get_meta("f.txt").await.unwrap().owner.as_deref(),
+            store
+                .get_meta(&StorePath::from_static("f.txt"))
+                .await
+                .unwrap()
+                .owner
+                .as_deref(),
             Some("first")
         );
         // Two callers without accounts do not "own" an unowned file.
@@ -924,37 +1231,37 @@ mod tests {
         fn name(&self) -> &str {
             "mem"
         }
-        async fn read(&self, path: &str) -> sc_error::Result<Bytes> {
+        async fn read(&self, path: &StorePath) -> sc_error::Result<Bytes> {
             self.0
                 .lock()
                 .unwrap()
-                .get(path)
+                .get(path.as_str())
                 .cloned()
-                .ok_or_else(|| sc_error::Error::not_found(path.to_owned()))
+                .ok_or_else(|| sc_error::Error::not_found(path.to_string()))
         }
-        async fn write(&self, path: &str, data: Bytes) -> sc_error::Result<()> {
-            self.0.lock().unwrap().insert(path.to_owned(), data);
+        async fn write(&self, path: &StorePath, data: Bytes) -> sc_error::Result<()> {
+            self.0.lock().unwrap().insert(path.to_string(), data);
             Ok(())
         }
-        async fn list(&self, _dir: &str) -> sc_error::Result<Vec<Entry>> {
+        async fn list(&self, _dir: &StorePath) -> sc_error::Result<Vec<Entry>> {
             Ok(Vec::new())
         }
-        async fn mkdir(&self, _path: &str) -> sc_error::Result<()> {
+        async fn mkdir(&self, _path: &StorePath) -> sc_error::Result<()> {
             Ok(())
         }
-        async fn delete(&self, path: &str) -> sc_error::Result<bool> {
-            Ok(self.0.lock().unwrap().remove(path).is_some())
+        async fn delete(&self, path: &StorePath) -> sc_error::Result<bool> {
+            Ok(self.0.lock().unwrap().remove(path.as_str()).is_some())
         }
-        async fn rename(&self, _from: &str, _to: &str) -> sc_error::Result<()> {
+        async fn rename(&self, _from: &StorePath, _to: &StorePath) -> sc_error::Result<()> {
             Ok(())
         }
         fn is_git_repo(&self) -> bool {
             false
         }
-        async fn get_meta(&self, _path: &str) -> sc_error::Result<FileMeta> {
+        async fn get_meta(&self, _path: &StorePath) -> sc_error::Result<FileMeta> {
             Ok(FileMeta::default())
         }
-        async fn set_meta(&self, _path: &str, _meta: &FileMeta) -> sc_error::Result<()> {
+        async fn set_meta(&self, _path: &StorePath, _meta: &FileMeta) -> sc_error::Result<()> {
             Ok(())
         }
     }
@@ -964,54 +1271,135 @@ mod tests {
     async fn streaming_contract(store: &dyn FileStore) {
         use tokio::io::AsyncWriteExt;
         store
-            .write("in/a.bin", Bytes::from_static(b"0123456789"))
+            .write(
+                &StorePath::from_static("in/a.bin"),
+                Bytes::from_static(b"0123456789"),
+            )
             .await
             .unwrap();
         // Whole, and ranged (half-open), and the empty range at the end.
-        let all = read_to_bytes(store.open_read("in/a.bin", None).await.unwrap())
-            .await
-            .unwrap();
+        let all = read_to_bytes(
+            store
+                .open_read(&StorePath::from_static("in/a.bin"), None)
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
         assert_eq!(&all[..], b"0123456789");
-        let some = read_to_bytes(store.open_read("in/a.bin", Some(2..5)).await.unwrap())
-            .await
-            .unwrap();
+        let some = read_to_bytes(
+            store
+                .open_read(&StorePath::from_static("in/a.bin"), Some(2..5))
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
         assert_eq!(&some[..], b"234");
-        let none = read_to_bytes(store.open_read("in/a.bin", Some(10..10)).await.unwrap())
-            .await
-            .unwrap();
+        let none = read_to_bytes(
+            store
+                .open_read(&StorePath::from_static("in/a.bin"), Some(10..10))
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
         assert!(none.is_empty());
         // Past the end is refused, not truncated; a missing file is not found.
-        assert!(store.open_read("in/a.bin", Some(5..11)).await.is_err());
-        let err = store.open_read("in/nope.bin", None).await.err().unwrap();
+        assert!(
+            store
+                .open_read(&StorePath::from_static("in/a.bin"), Some(5..11))
+                .await
+                .is_err()
+        );
+        let err = store
+            .open_read(&StorePath::from_static("in/nope.bin"), None)
+            .await
+            .err()
+            .unwrap();
         assert!(matches!(err.repr(), sc_error::Repr::NotFound(_)), "{err}");
 
         // Append creates, then appends across two openings.
         for chunk in [&b"abc"[..], b"def"] {
-            let mut out = store.open_append("up/new.bin").await.unwrap();
+            let mut out = store
+                .open_append(&StorePath::from_static("up/new.bin"))
+                .await
+                .unwrap();
             out.write_all(chunk).await.unwrap();
             out.shutdown().await.unwrap();
         }
-        assert_eq!(&store.read("up/new.bin").await.unwrap()[..], b"abcdef");
+        assert_eq!(
+            &store
+                .read(&StorePath::from_static("up/new.bin"))
+                .await
+                .unwrap()[..],
+            b"abcdef"
+        );
 
         // Concat joins in order and answers the size.
         store
-            .write("parts/1", Bytes::from_static(b"one-"))
+            .write(
+                &StorePath::from_static("parts/1"),
+                Bytes::from_static(b"one-"),
+            )
             .await
             .unwrap();
         store
-            .write("parts/2", Bytes::from_static(b"two"))
+            .write(
+                &StorePath::from_static("parts/2"),
+                Bytes::from_static(b"two"),
+            )
             .await
             .unwrap();
-        let parts = ["parts/1".to_owned(), "parts/2".to_owned()];
-        assert_eq!(store.concat(&parts, "joined/out.txt").await.unwrap(), 7);
-        assert_eq!(&store.read("joined/out.txt").await.unwrap()[..], b"one-two");
+        let parts = [
+            StorePath::from_static("parts/1"),
+            StorePath::from_static("parts/2"),
+        ];
+        assert_eq!(
+            store
+                .concat(&parts, &StorePath::from_static("joined/out.txt"))
+                .await
+                .unwrap(),
+            7
+        );
+        assert_eq!(
+            &store
+                .read(&StorePath::from_static("joined/out.txt"))
+                .await
+                .unwrap()[..],
+            b"one-two"
+        );
         // A missing part fails without leaving a partial target: neither a new
         // one nor a change to one that was there.
-        let broken = ["parts/1".to_owned(), "parts/missing".to_owned()];
-        assert!(store.concat(&broken, "joined/partial.txt").await.is_err());
-        assert!(store.read("joined/partial.txt").await.is_err());
-        assert!(store.concat(&broken, "joined/out.txt").await.is_err());
-        assert_eq!(&store.read("joined/out.txt").await.unwrap()[..], b"one-two");
+        let broken = [
+            StorePath::from_static("parts/1"),
+            StorePath::from_static("parts/missing"),
+        ];
+        assert!(
+            store
+                .concat(&broken, &StorePath::from_static("joined/partial.txt"))
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .read(&StorePath::from_static("joined/partial.txt"))
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .concat(&broken, &StorePath::from_static("joined/out.txt"))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            &store
+                .read(&StorePath::from_static("joined/out.txt"))
+                .await
+                .unwrap()[..],
+            b"one-two"
+        );
     }
 
     #[tokio::test]
@@ -1025,15 +1413,23 @@ mod tests {
             .collect();
         assert_eq!(leftovers, ["out.txt"]);
         // A directory is not a file to stream.
-        store.mkdir("adir").await.unwrap();
-        assert!(store.open_read("adir", None).await.is_err());
+        store.mkdir(&StorePath::from_static("adir")).await.unwrap();
+        assert!(
+            store
+                .open_read(&StorePath::from_static("adir"), None)
+                .await
+                .is_err()
+        );
         // A replaced join keeps the target's metadata, owner included.
         record_owner(&store, "joined/out.txt", "user-a").await;
-        let parts = ["parts/2".to_owned()];
-        store.concat(&parts, "joined/out.txt").await.unwrap();
+        let parts = [StorePath::from_static("parts/2")];
+        store
+            .concat(&parts, &StorePath::from_static("joined/out.txt"))
+            .await
+            .unwrap();
         assert_eq!(
             store
-                .get_meta("joined/out.txt")
+                .get_meta(&StorePath::from_static("joined/out.txt"))
                 .await
                 .unwrap()
                 .owner
@@ -1048,11 +1444,25 @@ mod tests {
         streaming_contract(&store).await;
         // The default append writes nothing until it is shut down.
         use tokio::io::AsyncWriteExt;
-        let mut out = store.open_append("late.bin").await.unwrap();
+        let mut out = store
+            .open_append(&StorePath::from_static("late.bin"))
+            .await
+            .unwrap();
         out.write_all(b"x").await.unwrap();
-        assert!(store.read("late.bin").await.is_err());
+        assert!(
+            store
+                .read(&StorePath::from_static("late.bin"))
+                .await
+                .is_err()
+        );
         out.shutdown().await.unwrap();
-        assert_eq!(&store.read("late.bin").await.unwrap()[..], b"x");
+        assert_eq!(
+            &store
+                .read(&StorePath::from_static("late.bin"))
+                .await
+                .unwrap()[..],
+            b"x"
+        );
     }
 
     // --- the store-side search ----------------------------------------------
@@ -1068,14 +1478,17 @@ mod tests {
             ("node_modules/pkg/index.js", b"todo everywhere\n"),
         ] {
             store
-                .write(path, Bytes::copy_from_slice(bytes))
+                .write(
+                    &StorePath::parse(path).unwrap(),
+                    Bytes::copy_from_slice(bytes),
+                )
                 .await
                 .unwrap();
         }
         // Not UTF-8: it has no lines, and "matched at line 3" of a PNG is noise.
         store
             .write(
-                "logo.png",
+                &StorePath::from_static("logo.png"),
                 Bytes::from_static(&[0xff, 0xfe, b't', b'o', 0x00]),
             )
             .await
@@ -1138,7 +1551,7 @@ mod tests {
         let (_base, store) = searchable().await;
         store
             .set_meta(
-                "src/deep",
+                &StorePath::from_static("src/deep"),
                 &FileMeta {
                     min_role: Some(Role::ADMIN),
                     ..Default::default()
@@ -1177,7 +1590,10 @@ mod tests {
         let (_base, store) = temp_store();
         for n in 0..10 {
             store
-                .write(&format!("f{n}.ts"), Bytes::from_static(b"needle\nneedle\n"))
+                .write(
+                    &StorePath::parse(&format!("f{n}.ts")).unwrap(),
+                    Bytes::from_static(b"needle\nneedle\n"),
+                )
                 .await
                 .unwrap();
         }
@@ -1283,7 +1699,7 @@ mod tests {
         let (_base, store) = searchable().await;
         store
             .set_meta(
-                "src/deep",
+                &StorePath::from_static("src/deep"),
                 &FileMeta {
                     min_role: Some(Role::ADMIN),
                     ..Default::default()

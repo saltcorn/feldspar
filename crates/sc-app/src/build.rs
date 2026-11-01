@@ -319,13 +319,15 @@ pub async fn build_app(cat: &Catalog, source: &AppSource) -> Result<BuildReport>
 /// object-store-backed app is refused here with one message rather than two
 /// (§13.3).
 fn store_root(store: &Arc<dyn sc_files::FileStore>, source: &AppSource) -> Result<PathBuf> {
-    store.local_path("")?.ok_or_else(|| {
-        Error::config(format!(
-            "file store {:?} has no local path, so it cannot host a code framework's \
+    store
+        .local_path(&sc_files::StorePath::root())?
+        .ok_or_else(|| {
+            Error::config(format!(
+                "file store {:?} has no local path, so it cannot host a code framework's \
              build step; use a local store",
-            source.store.0
-        ))
-    })
+                source.store.0
+            ))
+        })
 }
 
 /// Delete an application's installed dependencies — a `react` app's
@@ -628,18 +630,28 @@ pub async fn emit_client(
         // …and its exposed agents (§11.7): `api.agents["<name>"]`.
         &crate::agent_exports(app),
     );
-    store.write(path, Bytes::from(client.into_bytes())).await?;
+    store
+        .write(
+            &sc_files::StorePath::parse(path)?,
+            Bytes::from(client.into_bytes()),
+        )
+        .await?;
     let mut written = vec![path.clone()];
     for (name, text) in sc_api::client_runtime(sc_api::has_offline_sync(endpoints)) {
         let at = sibling(path, name);
-        store.write(&at, Bytes::from(text.into_bytes())).await?;
+        store
+            .write(
+                &sc_files::StorePath::parse(&at)?,
+                Bytes::from(text.into_bytes()),
+            )
+            .await?;
         written.push(at);
     }
     let skill = sibling(path, crate::SKILL_FILE);
     let client_file = path.rsplit('/').next().unwrap_or(path.as_str()).to_owned();
     store
         .write(
-            &skill,
+            &sc_files::StorePath::parse(&skill)?,
             Bytes::from(crate::generate_skill(cat, app, &client_file).into_bytes()),
         )
         .await?;

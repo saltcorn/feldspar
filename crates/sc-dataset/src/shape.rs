@@ -374,7 +374,7 @@ fn table_info(table: &Table, all: &BTreeMap<String, Table>) -> TableInfo {
                 // A key has its target's type: a key to an integer id holds
                 // integers.
                 let ty = all
-                    .get(&target_table.0)
+                    .get(target_table)
                     .and_then(|t| t.field(&target_field.0))
                     .map_or(ColType::of_type(&field.base.type_), |f| {
                         ColType::of_type(&f.base.type_)
@@ -383,7 +383,7 @@ fn table_info(table: &Table, all: &BTreeMap<String, Table>) -> TableInfo {
                     name: field.base.name.clone(),
                     ty,
                     key: Some(ForeignKey {
-                        table: target_table.0.clone(),
+                        table: target_table.clone(),
                         field: target_field.0.clone(),
                     }),
                 });

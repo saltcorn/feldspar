@@ -174,11 +174,11 @@ pub async fn sync_watermark(catalog: &Catalog, tx: &SharedTx) -> Result<SyncWate
             .run_as(
                 Authority::system("sync: read the change-log watermark"),
                 &Statement::raw(
-                    format!(
+                    sc_query::TrustedSql::composed(format!(
                         "SELECT max(coalesce((SELECT seq FROM sqlite_sequence WHERE name = '{log}'), 0), \
                          coalesce((SELECT max(seq) FROM \"{log}\"), 0)) AS seq",
                         log = crate::change_log::CHANGES_TABLE
-                    ),
+                    )),
                     Vec::new(),
                 ),
             )
@@ -284,7 +284,7 @@ pub async fn changed_entries(
     let rows = tx
         .run_as(
             Authority::system("sync: read the change log"),
-            &Statement::raw(sql, binds),
+            &Statement::raw(sc_query::TrustedSql::composed(sql), binds),
         )
         .await?;
     Ok(rows

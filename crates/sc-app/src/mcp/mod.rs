@@ -332,7 +332,7 @@ fn application_json(app: &Application) -> Result<Json> {
         "name": app.name,
         "description": app.description,
         "framework": app.framework.name,
-        "tables": app.tables.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
+        "tables": app.tables.to_vec(),
         // The connected tables that also serve a generic row API — usually none.
         "api_tables": update::api_tables_json(app),
         "triggers": app.triggers.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),

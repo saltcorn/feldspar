@@ -455,7 +455,7 @@ fn section_config(section: &Environment) -> Option<Result<Config>> {
         config.user(user);
     }
     if let Some(password) = &section.password {
-        config.password(password);
+        config.password(password.expose());
     }
     if let Some(database) = &section.database {
         config.dbname(database);

@@ -99,7 +99,7 @@ pub struct ConsentFlow {
     pub authorization_url: String,
     pub token_url: String,
     pub client_id: String,
-    pub client_secret: String,
+    pub client_secret: sc_error::Secret<String>,
     pub scope: String,
     /// Extra authorization parameters (`login_hint`, `prompt`, …).
     pub params: Vec<(String, String)>,
@@ -237,7 +237,7 @@ pub fn consent_flow(
         authorization_url,
         token_url,
         client_id,
-        client_secret,
+        client_secret: client_secret.into(),
         scope,
         params,
         return_to,

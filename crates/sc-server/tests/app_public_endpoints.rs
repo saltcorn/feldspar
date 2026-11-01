@@ -32,7 +32,7 @@ use sc_action::{EventKind, Trigger, save_trigger};
 use sc_api::{CustomParam, CustomQuery, Method, QueryLanguage, ValueType, set_custom_queries};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, TriggerRef};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, TableId, TableMeta, bootstrap_table_meta, save_table_meta};
+use sc_catalog::{Catalog, TableMeta, bootstrap_table_meta, save_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
@@ -227,8 +227,8 @@ fn guests_app() -> Application {
     )
     .unwrap();
     Application::new("Guests", "guests", FrameworkRef::new("code"))
-        .with_table(TableId("guestbook".to_owned()))
-        .with_table(TableId("secrets".to_owned()))
+        .with_table("guestbook".to_owned())
+        .with_table("secrets".to_owned())
         .with_api(api)
         .with_trigger(TriggerRef::new("sign"))
         .with_trigger(TriggerRef::new("sign_as_editor"))

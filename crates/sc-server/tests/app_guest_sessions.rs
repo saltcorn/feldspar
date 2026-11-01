@@ -29,7 +29,7 @@ use sc_action::{EventKind, Trigger, save_trigger};
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation, TableSettings};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
 use sc_auth::{SessionStore, create_user};
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
@@ -250,8 +250,8 @@ async fn setup() -> sc_error::Result<Server> {
             .with_triggers(dispatcher),
     );
     let app = Application::new("Shop", "shop", FrameworkRef::new("code"))
-        .with_table(TableId("baskets".to_owned()))
-        .with_table(TableId("rls_baskets".to_owned()))
+        .with_table("baskets".to_owned())
+        .with_table("rls_baskets".to_owned())
         .with_api(ApiConfig::new("rest", "/api"))
         .attribute(sc_app::GUEST_SESSIONS_ATTRIBUTE, true)
         .attribute(sc_app::GUEST_SESSION_DAYS_ATTRIBUTE, 30);

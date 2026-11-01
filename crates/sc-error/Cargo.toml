@@ -9,7 +9,12 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# `Secret<T>` deserialises as the value it wraps (a stored setting, a config
+# file), and serialises only through the explicit `secret::expose` functions.
+serde.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

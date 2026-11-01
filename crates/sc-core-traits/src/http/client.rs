@@ -15,7 +15,7 @@ use sc_error::{Error, Result, format_causes};
 use serde_json::Value as Json;
 
 use super::cookies::CookieJar;
-use super::guard::{HostPolicy, PublicResolver};
+use super::guard::{HostPolicy, REFUSAL};
 
 /// The most of a response body that is read. A documentation page is a few
 /// hundred kilobytes; past this the rest is not read at all, and the result
@@ -34,7 +34,7 @@ const DEFAULT_ACCEPT: &str =
 /// The two clients a policy chooses between: one that resolves names to
 /// public addresses only, and one that does not filter.
 pub struct HttpClient {
-    public: reqwest::Client,
+    public: sc_net::PublicClient,
     open: reqwest::Client,
 }
 
@@ -43,10 +43,7 @@ impl HttpClient {
     /// and a server where that fails should say so at boot.
     pub fn new() -> Result<HttpClient> {
         Ok(HttpClient {
-            public: builder()
-                .dns_resolver(PublicResolver)
-                .build()
-                .map_err(build_failed)?,
+            public: sc_net::PublicClient::new(builder(), REFUSAL, sc_net::Redirects::None)?,
             open: builder().build().map_err(build_failed)?,
         })
     }
@@ -69,10 +66,6 @@ impl HttpClient {
         request: Request,
         mut jar: Option<&mut CookieJar>,
     ) -> Result<Response> {
-        let client = match policy.private_network() {
-            true => &self.open,
-            false => &self.public,
-        };
         let deadline = Instant::now() + request.timeout;
         let Request {
             mut method,
@@ -99,10 +92,11 @@ impl HttpClient {
             {
                 hop_headers.insert(COOKIE, value);
             }
-            let mut builder = client
-                .request(method.clone(), url.clone())
-                .timeout(remaining)
-                .headers(hop_headers);
+            let request = match policy.private_network() {
+                true => self.open.request(method.clone(), url.clone()),
+                false => self.public.request(method.clone(), url.clone())?,
+            };
+            let mut builder = request.timeout(remaining).headers(hop_headers);
             builder = match &body {
                 None => builder,
                 Some(Json::String(text)) => builder.body(text.clone()),

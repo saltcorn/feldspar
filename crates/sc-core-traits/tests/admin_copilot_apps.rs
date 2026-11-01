@@ -78,7 +78,7 @@ async fn app_with_api(env: &Env) -> Result<std::path::PathBuf> {
         .with("command", "sh build.sh")
         .with("client", "web/src/api.ts");
     let app = Application::new("Blog", "blog", framework)
-        .with_table(sc_catalog::TableId("books".to_owned()))
+        .with_table("books".to_owned())
         .with_api(ApiConfig::new("rest", "/api"));
     save_application(&env.catalog, &app).await?;
     Ok(dir)
@@ -710,8 +710,7 @@ async fn update_application_checks_each_section_s_grant_before_changing_anything
 async fn opening_a_tables_row_api_needs_the_access_changes_grant() -> Result<()> {
     let env = Env::with_schema(SCHEMA).await?;
     app_with_api(&env).await?;
-    let api_tables =
-        |app: &Application| -> Vec<String> { app.api_tables.iter().map(|t| t.0.clone()).collect() };
+    let api_tables = |app: &Application| -> Vec<String> { app.api_tables.to_vec() };
     let stored = || async {
         load_application_by_subdomain(&env.catalog, "blog")
             .await

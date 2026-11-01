@@ -210,7 +210,7 @@ fn field_json(by_name: &HashMap<&str, &Table>, table: &Table, field: &DataField)
             target_table,
             target_field,
             ..
-        } => Some((target_table.0.as_str(), target_field.0.as_str())),
+        } => Some((target_table.as_str(), target_field.0.as_str())),
         _ => None,
     };
     out.insert(
@@ -275,7 +275,7 @@ fn v1_attributes(field: &DataField) -> Map<String, Json> {
 fn field_type(field: &DataField) -> (Json, String) {
     match &field.kind {
         DataFieldKind::Key { target_table, .. } => {
-            let name = format!("Key to {}", target_table.0);
+            let name = format!("Key to {}", target_table);
             (json!(name), name)
         }
         DataFieldKind::File { .. } => (json!("File"), "File".to_owned()),

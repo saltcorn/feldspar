@@ -31,7 +31,7 @@ use sc_app::{
     ApiConfig, Application, CodeFramework, FrameworkRef, bootstrap, save_application, scaffold_app,
 };
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -197,7 +197,7 @@ async fn setup(tag: &str) -> sc_error::Result<Harness> {
             .with("store", "apps")
             .with("project", "todo"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     save_application(&catalog, &app).await?;

@@ -108,7 +108,7 @@ impl Live {
     /// the formula engine behind a delegated read.
     fn host(&self) -> TableHost<'_> {
         TableHost::new(&self.catalog)
-            .caused_by(40, Some(ada()))
+            .caused_by(sc_types::Role::of(40), Some(ada()))
             .with_evaluator(Some(Arc::clone(&self.evaluator)))
     }
 

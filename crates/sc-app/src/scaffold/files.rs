@@ -4956,13 +4956,12 @@ pub(super) fn ts_empty(field: &sc_catalog::DataField) -> &'static str {
 mod tests {
     use super::*;
     use sc_api::{ApiProvider, RestProvider};
-    use sc_catalog::{AccessRules, DataField, DbId, TableId, TableSource};
+    use sc_catalog::{AccessRules, DataField, DbId, TableSource};
     use sc_types::Role;
     use sc_types::TypeRef;
 
     fn tasks() -> Table {
         Table {
-            id: TableId("tasks".to_owned()),
             name: "tasks".to_owned(),
             database: DbId::primary(),
             source: TableSource::Database,
@@ -4998,7 +4997,6 @@ mod tests {
     #[test]
     fn the_password_hash_is_on_no_generated_page_or_form() {
         let mut users = tasks();
-        users.id = TableId(sc_auth::USERS_TABLE.to_owned());
         users.name = sc_auth::USERS_TABLE.to_owned();
         users.label = sc_auth::USERS_TABLE.to_owned();
         users.fields = vec![
@@ -6205,7 +6203,6 @@ export function Board({ id }: { id: number }) {
         let tables = [tasks(), {
             let mut t = tasks();
             t.name = "notes".to_owned();
-            t.id = TableId("notes".to_owned());
             t
         }];
         let eps = endpoints(&tables);
@@ -6380,7 +6377,6 @@ export function Board({ id }: { id: number }) {
     /// creates the row is what issues it.
     fn people() -> Table {
         let mut table = tasks();
-        table.id = TableId("people".to_owned());
         table.name = "people".to_owned();
         table.label = "people".to_owned();
         table.fields[0] = DataField::plain("id", TypeRef::Basic(BasicType::Uuid))

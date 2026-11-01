@@ -24,7 +24,7 @@ use sc_app::{
     ApiConfig, Application, CodeFramework, FrameworkRef, app_source_from_config, build_application,
 };
 use sc_auth::{RoleDef, SessionStore, load_user_by_email, save_role};
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -186,7 +186,7 @@ fn code_framework() -> FrameworkRef {
 
 fn blog_app(api: ApiConfig) -> Application {
     Application::new("Blog", "blog", code_framework())
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_file_store(FileStoreId("apps".to_owned()))
         .with_api(api)
 }

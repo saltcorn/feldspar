@@ -539,50 +539,63 @@ mod tests {
         fn name(&self) -> &str {
             "generated"
         }
-        async fn read(&self, _path: &str) -> sc_error::Result<bytes::Bytes> {
+        async fn read(&self, _path: &sc_files::StorePath) -> sc_error::Result<bytes::Bytes> {
             self.whole_reads.fetch_add(1, Ordering::SeqCst);
             Ok(bytes::Bytes::from(vec![b'x'; self.size as usize]))
         }
-        async fn write(&self, _: &str, _: bytes::Bytes) -> sc_error::Result<()> {
+        async fn write(&self, _: &sc_files::StorePath, _: bytes::Bytes) -> sc_error::Result<()> {
             Ok(())
         }
-        async fn list(&self, _: &str) -> sc_error::Result<Vec<sc_files::Entry>> {
+        async fn list(&self, _: &sc_files::StorePath) -> sc_error::Result<Vec<sc_files::Entry>> {
             Ok(Vec::new())
         }
-        async fn mkdir(&self, _: &str) -> sc_error::Result<()> {
+        async fn mkdir(&self, _: &sc_files::StorePath) -> sc_error::Result<()> {
             Ok(())
         }
-        async fn delete(&self, _: &str) -> sc_error::Result<bool> {
+        async fn delete(&self, _: &sc_files::StorePath) -> sc_error::Result<bool> {
             Ok(false)
         }
-        async fn rename(&self, _: &str, _: &str) -> sc_error::Result<()> {
+        async fn rename(
+            &self,
+            _: &sc_files::StorePath,
+            _: &sc_files::StorePath,
+        ) -> sc_error::Result<()> {
             Ok(())
         }
         fn is_git_repo(&self) -> bool {
             false
         }
-        async fn stat(&self, path: &str) -> sc_error::Result<Option<sc_files::FileStat>> {
-            Ok((path != "missing.bin").then(|| sc_files::FileStat {
-                size: self.size,
-                is_dir: false,
-                modified: Some("2026-10-12T10:00:00Z".to_owned()),
-            }))
+        async fn stat(
+            &self,
+            path: &sc_files::StorePath,
+        ) -> sc_error::Result<Option<sc_files::FileStat>> {
+            Ok(
+                (path.as_str() != "missing.bin").then(|| sc_files::FileStat {
+                    size: self.size,
+                    is_dir: false,
+                    modified: Some("2026-10-12T10:00:00Z".to_owned()),
+                }),
+            )
         }
         async fn open_read(
             &self,
-            _path: &str,
+            _path: &sc_files::StorePath,
             range: Option<Range<u64>>,
         ) -> sc_error::Result<BoxAsyncRead> {
             let remaining = range.map_or(self.size, |r| r.end - r.start);
             Ok(Box::new(Lazy { remaining }))
         }
-        async fn get_meta(&self, _: &str) -> sc_error::Result<sc_files::FileMeta> {
+        async fn get_meta(&self, _: &sc_files::StorePath) -> sc_error::Result<sc_files::FileMeta> {
             Ok(sc_files::FileMeta {
                 attributes: self.attributes.clone(),
                 ..Default::default()
             })
         }
-        async fn set_meta(&self, _: &str, _: &sc_files::FileMeta) -> sc_error::Result<()> {
+        async fn set_meta(
+            &self,
+            _: &sc_files::StorePath,
+            _: &sc_files::FileMeta,
+        ) -> sc_error::Result<()> {
             Ok(())
         }
     }
@@ -607,7 +620,7 @@ mod tests {
         for (name, value) in headers {
             map.insert(name.clone(), HeaderValue::from_str(value).unwrap());
         }
-        let file = ServeFile::new(store.clone(), path);
+        let file = ServeFile::new(store.clone(), sc_files::StorePath::parse(path).unwrap());
         serve(&file, &Method::GET, &uri.parse().unwrap(), &map).await
     }
 

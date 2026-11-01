@@ -13,7 +13,7 @@ use axum::http::{Request, StatusCode, header};
 use sc_action::{EventKind, Trigger, save_trigger};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, TriggerRef};
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
@@ -92,7 +92,7 @@ async fn setup() -> sc_error::Result<(Router, Arc<Catalog>, sc_app::AppId, TestD
             .with_triggers(dispatcher.clone()),
     );
     let app = Application::new("Shop", "shop", FrameworkRef::new("code"))
-        .with_table(TableId("visits".to_owned()))
+        .with_table("visits".to_owned())
         .with_api(ApiConfig::new("rest", "/api"))
         .with_trigger(TriggerRef::new("whereami"))
         .with_trigger(TriggerRef::new("visit"))

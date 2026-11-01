@@ -51,7 +51,7 @@ use sc_auth::{
 use sc_catalog::{
     ATTR_OWNERSHIP_FORMULA, Attrs, Catalog, ConstraintKind, DataField, DataFieldKind,
     DbConnectionDef, DbConnectionId, FIELD_META_TABLE, FieldId, FieldMeta, FileOnConflict,
-    FileOnDelete, FileStoreId, SchemaProjection, Table, TableConstraint, TableId,
+    FileOnDelete, FileStoreId, SchemaProjection, Table, TableConstraint,
     check_db_connection_saveable, check_file_store_saveable, connect_db_connection,
     connect_file_store_def, delete_db_connection, delete_file_store, file_kind_config_spec,
     key_kind_config_spec, list_db_connections, list_field_meta_for_table, list_file_stores,
@@ -4671,7 +4671,7 @@ pub fn admin_handlers_with(
                 let ssl = sc_config::ssl_settings_from(&merged)?;
                 ssl.check()?;
                 if ssl.mode == sc_config::SslMode::Custom {
-                    crate::tls::check_certificate(&ssl.certificate, &ssl.private_key)?;
+                    crate::tls::check_certificate(&ssl.certificate, ssl.private_key.expose())?;
                 }
                 // The email section's own cross-field rules, on the same
                 // footing: a username with no password, or credentials over an
@@ -5794,7 +5794,7 @@ pub fn admin_handlers_with(
                 // The subset bounds what a step may be asked about, as it bounds
                 // what a view may be saved over (§11).
                 if let Some(table) = table
-                    && !app.tables.iter().any(|t| t.0 == table)
+                    && !app.tables.iter().any(|t| t == table)
                 {
                     return Err(Error::invalid(format!(
                         "the table `{table}` is not in application `{}`'s table subset",
@@ -7029,7 +7029,7 @@ pub fn admin_handlers_with(
                         email: non_empty_str_field(obj, "email")?.to_owned(),
                         // Absent or blank asks for a generated password, which
                         // comes back in this response and nowhere else.
-                        password: optional_str(obj, "password"),
+                        password: optional_str(obj, "password").into(),
                         role: user_role_field(obj)?,
                         language: user_language_field(obj)?,
                         extra: user_extra_values(&users, obj)?,
@@ -7062,7 +7062,9 @@ pub fn admin_handlers_with(
                         // Blank here means "leave it alone" — the form's password
                         // box is empty because the admin is not changing it, not
                         // because they want the account to have no password.
-                        password: Some(optional_str(obj, "password")).filter(|p| !p.is_empty()),
+                        password: Some(optional_str(obj, "password"))
+                            .filter(|p| !p.is_empty())
+                            .map(sc_error::Secret::new),
                         // Absent leaves it alone; present-and-empty is the
                         // form's "Site default" option, which is a change.
                         language: match obj.contains_key("language") {
@@ -7622,9 +7624,9 @@ async fn help_context(
             .map(|f| {
                 let key_to = match &f.kind {
                     DataFieldKind::Key { target_table, .. } => {
-                        let target = tables.iter().find(|t| t.name == target_table.0);
+                        let target = tables.iter().find(|t| &t.name == target_table);
                         json!({
-                            "table": target_table.0,
+                            "table": target_table,
                             "fields": target.map_or_else(Vec::new, |t| {
                                 t.fields
                                     .iter()
@@ -7821,7 +7823,7 @@ fn field_kind_json(kind: &DataFieldKind) -> Json {
             summary_field,
         } => json!({
             "type": "key",
-            "target_table": target_table.0,
+            "target_table": target_table,
             "target_field": target_field.0,
             "summary_field": summary_field.as_ref().map(|f| f.0.clone()),
         }),
@@ -7878,7 +7880,7 @@ fn parse_field_kind(obj: &Map<String, Json>) -> Result<DataFieldKind> {
             on_conflict: file_option(kind, "on_conflict", FileOnConflict::parse)?,
         }),
         "key" => Ok(DataFieldKind::Key {
-            target_table: TableId(non_empty_str_field(kind, "target_table")?.to_owned()),
+            target_table: non_empty_str_field(kind, "target_table")?.to_owned(),
             target_field: FieldId(non_empty_str_field(kind, "target_field")?.to_owned()),
             summary_field: optional_present_str(kind, "summary_field").map(FieldId),
         }),
@@ -8033,8 +8035,8 @@ pub(crate) fn application_json(app: &Application) -> Json {
         "subdomain": app.subdomain,
         "framework": framework_ref_json(&app.framework),
         "extra_frameworks": app.extra_frameworks.iter().map(framework_ref_json).collect::<Vec<_>>(),
-        "tables": app.tables.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
-        "api_tables": app.api_tables.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
+        "tables": app.tables.to_vec(),
+        "api_tables": app.api_tables.to_vec(),
         "file_stores": app.file_stores.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
         "triggers": app.triggers.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
         "streams": app.streams.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
@@ -8659,16 +8661,10 @@ pub(crate) fn application_from_body(id: AppId, body: &Json) -> Result<Applicatio
         .iter()
         .map(parse_framework)
         .collect::<Result<_>>()?;
-    let tables = parse_str_array(obj, "tables")?
-        .into_iter()
-        .map(TableId)
-        .collect();
+    let tables = parse_str_array(obj, "tables")?.into_iter().collect();
     // Absent is "serves no table's row API" — the default a new application
     // has; each table is opted in by name, and must be one of `tables`.
-    let api_tables = parse_str_array(obj, "api_tables")?
-        .into_iter()
-        .map(TableId)
-        .collect();
+    let api_tables = parse_str_array(obj, "api_tables")?.into_iter().collect();
     let file_stores = parse_str_array(obj, "file_stores")?
         .into_iter()
         .map(FileStoreId)
@@ -9501,8 +9497,8 @@ pub(crate) fn db_connection_from_body(
         // A sentinel with nothing stored behind it is not a password anybody
         // meant to set; it is a form that was shown one for a connection this
         // request is not about. Empty is the safe reading.
-        (SECRET_SENTINEL, None) => String::new(),
-        (other, _) => other.to_owned(),
+        (SECRET_SENTINEL, None) => sc_error::Secret::default(),
+        (other, _) => other.into(),
     };
 
     // A body that names no backend means Postgres, which is what every
@@ -9658,7 +9654,7 @@ pub(crate) fn backup_db_connection_json(def: &DbConnectionDef) -> Json {
         "port": def.port,
         "database": def.database,
         "username": def.username,
-        "password": def.password,
+        "password": def.password.expose(),
         "schema": def.schema,
         "file_store": def.file_store,
         "file_path": def.file_path,
@@ -10986,7 +10982,7 @@ fn no_library_item(app: &Application, id: sc_viewpattern::LibraryItemId) -> Erro
 
 /// Refuse a table outside `app`'s subset, as a configuration step does (§11).
 fn require_subset_table(app: &Application, table: &str) -> Result<()> {
-    if app.tables.iter().any(|t| t.0 == table) {
+    if app.tables.iter().any(|t| t == table) {
         return Ok(());
     }
     Err(Error::invalid(format!(

@@ -392,7 +392,7 @@ impl Plan {
                     vectors.name
                 )));
             };
-            let documents = catalog.require(&target_table.0)?;
+            let documents = catalog.require(target_table)?;
             (Some((relation_name, target_field.0.clone())), documents)
         };
         let allowed = configured_fields(config)?;

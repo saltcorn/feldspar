@@ -439,10 +439,9 @@ console.log(JSON.stringify({ first, second: sockets[1].sent, same, seen, key: ap
 
 /// A small `posts` table with an identity key, for a client that reads it.
 fn posts() -> sc_catalog::Table {
-    use sc_catalog::{AccessRules, DataField, DbId, Table, TableId, TableSource};
+    use sc_catalog::{AccessRules, DataField, DbId, Table, TableSource};
     use sc_types::{BasicType, TypeRef};
     Table {
-        id: TableId("posts".to_owned()),
         name: "posts".to_owned(),
         database: DbId::primary(),
         source: TableSource::Database,

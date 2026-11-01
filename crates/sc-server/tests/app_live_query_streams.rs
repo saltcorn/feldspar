@@ -41,7 +41,7 @@ use futures::{SinkExt, StreamExt};
 use sc_api::{CustomParam, CustomQuery, Method, QueryLanguage, QueryRateLimit, ResponseType};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, DataField, FieldMeta, TableId, save_field_meta};
+use sc_catalog::{Catalog, DataField, FieldMeta, save_field_meta};
 use sc_db::{ColumnGenerator, DatabaseDriver};
 use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
@@ -293,8 +293,8 @@ fn app() -> Application {
     sc_api::set_custom_queries(&mut api.config, &queries()).unwrap();
     Application::new("Notes", "notes", FrameworkRef::new("code"))
         .with_api(api)
-        .with_table(TableId("notes".to_owned()))
-        .with_table(TableId("share_links".to_owned()))
+        .with_table("notes".to_owned())
+        .with_table("share_links".to_owned())
         .with_stream(StreamRef::new("note_body"))
         .with_stream(StreamRef::new("note_cursor"))
 }

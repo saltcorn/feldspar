@@ -779,8 +779,9 @@ pub async fn ratchet(
                 now_at = m.to.clone();
             }
         }
-        let now = match store.stat(&now_at).await? {
-            Some(stat) if !stat.is_dir => Some(store.read(&now_at).await?),
+        let at = sc_files::StorePath::parse(&now_at)?;
+        let now = match store.stat(&at).await? {
+            Some(stat) if !stat.is_dir => Some(store.read(&at).await?),
             _ => None,
         };
         let Some(now) = now else {

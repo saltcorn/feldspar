@@ -58,9 +58,10 @@ async fn setup(db: &TestDb) -> Result<Catalog> {
 
 /// The event every test fires: a directly-run trigger with a payload.
 fn fired(payload: Json) -> Event {
-    Event::new(EventKind::None)
-        .payload(payload)
-        .caller(1, Some(json!({ "email": "admin@example.com" })))
+    Event::new(EventKind::None).payload(payload).caller(
+        sc_types::Role::ADMIN,
+        Some(json!({ "email": "admin@example.com" })),
+    )
 }
 
 /// The adapters a dispatcher hands every action it runs — here, one.

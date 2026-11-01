@@ -12,7 +12,7 @@ use std::sync::Arc;
 use sc_analytics::layer::{
     GeometrySource, LayerData, LayerRequest, Limits, SOURCE_LAYER, layer_data, layer_tile,
 };
-use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, TableId};
+use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId};
 use sc_dataset::{DatasetDef, DatasetId, save_dataset};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -90,7 +90,7 @@ pub(crate) async fn sites() -> Result<Option<(Catalog, TestDb, DatasetId, Datase
     .await?;
     let mut region = column("region", BasicType::Int);
     region.kind = DataFieldKind::Key {
-        target_table: TableId("regions".into()),
+        target_table: "regions".into(),
         target_field: FieldId("id".into()),
         summary_field: None,
     };

@@ -29,7 +29,7 @@ use std::time::Duration;
 use sc_access::rows;
 use sc_auth::User;
 use sc_catalog::{
-    Catalog, DataField, DataFieldKind, FieldId, LIVE_EVENTS, TableEvents, TableId, TableMeta,
+    Catalog, DataField, DataFieldKind, FieldId, LIVE_EVENTS, TableEvents, TableMeta,
     bootstrap_table_meta, save_table_meta,
 };
 use sc_db::DatabaseDriver;
@@ -72,7 +72,7 @@ fn id(user: &User) -> String {
 fn key(name: &str, target: &str) -> DataField {
     DataField {
         kind: DataFieldKind::Key {
-            target_table: TableId(target.to_owned()),
+            target_table: target.to_owned(),
             target_field: FieldId("id".to_owned()),
             summary_field: None,
         },

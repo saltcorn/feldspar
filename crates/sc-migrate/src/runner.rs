@@ -273,7 +273,7 @@ async fn apply(
         vec![Value::Text(migration.id.to_owned())],
     );
     let recorded = !tx
-        .query(&Statement::raw(sql, binds))
+        .query(&Statement::raw(sc_query::TrustedSql::composed(sql), binds))
         .await?
         .try_collect()
         .await?
@@ -367,7 +367,7 @@ async fn insert_record(
         Value::Text(VERSION.to_owned()),
         Value::Int(duration_ms),
     ];
-    tx.query(&Statement::raw(sql, binds))
+    tx.query(&Statement::raw(sc_query::TrustedSql::composed(sql), binds))
         .await?
         .try_collect()
         .await?;

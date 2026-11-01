@@ -737,7 +737,7 @@ impl SummaryLookups {
             let found = match self.resolved.get(&cache_key) {
                 Some(found) => found.clone(),
                 None => {
-                    let target = catalog.require(&target_table.0)?;
+                    let target = catalog.require(target_table)?;
                     let found = summary_key(
                         catalog,
                         &target,
@@ -767,7 +767,7 @@ impl SummaryLookups {
                     return Err(Error::invalid(format!(
                         "in field `{}` the value \"{text}\" is not matched by any row of \
                          `{}`.`{}`",
-                        field.base.name, target_table.0, summary.0
+                        field.base.name, target_table, summary.0
                     )));
                 }
             }

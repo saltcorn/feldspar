@@ -26,7 +26,7 @@ use sc_app::{
     add_build_host, bootstrap, install_frameworks, save_application,
 };
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_expr::Template;
@@ -261,7 +261,7 @@ async fn serve(tag: &str) -> sc_error::Result<(Client, Application, String, Temp
             .with("project", "site")
             .with("token", "s3cret"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     let app = save_application(&catalog, &app).await?;

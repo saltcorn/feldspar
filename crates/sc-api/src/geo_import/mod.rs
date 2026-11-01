@@ -458,7 +458,7 @@ async fn convert(
         rows.join(", ")
     );
     let result = driver
-        .query(&Statement::raw(sql, binds))
+        .query(&Statement::raw(sc_query::TrustedSql::composed(sql), binds))
         .await?
         .try_collect()
         .await?;

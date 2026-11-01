@@ -134,16 +134,26 @@ mod deno {
         let files = cat
             .require_file_store("fm_files", sc_catalog::Unchecked::system("test"))
             .unwrap();
-        let big = files.stat("docs/big-stream.bin").await.unwrap().unwrap();
+        let big = files
+            .stat(&sc_files::StorePath::from_static("docs/big-stream.bin"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(big.size, 20 * MB);
-        let meta = files.get_meta("docs/a/hello.txt").await.unwrap();
+        let meta = files
+            .get_meta(&sc_files::StorePath::from_static("docs/a/hello.txt"))
+            .await
+            .unwrap();
         assert_eq!(meta.attributes[CONTENT_TYPE_ATTRIBUTE], "text/x-greeting");
         assert_eq!(meta.attributes[FILENAME_ATTRIBUTE], "Hello.txt");
         // Recorded as the module's (security review #39), the streamed file
         // renamed into place too: no user may attach either to a row they
         // write, which is what would let them download it.
         for path in ["docs/a/hello.txt", "docs/big-stream.bin"] {
-            let meta = files.get_meta(path).await.unwrap();
+            let meta = files
+                .get_meta(&sc_files::StorePath::parse(path).unwrap())
+                .await
+                .unwrap();
             assert_eq!(
                 meta.owner.as_deref(),
                 Some(sc_module::files::module_owner(&names[0]).as_str()),
@@ -159,7 +169,7 @@ mod deno {
             );
         }
         let listed: Vec<String> = files
-            .list("docs")
+            .list(&sc_files::StorePath::from_static("docs"))
             .await
             .unwrap()
             .into_iter()
@@ -169,12 +179,30 @@ mod deno {
             listed.iter().all(|n| !n.contains(".part-")),
             "no temporary is left: {listed:?}"
         );
-        assert!(files.stat("other/x.txt").await.unwrap().is_none());
-        assert!(files.stat("docs-x/x.txt").await.unwrap().is_none());
+        assert!(
+            files
+                .stat(&sc_files::StorePath::from_static("other/x.txt"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            files
+                .stat(&sc_files::StorePath::from_static("docs-x/x.txt"))
+                .await
+                .unwrap()
+                .is_none()
+        );
         let other = cat
             .require_file_store("fm_other", sc_catalog::Unchecked::system("test"))
             .unwrap();
-        assert!(other.stat("docs/x.txt").await.unwrap().is_none());
+        assert!(
+            other
+                .stat(&sc_files::StorePath::from_static("docs/x.txt"))
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         // --- From an action -----------------------------------------------------
         let mut event = Event::new(EventKind::None);
@@ -197,16 +225,22 @@ mod deno {
         // `callerFiles` reads with the caller's authority: the rule on a file
         // decides, as it would for their download, and there is no write.
         other
-            .write("shared/open.txt", b"for everyone".to_vec().into())
+            .write(
+                &sc_files::StorePath::from_static("shared/open.txt"),
+                b"for everyone".to_vec().into(),
+            )
             .await
             .unwrap();
         other
-            .write("shared/closed.txt", b"admins only".to_vec().into())
+            .write(
+                &sc_files::StorePath::from_static("shared/closed.txt"),
+                b"admins only".to_vec().into(),
+            )
             .await
             .unwrap();
         other
             .set_meta(
-                "shared/closed.txt",
+                &sc_files::StorePath::from_static("shared/closed.txt"),
                 &sc_files::FileMeta {
                     min_role: Some(Role::ADMIN),
                     ..Default::default()

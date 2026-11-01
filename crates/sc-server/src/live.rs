@@ -98,7 +98,7 @@ use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use sc_api::StreamOpening;
 use sc_auth::{SessionStore, User};
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_live::{
     Attached, Caller, ChangeAccess, ClientFrame, CloseReason, Connection, ConnectionInfo, Delivery,
     DocNews, DocRefusal, DocSeat, DocTarget, ErrorCode, FrameError, LikeRules, LiveHub, LiveLimits,
@@ -790,7 +790,7 @@ impl Live {
         if document.is_none() && row.provider != internal::INTERNAL {
             return Err("it is neither a document stream nor an internal stream".to_owned());
         }
-        if !app.app.can_access_table(&TableId(table.clone())) {
+        if !app.app.can_access_table(&table) {
             return Err(format!("its table `{table}` is not in the application"));
         }
         Ok(QueryGrant {
@@ -1476,7 +1476,7 @@ impl Live {
                 // Rule 3: a stream of a table's changes exists for this app
                 // only if the table does — in its subset, and in the catalog.
                 (TopicSpec::PerElementRow { table }, _) => {
-                    let exposed = app.app.can_access_table(&TableId(table.clone()))
+                    let exposed = app.app.can_access_table(table)
                         && matches!(self.env.catalog.get(table), Ok(Some(_)));
                     if !exposed {
                         facts.row = RowFact::TableNotExposed;
@@ -1492,7 +1492,7 @@ impl Live {
     async fn row_fact(&self, app: &MountedApp, table: &str, key: &str) -> RowFact {
         // Rule 3: a table outside the application's subset does not exist for
         // its pages, whatever the caller may read elsewhere.
-        if !app.app.can_access_table(&TableId(table.to_owned())) {
+        if !app.app.can_access_table(table) {
             return RowFact::TableNotExposed;
         }
         let found = match self.env.catalog.get(table) {

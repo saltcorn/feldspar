@@ -738,7 +738,7 @@ fn collect_extras(
         };
         match &field.kind {
             DataFieldKind::Key { target_table, .. } => {
-                let Ok(target) = cat.require(&target_table.0) else {
+                let Ok(target) = cat.require(target_table) else {
                     // A key out of the application's own tables carries its own
                     // value, which `SELECT *` (or the leaf below) already has.
                     push_leaf(prefix, &ident, &mut out.idents);

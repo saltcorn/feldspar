@@ -310,7 +310,7 @@ pub async fn validate(catalog: &Catalog, scope: &FileScope, config: &Attrs) -> R
 /// The scope's directory on disk.
 pub async fn scope_dir(scope: &FileScope, catalog: &Catalog) -> Result<PathBuf> {
     let (store, _) = scope.connect(catalog).await?;
-    store.local_path(&scope.resolve("")?)?.ok_or_else(|| {
+    store.local_path(&scope.resolve_path("")?)?.ok_or_else(|| {
         Error::config(format!(
             "{} has no local path, so no shell can run in it; a shell needs a local \
              file store",

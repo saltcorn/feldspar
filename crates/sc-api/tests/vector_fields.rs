@@ -299,10 +299,10 @@ async fn a_scan_past_the_limit_is_refused_on_sqlite() -> Result<()> {
     add_vector(&catalog, json!({ "dimensions": 2 })).await?;
     let rows = sc_catalog::VECTOR_SCAN_LIMIT + 1;
     let fill = sc_query::Statement::raw(
-        format!(
+        sc_query::TrustedSql::composed(format!(
             "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < {rows}) \
              INSERT INTO docs (title) SELECT 'row' FROM n"
-        ),
+        )),
         Vec::new(),
     );
     catalog

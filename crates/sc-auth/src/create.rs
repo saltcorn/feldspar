@@ -33,7 +33,7 @@ pub struct NewUser {
     pub email: String,
     /// The password, or **blank to have one generated** — see
     /// [`CreatedUser::generated_password`].
-    pub password: String,
+    pub password: sc_error::Secret<String>,
     /// The role, `1..=100`, which must already exist in `_fd_roles`.
     pub role: Role,
     /// The language this account reads the product in — a BCP-47 tag, or `None`
@@ -76,7 +76,7 @@ pub async fn create_user_with(catalog: &Catalog, new: NewUser) -> Result<Created
             let password = random_password();
             (password.clone(), Some(password))
         }
-        false => (new.password.clone(), None),
+        false => (new.password.expose().clone(), None),
     };
     // Hash before touching the database — argon2id is deliberately slow.
     let password_hash = hash_password(&password)?;
@@ -184,7 +184,7 @@ pub async fn sign_up_user(
     }
     let new = NewUser {
         email: email.to_owned(),
-        password: password.to_owned(),
+        password: password.into(),
         role,
         language: None,
         extra: BTreeMap::new(),
@@ -213,7 +213,7 @@ pub async fn create_user(
         catalog,
         NewUser {
             email: email.to_owned(),
-            password: password.to_owned(),
+            password: password.into(),
             role,
             language: None,
             extra: BTreeMap::new(),

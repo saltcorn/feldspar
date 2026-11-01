@@ -32,11 +32,6 @@ pub use sc_types::Attrs;
 /// half of §6.2's split, and re-exported here beside [`DataField`].
 pub use sc_types::BaseField;
 
-/// Identifies a table within the catalog. For the MVP — which stores no metadata
-/// beyond `information_schema` — a table's stable identity is simply its name.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TableId(pub String);
-
 /// Identifies a field within a table. As with [`TableId`], the MVP identity is
 /// the field (column) name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -108,7 +103,7 @@ pub enum DataFieldKind {
     /// label when selecting.
     Key {
         /// The referenced table.
-        target_table: TableId,
+        target_table: String,
         /// The referenced field.
         target_field: FieldId,
         /// A field of the target used as a human label, if chosen.
@@ -324,7 +319,7 @@ impl DataField {
             ..
         } = &self.kind
         {
-            col = col.references(target_table.0.clone(), target_field.0.clone());
+            col = col.references(target_table.clone(), target_field.0.clone());
         }
         col
     }

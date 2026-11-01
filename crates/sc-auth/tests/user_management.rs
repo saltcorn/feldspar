@@ -139,7 +139,7 @@ async fn a_blank_password_is_generated_and_handed_back_once() -> Result<()> {
         &cat,
         NewUser {
             email: "new@example.com".into(),
-            password: String::new(),
+            password: sc_error::Secret::default(),
             role: Role::of(40),
             language: None,
             extra: BTreeMap::new(),

@@ -1,7 +1,7 @@
 //! Table fixtures for this crate's unit tests: the smallest table a filter can
 //! be asked about, with no catalog and no database.
 
-use sc_catalog::{AccessRules, DataField, DbId, Table, TableId, TableSource};
+use sc_catalog::{AccessRules, DataField, DbId, Table, TableSource};
 use sc_types::{Attrs, BasicType, TypeRef};
 
 /// A table with `fields`, whose primary key is `id` when it has such a column.
@@ -12,7 +12,6 @@ pub fn table_of(name: &str, fields: Vec<DataField>) -> Table {
         .map(|f| f.base.name.clone())
         .collect();
     Table {
-        id: TableId(name.to_owned()),
         name: name.to_owned(),
         database: DbId::primary(),
         source: TableSource::Database,

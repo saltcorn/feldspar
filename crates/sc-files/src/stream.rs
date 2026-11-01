@@ -19,6 +19,7 @@ use sc_error::{Error, Repr, Result};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::store::FileStore;
+use crate::store_path::StorePath;
 
 /// A file's bytes as a stream, owning everything it reads from — so a response
 /// body can outlive the request that opened it.
@@ -48,14 +49,14 @@ pub fn check_range(range: &Range<u64>, size: u64, path: &str) -> Result<()> {
 /// whole file, sliced.
 pub(crate) async fn read_by_slicing(
     store: &(impl FileStore + ?Sized),
-    path: &str,
+    path: &StorePath,
     range: Option<Range<u64>>,
 ) -> Result<BoxAsyncRead> {
     let bytes = store.read(path).await?;
     let bytes = match range {
         None => bytes,
         Some(range) => {
-            check_range(&range, bytes.len() as u64, path)?;
+            check_range(&range, bytes.len() as u64, path.as_str())?;
             bytes.slice(range.start as usize..range.end as usize)
         }
     };
@@ -67,8 +68,8 @@ pub(crate) async fn read_by_slicing(
 /// target is touched.
 pub(crate) async fn concat_in_memory(
     store: &(impl FileStore + ?Sized),
-    parts: &[String],
-    to: &str,
+    parts: &[StorePath],
+    to: &StorePath,
 ) -> Result<u64> {
     let mut joined = BytesMut::new();
     for part in parts {
@@ -87,16 +88,16 @@ type Flush<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
 /// appended — when shut down.
 pub(crate) struct BufferedAppend<'a, S: FileStore + ?Sized> {
     store: &'a S,
-    path: String,
+    path: StorePath,
     buffer: Vec<u8>,
     flush: Option<Flush<'a>>,
 }
 
 impl<'a, S: FileStore + ?Sized> BufferedAppend<'a, S> {
-    pub(crate) fn new(store: &'a S, path: &str) -> BufferedAppend<'a, S> {
+    pub(crate) fn new(store: &'a S, path: &StorePath) -> BufferedAppend<'a, S> {
         BufferedAppend {
             store,
-            path: path.to_owned(),
+            path: path.clone(),
             buffer: Vec::new(),
             flush: None,
         }

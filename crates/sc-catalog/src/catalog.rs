@@ -19,7 +19,7 @@ use sc_error::{Error, Result};
 use sc_files::FileStore;
 use sc_query::{Select, Source, Statement};
 
-use crate::field::{DataField, DbId, TableId};
+use crate::field::{DataField, DbId};
 use crate::field_meta::{FIELD_META_TABLE, list_field_meta};
 use crate::provider::{DriverTableProvider, TableProvider};
 use crate::table::{FieldMergeIssue, Table};
@@ -64,7 +64,7 @@ pub struct Catalog {
     /// [`field_overlay_issues`](Catalog::field_overlay_issues).
     shadowed_tables: RwLock<HashMap<String, Vec<String>>>,
     /// Cache of tables keyed by id, rebuilt from introspection.
-    cache: RwLock<HashMap<TableId, Table>>,
+    cache: RwLock<HashMap<String, Table>>,
     /// Connected file stores, keyed by their [`name`](FileStore::name). Only the
     /// store handles live here (files keep no database row, design §9); the bytes
     /// and per-file metadata stay in the store itself.
@@ -446,7 +446,7 @@ impl Catalog {
         let mut map = HashMap::with_capacity(physicals.len());
         for physical in &physicals {
             let table = Table::from_physical(self.primary_db.clone(), physical);
-            map.insert(table.id.clone(), table);
+            map.insert(table.name.clone(), table);
         }
 
         // Then every secondary connection, on the same terms: introspection is
@@ -478,14 +478,14 @@ impl Catalog {
             };
             for physical in &foreign {
                 let table = Table::from_physical(DbId(name.clone()), physical);
-                if map.contains_key(&table.id) {
+                if map.contains_key(&table.name) {
                     shadowed
                         .entry(name.clone())
                         .or_default()
                         .push(table.name.clone());
                     continue;
                 }
-                map.insert(table.id.clone(), table);
+                map.insert(table.name.clone(), table);
             }
         }
         for names in shadowed.values_mut() {
@@ -498,7 +498,7 @@ impl Catalog {
         // once on a database where `_fd_tables` genuinely does not exist yet.
         // Selecting from it there would make bootstrapping impossible.
         let mut provided_issues: Vec<ProvidedTableIssue> = Vec::new();
-        if map.contains_key(&TableId(TABLE_META_TABLE.to_owned())) {
+        if map.contains_key(TABLE_META_TABLE) {
             for meta in list_table_meta(self).await? {
                 // A row carrying a provider is a **definition**, not an overlay:
                 // it is what makes the table exist, so the table is built here
@@ -506,7 +506,7 @@ impl Catalog {
                 // label, the description, the access rules — then applies to it
                 // exactly as it would to an introspected table.
                 if let Some(def) = meta.provider() {
-                    let id = TableId(meta.table_name.clone());
+                    let id = meta.table_name.clone();
                     if map.contains_key(&id) {
                         // The database wins the name, exactly as the primary wins
                         // a name a secondary connection offers, and for the same
@@ -558,7 +558,7 @@ impl Catalog {
                 }
                 // An overlay for a table that is not here is not an error and is
                 // not dropped; see `orphan_table_meta` for why it is kept.
-                if let Some(table) = map.get_mut(&TableId(meta.table_name.clone())) {
+                if let Some(table) = map.get_mut(&meta.table_name) {
                     table.apply_overlay(&meta);
                 }
             }
@@ -570,9 +570,9 @@ impl Catalog {
         // above. The merge reports rather than fails, so its issues are collected
         // here and stored beside the cache.
         let mut field_issues = Vec::new();
-        if map.contains_key(&TableId(FIELD_META_TABLE.to_owned())) {
+        if map.contains_key(FIELD_META_TABLE) {
             for meta in list_field_meta(self).await? {
-                match map.get_mut(&TableId(meta.table_name.clone())) {
+                match map.get_mut(&meta.table_name) {
                     Some(table) => field_issues.extend(table.apply_field_overlay(&meta)),
                     // A field overlay whose whole table is gone is a dangling row
                     // too — kept (like an orphan table overlay) and reported.
@@ -604,7 +604,7 @@ impl Catalog {
         // table for the admin UI, exactly like a field-overlay issue: reported,
         // never fatal, the table stays usable at its `min_role`s.
         let shape = self.with_module_functions(schema_shape_of(&map));
-        let mut ownership_errors: Vec<(TableId, String)> = Vec::new();
+        let mut ownership_errors: Vec<(String, String)> = Vec::new();
         for (id, table) in &map {
             let Some(formula) = &table.ownership else {
                 continue;
@@ -800,7 +800,7 @@ impl Catalog {
             .cache
             .read()
             .map_err(|_| Error::msg("catalog cache lock poisoned"))?;
-        Ok(guard.get(&TableId(name.to_owned())).cloned())
+        Ok(guard.get(name).cloned())
     }
 
     /// The cached table with the given name, or a [`NotFound`](Error::NotFound)
@@ -2174,7 +2174,7 @@ pub(crate) const USERS_PASSWORD_COLUMN: &str = "password_hash";
 
 /// Project a table cache into the [`sc_expr::SchemaShape`] formula validation
 /// and translation consume.
-fn schema_shape_of(map: &HashMap<TableId, Table>) -> sc_expr::SchemaShape {
+fn schema_shape_of(map: &HashMap<String, Table>) -> sc_expr::SchemaShape {
     schema_shape_of_tables(map.values())
 }
 
@@ -2217,7 +2217,7 @@ pub(crate) fn schema_shape_of_tables<'a>(
                     target_table,
                     target_field,
                     ..
-                } => table_shape.key_field(&field.base.name, &target_table.0, &target_field.0),
+                } => table_shape.key_field(&field.base.name, target_table, &target_field.0),
                 _ => table_shape.field(&field.base.name),
             };
         }

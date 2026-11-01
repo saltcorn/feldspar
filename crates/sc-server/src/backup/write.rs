@@ -41,6 +41,7 @@ use sc_access::rows;
 use sc_catalog::{Catalog, FIELD_META_TABLE, Table, list_field_meta_for_table, list_file_stores};
 use sc_db::{Row, Transaction};
 use sc_error::{Error, Result};
+use sc_files::StorePath;
 use sc_query::{BinOp, Expr, OrderBy, Projection, Select, Source, Statement, Value};
 use serde_json::{Map, Value as Json, json};
 use tokio::io::AsyncReadExt;
@@ -462,7 +463,7 @@ async fn write_entries<W: Write + Seek>(
         // definition and no files, rather than failing the whole backup: the
         // definition is the part that is hard to recreate by hand.
         if let Ok(store) = catalog.require_file_store(&def.name, crate::ADMIN_TASKS) {
-            for (path, size) in walk(store.as_ref(), "").await? {
+            for (path, size) in walk(store.as_ref()).await? {
                 let written = copy_file(
                     store.as_ref(),
                     &path,
@@ -473,7 +474,12 @@ async fn write_entries<W: Write + Seek>(
                 .await?;
                 let meta = store.get_meta(&path).await.unwrap_or_default();
                 let mode = file_mode(store.as_ref(), &path);
-                files.push(backup_file_meta_json(&path, Some(written), &meta, mode));
+                files.push(backup_file_meta_json(
+                    path.as_str(),
+                    Some(written),
+                    &meta,
+                    mode,
+                ));
             }
         }
         let count = i64::try_from(files.len()).unwrap_or(i64::MAX);
@@ -932,7 +938,7 @@ async fn library_of(
 /// Only the `rwx` bits: setuid, setgid and sticky are not something a restore
 /// should hand back to whoever restores the file.
 #[cfg(unix)]
-fn file_mode(store: &dyn sc_files::FileStore, path: &str) -> Option<u32> {
+fn file_mode(store: &dyn sc_files::FileStore, path: &StorePath) -> Option<u32> {
     use std::os::unix::fs::PermissionsExt;
     let local = store.local_path(path).ok()??;
     let meta = std::fs::metadata(local).ok()?;
@@ -940,7 +946,7 @@ fn file_mode(store: &dyn sc_files::FileStore, path: &str) -> Option<u32> {
 }
 
 #[cfg(not(unix))]
-fn file_mode(_store: &dyn sc_files::FileStore, _path: &str) -> Option<u32> {
+fn file_mode(_store: &dyn sc_files::FileStore, _path: &StorePath) -> Option<u32> {
     None
 }
 
@@ -951,18 +957,19 @@ fn file_mode(_store: &dyn sc_files::FileStore, _path: &str) -> Option<u32> {
 /// restore could not recreate, and every non-empty one is implied by the paths of
 /// the files in it. A `node_modules` is not descended into
 /// ([`super::is_installed_dependency`]).
-async fn walk(store: &dyn sc_files::FileStore, dir: &str) -> Result<Vec<(String, Option<u64>)>> {
+async fn walk(store: &dyn sc_files::FileStore) -> Result<Vec<(StorePath, Option<u64>)>> {
     let mut out = Vec::new();
-    let mut pending = vec![dir.to_owned()];
+    let mut pending = vec![StorePath::root()];
     while let Some(dir) = pending.pop() {
         for entry in store.list(&dir).await? {
             if super::is_installed_dependency(&entry.path) {
                 continue;
             }
+            let path = StorePath::parse(&entry.path)?;
             if entry.is_dir {
-                pending.push(entry.path);
+                pending.push(path);
             } else {
-                out.push((entry.path, entry.size));
+                out.push((path, entry.size));
             }
         }
     }
@@ -1108,13 +1115,13 @@ const CHUNK: usize = 64 * 1024;
 /// Copy one store file into the zip a chunk at a time, returning its length.
 async fn copy_file<W: Write + Seek>(
     store: &dyn sc_files::FileStore,
-    path: &str,
+    path: &StorePath,
     size: Option<u64>,
     zip: &mut ZipBuilder<W>,
     entry: &str,
 ) -> Result<u64> {
     let mut reader = store.open_read(path, None).await?;
-    zip.start_file(entry, path, size)?;
+    zip.start_file(entry, path.as_str(), size)?;
     let mut buffer = vec![0u8; CHUNK];
     let mut written = 0;
     loop {
@@ -1172,7 +1179,7 @@ struct ZipBuilder<W: Write + Seek> {
     /// One row's line, reused from row to row.
     line: Vec<u8>,
     /// The password every entry is encrypted with, when there is one.
-    password: Option<String>,
+    password: Option<sc_error::Secret<String>>,
 }
 
 /// The options for one entry: `method`, and AES-256 under `password` when
@@ -1216,7 +1223,7 @@ impl<W: Write + Seek> ZipBuilder<W> {
     fn encrypted(mut self, password: Option<&str>) -> Result<ZipBuilder<W>> {
         if let Some(password) = password {
             super::check_password(password)?;
-            self.password = Some(password.to_owned());
+            self.password = Some(password.into());
         }
         Ok(self)
     }
@@ -1225,7 +1232,10 @@ impl<W: Write + Seek> ZipBuilder<W> {
     /// read, and `git diff` on an unpacked one is a real way to answer "what
     /// changed".
     fn json(&mut self, path: &str, value: &Json) -> Result<()> {
-        let options = entry_options(self.password.as_deref(), zip::CompressionMethod::Deflated);
+        let options = entry_options(
+            self.password.as_ref().map(sc_error::Secret::expose_str),
+            zip::CompressionMethod::Deflated,
+        );
         self.zip
             .start_file(path, options)
             .map_err(|e| zip_error(path, &e.to_string()))?;
@@ -1236,7 +1246,10 @@ impl<W: Write + Seek> ZipBuilder<W> {
     /// Start an NDJSON entry of rows. How long it will be is not known, so it
     /// is written with Zip64 sizes in case it passes 4 GiB.
     fn start_rows(&mut self, path: &str) -> Result<()> {
-        let options = entry_options(self.password.as_deref(), zip::CompressionMethod::Deflated);
+        let options = entry_options(
+            self.password.as_ref().map(sc_error::Secret::expose_str),
+            zip::CompressionMethod::Deflated,
+        );
         self.zip
             .start_file(path, options.large_file(true))
             .map_err(|e| zip_error(path, &e.to_string()))
@@ -1269,7 +1282,10 @@ impl<W: Write + Seek> ZipBuilder<W> {
         } else {
             zip::CompressionMethod::Deflated
         };
-        let options = entry_options(self.password.as_deref(), method);
+        let options = entry_options(
+            self.password.as_ref().map(sc_error::Secret::expose_str),
+            method,
+        );
         let large = size.is_none_or(|size| size >= ZIP64_FROM);
         self.zip
             .start_file(path, options.large_file(large))

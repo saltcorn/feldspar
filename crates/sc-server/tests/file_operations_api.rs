@@ -240,7 +240,10 @@ async fn mkdir_delete_and_rename_through_the_api() -> sc_error::Result<()> {
 
     // --- rename -----------------------------------------------------------
     store
-        .write("assets/img/old.png", bytes::Bytes::from_static(b"png"))
+        .write(
+            &sc_files::StorePath::from_static("assets/img/old.png"),
+            bytes::Bytes::from_static(b"png"),
+        )
         .await?;
     let (status, entry) = client
         .send(
@@ -251,12 +254,20 @@ async fn mkdir_delete_and_rename_through_the_api() -> sc_error::Result<()> {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(entry["path"], json!("assets/img/new.png"));
-    assert_eq!(&store.read("assets/img/new.png").await?[..], b"png");
+    assert_eq!(
+        &store
+            .read(&sc_files::StorePath::from_static("assets/img/new.png"))
+            .await?[..],
+        b"png"
+    );
 
     // Never clobbers: a silent replace on a file manager's drag-and-drop is a
     // lost file with no undo.
     store
-        .write("assets/img/other.png", bytes::Bytes::from_static(b"other"))
+        .write(
+            &sc_files::StorePath::from_static("assets/img/other.png"),
+            bytes::Bytes::from_static(b"other"),
+        )
         .await?;
     let (status, _) = client
         .send(
@@ -266,7 +277,12 @@ async fn mkdir_delete_and_rename_through_the_api() -> sc_error::Result<()> {
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(&store.read("assets/img/new.png").await?[..], b"png");
+    assert_eq!(
+        &store
+            .read(&sc_files::StorePath::from_static("assets/img/new.png"))
+            .await?[..],
+        b"png"
+    );
 
     // --- delete -----------------------------------------------------------
     let (status, body) = client
@@ -299,7 +315,7 @@ async fn mkdir_delete_and_rename_through_the_api() -> sc_error::Result<()> {
         )
         .await;
     assert_eq!(body["deleted"], json!(true));
-    assert!(store.list("").await?.is_empty());
+    assert!(store.list(&sc_files::StorePath::root()).await?.is_empty());
 
     Ok(())
 }
@@ -349,7 +365,10 @@ async fn traversal_is_rejected_on_every_file_operation() -> sc_error::Result<()>
 async fn file_meta_round_trips_and_reports_the_effective_rule() -> sc_error::Result<()> {
     let (mut client, store, _db) = setup().await?;
     store
-        .write("private/secret.txt", bytes::Bytes::from_static(b"s"))
+        .write(
+            &sc_files::StorePath::from_static("private/secret.txt"),
+            bytes::Bytes::from_static(b"s"),
+        )
         .await?;
 
     // Unset to begin with.
@@ -408,7 +427,9 @@ async fn file_meta_round_trips_and_reports_the_effective_rule() -> sc_error::Res
     assert_eq!(meta["attributes"]["mime"], json!("text/plain"));
 
     // Attributes round-trip through the xattr layer.
-    let stored = store.get_meta("private/secret.txt").await?;
+    let stored = store
+        .get_meta(&sc_files::StorePath::from_static("private/secret.txt"))
+        .await?;
     assert_eq!(stored.min_role, Some(Role::PUBLIC));
     assert_eq!(
         stored.attributes.get("mime").map(String::as_str),
@@ -443,9 +464,17 @@ async fn binary_upload_writes_the_body_and_still_requires_auth() -> sc_error::Re
     assert_eq!(entry["size"], json!(4096));
 
     // The bytes land verbatim — no base64 round-trip, no UTF-8 assumption.
-    assert_eq!(&store.read("assets/blob.bin").await?[..], &payload[..]);
+    assert_eq!(
+        &store
+            .read(&sc_files::StorePath::from_static("assets/blob.bin"))
+            .await?[..],
+        &payload[..]
+    );
     // And the admin who uploaded it is recorded as its owner (F2 §2.1).
-    let owner = store.get_meta("assets/blob.bin").await?.owner;
+    let owner = store
+        .get_meta(&sc_files::StorePath::from_static("assets/blob.bin"))
+        .await?
+        .owner;
     assert!(owner.is_some_and(|id| uuid::Uuid::parse_str(&id).is_ok()));
 
     // A nested destination arrives whole, because `{*path}` is a greedy capture.
@@ -478,7 +507,10 @@ async fn upload_rejects_an_unauthenticated_caller() -> sc_error::Result<()> {
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert!(
-        store.read("sneak.bin").await.is_err(),
+        store
+            .read(&sc_files::StorePath::from_static("sneak.bin"))
+            .await
+            .is_err(),
         "nothing must have been written"
     );
 
@@ -495,7 +527,7 @@ async fn download_serves_the_bytes_as_a_named_file() -> sc_error::Result<()> {
     let payload: Vec<u8> = (0u8..=255).cycle().take(3 * 1024 * 1024).collect();
     store
         .write(
-            "app/outputs/app-debug.apk",
+            &sc_files::StorePath::from_static("app/outputs/app-debug.apk"),
             bytes::Bytes::from(payload.clone()),
         )
         .await?;
@@ -573,7 +605,9 @@ async fn a_missing_path_is_reported_as_not_found() -> sc_error::Result<()> {
 
     // And a path that *is* there still reads, so this is a mapping and not a
     // blanket refusal.
-    store.write("here.txt", "x".into()).await?;
+    store
+        .write(&sc_files::StorePath::from_static("here.txt"), "x".into())
+        .await?;
     let (status, _) = client
         .send(
             "POST",

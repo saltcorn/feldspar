@@ -201,7 +201,10 @@ mod deno {
         sc_catalog::connect_file_store_def(&cat, &uploads).unwrap();
         cat.require_file_store("uploads", sc_catalog::Unchecked::system("test"))
             .unwrap()
-            .write("quotes/q-17.pdf", b"%PDF quote 17".to_vec().into())
+            .write(
+                &sc_files::StorePath::from_static("quotes/q-17.pdf"),
+                b"%PDF quote 17".to_vec().into(),
+            )
             .await
             .unwrap();
 

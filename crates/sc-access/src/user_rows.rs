@@ -291,13 +291,12 @@ pub(crate) fn and_guard(guard: Option<Expr>, extra: Option<Expr>) -> Option<Expr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sc_catalog::{AccessRules, DbId, TableId, TableSource};
+    use sc_catalog::{AccessRules, DbId, TableSource};
     use sc_types::{BasicType, TypeRef};
     use serde_json::json;
 
     fn users() -> Table {
         Table {
-            id: TableId(USERS_TABLE.to_owned()),
             name: USERS_TABLE.to_owned(),
             database: DbId::primary(),
             source: TableSource::Database,

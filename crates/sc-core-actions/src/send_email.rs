@@ -7,7 +7,7 @@ use sc_action::{
 use sc_catalog::{Catalog, DataField, DataFieldKind, Table};
 use sc_email::{
     Attachment, Email, EmailSettings, Mailbox, SUBMISSION_STARTTLS_PORT, SUBMISSION_TLS_PORT,
-    SmtpSecurity, is_public, parse_mailbox, parse_recipients, render_mjml, security_for_port,
+    SmtpSecurity, parse_mailbox, parse_recipients, render_mjml, security_for_port,
 };
 use sc_error::{Error, Result};
 use sc_expr::{RenderMode, Template};
@@ -463,7 +463,7 @@ impl Templates {
         }
         if let Some(host) = literal(&self.smtp_host)
             && let Ok(ip) = host.trim_start_matches('[').trim_end_matches(']').parse()
-            && !is_public(ip)
+            && !sc_net::is_public(ip)
         {
             return Err(Error::invalid(format!(
                 "`{CFG_SMTP_HOST}`: `{host}` is a private or reserved address; a trigger may \
@@ -573,7 +573,7 @@ async fn relay_settings(
         port,
         security,
         username,
-        password,
+        password: password.into(),
         // Replaced by the message's own from-address before it is sent.
         from: Mailbox {
             name: None,

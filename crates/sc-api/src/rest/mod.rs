@@ -2324,9 +2324,9 @@ fn resource_model(table: &Table, exposed: &std::collections::HashSet<&str>) -> R
         rf.read_only = matches!(field.kind, DataFieldKind::Calc { .. });
         rf.write_only = field.is_secret();
         if let DataFieldKind::Key { target_table, .. } = &field.kind
-            && exposed.contains(target_table.0.as_str())
+            && exposed.contains(target_table.as_str())
         {
-            rf.references = Some(target_table.0.clone());
+            rf.references = Some(target_table.clone());
         }
         model.fields.push(rf);
     }
@@ -2361,13 +2361,12 @@ pub fn op_name(op: &str, table: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sc_catalog::{AccessRules, DataField, DbId, FileStoreId, TableId, TableSource};
+    use sc_catalog::{AccessRules, DataField, DbId, FileStoreId, TableSource};
     use sc_types::{BasicType, TypeRef};
 
     /// A table named `name` with an `id` primary key and a `title` text column.
     fn table(name: &str, access: AccessRules) -> Table {
         Table {
-            id: TableId(name.to_owned()),
             name: name.to_owned(),
             database: DbId::primary(),
             source: TableSource::Database,

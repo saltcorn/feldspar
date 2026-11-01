@@ -21,7 +21,7 @@ use sc_app::{
     ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, bootstrap, save_application,
 };
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -328,7 +328,7 @@ async fn a_geometry_field_is_geojson_through_rest_and_graphql() -> sc_error::Res
             .with("output", "web/dist")
             .with("command", "sh build.sh"),
     )
-    .with_table(TableId("places".to_owned()))
+    .with_table("places".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"))
     .with_api(ApiConfig::new("graphql", "/graphql"));

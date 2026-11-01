@@ -189,7 +189,7 @@ pub struct RemotePostgres {
     pub host: Option<String>,
     pub port: Option<u16>,
     pub user: Option<String>,
-    pub password: Option<String>,
+    pub password: Option<sc_error::Secret<String>>,
     pub database: Option<String>,
 }
 
@@ -293,7 +293,9 @@ impl SetupArgs {
                         Error::config(format!("--db-port should be a port number, got `{port}`"))
                     })?);
                 }
-                "--db-password" => parsed.remote.password = Some(value("--db-password")?),
+                "--db-password" => {
+                    parsed.remote.password = Some(value("--db-password")?.into());
+                }
                 "--db-user" => parsed.db_user = Some(value("--db-user")?),
                 "--db-name" => parsed.db_name = Some(value("--db-name")?),
                 "--domain" => parsed.domain = Some(value("--domain")?),
@@ -829,7 +831,9 @@ pub fn resolve(
                         remote.user = Some(p.require("User")?);
                     }
                     let password = p.secret("Password (empty for none)")?;
-                    remote.password = Some(password).filter(|p| !p.is_empty());
+                    remote.password = Some(password)
+                        .filter(|p| !p.is_empty())
+                        .map(sc_error::Secret::new);
                     if remote.database.is_none() {
                         remote.database = Some(p.ask("Database", Some(DEFAULT_DATABASE))?);
                     }
@@ -1677,7 +1681,7 @@ pub fn environment_section(c: &Choices) -> String {
                 out += &format!("user = {}\n", quoted(user));
             }
             if let Some(password) = &r.password {
-                out += &format!("password = {}\n", quoted(password));
+                out += &format!("password = {}\n", quoted(password.expose()));
             }
             if let Some(database) = &r.database {
                 out += &format!("database = {}\n", quoted(database));

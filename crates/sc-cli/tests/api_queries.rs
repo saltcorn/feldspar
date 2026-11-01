@@ -18,7 +18,7 @@ use sc_app::{
     ApiConfig, Application, FrameworkRef, load_application_by_subdomain, react_client_path,
     save_application, scaffold_app,
 };
-use sc_catalog::{Catalog, DataField, FileStoreId, TableId};
+use sc_catalog::{Catalog, DataField, FileStoreId};
 use sc_cli::{DbConfig, connect_catalog};
 use sc_files::LocalFileStore;
 use sc_test_harness::TestDb;
@@ -97,7 +97,7 @@ async fn books_app(db: &TestDb, tmp: &TempDir) -> sc_error::Result<Arc<Catalog>>
             .with("store", "apps")
             .with("project", "books"),
     )
-    .with_table(TableId("books".to_owned()))
+    .with_table("books".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     save_application(&catalog, &app).await?;

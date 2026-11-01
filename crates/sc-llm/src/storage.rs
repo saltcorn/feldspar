@@ -26,7 +26,7 @@
 
 use sc_catalog::{
     Catalog, ConstraintKind, DataField, DataFieldKind, FieldId, SchemaStep, SharedTx, Table,
-    TableConstraint, TableId,
+    TableConstraint,
 };
 use sc_db::{Row, SchemaChange};
 use sc_error::{Error, Result};
@@ -416,7 +416,7 @@ fn model_fields() -> Vec<DataField> {
         DataField::plain(COL_ID, uuid()).required().primary_key(),
         DataField {
             kind: DataFieldKind::Key {
-                target_table: TableId(LLM_PROVIDERS_TABLE.to_owned()),
+                target_table: LLM_PROVIDERS_TABLE.to_owned(),
                 target_field: FieldId(COL_ID.to_owned()),
                 summary_field: Some(FieldId(COL_NAME.to_owned())),
             },
@@ -885,7 +885,7 @@ mod tests {
         let by_name = |n: &str| fields.iter().find(|f| f.base.name == n).unwrap();
         assert!(matches!(
             &by_name(COL_PROVIDER_ID).kind,
-            DataFieldKind::Key { target_table, .. } if target_table.0 == LLM_PROVIDERS_TABLE
+            DataFieldKind::Key { target_table, .. } if target_table == LLM_PROVIDERS_TABLE
         ));
         assert!(
             !by_name(COL_NAME).unique,

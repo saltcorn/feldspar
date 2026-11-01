@@ -1507,7 +1507,7 @@ async fn signing_in_lands_on_the_view_asked_for_and_signing_out_leaves() -> sc_e
     // 7.4: the application stops having Books, under views that name it. The
     // view and the page embedding one fail with that sentence, not an empty list.
     let mut narrowed = open;
-    narrowed.tables.retain(|t| t.0 != "Books");
+    narrowed.tables.retain(|t| t != "Books");
     let narrowed = save_application(&catalog, &narrowed).await?;
     build_and_mount(&server.apps, narrowed).await?;
     let sentence = "names the table Books, which the application BooksDB does not have";
@@ -1824,7 +1824,7 @@ async fn the_builder_canvas_calls_answer_their_goldens() -> sc_error::Result<()>
 
     // The table the builder names is the application's, and so is every table
     // it reaches through a key.
-    app.tables.retain(|t| t.0 != "Publishers");
+    app.tables.retain(|t| t != "Publishers");
     save_application(&catalog, &app).await?;
     sc_viewpattern::view_sets().reload(&catalog, app.id).await?;
     let (status, preview) = server
@@ -2009,7 +2009,7 @@ async fn the_builder_options_are_what_saltcorn_1_passes() -> sc_error::Result<()
 
     // --- The subset (5.2, 5.3): without Publishers, Books' key to it is no
     // join, no parent and no table the builder offers.
-    app.tables.retain(|t| t.0 != "Publishers");
+    app.tables.retain(|t| t != "Publishers");
     let app = save_application(&catalog, &app).await?;
     // Saving the row is not deploying it; the mount is what the snapshot the
     // worker holds is rebuilt from (as 7.4's narrowing does).

@@ -385,10 +385,12 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<Server> {
     catalog.connect_file_store(store.clone())?;
     // Everything under `private` is the administrator's: a share query is the
     // only way anyone else reads it.
-    store.mkdir("private").await?;
+    store
+        .mkdir(&sc_files::StorePath::from_static("private"))
+        .await?;
     store
         .set_meta(
-            "private",
+            &sc_files::StorePath::from_static("private"),
             &FileMeta {
                 min_role: Some(Role::ADMIN),
                 ..FileMeta::default()
@@ -448,7 +450,10 @@ async fn a_code_body_joins_hashes_and_reads_a_file_larger_than_one_read() -> sc_
     for (i, part) in data.chunks(7 * MB).enumerate() {
         server
             .store
-            .write(&format!("parts/p{i}"), Bytes::from(part.to_vec()))
+            .write(
+                &sc_files::StorePath::parse(&format!("parts/p{i}")).unwrap(),
+                Bytes::from(part.to_vec()),
+            )
             .await?;
     }
     let mut admin = Client::new(server.router.clone());
@@ -482,7 +487,11 @@ async fn a_code_body_joins_hashes_and_reads_a_file_larger_than_one_read() -> sc_
     assert_eq!(out["media"], json!("/media/a%20b.png?download=1"));
     // And the bytes are really there.
     assert_eq!(
-        server.store.read("joined/big.bin").await?.as_ref(),
+        server
+            .store
+            .read(&sc_files::StorePath::from_static("joined/big.bin"))
+            .await?
+            .as_ref(),
         &data[..]
     );
     Ok(())
@@ -539,7 +548,10 @@ async fn a_share_query_serves_a_large_file_by_its_own_rule() -> sc_error::Result
     let data = film(50 * MB);
     server
         .store
-        .write("private/film.mp4", Bytes::from(data.clone()))
+        .write(
+            &sc_files::StorePath::from_static("private/film.mp4"),
+            Bytes::from(data.clone()),
+        )
         .await?;
     let mut admin = Client::new(server.router.clone());
     admin.login("admin@example.com").await;
@@ -615,12 +627,15 @@ async fn a_handle_opened_as_the_caller_is_checked_when_served() -> sc_error::Res
     // Alice's file, in the administrator's folder: hers by the owner rule.
     server
         .store
-        .write("private/alice.txt", Bytes::from_static(b"alice's"))
+        .write(
+            &sc_files::StorePath::from_static("private/alice.txt"),
+            Bytes::from_static(b"alice's"),
+        )
         .await?;
     server
         .store
         .set_meta(
-            "private/alice.txt",
+            &sc_files::StorePath::from_static("private/alice.txt"),
             &FileMeta {
                 owner: Some(server.users["alice"].clone()),
                 ..FileMeta::default()

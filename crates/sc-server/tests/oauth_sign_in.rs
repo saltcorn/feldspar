@@ -28,7 +28,7 @@ use sc_app::{
     ApiConfig, Application, CodeFramework, FrameworkRef, app_source_from_config, build_application,
 };
 use sc_auth::{SessionStore, load_user_by_email};
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -335,7 +335,7 @@ async fn setup(
     write_app_source(tmp.path());
     catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", tmp.path())?))?;
     let app = Application::new("Blog", "blog", code_framework())
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_file_store(FileStoreId("apps".to_owned()))
         .with_api(ApiConfig::new("rest", "/api"));
     let source = app_source_from_config(&code_framework())?;
@@ -470,7 +470,7 @@ async fn an_application_and_the_admin_ui_sign_in_with_an_identity_provider() -> 
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["label"], "Corp");
     let stored = sc_config::oauth_provider(&catalog, "corp").await?.unwrap();
-    assert_eq!(stored.client_secret, CLIENT_SECRET);
+    assert_eq!(stored.client_secret.expose(), CLIENT_SECRET);
 
     // A second provider with the same name is refused.
     let (status, _) = admin

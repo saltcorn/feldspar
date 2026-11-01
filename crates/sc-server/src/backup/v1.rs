@@ -2676,10 +2676,7 @@ mod tests {
         // Every imported table (not `users`, which is not an ordinary table
         // here), the store, and every trigger the views may name.
         let names = |ids: Vec<String>| ids;
-        assert_eq!(
-            names(app.tables.iter().map(|t| t.0.clone()).collect()),
-            vec!["Books"]
-        );
+        assert_eq!(names(app.tables.to_vec()), vec!["Books"]);
         assert_eq!(
             names(app.file_stores.iter().map(|s| s.0.clone()).collect()),
             vec!["BooksDB"]

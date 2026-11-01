@@ -133,7 +133,7 @@ pub struct BackupSchedule {
     pub include_all: IncludeAll,
     /// The password each backup is protected with, if any. Stored as the
     /// destination's credentials are, and sent to the admin UI as the mask.
-    pub password: Option<String>,
+    pub password: Option<sc_error::Secret<String>>,
 }
 
 /// Which kinds a schedule includes every one of — those there are when it
@@ -254,7 +254,7 @@ impl BackupSchedule {
             retention_days,
             include,
             include_all: IncludeAll::from_json(body.get("include_all")),
-            password,
+            password: password.map(sc_error::Secret::new),
         })
     }
 
@@ -263,7 +263,7 @@ impl BackupSchedule {
     /// password is refused, as a destination's is: saving it would protect
     /// every backup with the mask's text.
     pub fn keep_password(mut self, previous: Option<&BackupSchedule>) -> Result<BackupSchedule> {
-        if self.password.as_deref() == Some(SECRET_SENTINEL) {
+        if self.password.as_ref().map(sc_error::Secret::expose_str) == Some(SECRET_SENTINEL) {
             self.password = match previous.and_then(|p| p.password.clone()) {
                 Some(stored) => Some(stored),
                 None => return Err(Error::invalid("`password`: enter the backup password")),
@@ -281,7 +281,7 @@ impl BackupSchedule {
             "retention_days": self.retention_days,
             "include": self.include.to_json(),
             "include_all": self.include_all.to_json(),
-            "password": self.password,
+            "password": self.password.as_ref().map(sc_error::Secret::expose_str),
         })
     }
 
@@ -542,7 +542,7 @@ pub async fn run_schedule(
     super::write_backup_to(
         catalog,
         &schedule.selection(&available),
-        schedule.password.as_deref(),
+        schedule.password.as_ref().map(sc_error::Secret::expose_str),
         spool.create()?,
     )
     .await?;
@@ -809,7 +809,10 @@ mod tests {
             .unwrap()
         };
         let stored = with(json!("correct horse")).keep_password(None).unwrap();
-        assert_eq!(stored.password.as_deref(), Some("correct horse"));
+        assert_eq!(
+            stored.password.as_ref().map(sc_error::Secret::expose_str),
+            Some("correct horse")
+        );
         assert_eq!(
             BackupSchedule::from_json(&stored.to_json()),
             Some(stored.clone())
@@ -820,7 +823,10 @@ mod tests {
         let kept = with(json!(SECRET_SENTINEL))
             .keep_password(Some(&stored))
             .unwrap();
-        assert_eq!(kept.password.as_deref(), Some("correct horse"));
+        assert_eq!(
+            kept.password.as_ref().map(sc_error::Secret::expose_str),
+            Some("correct horse")
+        );
         assert!(with(json!(SECRET_SENTINEL)).keep_password(None).is_err());
         // Empty or null is no password: an edit can remove it.
         assert_eq!(

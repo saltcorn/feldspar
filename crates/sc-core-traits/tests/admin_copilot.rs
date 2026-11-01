@@ -97,7 +97,7 @@ async fn a_batch_builds_connected_tables_and_the_key_really_constrains_rows() ->
             target_field,
             summary_field,
         } => {
-            assert_eq!(target_table.0, "clients");
+            assert_eq!(target_table, "clients");
             assert_eq!(target_field.0, "id");
             assert_eq!(summary_field.as_ref().map(|f| f.0.as_str()), Some("name"));
         }

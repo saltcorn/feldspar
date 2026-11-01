@@ -34,7 +34,7 @@ use sc_app::{
     ApiConfig, Application, CodeFramework, FrameworkRef, app_source_from_config, build_application,
 };
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::{FileMeta, FileStore, LocalFileStore};
@@ -235,7 +235,7 @@ fn code_framework() -> FrameworkRef {
 
 fn blog_app() -> Application {
     Application::new("Blog", "blog", code_framework())
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_file_store(FileStoreId("apps".to_owned()))
         .with_api(ApiConfig::new("rest", "/api"))
 }
@@ -384,7 +384,9 @@ async fn a_file_fields_bytes_are_served_at_the_stricter_of_table_and_path_rules(
     // only a filename — and the row now references the stored path.
     assert_eq!(updated["attachment"], json!("docs/notes.txt"));
     assert_eq!(
-        &uploads.read("docs/notes.txt").await?[..],
+        &uploads
+            .read(&sc_files::StorePath::from_static("docs/notes.txt"))
+            .await?[..],
         b"attached words"
     );
 
@@ -420,7 +422,12 @@ async fn a_file_fields_bytes_are_served_at_the_stricter_of_table_and_path_rules(
     assert!(message.contains("attachment"), "names the field: {message}");
     assert!(message.contains("text/html"), "names the type: {message}");
     // Nothing was written and the row still references the first upload.
-    assert!(uploads.read("docs/evil.html").await.is_err());
+    assert!(
+        uploads
+            .read(&sc_files::StorePath::from_static("docs/evil.html"))
+            .await
+            .is_err()
+    );
 
     // A traversing filename cannot escape the folder either.
     let (status, _) = editor
@@ -463,7 +470,7 @@ async fn a_file_fields_bytes_are_served_at_the_stricter_of_table_and_path_rules(
     // editor and refused to the reader, so the stricter rule decided.
     uploads
         .set_meta(
-            "docs",
+            &sc_files::StorePath::from_static("docs"),
             &FileMeta {
                 min_role: Some(Role::of(40)),
                 ..Default::default()
@@ -538,10 +545,12 @@ async fn an_upload_into_a_private_folder_is_its_uploaders_alone() -> sc_error::R
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    uploads.mkdir("private").await?;
+    uploads
+        .mkdir(&sc_files::StorePath::from_static("private"))
+        .await?;
     uploads
         .set_meta(
-            "private",
+            &sc_files::StorePath::from_static("private"),
             &FileMeta {
                 min_role: Some(Role::ADMIN),
                 ..Default::default()
@@ -570,7 +579,10 @@ async fn an_upload_into_a_private_folder_is_its_uploaders_alone() -> sc_error::R
         .await;
     assert_eq!(status, StatusCode::CREATED, "{updated}");
     assert_eq!(
-        uploads.get_meta("private/ada.txt").await?.owner,
+        uploads
+            .get_meta(&sc_files::StorePath::from_static("private/ada.txt"))
+            .await?
+            .owner,
         Some(ada.id().to_string()),
         "the uploader owns the upload"
     );
@@ -617,7 +629,12 @@ async fn an_upload_into_a_private_folder_is_its_uploaders_alone() -> sc_error::R
         )
         .await;
     assert!(!status.is_success(), "{status}");
-    assert_eq!(&uploads.read("private/ada.txt").await?[..], b"ada's words");
+    assert_eq!(
+        &uploads
+            .read(&sc_files::StorePath::from_static("private/ada.txt"))
+            .await?[..],
+        b"ada's words"
+    );
 
     Ok(())
 }
@@ -708,8 +725,18 @@ async fn a_file_field_can_suffix_taken_names_and_remove_files_with_their_rows()
         .await;
     assert_eq!(status, StatusCode::CREATED, "{second}");
     assert_eq!(second["attachment"], json!("docs/notes_1.txt"));
-    assert_eq!(&uploads.read("docs/notes.txt").await?[..], b"first");
-    assert_eq!(&uploads.read("docs/notes_1.txt").await?[..], b"second");
+    assert_eq!(
+        &uploads
+            .read(&sc_files::StorePath::from_static("docs/notes.txt"))
+            .await?[..],
+        b"first"
+    );
+    assert_eq!(
+        &uploads
+            .read(&sc_files::StorePath::from_static("docs/notes_1.txt"))
+            .await?[..],
+        b"second"
+    );
 
     // The third row shares the second's file.
     let (status, body) = app
@@ -726,20 +753,35 @@ async fn a_file_field_can_suffix_taken_names_and_remove_files_with_their_rows()
         .send("DELETE", &format!("/api/posts/{}", ids[0]), None)
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(uploads.stat("docs/notes.txt").await?.is_none());
+    assert!(
+        uploads
+            .stat(&sc_files::StorePath::from_static("docs/notes.txt"))
+            .await?
+            .is_none()
+    );
 
     // The second row's file is still the third's, so it stays…
     let (status, _) = app
         .send("DELETE", &format!("/api/posts/{}", ids[1]), None)
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(uploads.stat("docs/notes_1.txt").await?.is_some());
+    assert!(
+        uploads
+            .stat(&sc_files::StorePath::from_static("docs/notes_1.txt"))
+            .await?
+            .is_some()
+    );
     // …until the last row referencing it goes.
     let (status, _) = app
         .send("DELETE", &format!("/api/posts/{}", ids[2]), None)
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(uploads.stat("docs/notes_1.txt").await?.is_none());
+    assert!(
+        uploads
+            .stat(&sc_files::StorePath::from_static("docs/notes_1.txt"))
+            .await?
+            .is_none()
+    );
     Ok(())
 }
 
@@ -881,7 +923,10 @@ async fn a_row_cannot_be_pointed_at_somebody_elses_upload() -> sc_error::Result<
     assert_eq!(status, StatusCode::CREATED, "{body}");
     // …and so is a file nobody owns that his role reaches…
     uploads
-        .write("shots/shared.txt", bytes::Bytes::from_static(b"shared"))
+        .write(
+            &sc_files::StorePath::from_static("shots/shared.txt"),
+            bytes::Bytes::from_static(b"shared"),
+        )
         .await?;
     let (status, body) = bob
         .send(
@@ -892,10 +937,12 @@ async fn a_row_cannot_be_pointed_at_somebody_elses_upload() -> sc_error::Result<
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     // …but not one behind a rule it does not clear.
-    uploads.mkdir("shots/staff").await?;
+    uploads
+        .mkdir(&sc_files::StorePath::from_static("shots/staff"))
+        .await?;
     uploads
         .set_meta(
-            "shots/staff",
+            &sc_files::StorePath::from_static("shots/staff"),
             &FileMeta {
                 min_role: Some(Role::ADMIN),
                 ..Default::default()
@@ -903,7 +950,10 @@ async fn a_row_cannot_be_pointed_at_somebody_elses_upload() -> sc_error::Result<
         )
         .await?;
     uploads
-        .write("shots/staff/memo.txt", bytes::Bytes::from_static(b"memo"))
+        .write(
+            &sc_files::StorePath::from_static("shots/staff/memo.txt"),
+            bytes::Bytes::from_static(b"memo"),
+        )
         .await?;
     let (status, body) = bob
         .send(
@@ -929,6 +979,11 @@ async fn a_row_cannot_be_pointed_at_somebody_elses_upload() -> sc_error::Result<
         .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 
-    assert_eq!(&uploads.read("shots/photo.txt").await?[..], b"ada's photo");
+    assert_eq!(
+        &uploads
+            .read(&sc_files::StorePath::from_static("shots/photo.txt"))
+            .await?[..],
+        b"ada's photo"
+    );
     Ok(())
 }

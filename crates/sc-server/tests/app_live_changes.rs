@@ -34,7 +34,7 @@ use axum::http::{HeaderValue, Request, StatusCode, header};
 use futures::{SinkExt, StreamExt};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -238,8 +238,8 @@ fn app() -> Application {
         .with("command", "true");
     Application::new("Kanban", "kanban", framework)
         .with_api(ApiConfig::new("rest", "/api"))
-        .with_table(TableId("boards".to_owned()))
-        .with_table(TableId("cards".to_owned()))
+        .with_table("boards".to_owned())
+        .with_table("cards".to_owned())
         .with_stream(StreamRef::new("cards_live"))
         .with_stream(StreamRef::new("secret_changes"))
 }

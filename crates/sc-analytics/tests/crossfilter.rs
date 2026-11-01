@@ -26,7 +26,7 @@ use chrono::{NaiveDate, TimeZone, Utc};
 use sc_analytics::crossfilter::Condition;
 use sc_analytics::map::render_map_in;
 use sc_analytics::panel::{Panel, render_panel_in};
-use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, TableId};
+use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId};
 use sc_dataset::{Base, DatasetDef, DatasetId, save_dataset};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -58,7 +58,7 @@ fn id() -> DataField {
 fn key(name: &str, table: &str) -> DataField {
     let mut field = column(name, BasicType::Int);
     field.kind = DataFieldKind::Key {
-        target_table: TableId(table.to_owned()),
+        target_table: table.to_owned(),
         target_field: FieldId("id".to_owned()),
         summary_field: None,
     };

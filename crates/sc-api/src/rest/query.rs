@@ -381,7 +381,7 @@ fn resolve(
                 table.name
             )));
         };
-        let target = cat.require(&target_table.0)?;
+        let target = cat.require(target_table)?;
         // A joined row is *read*, so the target's read rule holds — an embed
         // must not become a way around the floor a list over the same table
         // enforces, and a formula-granted access cannot be carried by a

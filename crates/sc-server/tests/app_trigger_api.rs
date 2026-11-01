@@ -31,7 +31,7 @@ use sc_agent::testing::{FakeProvider, Reply};
 use sc_agent::{Agent, ProviderConnector};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, TriggerRef};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -192,7 +192,7 @@ fn summarise_trigger() -> Trigger {
 
 fn blog_app() -> Application {
     Application::new("Blog", "blog", FrameworkRef::new("code"))
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_api(ApiConfig::new("rest", "/api"))
         // The exposed subset: two of the server's three audit triggers, plus the
         // one whose action is an agent — which §11.5 claims needs no change to

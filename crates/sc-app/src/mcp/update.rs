@@ -622,7 +622,7 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
             .api_tables
             .iter()
             .filter(|t| !before.contains(t))
-            .map(|t| t.0.clone())
+            .cloned()
             .collect();
         if !opened.is_empty() {
             require_grant(
@@ -893,7 +893,7 @@ fn change_tables(
 }
 
 fn tables_json(app: &Application) -> Json {
-    json!(app.tables.iter().map(|t| t.0.clone()).collect::<Vec<_>>())
+    json!(app.tables.to_vec())
 }
 
 fn change_api_tables(app: &mut Application, section: &Map<String, Json>) -> Result<()> {
@@ -910,12 +910,7 @@ fn change_api_tables(app: &mut Application, section: &Map<String, Json>) -> Resu
 }
 
 pub(super) fn api_tables_json(app: &Application) -> Json {
-    json!(
-        app.api_tables
-            .iter()
-            .map(|t| t.0.clone())
-            .collect::<Vec<_>>()
-    )
+    json!(app.api_tables.to_vec())
 }
 
 // --- streams ------------------------------------------------------------------

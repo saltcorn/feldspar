@@ -24,7 +24,7 @@ use axum::http::{StatusCode, header};
 use sc_action::{ATTR_HOUR, EventKind, Trigger, save_trigger};
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation, TableSettings};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, TriggerRef};
-use sc_catalog::{Catalog, DataFieldKind, FieldId, TableId};
+use sc_catalog::{Catalog, DataFieldKind, FieldId};
 use sc_server::MountedApp;
 use serde_json::json;
 
@@ -44,7 +44,7 @@ fn field(name: &str, type_name: &str) -> FieldSpec {
 fn user_key(name: &str) -> FieldSpec {
     FieldSpec {
         kind: DataFieldKind::Key {
-            target_table: TableId("users".to_owned()),
+            target_table: "users".to_owned(),
             target_field: FieldId(String::new()),
             summary_field: None,
         },
@@ -280,7 +280,7 @@ async fn setup() -> sc_error::Result<Booted> {
         "pay_objects",
         "role_grants",
     ] {
-        app = app.with_table(TableId(table.to_owned()));
+        app = app.with_table(table.to_owned());
     }
     booted.apps.mount(MountedApp::new_with(
         app,

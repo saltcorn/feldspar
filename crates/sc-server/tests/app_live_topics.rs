@@ -43,7 +43,7 @@ use sc_app::{
     ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef, TriggerRef,
 };
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -300,8 +300,8 @@ fn streams() -> Vec<Stream> {
 fn app() -> Application {
     let mut app = Application::new("Boards", "boards", FrameworkRef::new("code"))
         .with_api(ApiConfig::new("rest", "/api"))
-        .with_table(TableId("boards".to_owned()))
-        .with_table(TableId("rls_boards".to_owned()))
+        .with_table("boards".to_owned())
+        .with_table("rls_boards".to_owned())
         .with_trigger(TriggerRef::new("long_report"))
         .with_trigger(TriggerRef::new("progress_js"))
         .with_trigger(TriggerRef::new("announce_nobody"));

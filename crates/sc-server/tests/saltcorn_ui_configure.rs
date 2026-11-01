@@ -1085,7 +1085,7 @@ async fn the_builder_saves_layouts_keeps_the_library_and_previews() -> sc_error:
             .with("output", "web/dist")
             .with("command", "sh build.sh"),
     )
-    .with_table(sc_catalog::TableId("books".to_owned()));
+    .with_table("books".to_owned());
     let code = sc_app::save_application(&catalog, &code).await?.id.0;
     let item = uuid::Uuid::new_v4();
     let code_api = format!("/api/applications/{code}");

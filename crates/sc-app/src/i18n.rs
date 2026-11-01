@@ -406,7 +406,11 @@ impl CatalogStore for FileCatalogStore {
         let store = self.store(cat)?;
         // A project that has never been translated has no `locales/` at all,
         // and that is not an error — it is the answer.
-        let entries = match store.list(&self.dir()).await {
+        let listed = match sc_files::StorePath::parse(&self.dir()) {
+            Ok(dir) => store.list(&dir).await,
+            Err(e) => Err(e),
+        };
+        let entries = match listed {
             Ok(entries) => entries,
             Err(_) => return Ok(Vec::new()),
         };
@@ -430,6 +434,9 @@ impl CatalogStore for FileCatalogStore {
     async fn load(&self, cat: &Catalog, locale: &Locale) -> Result<Option<MessageCatalog>> {
         let store = self.store(cat)?;
         let path = self.path(locale);
+        let Ok(path) = sc_files::StorePath::parse(&path) else {
+            return Ok(None);
+        };
         let Ok(bytes) = store.read(&path).await else {
             return Ok(None);
         };
@@ -444,7 +451,9 @@ impl CatalogStore for FileCatalogStore {
         // The directory is the admin's repository, so create it rather than
         // refusing: the first translation of an application is the normal way
         // `locales/` comes into existence.
-        store.mkdir(&self.dir()).await?;
+        store
+            .mkdir(&sc_files::StorePath::parse(&self.dir())?)
+            .await?;
         let mut text = serde_json::to_string_pretty(&messages.to_json())
             .map_err(|e| Error::msg(format!("serialising a catalogue: {e}")))?;
         // It is a file in a repository, and a repository's files end in a
@@ -452,7 +461,7 @@ impl CatalogStore for FileCatalogStore {
         text.push('\n');
         store
             .write(
-                &self.path(messages.locale()),
+                &sc_files::StorePath::parse(&self.path(messages.locale()))?,
                 Bytes::from(text.into_bytes()),
             )
             .await
@@ -460,7 +469,9 @@ impl CatalogStore for FileCatalogStore {
 
     async fn delete(&self, cat: &Catalog, locale: &Locale) -> Result<bool> {
         let store = self.store(cat)?;
-        store.delete(&self.path(locale)).await
+        store
+            .delete(&sc_files::StorePath::parse(&self.path(locale))?)
+            .await
     }
 }
 

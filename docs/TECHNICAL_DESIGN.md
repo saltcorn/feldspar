@@ -67,6 +67,10 @@ feldspar/
 │  ├─ sc-dns/                     # 0. the process's resolver: a hickory-backed getaddrinfo
 │  │                              #    linked in front of glibc's, so no NSS module is
 │  │                              #    dlopened into the process (§13.5)
+│  ├─ sc-net/                     # 0. outbound connections to the public internet only:
+│  │                              #    `is_public`, `PublicAddr`, the SSRF resolver and the
+│  │                              #    `PublicClient` the agent's http trait, `fetch` and MCP
+│  │                              #    send with; an SMTP override's pinned address
 │  ├─ sc-ratelimit/               # 0. in-memory token-bucket rate limiter keyed by string,
 │  │                              #    and the client-IP rule (queries, logins, code bodies)
 │  ├─ sc-i18n/                    # 0. Locale, negotiation, the Catalog, the message format,
@@ -241,7 +245,8 @@ graph TD
   check --> browser["sc-browser"]
   agent --> browser
   browser --> auth
-  mcp --> email
+  mcp --> net["sc-net"]
+  mcp --> catalog
   coreact --> api["sc-api"]
   server --> module["sc-module"]
   viewpattern["sc-viewpattern"] --> app
@@ -281,6 +286,7 @@ graph TD
   access --> llm["sc-llm"]
   action --> email["sc-email"]
   email --> config["sc-config"]
+  email --> net
   config --> catalog["sc-catalog"]
   auth --> catalog
   llm --> config
@@ -318,6 +324,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-log` | `sc-error` |
 | `sc-config-file` | `sc-error` |
 | `sc-dns` | `sc-error` |
+| `sc-net` | `sc-error` |
 | `sc-ratelimit` | — (nothing in the workspace) |
 | `sc-query` | `sc-error` |
 | `sc-repomap` | — (nothing in the workspace) |
@@ -333,11 +340,11 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-files` | `sc-error` `sc-types` |
 | `sc-catalog` | `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-error` `sc-expr` `sc-files` `sc-query` `sc-types` |
 | `sc-config` | `sc-catalog` `sc-db` `sc-error` `sc-i18n` `sc-log` `sc-query` `sc-types` |
-| `sc-email` | `sc-catalog` `sc-config` `sc-error` |
+| `sc-email` | `sc-catalog` `sc-config` `sc-error` `sc-net` |
 | `sc-auth` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
 | `sc-llm` | `sc-catalog` `sc-config` `sc-db` `sc-error` `sc-log` `sc-query` `sc-types` |
 | `sc-access` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-query` `sc-types` |
-| `sc-mcp` | `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-query` `sc-types` |
+| `sc-mcp` | `sc-catalog` `sc-db` `sc-error` `sc-net` `sc-query` `sc-types` |
 | `sc-action` | `sc-access` `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-dataset` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-model` | `sc-catalog` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
@@ -350,12 +357,12 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-api` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-dataset` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
 | `sc-app` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-stream` `sc-types` |
 | `sc-live` | `sc-access` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-stream` `sc-types` |
-| `sc-core-actions` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-query` `sc-types` |
+| `sc-core-actions` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-net` `sc-query` `sc-types` |
 | `sc-viewpattern` | `sc-access` `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-types` |
 | `sc-module` | `sc-access` `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
 | `sc-python` | `sc-action` `sc-catalog` `sc-core-actions` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
 | `sc-check` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-browser` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
-| `sc-core-traits` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-repomap` `sc-types` |
+| `sc-core-traits` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-query` `sc-repomap` `sc-types` |
 | `sc-server` | `sc-access` `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-help` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 

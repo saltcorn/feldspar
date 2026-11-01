@@ -56,6 +56,8 @@ use crate::analyze::Analysis;
 use crate::ast::Ast;
 use crate::eval::{FormulaCall, JsEvaluator};
 use crate::formula::Formula;
+// The one HTML escape (TODO-code-quality Q4.5).
+use crate::html::escape_html;
 use crate::shape::SchemaShape;
 
 /// How many times a `{{= }}` token's result may be interpolated again before the
@@ -514,23 +516,6 @@ fn render_value(value: &Json) -> String {
         Json::String(s) => s.clone(),
         other => other.to_string(),
     }
-}
-
-/// HTML-escape the five characters that can end an element, an attribute or a
-/// string in markup.
-fn escape_html(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 /// The first few characters of `s`, for an error message that must quote

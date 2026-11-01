@@ -32,7 +32,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use futures::{SinkExt, StreamExt};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
@@ -272,7 +272,7 @@ fn todo_app() -> Application {
     )
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"))
-    .with_table(TableId("notes".to_owned()))
+    .with_table("notes".to_owned())
     .with_stream(StreamRef::new("note_body"))
 }
 

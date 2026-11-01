@@ -1753,7 +1753,7 @@ async fn the_bundled_react_native_module_scaffolds_an_application_that_builds() 
             .with("store", "apps")
             .with("project", "todo"),
     )
-    .with_table(sc_catalog::TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(sc_catalog::FileStoreId("apps".to_owned()))
     .with_api(sc_app::ApiConfig::new("rest", "/api"));
     let app = sc_app::save_application(&cat, &app)

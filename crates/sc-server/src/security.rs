@@ -485,35 +485,9 @@ fn authority(host_and_port: &str, scheme: Option<&str>) -> String {
 /// port at the first `:`. `blog.example.com:@evil.com` would route to `blog`
 /// while a link built from it lands a browser on `evil.com`, carrying its token.
 pub(crate) fn is_valid_host_header(host: &str) -> bool {
-    let digits =
-        |port: &str| (1..=5).contains(&port.len()) && port.bytes().all(|b| b.is_ascii_digit());
-    let (name, port) = if let Some(rest) = host.strip_prefix('[') {
-        let Some((literal, after)) = rest.split_once(']') else {
-            return false;
-        };
-        if literal.is_empty()
-            || !literal
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
-        {
-            return false;
-        }
-        return match after {
-            "" => true,
-            _ => after.strip_prefix(':').is_some_and(digits),
-        };
-    } else {
-        match host.split_once(':') {
-            Some((name, port)) => (name, Some(port)),
-            None => (host, None),
-        }
-    };
-    !name.is_empty()
-        && name.len() <= 253
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
-        && port.is_none_or(digits)
+    // The one rule, shared with what a `TrustedHost` holds (TODO-code-quality
+    // Q4.2).
+    sc_catalog::is_valid_host(host)
 }
 
 /// Refuse a request whose `Host` header is not [`is_valid_host_header`] with a

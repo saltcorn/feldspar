@@ -231,7 +231,7 @@ async fn read_as(
     let (store, floor): (Arc<dyn FileStore>, Option<Role>) = scope.connect(catalog).await?;
     let path = scope.resolve(rel)?;
     check_access(store.as_ref(), floor, &path, &file_caller(caller)).await?;
-    let bytes = store.read(&path).await?;
+    let bytes = store.read(&sc_files::StorePath::parse(&path)?).await?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 

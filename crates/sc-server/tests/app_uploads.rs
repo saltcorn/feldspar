@@ -341,10 +341,12 @@ async fn setup(tmp: &TempDir, config: ServerConfig) -> sc_error::Result<Server> 
     catalog.connect_file_store(store.clone())?;
     // The folder the drops land in is the administrator's: a member reads only
     // what they own there (§2.1).
-    store.mkdir("drops").await?;
+    store
+        .mkdir(&sc_files::StorePath::from_static("drops"))
+        .await?;
     store
         .set_meta(
-            "drops",
+            &sc_files::StorePath::from_static("drops"),
             &FileMeta {
                 min_role: Some(Role::ADMIN),
                 ..FileMeta::default()
@@ -471,12 +473,27 @@ async fn a_large_upload_resumes_after_a_dropped_connection_and_is_its_uploaders_
     assert_eq!(url, format!("/media/{}", path.trim_start_matches("drops/")));
 
     // The file is all there, in place, and the temporary one is gone.
-    assert_eq!(&server.store.read(&path).await?[..], &data[..]);
+    assert_eq!(
+        &server
+            .store
+            .read(&sc_files::StorePath::parse(&path).unwrap())
+            .await?[..],
+        &data[..]
+    );
     let temp = sc_server::UPLOAD_TEMP_DIR;
-    assert!(server.store.list(temp).await?.is_empty());
+    assert!(
+        server
+            .store
+            .list(&sc_files::StorePath::parse(temp).unwrap())
+            .await?
+            .is_empty()
+    );
 
     // Owned by its uploader, and named as it was on their disk.
-    let meta = server.store.get_meta(&path).await?;
+    let meta = server
+        .store
+        .get_meta(&sc_files::StorePath::parse(&path).unwrap())
+        .await?;
     let alice_id = sc_auth::load_user_by_email(&server.catalog, "alice@example.com")
         .await?
         .unwrap()
@@ -581,7 +598,7 @@ async fn only_the_uploader_may_continue_look_at_or_abandon_an_upload() -> sc_err
     assert!(
         server
             .store
-            .list(sc_server::UPLOAD_TEMP_DIR)
+            .list(&sc_files::StorePath::parse(sc_server::UPLOAD_TEMP_DIR).unwrap())
             .await?
             .is_empty()
     );
@@ -613,7 +630,12 @@ async fn a_hook_refuses_or_decides_where_the_file_goes() -> sc_error::Result<()>
     );
     // No route serves that folder, so there is no URL to give.
     assert!(done.header(FILE_URL_HEADER).is_none());
-    let meta = server.store.get_meta("guarded/alice/holiday.mp4").await?;
+    let meta = server
+        .store
+        .get_meta(&sc_files::StorePath::from_static(
+            "guarded/alice/holiday.mp4",
+        ))
+        .await?;
     assert_eq!(
         meta.attributes.get("checked").map(String::as_str),
         Some("yes")
@@ -668,7 +690,7 @@ async fn a_slots_limit_is_enforced_up_front_and_mid_stream() -> sc_error::Result
     assert!(
         server
             .store
-            .list("small")
+            .list(&sc_files::StorePath::from_static("small"))
             .await
             .map_or(true, |e| e.is_empty())
     );
@@ -700,7 +722,11 @@ async fn an_upload_abandoned_for_a_day_is_swept() -> sc_error::Result<()> {
     let location = created.header("location").unwrap().to_owned();
     alice.patch(&location, 0, Body::from(vec![1u8; 40])).await;
     assert_eq!(
-        server.store.list(sc_server::UPLOAD_TEMP_DIR).await?.len(),
+        server
+            .store
+            .list(&sc_files::StorePath::parse(sc_server::UPLOAD_TEMP_DIR).unwrap())
+            .await?
+            .len(),
         1
     );
 
@@ -721,7 +747,7 @@ async fn an_upload_abandoned_for_a_day_is_swept() -> sc_error::Result<()> {
     assert!(
         server
             .store
-            .list(sc_server::UPLOAD_TEMP_DIR)
+            .list(&sc_files::StorePath::parse(sc_server::UPLOAD_TEMP_DIR).unwrap())
             .await?
             .is_empty()
     );

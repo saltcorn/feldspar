@@ -140,7 +140,7 @@ async fn editing_a_store_repoints_it_without_a_restart() -> Result<()> {
 
     let before = cat
         .require_file_store("docs", sc_catalog::Unchecked::system("test"))?
-        .read("marker.txt")
+        .read(&sc_files::StorePath::from_static("marker.txt"))
         .await?;
     assert_eq!(&before[..], b"old");
 
@@ -152,7 +152,7 @@ async fn editing_a_store_repoints_it_without_a_restart() -> Result<()> {
 
     let after = cat
         .require_file_store("docs", sc_catalog::Unchecked::system("test"))?
-        .read("marker.txt")
+        .read(&sc_files::StorePath::from_static("marker.txt"))
         .await?;
     assert_eq!(&after[..], b"new", "the edit must take effect immediately");
     // Still exactly one store: re-connecting a name replaces it rather than

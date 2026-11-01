@@ -918,7 +918,7 @@ async fn part_two_notifications_and_progress() -> Result<()> {
 /// its topics are rows of.
 fn todo_app_part_four() -> Application {
     todo_app()
-        .with_table(sc_catalog::TableId("boards".to_owned()))
+        .with_table("boards".to_owned())
         .with_stream(StreamRef::new("board_presence"))
 }
 

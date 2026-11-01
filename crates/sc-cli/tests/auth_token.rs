@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
 use sc_auth::{RoleDef, SessionStore, save_role};
-use sc_catalog::{Catalog, PublicOrigin, TableId};
+use sc_catalog::{Catalog, PublicOrigin};
 use sc_cli::auth::{self, SessionFormat, Target, UserSelector};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -74,7 +74,7 @@ async fn start() -> sc_error::Result<Running> {
         .with("output", "web/dist")
         .with("command", "sh build.sh");
     let app = Application::new("Blog", "blog", framework)
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_api(ApiConfig::new("rest", "/api"));
     sc_app::save_application(&catalog, &app).await?;
 

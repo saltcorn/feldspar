@@ -52,8 +52,8 @@ use sc_error::{Error, Result};
 
 pub use mjml::render_mjml;
 pub use relay::{
-    SUBMISSION_STARTTLS_PORT, SUBMISSION_TLS_PORT, check_relay, is_public, relay_mailer,
-    resolve_public, security_for_port,
+    SUBMISSION_STARTTLS_PORT, SUBMISSION_TLS_PORT, check_relay, relay_mailer, resolve_public,
+    security_for_port,
 };
 // The address vocabulary, re-exported: a crate that builds a message should not
 // have to depend on the *settings* crate to name an address. Parsed there, and
@@ -286,7 +286,7 @@ impl SmtpMailer {
         if settings.authenticates() {
             builder = builder.credentials(Credentials::new(
                 settings.username.clone(),
-                settings.password.clone(),
+                settings.password.expose().clone(),
             ));
         }
         Ok(SmtpMailer {

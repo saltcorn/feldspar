@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use chrono::NaiveDate;
-use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, TableId};
+use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId};
 use sc_dataset::{DatasetDef, Page, StagePage, read_stage, value_json};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -38,7 +38,7 @@ fn id() -> DataField {
 fn key(name: &str, table: &str) -> DataField {
     let mut field = column(name, BasicType::Int);
     field.kind = DataFieldKind::Key {
-        target_table: TableId(table.to_owned()),
+        target_table: table.to_owned(),
         target_field: FieldId("id".to_owned()),
         summary_field: None,
     };

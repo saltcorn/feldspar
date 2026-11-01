@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
-use sc_catalog::{Catalog, DataFieldKind, FieldId, SharedTx, TableId, Unchecked};
+use sc_catalog::{Catalog, DataFieldKind, FieldId, SharedTx, Unchecked};
 use sc_dataset::{DatasetDef, DatasetId};
 use sc_error::{Error, Result};
 use sc_types::BasicType;
@@ -303,7 +303,7 @@ async fn create_tables(
 fn field_spec(entry: &PublicDataset, field: &FieldDef) -> schema_edit::FieldSpec {
     let kind = match (&field.references, field.is_key()) {
         (Some(target), true) => DataFieldKind::Key {
-            target_table: TableId(target.clone()),
+            target_table: target.clone(),
             target_field: FieldId(String::new()),
             summary_field: entry
                 .table(target)

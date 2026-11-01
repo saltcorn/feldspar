@@ -84,7 +84,7 @@ async fn format(
     state: &mut CodingState,
 ) -> Result<Option<String>> {
     let (store, _) = scope.connect(catalog).await?;
-    let Some(root) = store.local_path(&scope.resolve("")?)? else {
+    let Some(root) = store.local_path(&scope.resolve_path("")?)? else {
         return Ok(None);
     };
     let prettier = root.join("node_modules").join(".bin").join("prettier");
@@ -93,13 +93,14 @@ async fn format(
     }
     let mut files: Vec<(String, String, Vec<u8>)> = Vec::new();
     for path in edited {
-        if let Some(stat) = store.stat(path).await?
+        let at = sc_files::StorePath::parse(path)?;
+        if let Some(stat) = store.stat(&at).await?
             && !stat.is_dir
         {
             files.push((
                 path.clone(),
                 scope.relative(path),
-                store.read(path).await?.to_vec(),
+                store.read(&at).await?.to_vec(),
             ));
         }
     }
@@ -116,7 +117,7 @@ async fn format(
     }
     let mut changed = Vec::new();
     for (path, rel, before) in files {
-        let after = store.read(&path).await?;
+        let after = store.read(&sc_files::StorePath::parse(&path)?).await?;
         if after.as_ref() != before.as_slice() {
             state.saw(&path, &after);
             changed.push(rel);

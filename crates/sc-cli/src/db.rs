@@ -141,7 +141,7 @@ impl Serving<'_> {
         let mut def = sc_llm::LlmProviderDef::new(&section.name, &section.backend)
             .description(section.description.clone().unwrap_or_default());
         if let Some(key) = &section.api_key {
-            def = def.with(sc_llm::CFG_API_KEY, key.clone());
+            def = def.with(sc_llm::CFG_API_KEY, key.expose().clone());
         }
         if let Some(url) = &section.base_url {
             def = def.with(sc_llm::CFG_BASE_URL, url.clone());
@@ -277,7 +277,7 @@ pub struct DbConfig {
     host: Option<String>,
     port: Option<String>,
     user: Option<String>,
-    password: Option<String>,
+    password: Option<sc_error::Secret<String>>,
     dbname: Option<String>,
     /// A SQLite file to use instead of a Postgres server.
     sqlite: Option<String>,
@@ -327,12 +327,15 @@ impl DbConfig {
         let mut rest = Vec::new();
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
+            if arg.as_ref() == "--db-password" {
+                cfg.password = Some(next_value(&mut it, "--db-password")?.into());
+                continue;
+            }
             let slot = match arg.as_ref() {
                 "--database-url" => &mut cfg.url,
                 "--db-host" => &mut cfg.host,
                 "--db-port" => &mut cfg.port,
                 "--db-user" => &mut cfg.user,
-                "--db-password" => &mut cfg.password,
                 "--db-name" => &mut cfg.dbname,
                 "--sqlite" => &mut cfg.sqlite,
                 "--environment" | "--env" => &mut environment,
@@ -421,8 +424,10 @@ impl DbConfig {
         if let Some(user) = self.resolved(&self.user, "PGUSER", |e| e.user.clone()) {
             config.user(user);
         }
-        if let Some(password) = self.resolved(&self.password, "PGPASSWORD", |e| e.password.clone())
-        {
+        let flag = self.password.as_ref().map(|p| p.expose().clone());
+        if let Some(password) = self.resolved(&flag, "PGPASSWORD", |e| {
+            e.password.as_ref().map(|p| p.expose().clone())
+        }) {
             config.password(password);
         }
         if let Some(dbname) = self.resolved(&self.dbname, "PGDATABASE", |e| e.database.clone()) {
@@ -740,7 +745,10 @@ vision = "no"
         assert_eq!(cfg.host.as_deref(), Some("db.internal"));
         assert_eq!(cfg.port.as_deref(), Some("6543"));
         assert_eq!(cfg.user.as_deref(), Some("sc"));
-        assert_eq!(cfg.password.as_deref(), Some("secret"));
+        assert_eq!(
+            cfg.password.as_ref().map(sc_error::Secret::expose_str),
+            Some("secret")
+        );
         assert_eq!(cfg.dbname.as_deref(), Some("app"));
         // Non-database flags are handed back for the server parser, in order.
         assert_eq!(rest, ["--bind", "0.0.0.0:80", "--secure-cookies"]);
@@ -783,7 +791,7 @@ vision = "no"
             host: Some("h".to_owned()),
             port: Some("6000".to_owned()),
             dbname: Some("mydb".to_owned()),
-            password: Some("secret".to_owned()),
+            password: Some("secret".into()),
             ..DbConfig::default()
         };
         // Call the parts formatter directly: whether `target()` takes the parts

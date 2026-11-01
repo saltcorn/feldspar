@@ -23,9 +23,8 @@ use std::sync::Arc;
 
 use sc_action::{ActionContext, Event, EventKind, Trigger, validate_trigger};
 use sc_catalog::{
-    Catalog, DataField, DataFieldKind, FieldId, FieldMeta, FileStoreId, TableId,
-    bootstrap_field_meta, bootstrap_file_stores, connect_all_file_stores, save_field_meta,
-    save_file_store,
+    Catalog, DataField, DataFieldKind, FieldId, FieldMeta, FileStoreId, bootstrap_field_meta,
+    bootstrap_file_stores, connect_all_file_stores, save_field_meta, save_file_store,
 };
 use sc_core_actions::builtin_actions;
 use sc_db::DatabaseDriver;
@@ -82,7 +81,7 @@ async fn shop(db: &TestDb, tag: &str) -> Result<Arc<Catalog>> {
     .await?;
     let mut customer = DataField::plain("customer", int());
     customer.kind = DataFieldKind::Key {
-        target_table: TableId("customers".to_owned()),
+        target_table: "customers".to_owned(),
         target_field: FieldId("id".to_owned()),
         summary_field: None,
     };

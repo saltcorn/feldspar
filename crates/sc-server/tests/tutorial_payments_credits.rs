@@ -27,7 +27,7 @@ use rust_decimal::Decimal;
 use sc_action::{EventKind, Trigger, save_trigger};
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation, TableSettings};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, TriggerRef};
-use sc_catalog::{Catalog, Principal, TableId};
+use sc_catalog::{Catalog, Principal};
 use sc_server::MountedApp;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -277,7 +277,7 @@ async fn setup() -> sc_error::Result<Booted> {
         "credit_entries",
         "pay_objects",
     ] {
-        app = app.with_table(TableId(table.to_owned()));
+        app = app.with_table(table.to_owned());
     }
     booted.apps.mount(MountedApp::new_with(
         app,

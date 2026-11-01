@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use sc_catalog::{
-    Catalog, DbConnectionDef, DbId, TableId, bootstrap_db_connections, bootstrap_file_stores,
+    Catalog, DbConnectionDef, DbId, bootstrap_db_connections, bootstrap_file_stores,
     connect_db_connection, connect_file_store_def, delete_db_connection, list_db_connections,
     save_db_connection, save_file_store,
 };
@@ -122,7 +122,7 @@ async fn a_sqlite_file_in_a_file_store_is_a_connected_database() -> sc_error::Re
     // The file's table is in the catalog like any other, stamped with the
     // connection — which is what the admin UI badges and what routes a query.
     let invoice = catalog.require("invoice")?;
-    assert_eq!(invoice.id, TableId("invoice".into()));
+    assert_eq!(invoice.name, "invoice");
     assert_eq!(invoice.database, DbId("reporting".into()));
     assert!(invoice.field("title").is_some());
     // Its key numbers itself, exactly as it does on Postgres, so a form can

@@ -32,7 +32,7 @@ use sc_app::{
     ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, bootstrap, save_application,
 };
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -194,8 +194,8 @@ fn staff_app() -> Application {
             .with("output", "web/dist")
             .with("command", "sh build.sh"),
     )
-    .with_table(TableId("departments".to_owned()))
-    .with_table(TableId("employees".to_owned()))
+    .with_table("departments".to_owned())
+    .with_table("employees".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"))
     // Aggregates switched on: they are absent from the schema unless an
@@ -443,7 +443,7 @@ async fn an_application_with_nothing_to_explore_says_which_it_is() -> sc_error::
             .with("output", "web/dist")
             .with("command", "sh build.sh"),
     )
-    .with_table(TableId("departments".to_owned()))
+    .with_table("departments".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     let rest_only_id = rest_only.id.to_string();
@@ -478,7 +478,7 @@ async fn an_application_with_nothing_to_explore_says_which_it_is() -> sc_error::
             .with("output", "web/dist")
             .with("command", "sh build.sh"),
     )
-    .with_table(TableId("departments".to_owned()))
+    .with_table("departments".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("graphql", "/graphql"));
     let unbuilt_id = unbuilt.id.to_string();

@@ -259,8 +259,8 @@ fn row_field_resolver(field: &DataField, names: &SchemaNames) -> resolve::Resolv
         // A key whose target this application exposes resolves *through* the
         // parent query's projected Ⱶ-join; one whose target it does not carries
         // the column's own value, exactly as its type says.
-        DataFieldKind::Key { target_table, .. } => match names.get(&target_table.0) {
-            Some(_) => resolve::key_field(name, &target_table.0),
+        DataFieldKind::Key { target_table, .. } => match names.get(target_table) {
+            Some(_) => resolve::key_field(name, target_table),
             None => resolve::column_field(name),
         },
         DataFieldKind::File { .. } => resolve::file_field(name),

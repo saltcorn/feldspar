@@ -83,7 +83,10 @@ async fn make_pre_framework(driver: &dyn DatabaseDriver) {
 
 async fn scalar(driver: &dyn DatabaseDriver, sql: &str) -> Value {
     let rows = driver
-        .query(&Statement::raw(sql, Vec::new()))
+        .query(&Statement::raw(
+            sc_query::TrustedSql::composed(sql),
+            Vec::new(),
+        ))
         .await
         .unwrap()
         .try_collect()

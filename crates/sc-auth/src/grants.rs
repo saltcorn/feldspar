@@ -41,7 +41,7 @@
 
 use chrono::{DateTime, Utc};
 use sc_catalog::{
-    Catalog, DataField, DataFieldKind, FieldId, Table, TableConstraint, TableId, TableMeta,
+    Catalog, DataField, DataFieldKind, FieldId, Table, TableConstraint, TableMeta,
     load_table_meta_by_name, save_table_meta_row,
 };
 use sc_db::{Row, SchemaChange};
@@ -164,7 +164,7 @@ fn grant_fields() -> Vec<DataField> {
             .primary_key(),
         DataField {
             kind: DataFieldKind::Key {
-                target_table: TableId(USERS_TABLE.to_owned()),
+                target_table: USERS_TABLE.to_owned(),
                 target_field: FieldId(COL_USER_ID_TARGET.to_owned()),
                 summary_field: Some(FieldId(COL_EMAIL.to_owned())),
             },
@@ -172,7 +172,7 @@ fn grant_fields() -> Vec<DataField> {
         },
         DataField {
             kind: DataFieldKind::Key {
-                target_table: TableId(ROLES_TABLE.to_owned()),
+                target_table: ROLES_TABLE.to_owned(),
                 target_field: FieldId(crate::users::COL_ROLE.to_owned()),
                 summary_field: Some(FieldId(COL_ROLE_NAME.to_owned())),
             },

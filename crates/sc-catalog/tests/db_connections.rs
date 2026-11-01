@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use sc_catalog::{
-    Catalog, DataField, DbConnectionDef, DbId, TableId, bootstrap_db_connections,
+    Catalog, DataField, DbConnectionDef, DbId, bootstrap_db_connections,
     connect_all_db_connections, connect_db_connection, delete_db_connection, list_db_connections,
     load_db_connection_by_name, save_db_connection,
 };
@@ -44,7 +44,7 @@ fn def_for(name: &str, db: &TestDb) -> DbConnectionDef {
     let mut def = DbConnectionDef::new(name, parts.host, parts.database);
     def.port = parts.port;
     def.username = parts.user;
-    def.password = parts.password;
+    def.password = parts.password.into();
     def
 }
 
@@ -132,7 +132,7 @@ async fn a_connected_database_shares_the_catalog() -> sc_error::Result<()> {
 
     // The foreign table is in the catalog like any other, found by name.
     let invoice = catalog.require("invoice")?;
-    assert_eq!(invoice.id, TableId("invoice".into()));
+    assert_eq!(invoice.name, "invoice");
     // …and stamped with the connection, which is what the admin UI badges and
     // what routes its queries.
     assert_eq!(invoice.database, DbId("reporting".into()));

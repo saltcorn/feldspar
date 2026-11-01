@@ -286,7 +286,10 @@ impl<'a> HistoryReader<'a> {
         let rows = self
             .catalog
             .primary(crate::INTERNAL_TABLES)
-            .query(&Statement::raw(sql, vec![Value::Json(ids)]))
+            .query(&Statement::raw(
+                sc_query::TrustedSql::composed(sql),
+                vec![Value::Json(ids)],
+            ))
             .await?
             .try_collect()
             .await?;

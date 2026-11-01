@@ -59,12 +59,10 @@ pub fn validate_file_path(path: &str, folder: Option<&str>, mime_allow: &[String
     // `/` is the only separator a store path has. A `\` is one more on Windows
     // (`uploads/..\..\x`), a `:` starts a drive (`C:\x`) or an NTFS stream, and
     // a segment of dots and spaces is trimmed by Windows to `..` — each a way
-    // out of the folder this check is about to compare against.
-    if path.contains(['\\', ':', '\0'])
-        || path.split('/').any(|segment| {
-            !segment.is_empty() && segment.trim_end_matches(['.', ' ']).is_empty() && segment != "."
-        })
-    {
+    // out of the folder this check is about to compare against. The one
+    // validator ([`StorePath`](crate::StorePath)) decides; this keeps its own
+    // wording for a field value.
+    if crate::StorePath::parse(path).is_err() {
         return Err(Error::invalid(format!(
             "file path `{path}` may only use `/` between plain names"
         )));
@@ -119,14 +117,19 @@ pub fn suffixed_path(path: &str, n: u32) -> String {
 /// occupies — where an upload lands when its field keeps what is there rather
 /// than replacing it. Two uploads racing for the same name may still pick the
 /// same one; the window is the gap between this check and the write.
-pub async fn free_path(store: &dyn crate::FileStore, path: &str) -> Result<String> {
-    if store.stat(path).await?.is_none() {
-        return Ok(path.to_owned());
+pub async fn free_path(
+    store: &dyn crate::FileStore,
+    path: impl crate::AsStorePath,
+) -> Result<String> {
+    let path = path.store_path()?;
+    if store.stat(&path).await?.is_none() {
+        return Ok(path.to_string());
     }
+    let path = path.as_str();
     for n in 1..=MAX_SUFFIX {
-        let candidate = suffixed_path(path, n);
+        let candidate = crate::StorePath::parse(&suffixed_path(path, n))?;
         if store.stat(&candidate).await?.is_none() {
-            return Ok(candidate);
+            return Ok(candidate.to_string());
         }
     }
     Err(Error::invalid(format!(

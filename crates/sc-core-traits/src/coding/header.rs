@@ -115,7 +115,7 @@ pub fn agents_files(files: &[sc_repomap::SourceFile], brief: &str) -> Vec<String
 /// One `AGENTS.md`, as the caller may read it, framed with its path.
 async fn read_notes(scope: &FileScope, cx: &SessionContext<'_>, rel: &str) -> Option<String> {
     let (store, floor) = scope.connect(cx.catalog).await.ok()?;
-    let path = scope.resolve(rel).ok()?;
+    let path = scope.resolve_path(rel).ok()?;
     if !store.stat(&path).await.ok()?.is_some_and(|s| !s.is_dir) {
         return None;
     }
@@ -168,8 +168,8 @@ fn clip(text: &str, max: usize) -> String {
 /// history is not the application's.
 async fn git_log(scope: &FileScope, cx: &SessionContext<'_>) -> Option<String> {
     let (store, _) = scope.connect(cx.catalog).await.ok()?;
-    let store_dir = store.local_path("").ok()??;
-    let dir = store.local_path(&scope.resolve("").ok()?).ok()??;
+    let store_dir = store.local_path(&sc_files::StorePath::root()).ok()??;
+    let dir = store.local_path(&scope.resolve_path("").ok()?).ok()??;
     if !dir.is_dir() {
         return None;
     }

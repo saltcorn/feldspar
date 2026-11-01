@@ -82,7 +82,7 @@ impl ViewSnapshot {
                 // The tables a view may name (§11): checked on save, and again
                 // on every run in the worker, because the subset can shrink
                 // under a view already saved (7.4).
-                "tables": application.tables.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(),
+                "tables": application.tables.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
                 // The stores the builder's image picker lists (TODO "The
                 // builder" 5.4). Names only: what is in them is listed when the
                 // builder asks, through the call's file surface.
@@ -198,8 +198,7 @@ mod tests {
         framework
             .config
             .insert("site_name".into(), json!("BooksDB"));
-        Application::new("BooksDB", "books", framework)
-            .with_table(sc_catalog::TableId("books".into()))
+        Application::new("BooksDB", "books", framework).with_table("books".into())
     }
 
     fn role(role: Role, name: &str) -> RoleDef {

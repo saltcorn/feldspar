@@ -44,7 +44,7 @@ use sc_app::{
     ApiConfig, Application, AssetBundle, BuildSpec, CodeFramework, FrameworkRef, save_application,
 };
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_config::{MCP_ENABLED, MCP_LOOPBACK_ONLY, set_config};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -969,7 +969,7 @@ async fn mount_shop(
         .with_file_store(FileStoreId("apps".to_owned()))
         .with_api(ApiConfig::new("rest", "/api"));
     for table in tables {
-        app = app.with_table(TableId((*table).to_owned()));
+        app = app.with_table((*table).to_owned());
     }
     save_application(catalog, &app).await?;
     // A framework with a build step, because that is the whole question the

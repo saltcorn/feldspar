@@ -47,6 +47,7 @@ mod code_reply;
 mod eval;
 mod formula;
 mod geo;
+pub mod html;
 #[cfg(feature = "eval")]
 mod normalise;
 mod rewrite;

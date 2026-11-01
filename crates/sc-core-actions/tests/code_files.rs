@@ -262,7 +262,9 @@ async fn metadata_a_body_sets_is_the_stores_own() -> Result<()> {
     // The same metadata the store itself reads: a body's `setMeta` is not a
     // second place rules are kept.
     let store = catalog.require_file_store("docs", sc_catalog::Unchecked::system("test"))?;
-    let meta = store.get_meta("secret.txt").await?;
+    let meta = store
+        .get_meta(&sc_files::StorePath::from_static("secret.txt"))
+        .await?;
     assert_eq!(meta.min_role, Some(Role::of(10)));
     assert_eq!(
         meta.attributes.get("origin").map(String::as_str),
@@ -285,7 +287,7 @@ async fn a_delegated_body_obeys_the_folder_rule_and_the_trigger_does_not() -> Re
     let store = catalog.require_file_store("docs", sc_catalog::Unchecked::system("test"))?;
     store
         .set_meta(
-            "private",
+            &sc_files::StorePath::from_static("private"),
             &FileMeta {
                 min_role: Some(Role::ADMIN),
                 ..Default::default()
@@ -391,7 +393,11 @@ async fn a_delegated_write_is_the_callers_and_nobody_else_may_change_it() -> Res
     );
     let store = catalog.require_file_store("docs", sc_catalog::Unchecked::system("test"))?;
     assert_eq!(
-        store.get_meta("drops/a-dir").await?.owner.as_deref(),
+        store
+            .get_meta(&sc_files::StorePath::from_static("drops/a-dir"))
+            .await?
+            .owner
+            .as_deref(),
         Some("user-a")
     );
 
@@ -575,12 +581,14 @@ async fn a_delegated_copy_into_another_store_may_not_loosen_its_rule() -> Result
         ..FileMeta::default()
     };
     std::fs::write(dir.join("mine.txt"), "new").unwrap();
-    raw("docs").set_meta("mine.txt", &mine).await?;
+    raw("docs")
+        .set_meta(&sc_files::StorePath::from_static("mine.txt"), &mine)
+        .await?;
     // In `archive` (no floor), user-a's file is closed to everyone below 40.
     std::fs::write(archive.join("kept.txt"), "old").unwrap();
     raw("archive")
         .set_meta(
-            "kept.txt",
+            &sc_files::StorePath::from_static("kept.txt"),
             &FileMeta {
                 min_role: Some(Role::of(40)),
                 ..mine.clone()
@@ -605,7 +613,10 @@ async fn a_delegated_copy_into_another_store_may_not_loosen_its_rule() -> Result
     assert_eq!(out["tightened"], json!("done"), "{out}");
     assert_eq!(on_disk(&archive, "kept.txt").unwrap(), "new");
     assert_eq!(
-        raw("archive").get_meta("kept.txt").await?.min_role,
+        raw("archive")
+            .get_meta(&sc_files::StorePath::from_static("kept.txt"))
+            .await?
+            .min_role,
         Some(Role::ADMIN)
     );
 

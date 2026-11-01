@@ -1160,7 +1160,7 @@ async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
     assert_eq!(app.framework.config["menu_items"], json!([]));
     let names = |ids: Vec<&String>| ids.into_iter().cloned().collect::<Vec<_>>();
     assert_eq!(
-        names(app.tables.iter().map(|t| &t.0).collect()),
+        names(app.tables.iter().collect()),
         vec!["Books", "Authors", "Publishers"]
     );
     assert_eq!(

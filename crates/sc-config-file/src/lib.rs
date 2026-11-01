@@ -180,7 +180,7 @@ pub struct Environment {
     pub host: Option<String>,
     pub port: Option<u16>,
     pub user: Option<String>,
-    pub password: Option<String>,
+    pub password: Option<sc_error::Secret<String>>,
     /// The database name (`database`, not `dbname`: this is a file a person
     /// writes, and `--db-name`'s spelling is the CLI's own abbreviation).
     pub database: Option<String>,
@@ -326,7 +326,7 @@ pub struct LlmProviderSection {
     /// A human description, shown under the name.
     pub description: Option<String>,
     /// The API key — optional only for an `openai_chat` local host.
-    pub api_key: Option<String>,
+    pub api_key: Option<sc_error::Secret<String>>,
     /// The endpoint, when it is not the backend's own default.
     pub base_url: Option<String>,
     /// The model an agent naming this provider and no model calls. May be left
@@ -991,7 +991,10 @@ name = "claude-haiku-4-5"
             .expect("the section is read");
         assert_eq!(provider.name, "hosted");
         assert_eq!(provider.backend, "anthropic");
-        assert_eq!(provider.api_key.as_deref(), Some("sk-ant-x"));
+        assert_eq!(
+            provider.api_key.as_ref().map(|k| k.expose().as_str()),
+            Some("sk-ant-x")
+        );
         assert!(provider.base_url.is_none());
         assert_eq!(provider.models.len(), 2);
         assert_eq!(
