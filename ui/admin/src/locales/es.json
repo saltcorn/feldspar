@@ -2,6 +2,7 @@
   " — at {path}": " — en {path}",
   " — showing the first {shown}; narrow with a filter": " — mostrando los primeros {shown}; delimita con un filtro",
   "(a guest's session) and the row's other fields. On a nullable field, an expression that gives nothing leaves it empty.": "(la sesión de un invitado) y los demás campos de la fila. En un campo que admite vacíos, una expresión que no da nada lo deja vacío.",
+  "(build with Claude)": "(construir con Claude)",
   "(choose one)": "(elige uno)",
   "(delegated)": "(delegado)",
   "(edit code)": "(editar código)",

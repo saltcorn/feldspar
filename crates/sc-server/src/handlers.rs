@@ -5297,16 +5297,28 @@ pub fn admin_handlers_with(
 
     reg.register("listApplications", {
         let catalog = catalog.clone();
+        let mounts = apps.clone();
         move |_ctx| {
             let catalog = catalog.clone();
+            let mounts = mounts.clone();
             async move {
                 let apps = list_applications(&catalog).await?;
                 let hosts = sc_app::list_build_hosts(&catalog).await?;
+                let claude =
+                    crate::terminal::claude_unavailable(&catalog, &mounts.claude_cli(), &apps)
+                        .await;
                 let out: Vec<Json> = apps
                     .iter()
-                    .map(|app| {
+                    .zip(claude)
+                    .map(|(app, unavailable)| {
                         let mut body = application_api_json(app);
                         builds_on_hosts(&mut body, &hosts);
+                        // Whether "Build with Claude" can open a session, and
+                        // if not, the sentence its tooltip shows.
+                        body["claude"] = json!({
+                            "available": unavailable.is_none(),
+                            "reason": unavailable,
+                        });
                         body
                     })
                     .collect();

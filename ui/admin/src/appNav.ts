@@ -8,7 +8,7 @@
 // its row in the applications list do. This module decides which links those are
 // and when one is "here"; `AppSidebar.tsx` draws them.
 
-import { ideUrl } from "./App";
+import { claudeUrl, ideUrl } from "./App";
 import { appUrl } from "./adminAddress";
 import type { ListAgentsResponse, ListApplicationsResponse } from "./client";
 
@@ -25,6 +25,7 @@ export type AppNavLink = {
   id:
   | "app-link"
   | "edit-code"
+  | "claude"
   | "build"
   | "target"
   | "chat"
@@ -45,6 +46,9 @@ export type AppNavLink = {
   /** The build target a `target` link builds, and whether this server can
    * build it now (a state, not part of the target). */
   target?: TargetLink;
+  /** Why the link cannot be followed now, shown as its tooltip; the link is
+   * drawn disabled. */
+  unavailable?: string;
 };
 
 /** A build target as its button needs it: what it is, and whether this server
@@ -101,9 +105,10 @@ export function builderAgentFor(
  * - **The application itself comes first**, on its own subdomain, in a new
  *   tab: it is what all the other links are for.
  * - An application that is **built** from a source tree (React, code) gets the
- *   loop an admin works in: edit the code, build. A build rewrites the
- *   generated client first, so there is no separate link for that. One with no
- *   framework has a directory but no build, so it gets only the first.
+ *   loop an admin works in: edit the code (or have Claude Code edit it),
+ *   build. A build rewrites the generated client first, so there is no
+ *   separate link for that. One with no framework has a directory but no
+ *   build, so it gets only the first.
  * - One that is **constructed** from views and pages (Saltcorn UI) gets those,
  *   and the library its views and pages place.
  * - Either gets a new chat with its coding agent, when it has one.
@@ -112,7 +117,10 @@ export function builderAgentFor(
  *   rows, where it cannot be clicked on the way to something else.
  */
 export function appNavLinks(
-  app: Pick<AppItem, "id" | "subdomain" | "builds" | "has_views" | "source" | "targets">,
+  app: Pick<
+    AppItem,
+    "id" | "name" | "subdomain" | "builds" | "has_views" | "source" | "targets" | "claude"
+  >,
   agent: string | null,
   admin: AdminLocation,
 ): AppNavLink[] {
@@ -135,6 +143,19 @@ export function appNavLinks(
       href: ideUrl(app.source.store),
       external: true,
       matches: [],
+    });
+    // The same directory with Claude Code already running in it. Shown even
+    // when it cannot start, disabled with the server's reason, so the admin
+    // learns what to change rather than that the link exists somewhere.
+    links.push({
+      id: "claude",
+      label: "Build with Claude",
+      href: claudeUrl(app.source.store, app.name),
+      external: true,
+      matches: [],
+      unavailable: app.claude.available
+        ? undefined
+        : (app.claude.reason ?? "Claude Code cannot start here"),
     });
   }
   if (app.builds) {

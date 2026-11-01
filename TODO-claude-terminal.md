@@ -65,13 +65,13 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## CT4 — One click from the admin UI
 
-- [ ] CT4.1 `listApplications` reports, per application, whether a Claude session can start and
+- [x] CT4.1 `listApplications` reports, per application, whether a Claude session can start and
       why not (feature off, no source directory, no local path, no executable).
-- [ ] CT4.2 "Build with Claude" in the application sidebar (`appNav.ts`) and in the
+- [x] CT4.2 "Build with Claude" in the application sidebar (`appNav.ts`) and in the
       applications list, next to the "Edit code" links; disabled with the reason as tooltip.
       Strings in every locale.
-- [ ] CT4.3 Tests: the availability reasons (`sc-api`); the links and their disabled state
-      (`ui/admin`).
+- [x] CT4.3 Tests: the availability reasons (`sc-server/tests/ide_terminal.rs`, since they are
+      the terminal route's own checks); the links and their disabled state (`ui/admin`).
 
 ## CT5 — Keeping the workbench in step
 
@@ -103,3 +103,6 @@ in the open editor, and the build succeeds. Reload the page: the conversation co
   that daemonises on purpose, which escapes today.
 - Proxy SSE MCP servers too (rewriting the posting URL in the event stream), or wait until
   someone configures one they want in a session?
+- Give `AppMounts::new` the Claude Code program? `AppMounts` holds it behind a lock only because
+  the configured path arrives when the router is built, after `AppMounts` exists. Passed to
+  `new`, it could be a plain `Arc<PathBuf>`, but `new` has 131 callers, almost all of them tests.

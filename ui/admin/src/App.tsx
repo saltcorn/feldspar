@@ -118,6 +118,12 @@ export function ideUrl(store: string, path?: string): string {
   return path && path.trim() !== "" ? `${base}&path=${encodeURIComponent(path.trim())}` : base;
 }
 
+/** The IDE on `store` with Claude Code open in application `app`'s source
+ * directory (design §12.1): the IDE reads `claude=1&app=` once it is up. */
+export function claudeUrl(store: string, app: string): string {
+  return `${ideUrl(store)}&claude=1&app=${encodeURIComponent(app)}`;
+}
+
 export function App() {
   const [status, setStatus] = useState<AuthStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);

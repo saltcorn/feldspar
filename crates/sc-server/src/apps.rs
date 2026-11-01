@@ -303,6 +303,10 @@ pub struct AppMounts {
     session_ttl_hours: SessionTtlHours,
     /// The identity-provider sign-ins under way (`crate::oauth`).
     oauth: crate::oauth::OAuthFlows,
+    /// The Claude Code the IDE's terminal runs (`ServerConfig::claude_cli`),
+    /// set when the router is built. Held here so the terminal route and the
+    /// applications list ("Build with Claude") read the same one.
+    claude_cli: RwLock<Option<Arc<PathBuf>>>,
 }
 
 /// One run's preview of one application.
@@ -361,6 +365,7 @@ impl AppMounts {
             shared_session_cookie: AtomicBool::new(false),
             session_ttl_hours: SessionTtlHours::default(),
             oauth: crate::oauth::OAuthFlows::default(),
+            claude_cli: RwLock::new(None),
         }
     }
 
@@ -429,6 +434,24 @@ impl AppMounts {
     /// The identity-provider sign-ins this process has under way.
     pub(crate) fn oauth(&self) -> &crate::oauth::OAuthFlows {
         &self.oauth
+    }
+
+    /// The Claude Code the IDE's terminal runs: `claude` on `PATH` until the
+    /// router sets the configured one.
+    pub(crate) fn claude_cli(&self) -> Arc<PathBuf> {
+        self.claude_cli
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(|| Arc::new(PathBuf::from(crate::terminal::CLAUDE_BIN)))
+    }
+
+    /// Run `program` as the IDE terminal's Claude Code.
+    pub(crate) fn set_claude_cli(&self, program: PathBuf) {
+        *self
+            .claude_cli
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(program));
     }
 
     /// The host the admin UI is served on, if this deployment has a base domain.

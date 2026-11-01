@@ -2,6 +2,7 @@
   " — at {path}": " — في {path}",
   " — showing the first {shown}; narrow with a filter": " — يعرض أول {shown}؛ ضيّق النتائج باستخدام مرشح",
   "(a guest's session) and the row's other fields. On a nullable field, an expression that gives nothing leaves it empty.": "(جلسة الضيف) وحقول الصف الأخرى. في حقل يقبل القيم الفارغة، يتركه التعبير الذي لا يعطي شيئًا فارغًا.",
+  "(build with Claude)": "(البناء باستخدام Claude)",
   "(choose one)": "(اختر واحدًا)",
   "(delegated)": "(مفوَّض)",
   "(edit code)": "(تحرير التعليمات البرمجية)",

@@ -14,22 +14,29 @@ import {
   onApplicationsList,
 } from "./appNav";
 
+/** A Claude Code session can start for it. */
+const claudeOk = { available: true, reason: null };
+
 const react = {
   id: "a1",
+  name: "todo",
   subdomain: "todo",
   builds: true,
   has_views: false,
   source: { store: "code", path: "todo" },
   targets: [],
+  claude: claudeOk,
 };
 
 const saltcornUi = {
   id: "a2",
+  name: "crm",
   subdomain: "crm",
   builds: false,
   has_views: true,
   source: null,
   targets: [],
+  claude: { available: false, reason: "crm has no source directory" },
 };
 
 /** Where the admin is served; applications sit on subdomains of it. */
@@ -66,6 +73,7 @@ describe("the current application's sidebar links", () => {
     expect(links.map((l) => l.label)).toEqual([
       "Application link",
       "Edit code",
+      "Build with Claude",
       "Build",
       "Settings",
     ]);
@@ -74,7 +82,7 @@ describe("the current application's sidebar links", () => {
     expect(edit.external).toBe(true);
     // Build does something rather than going somewhere, and it brings the
     // generated client up to date itself — there is no separate link for that.
-    expect(links[2].href).toBeUndefined();
+    expect(links[3].href).toBeUndefined();
     expect(links.map((l) => l.id)).not.toContain("update-client");
   });
 
@@ -96,25 +104,52 @@ describe("the current application's sidebar links", () => {
     expect(labels).toEqual([
       "Application link",
       "Edit code",
+      "Build with Claude",
       "Build",
       "Coding agent",
       "Settings",
     ]);
-    expect(appNavLinks(react, "build-todo", admin)[3].href).toBe("#/agents/build-todo/chat");
+    expect(appNavLinks(react, "build-todo", admin)[4].href).toBe("#/agents/build-todo/chat");
   });
 
   it("gives an application with no framework edit code but nothing to build", () => {
     const none = {
       id: "a3",
+      name: "landing",
       subdomain: "landing",
       builds: false,
       has_views: false,
       source: { store: "site", path: "public" },
       targets: [],
+      claude: claudeOk,
     };
     const links = appNavLinks(none, null, admin);
-    expect(links.map((l) => l.id)).toEqual(["app-link", "edit-code", "settings"]);
+    expect(links.map((l) => l.id)).toEqual(["app-link", "edit-code", "claude", "settings"]);
     expect(links[1].href).toBe("/ide/?store=site");
+  });
+
+  it("opens Claude Code in the IDE, in the application's directory", () => {
+    const claude = appNavLinks(react, null, admin).find((l) => l.id === "claude")!;
+    expect(claude.href).toBe("/ide/?store=code&claude=1&app=todo");
+    expect(claude.external).toBe(true);
+    expect(claude.unavailable).toBeUndefined();
+  });
+
+  it("shows Build with Claude disabled, with the server's reason, when it cannot start", () => {
+    const off = {
+      ...react,
+      claude: {
+        available: false,
+        reason: "the IDE terminal is turned off (Settings → Development)",
+      },
+    };
+    const claude = appNavLinks(off, null, admin).find((l) => l.id === "claude")!;
+    expect(claude.unavailable).toBe("the IDE terminal is turned off (Settings → Development)");
+    // A name that needs escaping in the URL.
+    const spaced = { ...react, name: "my shop" };
+    expect(appNavLinks(spaced, null, admin).find((l) => l.id === "claude")!.href).toBe(
+      "/ide/?store=code&claude=1&app=my%20shop",
+    );
   });
 
   it("gives a Saltcorn UI application views, pages and library, then settings", () => {

@@ -68,6 +68,34 @@ export function withoutClaudeRequest(href: string): string {
 }
 
 /**
+ * The process id a terminal reports to VS Code for the program on the server.
+ *
+ * The real one is the server's, and VS Code only shows it, with one exception:
+ * a terminal the panel's "New Terminal" starts gets the admin's typing only
+ * once its process id is non-zero, and queues it until then — forever, for a
+ * process that never reports another. Any positive number will do.
+ */
+export const REPORTED_PID = 1;
+
+/**
+ * The panel starts closed on every visit.
+ *
+ * VS Code gives a terminal panel that becomes visible with no terminal in it a
+ * new one, and every terminal here is a Claude Code session. A panel left open
+ * on the last visit is restored open, and so would start a session nobody asked
+ * for — beside the "Claude · <app>" tab when the page was opened to start one.
+ * The terminal's `hideOnStartup` setting does not help: it hides the panel, and
+ * restoring the layout opens it again afterwards. Opening the panel by hand is
+ * unaffected.
+ *
+ * A string: the layout reads the stored text and compares it with `"true"`, and
+ * a forced value reaches it unconverted.
+ */
+export const TERMINAL_STORAGE: Record<string, unknown> = {
+  "workbench.panel.hidden": "true",
+};
+
+/**
  * How far the program's output may run ahead of the terminal drawing it, in
  * characters, before the server is asked to stop reading; and how far behind it
  * must fall again before it is asked to go on. VS Code's own numbers for its

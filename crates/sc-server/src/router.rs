@@ -173,8 +173,6 @@ pub(crate) struct AppState {
     language_server: Arc<std::path::PathBuf>,
     /// How many more terminals the IDE may open (design §12.1).
     terminal_slots: TerminalSlots,
-    /// The Claude Code the IDE's terminal runs ([`ServerConfig::claude_cli`]).
-    claude_cli: Arc<std::path::PathBuf>,
     /// The MCP credentials of the open terminals, which the MCP route accepts
     /// beside the token table (§12.1).
     pub(crate) terminal_tokens: SessionTokens,
@@ -281,6 +279,10 @@ pub fn build_router_with_apps(
         )?;
     }
 
+    // The terminal route and the applications list's "Build with Claude" both
+    // ask the registry, so there is one answer to "which Claude Code".
+    apps.set_claude_cli(config.claude_cli.clone());
+
     let routes = Arc::new(build_matchit(endpoints)?);
     let mut handlers = handlers;
     crate::builder::register_status_handler(&mut handlers, config.builder_dir.clone());
@@ -306,7 +308,6 @@ pub fn build_router_with_apps(
         lsp_slots: server_slots(),
         language_server: Arc::new(config.language_server.clone()),
         terminal_slots: terminal_slots(),
-        claude_cli: Arc::new(config.claude_cli.clone()),
         terminal_tokens: SessionTokens::default(),
         terminal_origin: Arc::new(loopback_origin(config.addr)),
         mcp_endpoint_tools,
@@ -1098,7 +1099,7 @@ async fn ide_terminal(
             slots: &state.terminal_slots,
             tokens: &state.terminal_tokens,
             origin: &state.terminal_origin,
-            program: Arc::clone(&state.claude_cli),
+            program: state.apps.claude_cli(),
         },
         user.id,
         store,

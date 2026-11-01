@@ -2,6 +2,7 @@
   " — at {path}": " — unter {path}",
   " — showing the first {shown}; narrow with a filter": " — die ersten {shown} werden angezeigt; mit einem Filter eingrenzen",
   "(a guest's session) and the row's other fields. On a nullable field, an expression that gives nothing leaves it empty.": "(die Sitzung eines Gastes) und die anderen Felder der Zeile verwenden. Bei einem Feld, das leer sein darf, bleibt es leer, wenn der Ausdruck nichts ergibt.",
+  "(build with Claude)": "(mit Claude bauen)",
   "(choose one)": "(eine auswählen)",
   "(delegated)": "(delegiert)",
   "(edit code)": "(Code bearbeiten)",

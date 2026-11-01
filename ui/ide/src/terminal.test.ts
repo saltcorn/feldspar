@@ -9,6 +9,8 @@ import {
   FlowControl,
   HIGH_WATERMARK_CHARS,
   LOW_WATERMARK_CHARS,
+  REPORTED_PID,
+  TERMINAL_STORAGE,
   TerminalConnection,
   claudeRequest,
   closeOutcome,
@@ -38,6 +40,20 @@ describe("where a terminal's socket is", () => {
   it("calls the tab after the application", () => {
     expect(terminalName("Shop")).toBe("Claude · Shop");
     expect(terminalName(null)).toBe("Claude");
+  });
+});
+
+describe("the process id a terminal reports", () => {
+  // VS Code holds back the typing for a "New Terminal" process whose id is 0.
+  it("is not 0", () => {
+    expect(REPORTED_PID).toBeGreaterThan(0);
+  });
+});
+
+describe("the panel on startup", () => {
+  // Restored open, it would start a session of its own beside the tab.
+  it("is forced closed, as the text the layout compares with", () => {
+    expect(TERMINAL_STORAGE["workbench.panel.hidden"]).toBe("true");
   });
 });
 

@@ -121,6 +121,8 @@ function services(
         // The chat's setup state, when there is a chat; see `loadChatServices`.
         ...(chat?.storage ?? {}),
       },
+      // The terminal's, when there is one; see `TERMINAL_STORAGE`.
+      forcedValues: terminal?.storage,
     }),
     ...getSecretStorageServiceOverride(),
     ...getModelServiceOverride(),

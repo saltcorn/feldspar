@@ -304,14 +304,12 @@ pub(crate) async fn terminal_dir(
     let Some(catalog) = catalog else {
         return Err("this server has no catalog, so it has no file stores".to_owned());
     };
-    match sc_config::ide_terminal_enabled(catalog).await {
-        Ok(true) => {}
-        Ok(false) => {
-            return Err("the IDE terminal is turned off (Settings → Development)".to_owned());
-        }
-        Err(e) => return Err(format!("could not read the settings: {e}")),
+    if let Some(off) = terminal_off(catalog).await {
+        return Err(off);
     }
-    let handle = catalog
+    // Before the application is looked up, so an unknown store is refused as
+    // that rather than as "<app>'s source is in …, not <store>".
+    catalog
         .file_store(store)
         .map_err(|e| format!("file store {store}: {e}"))?
         .ok_or_else(|| format!("the file store {store} is not connected"))?;
@@ -322,8 +320,66 @@ pub(crate) async fn terminal_dir(
             (dir, Some(app))
         }
     };
+    let dir = local_dir(catalog, store, &dir)?;
+    Ok(TerminalPlace { dir, app })
+}
+
+/// Why a Claude session cannot start for each of `apps`, or `None` where it
+/// can: what the applications list's "Build with Claude" shows.
+///
+/// The terminal route's own checks, in its order, minus the bound on sessions:
+/// how many are open is a moment's state, not something about the application.
+pub(crate) async fn claude_unavailable(
+    catalog: &Catalog,
+    program: &Path,
+    apps: &[Application],
+) -> Vec<Option<String>> {
+    let everywhere = match terminal_off(catalog).await {
+        Some(off) => Some(off),
+        None => locate_program(program)
+            .is_none()
+            .then(|| not_installed(program)),
+    };
+    apps.iter()
+        .map(|app| {
+            everywhere
+                .clone()
+                .or_else(|| match sc_app::app_source_location(app) {
+                    Err(_) => Some(format!("{} has no source directory", app.name)),
+                    Ok((store, dir)) => local_dir(catalog, &store, &dir).err(),
+                })
+        })
+        .collect()
+}
+
+/// Why the IDE terminal is off, if it is.
+async fn terminal_off(catalog: &Catalog) -> Option<String> {
+    match sc_config::ide_terminal_enabled(catalog).await {
+        Ok(true) => None,
+        Ok(false) => Some("the IDE terminal is turned off (Settings → Development)".to_owned()),
+        Err(e) => Some(format!("could not read the settings: {e}")),
+    }
+}
+
+/// The refusal for a `program` that is not installed.
+fn not_installed(program: &Path) -> String {
+    format!(
+        "{} is not installed on this server",
+        program.file_name().map_or_else(
+            || program.display().to_string(),
+            |name| name.to_string_lossy().into_owned()
+        )
+    )
+}
+
+/// The directory `dir` of `store` on this server's disk, or why there is none.
+fn local_dir(catalog: &Catalog, store: &str, dir: &str) -> Result<PathBuf, String> {
+    let handle = catalog
+        .file_store(store)
+        .map_err(|e| format!("file store {store}: {e}"))?
+        .ok_or_else(|| format!("the file store {store} is not connected"))?;
     let root = handle
-        .local_path(&dir)
+        .local_path(dir)
         .map_err(|e| format!("file store {store}: {e}"))?
         .ok_or_else(|| format!("{store} is not on this server's disk, so it has no terminal"))?;
     if !root.is_dir() {
@@ -334,7 +390,7 @@ pub(crate) async fn terminal_dir(
         };
         return Err(format!("{shown} is not there yet"));
     }
-    Ok(TerminalPlace { dir: root, app })
+    Ok(root)
 }
 
 /// The directory, inside `store`, that application `app`'s source is in, and
@@ -424,13 +480,7 @@ pub(crate) async fn terminal_upgrade(
     let refusal = match terminal_dir(catalog, &store, query.app.as_deref()).await {
         Err(reason) => reason,
         Ok(place) => match locate_program(&program) {
-            None => format!(
-                "{} is not installed on this server",
-                program.file_name().map_or_else(
-                    || program.display().to_string(),
-                    |name| name.to_string_lossy().into_owned()
-                )
-            ),
+            None => not_installed(&program),
             Some(exe) => match Arc::clone(slots).try_acquire_owned() {
                 Ok(permit) => {
                     let token = tokens.issue(user_id);

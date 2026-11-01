@@ -7,8 +7,12 @@ Changes in reverse chronological order.
 An admin can run Claude Code on the server in a terminal tab of the file-store IDE. Opening
 `/ide/?store=<store>&claude=1&app=<name>` starts a session in that application's source
 directory, in an editor tab named "Claude · <name>". The "Claude" status-bar button and the
-terminal panel's "New Terminal" open more sessions. The admin UI's "Build with Claude" link is
-still to come (TODO-claude-terminal CT4).
+terminal panel's "New Terminal" open more sessions.
+
+- **One click from the admin UI**: "Build with Claude" in an application's sidebar links and
+  "(build with Claude)" in the applications list, next to "Edit code", open that URL. When a
+  session cannot start (terminal off, Claude Code not installed, store not on disk or not
+  connected, directory not there yet) the link is greyed out and its tooltip says why.
 
 - **Off by default**: Settings → Development → "Claude Code in the IDE" (`ide_terminal_enabled`).
   While it is off the IDE has no terminal at all. Only stores on this machine's disk can have one.
@@ -37,7 +41,7 @@ still to come (TODO-claude-terminal CT4).
   background jobs and children in a session of their own.
 - Tests: `sc-server/tests/ide_terminal.rs`, `sc-server/tests/mcp_client.rs`,
   `sc-server/tests/tls_serving.rs`, `ui/ide/src/terminal.test.ts`,
-  `ui/admin/src/mcpServers.test.ts`.
+  `ui/admin/src/mcpServers.test.ts`, `ui/admin/src/appNav.test.ts`.
 
 ## CLI: set up a hosted server without the admin UI (modules, routes-only tokens, settings, mail, app tables)
 

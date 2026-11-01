@@ -47,6 +47,7 @@ import {
   IconLayoutDashboard,
   IconMessagePlus,
   IconSettings,
+  IconSparkles,
 } from "./icons";
 import { useT } from "./i18n";
 
@@ -58,6 +59,7 @@ const CURRENT_APP_KEY = "saltcorn-admin-application";
 const LINK_ICONS: Record<AppNavLink["id"], ReactNode> = {
   "app-link": <IconExternalLink />,
   "edit-code": <IconCode />,
+  claude: <IconSparkles />,
   build: <IconHammer />,
   target: <IconDeviceMobile />,
   chat: <IconMessagePlus />,
@@ -234,6 +236,22 @@ function AppLink({
         ? "Rewrite this application's generated client, hooks and schema from its current definition, then build it"
         : undefined;
 
+  // Not Bootstrap's `disabled`, whose `pointer-events: none` would also take
+  // away the tooltip that says why.
+  if (link.unavailable) {
+    return (
+      <li className="nav-item">
+        <span
+          className="nav-link opacity-50"
+          style={{ cursor: "not-allowed" }}
+          aria-disabled="true"
+          title={link.unavailable}
+        >
+          {content}
+        </span>
+      </li>
+    );
+  }
   return (
     <li className={active ? "nav-item active" : "nav-item"}>
       {link.href ? (

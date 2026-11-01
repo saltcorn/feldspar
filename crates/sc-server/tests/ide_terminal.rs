@@ -8,6 +8,9 @@
 //! it was started with and then becomes `/bin/sh`, because the bridge does not
 //! care which program is on the terminal, and a shell can be asked about the
 //! terminal it is on (`stty size`, `pwd`, `$$`).
+//!
+//! The applications list's answer to "can Claude start here" (CT4) is tested
+//! here too, because it is this route's own checks asked ahead of time.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![cfg(unix)]
 
@@ -141,16 +144,18 @@ async fn serve(program: &Path, enabled: bool) -> Result<Server> {
     // Bound first, so the router knows the address its terminals reach MCP on.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let apps = Arc::new(AppMounts::new(Arc::clone(&catalog)));
     let router = build_router_with_apps(
         &sc_api::admin_endpoints(),
-        sc_server::HandlerRegistry::new(),
+        // The real ones, for the applications list's "Build with Claude".
+        sc_server::admin_handlers(Arc::clone(&catalog), Arc::clone(&apps)),
         sessions.clone(),
         &ServerConfig {
             addr,
             claude_cli: program.to_path_buf(),
             ..ServerConfig::default()
         },
-        Arc::new(AppMounts::new(Arc::clone(&catalog))),
+        apps,
     )?;
     let served = router.clone();
     tokio::spawn(async move {
@@ -931,5 +936,109 @@ async fn the_number_of_terminals_is_bounded() -> Result<()> {
     }
     let mut again = again.expect("a slot came free");
     read_until(&mut again, "again-ok").await;
+    Ok(())
+}
+
+/// What the applications list says about each application's "Build with
+/// Claude", as the admin's browser reads it.
+async fn claude_availability(server: &Server) -> HashMap<String, Value> {
+    let response = reqwest::Client::new()
+        .get(format!("http://{}/api/applications", server.addr))
+        .header(header::COOKIE, format!("{SESSION_COOKIE}={}", server.admin))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let apps: Vec<Value> = response.json().await.unwrap();
+    apps.into_iter()
+        .map(|app| {
+            (
+                app["name"].as_str().unwrap().to_owned(),
+                app["claude"].clone(),
+            )
+        })
+        .collect()
+}
+
+/// Save a `none` application whose source is `dir` of `store`.
+async fn save_app(server: &Server, name: &str, store: &str, dir: &str) -> Result<()> {
+    let framework = FrameworkRef::new("none")
+        .with("store", store)
+        .with("source", dir);
+    sc_app::save_application(&server.catalog, &Application::new(name, name, framework)).await?;
+    Ok(())
+}
+
+/// The reason "Build with Claude" shows for `app`, or `None` when it can start.
+fn reason(availability: &HashMap<String, Value>, app: &str) -> Option<String> {
+    let claude = &availability[app];
+    let available = claude["available"].as_bool().unwrap();
+    let reason = claude["reason"].as_str().map(str::to_owned);
+    assert_eq!(available, reason.is_none(), "{app}: {claude}");
+    reason
+}
+
+/// Each application says whether Claude can start in it, and if not, the
+/// reason the terminal route itself would give.
+#[tokio::test]
+async fn the_applications_list_says_where_claude_can_start() -> Result<()> {
+    let server = serve(&sh(), true).await?;
+    std::fs::create_dir_all(server.root.join("web"))?;
+    save_app(&server, "site", "code", "web").await?;
+    save_app(&server, "later", "code", "not-yet").await?;
+    // Saved while its store was connected; the store has gone since.
+    server.catalog.connect_file_store(
+        Arc::new(LocalFileStore::new("gone", temp_dir("gone"))?) as Arc<dyn FileStore>
+    )?;
+    save_app(&server, "elsewhere", "gone", "web").await?;
+    server.catalog.disconnect_file_store("gone")?;
+    // Constructed from views and pages: there is no directory to start in.
+    sc_app::save_application(
+        &server.catalog,
+        &Application::new("crm", "crm", FrameworkRef::new("saltcorn-ui")),
+    )
+    .await?;
+
+    let availability = claude_availability(&server).await;
+    assert_eq!(reason(&availability, "site"), None);
+    assert!(
+        reason(&availability, "later")
+            .unwrap()
+            .contains("code/not-yet is not there yet")
+    );
+    assert!(
+        reason(&availability, "elsewhere")
+            .unwrap()
+            .contains("the file store gone is not connected")
+    );
+    assert!(
+        reason(&availability, "crm")
+            .unwrap()
+            .contains("crm has no source directory")
+    );
+    Ok(())
+}
+
+/// What is true of the whole server — the terminal turned off, Claude Code not
+/// installed — is every application's reason.
+#[tokio::test]
+async fn the_server_wide_reasons_reach_every_application() -> Result<()> {
+    let off = serve(&sh(), false).await?;
+    std::fs::create_dir_all(off.root.join("web"))?;
+    save_app(&off, "site", "code", "web").await?;
+    assert!(
+        reason(&claude_availability(&off).await, "site")
+            .unwrap()
+            .contains("turned off")
+    );
+
+    let missing = serve(Path::new("/nonexistent/claude"), true).await?;
+    std::fs::create_dir_all(missing.root.join("web"))?;
+    save_app(&missing, "site", "code", "web").await?;
+    assert!(
+        reason(&claude_availability(&missing).await, "site")
+            .unwrap()
+            .contains("claude is not installed")
+    );
     Ok(())
 }

@@ -2,6 +2,7 @@
   " — at {path}": " — 位于 {path}",
   " — showing the first {shown}; narrow with a filter": " — 显示前 {shown} 项；使用筛选器缩小范围",
   "(a guest's session) and the row's other fields. On a nullable field, an expression that gives nothing leaves it empty.": "（访客的会话）以及该行的其他字段。对于可为空的字段，若表达式没有给出值，该字段保持为空。",
+  "(build with Claude)": "(使用 Claude 构建)",
   "(choose one)": "（选择一个）",
   "(delegated)": "（已委派）",
   "(edit code)": "（编辑代码）",

@@ -5531,10 +5531,12 @@ for an admin who came in through "Edit code", and the terminal panel's own "New 
 one at the store's root.
 
 The link is **disabled, with the reason as its tooltip**, when the session could not start: the
-feature is off, the store has no local path, the `claude` executable is not installed, or the
-application has no source directory. `listApplications` reports this per application, as
+feature is off, the store has no local path or is not connected, the `claude` executable is not
+installed, or the application's directory is not there yet. `listApplications` reports this per
+application (`claude: { available, reason }`), with the terminal route's own sentences, as
 `listAgents` already reports an agent's `error`. A click that is known to fail is worse than a
-link that says why it would.
+link that says why it would. An application with no source directory gets no link at all, as it
+gets no "Edit code": there is nothing to open.
 
 **The terminal is VS Code's, over a terminal process of ours.** The plan was an extension
 `Pseudoterminal`, and it cannot do flow control: VS Code tells a terminal *process* how much of

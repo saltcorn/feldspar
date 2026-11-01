@@ -35,6 +35,8 @@ import type * as TerminalOverride from "@codingame/monaco-vscode-terminal-servic
 import { api, errorMessage } from "./api";
 import { applicationsBuiltFrom } from "./applications";
 import {
+  REPORTED_PID,
+  TERMINAL_STORAGE,
   TerminalConnection,
   terminalName,
   terminalUrl,
@@ -50,6 +52,8 @@ export const CLAUDE_CONTEXT = "saltcorn.claudeCodeEnabled";
 export interface TerminalServices {
   readonly services: IEditorOverrideServices;
   readonly override: typeof TerminalOverride;
+  /** Storage values to force, whatever an earlier visit stored. */
+  readonly storage: Record<string, unknown>;
 }
 
 /**
@@ -91,7 +95,7 @@ export async function loadTerminalServices(
   const backend = storeBackend(override, store);
   const services = override.default(backend);
   backend.setReady();
-  return { services, override };
+  return { services, override, storage: TERMINAL_STORAGE };
 }
 
 /** Terminal ids, unique for the page. */
@@ -110,8 +114,9 @@ function socketProcessClass(override: typeof TerminalOverride) {
 
     constructor(url: string, cols: number, rows: number) {
       const data = new Emitter<string>();
-      // No pid and no cwd: both are the server's, and VS Code only shows them.
-      super(nextTerminalId++, 0, "", data.event);
+      // No cwd: it is the server's, and VS Code only shows it. A pid it needs
+      // (`REPORTED_PID`).
+      super(nextTerminalId++, REPORTED_PID, "", data.event);
       this.onProcessExit = this.exit.event;
       this.connection = new TerminalConnection(
         new WebSocket(url),

@@ -44,6 +44,7 @@ function application(
     installs: true,
     has_views: false,
     targets: [],
+    claude: { available: true, reason: null },
   };
 }
 
