@@ -18,15 +18,13 @@ use axum::http::{Request, StatusCode, header};
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_model::{FitResult, Frame, ModelProvider, OutcomeSpec, Prediction};
 use sc_server::{
     AppMounts, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
     install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use sc_types::{Attrs, FormField};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -219,21 +217,7 @@ impl Client {
 }
 
 async fn setup() -> Result<(Client, Arc<Catalog>, TestDb)> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(&format!(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$; {SCHEMA}"
-        ))
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().sql(SCHEMA).build().await?;
     sc_auth::bootstrap(&catalog).await?;
     let agents = sc_server::install_agents(&catalog).await?;
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;

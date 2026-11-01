@@ -16,7 +16,7 @@
 //!
 //! **The tools themselves are not here.** They are
 //! [`sc_api::mcp`]'s — assembled into one [`ToolSet`] by
-//! [`sc_app::mcp::tool_set`] — because this agent is no longer their only
+//! [`sc_app::mcp::tool_set`] — because this agent is not their only
 //! caller: the administration MCP server (§13.6) offers the same ten tools to
 //! an external coding agent, under a token's grants instead of an agent's
 //! checkboxes. Two callers over one implementation, rather than two
@@ -114,13 +114,12 @@
 
 use sc_agent::DEFAULT_MAX_DEPTH;
 use sc_agent::{AgentTrait, RunCaller, SessionContext, ToolsContext, TraitCheck, TraitContext};
-use sc_api::mcp::{
-    Area, Areas, ToolContext, ToolSet, arguments, optional_string, require_admin, require_grant,
-};
+use sc_api::mcp::{Area, Areas, ToolContext, ToolSet, arguments, require_admin, require_grant};
 use sc_api::schema_edit::{self, Grants};
 use sc_docs::tools::{TOOL_READ_DOCS, TOOL_SEARCH_DOCS};
 use sc_error::{Error, Result};
 use sc_llm::ToolSpec;
+use sc_types::ArgsExt;
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value as Json, json};
 
@@ -217,7 +216,7 @@ pub const CFG_ALLOW_TRIGGERS: &str = sc_api::mcp::Area::Triggers.key();
 /// offered at all. On by default, and read exactly as [`CFG_ALLOW_TRIGGERS`] is.
 pub const CFG_ALLOW_APPLICATIONS: &str = sc_api::mcp::Area::Applications.key();
 
-/// What this agent may do to **checklists** (TODO-checklists C1.13): `none`,
+/// What this agent may do to **checklists**: `none`,
 /// `append` (the default) or `full` — the same key and values an MCP token's
 /// grants carry, read by `sc_check::ChecklistGrant::from_attrs`. The tools
 /// themselves are `sc-check`'s, shared with the MCP server.
@@ -563,7 +562,8 @@ async fn delegate_to_coding_agent(args: &Json, ctx: &mut TraitContext<'_>) -> Re
         ],
     )?;
     let named = |key: &str| -> Result<Option<String>> {
-        Ok(optional_string(&obj, key)?
+        Ok(obj
+            .optional_string(key)?
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty()))
     };
@@ -684,7 +684,8 @@ fn publish_spec() -> ToolSpec {
 
 async fn publish_application(args: &Json, ctx: &mut TraitContext<'_>) -> Result<Json> {
     let obj = arguments(args, &[ARG_APPLICATION])?;
-    let subdomain = optional_string(&obj, ARG_APPLICATION)?
+    let subdomain = obj
+        .optional_string(ARG_APPLICATION)?
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| Error::invalid(format!("`{ARG_APPLICATION}` is required")))?;

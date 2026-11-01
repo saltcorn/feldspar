@@ -5,6 +5,7 @@
 use super::*;
 
 /// Declare this domain's endpoints on `set`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(set: &mut EndpointSet) {
     // A provider, like a file store, exists only as its stored row (§9, §11.1),
     // and these endpoints are that row's lifecycle. The shape is deliberately

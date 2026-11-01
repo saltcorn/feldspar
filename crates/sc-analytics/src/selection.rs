@@ -80,7 +80,7 @@ pub async fn layer_rows(
     req: &LayerRequest,
     sort: Option<&SortKey>,
     limit: u64,
-) -> Result<std::result::Result<LayerRows, String>> {
+) -> Result<Result<LayerRows>> {
     let layer = match prepare_with(catalog, caller, req, Vec::new()).await? {
         Ok(layer) => layer,
         Err(e) => return Ok(Err(e)),
@@ -88,10 +88,10 @@ pub async fn layer_rows(
     let layer = match sort {
         Some(key) if layer.keyed => {
             if layer.shape.column(&key.formula).is_none() {
-                return Ok(Err(format!(
+                return Ok(Err(Error::invalid(format!(
                     "`{}` is not a column of `{}` to sort by",
                     key.formula, layer.name
-                )));
+                ))));
             }
             let op = Operation::new(
                 format!("{EXTRA_OP}-sort"),
@@ -210,13 +210,13 @@ pub(crate) fn text_literal(s: &str) -> String {
 }
 
 /// A distance in metres, as a formula reads it.
-fn metres(d: f64) -> std::result::Result<String, String> {
+fn metres(d: f64) -> Result<String> {
     if d.is_finite() && d > 0.0 {
         Ok(format!("{d}"))
     } else {
-        Err(format!(
+        Err(Error::invalid(format!(
             "{d} metres is not a distance to select within; give a positive number"
-        ))
+        )))
     }
 }
 
@@ -239,14 +239,16 @@ async fn condition_of(
     caller: &Caller,
     req: &LayerRequest,
     by: &SelectBy,
-) -> Result<std::result::Result<String, String>> {
+) -> Result<Result<String>> {
     // The geometry as stored: a lasso picks the regions it touches, not their
     // centres.
     let g = req.geometry.formula();
     Ok(match by {
         SelectBy::Condition { formula } => {
             if formula.trim().is_empty() {
-                Err("write the condition the rows are selected by".to_owned())
+                Err(Error::invalid(
+                    "write the condition the rows are selected by",
+                ))
             } else {
                 Ok(formula.trim().to_owned())
             }
@@ -257,7 +259,7 @@ async fn condition_of(
                 .and_then(Json::as_str)
                 .unwrap_or_default();
             if !matches!(kind, "Polygon" | "MultiPolygon") {
-                Err("a shape to select by is a GeoJSON polygon".to_owned())
+                Err(Error::invalid("a shape to select by is a GeoJSON polygon"))
             } else {
                 let text = serde_json::to_string(geometry)
                     .map_err(|e| Error::serde(format!("a shape does not serialise: {e}")))?;
@@ -273,9 +275,9 @@ async fn condition_of(
             distance,
         } => {
             if !(-180.0..=180.0).contains(longitude) || !(-90.0..=90.0).contains(latitude) {
-                Err(format!(
+                Err(Error::invalid(format!(
                     "[{longitude}, {latitude}] is not a longitude and a latitude"
-                ))
+                )))
             } else {
                 metres(*distance).map(|d| {
                     format!("Geo.distance({g}, Geo.point({longitude}, {latitude})) <= {d}")
@@ -292,25 +294,30 @@ async fn condition_of(
                 Err(e) => return Ok(Err(e)),
             };
             if ids.is_empty() {
-                return Ok(Err(
-                    "select the features of the other layer to measure from first".to_owned(),
-                ));
+                return Ok(Err(Error::invalid(
+                    "select the features of the other layer to measure from first",
+                )));
             }
             if ids.len() > MAX_NEAR_FEATURES {
-                return Ok(Err(format!(
+                return Ok(Err(Error::invalid(format!(
                     "{} features are selected in the other layer, and a selection by \
                      location measures from at most {MAX_NEAR_FEATURES}",
                     ids.len()
-                )));
+                ))));
             }
             let shapes = match geometries_of(catalog, caller, layer, ids).await? {
                 Ok(shapes) => shapes,
-                Err(e) => return Ok(Err(format!("the other layer: {e}"))),
+                Err(e) => {
+                    return Ok(Err(Error::invalid(format!(
+                        "the other layer: {}",
+                        e.message()
+                    ))));
+                }
             };
             if shapes.is_empty() {
-                return Ok(Err(
-                    "the other layer's selected features have no geometry".to_owned()
-                ));
+                return Ok(Err(Error::invalid(
+                    "the other layer's selected features have no geometry",
+                )));
             }
             let terms: Vec<String> = shapes
                 .iter()
@@ -332,7 +339,7 @@ async fn geometries_of(
     caller: &Caller,
     req: &LayerRequest,
     ids: &[Json],
-) -> Result<std::result::Result<Vec<Json>, String>> {
+) -> Result<Result<Vec<Json>>> {
     let layer = match prepare_with(catalog, caller, req, Vec::new()).await? {
         Ok(layer) => layer,
         Err(e) => return Ok(Err(e)),
@@ -362,7 +369,7 @@ pub async fn select_features(
     caller: &Caller,
     req: &LayerRequest,
     by: &SelectBy,
-) -> Result<std::result::Result<Selected, String>> {
+) -> Result<Result<Selected>> {
     let condition = match condition_of(catalog, caller, req, by).await? {
         Ok(c) => c,
         Err(e) => return Ok(Err(e)),
@@ -382,7 +389,7 @@ async fn ids_where(
     caller: &Caller,
     req: &LayerRequest,
     condition: &str,
-) -> Result<std::result::Result<(Vec<Json>, u64), String>> {
+) -> Result<Result<(Vec<Json>, u64)>> {
     let probe = match prepare_with(catalog, caller, req, Vec::new()).await? {
         Ok(layer) => layer,
         Err(e) => return Ok(Err(e)),
@@ -456,16 +463,16 @@ async fn identity_condition(
     caller: &Caller,
     req: &LayerRequest,
     ids: &[Json],
-) -> Result<std::result::Result<String, String>> {
+) -> Result<Result<String>> {
     if ids.is_empty() {
-        return Ok(Err("nothing is selected".to_owned()));
+        return Ok(Err(Error::invalid("nothing is selected")));
     }
     if ids.len() > MAX_SAVED_IDS {
-        return Ok(Err(format!(
+        return Ok(Err(Error::invalid(format!(
             "{} features are selected one by one, and a saved selection names at most \
              {MAX_SAVED_IDS} that way; select them by a condition instead",
             ids.len()
-        )));
+        ))));
     }
     let layer = match prepare_with(catalog, caller, req, Vec::new()).await? {
         Ok(layer) => layer,
@@ -482,7 +489,7 @@ async fn identity_condition(
         let mut terms: Vec<String> = Vec::with_capacity(ids.len());
         for id in ids {
             let Some(n) = id.as_i64() else {
-                return Ok(Err(format!("{id} is not a row's key")));
+                return Ok(Err(Error::invalid(format!("{id} is not a row's key"))));
             };
             terms.push(format!("{key} == {n}"));
         }
@@ -494,11 +501,11 @@ async fn identity_condition(
         }
         Grain::Table { key, .. } if layer.shape.column(key).is_some() => vec![key.clone()],
         _ => {
-            return Ok(Err(format!(
+            return Ok(Err(Error::invalid(format!(
                 "the rows of `{}` have nothing that tells them apart, so features picked one \
                  by one cannot be saved; select them by a condition instead",
                 layer.name
-            )));
+            ))));
         }
     };
     let read = read_rows_with(&layer.reader, &layer.stage, None, Some(SELECT_ROWS)).await?;
@@ -515,21 +522,21 @@ async fn identity_condition(
         for (k, at) in keys.iter().zip(&index) {
             let value = at.and_then(|a| read.rows[i].get(a)).unwrap_or(&Value::Null);
             let Some(lit) = literal(value) else {
-                return Ok(Err(format!(
+                return Ok(Err(Error::invalid(format!(
                     "the rows of `{}` are told apart by `{k}`, whose values cannot be written \
                      in a condition, so features picked one by one cannot be saved; select them \
                      by a condition instead",
                     layer.name
-                )));
+                ))));
             };
             parts.push(format!("{k} == {lit}"));
         }
         terms.push(parts.join(" && "));
     }
     if terms.is_empty() {
-        return Ok(Err(
-            "none of the selected features is a row of the layer now".to_owned(),
-        ));
+        return Ok(Err(Error::invalid(
+            "none of the selected features is a row of the layer now",
+        )));
     }
     Ok(Ok(any_of(&terms)))
 }
@@ -548,9 +555,7 @@ pub async fn save_selection(
 ) -> Result<DatasetDef> {
     let formula = match condition.filter(|c| !c.trim().is_empty()) {
         Some(c) => c.trim().to_owned(),
-        None => identity_condition(catalog, caller, req, ids)
-            .await?
-            .map_err(Error::invalid)?,
+        None => identity_condition(catalog, caller, req, ids).await??,
     };
     let mut def = DatasetDef::new(name.trim(), Base::dataset(req.dataset));
     if let Some(filter) = req.filter.as_deref().filter(|f| !f.trim().is_empty()) {

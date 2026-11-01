@@ -24,6 +24,7 @@
 //!    `aborted`, and what the agent had already done is still in its context.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::{Socket, send};
 use sc_types::Role;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,20 +32,18 @@ use std::time::Duration;
 use async_trait::async_trait;
 use axum::Router;
 use axum::http::{HeaderValue, StatusCode, header};
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use sc_agent::testing::{FakeProvider, Reply};
 use sc_agent::{Agent, EnabledTrait, RunState};
 use sc_auth::{SessionStore, User};
 use sc_catalog::{Catalog, DataField};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_llm::{ConnectedModel, LlmProvider};
 use sc_server::{
     AGENT_CHAT_ROUTE, AgentServices, AppMounts, SESSION_COOKIE, ServerConfig, admin_handlers,
     build_router_with_apps,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -53,10 +52,6 @@ use uuid::Uuid;
 
 /// How long a test waits for an event that should arrive promptly.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(20);
-
-/// The socket type the client half works over.
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 // --- the scripted provider, behind the production seam -----------------------
 
@@ -139,22 +134,7 @@ async fn serve_with(
     agent: Agent,
     providers: Arc<dyn sc_agent::ProviderConnector>,
 ) -> Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_llm::bootstrap_llm_providers(&catalog).await?;
     sc_llm::save_llm_provider(
@@ -234,13 +214,6 @@ fn reader() -> Agent {
 }
 
 // --- socket helpers ----------------------------------------------------------
-
-async fn send(socket: &mut Socket, message: Value) {
-    socket
-        .send(Message::text(message.to_string()))
-        .await
-        .expect("send");
-}
 
 /// The next event, or a failed test.
 async fn next_event(socket: &mut Socket) -> Value {

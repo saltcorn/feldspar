@@ -5,6 +5,7 @@
 use super::*;
 
 /// Declare this domain's endpoints on `set`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(set: &mut EndpointSet) {
     // What "working" means for an application (or for the data, with no
     // application): checklists, their steps, their runs, and the agents'

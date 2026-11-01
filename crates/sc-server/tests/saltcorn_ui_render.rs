@@ -40,14 +40,12 @@ use sc_api::admin_endpoints;
 use sc_app::{Application, save_application};
 use sc_auth::{SessionStore, create_user};
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_files::FileStoreDef;
 use sc_server::{
     AppMounts, ModuleServices, SESSION_COOKIE, ServerConfig, admin_handlers, build_and_mount,
     build_router_with_apps, default_js_evaluator, install_agents, install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use sc_viewpattern::{LibraryItem, Page, View};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -242,22 +240,7 @@ pub(crate) async fn setup(tag: &str, bundle: PathBuf) -> sc_error::Result<Server
 
 /// [`setup`], restoring `archive` rather than the plain BooksDB backup.
 async fn setup_from(tag: &str, bundle: PathBuf, archive: &[u8]) -> sc_error::Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
@@ -586,6 +569,7 @@ async fn book(client: &mut Client, id: &Value) -> Option<Value> {
 /// Phase 6: what a browser does with the forms, buttons and links v1's patterns
 /// render — through the assembled router, CSRF middleware and all.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_views_save_forms_run_actions_filter_and_delete() -> sc_error::Result<()> {
     let Some(bundle) = bundle_dir() else {
         eprintln!(
@@ -1304,6 +1288,7 @@ async fn the_sign_in_form_is_throttled_like_every_other_login() -> sc_error::Res
 /// only when the settings say so; and a view whose table the application no
 /// longer has fails naming it.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn signing_in_lands_on_the_view_asked_for_and_signing_out_leaves() -> sc_error::Result<()> {
     let Some(bundle) = bundle_dir() else {
         eprintln!(
@@ -1866,6 +1851,7 @@ async fn the_builder_canvas_calls_answer_their_goldens() -> sc_error::Result<()>
 /// `SC_DUMP_BUILDER_OPTIONS=<dir>` writes what this server computed, before
 /// anything is normalised, for comparing by hand.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_builder_options_are_what_saltcorn_1_passes() -> sc_error::Result<()> {
     let Some(bundle) = bundle_dir() else {
         eprintln!(
@@ -2455,6 +2441,7 @@ async fn a_placed_library_item_renders_as_its_inline_equivalent() -> sc_error::R
 /// token and below the page's role. And a page's `no_menu` and
 /// `request_fluid_layout` reach the document.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_pages_action_buttons_run_and_its_properties_shape_the_document() -> sc_error::Result<()>
 {
     let Some(bundle) = bundle_dir() else {

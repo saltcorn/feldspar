@@ -23,7 +23,7 @@
 //!
 //! - **Not one of the application's tables** (`Caller::tables`): refused. This
 //!   is how a self-serve application's table subset is enforced on reads — at
-//!   the statement, whatever the client sent (A9.4).
+//!   the statement, whatever the client sent.
 //! - **Row-level security** on the table: the database decides, inside a
 //!   transaction that carries the caller ([`sc_catalog::set_caller_context`]).
 //! - **The caller meets `min_role_read`**: read as it is.
@@ -63,7 +63,7 @@ pub struct Caller {
     /// column. `None` for nobody, and for the server reading on its own
     /// authority.
     pub user: Option<BTreeMap<String, Value>>,
-    /// The tables an application lets its users read (A9.4); `None` is every
+    /// The tables an application lets its users read; `None` is every
     /// table, which is the unrestricted Analytics UI.
     pub tables: Option<Arc<BTreeSet<String>>>,
 }
@@ -133,8 +133,7 @@ impl Caller {
     }
 }
 
-/// Who owns a dataset or a workspace, and the roles it is shared with
-/// (analytics TODO A9.1).
+/// Who owns a dataset or a workspace, and the roles it is shared with.
 ///
 /// Sharing is by **role floor**, the one way this system says "these people":
 /// shared with role 40, a thing is seen by every user whose role is 40 or more
@@ -277,16 +276,7 @@ impl Reader {
             Ok(stream) => stream.try_collect().await,
             Err(e) => Err(e),
         };
-        match outcome {
-            Ok(rows) => {
-                tx.commit().await?;
-                Ok(rows)
-            }
-            Err(e) => {
-                let _ = tx.rollback().await;
-                Err(e)
-            }
-        }
+        sc_db::finish(tx, outcome).await
     }
 
     /// What reading `name` under the alias `root` means for this caller.

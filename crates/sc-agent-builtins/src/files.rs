@@ -38,7 +38,7 @@ use sc_catalog::{Catalog, load_file_store_by_name};
 use sc_error::{Error, Result};
 use sc_files::{CheckedStore, FileCaller, FileStore, StorePath};
 use sc_types::{Attrs, BasicType, FormField};
-use serde_json::{Map, Value as Json};
+use serde_json::Value as Json;
 
 use crate::table::config_str;
 
@@ -215,7 +215,7 @@ impl FileScope {
     /// caller that forgot the floor would be applying the per-file rules while
     /// ignoring the store-wide one.
     ///
-    /// The **raw** store (TODO-code-quality Q3.6): the file tools reach it
+    /// The **raw** store: the file tools reach it
     /// through [`open_at`] / [`open_to_write`], which bind the run's caller
     /// ([`CheckedStore`]); the coding trait's other tools check the caller
     /// themselves (`find`, `search`, `view_app`'s assets, the skill and script
@@ -381,39 +381,6 @@ fn normalise_path(path: &str) -> std::result::Result<String, ()> {
         .map_err(|_| ())
 }
 
-/// A string argument, required.
-pub fn string_arg(args: &Map<String, Json>, name: &str) -> Result<String> {
-    match args.get(name) {
-        Some(Json::String(s)) => Ok(s.clone()),
-        None | Some(Json::Null) => Err(Error::invalid(format!("`{name}` is required"))),
-        Some(other) => Err(Error::invalid(format!(
-            "`{name}` should be text, got {other}"
-        ))),
-    }
-}
-
-/// A string argument that may be absent, defaulting to `""`.
-pub fn optional_string_arg(args: &Map<String, Json>, name: &str) -> Result<String> {
-    match args.get(name) {
-        None | Some(Json::Null) => Ok(String::new()),
-        Some(Json::String(s)) => Ok(s.clone()),
-        Some(other) => Err(Error::invalid(format!(
-            "`{name}` should be text, got {other}"
-        ))),
-    }
-}
-
-/// A boolean argument that may be absent.
-pub fn optional_bool_arg(args: &Map<String, Json>, name: &str, default: bool) -> Result<bool> {
-    match args.get(name) {
-        None | Some(Json::Null) => Ok(default),
-        Some(Json::Bool(b)) => Ok(*b),
-        Some(other) => Err(Error::invalid(format!(
-            "`{name}` should be true or false, got {other}"
-        ))),
-    }
-}
-
 /// A configured whole number, or `default` when the admin set none.
 pub fn config_count(config: &Attrs, key: &str, default: u64) -> Result<u64> {
     match config.get(key) {
@@ -433,6 +400,7 @@ pub fn config_count(config: &Attrs, key: &str, default: u64) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sc_types::ArgsExt;
     use serde_json::json;
 
     fn scope(store: &str, root: &str) -> FileScope {
@@ -507,10 +475,10 @@ mod tests {
     #[test]
     fn an_argument_is_read_by_name_and_by_type() {
         let args = sc_api::mcp::arguments(&json!({"path": "a.ts"}), &[ARG_PATH]).unwrap();
-        assert_eq!(string_arg(&args, ARG_PATH).unwrap(), "a.ts");
-        assert_eq!(optional_string_arg(&args, "dir").unwrap(), "");
+        assert_eq!(args.string_arg(ARG_PATH).unwrap(), "a.ts");
+        assert_eq!(args.string_or_empty("dir").unwrap(), "");
         // An argument of the wrong type is a mistake the model can correct.
         let args = sc_api::mcp::arguments(&json!({"path": 3}), &[ARG_PATH]).unwrap();
-        assert!(string_arg(&args, ARG_PATH).is_err());
+        assert!(args.string_arg(ARG_PATH).is_err());
     }
 }

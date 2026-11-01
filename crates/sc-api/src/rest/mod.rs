@@ -422,6 +422,7 @@ impl RestProvider {
     /// against the live trigger set by the caller — the same arrangement the
     /// tables have, and for the same reason: this crate sits below `sc-app`, so
     /// it takes what an app resolved rather than the `Application`.
+    #[allow(clippy::too_many_lines)]
     pub fn project_with(
         mount: impl Into<String>,
         tables: &[Table],

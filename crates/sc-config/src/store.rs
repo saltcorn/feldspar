@@ -219,13 +219,7 @@ pub async fn set_config_many(catalog: &Catalog, values: &Attrs) -> Result<()> {
         Ok::<(), Error>(())
     }
     .await;
-    match written {
-        Ok(()) => tx.commit().await,
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(e)
-        }
-    }
+    tx.finish(written).await
 }
 
 /// Pin `values` over `_fd_config` for as long as this process runs — the TLS

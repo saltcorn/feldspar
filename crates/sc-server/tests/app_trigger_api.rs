@@ -33,15 +33,13 @@ use sc_agent::{Agent, ProviderConnector};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, TriggerRef};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_llm::{ConnectedModel, LlmProvider};
 use sc_server::{
     AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps,
     default_js_evaluator, install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -263,22 +261,7 @@ impl Server {
 }
 
 async fn setup() -> sc_error::Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(&format!(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$; {SCHEMA}"
-        ))
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().sql(SCHEMA).build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     // A user's role has to be one the server defines; `public` (100) is built in.

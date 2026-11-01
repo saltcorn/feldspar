@@ -103,6 +103,7 @@ impl Row {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn list_entities(
     catalog: &Catalog,
     apps: &AppMounts,

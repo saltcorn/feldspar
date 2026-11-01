@@ -395,6 +395,7 @@ impl ChromiumDriver {
         Ok(run_page)
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn act_in(
         &self,
         request: &BrowserRequest<'_>,

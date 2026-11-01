@@ -365,6 +365,7 @@ fn mark_paid(table: &str, key: &str) -> Trigger {
         .config("assignments", json!({ "status": "\"paid\"" }))
 }
 
+#[allow(clippy::too_many_lines)]
 async fn setup(tag: &str) -> sc_error::Result<(Server, Value)> {
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
@@ -727,6 +728,7 @@ async fn the_module_installs_its_tables_and_refuses_an_account_it_cannot_use()
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_fake_provider_takes_a_payment_and_delivers_signed_webhooks() -> sc_error::Result<()> {
     if !have_npm() {
         eprintln!("skipping: npm is not on the PATH");
@@ -1033,6 +1035,7 @@ pub(crate) fn error_of(answer: &Answer) -> String {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_guest_pays_for_their_own_order_and_the_apps_trigger_marks_it_paid()
 -> sc_error::Result<()> {
     if !have_npm() {
@@ -1604,6 +1607,7 @@ async fn press(server: &Server, path: &str, form: &str) -> Answer {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_error::Result<()> {
     if !have_npm() {
         eprintln!("skipping: npm is not on the PATH");

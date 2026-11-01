@@ -967,6 +967,7 @@ impl AgentExport {
 /// upload slot the application declares (TODO F2.11): a resumable tus upload
 /// resolving to the stored file's `{ path, url }` — and `agents["<name>"]` per
 /// agent it exposes (§11.7).
+#[allow(clippy::too_many_lines)]
 pub fn generate_app_client(
     set: &EndpointSet,
     streams: &[StreamExport],

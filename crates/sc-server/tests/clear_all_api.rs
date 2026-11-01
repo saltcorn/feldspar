@@ -23,13 +23,11 @@ use axum::http::{Request, StatusCode, header};
 use sc_api::admin_endpoints;
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_server::{
     AppMounts, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
     install_agents, install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -124,24 +122,7 @@ struct Server {
 }
 
 async fn setup() -> sc_error::Result<Server> {
-    let db = TestDb::new().await?;
-    // Neutralise any `users` table inherited from the template database before
-    // bootstrap introspects, exactly as the other server tests do.
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
@@ -219,6 +200,7 @@ async fn ok(client: &mut Client, method: &str, path: &str, body: Value) -> Value
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> sc_error::Result<()>
 {
     // Clear all resets the logging switches, which another test is checking.

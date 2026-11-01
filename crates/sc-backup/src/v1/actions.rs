@@ -34,6 +34,7 @@
 //! says so ([`Converted::browser_eval`]) and the importer relaxes that one
 //! policy, saying so in the report.
 
+use serde::Deserialize;
 use serde_json::{Map, Value as Json, json};
 
 use sc_error::{Error, Result};
@@ -175,6 +176,7 @@ impl Converted {
 
 /// The v1 action `action`, configured with `config`, as an action here — or the
 /// reason it cannot be.
+#[allow(clippy::too_many_lines)]
 pub(super) fn convert_action(
     action: &str,
     config: &Map<String, Json>,
@@ -759,6 +761,26 @@ fn form_action(js: &Js<'_>, config: &Map<String, Json>) -> Result<Converted> {
     })
 }
 
+/// What kind of toast v1's `toast` shows, as v1 spells it in `notify_type`
+/// (or the older `type`). Anything else, or nothing, is a plain notice.
+#[derive(Deserialize)]
+enum NotifyType {
+    Error,
+    Success,
+    Warning,
+    #[serde(other)]
+    Info,
+}
+
+impl NotifyType {
+    fn of(kind: &str) -> NotifyType {
+        use serde::de::IntoDeserializer;
+        let kind: serde::de::value::StrDeserializer<'_, serde::de::value::Error> =
+            kind.into_deserializer();
+        NotifyType::deserialize(kind).unwrap_or(NotifyType::Info)
+    }
+}
+
 fn toast(js: &Js<'_>, config: &Map<String, Json>) -> Result<Converted> {
     let s = |key: &str| text(config, key);
     let mut extra = String::new();
@@ -779,11 +801,13 @@ fn toast(js: &Js<'_>, config: &Map<String, Json>) -> Result<Converted> {
         "" => s("type"),
         kind => kind.to_owned(),
     };
-    let answer = match kind.as_str() {
-        "Error" => format!("{{ error: {message}{extra} }}"),
-        "Success" => format!("{{ notify_success: {message}{extra} }}"),
-        "Warning" => format!("{{ notify: {message}, notify_type: \"warning\"{extra} }}"),
-        _ => format!("{{ notify: {message}{extra} }}"),
+    let answer = match NotifyType::of(&kind) {
+        NotifyType::Error => format!("{{ error: {message}{extra} }}"),
+        NotifyType::Success => format!("{{ notify_success: {message}{extra} }}"),
+        NotifyType::Warning => {
+            format!("{{ notify: {message}, notify_type: \"warning\"{extra} }}")
+        }
+        NotifyType::Info => format!("{{ notify: {message}{extra} }}"),
     };
     Ok(Converted::code(
         js.body("toast", &format!("return {answer};")),
@@ -1456,6 +1480,18 @@ mod tests {
 
     /// Every action v1 has gets an answer: converted, or refused with a reason
     /// — never passed through under its v1 name to mean something else here.
+    /// v1's toast kinds by name; anything else (an empty one, a lower-case
+    /// one) is the plain notice, as v1 showed it.
+    #[test]
+    fn a_toast_kind_is_read_by_its_v1_name() {
+        assert!(matches!(NotifyType::of("Error"), NotifyType::Error));
+        assert!(matches!(NotifyType::of("Success"), NotifyType::Success));
+        assert!(matches!(NotifyType::of("Warning"), NotifyType::Warning));
+        for other in ["", "Info", "error", "Notify"] {
+            assert!(matches!(NotifyType::of(other), NotifyType::Info), "{other}");
+        }
+    }
+
     #[test]
     fn every_builtin_action_is_converted_or_refused_with_a_reason() {
         for action in V1_BUILTIN_ACTIONS {

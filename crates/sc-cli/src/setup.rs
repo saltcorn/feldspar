@@ -705,6 +705,7 @@ impl<'a> Prompter<'a> {
 
 /// Settle every choice: from the flags, then from `prompt` when there is one,
 /// then from the defaults of the chosen mode.
+#[allow(clippy::too_many_lines)]
 pub fn resolve(
     args: &SetupArgs,
     host: &Host,

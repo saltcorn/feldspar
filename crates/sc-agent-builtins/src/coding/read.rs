@@ -20,13 +20,14 @@
 
 use sc_error::{Error, Result};
 use sc_llm::ToolSpec;
+use sc_types::ArgsExt;
 use sc_types::Attrs;
 use serde_json::{Value as Json, json};
 
 use sc_agent::TraitContext;
 
 use super::state::CodingState;
-use crate::files::{ARG_PATH, FileScope, config_count, open_at, string_arg};
+use crate::files::{ARG_PATH, FileScope, config_count, open_at};
 use sc_api::mcp::arguments;
 
 /// The most lines one call returns, when the admin sets nothing else.
@@ -87,7 +88,7 @@ pub async fn call(
 ) -> Result<Json> {
     let ceiling = config_count(config, CFG_MAX_LINES, DEFAULT_MAX_LINES)?;
     let args = arguments(args, &[ARG_PATH, ARG_OFFSET, ARG_LIMIT])?;
-    let rel = string_arg(&args, ARG_PATH)?;
+    let rel = args.string_arg(ARG_PATH)?;
     let offset = line_arg(&args, ARG_OFFSET)?.unwrap_or(1);
     let limit = line_arg(&args, ARG_LIMIT)?.map_or(ceiling, |l| l.min(ceiling)) as usize;
 

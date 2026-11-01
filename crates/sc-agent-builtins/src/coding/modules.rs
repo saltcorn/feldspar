@@ -22,9 +22,10 @@
 use sc_agent::{ModuleInstall, TraitContext};
 use sc_error::{Error, Result};
 use sc_llm::ToolSpec;
+use sc_types::ArgsExt;
 use serde_json::{Value as Json, json};
 
-use crate::files::{FileScope, string_arg};
+use crate::files::FileScope;
 use sc_api::mcp::arguments;
 
 const ARG_LANGUAGE: &str = "language";
@@ -106,9 +107,9 @@ pub async fn list(args: &Json, ctx: &mut TraitContext<'_>) -> Result<Json> {
 pub async fn install(args: &Json, ctx: &mut TraitContext<'_>) -> Result<Json> {
     let args = arguments(args, &[ARG_LANGUAGE, ARG_SOURCE, ARG_LOCATION])?;
     let request = ModuleInstall {
-        language: string_arg(&args, ARG_LANGUAGE)?,
-        source: string_arg(&args, ARG_SOURCE)?,
-        location: string_arg(&args, ARG_LOCATION)?,
+        language: args.string_arg(ARG_LANGUAGE)?,
+        source: args.string_arg(ARG_SOURCE)?,
+        location: args.string_arg(ARG_LOCATION)?,
     };
     if request.location.trim().is_empty() {
         return Err(Error::invalid(

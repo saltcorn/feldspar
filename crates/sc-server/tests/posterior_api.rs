@@ -23,8 +23,6 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
 use sc_model::{
     Declaration, DrawSeries, Element, FitContext, FitResult, Frame, Interface, ModelProvider,
@@ -35,7 +33,7 @@ use sc_server::{
     AppMounts, ModelServices, ServerConfig, StanSettings, admin_handlers, build_router_with_apps,
     default_js_evaluator, install_triggers, start_workflow_engine,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -343,21 +341,7 @@ async fn setup() -> Result<Server> {
 
 /// [`setup`], with the Stan flags `stan` (TODO §20).
 async fn setup_with(stan: &StanSettings) -> Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(&format!(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$; {SCHEMA}"
-        ))
-        .await
-        .map_err(|e| Error::database(e.to_string()))?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().sql(SCHEMA).build().await?;
     sc_auth::bootstrap(&catalog).await?;
     let agents = sc_server::install_agents(&catalog).await?;
     let models = sc_server::install_models_with(&catalog, sc_model::DEFAULT_MAX_ROWS, stan).await?;
@@ -466,6 +450,7 @@ async fn fitted(client: &mut Client, body: Value) -> (String, Value) {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_posterior_is_bound_fitted_read_by_key_and_written_back() -> Result<()> {
     let mut server = setup().await?;
     let client = &mut server.client;

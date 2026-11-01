@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 
 use sc_catalog::Catalog;
-use sc_error::Result;
+use sc_error::{Error, Result};
 use sc_model::{
     InstanceId, ModelInstance, OutputDecl, OutputKind, ParameterBlock, SCALARS, SplitMetrics,
 };
@@ -67,14 +67,10 @@ pub struct OutputTable {
 
 /// `spec` (a plot spec without its data) over the output data `data` of
 /// `instance`, or why it is not a plot spec.
-pub fn output_spec(
-    instance: InstanceId,
-    data: &str,
-    spec: &Json,
-) -> std::result::Result<PlotSpec, String> {
+pub fn output_spec(instance: InstanceId, data: &str, spec: &Json) -> Result<PlotSpec> {
     let mut spec = match spec {
         Json::Object(map) => map.clone(),
-        _ => return Err("its plot spec is not an object".to_owned()),
+        _ => return Err(Error::invalid("its plot spec is not an object")),
     };
     spec.insert(
         "data".to_owned(),
@@ -82,10 +78,10 @@ pub fn output_spec(
             instance: instance.0,
             name: data.to_owned(),
         })
-        .map_err(|e| e.to_string())?,
+        .map_err(|e| Error::invalid(e.to_string()))?,
     );
     serde_json::from_value(Json::Object(spec))
-        .map_err(|e| format!("its plot spec does not read: {e}"))
+        .map_err(|e| Error::invalid(format!("its plot spec does not read: {e}")))
 }
 
 /// Every output `instance` recorded, in order: tables filled, plot specs made,
@@ -104,7 +100,7 @@ pub async fn render_outputs(
 
 /// The output of `instance` called `name`, drawn whether it is optional or
 /// not; `None` when the fit recorded no such output. What a panel copied from
-/// the model editor (A4.3) shows.
+/// the model editor shows.
 pub async fn render_one_output(
     catalog: &Catalog,
     instance: &ModelInstance,
@@ -160,14 +156,14 @@ async fn render_output(
             match output_spec(instance.id, data, spec) {
                 Ok(spec) => {
                     if !decl.optional || include.contains(&decl.name) {
-                        // A model's outputs are the admin's (A9.1): the model
+                        // A model's outputs are the admin's: the model
                         // editor is only in the unrestricted Analytics UI.
                         let admin = sc_dataset::Caller::admin();
                         view.plot = Some(render_plot(catalog, &admin, &spec).await?);
                     }
                     view.spec = Some(spec);
                 }
-                Err(e) => view.error = Some(e),
+                Err(e) => view.error = Some(e.message().to_owned()),
             }
         }
     }
@@ -329,7 +325,10 @@ mod tests {
         );
         assert_eq!(spec_instance(&spec), Some(id.0));
         assert!(output_spec(id, "rows", &json!([])).is_err());
-        let err = output_spec(id, "rows", &json!({ "layers": "none" })).unwrap_err();
+        let err = output_spec(id, "rows", &json!({ "layers": "none" }))
+            .unwrap_err()
+            .message()
+            .to_owned();
         assert!(err.contains("does not read"), "{err}");
     }
 

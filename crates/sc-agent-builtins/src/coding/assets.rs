@@ -33,12 +33,13 @@ use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_files::{DEFAULT_EXCLUDED_DIRS, DEFAULT_MAX_RESULTS, glob_matches, walk_store};
 use sc_llm::ToolSpec;
+use sc_types::ArgsExt;
 use sc_types::Attrs;
 use serde_json::{Value as Json, json};
 
 use super::check::configured_application;
 use super::search::CFG_MAX_RESULTS;
-use crate::files::{FileScope, config_count, optional_string_arg};
+use crate::files::{FileScope, config_count};
 use sc_api::mcp::arguments;
 
 /// The glob, matched as `find_files` matches one.
@@ -119,8 +120,8 @@ struct Asset {
 pub async fn call(config: &Attrs, args: &Json, ctx: &mut TraitContext<'_>) -> Result<Json> {
     let ceiling = config_count(config, CFG_MAX_RESULTS, DEFAULT_MAX_RESULTS as u64)? as usize;
     let args = arguments(args, &[ARG_PATTERN, ARG_DIR])?;
-    let pattern = optional_string_arg(&args, ARG_PATTERN)?;
-    let rel_dir = optional_string_arg(&args, ARG_DIR)?;
+    let pattern = args.string_or_empty(ARG_PATTERN)?;
+    let rel_dir = args.string_or_empty(ARG_DIR)?;
     let app = application(ctx.catalog, config).await?;
 
     let mut found: Vec<Asset> = Vec::new();

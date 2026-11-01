@@ -236,6 +236,7 @@ async fn deliveries(catalog: &Catalog) -> Vec<Value> {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_webhook_receives_the_bytes_writes_its_own_table_and_answers() -> sc_error::Result<()> {
     if !have_npm() {
         eprintln!("skipping: npm is not on the PATH");

@@ -275,6 +275,7 @@ async fn asset(dir: Option<&Path>, file: &[&str], missing: &str) -> Response {
 // `clippy::result_large_err` does not apply: the `Err` is not an error being
 // propagated, it *is* the response to send, returned unchanged by the one caller.
 #[allow(clippy::result_large_err)]
+#[allow(clippy::too_many_lines)]
 async fn document(
     env: &BuilderEnv<'_>,
     headers: &HeaderMap,

@@ -2,6 +2,101 @@
 
 Changes in reverse chronological order.
 
+## Code quality Q6: argument readers, transaction endings, typed errors in analytics, a test server, condition waits, a length lint, a comment pass
+
+The seventh milestone of `TODO-code-quality.md` (§3.2, §3.4, §3.6–3.8 of the review): Q6.1 to
+Q6.6. Nothing changes on the wire, in stored data or in the schema. The few refusal messages
+that read differently are listed under **Behaviour changes**.
+
+**Argument readers and tagged kinds (Q6.1, still open).** `sc_types::ArgsExt`, on a JSON object (`Map` or
+`Value`), reads one member at a time with the refusals callers already rely on, in two families:
+tool arguments (`optional_string`, `string_or_empty`, `string_arg`, `required_string`,
+`optional_bool`, `required_value`: "`` `k` is required ``", "`` `k` should be a string, got 5 ``")
+and admin-API body fields (`str_field`, `non_empty_str_field`: "missing or non-string field
+`k`", "field `k` must not be empty"). It replaces `sc_api::mcp::optional_string` /
+`optional_bool`, the three `required` / `required_str` copies (sc-check, sc-app's MCP tools and
+libraries), sc-agent-builtins' `string_arg` / `optional_string_arg` / `optional_bool_arg`,
+sc-backup's codec `str_field` / `non_empty_str_field` (and sc-api's copy of them in
+`credentials`), and sc-server's analytics `required` / `text`. Left as they are, because their
+refusals are worded for a different reader: sc-action's `ActionContext::require_str` (a stored
+trigger's setting, a configuration error naming the trigger), the REST password endpoint's
+`required_text` (its public messages), sc-check's step-parameter `text` (which also takes a
+number), and query-parameter readers. The kind dispatches are enums: a v1 agent skill is read as
+`#[serde(tag = "skill_type")] SkillType` (a kind with no counterpart, a missing kind or one that
+is not text is `#[serde(other)] Other`, reported as before), v1's toast kind as `NotifyType`
+(anything else is the plain notice, as before) and `propose_step_change`'s `change` as
+`StepChange` (trimmed first, as before; an unknown one is refused with the same sentence). Not done: parsing
+whole request bodies into structs at the edge; see the TODO note.
+
+**Ending a transaction (Q6.2).** `sc_db::finish(tx, outcome)` commits a success and rolls back a
+failure, `sc_db::abandon(tx)` rolls back where nothing waits on it (after a failure, or reads),
+and `sc_db::with_tx(driver, |tx| Box::pin(async move { … }))` runs work in a transaction and
+ends it by the outcome. `SharedTx::finish` / `SharedTx::abandon` are the same for a shared
+transaction. A failed rollback is logged at verbose level rather than dropped silently. The 26
+`let _ = tx.rollback().await` are gone, with the three local `finish` helpers they had grown
+(sc-model, sc-viewpattern, sc-api's undo). `with_tx` takes a boxed future rather than an async
+closure: an async closure's future is not `Send` for every borrow (rustc's "implementation of
+`Send` is not general enough"), which a handler needs. sc-db and sc-catalog now depend on sc-log
+for that line (TECHNICAL_DESIGN §2's table is updated).
+`Result<_, String>` in sc-dataset and sc-analytics is `sc_error::Result`: the compiler's stage and
+query builders, `Schema::table`, the dataset store's JSON columns, the map, panel, crossfilter,
+selection, layer, card, plot, test-choice and tool functions, including the
+`Result<Result<T>>` "the answer, or the sentence saying why not" ones. The errors are
+`Error::invalid` with the same sentence, and every place that shows one (an operation report,
+a panel's refusal, a layer's `error`, the explorer's answers) shows `Error::message()`, so no
+`invalid: ` prefix reaches a page. Left as they are: the `Schema::spatial` field (a reason sc-db's
+`SpatialSupport` gives), and the statistics routines' `hypothesis::Refusal`, a named `String`
+saying why one test of several could not be computed, which `stats/run.rs` now names instead of
+`String`.
+
+**A test server (Q6.3).** `sc_test_harness::TestServer::builder()` (the harness's new `catalog`
+feature): a fresh database with the template's `users` tables dropped, the SQL a test starts
+with (`.sql(…)`), a catalog read from it, and the catalog's teardown registered on the database,
+so a test cannot forget it. `.on(db)` starts from a database made with `with_postgis` /
+`with_pgvector`; `.build_on(&db)` is for a helper that is handed one. `TestDb::execute` and
+`TestDb::drop_template_users` are the pieces. The 97 copies of the `DROP TABLE … users CASCADE`
+block, each with its driver and `Catalog::init`, are one builder call (79 in sc-server, 13 in
+sc-auth, 4 in sc-api, 1 in sc-action-builtins); the sc-auth and sc-api tests that had no teardown
+now have one. The helpers sc-server's test files repeated are in `tests/support.rs`: `Socket`,
+`send`, `next_frame`, `code_framework` and `blog_app`. Copies that differ for a reason stay: the
+`next_frame` of `app_guest_live` and `tutorial_live` answers `None` on a close, which those tests
+expect; five `blog_app`s are other applications; sc-app's two `code_framework`s are in another
+test binary. The ~90 per-file `Client` structs are not merged (most add their own methods).
+
+**Waiting on a condition (Q6.4).** `sc_test_harness::wait_until(what, within, || …)` polls every
+10 ms. Six sleeps that waited for something to happen now wait for it: a module stream's polls
+(three in `stream_providers`, one in `bundled_rss`), a freed subscriber count (`app_live`) and a
+running stream's elements (`sc-live`'s hub). The others stay: most are already the pause inside
+a polling loop; the rest check that something does *not* happen (no mail, no write, no element),
+let time pass on purpose (session and grant TTLs, credit expiry, heartbeats, timestamps that must
+differ), hold a socket open, or pace the JS fake-socket tests. None of those measures the
+injected `sc_types::clock::Clock`, so `ManualClock` does not apply to them.
+
+**A length lint (Q6.5).** `clippy::too_many_lines` warns (workspace `[lints]`), at 150 lines
+(`clippy.toml`). The functions already over it carry `#[allow(clippy::too_many_lines)]`.
+
+**Comments (Q6.6).** In the files this milestone touched: history narration rewritten as what is
+true now, references to closed TODO items dropped, and the stale "MVP" statements fixed —
+`sc-catalog/src/field.rs` (`DbId` is the primary or a connected database; the kinds a
+`DataField` has; why `unique` is false), the catalog's module and struct docs, `sc-types`'
+`catchall`.
+
+- **Behaviour changes:**
+  - A tool argument of the wrong type to a coding/file tool reads "`` `k` should be a string,
+    got 5 ``" (was "should be text").
+  - The analytics endpoints' `name` / `url` / `tool` / `kind` members refuse a non-string with
+    "`` `k` should be a string, got … ``" (was "`` `k` is required ``").
+  - A dataset row whose `base` / `operations` column is not JSON says "dataset `x`: base should
+    be json, got text" (was "dataset `x`: invalid: base should be …").
+  - A failed rollback is logged at verbose level.
+
+Tests: `sc_types::args::tests`, `sc_db::tx::tests` (commit, rollback, a failed commit),
+`shared_tx::finish_commits_a_success_and_rolls_back_a_failure`, the enum tests in sc-backup's
+`v1::agents` / `v1::actions` and sc-check's `tools`, sc-dataset's
+`a_dataset_over_a_dataset_reads_its_operations_first_and_a_cycle_is_refused` (the report and the
+refusal carry no kind prefix), the harness's `server::tests` and `wait_tests`, and every test
+the builder and the helpers moved into.
+
 ## Code quality Q5 (part 2): crate merges and renames, one `Ask`, split files, no alias re-exports, one Value↔JSON module, one clock
 
 The second half of the sixth milestone of `TODO-code-quality.md` (§1, §2, §3 of the review):

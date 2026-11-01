@@ -10,8 +10,9 @@
 //! [`SessionAction`]: crate::SessionAction
 
 use sc_auth::{COL_EMAIL, User};
-use sc_error::{Error, Result};
+use sc_error::Result;
 use sc_query::Value;
+use sc_types::ArgsExt;
 use serde_json::{Value as Json, json};
 
 use crate::schema::{StructField, TypeSchema};
@@ -109,7 +110,7 @@ pub fn user_row_schema() -> TypeSchema {
         // its own select on the form, so it is a named field rather than one of
         // `extra`'s (§16.1). Optional: most accounts have never stated one.
         StructField::new("language", TypeSchema::optional(TypeSchema::text())),
-        // Whether a checklist may run as this account (TODO-checklists C1.5).
+        // Whether a checklist may run as this account.
         // Set with `setCheckUser`, never through the form's fields.
         StructField::new("check_user", TypeSchema::bool()),
         // Keyed by column name, since only the admin's own schema knows what is
@@ -293,16 +294,7 @@ pub fn user_row_json(user: &User) -> Json {
 /// not a login attempt to be checked against the hash.
 pub fn credentials(body: &Json) -> Result<(String, String)> {
     let obj = require_object(body)?;
-    let field = |key: &str| -> Result<String> {
-        let value = obj
-            .get(key)
-            .and_then(Json::as_str)
-            .ok_or_else(|| Error::invalid(format!("missing or non-string field `{key}`")))?;
-        if value.trim().is_empty() {
-            return Err(Error::invalid(format!("field `{key}` must not be empty")));
-        }
-        Ok(value.to_owned())
-    };
+    let field = |key: &str| obj.non_empty_str_field(key).map(str::to_owned);
     Ok((field("email")?, field("password")?))
 }
 

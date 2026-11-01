@@ -842,9 +842,7 @@ async fn in_transaction(catalog: &Catalog, statements: Vec<Statement>) -> Result
             )
             .await
         {
-            // The rollback's own failure would hide the reason; the statement's
-            // error is the one worth reporting.
-            let _ = tx.rollback().await;
+            tx.abandon().await;
             return Err(e);
         }
     }

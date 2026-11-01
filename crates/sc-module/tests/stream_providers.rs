@@ -173,10 +173,10 @@ async fn a_stream_over_a_module_provider_delivers_elements_and_carries_its_curso
         .await
         .expect("it subscribes");
 
-    // Three polls' worth of time, and what matters is not exactly how many ran
-    // but that they carried on from each other: the cursor is the module's own
-    // "where I got to", and `sc-stream` hands it back untouched.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Three polls, and what matters is not exactly how many ran but that they
+    // carried on from each other: the cursor is the module's own "where I got
+    // to", and `sc-stream` hands it back untouched.
+    sc_test_harness::wait_until("four elements", Duration::from_secs(10), || sink.len() >= 4).await;
     let values = sink.values();
     assert!(values.len() >= 4, "{values:?}");
     for (n, value) in values.iter().enumerate() {
@@ -214,7 +214,10 @@ async fn an_element_that_is_not_what_was_declared_is_counted_and_not_delivered()
         )
         .await
         .expect("it subscribes");
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    sc_test_harness::wait_until("the first poll", Duration::from_secs(10), || {
+        sink.len() + sink.malformed().len() >= 2
+    })
+    .await;
     drop(subscription);
 
     // The good one arrived; the one whose `n` is a string was counted, not
@@ -246,7 +249,10 @@ async fn a_poll_that_throws_ends_the_subscription_for_the_supervisor_to_retry() 
         )
         .await
         .expect("subscribing is not polling");
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    sc_test_harness::wait_until("the subscription to end", Duration::from_secs(10), || {
+        subscription.has_ended()
+    })
+    .await;
 
     // Ended rather than spinning: the module's throw is a failure the
     // supervisor services with its backoff, which is the one place retrying is

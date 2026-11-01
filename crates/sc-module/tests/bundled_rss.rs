@@ -394,7 +394,10 @@ async fn the_bundled_rss_module_serves_a_stream_from_a_feed() {
         .expect("it subscribes");
 
     // The first poll delivers the window — three items, as they stand.
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    sc_test_harness::wait_until("the first poll", Duration::from_secs(10), || {
+        sink.len() >= 3
+    })
+    .await;
     let values = sink.values();
     assert_eq!(values.len(), 3, "{values:?}");
     assert_eq!(values[0]["guid"], json!("urn:feldspar:1"));

@@ -94,7 +94,7 @@ pub const GRANT_DROP: &str = schema_edit::GRANT_DROP;
 /// May write the access rules of §7.3, a trigger's `min_role` and a query's.
 pub const GRANT_ACCESS_CHANGES: &str = schema_edit::GRANT_ACCESS_CHANGES;
 
-/// The key the **checklists grant** is stored under (TODO-checklists C1.13):
+/// The key the **checklists grant** is stored under:
 /// `none`, `append` (the default) or `full`. Not one of the boolean
 /// [`FLAG_KEYS`] — it has three values — but stored beside them, on an
 /// `admin_copilot` agent's configuration and on a token's grants alike, so the
@@ -685,28 +685,6 @@ pub fn arguments(args: &Json, allowed: &[&str]) -> Result<Map<String, Json>> {
         }
     }
     Ok(obj)
-}
-
-/// An optional string argument, or the refusal that says what it should be.
-pub fn optional_string(obj: &Map<String, Json>, key: &str) -> Result<Option<String>> {
-    match obj.get(key) {
-        None | Some(Json::Null) => Ok(None),
-        Some(Json::String(s)) => Ok(Some(s.clone())),
-        Some(other) => Err(Error::invalid(format!(
-            "`{key}` should be a string, got {other}"
-        ))),
-    }
-}
-
-/// An optional boolean argument, or the refusal that says what it should be.
-pub fn optional_bool(obj: &Map<String, Json>, key: &str) -> Result<Option<bool>> {
-    match obj.get(key) {
-        None | Some(Json::Null) => Ok(None),
-        Some(Json::Bool(b)) => Ok(Some(*b)),
-        Some(other) => Err(Error::invalid(format!(
-            "`{key}` should be true or false, got {other}"
-        ))),
-    }
 }
 
 /// An optional role argument, checked against the 1–100 scale.

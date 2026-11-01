@@ -27,11 +27,9 @@ use sc_api::admin_endpoints;
 use sc_app::{ApiConfig, Application, CodeFramework, FrameworkRef, bootstrap, save_application};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, FileStoreId};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
 use sc_server::{AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -131,23 +129,8 @@ impl Drop for TempDir {
 /// store — plus the schema observer installed on the catalog, exactly as the
 /// server installs it at boot.
 async fn setup(tag: &str) -> sc_error::Result<Harness> {
-    let db = TestDb::new().await?;
     let dir = TempDir::new(tag);
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;

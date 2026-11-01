@@ -5,6 +5,7 @@
 use super::*;
 
 /// Declare this domain's endpoints on `set`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(set: &mut EndpointSet) {
     // Five nouns and three screens (TODO "Predictive models"): a **model
     // provider** is code that can fit something, a **dataset** is which rows and

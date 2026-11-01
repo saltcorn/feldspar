@@ -136,6 +136,7 @@ pub(super) fn is_v1_backup<'a>(mut names: impl Iterator<Item = &'a str>) -> bool
 /// not have) is a *note*: it is carried in the manifest and read back into the
 /// restore report, so the admin is told what did not come across on the same
 /// screen that tells them what did.
+#[allow(clippy::too_many_lines)]
 pub(super) fn convert(entries: &Entries) -> Result<Entries> {
     let pack = json_entry(entries, PACK)?;
     let pack = pack
@@ -559,6 +560,7 @@ const VECTOR_UNSIZED: &str = "vector";
 ///
 /// `Ok(None)` for a field that is deliberately not imported; `Err` for one whose
 /// type has no counterpart, which the caller turns into a note.
+#[allow(clippy::too_many_lines)]
 fn convert_field(
     field: &Map<String, Json>,
     site: &str,
@@ -1151,6 +1153,7 @@ struct ImportedTrigger {
 /// carried by name, so that a module installed here that has it runs it, and
 /// `save_trigger` refuses it by name otherwise — which is a better answer than
 /// an action silently turned into the nearest one that exists.
+#[allow(clippy::too_many_lines)]
 fn convert_triggers(
     pack: &Map<String, Json>,
     agents: &agents::ConvertedAgents,

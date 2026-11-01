@@ -5,6 +5,7 @@
 use super::*;
 
 /// Declare this domain's endpoints on `set`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(set: &mut EndpointSet) {
     // A Saltcorn UI application's source is rows rather than a file store
     // (TODO "Saltcorn UI" §1): its views and pages, each addressed by name

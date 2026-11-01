@@ -99,7 +99,7 @@ rusqlite.workspace = true
 # that is not Postgres — which is what having a `DatabaseDriver` trait is for.
 sc-db-sqlite.workspace = true
 sc-db-postgres.workspace = true
-sc-test-harness.workspace = true
+sc-test-harness = { workspace = true, features = ["catalog"] }
 # The real engines, for the two things a mock would hide: an ownership formula
 # the translator refuses is decided by V8 (`DenoEvaluator`), and a delegated read
 # from a code body must not deadlock against it (`CodeRuntime`) — see

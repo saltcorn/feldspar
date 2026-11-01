@@ -1,14 +1,13 @@
 //! The [`Catalog`]: the hub that owns the connected database and an in-memory
 //! cache of its tables.
 //!
-//! For the MVP the catalog is initialised straight from a
-//! [`DatabaseDriver`]'s introspection — **no stored metadata beyond
-//! `information_schema`** (technical design §5, §8, §9). As soon as a database is
-//! connected every table is usable; there is no discovery or registration step.
-//! The cache is rebuilt from introspection on [`init`](Catalog::init) and after
-//! every schema mutation the catalog makes, so it always reflects the live
-//! schema. Cross-process cache invalidation over a message bus is post-MVP
-//! (single process for the MVP), so a simple `RwLock` guards the cache here.
+//! The catalog is read from a [`DatabaseDriver`]'s introspection, with the
+//! `_fd_tables` / `_fd_fields` overlays on top (technical design §5, §8, §9). As
+//! soon as a database is connected every table is usable; there is no discovery
+//! or registration step. The cache is rebuilt on [`init`](Catalog::init) and
+//! after every schema change the catalog makes, so it always reflects the live
+//! schema. The server is one process, so the cache is swapped in place under a
+//! lock; nothing outside the process invalidates it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -27,11 +26,11 @@ use crate::table_meta::{TABLE_META_TABLE, list_table_meta};
 
 /// The catalog: the connected primary database plus a cache of its tables
 /// (technical design §8.1). Row data for users, workflow runs, and files is
-/// deliberately not cached; for the MVP the cache holds tables only. Connected
+/// deliberately not cached; the cache holds tables only. Connected
 /// **file stores** (§14.1) are registered here too — not their contents, just
 /// the named store handles — so the server can resolve a store by name.
 pub struct Catalog {
-    /// The primary (and, for the MVP, only) database driver.
+    /// The primary database's driver.
     primary: Arc<dyn DatabaseDriver>,
     /// The primary database's id, stamped onto every [`Table`] it hosts.
     primary_db: DbId,
@@ -55,7 +54,7 @@ pub struct Catalog {
     /// did not merge, which tables a connection lost to a name clash, and the
     /// generation stamp — one immutable value, replaced whole by the reload that
     /// built the next one, so a reader never sees half of one reload and half of
-    /// another (TODO-code-quality Q5.2). See [`CatalogSchema`].
+    /// another. See [`CatalogSchema`].
     schema: RwLock<Arc<CatalogSchema>>,
     /// Connected file stores, keyed by their [`name`](FileStore::name). Only the
     /// store handles live here (files keep no database row, design §9); the bytes
@@ -91,7 +90,7 @@ pub struct Catalog {
     /// state: a server with no base domain serves no applications.
     public_origin: RwLock<Option<crate::PublicOrigin>>,
     /// Whether this process serves an environment marked `production` in
-    /// `feldspar.toml` (TODO-checklists C1.6): a checklist that writes data is
+    /// `feldspar.toml`: a checklist that writes data is
     /// refused here unless it is allowed on production. Set once at boot by the
     /// process that read the file; `false` where nobody said.
     production: std::sync::atomic::AtomicBool,
@@ -225,13 +224,8 @@ async fn apply_one(driver: &dyn DatabaseDriver, change: &SchemaChange) -> Result
         return driver.apply_schema(change).await;
     }
     let mut tx = driver.begin().await?;
-    match crate::change_log_sqlite::apply_keeping_triggers(tx.as_mut(), change).await {
-        Ok(()) => tx.commit().await,
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(e)
-        }
-    }
+    let outcome = crate::change_log_sqlite::apply_keeping_triggers(tx.as_mut(), change).await;
+    sc_db::finish(tx, outcome).await
 }
 
 /// One step of a transactional schema batch ([`Catalog::apply_schema_batch`]).
@@ -309,7 +303,7 @@ impl Catalog {
             schema: RwLock::new(Arc::new(CatalogSchema::default())),
             services: RwLock::new(Services::default()),
         };
-        // Whether the database has PostGIS (analytics TODO A5.1). Asking is not
+        // Whether the database has PostGIS. Asking is not
         // installing it — `bootstrap_spatial` does that, on a server's boot —
         // and a database that cannot say is one without geometry, not a
         // catalog that cannot start.
@@ -321,7 +315,7 @@ impl Catalog {
     }
 
     /// The primary database driver: every statement it runs reaches every row,
-    /// so it takes an [`Unchecked`](crate::Unchecked) (TODO-code-quality Q3.5).
+    /// so it takes an [`Unchecked`](crate::Unchecked).
     ///
     /// A crate's own internal tables (`_fd_*`) are reached through one
     /// crate-private helper per crate that makes the token once, with the
@@ -367,6 +361,7 @@ impl Catalog {
     /// as it did before the overlay existed. That is the zero-setup promise of
     /// §9 in one line of code: the loop below can only ever modify entries the
     /// introspection loop above it created.
+    #[allow(clippy::too_many_lines)]
     pub async fn reload(&self) -> Result<()> {
         let physicals = self.primary.introspect().await?;
         let mut map = HashMap::with_capacity(physicals.len());
@@ -990,7 +985,7 @@ impl Catalog {
                 SchemaStep::Sql(sql) => tx.batch(sql).await,
             };
             if let Err(e) = outcome {
-                let _ = tx.rollback().await;
+                sc_db::abandon(tx).await;
                 return Err(e);
             }
         }
@@ -1262,7 +1257,7 @@ impl Catalog {
     /// failure nobody would see until the data was wrong.
     ///
     /// A provider reads and writes every row, so it takes an
-    /// [`Unchecked`](crate::Unchecked) (TODO-code-quality Q3.5): a caller's rows
+    /// [`Unchecked`](crate::Unchecked): a caller's rows
     /// are reached through `sc_access::Scoped`.
     pub fn provider(
         &self,
@@ -1421,7 +1416,7 @@ impl Catalog {
     /// secondary connection whose name the table's [`DbId`] carries.
     ///
     /// The driver runs any statement, so it takes an
-    /// [`Unchecked`](crate::Unchecked) (TODO-code-quality Q3.5). What a caller
+    /// [`Unchecked`](crate::Unchecked). What a caller
     /// only needs to know about the database — its dialect, its capabilities —
     /// is [`driver_info`](Catalog::driver_info).
     pub fn driver_for(
@@ -1525,7 +1520,7 @@ impl Catalog {
     }
 
     /// The connected secondary database with the given name, if any. Crate-
-    /// private (TODO-code-quality Q3.5): outside this crate a driver is reached
+    /// private: outside this crate a driver is reached
     /// through [`driver_named`](Catalog::driver_named) and an `Unchecked`.
     pub(crate) fn database(&self, name: &str) -> Result<Option<Arc<dyn DatabaseDriver>>> {
         let guard = self
@@ -1959,7 +1954,7 @@ impl Catalog {
 
     /// The connected file store with the given name, if any — the raw store,
     /// whose operations check nobody's access, so it takes an
-    /// [`Unchecked`](crate::Unchecked) (TODO-code-quality Q3.6). A caller's
+    /// [`Unchecked`](crate::Unchecked). A caller's
     /// files are reached through [`checked_file_store`](Catalog::checked_file_store).
     pub fn file_store(
         &self,

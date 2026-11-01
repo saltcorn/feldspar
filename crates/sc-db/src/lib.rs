@@ -24,6 +24,7 @@ mod driver;
 mod row;
 mod schema;
 mod spatial;
+mod tx;
 mod vector;
 
 pub use capabilities::{DbCapabilities, TX_SETTINGS_TABLE};
@@ -34,6 +35,7 @@ pub use schema::{
     IndexOn, PhysicalConstraint, PhysicalConstraintKind, PhysicalTable, SchemaChange,
 };
 pub use spatial::SpatialSupport;
+pub use tx::{abandon, finish, with_tx};
 pub use vector::VectorSupport;
 
 #[cfg(test)]

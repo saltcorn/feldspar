@@ -226,6 +226,7 @@ pub fn build_router(
 /// keeps a clone to mount/unmount apps at runtime, and this router resolves each
 /// request against the registry's current contents — an app mounted after the
 /// router was built serves immediately, with no restart.
+#[allow(clippy::too_many_lines)]
 pub fn build_router_with_apps(
     endpoints: &EndpointSet,
     handlers: HandlerRegistry,
@@ -1579,6 +1580,7 @@ pub(crate) enum Resolved {
 /// `/api/*` is its data and everything else is its UI. Both answers carry the
 /// app's own CSP.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn dispatch_app(
     state: &AppState,
     app: &Arc<MountedApp>,

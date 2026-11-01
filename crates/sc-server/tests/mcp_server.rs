@@ -47,14 +47,12 @@ use sc_app::{
 use sc_auth::SessionStore;
 use sc_catalog::{Catalog, FileStoreId};
 use sc_config::{MCP_ENABLED, MCP_LOOPBACK_ONLY, set_config};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
 use sc_server::{
     AppMounts, MCP_PROTOCOL_VERSION, MCP_ROUTE, MountedApp, ServerConfig, admin_handlers,
     build_router_with_apps,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -195,22 +193,7 @@ struct Harness {
 /// A router over a real database with the platform tables bootstrapped, an admin
 /// signed in and the MCP server switched **on**.
 async fn setup() -> sc_error::Result<Harness> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
@@ -1463,6 +1446,7 @@ async fn roles_and_accounts_are_tools_behind_the_access_and_drop_grants() -> sc_
 /// observe it needs `allow_access_changes`; deleting it needs `allow_drop` and
 /// is refused while an application still exposes it.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_document_stream_is_created_exposed_and_deleted_over_mcp() -> sc_error::Result<()> {
     let Harness {
         mut client,
@@ -1839,6 +1823,7 @@ async fn the_history_tools_are_offered_only_to_a_token_given_allow_history() -> 
 /// exist, is refused by name; a public one needs `allow_access_changes`; and
 /// removing one takes the method back out of the client.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_trigger_is_exposed_on_an_app_and_removed_over_mcp() -> sc_error::Result<()> {
     let Harness {
         mut client,

@@ -63,8 +63,7 @@ pub const COL_DESCRIPTION: &str = "description";
 pub const COL_TABLE_NAME: &str = "table_name";
 /// The registered model-provider name.
 pub const COL_PROVIDER: &str = "provider";
-/// The dataset, as a reference to a named one: `{ "dataset_id": "…" }`
-/// (analytics TODO A1.8).
+/// The dataset, as a reference to a named one: `{ "dataset_id": "…" }`.
 pub const COL_DATASET: &str = "dataset";
 /// The provider's configuration (JSON object).
 pub const COL_CONFIGURATION: &str = "configuration";
@@ -81,7 +80,7 @@ pub const COL_ATTRIBUTES: &str = "attributes";
 /// installation whose `_fd_models` already has rows — a required column could
 /// not be added there without a value for each. NULL reads as "none".
 pub const COL_RELATED: &str = "related";
-/// Column: the model's **view state** (analytics TODO A3.4) — a JSON object
+/// Column: the model's **view state** — a JSON object
 /// the screens showing the model keep their layout in. Not part of the model:
 /// see [`model_view_state`].
 pub const COL_VIEW_STATE: &str = "view_state";
@@ -193,7 +192,7 @@ pub async fn save_model(
     }
 }
 
-/// A model's **view state** (analytics TODO A3.4): the dictionary the model
+/// A model's **view state**: the dictionary the model
 /// editor, a comparison or a split view keeps its layout in — which outputs
 /// are open, the optional plots chosen, the selected fit — so that a model
 /// reopens as it was left.
@@ -440,7 +439,7 @@ pub async fn delete_model(
             .map(drop)
     }
     .await;
-    crate::instance_store::finish(tx, deleted).await?;
+    sc_db::finish(tx, deleted).await?;
     // The model row is gone, so the provider is asked for by the name it had.
     if let Some(provider) = registry.get(model.provider.trim()) {
         crate::instance_store::discard_with(provider.as_ref(), &states).await?;
@@ -761,7 +760,7 @@ mod tests {
         assert_eq!(model_columns().len(), model_values(&model).unwrap().len());
         let declared: Vec<String> = model_fields().iter().map(|f| f.base.name.clone()).collect();
         // Every declared column but the view state, which a save of the model
-        // never writes (analytics TODO A3.4).
+        // never writes.
         let mut written = model_columns();
         written.push(COL_VIEW_STATE.to_owned());
         assert_eq!(written, declared);

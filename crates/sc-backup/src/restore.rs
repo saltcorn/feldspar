@@ -104,6 +104,7 @@ pub fn inspect(path: &Path, password: Option<&str>) -> Result<(Available, Json)>
 ///
 /// The file is read as the restore goes ([`Archive`]), so it must stay where it
 /// is until this returns. `password` decrypts a password-protected backup.
+#[allow(clippy::too_many_lines)]
 pub async fn restore_backup(
     catalog: &Catalog,
     apps: &dyn RestoreHost,
@@ -1684,13 +1685,7 @@ async fn insert_batch(catalog: &Catalog, table: &Table, batch: &[Json]) -> Resul
         Ok(stream) => stream.try_collect().await,
         Err(e) => Err(e),
     };
-    match outcome {
-        Ok(_) => tx.commit().await,
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(e)
-        }
-    }
+    sc_db::finish(tx, outcome).await.map(drop)
 }
 
 /// A store's definition (only when there is not one already), then its files.
@@ -1717,6 +1712,7 @@ async fn insert_batch(catalog: &Catalog, table: &Table, batch: &[Json]) -> Resul
 /// **A `.git` is never written into a repository that is already there.** That
 /// repository is the one the admin meant, and the backup's refs and index laid
 /// over it would corrupt it rather than restore it.
+#[allow(clippy::too_many_lines)]
 async fn restore_file_store(
     catalog: &Catalog,
     archive: &Archive,
@@ -2206,6 +2202,7 @@ async fn free_subdomain(catalog: &Catalog, wanted: &str) -> Result<String> {
 /// application does not have is a line too, and so is each placement of a library
 /// item it does not have: the view is imported, and the admin is told its link
 /// leads nowhere before somebody clicks it.
+#[allow(clippy::too_many_lines)]
 async fn restore_views_and_pages(
     catalog: &Catalog,
     archive: &Archive,

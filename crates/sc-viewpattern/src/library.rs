@@ -310,15 +310,8 @@ pub async fn apply_library_updates(
     updates: &[LibraryUpdate],
 ) -> Result<()> {
     let tx = SharedTx::begin_primary(catalog)?;
-    match apply_library_updates_in(&tx, catalog, application, updates).await {
-        Ok(()) => tx.commit().await,
-        Err(e) => {
-            // The refusal is the answer; a rollback that also fails has nothing
-            // to add, and the dropped transaction is rolled back by the driver.
-            let _ = tx.rollback().await;
-            Err(e)
-        }
-    }
+    let outcome = apply_library_updates_in(&tx, catalog, application, updates).await;
+    tx.finish(outcome).await
 }
 
 /// [`apply_library_updates`] inside a transaction the caller owns, so a view's

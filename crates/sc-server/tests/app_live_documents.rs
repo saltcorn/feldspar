@@ -28,6 +28,7 @@
 //!   `GET /api/notes` has it in `body_text`, and has no `body`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::{Socket, next_frame, send};
 use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,7 +39,6 @@ use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use futures::{SinkExt, StreamExt};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, FieldMeta, save_field_meta};
@@ -50,7 +50,6 @@ use sc_stream::{Document, Stream, StreamConfig, StreamProvider, StreamRegistry, 
 use sc_test_harness::Teardown;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value, json};
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -69,9 +68,6 @@ const ROLE_MEMBER: Role = Role::of(40);
 /// a share that may edit.
 const NOTES_RULE: &str =
     "owner === user.id || sharesↃnote.some(s => s.member === user.id && (_read || s.can_edit))";
-
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// A cookie-carrying client addressing one host through `oneshot`.
 struct Client {
@@ -246,6 +242,7 @@ fn limits() -> LiveLimits {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn setup() -> Result<Server> {
     let dir = Scratch(
         std::env::temp_dir().join(format!("sc-live-docs-{}", Uuid::new_v4())),
@@ -421,28 +418,6 @@ async fn setup() -> Result<Server> {
 }
 
 // --- frames -------------------------------------------------------------------
-
-async fn send(socket: &mut Socket, frame: Value) {
-    socket
-        .send(Message::text(frame.to_string()))
-        .await
-        .expect("the socket takes a frame");
-}
-
-async fn next_frame(socket: &mut Socket) -> Value {
-    loop {
-        let message = tokio::time::timeout(Duration::from_secs(20), socket.next())
-            .await
-            .expect("a frame arrives within the timeout")
-            .expect("the socket is still open")
-            .expect("the frame is readable");
-        match message {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
-            Message::Ping(_) | Message::Pong(_) => continue,
-            other => panic!("expected a text frame, got {other:?}"),
-        }
-    }
-}
 
 /// Subscribe and wait for `ready` or `error`; with presence, the member list
 /// follows `ready` and is read by [`frame_for`].

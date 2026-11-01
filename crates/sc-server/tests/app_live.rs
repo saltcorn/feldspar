@@ -23,6 +23,7 @@
 //! - **L1.9** the generated client reaches the same socket.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::{Socket, next_frame, send};
 use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,15 +36,13 @@ use futures::{SinkExt, StreamExt};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
 use sc_auth::{RoleDef, SessionStore, UserUpdate, create_user, save_role};
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_live::LiveLimits;
 use sc_stream::testing::ScriptedProvider;
 use sc_stream::{
     ElementField, ElementType, Stream, StreamConfig, StreamProvider, StreamRegistry, save_stream,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use sc_types::BasicType;
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -63,9 +62,6 @@ const PASSWORD: &str = "correct-horse";
 /// not.
 const ROLE_EDITOR: Role = Role::of(80);
 const ROLE_READER: Role = Role::PUBLIC;
-
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// What the scripted boiler publishes: one required key and one that may be
 /// absent, so the generated envelope has one of each.
@@ -272,22 +268,7 @@ fn boiler_provider() -> ScriptedProvider {
 }
 
 async fn setup(limits: LiveLimits) -> Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$;",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     save_role(&catalog, &RoleDef::new(ROLE_EDITOR, "Editor")).await?;
@@ -401,29 +382,6 @@ fn quick() -> LiveLimits {
     LiveLimits {
         status_interval: Duration::from_millis(100),
         ..LiveLimits::default()
-    }
-}
-
-async fn send(socket: &mut Socket, frame: Value) {
-    socket
-        .send(Message::text(frame.to_string()))
-        .await
-        .expect("the socket takes a frame");
-}
-
-/// The next JSON frame, or a panic saying none arrived.
-async fn next_frame(socket: &mut Socket) -> Value {
-    loop {
-        let message = tokio::time::timeout(Duration::from_secs(20), socket.next())
-            .await
-            .expect("a frame arrives within the timeout")
-            .expect("the socket is still open")
-            .expect("the frame is readable");
-        match message {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
-            Message::Ping(_) | Message::Pong(_) => continue,
-            other => panic!("expected a text frame, got {other:?}"),
-        }
     }
 }
 
@@ -548,8 +506,10 @@ async fn one_socket_carries_two_subscriptions_and_both_receive() -> Result<()> {
     // Unsubscribing one leaves the other flowing, and frees the count.
     send(&mut socket, json!({ "type": "unsubscribe", "sub": "s1" })).await;
     frame_for(&mut socket, "s2", "element").await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(hub.subscribers(boiler_id), 0);
+    sc_test_harness::wait_until("the count to be freed", Duration::from_secs(10), || {
+        hub.subscribers(boiler_id) == 0
+    })
+    .await;
     // And a name already in use is refused, while it is in use.
     let again = subscribe(&mut socket, "s2", "boiler").await;
     assert_eq!(again["code"], json!("invalid"), "{again}");

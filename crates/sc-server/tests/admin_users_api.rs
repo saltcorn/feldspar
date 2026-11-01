@@ -23,11 +23,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
-use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_server::{AppMounts, SESSION_COOKIE, ServerConfig, admin_handlers, build_router};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -107,22 +104,7 @@ impl Client {
 /// A router over the admin endpoints backed by a fresh catalog, with the first
 /// (admin) user created and signed in, and role 40 available to hold.
 async fn setup() -> sc_error::Result<(Client, TestDb)> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     // The overlay tables a field edit writes its settings into, which `serve`
     // has by the time anyone reaches a screen.

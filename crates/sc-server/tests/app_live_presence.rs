@@ -26,6 +26,7 @@
 //! - **L4.5** the admin's Observe socket shows who is on each topic.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::{Socket, next_frame, send};
 use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,18 +35,14 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode, header};
-use futures::{SinkExt, StreamExt};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_live::LiveLimits;
 use sc_stream::{Internal, Stream, StreamConfig, StreamProvider, StreamRegistry, save_stream};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -70,9 +67,6 @@ const SCHEMA: &str = "\
 /// a share that may edit.
 const BOARDS_RULE: &str =
     "owner === user.id || sharesↃboard.some(s => s.member === user.id && (_read || s.can_edit))";
-
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// A cookie-carrying client addressing one host through `oneshot`.
 struct Client {
@@ -267,22 +261,7 @@ fn limits() -> LiveLimits {
 }
 
 async fn setup() -> Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(&format!(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$; {SCHEMA}"
-        ))
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().sql(SCHEMA).build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;
@@ -406,28 +385,6 @@ async fn setup() -> Result<Server> {
 }
 
 // --- frames -------------------------------------------------------------------
-
-async fn send(socket: &mut Socket, frame: Value) {
-    socket
-        .send(Message::text(frame.to_string()))
-        .await
-        .expect("the socket takes a frame");
-}
-
-async fn next_frame(socket: &mut Socket) -> Value {
-    loop {
-        let message = tokio::time::timeout(Duration::from_secs(20), socket.next())
-            .await
-            .expect("a frame arrives within the timeout")
-            .expect("the socket is still open")
-            .expect("the frame is readable");
-        match message {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
-            Message::Ping(_) | Message::Pong(_) => continue,
-            other => panic!("expected a text frame, got {other:?}"),
-        }
-    }
-}
 
 /// Subscribe and wait for `ready` or `error`; with presence, the member list
 /// follows `ready` and is read by [`frame_for`].

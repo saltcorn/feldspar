@@ -4,6 +4,7 @@
 use super::*;
 
 /// Register this domain's admin handlers on `reg`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
     let apps = state.apps.clone();

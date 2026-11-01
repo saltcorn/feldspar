@@ -10,11 +10,12 @@
 use sc_agent::TraitContext;
 use sc_error::{Error, Result};
 use sc_llm::{EditFormat, ToolSpec};
+use sc_types::ArgsExt;
 use serde_json::{Value as Json, json};
 
 use super::change::{current, write_tracked};
 use super::state::{CodingState, stale_message};
-use crate::files::{ARG_PATH, FileScope, open_to_write, string_arg};
+use crate::files::{ARG_PATH, FileScope, open_to_write};
 use sc_api::mcp::arguments;
 
 /// The file's new contents.
@@ -53,8 +54,8 @@ pub fn spec(scope: &FileScope, format: EditFormat) -> ToolSpec {
 /// Write one file whole, as the run's caller.
 pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) -> Result<Json> {
     let args = arguments(args, &[ARG_PATH, ARG_CONTENT])?;
-    let rel = string_arg(&args, ARG_PATH)?;
-    let content = string_arg(&args, ARG_CONTENT)?;
+    let rel = args.string_arg(ARG_PATH)?;
+    let content = args.string_arg(ARG_CONTENT)?;
 
     let (store, path) = open_to_write(scope, ctx, &rel).await?;
     let before = current(&store, &path, &rel).await?;

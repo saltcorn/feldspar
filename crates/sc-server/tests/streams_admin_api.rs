@@ -33,6 +33,7 @@
 //!    `ready` with the element type, then the ring replay, then live elements.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::next_frame;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,12 +44,10 @@ use axum::http::{HeaderValue, Request, StatusCode, header};
 use futures::StreamExt;
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_stream::testing::ScriptedProvider;
 use sc_stream::{ElementField, ElementType, StreamConfig, StreamProvider, StreamRegistry};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use sc_types::{BasicType, FormField, SECRET_SENTINEL, TypeRef};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -183,22 +182,7 @@ impl Server {
 
 /// A server whose stream registry holds `provider` and nothing else.
 async fn serve_with(provider: ScriptedProvider) -> Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$;",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
 
     let agents = sc_server::install_agents(&catalog).await?;
@@ -727,26 +711,6 @@ async fn a_socket_on_a_stream_that_is_not_running_is_closed_with_a_reason() -> R
         other => panic!("expected a close frame, got {other:?}"),
     }
     Ok(())
-}
-
-/// The next JSON frame, or a panic saying none arrived.
-async fn next_frame(
-    socket: &mut tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
-) -> Value {
-    loop {
-        let message = tokio::time::timeout(Duration::from_secs(20), socket.next())
-            .await
-            .expect("a frame arrives within the timeout")
-            .expect("the socket is still open")
-            .expect("the frame is readable");
-        match message {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
-            Message::Ping(_) | Message::Pong(_) => continue,
-            other => panic!("expected a text frame, got {other:?}"),
-        }
-    }
 }
 
 /// Percent-encode a query-parameter value — enough for the JSON this test

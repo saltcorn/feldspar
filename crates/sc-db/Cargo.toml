@@ -10,6 +10,7 @@ rust-version.workspace = true
 
 [dependencies]
 sc-error.workspace = true
+sc-log.workspace = true
 sc-query.workspace = true
 async-trait.workspace = true
 futures.workspace = true

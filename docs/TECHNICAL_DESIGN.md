@@ -332,13 +332,13 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-i18n` | `sc-error` |
 | `sc-docs` | `sc-error` |
 | `sc-types` | `sc-error` `sc-i18n` `sc-query` |
-| `sc-db` | `sc-error` `sc-query` |
+| `sc-db` | `sc-error` `sc-log` `sc-query` |
 | `sc-db-postgres` | `sc-db` `sc-error` `sc-log` `sc-query` |
 | `sc-db-sqlite` | `sc-db` `sc-error` `sc-log` `sc-query` |
 | `sc-migrate` | `sc-db` `sc-error` `sc-query` |
 | `sc-expr` | `sc-error` `sc-query` `sc-ratelimit` `sc-types` |
 | `sc-files` | `sc-error` `sc-types` |
-| `sc-catalog` | `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-error` `sc-expr` `sc-files` `sc-query` `sc-types` |
+| `sc-catalog` | `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-query` `sc-types` |
 | `sc-config` | `sc-catalog` `sc-db` `sc-error` `sc-i18n` `sc-log` `sc-query` `sc-types` |
 | `sc-email` | `sc-catalog` `sc-config` `sc-error` `sc-net` |
 | `sc-auth` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |

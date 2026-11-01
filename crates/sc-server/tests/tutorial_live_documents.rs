@@ -18,6 +18,7 @@
 //! and `yjs` are available (it says so and stops short when they are not).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::{Socket, next_frame, send};
 use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -29,7 +30,7 @@ use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, FileStoreId};
@@ -41,7 +42,6 @@ use sc_live::{CollabDoc, DocShape, LiveLimits, RootKind};
 use sc_stream::StreamConfig;
 use sc_test_harness::Teardown;
 use serde_json::{Value, json};
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tower::ServiceExt;
 
@@ -54,9 +54,6 @@ const READER: &str = "reader@example.com";
 const OUTSIDER: &str = "outsider@example.com";
 const PASSWORD: &str = "correct-horse";
 const ROLE_MEMBER: Role = Role::of(40);
-
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// A cookie-jar client addressing one host.
 struct Client {
@@ -300,28 +297,6 @@ fn doc_block(heading: &str, lang: &str) -> String {
 
 // --- frames -------------------------------------------------------------------
 
-async fn send(socket: &mut Socket, frame: Value) {
-    socket
-        .send(Message::text(frame.to_string()))
-        .await
-        .expect("the socket takes a frame");
-}
-
-async fn next_frame(socket: &mut Socket) -> Value {
-    loop {
-        let message = tokio::time::timeout(Duration::from_secs(20), socket.next())
-            .await
-            .expect("a frame arrives within the timeout")
-            .expect("the socket is still open")
-            .expect("the frame is readable");
-        match message {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
-            Message::Ping(_) | Message::Pong(_) => continue,
-            other => panic!("expected a text frame, got {other:?}"),
-        }
-    }
-}
-
 /// Subscribe and wait for `ready` or `error`; with presence, the member list
 /// follows `ready` and is read by [`frame_for`].
 async fn subscribe(socket: &mut Socket, frame: Value) -> Value {
@@ -419,6 +394,7 @@ fn admin_node_modules() -> PathBuf {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn part_five_a_collaborative_notes_app() -> Result<()> {
     let tutorial = assumed().await?;
     let mut admin = tutorial.on(BASE_DOMAIN);

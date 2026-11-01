@@ -20,13 +20,14 @@
 use sc_agent::{Signal, TraitContext};
 use sc_error::{Error, Result};
 use sc_llm::ToolSpec;
+use sc_types::ArgsExt;
 use serde_json::{Value as Json, json};
 
 use super::change::{current, edited_region, numbered, write_tracked};
 use super::matching::{self, Level, Search};
 use super::read::as_text;
 use super::state::{CodingState, stale_message};
-use crate::files::{ARG_PATH, FileScope, open_to_write, optional_bool_arg, string_arg};
+use crate::files::{ARG_PATH, FileScope, open_to_write};
 use sc_api::mcp::arguments;
 
 /// The text to find.
@@ -71,10 +72,10 @@ pub fn spec(scope: &FileScope) -> ToolSpec {
 /// Apply one edit, as the run's caller.
 pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) -> Result<Json> {
     let args = arguments(args, &[ARG_PATH, ARG_OLD, ARG_NEW, ARG_ALL])?;
-    let rel = string_arg(&args, ARG_PATH)?;
-    let old = string_arg(&args, ARG_OLD)?;
-    let new = string_arg(&args, ARG_NEW)?;
-    let all = optional_bool_arg(&args, ARG_ALL, false)?;
+    let rel = args.string_arg(ARG_PATH)?;
+    let old = args.string_arg(ARG_OLD)?;
+    let new = args.string_arg(ARG_NEW)?;
+    let all = args.optional_bool(ARG_ALL)?.unwrap_or(false);
     if old.is_empty() {
         return Err(Error::invalid(format!(
             "`{ARG_OLD}` is empty. To create a file, use `{}`.",

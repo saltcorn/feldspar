@@ -289,7 +289,7 @@ async fn import_in_changeset(
     if outcome.inserted + outcome.updated == 0 {
         // Nothing to keep. Rolling back rather than committing an empty
         // transaction is the same outcome and says what happened.
-        let _ = tx.rollback().await;
+        tx.abandon().await;
         return Ok(outcome);
     }
     tx.commit().await.map_err(|e| {

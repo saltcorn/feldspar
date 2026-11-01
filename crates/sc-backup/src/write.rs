@@ -313,6 +313,7 @@ async fn write_archive<W: Write + Seek>(
     zip.finish()
 }
 
+#[allow(clippy::too_many_lines)]
 async fn write_entries<W: Write + Seek>(
     catalog: &Catalog,
     selection: &Selection,
@@ -1015,7 +1016,7 @@ impl<'a> RowSource<'a> {
     /// failure to end it is the connection's problem, not the backup's.
     async fn finish(self) {
         if let RowSource::Snapshot(tx) = self {
-            let _ = tx.rollback().await;
+            sc_db::abandon(tx).await;
         }
     }
 }

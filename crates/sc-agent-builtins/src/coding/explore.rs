@@ -9,9 +9,10 @@
 use sc_agent::{DelegateRequest, ModelRole, RunMode, TraitContext};
 use sc_error::{Error, Result};
 use sc_llm::ToolSpec;
+use sc_types::ArgsExt;
 use serde_json::{Value as Json, json};
 
-use crate::files::{FileScope, string_arg};
+use crate::files::FileScope;
 use sc_api::mcp::arguments;
 
 /// The most words of an answer handed back.
@@ -44,7 +45,7 @@ pub fn spec(scope: &FileScope) -> ToolSpec {
 /// its answer, capped.
 pub async fn call(args: &Json, ctx: &mut TraitContext<'_>) -> Result<Json> {
     let args = arguments(args, &["question"])?;
-    let question = string_arg(&args, "question")?;
+    let question = args.string_arg("question")?;
     if question.trim().is_empty() {
         return Err(Error::invalid("`question` is empty"));
     }

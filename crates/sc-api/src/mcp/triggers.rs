@@ -34,6 +34,7 @@
 //!   are distinguished rather than collapsed. Sending the whole object back would
 //!   mean a model that forgot one field silently reset it.
 
+use sc_types::ArgsExt;
 use sc_types::Role;
 use std::collections::BTreeMap;
 
@@ -48,10 +49,7 @@ use serde_json::{Map, Value as Json, json};
 
 use crate::schema_edit::{GRANT_ACCESS_CHANGES, GRANT_CREATE, GRANT_DROP, GRANT_EDIT, Grants};
 
-use super::{
-    AdminTool, Area, TOOL_DESCRIBE_CODE_API, ToolContext, optional_bool, optional_role,
-    optional_string, require_grant,
-};
+use super::{AdminTool, Area, TOOL_DESCRIBE_CODE_API, ToolContext, optional_role, require_grant};
 
 /// Reads the trigger set.
 pub const TOOL_DESCRIBE_TRIGGERS: &str = "describe_triggers";
@@ -709,7 +707,7 @@ fn build(
     args: &Map<String, Json>,
     notes: &mut Vec<String>,
 ) -> Result<Trigger> {
-    let given_when = match optional_string(args, ARG_WHEN)? {
+    let given_when = match args.optional_string(ARG_WHEN)? {
         Some(raw) => Some(EventKind::parse(raw.trim())?),
         None => None,
     };
@@ -722,7 +720,8 @@ fn build(
                      needs `{ARG_WHEN}` and `{ARG_ACTION}` as well as the name"
                 ))
             })?;
-            let action = optional_string(args, ARG_ACTION)?
+            let action = args
+                .optional_string(ARG_ACTION)?
                 .map(|a| a.trim().to_owned())
                 .filter(|a| !a.is_empty())
                 .ok_or_else(|| {
@@ -743,15 +742,17 @@ fn build(
         // `null` clears it, as it clears everything else here — the stored shape
         // is a `String` whose empty value *is* "none given" (§9), so the rule
         // holds without a second spelling of absence.
-        trigger.description = optional_string(args, ARG_DESCRIPTION)?.unwrap_or_default();
+        trigger.description = args.optional_string(ARG_DESCRIPTION)?.unwrap_or_default();
     }
     if args.contains_key(ARG_TABLE) {
-        trigger.channel = optional_string(args, ARG_TABLE)?
+        trigger.channel = args
+            .optional_string(ARG_TABLE)?
             .map(|t| t.trim().to_owned())
             .filter(|t| !t.is_empty());
     }
     if args.contains_key(ARG_ONLY_IF) {
-        trigger.only_if = optional_string(args, ARG_ONLY_IF)?
+        trigger.only_if = args
+            .optional_string(ARG_ONLY_IF)?
             .map(|f| f.trim().to_owned())
             .filter(|f| !f.is_empty());
     }
@@ -773,7 +774,8 @@ fn build(
     // `subject` is not `insert_row`'s anything, and validation's "unknown setting"
     // would report the symptom rather than what happened.
     let action_before = trigger.action().unwrap_or_default().to_owned();
-    if let Some(action) = optional_string(args, ARG_ACTION)?
+    if let Some(action) = args
+        .optional_string(ARG_ACTION)?
         .map(|a| a.trim().to_owned())
         .filter(|a| !a.is_empty())
     {
@@ -821,7 +823,7 @@ fn build(
     } else if args.contains_key(ARG_MIN_ROLE) {
         trigger.min_role = None;
     }
-    if let Some(enabled) = optional_bool(args, ARG_ENABLED)? {
+    if let Some(enabled) = args.optional_bool(ARG_ENABLED)? {
         trigger.set_enabled(enabled);
     }
     for key in [ATTR_MINUTE, ATTR_HOUR, ATTR_DAY_OF_WEEK] {

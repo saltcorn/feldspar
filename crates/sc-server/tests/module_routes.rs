@@ -244,6 +244,7 @@ pub(crate) async fn setup_unlocked() -> sc_error::Result<Server> {
 const BASE: &str = "/_feldspar/routes/routes";
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_modules_routes_are_served_on_the_admin_host_as_whoever_calls() -> sc_error::Result<()> {
     if !have_npm() {
         eprintln!("skipping: npm is not on the PATH");

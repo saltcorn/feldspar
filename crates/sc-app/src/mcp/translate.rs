@@ -39,11 +39,10 @@
 //! catalogue covers is listed with its `inherited` translation and is not
 //! missing.
 
+use sc_types::ArgsExt;
 use std::sync::Arc;
 
-use sc_api::mcp::{
-    AdminTool, Area, ToolContext, arguments, optional_bool, optional_string, require_grant,
-};
+use sc_api::mcp::{AdminTool, Area, ToolContext, arguments, require_grant};
 use sc_api::schema_edit::{GRANT_EDIT, Grants};
 use sc_catalog::{AdminHost, Catalog, TranslationsOf};
 use sc_error::{Error, Result};
@@ -141,7 +140,7 @@ impl AdminTool for DescribeTranslations {
         )?;
         let target = target(ctx, &args).await?;
         let locale = locale_arg(&args)?;
-        let missing_only = optional_bool(&args, ARG_MISSING_ONLY)?.unwrap_or(false);
+        let missing_only = args.optional_bool(ARG_MISSING_ONLY)?.unwrap_or(false);
         if missing_only && locale.is_none() {
             return Err(Error::invalid(format!(
                 "`{ARG_MISSING_ONLY}` needs `{ARG_LOCALE}`: missing is per locale"
@@ -182,7 +181,7 @@ fn scope_parameter() -> Json {
 
 /// The `scope` and `application` arguments, resolved.
 async fn target(ctx: &ToolContext<'_>, args: &Map<String, Json>) -> Result<Target> {
-    match optional_string(args, ARG_SCOPE)?.as_deref().map(str::trim) {
+    match args.optional_string(ARG_SCOPE)?.as_deref().map(str::trim) {
         None | Some("") | Some(SCOPE_APPLICATION) => {
             Ok(Target::Application(Box::new(load_app(ctx, args).await?)))
         }
@@ -485,7 +484,10 @@ fn host(ctx: &ToolContext<'_>) -> Result<Arc<dyn AdminHost>> {
 
 /// The `locale` argument, checked to be a locale tag.
 fn locale_arg(args: &Map<String, Json>) -> Result<Option<String>> {
-    match optional_string(args, ARG_LOCALE)?.map(|s| s.trim().to_owned()) {
+    match args
+        .optional_string(ARG_LOCALE)?
+        .map(|s| s.trim().to_owned())
+    {
         None => Ok(None),
         Some(tag) if tag.is_empty() => Ok(None),
         Some(tag) => Ok(Some(sc_i18n::Locale::parse(&tag)?.as_str().to_owned())),

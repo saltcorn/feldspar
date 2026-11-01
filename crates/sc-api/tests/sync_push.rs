@@ -10,11 +10,9 @@ use std::sync::Arc;
 use sc_api::{ApiProvider, ApiRequest, Method, RestProvider, schema_edit};
 use sc_auth::{User, bootstrap, create_user};
 use sc_catalog::{Catalog, bootstrap_change_log, bootstrap_field_meta, bootstrap_table_meta};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
 use sc_expr::{DenoEvaluator, JsEvaluator};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value as Json, json};
 
 const APP: uuid::Uuid = uuid::Uuid::from_u128(0x5eed);
@@ -32,14 +30,9 @@ struct Fixture {
 /// `drafts` is in the application but not synced. `lists` and their `entries`
 /// are synced, with integer keys the server issues.
 async fn fixture(db: &TestDb) -> Result<Fixture> {
-    sql(
-        db,
-        "DO $$ DECLARE r record; BEGIN \
-           FOR r IN SELECT table_schema FROM information_schema.tables \
-           WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-             EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-           END LOOP; END $$;
-         CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    let cat = TestServer::builder()
+        .sql(
+            "CREATE EXTENSION IF NOT EXISTS pgcrypto;
          CREATE TABLE notes (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
                              title text NOT NULL, owner uuid);
          CREATE TABLE items (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -47,10 +40,9 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
          CREATE TABLE drafts (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), body text);
          CREATE TABLE lists (id serial PRIMARY KEY, name text NOT NULL);
          CREATE TABLE entries (id serial PRIMARY KEY, list int REFERENCES lists(id), text text);",
-    )
-    .await?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let cat = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
+        )
+        .build_on(db)
+        .await?;
     bootstrap(&cat).await?;
     bootstrap_table_meta(&cat).await?;
     bootstrap_field_meta(&cat).await?;
@@ -119,20 +111,7 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
     .with_application(APP)
     // Ownership checks on writes run the formula.
     .with_evaluator(Arc::new(DenoEvaluator::new()) as Arc<dyn JsEvaluator>);
-    Ok(Fixture {
-        cat: Arc::new(cat),
-        api,
-        ann,
-        bob,
-    })
-}
-
-async fn sql(db: &TestDb, statements: &str) -> Result<()> {
-    db.client()
-        .await?
-        .batch_execute(statements)
-        .await
-        .map_err(|e| Error::database(format!("{e:?}")))
+    Ok(Fixture { cat, api, ann, bob })
 }
 
 async fn query(db: &TestDb, statement: &str) -> Result<Vec<String>> {

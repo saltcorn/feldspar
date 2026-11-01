@@ -3,6 +3,7 @@
 use super::*;
 
 /// Register this domain's admin handlers on `reg`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
     let apps = state.apps.clone();
@@ -128,7 +129,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             let pending = pending.clone();
             async move {
                 let obj = require_object(&ctx.body)?;
-                let id = parse_uuid(non_empty_str_field(obj, "id")?, "uploaded backup")?;
+                let id = parse_uuid(obj.non_empty_str_field("id")?, "uploaded backup")?;
                 let password = sc_backup::password_from_body(&ctx.body)?
                     .ok_or_else(|| Error::invalid("`password`: enter the backup's password"))?;
                 let file = pending.file(id)?;
@@ -159,7 +160,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             let pending = pending.clone();
             async move {
                 let obj = require_object(&ctx.body)?;
-                let id = parse_uuid(non_empty_str_field(obj, "id")?, "uploaded backup")?;
+                let id = parse_uuid(obj.non_empty_str_field("id")?, "uploaded backup")?;
                 let selection = match obj.get("include") {
                     Some(value) => sc_backup::Selection::from_json(value)?,
                     None => {

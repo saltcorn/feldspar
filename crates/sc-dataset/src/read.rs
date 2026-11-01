@@ -1,7 +1,7 @@
-//! Reading a stage (analytics TODO A1.7): a page of rows, the column types and
+//! Reading a stage: a page of rows, the column types and
 //! the total, in the stage's order.
 //!
-//! **As the caller** (A9.1): every statement is run through a [`Reader`], which
+//! **As the caller**: every statement is run through a [`Reader`], which
 //! narrows each table it reads to the rows the caller may read — their table
 //! permissions and ownership formulas, or the database's own row-level
 //! security. The admin reads everything.
@@ -68,9 +68,13 @@ pub async fn read_stage(
     library.insert(def.clone());
     let compiled = compile(&schema, &library, def, Options::default());
     let upto = upto.unwrap_or(def.operations.len());
-    let stage = compiled
-        .stage(upto)
-        .map_err(|e| Error::invalid(format!("`{}` does not read here: {e}", def.name)))?;
+    let stage = compiled.stage(upto).map_err(|e| {
+        Error::invalid(format!(
+            "`{}` does not read here: {}",
+            def.name,
+            e.message()
+        ))
+    })?;
     read_page(catalog, caller, stage, page).await
 }
 
@@ -83,9 +87,7 @@ pub async fn read_page(
 ) -> Result<StagePage> {
     let reader = Reader::new(catalog, caller)?;
     let limit = page.limit.clamp(1, MAX_PAGE);
-    let select = stage
-        .rows_query(None, Some((page.offset, limit)), false)
-        .map_err(Error::invalid)?;
+    let select = stage.rows_query(None, Some((page.offset, limit)), false)?;
     let rows = reader.query(select).await?;
     let total = count_with(&reader, stage, None).await?;
     let shape = stage.shape();
@@ -115,7 +117,7 @@ pub async fn count_with(
     stage: &Stage,
     restrict: Option<&Restriction>,
 ) -> Result<u64> {
-    let select = stage.count_query(restrict).map_err(Error::invalid)?;
+    let select = stage.count_query(restrict)?;
     let rows = reader.query(select).await?;
     match rows.first().and_then(|r| r.get_index(0)) {
         Some(Value::Int(n)) => Ok(u64::try_from(*n).unwrap_or(0)),
@@ -146,9 +148,7 @@ pub async fn read_rows_with(
     restrict: Option<&Restriction>,
     limit: Option<u64>,
 ) -> Result<Rows> {
-    let select = stage
-        .rows_query(restrict, limit.map(|l| (0, l)), true)
-        .map_err(Error::invalid)?;
+    let select = stage.rows_query(restrict, limit.map(|l| (0, l)), true)?;
     let rows = reader.query(select).await?;
     let shape = stage.shape();
     let with_key = stage.has_row_key();
@@ -191,9 +191,7 @@ pub async fn column_values(
     column: &str,
     limit: u64,
 ) -> Result<Vec<Value>> {
-    let select = stage
-        .values_query(column, limit.clamp(1, MAX_PAGE))
-        .map_err(Error::invalid)?;
+    let select = stage.values_query(column, limit.clamp(1, MAX_PAGE))?;
     Ok(Reader::new(catalog, caller)?
         .query(select)
         .await?
@@ -211,10 +209,13 @@ pub fn last_stage(
     options: Options,
 ) -> Result<Stage> {
     let compiled = compile(schema, library, def, options);
-    compiled
-        .last()
-        .cloned()
-        .map_err(|e| Error::invalid(format!("the dataset `{}` does not read: {e}", def.name)))
+    compiled.last().cloned().map_err(|e| {
+        Error::invalid(format!(
+            "the dataset `{}` does not read: {}",
+            def.name,
+            e.message()
+        ))
+    })
 }
 
 /// Each value as its column's type says it is, where a backend hands back

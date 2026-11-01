@@ -3,6 +3,7 @@
 use super::*;
 
 /// Register this domain's admin handlers on `reg`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
@@ -303,7 +304,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
 /// constraint over nothing, and a row constraint with no formula a trigger that
 /// checks nothing.
 fn constraint_from_body(obj: &Map<String, Json>) -> Result<(String, TableConstraint)> {
-    let type_name = non_empty_str_field(obj, "type")?.trim().to_owned();
+    let type_name = obj.non_empty_str_field("type")?.trim().to_owned();
     let kind = match type_name.as_str() {
         "unique" => ConstraintKind::Unique {
             fields: string_array(obj, "fields")?,
@@ -322,7 +323,7 @@ fn constraint_from_body(obj: &Map<String, Json>) -> Result<(String, TableConstra
             },
         },
         "formula" => ConstraintKind::Formula {
-            formula: non_empty_str_field(obj, "formula")?.trim().to_owned(),
+            formula: obj.non_empty_str_field("formula")?.trim().to_owned(),
         },
         "vector_index" => {
             let fields = string_array(obj, "fields")?;

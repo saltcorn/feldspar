@@ -148,6 +148,7 @@ async fn assert_builder_document(client: &mut Client, label: &str, html: &str) {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_builder_opens_each_pattern_and_a_page_and_refuses_the_rest() -> sc_error::Result<()> {
     let (Some(bundle), Some(_)) = (bundle_dir(), builder_bundle_dir()) else {
         eprintln!("skipping: the Saltcorn UI and builder bundles are not built");

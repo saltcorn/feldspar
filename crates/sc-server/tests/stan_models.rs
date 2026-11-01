@@ -732,6 +732,7 @@ fn radon_model(bindings: Value) -> Value {
 
 #[tokio::test]
 #[ignore = "needs a real CmdStan: `feldspar cmdstan install`, or set $CMDSTAN"]
+#[allow(clippy::too_many_lines)]
 async fn radon_is_bound_sampled_labelled_by_county_and_written_back() -> Result<()> {
     let mut server = setup("radon", &radon_sql(), &[("models/radon.stan", RADON)]).await?;
     let client = &mut server.client;

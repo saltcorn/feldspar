@@ -42,6 +42,7 @@
 //! with its pre-image, the model's read of it is forgotten (so the next edit
 //! asks for a re-read), and the result lists the paths.
 
+use sc_types::ArgsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -56,7 +57,7 @@ use serde_json::{Map, Value as Json, json};
 use super::snapshot::{Snapshot, record_changes};
 use super::state::CodingState;
 use super::{CFG_MAY_USE_SHELL, may};
-use crate::files::{FileScope, config_count, string_arg};
+use crate::files::{FileScope, config_count};
 use crate::table::config_str;
 use sc_api::mcp::arguments;
 
@@ -393,7 +394,7 @@ pub async fn call(
     ctx: &mut TraitContext<'_>,
 ) -> Result<Json> {
     let args = arguments(args, &[ARG_COMMAND, ARG_TIMEOUT])?;
-    let command = string_arg(&args, ARG_COMMAND)?;
+    let command = args.string_arg(ARG_COMMAND)?;
     if command.trim().is_empty() {
         return Err(Error::invalid(format!("`{ARG_COMMAND}` is empty")));
     }

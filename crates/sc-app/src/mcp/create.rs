@@ -36,18 +36,17 @@
 //! application's table subset, so code written before the tables exist is code
 //! written against nothing.
 
+use sc_types::ArgsExt;
 use std::sync::Arc;
 
-use sc_api::mcp::{
-    AdminTool, Area, ToolContext, arguments, optional_bool, optional_string, require_grant,
-};
+use sc_api::mcp::{AdminTool, Area, ToolContext, arguments, require_grant};
 use sc_api::schema_edit::{GRANT_CREATE, Grants};
 use sc_catalog::{AdminHost, BackendOperation, Catalog, NEW_LOCAL_FILE_STORE, NewFileStore};
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
 
+use super::TOOL_DESCRIBE_APPS;
 use super::update::TOOL_UPDATE_APP;
-use super::{TOOL_DESCRIBE_APPS, required_str};
 use crate::framework::CFG_STORE;
 use crate::location::{app_project_dir, store_dir};
 use crate::react::{CFG_PROJECT, REACT_FRAMEWORK};
@@ -175,12 +174,13 @@ impl AdminTool for CreateStore {
         )?;
         require_grant(grants.create, "create a file store", GRANT_CREATE)?;
         let host = require_host(ctx, TOOL_CREATE_STORE)?;
-        let name = required_str(&args, ARG_NAME)?;
-        let backend = optional_string(&args, ARG_BACKEND)?
+        let name = args.required_string(ARG_NAME)?;
+        let backend = args
+            .optional_string(ARG_BACKEND)?
             .map(|b| b.trim().to_lowercase())
             .filter(|b| !b.is_empty())
             .unwrap_or_else(|| sc_files::LOCAL_BACKEND.to_owned());
-        let description = optional_string(&args, ARG_DESCRIPTION)?.unwrap_or_default();
+        let description = args.optional_string(ARG_DESCRIPTION)?.unwrap_or_default();
         let user = ctx.user.map(|u| u.id());
 
         let config = match backend.as_str() {
@@ -212,16 +212,17 @@ impl AdminTool for CreateStore {
                     .unwrap_or_else(|| json!({}))
             }
             sc_files::GIT_BACKEND => {
-                let url = required_str(&args, ARG_URL)?;
+                let url = args.required_string(ARG_URL)?;
                 let mut config = Map::new();
                 config.insert(sc_files::CFG_URL.to_owned(), json!(url));
-                if let Some(branch) = optional_string(&args, ARG_BRANCH)?
+                if let Some(branch) = args
+                    .optional_string(ARG_BRANCH)?
                     .map(|b| b.trim().to_owned())
                     .filter(|b| !b.is_empty())
                 {
                     config.insert(sc_files::CFG_BRANCH.to_owned(), json!(branch));
                 }
-                if optional_bool(&args, ARG_GENERATE_KEY)? == Some(true) {
+                if args.optional_bool(ARG_GENERATE_KEY)? == Some(true) {
                     let generated = host
                         .backend_operation(
                             user,
@@ -248,7 +249,8 @@ impl AdminTool for CreateStore {
                         ),
                     }));
                 }
-                if let Some(key) = optional_string(&args, ARG_KEY_PATH)?
+                if let Some(key) = args
+                    .optional_string(ARG_KEY_PATH)?
                     .map(|k| k.trim().to_owned())
                     .filter(|k| !k.is_empty())
                 {
@@ -410,15 +412,17 @@ impl AdminTool for CreateApp {
         )?;
         require_grant(grants.create, "create an application", GRANT_CREATE)?;
         let host = require_host(ctx, TOOL_CREATE_APP)?;
-        let name = required_str(&args, ARG_NAME)?;
-        let subdomain = match optional_string(&args, ARG_SUBDOMAIN)?
+        let name = args.required_string(ARG_NAME)?;
+        let subdomain = match args
+            .optional_string(ARG_SUBDOMAIN)?
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty())
         {
             Some(given) => given,
             None => free_subdomain(ctx.catalog, &subdomain_from(&name)).await?,
         };
-        let framework = optional_string(&args, ARG_FRAMEWORK)?
+        let framework = args
+            .optional_string(ARG_FRAMEWORK)?
             .map(|f| f.trim().to_owned())
             .filter(|f| !f.is_empty())
             .unwrap_or_else(|| REACT_FRAMEWORK.to_owned());
@@ -428,7 +432,7 @@ impl AdminTool for CreateApp {
         let body = json!({
             "name": name,
             "subdomain": subdomain,
-            "description": optional_string(&args, ARG_DESCRIPTION)?.unwrap_or_default(),
+            "description": args.optional_string(ARG_DESCRIPTION)?.unwrap_or_default(),
             "framework": { "name": framework, "config": config },
             "tables": tables,
             // Always none: a row API is opted into afterwards, by name.
@@ -495,7 +499,8 @@ impl AdminTool for CreateApp {
 /// was given for another framework — with every store setting left unset
 /// asking for a new local store, as the admin's form does.
 fn framework_config(framework: &str, args: &Map<String, Json>) -> Result<Json> {
-    let store = optional_string(args, ARG_STORE)?
+    let store = args
+        .optional_string(ARG_STORE)?
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty());
     let mut config = match args.get(ARG_FRAMEWORK_CONFIG) {
@@ -508,7 +513,7 @@ fn framework_config(framework: &str, args: &Map<String, Json>) -> Result<Json> {
         }
     };
     if framework == REACT_FRAMEWORK {
-        let project = optional_string(args, ARG_PROJECT)?.unwrap_or_default();
+        let project = args.optional_string(ARG_PROJECT)?.unwrap_or_default();
         config.insert(CFG_PROJECT.to_owned(), json!(project.trim()));
     }
     let spec = crate::framework_config_spec(framework)?;

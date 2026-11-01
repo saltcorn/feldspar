@@ -227,7 +227,7 @@ impl SharedTx {
     /// probe-free reading [`run_in_context`](crate::run_in_context) gives it.
     ///
     /// The statement reaches every row its policies (if any) let `access`'s
-    /// authority reach, so it takes an [`Unchecked`] (TODO-code-quality Q3.5).
+    /// authority reach, so it takes an [`Unchecked`].
     pub async fn run(&self, access: Unchecked<'_>, stmt: &Statement) -> Result<Vec<Row>> {
         self.run_as(access.authority(), stmt).await
     }
@@ -263,7 +263,7 @@ impl SharedTx {
     /// Run a raw SQL batch inside the transaction — savepoints, and the DDL the
     /// structured [`SchemaChange`](sc_db::SchemaChange) does not model. Crate-private: raw SQL
     /// reaches every row, and nothing outside the catalog runs it on a shared
-    /// transaction (TODO-code-quality Q3.5).
+    /// transaction.
     pub(crate) async fn batch(&self, sql: &str) -> Result<()> {
         let mut open = self.inner.lock().await;
         open.handle(&self.driver).await?.batch(sql).await
@@ -358,7 +358,7 @@ impl SharedTx {
             Some(tx) => tx.commit().await,
             None => Ok(()),
         };
-        let callbacks = self.finish(outcome.is_ok());
+        let callbacks = self.close(outcome.is_ok());
         if outcome.is_ok() {
             for callback in callbacks {
                 callback();
@@ -374,14 +374,41 @@ impl SharedTx {
             Some(tx) => tx.rollback().await,
             None => Ok(()),
         };
-        drop(self.finish(false));
+        drop(self.close(false));
         outcome
+    }
+
+    /// Commit if `outcome` is a success, roll back if not, and answer `outcome`
+    /// (or the commit's error).
+    pub async fn finish<T>(&self, outcome: Result<T>) -> Result<T> {
+        match outcome {
+            Ok(value) => {
+                self.commit().await?;
+                Ok(value)
+            }
+            Err(e) => {
+                self.abandon().await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Roll back where nothing waits on the rollback: after a failure, whose
+    /// error is the news, or after reads with nothing to commit. A rollback
+    /// that fails is logged: the connection is dropped, which ends the
+    /// transaction.
+    pub async fn abandon(&self) {
+        if let Err(e) = self.rollback().await {
+            sc_log::log_verbose!(
+                "a transaction could not be rolled back, so its connection is dropped: {e}"
+            );
+        }
     }
 
     /// Record how the transaction ended, and take the callbacks out — to be
     /// run, or dropped, by the caller once the lock is released (a callback's
     /// captures are dropped outside it, whatever their `Drop` does).
-    fn finish(&self, committed: bool) -> Vec<AfterCommit> {
+    fn close(&self, committed: bool) -> Vec<AfterCommit> {
         let mut pending = lock(&self.pending);
         pending.outcome = Some(committed);
         pending.savepoints.clear();

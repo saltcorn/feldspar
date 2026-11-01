@@ -2,10 +2,9 @@
 //!
 //! The technical design (§6.2) separates a **database** field ([`DataField`] —
 //! a column in a table) from a [**form** field](sc_types::FormField), and shares
-//! their common shape in [`BaseField`](sc_types::BaseField). The MVP models `DataField` fully —
-//! including the `Key` and `File` kinds, even though the admin UI only exercises
-//! `Plain` — so the data model is right from the start (calculated fields are
-//! post-MVP; see the crate root).
+//! their common shape in [`BaseField`](sc_types::BaseField). A `DataField` is
+//! one of the kinds of [`DataFieldKind`]: a plain column, a key to another
+//! table, a file, or a calculated field with no column of its own.
 //!
 //! Only `DataField` and the identifiers live here. `BaseField` and `FormField`
 //! are in `sc-types` beside [`Attrs`](sc_types::Attrs), which they carry and describe. What keeps
@@ -21,14 +20,14 @@ use sc_types::TypeRef;
 // entry of the one and is the other half of §6.2's split with the other.
 use sc_types::{Attrs, BaseField};
 
-/// Identifies a field within a table. As with [`TableId`], the MVP identity is
-/// the field (column) name.
+/// Identifies a field within a table: as with [`TableId`], by its (column)
+/// name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FieldId(pub String);
 
-/// Identifies a connected database. The MVP has a single **primary** database
-/// (see [`DbId::primary`]); the newtype exists so multi-database support slots in
-/// later without changing field signatures.
+/// Identifies a connected database: the **primary** one ([`DbId::primary`]) or
+/// one of the `_fd_db_connections` an administrator added. A table lives in
+/// one database, and a query runs on one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DbId(pub String);
 
@@ -37,8 +36,8 @@ pub struct DbId(pub String);
 pub struct FileStoreId(pub String);
 
 impl DbId {
-    /// The single primary database of the MVP: the one that additionally hosts
-    /// the `users` and (post-MVP) `_fd_*` metadata tables.
+    /// The primary database: the one that also holds the `users` table and the
+    /// `_fd_*` metadata tables.
     pub fn primary() -> DbId {
         DbId("primary".to_owned())
     }
@@ -314,9 +313,9 @@ impl DataField {
     }
 
     /// Build a data field from an introspected [`Column`]. Nullability comes from
-    /// the column; uniqueness is not reported by MVP introspection and defaults
-    /// to `false`. The caller supplies primary-key membership and the kind, both
-    /// of which are table-level facts.
+    /// the column. `unique` is `false`: a unique constraint is one of the
+    /// table's constraints, not a fact about the column. The caller supplies
+    /// primary-key membership and the kind, both of which are table-level facts.
     pub fn from_column(col: &Column, primary_key: bool, kind: DataFieldKind) -> DataField {
         DataField {
             base: BaseField {

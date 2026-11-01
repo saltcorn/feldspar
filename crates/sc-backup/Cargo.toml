@@ -43,6 +43,7 @@ bytes.workspace = true
 chrono.workspace = true
 # Restoring a backup must give back the exact float written: deno_core turns this on in the
 # server binary, but the backup crate must not depend on that.
+serde.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 uuid.workspace = true
 rust_decimal.workspace = true

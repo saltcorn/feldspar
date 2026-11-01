@@ -6,7 +6,7 @@
 //! [`HandlerCtx`] and return a [`HandlerResponse`], deferring cookies/sessions to
 //! the dispatcher via [`SessionAction`](crate::SessionAction).
 //!
-//! **One module per domain** (TODO-code-quality Q5.4), each with a
+//! **One module per domain**, each with a
 //! `register(reg, state)` and the helpers only it uses, mirroring the module of
 //! the same name under `sc-api`'s `admin/`, which declares the endpoints. What
 //! more than one domain uses is here, and the entity codecs are
@@ -25,8 +25,8 @@
 //! row refuse — which is what the field list's red banner is warning about.
 
 use sc_catalog::Authority;
-use sc_types::Attrs;
 use sc_types::Role;
+use sc_types::{ArgsExt, Attrs};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -122,8 +122,7 @@ mod views;
 /// reaches the trigger dispatcher, the agents, models, modules and streams.
 ///
 /// Every domain's `register` is handed one, and a typed handler
-/// ([`typed`](crate::handler::typed)) is handed its own clone, in place of the
-/// `catalog.clone()` / `apps.clone()` pair every closure used to capture.
+/// ([`typed`](crate::handler::typed)) is handed its own clone.
 #[derive(Clone)]
 pub(crate) struct HandlerState {
     /// The server's catalog.
@@ -162,14 +161,12 @@ pub fn admin_handlers_with(
     fetch: Arc<dyn sc_api::public_datasets::Fetch>,
 ) -> HandlerRegistry {
     // A schema change re-projects the API providers of every mounted app
-    // exposing that table, live (Phase 7's seam). This used to be a
-    // `refresh_table` call inside each handler that changed a schema, which
-    // worked only while an HTTP request was the only way to change one; an agent
-    // can now change one too (§11.3), and `sc-api`'s schema editor — where the
-    // change is actually made — cannot name this crate. So the catalog carries
-    // the seam and the observer is installed **here**, at the one place a server
-    // has both handles: a caller that assembles the admin API gets live
-    // re-projection by construction rather than by remembering to ask for it.
+    // exposing that table, live. A request or an agent (§11.3) can change a
+    // schema, and `sc-api`'s schema editor — where the change is made — cannot
+    // name this crate. So the catalog carries the seam and the observer is
+    // installed **here**, at the one place a server has both handles: a caller
+    // that assembles the admin API gets live re-projection by construction
+    // rather than by remembering to ask for it.
     catalog.set_schema_observer(Arc::clone(&apps) as Arc<dyn sc_catalog::SchemaObserver>);
     // And what follows a table rename into the views, triggers, applications
     // and other definitions that name the table (`table_rename`), for the same
@@ -178,8 +175,8 @@ pub fn admin_handlers_with(
     // And the same for the trigger set, installed on the dispatcher rather than
     // the catalog because that is what holds it: a saved, renamed or deleted
     // trigger re-projects every app exposing one, whether the save came from
-    // these handlers or from an agent's `admin_copilot` (§11.3). The handlers'
-    // own `reproject_apps` calls are gone rather than double-firing beside it.
+    // these handlers or from an agent's `admin_copilot` (§11.3). The handlers do
+    // not re-project themselves, so nothing fires twice.
     if let Ok(dispatcher) = triggers_of(&apps) {
         dispatcher.set_observer(Arc::clone(&apps) as Arc<dyn sc_action::TriggerObserver>);
     }
@@ -210,7 +207,7 @@ pub fn admin_handlers_with(
     translations::register(&mut reg, &state);
     users::register(&mut reg, &state);
 
-    // --- the Analytics UI (analytics TODO A1.13) -----------------------------
+    // --- the Analytics UI -----------------------------
     crate::analytics::register(&mut reg, catalog.clone());
     crate::public_datasets::register(&mut reg, catalog.clone(), fetch);
     // --- the home page's entities list ----------------------------------------
@@ -219,7 +216,7 @@ pub fn admin_handlers_with(
     crate::mcp_servers::register(&mut reg, catalog.clone());
     // --- what agents remember (TODO-agent-skills AS8.3) ----------------------
     crate::agent_memory::register(&mut reg, catalog.clone());
-    // --- checklists (TODO-checklists C1.11) ----------------------------------
+    // --- checklists ----------------------------------
     crate::checklists::register(&mut reg, catalog.clone(), apps.clone());
 
     reg
@@ -383,8 +380,8 @@ pub(crate) async fn install_module_json(
     locale: &Locale,
 ) -> Result<Json> {
     let obj = require_object(body)?;
-    let source = sc_module::ModuleSource::parse(non_empty_str_field(obj, "source")?)?;
-    let location = non_empty_str_field(obj, "location")?.trim().to_owned();
+    let source = sc_module::ModuleSource::parse(obj.non_empty_str_field("source")?)?;
+    let location = obj.non_empty_str_field("location")?.trim().to_owned();
     // Absent is `javascript`: the language nearly every module is
     // written in, and the one every existing caller means.
     let language = match obj.get("language").filter(|v| !v.is_null()) {
@@ -1018,12 +1015,11 @@ fn say_unless_module(text: &str, module: Option<&String>, locale: &Locale) -> St
 /// policy's role floor, so the admin's own row editor sees and edits every row of
 /// a FORCE'd table — carrying the signed-in admin's fields.
 ///
-/// It used to be `None` off an RLS table, because a caller context meant only
-/// "route this through a policy transaction". It no longer does: `rows` decides
-/// that from the table, and the context is *who is writing* — which the table
-/// event a write raises has to report (§10.2). The role is explicit rather than
-/// the user's own for the reason it always was: this endpoint is admin-only, and
-/// the row editor must work on a FORCE'd table.
+/// The principal says *who is writing*, which the table event a write raises
+/// reports (§10.2); whether the write goes through a policy transaction `rows`
+/// decides from the table. The role is explicit rather than the user's own
+/// because this endpoint is admin-only, and the row editor must work on a
+/// FORCE'd table.
 fn admin_caller(user: Option<&sc_auth::User>) -> sc_catalog::Principal {
     sc_access::principal_at(Role::ADMIN, user)
 }

@@ -511,6 +511,7 @@ async fn prerendering_writes_the_listed_pages_through_the_same_body() -> sc_erro
 /// `URL`, the sandbox's own `Headers`). Opt-in, as the Vue build is: it needs
 /// Node, npm and the registry.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_bundled_astro_module_builds_a_site_this_server_renders() -> sc_error::Result<()> {
     if std::env::var("SC_TEST_NPM").as_deref() != Ok("1") {
         eprintln!("skipping: set SC_TEST_NPM=1 to run the real npm build");

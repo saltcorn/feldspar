@@ -41,6 +41,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Datelike, Duration, Months, NaiveDate};
+use sc_error::{Error, Result};
 use sc_expr::{
     Env, Formula, Operation as FormulaOperation, TableShape, TranslateError, UserEnv,
     translate_rooted, translate_value_rooted,
@@ -200,32 +201,32 @@ pub struct Compilation {
 impl Compilation {
     /// The stage after the first `upto` operations (0 is the base), or the
     /// sentence saying why it does not read.
-    pub fn stage(&self, upto: usize) -> Result<&Stage, String> {
+    pub fn stage(&self, upto: usize) -> Result<&Stage> {
         if upto > self.operations.len() {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "the dataset has {} operations, so there is no stage after operation {upto}",
                 self.operations.len()
-            ));
+            )));
         }
         if let Some(Some(stage)) = self.stages.get(upto) {
             return Ok(stage);
         }
         if let Some(error) = &self.base.error {
-            return Err(format!("its base does not read: {error}"));
+            return Err(Error::invalid(format!("its base does not read: {error}")));
         }
         match self.first_error() {
-            Some((i, report)) => Err(format!(
+            Some((i, report)) => Err(Error::invalid(format!(
                 "operation {} ({}) has an error: {}",
                 i + 1,
                 report.kind,
                 report.error.as_deref().unwrap_or("it does not compile")
-            )),
-            None => Err("this stage does not read".to_owned()),
+            ))),
+            None => Err(Error::invalid("this stage does not read")),
         }
     }
 
     /// The stage after the last operation.
-    pub fn last(&self) -> Result<&Stage, String> {
+    pub fn last(&self) -> Result<&Stage> {
         self.stage(self.operations.len())
     }
 
@@ -339,7 +340,7 @@ impl Stage {
         restrict: Option<&Restriction>,
         page: Option<(u64, u64)>,
         with_key: bool,
-    ) -> Result<Select, String> {
+    ) -> Result<Select> {
         let (sealed, alias) = self.sealed_for_read();
         let mut select = Select::from(sealed.from.clone());
         let mut columns: Vec<Projection> = self
@@ -355,7 +356,7 @@ impl Stage {
             ));
         }
         if columns.is_empty() {
-            return Err("the dataset has no columns at this stage".to_owned());
+            return Err(Error::invalid("the dataset has no columns at this stage"));
         }
         select.columns = columns;
         select.filter = self.restriction(&alias, restrict)?;
@@ -372,10 +373,10 @@ impl Stage {
     }
 
     /// The query reading this stage's visible columns in no particular order:
-    /// what a plot's stats are computed over (analytics TODO A2.3), wrapped as
+    /// what a plot's stats are computed over, wrapped as
     /// a subquery. Leaving the order out spares the database a sort that a
     /// histogram of a million rows would only throw away.
-    pub fn unordered_query(&self) -> Result<Select, String> {
+    pub fn unordered_query(&self) -> Result<Select> {
         let (sealed, alias) = self.sealed_for_read();
         let columns: Vec<Projection> = self
             .cols
@@ -384,16 +385,16 @@ impl Stage {
             .map(|c| Projection::expr_as(Expr::qcol(alias.clone(), c.name.clone()), c.name.clone()))
             .collect();
         if columns.is_empty() {
-            return Err("the dataset has no columns at this stage".to_owned());
+            return Err(Error::invalid("the dataset has no columns at this stage"));
         }
         Ok(self.finish(Select::from(sealed.from).columns(columns)))
     }
 
     /// The query reading this stage's visible columns — and [`ROW_KEY`] too,
     /// while rows are a table's — in no particular order: what a map layer's
-    /// features are drawn from (analytics TODO A5.5), a feature identified by
+    /// features are drawn from, a feature identified by
     /// its row's key.
-    pub fn features_query(&self) -> Result<Select, String> {
+    pub fn features_query(&self) -> Result<Select> {
         let (sealed, alias) = self.sealed_for_read();
         let mut columns: Vec<Projection> = self
             .cols
@@ -402,7 +403,7 @@ impl Stage {
             .map(|c| Projection::expr_as(Expr::qcol(alias.clone(), c.name.clone()), c.name.clone()))
             .collect();
         if columns.is_empty() {
-            return Err("the dataset has no columns at this stage".to_owned());
+            return Err(Error::invalid("the dataset has no columns at this stage"));
         }
         if self.has_row_key() {
             columns.push(Projection::expr_as(
@@ -422,7 +423,7 @@ impl Stage {
     }
 
     /// The query counting this stage's rows, restricted.
-    pub fn count_query(&self, restrict: Option<&Restriction>) -> Result<Select, String> {
+    pub fn count_query(&self, restrict: Option<&Restriction>) -> Result<Select> {
         let (sealed, alias) = self.sealed_for_read();
         let mut select = Select::from(sealed.from.clone())
             .columns(vec![Projection::expr_as(agg("count", Vec::new()), "n")]);
@@ -432,9 +433,11 @@ impl Stage {
 
     /// The distinct values of `column` at this stage, most frequent first, at
     /// most `limit` of them — what a Split's columns are pre-filled from.
-    pub fn values_query(&self, column: &str, limit: u64) -> Result<Select, String> {
+    pub fn values_query(&self, column: &str, limit: u64) -> Result<Select> {
         if self.col(column).is_none_or(|c| c.hidden) {
-            return Err(format!("there is no column `{column}` at this stage"));
+            return Err(Error::invalid(format!(
+                "there is no column `{column}` at this stage"
+            )));
         }
         let (sealed, alias) = self.sealed_for_read();
         let value = Expr::qcol(alias, column);
@@ -469,20 +472,16 @@ impl Stage {
     }
 
     /// The `WHERE` a restriction becomes on a read of this stage.
-    fn restriction(
-        &self,
-        alias: &str,
-        restrict: Option<&Restriction>,
-    ) -> Result<Option<Expr>, String> {
+    fn restriction(&self, alias: &str, restrict: Option<&Restriction>) -> Result<Option<Expr>> {
         let Some(r) = restrict else {
             return Ok(None);
         };
         if !self.has_row_key() {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "rows can be asked for by `{}` only while they are rows of it, and {}",
                 r.table,
                 self.grain.describe()
-            ));
+            )));
         }
         let keys = Select::from(Source::table(r.table.clone()))
             .columns(vec![Projection::expr(Expr::qcol(
@@ -505,12 +504,12 @@ impl Stage {
     }
 
     /// The column `name`, or the sentence saying it is not there.
-    fn require(&self, name: &str, what: &str) -> Result<&Col, String> {
+    fn require(&self, name: &str, what: &str) -> Result<&Col> {
         self.visible(name).ok_or_else(|| {
-            format!(
+            Error::invalid(format!(
                 "{what} `{name}` is not a column at this point (the columns are {})",
                 self.column_list()
-            )
+            ))
         })
     }
 
@@ -616,7 +615,7 @@ impl Stage {
                 None => table.field(&c.name),
             };
         }
-        // Whose rows these are, which is what `Ↄ` needs (A1.2): a table's,
+        // Whose rows these are, which is what `Ↄ` needs: a table's,
         // identified by the hidden row key, or — after an Aggregate grouped by
         // one foreign key — the referenced table's, identified by that key.
         match &self.grain {
@@ -690,7 +689,7 @@ impl Compiler<'_> {
             },
             Err(e) => BaseReport {
                 shape: None,
-                error: Some(e.clone()),
+                error: Some(e.message().to_owned()),
             },
         };
         let mut current = base.ok();
@@ -740,7 +739,7 @@ impl Compiler<'_> {
                             kind,
                             status: OpStatus::Invalid,
                             shape: None,
-                            error: Some(e),
+                            error: Some(e.message().to_owned()),
                         }
                     }
                 },
@@ -755,7 +754,7 @@ impl Compiler<'_> {
     }
 
     /// The stage a base provides.
-    fn base_stage(&self, base: &Base, stack: &[DatasetId]) -> Result<Stage, String> {
+    fn base_stage(&self, base: &Base, stack: &[DatasetId]) -> Result<Stage> {
         match base {
             Base::Table { table } => self.table_stage(table),
             Base::Dataset { dataset } => self.dataset_stage(*dataset, stack, "it is based on"),
@@ -764,38 +763,36 @@ impl Compiler<'_> {
 
     /// The last stage of another dataset, or the sentence saying why it does
     /// not read. `how` says how this one reads it ("it is based on").
-    fn dataset_stage(
-        &self,
-        id: DatasetId,
-        stack: &[DatasetId],
-        how: &str,
-    ) -> Result<Stage, String> {
+    fn dataset_stage(&self, id: DatasetId, stack: &[DatasetId], how: &str) -> Result<Stage> {
         if stack.contains(&id) {
             let name = self
                 .library
                 .get(id)
                 .map_or_else(|| id.to_string(), |d| d.name.clone());
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "the dataset `{name}` {how} leads back to itself, and a dataset cannot be \
                  built from its own rows"
-            ));
+            )));
         }
         let def = self
             .library
             .get(id)
-            .ok_or_else(|| format!("the dataset {how} no longer exists"))?;
+            .ok_or_else(|| Error::invalid(format!("the dataset {how} no longer exists")))?;
         let mut inner = stack.to_vec();
         inner.push(id);
         let compiled = self.compile_def(def, &inner);
-        compiled
-            .last()
-            .cloned()
-            .map_err(|e| format!("the dataset `{}` {how} does not read: {e}", def.name))
+        compiled.last().cloned().map_err(|e| {
+            Error::invalid(format!(
+                "the dataset `{}` {how} does not read: {}",
+                def.name,
+                e.message()
+            ))
+        })
     }
 
     /// The rows of a table: its columns under the base alias, and its primary
     /// key as the hidden row key.
-    fn table_stage(&self, name: &str) -> Result<Stage, String> {
+    fn table_stage(&self, name: &str) -> Result<Stage> {
         let info = self.schema.table(name)?;
         let user = UserEnv::Inline(None);
         let env = Env::new(&user).with_calc(&info.calc);
@@ -860,7 +857,7 @@ impl Compiler<'_> {
         })
     }
 
-    fn apply(&self, stage: Stage, op: &Op, stack: &[DatasetId]) -> Result<Stage, String> {
+    fn apply(&self, stage: Stage, op: &Op, stack: &[DatasetId]) -> Result<Stage> {
         match op {
             Op::Calculated(c) => self.calculated(stage, c),
             Op::Filter(_) | Op::Limit(_) if self.options.skip_filters => Ok(stage),
@@ -892,12 +889,16 @@ impl Compiler<'_> {
         source: &str,
         predicate: bool,
         allow_window: bool,
-    ) -> Result<Translated, String> {
+    ) -> Result<Translated> {
         if source.trim().is_empty() {
-            return Err("the formula is empty".to_owned());
+            return Err(Error::invalid("the formula is empty"));
         }
-        let formula = Formula::parse(source)
-            .map_err(|e| format!("`{source}` is not a formula: {}", plain(&e.to_string())))?;
+        let formula = Formula::parse(source).map_err(|e| {
+            Error::invalid(format!(
+                "`{source}` is not a formula: {}",
+                plain(&e.to_string())
+            ))
+        })?;
         let shape = stage.formula_shape(&self.schema.shape);
         let analysis = formula.validate(&shape, STAGE_NAME).map_err(|e| {
             let message = e.to_string();
@@ -912,25 +913,24 @@ impl Compiler<'_> {
             } else {
                 plain(&message)
             }
-        })?;
+        })
+        .map_err(Error::invalid)?;
         if analysis.uses_caller() || !analysis.flags.is_empty() {
-            return Err(
+            return Err(Error::invalid(
                 "a dataset cannot use `user`, `session` or the operation flags: it has no \
-                 caller, and its rows must not depend on who reads them"
-                    .to_owned(),
-            );
-        }
-        if let (Some(function), Err(reason)) = (analysis.geo_calls.first(), &self.schema.spatial) {
-            return Err(format!(
-                "`Geo.{function}` is computed by the database, and {reason}"
+                 caller, and its rows must not depend on who reads them",
             ));
         }
+        if let (Some(function), Err(reason)) = (analysis.geo_calls.first(), &self.schema.spatial) {
+            return Err(Error::invalid(format!(
+                "`Geo.{function}` is computed by the database, and {reason}"
+            )));
+        }
         if !analysis.model_calls.is_empty() {
-            return Err(
+            return Err(Error::invalid(
                 "a dataset formula cannot call `predict`: a model's predictions are added by \
-                 a Model predictions operation (milestone A7)"
-                    .to_owned(),
-            );
+                 a Model predictions operation (milestone A7)",
+            ));
         }
         let user = UserEnv::Inline(None);
         let env = Env::new(&user);
@@ -946,12 +946,14 @@ impl Compiler<'_> {
         } else {
             translate_value_rooted(&formula, &env, &shape, STAGE_NAME, ROW)
         };
-        let mut expr = translated.map_err(|e| match e {
-            TranslateError::Untranslatable(what) => {
-                format!("`{source}` cannot be computed by the database ({what})")
-            }
-            TranslateError::Error(e) => plain(&e.to_string()),
-        })?;
+        let mut expr = translated
+            .map_err(|e| match e {
+                TranslateError::Untranslatable(what) => {
+                    format!("`{source}` cannot be computed by the database ({what})")
+                }
+                TranslateError::Error(e) => plain(&e.to_string()),
+            })
+            .map_err(Error::invalid)?;
         let refs = walk::columns_of(&expr, ROW);
         if !stage.mergeable(&refs, allow_window) {
             self.seal(stage);
@@ -970,9 +972,9 @@ impl Compiler<'_> {
         })
     }
 
-    // --- the operations that keep the grain (A1.3) -------------------------
+    // --- the operations that keep the grain -------------------------
 
-    fn calculated(&self, mut stage: Stage, c: &CalculatedOp) -> Result<Stage, String> {
+    fn calculated(&self, mut stage: Stage, c: &CalculatedOp) -> Result<Stage> {
         let name = column_name(&c.name, "the new column")?;
         let t = self.translate(&mut stage, &c.formula, false, true)?;
         stage.put(Col {
@@ -986,7 +988,7 @@ impl Compiler<'_> {
         Ok(stage)
     }
 
-    fn filter(&self, mut stage: Stage, f: &FilterOp) -> Result<Stage, String> {
+    fn filter(&self, mut stage: Stage, f: &FilterOp) -> Result<Stage> {
         let t = self.translate(&mut stage, &f.formula, true, false)?;
         stage.filter = Some(match stage.filter.take() {
             Some(existing) => existing.and(t.expr),
@@ -995,19 +997,19 @@ impl Compiler<'_> {
         Ok(stage)
     }
 
-    fn sort(&self, mut stage: Stage, s: &SortOp) -> Result<Stage, String> {
+    fn sort(&self, mut stage: Stage, s: &SortOp) -> Result<Stage> {
         if s.keys.is_empty() {
-            return Err("a sort needs at least one key".to_owned());
+            return Err(Error::invalid("a sort needs at least one key"));
         }
         let mut keys = Vec::with_capacity(s.keys.len());
         for key in &s.keys {
             let t = self.translate(&mut stage, &key.formula, false, true)?;
             if matches!(t.ty, ColType::Json | ColType::Bytes | ColType::Geometry) {
-                return Err(format!(
+                return Err(Error::invalid(format!(
                     "`{}` is {}, which has no order to sort by",
                     key.formula,
                     t.ty.name()
-                ));
+                )));
             }
             keys.push((t, key.descending));
         }
@@ -1023,11 +1025,12 @@ impl Compiler<'_> {
         Ok(stage)
     }
 
-    fn window(&self, mut stage: Stage, w: &WindowOp) -> Result<Stage, String> {
+    #[allow(clippy::too_many_lines)]
+    fn window(&self, mut stage: Stage, w: &WindowOp) -> Result<Stage> {
         let name = column_name(&w.name, "the new column")?;
         let column = match (&w.column, w.function.needs_column()) {
             (Some(c), true) => Some(stage.require(c, "the column")?.clone()),
-            (None, true) => return Err("this window function needs a column".to_owned()),
+            (None, true) => return Err(Error::invalid("this window function needs a column")),
             (_, false) => None,
         };
         let numeric = matches!(
@@ -1044,11 +1047,11 @@ impl Compiler<'_> {
             && !c.ty.is_numeric()
             && c.ty != ColType::Unknown
         {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "`{}` is {}, and this window function needs a number",
                 c.name,
                 c.ty.name()
-            ));
+            )));
         }
         let mut refs: BTreeSet<String> = w.partition.iter().cloned().collect();
         for key in &w.order {
@@ -1202,11 +1205,14 @@ impl Compiler<'_> {
         Ok(stage)
     }
 
-    // --- the operations that change the grain (A1.4) ----------------------
+    // --- the operations that change the grain ----------------------
 
-    fn aggregate(&self, mut stage: Stage, a: &AggregateOp) -> Result<Stage, String> {
+    #[allow(clippy::too_many_lines)]
+    fn aggregate(&self, mut stage: Stage, a: &AggregateOp) -> Result<Stage> {
         if a.group_by.is_empty() && a.summaries.is_empty() {
-            return Err("an aggregate needs a group key or a summary".to_owned());
+            return Err(Error::invalid(
+                "an aggregate needs a group key or a summary",
+            ));
         }
         let mut names = BTreeSet::new();
         for name in a
@@ -1217,7 +1223,9 @@ impl Compiler<'_> {
         {
             let name = column_name(name, "a result column")?;
             if !names.insert(name.clone()) {
-                return Err(format!("two result columns are called `{name}`"));
+                return Err(Error::invalid(format!(
+                    "two result columns are called `{name}`"
+                )));
             }
         }
         // Check the summaries against the columns before anything is built,
@@ -1226,16 +1234,19 @@ impl Compiler<'_> {
         for s in &a.summaries {
             let column = match &s.column {
                 Some(c) => Some(stage.visible(c).ok_or_else(|| {
-                    format!(
+                    Error::invalid(format!(
                         "the summary `{}` reads `{c}`, and that is not a column at this point \
                          (the columns are {})",
                         s.name,
                         stage.column_list()
-                    )
+                    ))
                 })?),
                 None if s.function == SummaryFunction::Count => None,
                 None => {
-                    return Err(format!("the summary `{}` needs a column", s.name));
+                    return Err(Error::invalid(format!(
+                        "the summary `{}` needs a column",
+                        s.name
+                    )));
                 }
             };
             if let Some(c) = column {
@@ -1244,10 +1255,10 @@ impl Compiler<'_> {
             if s.function == SummaryFunction::Union
                 && let Err(reason) = &self.schema.spatial
             {
-                return Err(format!(
+                return Err(Error::invalid(format!(
                     "the union of `{}` is computed by the database, and {reason}",
                     s.column.as_deref().unwrap_or_default()
-                ));
+                )));
             }
             if let Some(order) = &s.order {
                 stage.require(&order.column, "the order column")?;
@@ -1271,10 +1282,10 @@ impl Compiler<'_> {
         for g in &a.group_by {
             let t = self.translate(&mut stage, &g.formula, false, false)?;
             if matches!(t.ty, ColType::Json) {
-                return Err(format!(
+                return Err(Error::invalid(format!(
                     "`{}` is JSON, which cannot be grouped by",
                     g.formula
-                ));
+                )));
             }
             keys.push((g.name.trim().to_owned(), t));
         }
@@ -1410,7 +1421,7 @@ impl Compiler<'_> {
                     ColType::Float,
                     None,
                 ),
-                // Regions dissolved into one geometry (A5.4).
+                // Regions dissolved into one geometry.
                 SummaryFunction::Union => (
                     agg("ST_Union", value.into_iter().collect()),
                     ColType::Geometry,
@@ -1521,9 +1532,9 @@ impl Compiler<'_> {
         Ok(stage)
     }
 
-    fn limit(&self, mut stage: Stage, l: &LimitOp) -> Result<Stage, String> {
+    fn limit(&self, mut stage: Stage, l: &LimitOp) -> Result<Stage> {
         if l.n == 0 {
-            return Err("a limit of 0 rows keeps nothing".to_owned());
+            return Err(Error::invalid("a limit of 0 rows keeps nothing"));
         }
         match l.mode {
             LimitMode::First => {
@@ -1617,27 +1628,29 @@ impl Compiler<'_> {
         Ok(stage)
     }
 
-    fn stack(&self, mut stage: Stage, s: &StackOp) -> Result<Stage, String> {
+    fn stack(&self, mut stage: Stage, s: &StackOp) -> Result<Stage> {
         if s.columns.is_empty() {
-            return Err("a stack needs at least one column".to_owned());
+            return Err(Error::invalid("a stack needs at least one column"));
         }
         let names_to = column_name(&s.names_to, "the name column")?;
         let values_to = column_name(&s.values_to, "the value column")?;
         if names_to == values_to {
-            return Err("the name column and the value column need different names".to_owned());
+            return Err(Error::invalid(
+                "the name column and the value column need different names",
+            ));
         }
         let mut ty = ColType::Unknown;
         let mut first: Option<&str> = None;
         for c in &s.columns {
             let col = stage.require(c, "the stacked column")?;
             if !ty.compatible(col.ty) {
-                return Err(format!(
+                return Err(Error::invalid(format!(
                     "stacked columns become one column, so they must be of one kind: `{}` is {} \
                      and `{c}` is {}",
                     first.unwrap_or(c),
                     ty.name(),
                     col.ty.name()
-                ));
+                )));
             }
             ty = ty.unify(col.ty);
             first.get_or_insert(c);
@@ -1651,11 +1664,11 @@ impl Compiler<'_> {
             .collect();
         for c in &kept {
             if !c.hidden && (c.name == names_to || c.name == values_to) {
-                return Err(format!(
+                return Err(Error::invalid(format!(
                     "`{}` is already a column; name the stacked columns' name or value column \
                      something else",
                     c.name
-                ));
+                )));
             }
         }
         self.seal(&mut stage);
@@ -1747,44 +1760,45 @@ impl Compiler<'_> {
         })
     }
 
-    fn split(&self, mut stage: Stage, s: &SplitOp) -> Result<Stage, String> {
+    fn split(&self, mut stage: Stage, s: &SplitOp) -> Result<Stage> {
         let names = stage.require(&s.names_from, "the name column")?.clone();
         let values = stage.require(&s.values_from, "the value column")?.clone();
         if s.id_columns.is_empty() {
-            return Err("a split needs at least one column identifying a row".to_owned());
+            return Err(Error::invalid(
+                "a split needs at least one column identifying a row",
+            ));
         }
         for c in &s.id_columns {
             stage.require(c, "the identifying column")?;
             if *c == s.names_from || *c == s.values_from {
-                return Err(format!(
+                return Err(Error::invalid(format!(
                     "`{c}` cannot identify a row and be split at the same time"
-                ));
+                )));
             }
         }
         if s.values.is_empty() {
-            return Err(
+            return Err(Error::invalid(
                 "a split has no new columns yet: read the values of the name column from the \
-                 data first"
-                    .to_owned(),
-            );
+                 data first",
+            ));
         }
         let mut seen: BTreeSet<&str> = s.id_columns.iter().map(String::as_str).collect();
         for v in &s.values {
             column_name(v, "a new column")?;
             if !seen.insert(v.as_str()) {
-                return Err(format!(
+                return Err(Error::invalid(format!(
                     "the new column `{v}` would be there twice (it is a value of `{}` and \
                      already a column, or listed twice)",
                     s.names_from
-                ));
+                )));
             }
         }
         if matches!(s.summary, SplitSummary::Sum | SplitSummary::Mean) && !values.ty.is_numeric() {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "`{}` is {}, which cannot be added up",
                 values.name,
                 values.ty.name()
-            ));
+            )));
         }
         self.seal(&mut stage);
         let name_expr = stage
@@ -1809,7 +1823,7 @@ impl Compiler<'_> {
             let col = stage
                 .col(c)
                 .cloned()
-                .ok_or_else(|| format!("`{c}` is not a column"))?;
+                .ok_or_else(|| Error::invalid(format!("`{c}` is not a column")))?;
             group.push(col.expr.clone());
             let o = self.fresh("_fd_o");
             order.push((o.clone(), false));
@@ -1828,10 +1842,10 @@ impl Compiler<'_> {
             SplitSummary::Count => ("count", ColType::Int),
         };
         if matches!(func, "max" | "min") && values.ty == ColType::Bool {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "`{}` is true or false, which has no largest value; count it instead",
                 values.name
-            ));
+            )));
         }
         let at = cols.iter().position(|c| c.hidden).unwrap_or(cols.len());
         let mut new_cols = Vec::with_capacity(s.values.len());
@@ -1865,24 +1879,28 @@ impl Compiler<'_> {
         Ok(stage)
     }
 
-    fn complete(&self, mut stage: Stage, c: &CompleteOp) -> Result<Stage, String> {
+    #[allow(clippy::too_many_lines)]
+    fn complete(&self, mut stage: Stage, c: &CompleteOp) -> Result<Stage> {
         if c.columns.is_empty() {
-            return Err("a complete needs at least one column".to_owned());
+            return Err(Error::invalid("a complete needs at least one column"));
         }
         let mut completed = BTreeSet::new();
         for column in &c.columns {
             stage.require(&column.column, "the completed column")?;
             if !completed.insert(column.column.as_str()) {
-                return Err(format!("`{}` is completed twice", column.column));
+                return Err(Error::invalid(format!(
+                    "`{}` is completed twice",
+                    column.column
+                )));
             }
         }
         for f in &c.fill {
             stage.require(&f.column, "the filled column")?;
             if completed.contains(f.column.as_str()) {
-                return Err(format!(
+                return Err(Error::invalid(format!(
                     "`{}` is completed, so it is never missing and has nothing to fill",
                     f.column
-                ));
+                )));
             }
         }
         self.seal(&mut stage);
@@ -1893,7 +1911,7 @@ impl Compiler<'_> {
             let col = stage
                 .col(&column.column)
                 .cloned()
-                .ok_or("the column vanished")?;
+                .ok_or_else(|| Error::invalid("the column vanished"))?;
             let alias = self.fresh("_fd_v");
             let values: Select = match &column.values {
                 CompleteValues::Data => {
@@ -1907,19 +1925,20 @@ impl Compiler<'_> {
                 }
                 CompleteValues::Table => {
                     let key = col.key.clone().ok_or_else(|| {
-                        format!(
+                        Error::invalid(format!(
                             "`{}` is not a foreign key, so there is no table to take its values \
                              from",
                             col.name
-                        )
+                        ))
                     })?;
                     Select::from(Source::table(key.table.clone())).columns(vec![
                         Projection::expr_as(Expr::qcol(key.table, key.field), "v"),
                     ])
                 }
                 CompleteValues::Range { from, to, step } => {
-                    let values = range_values(col.ty, from, to, step.as_ref())
-                        .map_err(|e| format!("the range of `{}`: {e}", col.name))?;
+                    let values = range_values(col.ty, from, to, step.as_ref()).map_err(|e| {
+                        Error::invalid(format!("the range of `{}`: {}", col.name, e.message()))
+                    })?;
                     let parts: Vec<Select> = values
                         .into_iter()
                         .map(|v| {
@@ -1967,8 +1986,9 @@ impl Compiler<'_> {
         let mut fills: BTreeMap<String, Expr> = BTreeMap::new();
         for col in &stage.cols {
             if let Some(value) = fill.get(col.name.as_str()) {
-                let value = json_value(value, col.ty)
-                    .map_err(|e| format!("the fill value of `{}`: {e}", col.name))?;
+                let value = json_value(value, col.ty).map_err(|e| {
+                    Error::invalid(format!("the fill value of `{}`: {}", col.name, e.message()))
+                })?;
                 fills.insert(col.name.clone(), typed(value, col.ty));
             }
         }
@@ -2079,47 +2099,52 @@ impl Compiler<'_> {
         })
     }
 
-    // --- the operations that combine (A1.5) ---------------------------------
+    // --- the operations that combine ---------------------------------
 
     /// The last stage of what a Join or Union reads.
-    fn other_stage(&self, other: &Other, stack: &[DatasetId]) -> Result<Stage, String> {
+    fn other_stage(&self, other: &Other, stack: &[DatasetId]) -> Result<Stage> {
         match other {
             Other::Table { table } => self.table_stage(table),
             Other::Dataset { dataset } => self.dataset_stage(*dataset, stack, "it combines with"),
         }
     }
 
-    fn join(&self, mut stage: Stage, j: &JoinOp, stack: &[DatasetId]) -> Result<Stage, String> {
+    #[allow(clippy::too_many_lines)]
+    fn join(&self, mut stage: Stage, j: &JoinOp, stack: &[DatasetId]) -> Result<Stage> {
         let mut right = self.other_stage(&j.with, stack)?;
         if j.on.is_empty() && j.asof.is_none() {
-            return Err("a join needs at least one pair of key columns".to_owned());
+            return Err(Error::invalid(
+                "a join needs at least one pair of key columns",
+            ));
         }
         for key in j.on.iter().chain(j.asof.iter()) {
             let l = stage.require(&key.left, "the key column")?;
-            let r = right
-                .visible(&key.right)
-                .ok_or_else(|| format!("`{}` is not a column of what is joined", key.right))?;
+            let r = right.visible(&key.right).ok_or_else(|| {
+                Error::invalid(format!("`{}` is not a column of what is joined", key.right))
+            })?;
             if !l.ty.compatible(r.ty) {
-                return Err(format!(
+                return Err(Error::invalid(format!(
                     "`{}` is {} and `{}` is {}, so they cannot be matched",
                     l.name,
                     l.ty.name(),
                     r.name,
                     r.ty.name()
-                ));
+                )));
             }
         }
         if let Some(asof) = &j.asof {
             if j.kind == JoinKind::Full {
-                return Err("a nearest-earlier match keeps every row of these, so it is a left or an inner join, not a full one".to_owned());
+                return Err(Error::invalid(
+                    "a nearest-earlier match keeps every row of these, so it is a left or an inner join, not a full one",
+                ));
             }
             let l = stage.require(&asof.left, "the date column")?;
             if !l.ty.is_ordered() {
-                return Err(format!(
+                return Err(Error::invalid(format!(
                     "`{}` is {}, which has no earlier and later",
                     l.name,
                     l.ty.name()
-                ));
+                )));
             }
         }
         let wanted: Option<BTreeSet<&str>> = j
@@ -2129,7 +2154,9 @@ impl Compiler<'_> {
         if let Some(wanted) = &wanted {
             for w in wanted {
                 if right.visible(w).is_none() {
-                    return Err(format!("`{w}` is not a column of what is joined"));
+                    return Err(Error::invalid(format!(
+                        "`{w}` is not a column of what is joined"
+                    )));
                 }
             }
         }
@@ -2219,11 +2246,11 @@ impl Compiler<'_> {
             if taken.contains(&name) || added.iter().any(|a: &Col| a.name == name) {
                 name = format!("{}{}", c.name, j.suffix);
                 if taken.contains(&name) || name.starts_with("_fd_") {
-                    return Err(format!(
+                    return Err(Error::invalid(format!(
                         "the joined column `{}` is already a column here, and so is `{name}`; \
                          choose another suffix",
                         c.name
-                    ));
+                    )));
                 }
             }
             added.push(Col {
@@ -2267,7 +2294,7 @@ impl Compiler<'_> {
         })
     }
 
-    fn union(&self, mut stage: Stage, u: &UnionOp, stack: &[DatasetId]) -> Result<Stage, String> {
+    fn union(&self, mut stage: Stage, u: &UnionOp, stack: &[DatasetId]) -> Result<Stage> {
         let mut other = self.other_stage(&u.with, stack)?;
         let source = match &u.source_column {
             Some(name) => Some(column_name(name, "the source column")?),
@@ -2281,12 +2308,12 @@ impl Compiler<'_> {
         for c in &mine {
             let ty = match theirs.iter().find(|t| t.name == c.name) {
                 Some(t) if !c.ty.compatible(t.ty) => {
-                    return Err(format!(
+                    return Err(Error::invalid(format!(
                         "`{}` is {} here and {} in what is appended, so they cannot be one column",
                         c.name,
                         c.ty.name(),
                         t.ty.name()
-                    ));
+                    )));
                 }
                 Some(t) => c.ty.unify(t.ty),
                 None => c.ty,
@@ -2306,9 +2333,9 @@ impl Compiler<'_> {
         if let Some(s) = &source
             && columns.iter().any(|(n, _, _)| n == s)
         {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "`{s}` is already a column; name the source column something else"
-            ));
+            )));
         }
         let labels: [String; 2] = match u.source_labels.as_slice() {
             [a, b] => [a.clone(), b.clone()],
@@ -2393,7 +2420,7 @@ impl Compiler<'_> {
             text_casts: stage.text_casts,
         })
     }
-    // --- the spatial join (A5.4) ---------------------------------------------
+    // --- the spatial join ---------------------------------------------
 
     /// Join where the geometries meet, or to the nearest. Like a Join, both
     /// sides are sealed and the other's columns brought across; the condition
@@ -2402,55 +2429,57 @@ impl Compiler<'_> {
     /// and limited to one — so each row matches at most one and the grain is
     /// kept. Distances are in metres, through `geography`, as the `Geo`
     /// functions' are.
+    #[allow(clippy::too_many_lines)]
     fn spatial_join(
         &self,
         mut stage: Stage,
         j: &SpatialJoinOp,
         stack: &[DatasetId],
-    ) -> Result<Stage, String> {
+    ) -> Result<Stage> {
         if let Err(reason) = &self.schema.spatial {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "a spatial join is computed by the database, and {reason}"
-            ));
+            )));
         }
         if j.kind == JoinKind::Full {
-            return Err(
+            return Err(Error::invalid(
                 "a spatial join keeps the rows of these that match (inner) or all of them \
-                 (left), never the other's rows that match nothing; choose inner or left"
-                    .to_owned(),
-            );
+                 (left), never the other's rows that match nothing; choose inner or left",
+            ));
         }
         let mut right = self.other_stage(&j.with, stack)?;
-        let geometry = |c: &Col, whose: &str| -> Result<(), String> {
+        let geometry = |c: &Col, whose: &str| -> Result<()> {
             if matches!(c.ty, ColType::Geometry | ColType::Unknown) {
                 Ok(())
             } else {
-                Err(format!(
+                Err(Error::invalid(format!(
                     "`{}` is {}, and a spatial join matches {whose} geometry column",
                     c.name,
                     c.ty.name()
-                ))
+                )))
             }
         };
         geometry(stage.require(&j.left, "the geometry column")?, "a")?;
         let r = right.visible(&j.right).ok_or_else(|| {
-            format!(
+            Error::invalid(format!(
                 "`{}` is not a column of what is joined (its columns are {})",
                 j.right,
                 right.column_list()
-            )
+            ))
         })?;
         geometry(r, "the other's")?;
         let distance = match (j.relation, j.distance) {
             (SpatialRelation::WithinDistance, None) => {
-                return Err("\"within a distance\" needs the distance, in metres".to_owned());
+                return Err(Error::invalid(
+                    "\"within a distance\" needs the distance, in metres",
+                ));
             }
             (SpatialRelation::WithinDistance | SpatialRelation::Nearest, Some(d))
                 if !(d.is_finite() && d > 0.0) =>
             {
-                return Err(format!(
+                return Err(Error::invalid(format!(
                     "{d} metres is not a distance to look within; give a positive number"
-                ));
+                )));
             }
             (SpatialRelation::WithinDistance | SpatialRelation::Nearest, d) => d,
             // A distance left in the form from another relation means nothing
@@ -2470,7 +2499,9 @@ impl Compiler<'_> {
         if let Some(wanted) = &wanted {
             for w in wanted {
                 if right.visible(w).is_none() {
-                    return Err(format!("`{w}` is not a column of what is joined"));
+                    return Err(Error::invalid(format!(
+                        "`{w}` is not a column of what is joined"
+                    )));
                 }
             }
         }
@@ -2570,11 +2601,11 @@ impl Compiler<'_> {
             if taken.contains(&name) || added.iter().any(|a| a.name == name) {
                 name = format!("{}{}", c.name, j.suffix);
                 if taken.contains(&name) || name.starts_with("_fd_") {
-                    return Err(format!(
+                    return Err(Error::invalid(format!(
                         "the joined column `{}` is already a column here, and so is `{name}`; \
                          choose another suffix",
                         c.name
-                    ));
+                    )));
                 }
             }
             let key = match (&c.key, &referenced) {
@@ -2592,9 +2623,9 @@ impl Compiler<'_> {
         }
         if let Some(name) = distance_column {
             if taken.contains(&name) || added.iter().any(|a| a.name == name) {
-                return Err(format!(
+                return Err(Error::invalid(format!(
                     "`{name}` is already a column; name the distance column something else"
-                ));
+                )));
             }
             added.push(Col {
                 name,
@@ -2638,9 +2669,9 @@ impl Compiler<'_> {
 }
 
 /// Keep, drop, rename and reorder: the one operation with no formula in it.
-fn select(mut stage: Stage, s: &SelectOp) -> Result<Stage, String> {
+fn select(mut stage: Stage, s: &SelectOp) -> Result<Stage> {
     if s.columns.is_empty() {
-        return Err("a selection must keep at least one column".to_owned());
+        return Err(Error::invalid("a selection must keep at least one column"));
     }
     let mut cols = Vec::with_capacity(s.columns.len());
     let mut seen = BTreeSet::new();
@@ -2649,7 +2680,9 @@ fn select(mut stage: Stage, s: &SelectOp) -> Result<Stage, String> {
         let col = stage.require(&c.column, "the column")?.clone();
         let name = column_name(c.output(), "a column")?;
         if !seen.insert(name.clone()) {
-            return Err(format!("two columns would be called `{name}`"));
+            return Err(Error::invalid(format!(
+                "two columns would be called `{name}`"
+            )));
         }
         renames.insert(c.column.clone(), name.clone());
         cols.push(Col { name, ..col });
@@ -2696,9 +2729,15 @@ fn window_frame(stage: &Stage, w: &WindowOp, tie_break: bool) -> (Vec<Expr>, Vec
 }
 
 /// Whether `function` can summarise `column`.
-fn check_summary(function: SummaryFunction, column: &Col) -> Result<(), String> {
+fn check_summary(function: SummaryFunction, column: &Col) -> Result<()> {
     let ty = column.ty;
-    let refuse = |why: &str| Err(format!("`{}` is {}, {why}", column.name, ty.name()));
+    let refuse = |why: &str| {
+        Err(Error::invalid(format!(
+            "`{}` is {}, {why}",
+            column.name,
+            ty.name()
+        )))
+    };
     if ty == ColType::Unknown {
         return Ok(());
     }
@@ -2726,18 +2765,18 @@ fn check_summary(function: SummaryFunction, column: &Col) -> Result<(), String> 
 
 /// A column name an operation creates: not empty, and not one of the reserved
 /// hidden names.
-fn column_name(name: &str, what: &str) -> Result<String, String> {
+fn column_name(name: &str, what: &str) -> Result<String> {
     let name = name.trim();
     if name.is_empty() {
-        return Err(format!("{what} has no name"));
+        return Err(Error::invalid(format!("{what} has no name")));
     }
     // The one reserved name an operation may make: the label a model reads
     // beside a related dataset's rows (`sc-model`'s `LABEL_COLUMN`), added by
     // the model, never by a person.
     if name.starts_with("_fd_") && name != LABEL_COLUMN {
-        return Err(format!(
+        return Err(Error::invalid(format!(
             "`{name}` starts with `_fd_`, which is reserved for the server's own names"
-        ));
+        )));
     }
     Ok(name.to_owned())
 }
@@ -2856,7 +2895,7 @@ fn text_cast(e: &Expr) -> Option<Expr> {
 /// a pseudo-random sort key reproducible from `seed` on both databases, neither
 /// of which can seed `random()` per query: multiply-and-square steps modulo the
 /// prime 2³¹−1, every product fitting in 63 bits. Ordering by it and keeping the
-/// first N is a random sample of N — a Limit's (A1.4) and a plot's (A2.5).
+/// first N is a random sample of N — a Limit's and a plot's.
 pub fn scramble(position: Expr, seed: i64) -> Expr {
     const M: i64 = 2_147_483_647;
     let int = |v: i64| typed(Value::Int(v), ColType::Int);
@@ -2899,8 +2938,8 @@ fn sorted(expr: Expr, descending: bool) -> OrderBy {
 }
 
 /// A JSON value as a value of a column of type `ty`.
-fn json_value(value: &Json, ty: ColType) -> Result<Value, String> {
-    let bad = || format!("{value} is not a value of a {} column", ty.name());
+fn json_value(value: &Json, ty: ColType) -> Result<Value> {
+    let bad = || Error::invalid(format!("{value} is not a value of a {} column", ty.name()));
     Ok(match (ty, value) {
         (_, Json::Null) => Value::Null,
         (ColType::Int, Json::Number(n)) => Value::Int(n.as_i64().ok_or_else(bad)?),
@@ -2920,29 +2959,30 @@ fn json_value(value: &Json, ty: ColType) -> Result<Value, String> {
 }
 
 /// The values of a Complete range.
-fn range_values(
-    ty: ColType,
-    from: &Json,
-    to: &Json,
-    step: Option<&Json>,
-) -> Result<Vec<Value>, String> {
+fn range_values(ty: ColType, from: &Json, to: &Json, step: Option<&Json>) -> Result<Vec<Value>> {
     let too_many = || {
-        format!("it has more than {MAX_RANGE_VALUES} values; use a larger step or a shorter range")
+        Error::invalid(format!(
+            "it has more than {MAX_RANGE_VALUES} values; use a larger step or a shorter range"
+        ))
     };
     match ty {
         ColType::Int | ColType::Float | ColType::Decimal => {
             let (Some(a), Some(b)) = (from.as_f64(), to.as_f64()) else {
-                return Err("a number range goes from a number to a number".to_owned());
+                return Err(Error::invalid(
+                    "a number range goes from a number to a number",
+                ));
             };
             let step = match step {
                 None | Some(Json::Null) => 1.0,
-                Some(s) => s.as_f64().ok_or("the step of a number range is a number")?,
+                Some(s) => s
+                    .as_f64()
+                    .ok_or_else(|| Error::invalid("the step of a number range is a number"))?,
             };
             if step <= 0.0 {
-                return Err("the step must be more than 0".to_owned());
+                return Err(Error::invalid("the step must be more than 0"));
             }
             if a > b {
-                return Err("it ends before it starts".to_owned());
+                return Err(Error::invalid("it ends before it starts"));
             }
             if (b - a) / step > MAX_RANGE_VALUES as f64 {
                 return Err(too_many());
@@ -2967,17 +3007,21 @@ fn range_values(
             let parse = |j: &Json| {
                 j.as_str()
                     .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-                    .ok_or("a date range goes from a date to a date, written YYYY-MM-DD")
+                    .ok_or_else(|| {
+                        Error::invalid(
+                            "a date range goes from a date to a date, written YYYY-MM-DD",
+                        )
+                    })
             };
             let (a, b) = (parse(from)?, parse(to)?);
             if a > b {
-                return Err("it ends before it starts".to_owned());
+                return Err(Error::invalid("it ends before it starts"));
             }
             let unit = match step {
                 None | Some(Json::Null) => "day",
-                Some(s) => s
-                    .as_str()
-                    .ok_or("the step of a date range is day, week, month or year")?,
+                Some(s) => s.as_str().ok_or_else(|| {
+                    Error::invalid("the step of a date range is day, week, month or year")
+                })?,
             };
             let mut out = Vec::new();
             let mut d = a;
@@ -2989,26 +3033,28 @@ fn range_values(
                 d = match unit {
                     "day" => d + Duration::days(1),
                     "week" => d + Duration::weeks(1),
-                    "month" => d
-                        .checked_add_months(Months::new(1))
-                        .ok_or("the range runs past the end of the calendar")?,
+                    "month" => d.checked_add_months(Months::new(1)).ok_or_else(|| {
+                        Error::invalid("the range runs past the end of the calendar")
+                    })?,
                     "year" => d
                         .with_year(d.year() + 1)
                         .or_else(|| d.checked_add_months(Months::new(12)))
-                        .ok_or("the range runs past the end of the calendar")?,
+                        .ok_or_else(|| {
+                            Error::invalid("the range runs past the end of the calendar")
+                        })?,
                     other => {
-                        return Err(format!(
+                        return Err(Error::invalid(format!(
                             "`{other}` is not a step of a date range; it is day, week, month or year"
-                        ));
+                        )));
                     }
                 };
             }
             Ok(out)
         }
-        other => Err(format!(
+        other => Err(Error::invalid(format!(
             "a range of values is for numbers and dates, and this column is {}",
             other.name()
-        )),
+        ))),
     }
 }
 

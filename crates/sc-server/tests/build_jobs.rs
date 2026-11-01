@@ -294,6 +294,7 @@ async fn serve(tag: &str) -> sc_error::Result<(Client, Application, String, Temp
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_build_host_takes_the_job_and_its_artifact_lands_in_the_store() -> sc_error::Result<()> {
     let (mut client, app, token, dir, _db) = serve("artifact").await?;
     let build = format!("/api/applications/{}/targets/remote/build", app.id);

@@ -276,6 +276,52 @@ async fn an_after_commit_callback_runs_only_once_the_commit_has_succeeded() -> R
     Ok(())
 }
 
+/// `finish` commits what succeeded and rolls back what failed, answering with
+/// the work's own error; `abandon` ends a transaction with nothing to keep.
+#[tokio::test]
+async fn finish_commits_a_success_and_rolls_back_a_failure() -> Result<()> {
+    let db = TestDb::new().await?;
+    let catalog = catalog(
+        &db,
+        "CREATE TABLE posts (id bigint primary key, owner text)",
+    )
+    .await?;
+
+    let heard = Heard::default();
+    let tx = SharedTx::begin_primary(&catalog)?;
+    let written = tx
+        .run(sc_catalog::Unchecked::system("test"), &insert(1, "ann"))
+        .await
+        .map(|_| "written");
+    tx.after_commit(heard.note("kept"));
+    assert_eq!(tx.finish(written).await?, "written");
+    assert_eq!(heard.said(), ["kept"]);
+    assert_eq!(committed(&db).await, 1);
+
+    let heard = Heard::default();
+    let tx = SharedTx::begin_primary(&catalog)?;
+    tx.run(sc_catalog::Unchecked::system("test"), &insert(2, "bob"))
+        .await?;
+    tx.after_commit(heard.note("dropped"));
+    let failed: Result<()> = Err(sc_error::Error::invalid("the work failed"));
+    let answer = tx.finish(failed).await;
+    assert_eq!(
+        answer.err().map(|e| e.message().to_owned()).as_deref(),
+        Some("the work failed")
+    );
+    assert!(heard.said().is_empty());
+    assert!(!tx.is_open().await);
+    assert_eq!(committed(&db).await, 1);
+
+    let tx = SharedTx::begin_primary(&catalog)?;
+    tx.run(sc_catalog::Unchecked::system("test"), &insert(3, "cy"))
+        .await?;
+    tx.abandon().await;
+    assert!(!tx.is_open().await);
+    assert_eq!(committed(&db).await, 1);
+    Ok(())
+}
+
 /// A commit the database refuses — here a deferred foreign key, checked only
 /// at the commit — runs none of the callbacks: the write they announce never
 /// happened.

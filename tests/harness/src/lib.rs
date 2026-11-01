@@ -50,9 +50,13 @@
 //! socket is a test of a mock.
 
 pub mod scratch;
+#[cfg(feature = "catalog")]
+mod server;
 pub mod smtp;
 
 pub use scratch::sweep_stale_scratch;
+#[cfg(feature = "catalog")]
+pub use server::{TestServer, TestServerBuilder};
 pub use smtp::{SmtpMessage, TestSmtp};
 
 use std::path::PathBuf;
@@ -340,6 +344,50 @@ impl TestDb {
             .get()
             .await
             .map_err(|e| Error::database(format!("checkout connection: {e}")))
+    }
+
+    /// Run `sql` (one or more statements) on the per-test database.
+    pub async fn execute(&self, sql: &str) -> Result<()> {
+        self.client()
+            .await?
+            .batch_execute(sql)
+            .await
+            .map_err(|e| Error::database(e.to_string()))
+    }
+
+    /// Drop every `users` table the database was cloned with.
+    ///
+    /// A developer's template can be a copy of a multi-tenant Saltcorn 1
+    /// database, which has a `users` table in several schemas; the auth
+    /// bootstrap then finds one that is not its own. A no-op on a clean
+    /// template, as in CI.
+    pub async fn drop_template_users(&self) -> Result<()> {
+        self.execute(
+            "DO $$ DECLARE r record; BEGIN \
+               FOR r IN SELECT table_schema FROM information_schema.tables \
+               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
+                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
+               END LOOP; END $$",
+        )
+        .await
+    }
+}
+
+/// Wait until `done()` holds, checking every 10 ms, and panic naming `what` if
+/// it does not within `within`.
+///
+/// For a test that waits for something to happen in the background: it goes
+/// on as soon as it has, rather than sleeping for a guess at how long that
+/// takes. A test that checks that something does *not* happen, or that time
+/// passing has an effect, still has to let the time pass.
+pub async fn wait_until(what: &str, within: std::time::Duration, mut done: impl FnMut() -> bool) {
+    let deadline = tokio::time::Instant::now() + within;
+    while !done() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out after {within:?} waiting for {what}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 }
 
@@ -815,5 +863,32 @@ impl Teardown {
 impl Drop for Teardown {
     fn drop(&mut self) {
         self.run();
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn wait_until_returns_once_the_condition_holds() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let bumped = Arc::clone(&count);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            bumped.store(3, Ordering::SeqCst);
+        });
+        super::wait_until("the count", Duration::from_secs(5), || {
+            count.load(Ordering::SeqCst) == 3
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "waiting for nothing")]
+    async fn wait_until_panics_when_it_never_holds() {
+        super::wait_until("nothing", Duration::from_millis(30), || false).await;
     }
 }

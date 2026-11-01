@@ -886,7 +886,7 @@ pub async fn revoke_credits(
     let user = {
         let tx = SharedTx::begin_primary(catalog)?;
         let found = find_bucket(&tx, source, key).await;
-        let _ = tx.rollback().await;
+        tx.abandon().await;
         match found? {
             Some(bucket) => bucket.user_id,
             None => return Ok(not_found),
@@ -1226,16 +1226,8 @@ where
         work(&tx, &mut written).await
     }
     .await;
-    match outcome {
-        Ok(value) => {
-            tx.commit().await?;
-            Ok((value, written))
-        }
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(e)
-        }
-    }
+    let value = tx.finish(outcome).await?;
+    Ok((value, written))
 }
 
 /// An account, as the locked transaction reads it.

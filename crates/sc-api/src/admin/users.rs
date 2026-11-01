@@ -5,6 +5,7 @@
 use super::*;
 
 /// Declare this domain's endpoints on `set`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(set: &mut EndpointSet) {
     // A role is a row in `_fd_roles` (§7.1, §9), not a bare integer: it carries
     // a name and, in `attributes`, whatever role-specific settings arrive later.

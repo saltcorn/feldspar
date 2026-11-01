@@ -26,11 +26,9 @@ use sc_auth::{
     create_user,
 };
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_query::{Delete, Expr, Select, Source, Statement};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 
 /// A database with the auth tables bootstrapped, and a handle on it.
 struct Fixture {
@@ -39,23 +37,7 @@ struct Fixture {
 }
 
 async fn fixture() -> Result<Fixture> {
-    let db = TestDb::new().await?;
-    // The multi-tenant v1 test template carries `users` tables in several
-    // schemas; drop them all so bootstrap creates the clean table. No-op in CI.
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     bootstrap(&catalog).await?;
     Ok(Fixture { catalog, db })
 }

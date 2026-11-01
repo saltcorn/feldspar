@@ -21,6 +21,7 @@ use sc_query::SqlDialect;
 use crate::dialect::PgDialect;
 
 /// Render `change` to a single Postgres DDL statement.
+#[allow(clippy::too_many_lines)]
 pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
     let sql = match change {
         SchemaChange::CreateTable {

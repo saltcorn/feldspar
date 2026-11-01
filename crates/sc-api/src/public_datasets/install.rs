@@ -368,7 +368,7 @@ async fn fill(
                 }
             }
             Err(e) => {
-                let _ = tx.rollback().await;
+                tx.abandon().await;
                 return Err(Error::invalid(format!(
                     "`{}`: {}",
                     plan.table.name,

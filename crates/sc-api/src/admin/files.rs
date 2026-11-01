@@ -6,6 +6,7 @@
 use super::*;
 
 /// Declare this domain's endpoints on `set`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(set: &mut EndpointSet) {
     // Browse one directory of a store. A POST (not GET) so the directory — which
     // may contain `/` and would not fit a single path segment — rides in the body.

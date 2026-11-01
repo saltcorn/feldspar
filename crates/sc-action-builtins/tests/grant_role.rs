@@ -15,28 +15,14 @@ use sc_action::{ActionContext, Event, EventKind, Trigger, validate_trigger};
 use sc_action_builtins::builtin_actions;
 use sc_auth::{RoleDef, create_user, list_role_grants, load_user, save_role};
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
 use sc_expr::{DenoEvaluator, JsEvaluator};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use sc_types::Attrs;
 use serde_json::{Value as Json, json};
 
-async fn setup(db: &TestDb) -> Result<Catalog> {
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| Error::database(e.to_string()))?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
+async fn setup(db: &TestDb) -> Result<Arc<Catalog>> {
+    let catalog = TestServer::builder().build_on(db).await?;
     sc_auth::bootstrap(&catalog).await?;
     save_role(&catalog, &RoleDef::new(Role::of(70), "Trial")).await?;
     save_role(&catalog, &RoleDef::new(Role::of(80), "Member")).await?;

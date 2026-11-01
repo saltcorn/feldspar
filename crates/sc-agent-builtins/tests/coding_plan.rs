@@ -293,6 +293,7 @@ async fn the_workflow_decides_the_starting_mode_and_is_validated() -> Result<()>
 
 /// The definition of done (TODO 9.9), on the scripted provider.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_planner_implements_three_features_each_checked_and_committed() -> Result<()> {
     if !have("git") || !have("node") || !have("npm") {
         eprintln!("skipped: git, node and npm are needed");

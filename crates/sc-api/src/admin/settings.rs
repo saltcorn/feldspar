@@ -6,6 +6,7 @@
 use super::*;
 
 /// Declare this domain's endpoints on `set`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(set: &mut EndpointSet) {
     // A help topic (`sc_docs::help`), filled in with what the screen is about and
     // rendered to HTML — v1's question-mark popups. `table` and `event` say what

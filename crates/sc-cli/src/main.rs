@@ -100,6 +100,7 @@ async fn run(args: &[String]) -> Result<()> {
 }
 
 /// Print the short usage summary.
+#[allow(clippy::too_many_lines)]
 fn print_usage() {
     eprintln!("feldspar — usage:");
     eprintln!("  feldspar --version   the version, git commit and build time of this binary");

@@ -6,6 +6,7 @@
 use super::*;
 
 /// Declare this domain's endpoints on `set`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(set: &mut EndpointSet) {
     set.register(
         Endpoint::new("listTables", Method::Get, api().lit("tables"))

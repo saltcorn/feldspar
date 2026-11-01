@@ -28,10 +28,10 @@ use super::choose::{
     TestSpec, choose,
 };
 use super::hypothesis::{
-    Moments, TestKind, TestResult, anova, binomial, chisq_fit, chisq_independence, expected_counts,
-    fisher_exact, kruskal_wallis, levene, linear_regression, logistic_regression, mann_whitney,
-    one_sample_t, paired_signed_rank, paired_t, pearson, shapiro, signed_rank, spearman, tukey_hsd,
-    welch_t,
+    Moments, Refusal, TestKind, TestResult, anova, binomial, chisq_fit, chisq_independence,
+    expected_counts, fisher_exact, kruskal_wallis, levene, linear_regression, logistic_regression,
+    mann_whitney, one_sample_t, paired_signed_rank, paired_t, pearson, shapiro, signed_rank,
+    spearman, tukey_hsd, welch_t,
 };
 use crate::crossfilter::Scope;
 use crate::plot::render::{
@@ -213,7 +213,7 @@ impl Section {
         &mut self,
         design: Design,
         test: TestKind,
-        outcome: std::result::Result<TestResult, String>,
+        outcome: std::result::Result<TestResult, Refusal>,
     ) {
         let role = if design.alternatives().contains(&test) {
             "alternative"
@@ -257,7 +257,7 @@ pub async fn run_tests(catalog: &Catalog, caller: &Caller, spec: &TestSpec) -> R
     run_tests_in(catalog, caller, spec, &Scope::none()).await
 }
 
-/// [`run_tests`] over the rows a dashboard's conditions keep (A6.4).
+/// [`run_tests`] over the rows a dashboard's conditions keep.
 pub async fn run_tests_in(
     catalog: &Catalog,
     caller: &Caller,
@@ -266,12 +266,12 @@ pub async fn run_tests_in(
 ) -> Result<TestsAnswer> {
     let rows = match plot_rows_in(catalog, caller, &spec.data, scope).await? {
         Ok(rows) => rows,
-        Err(sentence) => return Ok(TestsAnswer::refuse(sentence)),
+        Err(sentence) => return Ok(TestsAnswer::refuse(sentence.message())),
     };
     let shape = rows.shape.clone();
     let choice = match choose(spec, &shape) {
         Ok(c) => c,
-        Err(sentence) => return Ok(TestsAnswer::refuse(sentence)),
+        Err(sentence) => return Ok(TestsAnswer::refuse(sentence.message())),
     };
     let mut carrier = PlotSpec::single(spec.data.clone(), Layer::new(Mark::Point, Stat::Identity));
     carrier.layers.clear();
@@ -1109,9 +1109,9 @@ impl Tester<'_> {
 
 /// Mark a result as read from a sample.
 fn mark(
-    result: std::result::Result<TestResult, String>,
+    result: std::result::Result<TestResult, Refusal>,
     sampled: bool,
-) -> std::result::Result<TestResult, String> {
+) -> std::result::Result<TestResult, Refusal> {
     result.map(|mut r| {
         r.sampled = sampled;
         r

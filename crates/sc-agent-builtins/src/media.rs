@@ -24,12 +24,13 @@ use sc_agent::{AgentTrait, AnswerContext, DisplayPart, ToolsContext, TraitCheck,
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_llm::{ImageRequest, LlmModelDef, LlmProviderDef, ModelKind, SpeechRequest, ToolSpec};
+use sc_types::ArgsExt;
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value as Json, json};
 
 use crate::files::{
     FileScope, check_scope, check_tool_name, configured_scope, file_caller, open_to_write,
-    optional_string_arg, scope_as_written, scope_fields, slugify, string_arg,
+    scope_as_written, scope_fields, slugify,
 };
 use crate::table::config_str;
 use sc_api::mcp::arguments;
@@ -215,8 +216,8 @@ impl AgentTrait for GenerateImage {
         ctx: &mut TraitContext<'_>,
     ) -> Result<Json> {
         let args = arguments(args, &[ARG_PROMPT, ARG_NAME])?;
-        let prompt = string_arg(&args, ARG_PROMPT)?;
-        let stem = match slugify(&optional_string_arg(&args, ARG_NAME)?) {
+        let prompt = args.string_arg(ARG_PROMPT)?;
+        let stem = match slugify(&args.string_or_empty(ARG_NAME)?) {
             stem if stem.is_empty() => "image".to_owned(),
             stem => stem.chars().take(60).collect(),
         };

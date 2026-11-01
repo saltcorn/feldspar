@@ -1017,6 +1017,7 @@ fn accounts_section(endpoints: &EndpointSet) -> String {
 /// Written **once**, at scaffold time (decision 9). It is the developer's file
 /// from the moment it exists — agents append what they learn to it — so the
 /// scaffold's job is to give them a correct starting point, not to own it.
+#[allow(clippy::too_many_lines)]
 fn agents_md(ctx: &ProjectContext<'_>) -> String {
     let tables = if ctx.tables.is_empty() {
         "This application declares no tables yet; add them in the Saltcorn admin \

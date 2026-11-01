@@ -1,4 +1,4 @@
-//! A **new table from a geographic file** (analytics TODO A5.2): GeoJSON, a
+//! A **new table from a geographic file**: GeoJSON, a
 //! zipped Shapefile or a GeoPackage.
 //!
 //! Boundary files are where most GIS work starts, so they import the way a CSV
@@ -615,7 +615,7 @@ async fn fill(
         if let Err(e) =
             rows::create_row_in(catalog, table, &Json::Object(body), context, &executor).await
         {
-            let _ = tx.rollback().await;
+            tx.abandon().await;
             return Err(Error::invalid(format!("feature {}: {}", i + 1, e.causes())));
         }
     }

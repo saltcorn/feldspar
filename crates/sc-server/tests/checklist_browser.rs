@@ -25,15 +25,13 @@ use sc_check::{
     CheckEnv, Checklist, ChecklistInput, Editor, Outcome, RunStatus, SkipReason, StepDraft,
     StepRegistry, edit, run_checklist,
 };
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_files::LocalFileStore;
 use sc_server::{
     AppMounts, AppRequests, ChromiumDriver, ServerConfig, admin_handlers, build_and_mount,
     default_js_evaluator, detect_browser, install_agents_on, install_app_requests, serve_browser,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::json;
 
 const BASE_DOMAIN: &str = "example.com";
@@ -146,21 +144,7 @@ struct Env {
 
 async fn setup(tag: &str, executable: PathBuf) -> Result<Env> {
     let tmp = TempDir::new(tag);
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$;",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;

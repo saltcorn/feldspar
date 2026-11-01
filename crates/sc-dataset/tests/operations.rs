@@ -974,7 +974,13 @@ async fn a_dataset_over_a_dataset_reads_its_operations_first_and_a_cycle_is_refu
             "{report:?}"
         );
         assert!(compiled.stage(1).is_ok());
-        assert!(compiled.stage(2).is_err());
+        // The report and the refusal are the sentence alone, with no error
+        // kind in front: the report is what the UI shows.
+        let error = report.error.clone().unwrap_or_default();
+        assert!(!error.starts_with("invalid"), "{error}");
+        let refused = compiled.stage(2).expect_err("after the cycle");
+        assert!(refused.to_string().starts_with("invalid: "), "{refused}");
+        assert!(refused.message().starts_with("operation 2 ("), "{refused}");
     }
     Ok(())
 }

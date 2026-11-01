@@ -123,7 +123,10 @@ async fn the_replay_and_the_deliveries_meet_exactly() {
     // while elements are flowing through it.
     let (early, _early_queue) = hub.connect(info("blog", None, None)).unwrap();
     let (_early_sub, _) = early.attach(&running, None).await;
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    sc_test_harness::wait_until("elements to flow", Duration::from_secs(10), || {
+        running.counters().elements >= 4
+    })
+    .await;
 
     let (late, mut queue) = hub.connect(info("blog", None, None)).unwrap();
     let (_sub, replay) = late.attach(&running, None).await;

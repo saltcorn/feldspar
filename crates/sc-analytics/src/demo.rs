@@ -188,6 +188,7 @@ fn key(name: &str, table: &str) -> DataField {
 
 /// Make the demo's tables in `catalog`, refusing to touch any that are there
 /// unless `replace`.
+#[allow(clippy::too_many_lines)]
 pub async fn demo_analytics(catalog: &Catalog, replace: bool) -> Result<DemoReport> {
     let present: Vec<String> = DEMO_TABLES
         .iter()

@@ -175,7 +175,7 @@ russh-sftp.workspace = true
 # The Saltcorn UI golden-HTML test normalises what legitimately differs between
 # two renders (a user's UUID, v1's random element ids).
 regex-lite.workspace = true
-sc-test-harness.workspace = true
+sc-test-harness = { workspace = true, features = ["catalog"] }
 # The SQLite backend, for the one test that connects a SQLite file as a
 # secondary database through the admin API: the test has to *create* the file
 # the admin then points at.

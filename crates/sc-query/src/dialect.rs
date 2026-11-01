@@ -490,6 +490,7 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
         self.ident(&c.column);
     }
 
+    #[allow(clippy::too_many_lines)]
     fn expr(&mut self, e: &Expr) -> Result<()> {
         match e {
             Expr::Col(c) => {

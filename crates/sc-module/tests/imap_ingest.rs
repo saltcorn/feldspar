@@ -298,6 +298,7 @@ pub(crate) mod deno {
 
     #[tokio::test]
     #[ignore = "installs plugins/imap from npm and runs a local Dovecot (plugins/imap/test/servers)"]
+    #[allow(clippy::too_many_lines)]
     async fn the_mail_module_ingests_a_shared_mailbox_for_the_right_users() {
         skip_without!(have_npm(), "npm is not on the PATH");
         skip_without!(dovecot(&["clean"]), "the test Dovecot could not be started");

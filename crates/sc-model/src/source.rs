@@ -152,9 +152,9 @@ pub trait DatasetSource: Send + Sync {
 
 /// The [`DatasetSource`] that reads a named dataset the way everything else
 /// does: compiled by `sc-dataset` into one query and run on the primary
-/// database (analytics TODO A1.8).
+/// database.
 ///
-/// As the admin, for now (A1.7): a model is the admin's, and A9 is where a
+/// As the admin, for now: a model is the admin's, and A9 is where a
 /// restricted reader's permissions enter. A table's non-stored calculated
 /// fields are columns of a dataset over it where they become SQL, which is
 /// what the dataset compiler does with them.
@@ -180,9 +180,13 @@ impl DatasetSource for CompiledSource {
             skip_filters: !how.filtered,
         };
         let compiled = compile(&schema, &snapshot.library(), snapshot.def(), options);
-        let stage = compiled
-            .last()
-            .map_err(|e| Error::invalid(format!("the dataset `{}` does not read: {e}", ds.name)))?;
+        let stage = compiled.last().map_err(|e| {
+            Error::invalid(format!(
+                "the dataset `{}` does not read: {}",
+                ds.name,
+                e.message()
+            ))
+        })?;
         let restriction = match how.restrict {
             Some(filter) => {
                 let key = schema

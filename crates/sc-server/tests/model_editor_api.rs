@@ -3,6 +3,7 @@
 //! socket, the list of fits saying which are out of date, and the view state
 //! beside the model.
 
+use crate::support::Socket;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -113,9 +114,6 @@ struct Server {
     addr: std::net::SocketAddr,
     _db: TestDb,
 }
-
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 impl Server {
     /// Open the progress socket of fit `id`, as the admin or as nobody.

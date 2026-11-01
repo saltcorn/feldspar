@@ -11,10 +11,8 @@ use std::sync::Arc;
 use sc_api::{ApiProvider, ApiRequest, ApiResponse, Method, RestProvider, schema_edit};
 use sc_auth::{User, bootstrap, create_user};
 use sc_catalog::{Catalog, bootstrap_change_log, bootstrap_field_meta, bootstrap_table_meta};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value as Json, json};
 
 const APP: uuid::Uuid = uuid::Uuid::from_u128(0x5eed);
@@ -29,22 +27,15 @@ struct Fixture {
 /// `notes` belong to their `owner` (admin-only otherwise); `secrets` are
 /// admin-only. Both synced, both in the application.
 async fn fixture(db: &TestDb) -> Result<Fixture> {
-    // The local test template may carry `users` tables from a v1 database.
-    sql(
-        db,
-        "DO $$ DECLARE r record; BEGIN \
-           FOR r IN SELECT table_schema FROM information_schema.tables \
-           WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-             EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-           END LOOP; END $$;
-         CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    let cat = TestServer::builder()
+        .sql(
+            "CREATE EXTENSION IF NOT EXISTS pgcrypto;
          CREATE TABLE notes (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
                              title text, owner uuid);
          CREATE TABLE secrets (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), body text);",
-    )
-    .await?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let cat = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
+        )
+        .build_on(db)
+        .await?;
     bootstrap(&cat).await?;
     bootstrap_table_meta(&cat).await?;
     bootstrap_field_meta(&cat).await?;
@@ -79,12 +70,7 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
     let bob = create_user(&cat, "bob@example.com", "bob-password", Role::of(80)).await?;
     let api = RestProvider::project("/api", &[cat.require("notes")?, cat.require("secrets")?])
         .with_application(APP);
-    Ok(Fixture {
-        cat: Arc::new(cat),
-        api,
-        ann,
-        bob,
-    })
+    Ok(Fixture { cat, api, ann, bob })
 }
 
 async fn sql(db: &TestDb, statements: &str) -> Result<()> {

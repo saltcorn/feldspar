@@ -296,9 +296,7 @@ async fn apply(
         Err(e) => Err(e),
     };
     if let Err(e) = result {
-        // The error is what matters; a failed rollback still ends the
-        // transaction when the connection is dropped.
-        let _ = tx.rollback().await;
+        sc_db::abandon(tx).await;
         return Err(e).with_context(|| {
             format!(
                 "migration `{}` ({}) failed and was rolled back; the migrations before it are \

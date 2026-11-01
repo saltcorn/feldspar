@@ -3,6 +3,7 @@
 use super::*;
 
 /// Register this domain's admin handlers on `reg`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
     let apps = state.apps.clone();
@@ -123,7 +124,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let app = require_views_app(&catalog, ctx.path_param("id")?).await?;
                 let obj = require_object(&ctx.body)?;
-                let pattern = non_empty_str_field(obj, "viewpattern")?;
+                let pattern = obj.non_empty_str_field("viewpattern")?;
                 let table = obj
                     .get("table_name")
                     .and_then(Json::as_str)
@@ -479,7 +480,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     .await?
                     .ok_or_else(|| no_library_item(&app, id))?;
                 let obj = require_object(&ctx.body)?;
-                non_empty_str_field(obj, "name")?.clone_into(&mut item.name);
+                obj.non_empty_str_field("name")?.clone_into(&mut item.name);
                 if let Some(icon) = obj.get("icon").and_then(Json::as_str) {
                     icon.clone_into(&mut item.icon);
                 }
@@ -562,9 +563,9 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let app = require_views_app(&catalog, ctx.path_param("id")?).await?;
                 let obj = require_object(&ctx.body)?;
-                let table = non_empty_str_field(obj, "table")?;
-                let field = non_empty_str_field(obj, "field")?;
-                let fieldview = non_empty_str_field(obj, "fieldview")?;
+                let table = obj.non_empty_str_field("table")?;
+                let field = obj.non_empty_str_field("field")?;
+                let fieldview = obj.non_empty_str_field("fieldview")?;
                 require_subset_table(&app, table)?;
                 // v1's body, with only what was sent: `{ ...undefined }` and
                 // `{ ...null }` differ nowhere, but a fieldview may read either.
@@ -594,7 +595,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let app = require_views_app(&catalog, ctx.path_param("id")?).await?;
                 let obj = require_object(&ctx.body)?;
-                let table = non_empty_str_field(obj, "table")?;
+                let table = obj.non_empty_str_field("table")?;
                 require_subset_table(&app, table)?;
                 let form = view_configurer(&catalog, &app, ctx.user(), &apps)
                     .await?
@@ -614,7 +615,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let app = require_views_app(&catalog, ctx.path_param("id")?).await?;
                 let obj = require_object(&ctx.body)?;
-                let name = non_empty_str_field(obj, "view")?;
+                let name = obj.non_empty_str_field("view")?;
                 if sc_viewpattern::load_view(&catalog, app.id, name)
                     .await?
                     .is_none()
@@ -644,7 +645,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let app = require_views_app(&catalog, ctx.path_param("id")?).await?;
                 let obj = require_object(&ctx.body)?;
-                let name = non_empty_str_field(obj, "page")?;
+                let name = obj.non_empty_str_field("page")?;
                 if sc_viewpattern::load_page(&catalog, app.id, name)
                     .await?
                     .is_none()
@@ -775,8 +776,7 @@ fn step_member(obj: &Map<String, Json>) -> Result<usize> {
 /// A member a body must carry, `null` counting as absent; `what` says what it
 /// is in the refusal.
 fn required_member(obj: &Map<String, Json>, key: &str, what: &str) -> Result<Json> {
-    obj.get(key)
-        .filter(|v| !v.is_null())
+    obj.present(key)
         .cloned()
         .ok_or_else(|| Error::invalid(format!("`{key}` is required: {what}")))
 }

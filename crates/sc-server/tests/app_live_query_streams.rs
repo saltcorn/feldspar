@@ -26,6 +26,7 @@
 //! - over HTTP the query is a 400.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::{Socket, next_frame, send};
 use sc_types::Role;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -37,7 +38,6 @@ use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use futures::{SinkExt, StreamExt};
 use sc_api::{CustomParam, CustomQuery, Method, QueryLanguage, QueryRateLimit, ResponseType};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
 use sc_auth::{RoleDef, SessionStore, create_user, save_role};
@@ -52,7 +52,6 @@ use sc_stream::{
 use sc_test_harness::Teardown;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value, json};
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -63,9 +62,6 @@ const ADMIN: &str = "admin@example.com";
 const ALICE: &str = "alice@example.com";
 const PASSWORD: &str = "correct-horse";
 const ROLE_MEMBER: Role = Role::of(40);
-
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// The query a share link is opened with: the token decides the row and the
 /// mode, the page's flags only which of the app's streams it is asked for.
@@ -310,6 +306,7 @@ fn limits() -> LiveLimits {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn setup() -> Result<Server> {
     let dir = Scratch(
         std::env::temp_dir().join(format!("sc-live-query-{}", Uuid::new_v4())),
@@ -481,28 +478,6 @@ async fn setup() -> Result<Server> {
 }
 
 // --- frames -------------------------------------------------------------------
-
-async fn send(socket: &mut Socket, frame: Value) {
-    socket
-        .send(Message::text(frame.to_string()))
-        .await
-        .expect("the socket takes a frame");
-}
-
-async fn next_frame(socket: &mut Socket) -> Value {
-    loop {
-        let message = tokio::time::timeout(Duration::from_secs(20), socket.next())
-            .await
-            .expect("a frame arrives within the timeout")
-            .expect("the socket is still open")
-            .expect("the frame is readable");
-        match message {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
-            Message::Ping(_) | Message::Pong(_) => continue,
-            other => panic!("expected a text frame, got {other:?}"),
-        }
-    }
-}
 
 /// Send `frame` and wait for its `ready` or `error`.
 async fn answer(socket: &mut Socket, frame: Value) -> Value {

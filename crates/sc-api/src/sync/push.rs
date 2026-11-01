@@ -29,7 +29,7 @@
 /// What stands behind the sync bookkeeping statements a push runs as its
 /// caller (`_fd_sync_devices`, `_fd_sync_keys`): each names only the caller's
 /// own device, which was looked up by the caller's id, and runs in the caller's
-/// context so the change log attributes it (TODO-code-quality Q3.5).
+/// context so the change log attributes it.
 const OWN_DEVICE: &str = "sync: the statement names only the caller's own device";
 
 use sc_catalog::Unchecked;
@@ -291,7 +291,7 @@ impl Device<'_> {
             } else {
                 None
             };
-            let _ = tx.rollback().await;
+            tx.abandon().await;
             return Ok(Outcome::Skipped(key));
         }
         tx.savepoint(CHANGE_SAVEPOINT).await?;
@@ -312,7 +312,7 @@ impl Device<'_> {
                 // Not this change's fault (the database is gone, a bug): stop
                 // here. What is committed stays, and the device retries the rest.
                 None => {
-                    let _ = tx.rollback().await;
+                    tx.abandon().await;
                     return Err(e);
                 }
             },

@@ -202,6 +202,7 @@ fn park() -> Value {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_geometry_field_is_geojson_through_rest_and_graphql() -> sc_error::Result<()> {
     let Some(db) = TestDb::with_postgis().await? else {
         return Ok(());
@@ -573,6 +574,7 @@ async fn a_dataset_is_a_map_layer_as_geojson_or_as_tiles() -> sc_error::Result<(
 /// encoded columns, as GeoJSON and as tiles, and the base map setting — what
 /// `mapSettings` answers and the hosts the Analytics UI's policy names.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_map_panel_is_suggested_drawn_and_its_base_map_allowed() -> sc_error::Result<()> {
     let Some(db) = TestDb::with_postgis().await? else {
         return Ok(());
@@ -835,6 +837,7 @@ async fn analytics_policy(h: &Harness) -> String {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_map_workspace_selects_saves_runs_tools_and_is_a_panel() -> sc_error::Result<()> {
     let Some(db) = TestDb::with_postgis().await? else {
         return Ok(());

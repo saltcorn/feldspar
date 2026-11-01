@@ -3,6 +3,7 @@
 use super::*;
 
 /// Register this domain's admin handlers on `reg`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
     let apps = state.apps.clone();
@@ -522,7 +523,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let obj = require_object(&ctx.body)?;
                 let (host, token) = sc_app::add_build_host(
                     &catalog,
-                    str_field(obj, "name")?,
+                    obj.str_field("name")?,
                     &string_array_field(obj, "targets")?,
                 )
                 .await?;
@@ -545,7 +546,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let host = sc_app::update_build_host(
                     &catalog,
                     id,
-                    str_field(obj, "name")?,
+                    obj.str_field("name")?,
                     &string_array_field(obj, "targets")?,
                 )
                 .await?
@@ -1060,7 +1061,7 @@ async fn build_now(
     }
     log.push_str(&build_log(&report));
     // The application's checklists, when it asks for them after each build
-    // (TODO-checklists C4.3) — not after the dev loop's save, which is many a
+    // — not after the dev loop's save, which is many a
     // minute. The build has succeeded and is mounted whatever they say; a
     // failure to run them is a line in the log, not a failed build.
     let mut checks = Json::Null;
@@ -1456,7 +1457,7 @@ pub(crate) async fn build_application(
     let app = load_application(&catalog, id)
         .await?
         .ok_or_else(|| Error::not_found(format!("no application with id {id}")))?;
-    // `?quick=true` is the IDE's build on save (TODO-astro W2.5).
+    // `?quick=true` is the IDE's build on save.
     let quick = ctx
         .query_get("quick")
         .is_some_and(|q| q == "true" || q == "1");

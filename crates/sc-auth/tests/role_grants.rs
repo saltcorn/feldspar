@@ -22,10 +22,8 @@ use sc_auth::{
     grant_role_once, list_role_grants, load_base_user, load_user, revoke_role_grant, save_role,
 };
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::Result;
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use uuid::Uuid;
 
 struct Fixture {
@@ -34,20 +32,7 @@ struct Fixture {
 }
 
 async fn fixture() -> Result<Fixture> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     bootstrap(&catalog).await?;
     for (role, name) in [(40, "Staff"), (60, "Pro"), (70, "Basic"), (80, "Member")] {
         save_role(&catalog, &RoleDef::new(Role::of(role), name)).await?;

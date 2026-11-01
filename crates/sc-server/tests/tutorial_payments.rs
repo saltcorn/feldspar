@@ -634,6 +634,7 @@ async fn setup(tag: &str) -> sc_error::Result<Shop> {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_tutorials_shop_takes_a_guests_order_to_paid_and_delivers_it() -> sc_error::Result<()> {
     if !have_npm() {
         eprintln!("skipping: npm is not on the PATH");

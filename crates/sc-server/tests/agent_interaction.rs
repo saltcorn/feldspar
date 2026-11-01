@@ -14,6 +14,7 @@
 //!    and the chosen model answers in place of the agent's own.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::{Socket, next_frame};
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;
 use std::collections::HashMap;
@@ -25,7 +26,7 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode, header};
-use futures::{SinkExt, StreamExt};
+use futures::SinkExt;
 use sc_agent::testing::{FakeProvider, Reply};
 use sc_agent::{Agent, EnabledTrait};
 use sc_app::{AgentExposure, ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
@@ -444,9 +445,6 @@ fn sent(provider: &FakeProvider) -> String {
 
 // --- the admin socket ------------------------------------------------------------
 
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-
 async fn admin_socket(server: &Server, agent: &str) -> (Socket, Option<Value>) {
     let mut request = format!("ws://{}{AGENT_CHAT_ROUTE}", server.addr)
         .into_client_request()
@@ -473,16 +471,6 @@ async fn admin_socket(server: &Server, agent: &str) -> (Socket, Option<Value>) {
 
 async fn socket_send(socket: &mut Socket, frame: Value) {
     socket.send(Message::text(frame.to_string())).await.unwrap();
-}
-
-async fn next_frame(socket: &mut Socket) -> Value {
-    loop {
-        match socket.next().await.expect("the socket closed").unwrap() {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
-            Message::Close(frame) => panic!("closed: {frame:?}"),
-            _ => {}
-        }
-    }
 }
 
 /// One turn's events over the socket, up to `done`.

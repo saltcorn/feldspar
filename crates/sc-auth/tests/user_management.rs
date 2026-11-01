@@ -18,29 +18,15 @@ use sc_auth::{
     set_user_disabled, set_user_password, update_user,
 };
 use sc_catalog::{Catalog, DataField};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_query::Value;
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use sc_types::{BasicType, TypeRef};
 
 /// A catalog with the platform tables bootstrapped, over a database cleared of
 /// the v1 template's stray `users` tables.
-async fn catalog(db: &TestDb) -> Result<Catalog> {
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
+async fn catalog(db: &TestDb) -> Result<Arc<Catalog>> {
+    let catalog = TestServer::builder().build_on(db).await?;
     bootstrap(&catalog).await?;
     Ok(catalog)
 }

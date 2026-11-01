@@ -24,6 +24,7 @@
 //!
 //! Offered only to a model with `vision`, in every mode: it reads.
 
+use sc_types::ArgsExt;
 use std::io::Cursor;
 
 use image::codecs::jpeg::JpegEncoder;
@@ -37,7 +38,7 @@ use serde_json::{Value as Json, json};
 
 use super::assets;
 use super::check::configured_application;
-use crate::files::{ARG_PATH, FileScope, open_at, optional_string_arg};
+use crate::files::{ARG_PATH, FileScope, open_at};
 use sc_api::mcp::arguments;
 
 /// An image served by one of the application's static directories.
@@ -105,8 +106,8 @@ pub async fn call(
     ctx: &mut TraitContext<'_>,
 ) -> Result<Json> {
     let args = arguments(args, &[ARG_PATH, ARG_URL])?;
-    let rel = optional_string_arg(&args, ARG_PATH)?;
-    let url = optional_string_arg(&args, ARG_URL)?;
+    let rel = args.string_or_empty(ARG_PATH)?;
+    let url = args.string_or_empty(ARG_URL)?;
     let (named, where_, bytes) = match (rel.is_empty(), url.is_empty()) {
         (false, true) => {
             let (store, path) = open_at(scope, ctx, &rel).await?;

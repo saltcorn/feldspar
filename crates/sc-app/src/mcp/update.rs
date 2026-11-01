@@ -57,16 +57,17 @@
 //! form. A context with no server (a CLI command) saves the record and rewrites
 //! the client itself, and says the change is served from the next start.
 
+use sc_types::ArgsExt;
 use sc_types::Role;
 use std::sync::Arc;
 
-use sc_api::mcp::{AdminTool, Area, ToolContext, arguments, optional_string, require_grant};
+use sc_api::mcp::{AdminTool, Area, ToolContext, arguments, require_grant};
 use sc_api::schema_edit::{GRANT_ACCESS_CHANGES, GRANT_EDIT, Grants};
 use sc_catalog::{Catalog, FileStoreId};
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
 
-use super::{TOOL_DESCRIBE_APPS, TOOL_EDIT_STREAMS, load_app, required_str};
+use super::{TOOL_DESCRIBE_APPS, TOOL_EDIT_STREAMS, load_app};
 use crate::{
     AgentExposure, Application, CspPolicy, StaticDir, StreamRef, TriggerChange, UploadSlot,
     app_default_locale, app_locales, set_app_locales,
@@ -248,6 +249,7 @@ fn update_description(grants: &Grants) -> String {
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn update_parameters() -> Json {
     let names = json!({ "type": "array", "items": { "type": "string" } });
     json!({
@@ -467,6 +469,7 @@ fn update_parameters() -> Json {
     })
 }
 
+#[allow(clippy::too_many_lines)]
 async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Json> {
     let args = arguments(
         args,
@@ -1024,12 +1027,13 @@ fn additions(section: &Map<String, Json>) -> Result<Vec<StaticDir>> {
                 )));
             }
             let obj = arguments(item, &[ARG_MOUNT, ARG_STORE, ARG_PATH])?;
-            let path = optional_string(&obj, ARG_PATH)?
+            let path = obj
+                .optional_string(ARG_PATH)?
                 .map(|p| p.trim().trim_matches('/').to_owned())
                 .unwrap_or_default();
             Ok(StaticDir::new(
-                required_str(&obj, ARG_MOUNT)?,
-                FileStoreId(required_str(&obj, ARG_STORE)?),
+                obj.required_string(ARG_MOUNT)?,
+                FileStoreId(obj.required_string(ARG_STORE)?),
                 path,
             ))
         })

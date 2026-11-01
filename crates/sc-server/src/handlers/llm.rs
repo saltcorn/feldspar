@@ -3,6 +3,7 @@
 use super::*;
 
 /// Register this domain's admin handlers on `reg`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
@@ -316,9 +317,9 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             let catalog = catalog.clone();
             async move {
                 let obj = require_object(&ctx.body)?;
-                let backend = non_empty_str_field(obj, "backend")?.to_owned();
+                let backend = obj.non_empty_str_field("backend")?.to_owned();
                 let submitted = object_field(obj, "config")?;
-                let name = non_empty_str_field(obj, "name")?.to_owned();
+                let name = obj.non_empty_str_field("name")?.to_owned();
                 let model_config = match obj.get("model_config") {
                     None | Some(Json::Null) => sc_types::Attrs::new(),
                     Some(_) => object_field(obj, "model_config")?,

@@ -162,6 +162,7 @@ impl<'a> Driver<'a> {
     /// [`advance`](Driver::advance) with the version already in hand — what
     /// [`drive`](Driver::drive) uses so a hundred steps of one run are not a
     /// hundred loads of the same document.
+    #[allow(clippy::too_many_lines)]
     async fn advance_on(&self, run: &mut Run, workflow: &Workflow) -> Result<Advanced> {
         // The step's transaction. Nothing has begun on the database yet — it
         // opens on the first statement anything makes through it, and a step that
@@ -530,13 +531,8 @@ impl<'a> Driver<'a> {
     /// step did is being undone.
     async fn write(&self, run: &Run, traces: &[RunTrace]) -> Result<()> {
         let tx = SharedTx::begin_primary(self.catalog)?;
-        match self.write_on(run, traces, &tx).await {
-            Ok(()) => tx.commit().await,
-            Err(e) => {
-                let _ = tx.rollback().await;
-                Err(e)
-            }
-        }
+        let written = self.write_on(run, traces, &tx).await;
+        tx.finish(written).await
     }
 
     /// The advance's statements on `tx`, committing nothing: the run's row and,

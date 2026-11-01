@@ -780,6 +780,11 @@ nalgebra = { version = "0.35", default-features = false, features = ["std"] }
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
+# A function over the threshold in `clippy.toml` is flagged, so one does not
+# grow past it unnoticed. The functions that were already over it carry an
+# explicit `#[allow(clippy::too_many_lines)]`: split one when it is next
+# changed, and drop its allow.
+too_many_lines = "warn"
 
 # --- Build profiles ----------------------------------------------------------
 #

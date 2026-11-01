@@ -17,9 +17,9 @@
 //! | `summary_table` | `{ spec }` — a [`TableSpec`] |
 //! | `test_result` | `{ tests, plot? }` — a [`TestSpec`] and the plot beside it |
 //! | `text` | `{ markdown }` |
-//! | `fit_table` | `{ fit, output }` — a table output of a model fit (A3.2) |
-//! | `map` | `{ spec }` — a [`MapSpec`]: a map panel of the explorer, or a whole Map workspace (A5.13) |
-//! | `stat_card` | a [`StatCard`]: one number from a dataset, compared and with a sparkline (A6.2) |
+//! | `fit_table` | `{ fit, output }` — a table output of a model fit |
+//! | `map` | `{ spec }` — a [`MapSpec`]: a map panel of the explorer, or a whole Map workspace |
+//! | `stat_card` | a [`StatCard`]: one number from a dataset, compared and with a sparkline |
 //! | `custom` | `{ renderer, config }` — a plugin's panel kind |
 //!
 //! `fit_table` is a sixth kind beside the plan's five: a coefficient table is
@@ -98,12 +98,12 @@ pub enum PanelBody {
         /// The text.
         markdown: String,
     },
-    /// A map: its layers over a base map (A5.13).
+    /// A map: its layers over a base map.
     Map {
         /// The map.
         spec: MapSpec,
     },
-    /// One number from a dataset: a dashboard's stat card (A6.2).
+    /// One number from a dataset: a dashboard's stat card.
     StatCard(StatCard),
     /// A table output of a model fit — a coefficient table, cluster sizes, a
     /// posterior summary.
@@ -247,7 +247,7 @@ impl Panel {
 
 /// The panels in a workspace's state, by where its kind keeps them: a report's
 /// are the `panel` of each of its `blocks` whose `kind` is `panel` (A4.3–A4.4),
-/// a dashboard's the `panel` of each of its `tiles` (A6.1).
+/// a dashboard's the `panel` of each of its `tiles`.
 /// The kinds that hold no panels yet answer none. Anything in the place a
 /// panel goes that is not one is reported by [`check_state`], and skipped
 /// here.
@@ -304,10 +304,10 @@ pub fn check_state(kind: WorkspaceKind, state: &Json) -> Result<()> {
 /// The longest a report heading may be, in bytes.
 pub const MAX_HEADING: usize = 1_000;
 
-/// The page sizes a report can be printed on (A4.4).
+/// The page sizes a report can be printed on.
 pub const PAGE_SIZES: [&str; 4] = ["A4", "A3", "Letter", "Legal"];
 
-/// A report's blocks other than its panels (A4.4), and its page: a block is
+/// A report's blocks other than its panels, and its page: a block is
 /// `{ id, kind }` with `kind` one of `panel`, `heading` (`text`, `level`
 /// 1–3), `text` (`markdown`) and `page_break`; the page is `{ size,
 /// orientation }`.
@@ -375,14 +375,14 @@ fn check_report(state: &Json) -> Result<()> {
     Ok(())
 }
 
-/// The columns of a dashboard's grid (A6.1).
+/// The columns of a dashboard's grid.
 pub const DASHBOARD_COLUMNS: u64 = 12;
 /// The most rows of the grid a tile may span.
 pub const MAX_TILE_ROWS: u64 = 40;
 /// The most tiles a dashboard holds.
 pub const MAX_TILES: usize = 100;
 
-/// A dashboard's tiles (A6.1): each `{ id, panel, x, y, w, h, drill? }`,
+/// A dashboard's tiles: each `{ id, panel, x, y, w, h, drill? }`,
 /// placed on a grid [`DASHBOARD_COLUMNS`] wide — `x` and `w` in columns, `y`
 /// and `h` in rows — without overlapping. The browser lays a narrow screen
 /// out in one column from the same tiles; what is stored is the wide layout.
@@ -429,7 +429,7 @@ fn check_dashboard(state: &Json) -> Result<()> {
             )));
         }
         if let Some(drill) = tile.get("drill") {
-            check_drill(drill).map_err(|why| refuse(&why))?;
+            check_drill(drill).map_err(|why| refuse(why.message()))?;
         }
         let rect = [x, y, w, h];
         if let Some((j, _)) = placed.iter().find(|(_, o)| overlap(o, &rect)) {
@@ -443,7 +443,7 @@ fn check_dashboard(state: &Json) -> Result<()> {
     }
     if let Some(filters) = state.get("filters") {
         let filters = Condition::list_of(filters)
-            .map_err(|e| Error::invalid(format!("the dashboard's filters: {e}")))?;
+            .map_err(|e| Error::invalid(format!("the dashboard's filters: {}", e.message())))?;
         if filters.len() > MAX_DASHBOARD_FILTERS {
             return Err(Error::invalid(format!(
                 "a dashboard has at most {MAX_DASHBOARD_FILTERS} filters of its own"
@@ -467,42 +467,44 @@ fn check_dashboard(state: &Json) -> Result<()> {
     Ok(())
 }
 
-/// The most filters a dashboard keeps of its own (A6.6); a panel is drawn
+/// The most filters a dashboard keeps of its own; a panel is drawn
 /// with those and the selections, at most [`crossfilter::MAX_CONDITIONS`].
 pub const MAX_DASHBOARD_FILTERS: usize = 20;
-/// How often a dashboard may refresh its panels, in seconds (A6.6).
+/// How often a dashboard may refresh its panels, in seconds.
 pub const REFRESH_SECONDS: std::ops::RangeInclusive<u64> = 10..=86_400;
-/// The most levels a drill path has (A6.5).
+/// The most levels a drill path has.
 pub const MAX_DRILL_LEVELS: usize = 8;
 
-/// A tile's drill path (A6.5): `{ channel, path }`, the columns the channel
+/// A tile's drill path: `{ channel, path }`, the columns the channel
 /// shows at each level, outermost first — `district`, then `category`. A click
 /// on a value at one level shows the next, for that value.
-fn check_drill(drill: &Json) -> std::result::Result<(), String> {
+fn check_drill(drill: &Json) -> Result<()> {
     let channel = drill
         .get("channel")
         .cloned()
         .map(serde_json::from_value::<Channel>)
         .and_then(std::result::Result::ok);
     if !matches!(channel, Some(Channel::X | Channel::Y | Channel::Color)) {
-        return Err("drills down along X, Y or Color".to_owned());
+        return Err(Error::invalid("drills down along X, Y or Color"));
     }
     let Some(path) = drill.get("path").and_then(Json::as_array) else {
-        return Err("has a drill path without its columns".to_owned());
+        return Err(Error::invalid("has a drill path without its columns"));
     };
     let names: Vec<&str> = path.iter().filter_map(Json::as_str).collect();
     if names.len() != path.len() || names.iter().any(|n| n.trim().is_empty()) {
-        return Err("has a drill path whose levels are not all columns".to_owned());
+        return Err(Error::invalid(
+            "has a drill path whose levels are not all columns",
+        ));
     }
     if !(2..=MAX_DRILL_LEVELS).contains(&names.len()) {
-        return Err(format!(
+        return Err(Error::invalid(format!(
             "has a drill path of {} levels, and one has 2 to {MAX_DRILL_LEVELS}",
             names.len()
-        ));
+        )));
     }
     let distinct: BTreeSet<&str> = names.iter().copied().collect();
     if distinct.len() != names.len() {
-        return Err("has a drill path that names a column twice".to_owned());
+        return Err(Error::invalid("has a drill path that names a column twice"));
     }
     Ok(())
 }
@@ -532,7 +534,7 @@ fn state_datasets(kind: WorkspaceKind, state: &Json) -> BTreeMap<DatasetId, usiz
 
 /// The datasets a workspace's state reads: its panels', and those it keeps
 /// outside a panel (an explorer's chosen dataset, a map's layers). What an
-/// Analytics application in fixed mode lets its users read (A9.4).
+/// Analytics application in fixed mode lets its users read.
 pub fn workspace_datasets(ws: &Workspace) -> BTreeSet<DatasetId> {
     let mut out: BTreeSet<DatasetId> = state_datasets(ws.kind, &ws.state).into_keys().collect();
     for panel in panels_in_state(ws.kind, &ws.state) {
@@ -668,7 +670,7 @@ pub struct RenderedPanel {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub categorical: Vec<String>,
     /// What each of a dashboard's conditions did to each dataset the panel
-    /// reads: the column it filtered, or why it filtered none (A6.4).
+    /// reads: the column it filtered, or why it filtered none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub filters: Vec<Applied>,
 }
@@ -710,7 +712,7 @@ pub async fn missing_reference(catalog: &Catalog, panel: &Panel) -> Result<Optio
 }
 
 /// Draw `panel` from its datasets and fits as they are now, read as `caller`
-/// (A9.1). A panel whose dataset or fit is gone answers the sentence saying
+/// A panel whose dataset or fit is gone answers the sentence saying
 /// so in `error`.
 pub async fn render_panel(
     catalog: &Catalog,

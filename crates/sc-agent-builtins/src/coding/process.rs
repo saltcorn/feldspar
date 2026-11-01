@@ -18,6 +18,7 @@
 //! container**, so a test can reach the dev server another process started on
 //! `localhost`, and the container is removed with the run.
 
+use sc_types::ArgsExt;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -33,7 +34,7 @@ use super::shell::{
     Capture, Runtime, SHELL_ENV, Sandbox, Spawned, container_run_args, kill_group, lock, sandbox,
     scope_dir,
 };
-use crate::files::{FileScope, optional_string_arg, string_arg};
+use crate::files::FileScope;
 use sc_api::mcp::arguments;
 
 /// What to do.
@@ -173,12 +174,12 @@ pub async fn call(
     ctx: &mut TraitContext<'_>,
 ) -> Result<Json> {
     let args = arguments(args, &[ARG_ACTION, ARG_NAME, ARG_COMMAND])?;
-    let action = string_arg(&args, ARG_ACTION)?;
+    let action = args.string_arg(ARG_ACTION)?;
     let key = (ctx.run, scope.slug());
     if action == "list" {
         return Ok(Json::String(list(&key)));
     }
-    let name = string_arg(&args, ARG_NAME)?;
+    let name = args.string_arg(ARG_NAME)?;
     if name.is_empty()
         || name.len() > 40
         || !name
@@ -191,7 +192,7 @@ pub async fn call(
     }
     match action.as_str() {
         "start" => {
-            let command = optional_string_arg(&args, ARG_COMMAND)?;
+            let command = args.string_or_empty(ARG_COMMAND)?;
             if command.trim().is_empty() {
                 return Err(Error::invalid(format!(
                     "`start` needs `{ARG_COMMAND}`: the command to run"

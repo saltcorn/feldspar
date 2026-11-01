@@ -9,17 +9,16 @@
 //! handle while the same `router` answers every request.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::blog_app;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use sc_app::{
-    ApiConfig, Application, FrameworkRef, bootstrap, delete_application, save_application,
-};
+use sc_app::{Application, FrameworkRef, bootstrap, delete_application, save_application};
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, FileStoreId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -89,22 +88,6 @@ fn write_bundler(root: &Path, marker: &str, succeed: bool) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-}
-
-fn code_framework() -> FrameworkRef {
-    FrameworkRef::new("code")
-        .with("store", "apps")
-        .with("source", "web")
-        .with("output", "web/dist")
-        .with("command", "sh build.sh")
-        .with("client", "web/src/client.ts")
-}
-
-fn blog_app() -> Application {
-    Application::new("Blog", "blog", code_framework())
-        .with_table("posts".to_owned())
-        .with_file_store(FileStoreId("apps".to_owned()))
-        .with_api(ApiConfig::new("rest", "/api"))
 }
 
 /// Bring up a catalog with the applications + posts tables and an `apps` file

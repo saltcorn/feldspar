@@ -101,7 +101,7 @@ pub(crate) async fn pull(
     let tx = SharedTx::begin_snapshot(cat).await?;
     let read = read_tables(cat, &tx, &request, &synced, user, evaluator).await;
     // Read-only: there is nothing to commit, whichever way the reads went.
-    let _ = tx.rollback().await;
+    tx.abandon().await;
     let (watermark, since, tables) = read?;
 
     // What the device says it has applied — kept for the cleanup that will

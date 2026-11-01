@@ -604,6 +604,7 @@ impl<'a> Runner<'a> {
     ///
     /// Resuming is the same call: the state came off the row, so a run reloaded
     /// after a restart carries on from the step it was on.
+    #[allow(clippy::too_many_lines)]
     pub async fn drive(&self, run: &mut Run) -> Result<Conclusion> {
         let mut state = run.agent_loop()?;
         let mode = run.mode()?;
@@ -1608,6 +1609,7 @@ impl<'a> Runner<'a> {
 
     /// Start or resume a child run for `request`, from a run in `parent_mode`
     /// (§11.3, TODO §5).
+    #[allow(clippy::too_many_lines)]
     async fn delegate_from(
         &self,
         parent_mode: RunMode,

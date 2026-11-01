@@ -187,6 +187,7 @@ async fn stanc_agrees_with_our_reading_of_every_test_program() {
 /// words.
 #[tokio::test]
 #[ignore = "needs a real CmdStan: `feldspar cmdstan install`, or set $CMDSTAN"]
+#[allow(clippy::too_many_lines)]
 async fn a_program_is_compiled_sampled_and_published_through_the_provider() {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;

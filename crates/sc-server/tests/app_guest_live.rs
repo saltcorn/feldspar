@@ -8,6 +8,7 @@
 //!   the next re-check, as a signed-in session's end does.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::Socket;
 use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,9 +35,6 @@ use tower::ServiceExt;
 
 const BASE_DOMAIN: &str = "example.com";
 const HOST: &str = "shop.example.com";
-
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// A browser on the shop.
 struct Browser {

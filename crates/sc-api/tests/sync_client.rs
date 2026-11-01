@@ -16,11 +16,9 @@ use std::sync::Arc;
 use sc_api::{ApiProvider, ApiRequest, Method, RestProvider, schema_edit};
 use sc_auth::{User, bootstrap, create_user};
 use sc_catalog::{Catalog, bootstrap_change_log, bootstrap_field_meta, bootstrap_table_meta};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
 use sc_expr::{DenoEvaluator, JsEvaluator};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value as Json, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -133,23 +131,17 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
 /// [`fixture`], with `notes` read through `formula`, or readable by every user
 /// when `None`.
 async fn fixture_with(db: &TestDb, formula: Option<&str>) -> Result<Fixture> {
-    sql(
-        db,
-        "DO $$ DECLARE r record; BEGIN \
-           FOR r IN SELECT table_schema FROM information_schema.tables \
-           WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-             EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-           END LOOP; END $$;
-         CREATE TABLE notes (id uuid PRIMARY KEY, title text NOT NULL, owner uuid);
+    let cat = TestServer::builder()
+        .sql(
+            "CREATE TABLE notes (id uuid PRIMARY KEY, title text NOT NULL, owner uuid);
          CREATE TABLE items (id uuid PRIMARY KEY, note uuid REFERENCES notes(id) ON DELETE CASCADE,
                              label text, rank integer, done boolean);
          CREATE TABLE lists (id serial PRIMARY KEY, name text NOT NULL);
          CREATE TABLE entries (id serial PRIMARY KEY,
                                list int REFERENCES lists(id) ON DELETE CASCADE, text text);",
-    )
-    .await?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let cat = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
+        )
+        .build_on(db)
+        .await?;
     bootstrap(&cat).await?;
     bootstrap_table_meta(&cat).await?;
     bootstrap_field_meta(&cat).await?;
@@ -199,11 +191,7 @@ async fn fixture_with(db: &TestDb, formula: Option<&str>) -> Result<Fixture> {
     let api = RestProvider::project("/api", &tables)
         .with_application(APP)
         .with_evaluator(Arc::new(DenoEvaluator::new()) as Arc<dyn JsEvaluator>);
-    Ok(Fixture {
-        cat: Arc::new(cat),
-        api,
-        ann,
-    })
+    Ok(Fixture { cat, api, ann })
 }
 
 async fn sql(db: &TestDb, statements: &str) -> Result<()> {

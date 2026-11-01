@@ -3,6 +3,7 @@
 use super::*;
 
 /// Register this domain's admin handlers on `reg`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
@@ -42,7 +43,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // one rooted where the caller may not go is refused rather than
                 // quietly answering nothing.
                 files.check_read(dir).await?;
-                let query = non_empty_str_field(obj, "query")?.to_owned();
+                let query = obj.non_empty_str_field("query")?.to_owned();
                 let max_results = match obj.get("max_results").and_then(Json::as_i64) {
                     Some(n) if n >= 1 => n as usize,
                     _ => sc_files::DEFAULT_MAX_FOUND,
@@ -114,7 +115,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     _ => sc_files::DEFAULT_MAX_RESULTS,
                 };
                 let query = sc_files::SearchQuery {
-                    pattern: non_empty_str_field(obj, "pattern")?.to_owned(),
+                    pattern: obj.non_empty_str_field("pattern")?.to_owned(),
                     regex: flag("regex"),
                     case_sensitive: flag("case_sensitive"),
                     whole_word: flag("whole_word"),
@@ -157,7 +158,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let name = ctx.path_param("store")?.to_owned();
                 let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
-                let path = non_empty_str_field(obj, "path")?;
+                let path = obj.non_empty_str_field("path")?;
                 let bytes = files.read(path).await?;
                 // Always provide base64 (for binary download); add a decoded
                 // `text` when the bytes are valid UTF-8 (for the text editor).
@@ -183,7 +184,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let name = ctx.path_param("store")?.to_owned();
                 let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
-                let path = non_empty_str_field(obj, "path")?.to_owned();
+                let path = obj.non_empty_str_field("path")?.to_owned();
                 let file = files.writable(&path).await?;
                 let data = file_body_bytes(obj)?;
                 let size = data.len();
@@ -202,7 +203,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let name = ctx.path_param("store")?.to_owned();
                 let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
-                let path = non_empty_str_field(obj, "path")?.to_owned();
+                let path = obj.non_empty_str_field("path")?.to_owned();
                 let dir = files.writable(&path).await?;
                 dir.mkdir().await?;
                 dir.claim().await;
@@ -219,7 +220,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let name = ctx.path_param("store")?.to_owned();
                 let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
-                let path = non_empty_str_field(obj, "path")?.to_owned();
+                let path = obj.non_empty_str_field("path")?.to_owned();
                 let deleted = files.delete(&path).await?;
                 Ok(HandlerResponse::ok(json!({ "deleted": deleted })))
             }
@@ -234,8 +235,8 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let name = ctx.path_param("store")?.to_owned();
                 let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
-                let from = non_empty_str_field(obj, "from")?.to_owned();
-                let to = non_empty_str_field(obj, "to")?.to_owned();
+                let from = obj.non_empty_str_field("from")?.to_owned();
+                let to = obj.non_empty_str_field("to")?.to_owned();
                 // Both ends are checked: reading from a restricted place and
                 // writing into one are each things the rule governs, and a move
                 // does both.
@@ -295,7 +296,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let name = ctx.path_param("store")?.to_owned();
                 let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
-                let path = non_empty_str_field(obj, "path")?.to_owned();
+                let path = obj.non_empty_str_field("path")?.to_owned();
                 let meta = files.get_meta(&path).await?;
                 let effective = files.effective_min_role(&path).await?;
                 Ok(HandlerResponse::ok(file_meta_json(&path, &meta, effective)))
@@ -311,7 +312,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let name = ctx.path_param("store")?.to_owned();
                 let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
-                let path = non_empty_str_field(obj, "path")?.to_owned();
+                let path = obj.non_empty_str_field("path")?.to_owned();
                 let file = files.writable(&path).await?;
 
                 let min_role = optional_role(obj, "min_role")?;
@@ -357,7 +358,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
 /// inventing a restrictive default would break the workflow the flag exists for.
 ///
 /// Answered as a [`CheckedStore`] with the request's caller bound
-/// (TODO-code-quality Q3.6): every operation a file endpoint makes is checked
+/// every operation a file endpoint makes is checked
 /// by the store it holds, rather than by a call it has to remember to make.
 async fn resolve_store(
     catalog: &Catalog,

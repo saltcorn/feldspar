@@ -330,6 +330,7 @@ async fn may_write(browser: &mut Browser<'_>, table: &str) -> bool {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn brew_notes_trials_subscribes_reminds_and_lapses_as_the_tutorial_says()
 -> sc_error::Result<()> {
     if !have_npm() {

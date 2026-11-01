@@ -64,12 +64,12 @@
 //! rewritten here for the same reason the admin API rewrites it: the app's source
 //! tree should never disagree with the app's definition.
 
+use sc_types::ArgsExt;
 use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::mcp::{
-    AdminTool, Area, Areas, ToolContext, ToolSet, arguments, optional_bool, optional_role,
-    optional_string, require_grant,
+    AdminTool, Area, Areas, ToolContext, ToolSet, arguments, optional_role, require_grant,
 };
 use sc_api::schema_edit::{GRANT_ACCESS_CHANGES, GRANT_CREATE, GRANT_DROP, GRANT_EDIT, Grants};
 use sc_api::{CustomParam, CustomQuery, Method, ValueType};
@@ -491,6 +491,7 @@ fn save_description(grants: &Grants) -> String {
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn save_parameters() -> Json {
     json!({
         "type": "object",
@@ -698,7 +699,7 @@ fn save_parameters() -> Json {
 
 async fn save(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Json> {
     let args = arguments(args, &SAVE_ARGS)?;
-    let name = required_str(&args, ARG_NAME)?;
+    let name = args.required_string(ARG_NAME)?;
     let mut app = load_app(ctx, &args).await?;
     let subdomain = app.subdomain.clone();
     let api = crate::select_api(&mut app, api_mount(&args)?.as_deref(), HOW_TO_NAME_API)?;
@@ -792,7 +793,7 @@ fn build(
     existing: Option<&CustomQuery>,
     args: &Map<String, Json>,
 ) -> Result<CustomQuery> {
-    let method = match optional_string(args, ARG_METHOD)? {
+    let method = match args.optional_string(ARG_METHOD)? {
         Some(raw) => parse_method(&raw)?,
         None => existing.map(|q| q.method).unwrap_or(Method::Get),
     };
@@ -803,13 +804,19 @@ fn build(
              (`{what}` is missing)"
         ))
     };
-    let path = match optional_string(args, ARG_PATH)?.filter(|p| !p.trim().is_empty()) {
+    let path = match args
+        .optional_string(ARG_PATH)?
+        .filter(|p| !p.trim().is_empty())
+    {
         Some(path) => path,
         None => existing
             .map(|q| q.path.clone())
             .ok_or_else(|| missing(ARG_PATH))?,
     };
-    let code = match optional_string(args, ARG_CODE)?.filter(|s| !s.trim().is_empty()) {
+    let code = match args
+        .optional_string(ARG_CODE)?
+        .filter(|s| !s.trim().is_empty())
+    {
         Some(code) => code,
         None => existing
             .map(|q| q.code.clone())
@@ -817,7 +824,7 @@ fn build(
     };
 
     let mut query = CustomQuery::new(name, method, path, code);
-    query.language = match optional_string(args, ARG_LANGUAGE)? {
+    query.language = match args.optional_string(ARG_LANGUAGE)? {
         Some(raw) => {
             serde_json::from_value(Json::String(raw.trim().to_lowercase())).map_err(|_| {
                 Error::invalid(format!(
@@ -827,7 +834,7 @@ fn build(
         }
         None => existing.map(|q| q.language).unwrap_or_default(),
     };
-    query.body_type = match optional_string(args, ARG_BODY_TYPE)? {
+    query.body_type = match args.optional_string(ARG_BODY_TYPE)? {
         Some(raw) => {
             serde_json::from_value(Json::String(raw.trim().to_lowercase())).map_err(|_| {
                 Error::invalid(format!(
@@ -837,7 +844,7 @@ fn build(
         }
         None => existing.map(|q| q.body_type).unwrap_or_default(),
     };
-    query.response_type = match optional_string(args, ARG_RESPONSE_TYPE)? {
+    query.response_type = match args.optional_string(ARG_RESPONSE_TYPE)? {
         Some(raw) => {
             serde_json::from_value(Json::String(raw.trim().to_lowercase())).map_err(|_| {
                 Error::invalid(format!(
@@ -868,7 +875,7 @@ fn build(
         None => existing.and_then(|q| q.rate_limit.clone()),
     };
     query.description = match args.contains_key(ARG_DESCRIPTION) {
-        true => optional_string(args, ARG_DESCRIPTION)?.unwrap_or_default(),
+        true => args.optional_string(ARG_DESCRIPTION)?.unwrap_or_default(),
         false => existing.map(|q| q.description.clone()).unwrap_or_default(),
     };
     query.params = match args.contains_key(ARG_PARAMS) {
@@ -890,7 +897,7 @@ fn build(
 /// so on its own it is refused rather than guessed into some other role.
 fn requested_role(args: &Map<String, Json>) -> Result<Option<Role>> {
     let role = optional_role(args, ARG_MIN_ROLE)?;
-    let public = optional_bool(args, ARG_PUBLIC)?;
+    let public = args.optional_bool(ARG_PUBLIC)?;
     match (role, public) {
         (role, None) => Ok(role),
         (None, Some(true)) => Ok(Some(Role::PUBLIC)),
@@ -933,11 +940,12 @@ fn parse_params(args: &Map<String, Json>) -> Result<Vec<CustomParam>> {
                 )));
             }
         }
-        let name = optional_string(obj, "name")?
+        let name = obj
+            .optional_string("name")?
             .map(|n| n.trim().to_owned())
             .filter(|n| !n.is_empty())
             .ok_or_else(|| Error::invalid(format!("`{ARG_PARAMS}[{i}]` needs a `name`")))?;
-        let raw = optional_string(obj, "type")?.ok_or_else(|| {
+        let raw = obj.optional_string("type")?.ok_or_else(|| {
             Error::invalid(format!(
                 "the parameter `{name}` needs a `type`; the types are {}",
                 type_names()
@@ -950,7 +958,7 @@ fn parse_params(args: &Map<String, Json>) -> Result<Vec<CustomParam>> {
             ))
         })?;
         let param = CustomParam::new(name, ty);
-        out.push(match optional_bool(obj, "required")? {
+        out.push(match obj.optional_bool("required")? {
             Some(false) => param.optional(),
             _ => param,
         });
@@ -1005,7 +1013,7 @@ fn delete_parameters() -> Json {
 
 async fn delete(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Json> {
     let args = arguments(args, &[ARG_APPLICATION, ARG_API, ARG_NAME])?;
-    let name = required_str(&args, ARG_NAME)?;
+    let name = args.required_string(ARG_NAME)?;
     require_grant(grants.drop, "delete a custom SQL query", GRANT_DROP)?;
 
     let mut app = load_app(ctx, &args).await?;
@@ -1047,7 +1055,7 @@ async fn delete(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<J
 /// The application the arguments name, or the refusal that lists the ones there
 /// are.
 async fn load_app(ctx: &ToolContext<'_>, args: &Map<String, Json>) -> Result<Application> {
-    let subdomain = required_str(args, ARG_APPLICATION)?;
+    let subdomain = args.required_string(ARG_APPLICATION)?;
     match crate::load_application_by_subdomain(ctx.catalog, &subdomain).await? {
         Some(app) => Ok(app),
         None => {
@@ -1059,16 +1067,10 @@ async fn load_app(ctx: &ToolContext<'_>, args: &Map<String, Json>) -> Result<App
 
 /// The `api` argument, trimmed, or `None` for "there is only one".
 fn api_mount(args: &Map<String, Json>) -> Result<Option<String>> {
-    Ok(optional_string(args, ARG_API)?
+    Ok(args
+        .optional_string(ARG_API)?
         .map(|m| m.trim().to_owned())
         .filter(|m| !m.is_empty()))
-}
-
-fn required_str(args: &Map<String, Json>, key: &str) -> Result<String> {
-    optional_string(args, key)?
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| Error::invalid(format!("`{key}` is required")))
 }
 
 /// The query as it was **stored**, read back out of the saved application.

@@ -75,7 +75,7 @@ uuid.workspace = true
 # exactly the mistakes these tests exist to catch.
 sc-db.workspace = true
 sc-db-postgres.workspace = true
-sc-test-harness.workspace = true
+sc-test-harness = { workspace = true, features = ["catalog"] }
 sc-expr = { workspace = true, features = ["eval"] }
 # `RecordingMailer`, which is what makes `send_email`'s tests assertions about
 # the message rather than about a return value, and `bootstrap_config` for the

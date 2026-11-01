@@ -5,6 +5,7 @@
 use super::*;
 
 /// Declare this domain's endpoints on `set`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(set: &mut EndpointSet) {
     // Every row endpoint here is `admin()`, and that is **not** governed by a
     // table's `min_role_read`/`min_role_write`. Those rules are the table's

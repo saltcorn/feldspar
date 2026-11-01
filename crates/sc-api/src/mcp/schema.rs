@@ -23,10 +23,11 @@ use sc_catalog::{
     FileStoreId, Table,
 };
 use sc_error::{Error, Result};
+use sc_types::ArgsExt;
 use sc_types::Attrs;
 use serde_json::{Map, Value as Json, json};
 
-use super::{AdminTool, ToolContext, optional_bool, optional_role, optional_string};
+use super::{AdminTool, ToolContext, optional_role};
 
 /// The reading tool's name. Fixed rather than derived, because this surface is
 /// configured against no table to derive one from — which is also what makes a
@@ -375,6 +376,7 @@ fn edit_description(grants: &Grants, rls_available: bool) -> String {
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn edit_parameters() -> Json {
     let types = schema_edit::field_type_names();
     // A flat object with per-`op` optional fields, documented in the
@@ -866,7 +868,8 @@ fn parse_operation(item: &Json) -> Result<Operation> {
         "drop_table" => Ok(Operation::DropTable { table }),
         "rename_table" => Ok(Operation::RenameTable {
             table,
-            to: optional_string(obj, "rename_to")?
+            to: obj
+                .optional_string("rename_to")?
                 .filter(|s| !s.trim().is_empty())
                 .ok_or_else(|| Error::invalid("`rename_table` needs a `rename_to`"))?,
         }),
@@ -923,14 +926,14 @@ fn require_field(obj: &Map<String, Json>, op: &str) -> Result<String> {
 
 fn parse_table_settings(obj: &Map<String, Json>) -> Result<TableSettings> {
     Ok(TableSettings {
-        label: optional_string(obj, "label")?,
-        description: optional_string(obj, "description")?,
+        label: obj.optional_string("label")?,
+        description: obj.optional_string("description")?,
         min_role_read: optional_role(obj, "min_role_read")?,
         min_role_write: optional_role(obj, "min_role_write")?,
-        ownership_formula: optional_string(obj, "ownership_formula")?,
-        rls_enabled: optional_bool(obj, "rls_enabled")?,
-        sync_enabled: optional_bool(obj, "sync_enabled")?,
-        history_enabled: optional_bool(obj, "history_enabled")?,
+        ownership_formula: obj.optional_string("ownership_formula")?,
+        rls_enabled: obj.optional_bool("rls_enabled")?,
+        sync_enabled: obj.optional_bool("sync_enabled")?,
+        history_enabled: obj.optional_bool("history_enabled")?,
         history_min_role: optional_role(obj, "history_min_role")?,
         history_keep_days: match obj.get("history_keep_days") {
             None | Some(Json::Null) => None,
@@ -948,15 +951,15 @@ fn parse_table_settings(obj: &Map<String, Json>) -> Result<TableSettings> {
 fn parse_field_settings(obj: &Map<String, Json>) -> Result<FieldSettings> {
     let kind = field_kind(obj)?;
     Ok(FieldSettings {
-        name: optional_string(obj, "rename_to")?,
-        label: optional_string(obj, "label")?,
-        description: optional_string(obj, "description")?,
-        type_name: optional_string(obj, "type")?,
+        name: obj.optional_string("rename_to")?,
+        label: obj.optional_string("label")?,
+        description: obj.optional_string("description")?,
+        type_name: obj.optional_string("type")?,
         kind,
         attributes: None,
-        primary_key: optional_bool(obj, "primary_key")?,
-        required: optional_bool(obj, "required")?,
-        default_expression: optional_string(obj, "default")?,
+        primary_key: obj.optional_bool("primary_key")?,
+        required: obj.optional_bool("required")?,
+        default_expression: obj.optional_string("default")?,
     })
 }
 
@@ -973,15 +976,15 @@ fn parse_field_spec(item: &Json) -> Result<FieldSpec> {
         .to_owned();
     Ok(FieldSpec {
         name,
-        type_name: optional_string(obj, "type")?.unwrap_or_default(),
-        label: optional_string(obj, "label")?.unwrap_or_default(),
-        description: optional_string(obj, "description")?.unwrap_or_default(),
-        required: optional_bool(obj, "required")?.unwrap_or(false),
-        unique: optional_bool(obj, "unique")?.unwrap_or(false),
-        primary_key: optional_bool(obj, "primary_key")?.unwrap_or(false),
+        type_name: obj.optional_string("type")?.unwrap_or_default(),
+        label: obj.optional_string("label")?.unwrap_or_default(),
+        description: obj.optional_string("description")?.unwrap_or_default(),
+        required: obj.optional_bool("required")?.unwrap_or(false),
+        unique: obj.optional_bool("unique")?.unwrap_or(false),
+        primary_key: obj.optional_bool("primary_key")?.unwrap_or(false),
         kind: field_kind(obj)?.unwrap_or(DataFieldKind::Plain),
         attributes: Attrs::new(),
-        default_expression: optional_string(obj, "default")?,
+        default_expression: obj.optional_string("default")?,
     })
 }
 
@@ -991,7 +994,7 @@ fn file_choice<T: Default>(
     key: &str,
     parse: fn(&str) -> Option<T>,
 ) -> Result<T> {
-    match optional_string(obj, key)? {
+    match obj.optional_string(key)? {
         None => Ok(T::default()),
         Some(text) => parse(&text).ok_or_else(|| {
             Error::invalid(format!(
@@ -1067,9 +1070,15 @@ fn complete_file_alter(catalog: &Catalog, item: &Json) -> Result<Json> {
 /// one of them is a contradiction worth naming rather than resolving by
 /// precedence.
 fn field_kind(obj: &Map<String, Json>) -> Result<Option<DataFieldKind>> {
-    let references = optional_string(obj, "references")?.filter(|s| !s.trim().is_empty());
-    let expression = optional_string(obj, "expression")?.filter(|s| !s.trim().is_empty());
-    let file_store = optional_string(obj, ARG_FILE_STORE)?.filter(|s| !s.trim().is_empty());
+    let references = obj
+        .optional_string("references")?
+        .filter(|s| !s.trim().is_empty());
+    let expression = obj
+        .optional_string("expression")?
+        .filter(|s| !s.trim().is_empty());
+    let file_store = obj
+        .optional_string(ARG_FILE_STORE)?
+        .filter(|s| !s.trim().is_empty());
     if obj.get("type").and_then(Json::as_str).map(str::trim) == Some("file") {
         return Err(Error::invalid(format!(
             "`file` is not a type; a file field is one with `{ARG_FILE_STORE}` naming \
@@ -1101,7 +1110,8 @@ fn field_kind(obj: &Map<String, Json>) -> Result<Option<DataFieldKind>> {
         };
         return Ok(Some(DataFieldKind::File {
             store: FileStoreId(store.trim().to_owned()),
-            folder: optional_string(obj, ARG_FILE_FOLDER)?
+            folder: obj
+                .optional_string(ARG_FILE_FOLDER)?
                 .map(|f| f.trim().trim_matches('/').to_owned())
                 .filter(|f| !f.is_empty()),
             mime_allow,
@@ -1131,7 +1141,8 @@ fn field_kind(obj: &Map<String, Json>) -> Result<Option<DataFieldKind>> {
             // Empty: the schema editor resolves it to the target's primary key,
             // so the model never has to know (or guess) the column's name.
             target_field: FieldId(String::new()),
-            summary_field: optional_string(obj, "summary_field")?
+            summary_field: obj
+                .optional_string("summary_field")?
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty())
                 .map(FieldId),

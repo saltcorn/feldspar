@@ -36,6 +36,7 @@
 //! session's run is driven on from where it stopped, never started twice.
 //! Aborting the planner aborts the session with it (`abort_run`).
 
+use sc_types::ArgsExt;
 use std::str::FromStr;
 
 use sc_agent::{Conclusion, DelegateRequest, Delegator, ModelRole, RunId, RunMode, TraitContext};
@@ -50,7 +51,7 @@ use super::ledger::diff_ledger;
 use super::plan::{self, Kind, Plan, Progress, Status, checklist};
 use super::state::CodingState;
 use super::{CFG_MAY_CHECK, CFG_MAY_VIEW_APP, may, view_app};
-use crate::files::{FileScope, config_count, string_arg};
+use crate::files::{FileScope, config_count};
 use sc_api::mcp::arguments;
 
 /// How many sessions one feature may have, counting retries.
@@ -103,6 +104,7 @@ pub fn conclusion_words(conclusion: &Conclusion) -> String {
 }
 
 /// Implement one feature: brief, run, check, look, commit, report.
+#[allow(clippy::too_many_lines)]
 pub async fn call(
     scope: &FileScope,
     config: &Attrs,
@@ -110,7 +112,7 @@ pub async fn call(
     ctx: &mut TraitContext<'_>,
 ) -> Result<Json> {
     let args = arguments(args, &["id"])?;
-    let id = string_arg(&args, "id")?;
+    let id = args.string_arg("id")?;
     let max_sessions = config_count(config, CFG_MAX_SESSIONS, DEFAULT_MAX_SESSIONS)?;
     // Copied out of the context, so the state can be written while it is held.
     let Some(delegate) = ctx.delegate else {

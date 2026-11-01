@@ -1445,6 +1445,7 @@ impl Plan {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn alter_field(
         &mut self,
         catalog: &Catalog,

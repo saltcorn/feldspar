@@ -28,10 +28,8 @@ use sc_auth::{
     list_credit_entries, revoke_credits, save_role, set_low_balance_threshold,
 };
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::Result;
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use uuid::Uuid;
 
 struct Fixture {
@@ -40,20 +38,7 @@ struct Fixture {
 }
 
 async fn fixture() -> Result<Fixture> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     bootstrap(&catalog).await?;
     save_role(&catalog, &RoleDef::new(Role::of(80), "Member")).await?;
     Ok(Fixture { catalog, _db: db })

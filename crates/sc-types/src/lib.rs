@@ -20,10 +20,12 @@
 //!   (§6.2). `FormField` is **also** how every configurable extension point
 //!   declares its settings (§13.3), so the admin UI renders one form for all of
 //!   them and knows about none of them.
+//! - [`ArgsExt`] — reading a tool's arguments or a body's members one at a
+//!   time, with the refusals callers rely on ([`args`]).
 //! - [`Attrs`] — the JSON bag those settings land in; a `FormField` describes one
 //!   entry of it.
 //! - [`catchall`] — the reduced display/edit path (value → text, text → value)
-//!   that stands in for the full `FieldView` trait until post-MVP.
+//!   a type uses when it has no display or editor of its own.
 //! - [`translate_spec`] — the labels of a declared spec, translated against a
 //!   request's locale before the admin API serialises them (§16.1, [`i18n`]).
 //!
@@ -34,6 +36,7 @@
 //! that was always the only part that had to. Both are re-exported from
 //! `sc-catalog`, so `sc_catalog::{Attrs, BaseField}` still resolve.
 
+pub mod args;
 mod attrs;
 mod basic;
 pub mod catchall;
@@ -49,6 +52,7 @@ mod role;
 mod type_ref;
 pub mod vector;
 
+pub use args::ArgsExt;
 pub use attrs::Attrs;
 pub use basic::BasicType;
 pub use field::{

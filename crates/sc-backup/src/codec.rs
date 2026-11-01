@@ -7,11 +7,11 @@
 //! write and read a backup with the same functions. A field added to an
 //! application, an agent or a trigger reaches the backup format the moment it
 //! reaches the API, with nothing to remember. The small body-reading helpers
-//! the codecs are built from (`str_field`, `optional_bool`, …) are here too,
+//! the codecs are built from (`optional_bool`, `attributes_field`, …) are here too,
 //! and the handlers use them as well.
 
-use sc_types::Attrs;
 use sc_types::Role;
+use sc_types::{ArgsExt, Attrs};
 use std::collections::BTreeMap;
 
 use sc_access::rows::require_object;
@@ -159,26 +159,26 @@ pub fn parse_field_kind(obj: &Map<String, Json>) -> Result<DataFieldKind> {
     let kind = value
         .as_object()
         .ok_or_else(|| Error::invalid("`kind` must be an object"))?;
-    match str_field(kind, "type")? {
+    match kind.str_field("type")? {
         "plain" => Ok(DataFieldKind::Plain),
         // A secret (TODO-imap M2): a text column holding encrypted values.
         "secret" => Ok(DataFieldKind::Secret),
         "file" => Ok(DataFieldKind::File {
-            store: FileStoreId(non_empty_str_field(kind, "store")?.to_owned()),
+            store: FileStoreId(kind.non_empty_str_field("store")?.to_owned()),
             folder: optional_present_str(kind, "folder"),
             mime_allow: string_array_field(kind, "mime_allow")?,
             on_delete: file_option(kind, "on_delete", FileOnDelete::parse)?,
             on_conflict: file_option(kind, "on_conflict", FileOnConflict::parse)?,
         }),
         "key" => Ok(DataFieldKind::Key {
-            target_table: non_empty_str_field(kind, "target_table")?.to_owned(),
-            target_field: FieldId(non_empty_str_field(kind, "target_field")?.to_owned()),
+            target_table: kind.non_empty_str_field("target_table")?.to_owned(),
+            target_field: FieldId(kind.non_empty_str_field("target_field")?.to_owned()),
             summary_field: optional_present_str(kind, "summary_field").map(FieldId),
         }),
         // A non-stored calculated field (Phase 8): a virtual field with no
         // column, only an `sc-expr` expression computed on read.
         "calc" => Ok(DataFieldKind::Calc {
-            expression: non_empty_str_field(kind, "expression")?.to_owned(),
+            expression: kind.non_empty_str_field("expression")?.to_owned(),
         }),
         other => Err(Error::invalid(format!("unknown field kind `{other}`"))),
     }
@@ -208,7 +208,7 @@ pub fn file_option<T: Default>(
 /// a field kind a backup can carry.
 pub fn field_spec_from_body(obj: &Map<String, Json>) -> Result<schema_edit::FieldSpec> {
     Ok(schema_edit::FieldSpec {
-        name: non_empty_str_field(obj, "name")?.to_owned(),
+        name: obj.non_empty_str_field("name")?.to_owned(),
         type_name: optional_str(obj, "type"),
         label: optional_str(obj, "label"),
         description: optional_str(obj, "description"),
@@ -226,11 +226,11 @@ pub fn field_spec_from_body(obj: &Map<String, Json>) -> Result<schema_edit::Fiel
 /// right reading *here* and the wrong one in an agent's batch).
 pub fn table_settings_from_body(obj: &Map<String, Json>) -> Result<schema_edit::TableSettings> {
     Ok(schema_edit::TableSettings {
-        label: Some(str_field(obj, "label")?.to_owned()),
-        description: Some(str_field(obj, "description")?.to_owned()),
+        label: Some(obj.str_field("label")?.to_owned()),
+        description: Some(obj.str_field("description")?.to_owned()),
         min_role_read: Some(role_field(obj, "min_role_read")?),
         min_role_write: Some(role_field(obj, "min_role_write")?),
-        ownership_formula: Some(str_field(obj, "ownership_formula")?.to_owned()),
+        ownership_formula: Some(obj.str_field("ownership_formula")?.to_owned()),
         rls_enabled: Some(bool_field(obj, "rls_enabled")?),
         sync_enabled: Some(bool_field(obj, "sync_enabled")?),
         // Absent reads as off, like every other omitted value of this body.
@@ -359,8 +359,8 @@ pub fn view_from_body(
     body: &Json,
 ) -> Result<sc_viewpattern::View> {
     let obj = require_object(body)?;
-    let name = non_empty_str_field(obj, "name")?;
-    let viewpattern = non_empty_str_field(obj, "viewpattern")?;
+    let name = obj.non_empty_str_field("name")?;
+    let viewpattern = obj.non_empty_str_field("viewpattern")?;
     let mut view = sc_viewpattern::View::new(application, name, viewpattern, "");
     view.id = id;
     view.description = obj
@@ -401,7 +401,7 @@ pub fn page_from_body(
     body: &Json,
 ) -> Result<sc_viewpattern::Page> {
     let obj = require_object(body)?;
-    let name = non_empty_str_field(obj, "name")?;
+    let name = obj.non_empty_str_field("name")?;
     let mut page = sc_viewpattern::Page::new(application, name)
         .title(obj.get("title").and_then(Json::as_str).unwrap_or(""))
         .layout(obj.get("layout").cloned().unwrap_or_else(|| json!({})));
@@ -437,7 +437,7 @@ pub fn library_item_from_body(
     body: &Json,
 ) -> Result<sc_viewpattern::LibraryItem> {
     let obj = require_object(body)?;
-    let name = non_empty_str_field(obj, "name")?;
+    let name = obj.non_empty_str_field("name")?;
     let mut item = sc_viewpattern::LibraryItem::new(application, name)
         .icon(obj.get("icon").and_then(Json::as_str).unwrap_or(""))
         .description(obj.get("description").and_then(Json::as_str).unwrap_or(""))
@@ -489,8 +489,8 @@ pub fn csp_json(csp: &CspPolicy) -> Json {
 
 pub fn application_from_body(id: AppId, body: &Json) -> Result<Application> {
     let obj = require_object(body)?;
-    let name = non_empty_str_field(obj, "name")?.to_owned();
-    let subdomain = non_empty_str_field(obj, "subdomain")?.to_owned();
+    let name = obj.non_empty_str_field("name")?.to_owned();
+    let subdomain = obj.non_empty_str_field("subdomain")?.to_owned();
     let description = obj
         .get("description")
         .and_then(Json::as_str)
@@ -537,8 +537,8 @@ pub fn application_from_body(id: AppId, body: &Json) -> Result<Application> {
             // the provider declares (`validate_api_config`), so a key nobody
             // declared is refused here rather than stored and ignored.
             Ok(ApiConfig::new(
-                non_empty_str_field(o, "provider")?,
-                non_empty_str_field(o, "mount")?,
+                o.non_empty_str_field("provider")?,
+                o.non_empty_str_field("mount")?,
             )
             .with_config(object_field(o, "config")?))
         })
@@ -548,9 +548,9 @@ pub fn application_from_body(id: AppId, body: &Json) -> Result<Application> {
         .map(|v| {
             let o = require_object(v)?;
             Ok(StaticDir::new(
-                str_field(o, "mount")?,
-                FileStoreId(non_empty_str_field(o, "store")?.to_owned()),
-                str_field(o, "path")?,
+                o.str_field("mount")?,
+                FileStoreId(o.non_empty_str_field("store")?.to_owned()),
+                o.str_field("path")?,
             ))
         })
         .collect::<Result<_>>()?;
@@ -613,7 +613,7 @@ pub fn application_from_body(id: AppId, body: &Json) -> Result<Application> {
 /// empty settings bag.
 pub fn parse_framework(value: &Json) -> Result<FrameworkRef> {
     let obj = require_object(value)?;
-    let name = non_empty_str_field(obj, "name")?.to_owned();
+    let name = obj.non_empty_str_field("name")?.to_owned();
     let config = match obj.get("config") {
         None | Some(Json::Null) => Attrs::new(),
         Some(Json::Object(o)) => o.clone(),
@@ -874,7 +874,7 @@ pub fn backup_file_meta_json(
 /// A file's metadata back from a backup, in the shape `setFileMeta` accepts.
 pub fn backup_file_meta_from_json(value: &Json) -> Result<(String, FileMeta)> {
     let obj = require_object(value)?;
-    let path = non_empty_str_field(obj, "path")?.to_owned();
+    let path = obj.non_empty_str_field("path")?.to_owned();
     let attributes = match obj.get("attributes") {
         Some(Json::Object(o)) => o
             .iter()
@@ -909,8 +909,8 @@ pub fn trigger_table(trigger: &Trigger) -> Option<&str> {
 
 pub fn file_store_from_body(id: FileStoreDefId, body: &Json) -> Result<FileStoreDef> {
     let obj = require_object(body)?;
-    let name = non_empty_str_field(obj, "name")?.to_owned();
-    let backend = non_empty_str_field(obj, "backend")?.to_owned();
+    let name = obj.non_empty_str_field("name")?.to_owned();
+    let backend = obj.non_empty_str_field("backend")?.to_owned();
     let description = obj
         .get("description")
         .and_then(Json::as_str)
@@ -964,7 +964,7 @@ pub fn db_connection_from_body(
     existing: Option<&DbConnectionDef>,
 ) -> Result<DbConnectionDef> {
     let obj = require_object(body)?;
-    let name = non_empty_str_field(obj, "name")?.trim().to_owned();
+    let name = obj.non_empty_str_field("name")?.trim().to_owned();
     let str_field = |key: &str| -> String {
         obj.get(key)
             .and_then(Json::as_str)
@@ -1076,11 +1076,11 @@ pub fn backup_module_json(module: &sc_module::Module) -> Json {
 /// and the install that follows is what says whether it is still true.
 pub fn module_from_backup(value: &Json) -> Result<sc_module::Module> {
     let obj = require_object(value)?;
-    let source = sc_module::ModuleSource::parse(non_empty_str_field(obj, "source")?)?;
+    let source = sc_module::ModuleSource::parse(obj.non_empty_str_field("source")?)?;
     let mut module = sc_module::Module::new(
-        non_empty_str_field(obj, "name")?,
+        obj.non_empty_str_field("name")?,
         source,
-        non_empty_str_field(obj, "location")?,
+        obj.non_empty_str_field("location")?,
     )
     .in_language(match obj.get("language").and_then(Json::as_str) {
         Some(language) => sc_module::ModuleLanguage::parse(language)?,
@@ -1174,13 +1174,13 @@ pub fn llm_provider_from_body(id: LlmProviderDefId, body: &Json) -> Result<LlmPr
     let obj = require_object(body)?;
     Ok(LlmProviderDef {
         id,
-        name: non_empty_str_field(obj, "name")?.to_owned(),
+        name: obj.non_empty_str_field("name")?.to_owned(),
         description: obj
             .get("description")
             .and_then(Json::as_str)
             .unwrap_or("")
             .to_owned(),
-        backend: non_empty_str_field(obj, "backend")?.to_owned(),
+        backend: obj.non_empty_str_field("backend")?.to_owned(),
         config: object_field(obj, "config")?,
         attributes: sc_types::Attrs::new(),
     })
@@ -1217,7 +1217,7 @@ pub fn llm_model_from_body(
     Ok(LlmModelDef {
         id,
         provider_id: provider,
-        name: non_empty_str_field(obj, "name")?.trim().to_owned(),
+        name: obj.non_empty_str_field("name")?.trim().to_owned(),
         description: obj
             .get("description")
             .and_then(Json::as_str)
@@ -1270,8 +1270,8 @@ pub fn agent_from_body(id: sc_agent::AgentId, body: &Json) -> Result<sc_agent::A
     let obj = require_object(body)?;
     let mut agent = sc_agent::Agent::with_id(
         id,
-        non_empty_str_field(obj, "name")?,
-        non_empty_str_field(obj, "provider")?,
+        obj.non_empty_str_field("name")?,
+        obj.non_empty_str_field("provider")?,
     )
     .description(optional_str(obj, "description"))
     .system_prompt(optional_str(obj, "system_prompt"));
@@ -1411,7 +1411,7 @@ pub fn trigger_json_with(
 /// authority for it and the admin gets the same message the loader would.
 pub fn trigger_from_body(id: TriggerId, body: &Json) -> Result<Trigger> {
     let obj = require_object(body)?;
-    let when = EventKind::parse(non_empty_str_field(obj, "when")?)?;
+    let when = EventKind::parse(obj.non_empty_str_field("when")?)?;
     // The body decides what the rest of the request means: an `action` body
     // needs an action name and may carry a configuration, and a `workflow` body
     // has neither. Absent is `action`, because that is what every trigger was
@@ -1424,7 +1424,7 @@ pub fn trigger_from_body(id: TriggerId, body: &Json) -> Result<Trigger> {
         .unwrap_or(TriggerBody::ACTION);
     let action = match kind {
         TriggerBody::WORKFLOW => None,
-        _ => Some(non_empty_str_field(obj, "action")?.to_owned()),
+        _ => Some(obj.non_empty_str_field("action")?.to_owned()),
     };
     let configuration = match obj.get("configuration").filter(|v| !v.is_null()) {
         Some(Json::Object(config)) => config.clone().into_iter().collect(),
@@ -1434,7 +1434,7 @@ pub fn trigger_from_body(id: TriggerId, body: &Json) -> Result<Trigger> {
     // One reading of the three, the same one the stored row goes through, so the
     // API refuses exactly what the loader refuses.
     let body = TriggerBody::parse(kind, action.as_deref(), configuration)?;
-    let mut trigger = Trigger::with_body(id, non_empty_str_field(obj, "name")?, when, body)
+    let mut trigger = Trigger::with_body(id, obj.non_empty_str_field("name")?, when, body)
         .description(optional_str(obj, "description"));
     // Absent, null, or blank are all "no channel" — a form posts the empty
     // string for a picker it did not show.
@@ -1494,8 +1494,8 @@ pub fn stream_from_body(body: &Map<String, Json>) -> Result<sc_stream::Stream> {
     };
     let mut stream = sc_stream::Stream::with_id(
         id,
-        non_empty_str_field(body, "name")?,
-        non_empty_str_field(body, "provider")?,
+        body.non_empty_str_field("name")?,
+        body.non_empty_str_field("provider")?,
     );
     stream.description = optional_str(body, "description");
     stream.configuration = optional_attrs(body, "configuration")?;
@@ -1521,7 +1521,7 @@ pub fn stream_from_body(body: &Map<String, Json>) -> Result<sc_stream::Stream> {
 }
 
 /// A named dataset off the wire — `{ "dataset_id": "…" }` — resolved against
-/// the catalog and every stored dataset (analytics TODO A1.8).
+/// the catalog and every stored dataset.
 pub async fn dataset_from_json(catalog: &Catalog, value: &Json) -> Result<sc_model::Dataset> {
     let id = sc_model::dataset_ref(value)?;
     let schema = sc_dataset::Schema::of_catalog(catalog)?;
@@ -1552,8 +1552,8 @@ pub async fn model_from_body(
     .await?;
     let mut model = sc_model::Model::with_id(
         id,
-        non_empty_str_field(body, "name")?,
-        non_empty_str_field(body, "provider")?,
+        body.non_empty_str_field("name")?,
+        body.non_empty_str_field("provider")?,
         dataset,
     );
     model.description = optional_str(body, "description");
@@ -1817,21 +1817,6 @@ pub fn role_json(role: &RoleDef) -> Json {
         "description": role.description,
         "builtin": role.is_builtin(),
     })
-}
-
-pub fn str_field<'a>(obj: &'a Map<String, Json>, key: &str) -> Result<&'a str> {
-    obj.get(key)
-        .and_then(Json::as_str)
-        .ok_or_else(|| Error::invalid(format!("missing or non-string field `{key}`")))
-}
-
-/// A required, non-empty (after trimming) string field.
-pub fn non_empty_str_field<'a>(obj: &'a Map<String, Json>, key: &str) -> Result<&'a str> {
-    let value = str_field(obj, key)?;
-    if value.trim().is_empty() {
-        return Err(Error::invalid(format!("field `{key}` must not be empty")));
-    }
-    Ok(value)
 }
 
 /// An optional string field: the value if present and a string, else "". A

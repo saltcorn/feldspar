@@ -59,6 +59,7 @@ use sc_llm::{
     ANTHROPIC_BACKEND, CFG_API_KEY, CFG_BASE_URL, OPENAI_CHAT_BACKEND, OPENAI_RESPONSES_BACKEND,
 };
 use sc_types::vector::{ATTR_EMBED_MODEL, ATTR_EMBED_PROVIDER};
+use serde::Deserialize;
 use serde_json::{Map, Value as Json, json};
 
 use super::{array, name_of, text};
@@ -165,6 +166,7 @@ pub(super) fn convert_agents(
         // there is no prompt per trait here, and the agent's is where it reads.
         let mut prompt = vec![text(&config, "sys_prompt")];
         for skill in array(&config, "skills") {
+            let skill_type = SkillType::of(&skill);
             let Some(skill) = skill.as_object() else {
                 continue;
             };
@@ -176,8 +178,8 @@ pub(super) fn convert_agents(
                 out: &mut out,
                 notes,
             };
-            cx.convert_skill(skill, &mut converted);
-            if converted.traits.len() > before && text(skill, "skill_type") != "Preload Data" {
+            cx.convert_skill(skill_type, skill, &mut converted);
+            if converted.traits.len() > before && skill_type != SkillType::PreloadData {
                 prompt.push(text(skill, "add_sys_prompt"));
             }
         }
@@ -354,6 +356,64 @@ impl ConvertedAgents {
     }
 }
 
+/// A v1 skill's kind, its `skill_type`, as v1 spells it. A kind this system
+/// has no counterpart for, and a skill with no `skill_type`, is
+/// [`Other`](SkillType::Other): it is reported, not refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(tag = "skill_type")]
+enum SkillType {
+    #[serde(rename = "Table")]
+    Table,
+    #[serde(rename = "Run JavaScript code")]
+    RunJavaScript,
+    #[serde(rename = "Trigger")]
+    Trigger,
+    #[serde(rename = "Subagent")]
+    Subagent,
+    #[serde(rename = "Fetch")]
+    Fetch,
+    #[serde(rename = "Retrieval by full-text search")]
+    FullTextSearch,
+    #[serde(rename = "Retrieval by embedding")]
+    Embedding,
+    #[serde(rename = "Preload Data")]
+    PreloadData,
+    #[serde(rename = "Memory")]
+    Memory,
+    #[serde(rename = "Model Context Protocol")]
+    Mcp,
+    #[serde(rename = "Web search")]
+    WebSearch,
+    #[serde(rename = "Generate and run JavaScript code")]
+    GenerateJavaScript,
+    #[serde(rename = "Ask user question")]
+    AskUser,
+    #[serde(rename = "Plan approval")]
+    PlanApproval,
+    #[serde(rename = "Image generation")]
+    ImageGeneration,
+    #[serde(rename = "Text to speech")]
+    TextToSpeech,
+    #[serde(rename = "External Skill (SKILL.md)")]
+    ExternalSkill,
+    #[serde(rename = "Model picker")]
+    ModelPicker,
+    #[serde(rename = "Prompt picker")]
+    PromptPicker,
+    #[serde(rename = "Compaction")]
+    Compaction,
+    #[serde(rename = "Adaptive Feedback")]
+    AdaptiveFeedback,
+    #[serde(other)]
+    Other,
+}
+
+impl SkillType {
+    fn of(skill: &Json) -> SkillType {
+        SkillType::deserialize(skill).unwrap_or(SkillType::Other)
+    }
+}
+
 /// One agent as it is being converted.
 #[derive(Default)]
 struct Agent {
@@ -381,11 +441,18 @@ struct Context<'a> {
 impl Context<'_> {
     /// One v1 skill of `agent` as the traits that do its job here, or a note
     /// saying why it has none.
-    fn convert_skill(&mut self, skill: &Map<String, Json>, agent: &mut Agent) {
+    #[allow(clippy::too_many_lines)]
+    fn convert_skill(
+        &mut self,
+        skill_type: SkillType,
+        skill: &Map<String, Json>,
+        agent: &mut Agent,
+    ) {
         let name = agent.name.clone();
+        // The v1 name, for the notes.
         let kind = text(skill, "skill_type");
-        match kind.as_str() {
-            "Table" => {
+        match skill_type {
+            SkillType::Table => {
                 let table = text(skill, "table_name");
                 if truthy(skill.get("query")) {
                     let mut config = json!({ "table": table });
@@ -426,7 +493,7 @@ impl Context<'_> {
                     );
                 }
             }
-            "Run JavaScript code" => {
+            SkillType::RunJavaScript => {
                 if text(skill, "mode") == "Button" {
                     let label = Some(text(skill, "button_label"))
                         .filter(|l| !l.trim().is_empty())
@@ -447,13 +514,13 @@ impl Context<'_> {
                 }
                 agent.traits.push(js_tool(skill, &tool));
             }
-            "Trigger" => {
+            SkillType::Trigger => {
                 agent.add(
                     "run_trigger",
                     json!({ "trigger": text(skill, "trigger_name") }),
                 );
             }
-            "Subagent" => {
+            SkillType::Subagent => {
                 let target = text(skill, "agent_name");
                 // v1 told the model what the sub-agent is for with its description.
                 let when_to_use = array(self.pack, "triggers")
@@ -474,7 +541,7 @@ impl Context<'_> {
                 }
                 agent.add("subagent", config);
             }
-            "Fetch" => {
+            SkillType::Fetch => {
                 // Named so the tool is `fetch_web_page`, as it was in v1, and
                 // allowed to send, as v1's was. Public addresses only, as every
                 // `http` trait is unless an admin says otherwise.
@@ -484,7 +551,7 @@ impl Context<'_> {
                 }
                 agent.add("http", config);
             }
-            "Retrieval by full-text search" => {
+            SkillType::FullTextSearch => {
                 let table = text(skill, "table_name");
                 let mut config = json!({ "table": table, "mode": retrieval_mode(skill) });
                 retrieval_options(skill, &mut config);
@@ -492,9 +559,9 @@ impl Context<'_> {
                 self.out.full_text.insert(table);
                 agent.add("search_table", config);
             }
-            "Retrieval by embedding" => self.embedding(skill, agent),
-            "Preload Data" => self.preload(skill, agent),
-            "Memory" => {
+            SkillType::Embedding => self.embedding(skill, agent),
+            SkillType::PreloadData => self.preload(skill, agent),
+            SkillType::Memory => {
                 agent.add(
                     "memory",
                     json!({ "personal": true,
@@ -502,8 +569,8 @@ impl Context<'_> {
                 );
                 self.out.memory_agents.push(name);
             }
-            "Model Context Protocol" => self.mcp(skill, agent),
-            "Web search" => {
+            SkillType::Mcp => self.mcp(skill, agent),
+            SkillType::WebSearch => {
                 let config = match text(skill, "search_provider").as_str() {
                     "By URL template" => json!({
                         "search_provider": "url_template",
@@ -526,7 +593,7 @@ impl Context<'_> {
                 };
                 agent.add("web_search", config);
             }
-            "Generate and run JavaScript code" => {
+            SkillType::GenerateJavaScript => {
                 let tool = Some(text(skill, "tool_name"))
                     .filter(|t| !t.trim().is_empty())
                     .unwrap_or_else(|| "run_generated_code".to_owned());
@@ -553,7 +620,7 @@ impl Context<'_> {
                     }),
                 );
             }
-            "Ask user question" => {
+            SkillType::AskUser => {
                 let mut config = json!({});
                 for (from, to) in [
                     ("question_sys_prompt", "prompt"),
@@ -565,7 +632,7 @@ impl Context<'_> {
                 }
                 agent.add("ask_user", config);
             }
-            "Plan approval" => {
+            SkillType::PlanApproval => {
                 let mut config = json!({});
                 set_text(&mut config, "prompt", &text(skill, "ini_sys_prompt"));
                 set_text(
@@ -575,7 +642,7 @@ impl Context<'_> {
                 );
                 agent.add("plan_approval", config);
             }
-            "Image generation" => {
+            SkillType::ImageGeneration => {
                 let Some((provider, model)) = self.model_of("image", "", &name, &kind) else {
                     return;
                 };
@@ -595,7 +662,7 @@ impl Context<'_> {
                     }),
                 );
             }
-            "Text to speech" => {
+            SkillType::TextToSpeech => {
                 let Some((provider, model)) = self.model_of("speech", "", &name, &kind) else {
                     return;
                 };
@@ -608,7 +675,7 @@ impl Context<'_> {
                 }
                 agent.add("speech", config);
             }
-            "External Skill (SKILL.md)" => {
+            SkillType::ExternalSkill => {
                 let dir = text(skill, "skills_dir");
                 let leaf = dir
                     .trim_end_matches('/')
@@ -632,14 +699,14 @@ impl Context<'_> {
                     self.store
                 ));
             }
-            "Model picker" => self.model_picker(agent),
-            "Prompt picker" => self.prompt_picker(skill, agent),
+            SkillType::ModelPicker => self.model_picker(agent),
+            SkillType::PromptPicker => self.prompt_picker(skill, agent),
             // Compaction is built in here, on for every agent, and Adaptive
             // Feedback is a placeholder in v1 that does nothing: neither leaves
             // the imported agent short of anything.
-            "Compaction" | "Adaptive Feedback" => {}
-            other => self.notes.push(format!(
-                "the `{other}` skill of agent `{name}` was not imported: this system has no \
+            SkillType::Compaction | SkillType::AdaptiveFeedback => {}
+            SkillType::Other => self.notes.push(format!(
+                "the `{kind}` skill of agent `{name}` was not imported: this system has no \
                  counterpart for it"
             )),
         }
@@ -1368,6 +1435,31 @@ mod tests {
         .as_object()
         .unwrap()
         .clone()
+    }
+
+    /// A skill is read by its v1 name whatever else it carries; a kind with no
+    /// counterpart, a missing kind or one that is not text is `Other`, which is
+    /// reported rather than failing the restore.
+    #[test]
+    fn a_skill_type_is_read_by_its_v1_name_and_anything_else_is_other() {
+        let of = |v: Json| SkillType::of(&v);
+        assert_eq!(
+            of(json!({ "skill_type": "Table", "table_name": "t", "query": "on" })),
+            SkillType::Table
+        );
+        assert_eq!(
+            of(json!({ "skill_type": "External Skill (SKILL.md)", "skills_dir": "/x" })),
+            SkillType::ExternalSkill
+        );
+        assert_eq!(
+            of(json!({ "skill_type": "Preload Data" })),
+            SkillType::PreloadData
+        );
+        assert_eq!(of(json!({ "skill_type": "Retrieval" })), SkillType::Other);
+        assert_eq!(of(json!({ "skill_type": "table" })), SkillType::Other);
+        assert_eq!(of(json!({ "skill_type": 3 })), SkillType::Other);
+        assert_eq!(of(json!({ "tool_name": "x" })), SkillType::Other);
+        assert_eq!(of(json!("Table")), SkillType::Other);
     }
 
     #[test]

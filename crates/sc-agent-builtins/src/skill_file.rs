@@ -18,6 +18,7 @@
 //!   a skill in a directory the person chatting could not open is refused for
 //!   them, rather than read with the server's authority.
 
+use sc_types::ArgsExt;
 use sc_types::Role;
 use std::sync::Arc;
 
@@ -27,11 +28,11 @@ use sc_error::{Error, Result};
 use sc_files::{FileStore, check_access};
 use sc_llm::ToolSpec;
 use sc_types::{Attrs, BasicType, FormField};
-use serde_json::{Map, Value as Json, json};
+use serde_json::{Value as Json, json};
 
 use crate::files::{
     ARG_PATH, FileScope, check_scope, check_tool_name, config_count, file_caller, scope_as_written,
-    scope_fields, string_arg,
+    scope_fields,
 };
 use crate::table::config_str;
 
@@ -126,8 +127,7 @@ impl AgentTrait for SkillFile {
         ctx: &mut TraitContext<'_>,
     ) -> Result<Json> {
         let scope = skill_scope(config)?;
-        let empty = Map::new();
-        let rel = string_arg(args.as_object().unwrap_or(&empty), ARG_PATH)?;
+        let rel = args.string_arg(ARG_PATH)?;
         let rel = relative_to_skill(&skill_path(config)?, &rel);
         let limit = config_count(config, CFG_SKILL_MAX_CHARS, DEFAULT_SKILL_MAX_CHARS)? as usize;
         let text = read_as(ctx.catalog, ctx.caller, &scope, &rel).await?;

@@ -29,6 +29,7 @@ const DETAIL_RUNS: u64 = 10;
 /// How many runs `listChecklistRuns` returns when it names no limit.
 const DEFAULT_RUNS: u64 = 50;
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: Arc<AppMounts>) {
     macro_rules! handler {
         ($name:literal, |$ctx:ident, $catalog:ident, $registry:ident, $apps:ident| $body:expr) => {

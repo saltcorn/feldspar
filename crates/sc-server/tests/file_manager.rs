@@ -21,12 +21,9 @@ use axum::http::{Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use sc_auth::SessionStore;
-use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_files::{FileMeta, FileStore, LocalFileStore};
 use sc_server::{AppMounts, ServerConfig, admin_handlers, build_router};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -113,22 +110,7 @@ fn temp_dir() -> PathBuf {
 /// fresh temp directory, log in an admin, and return the client, the store handle,
 /// and the `TestDb` (kept in scope: dropping it deletes the database).
 async fn setup() -> sc_error::Result<(Client, Arc<dyn FileStore>, TestDb)> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     // `listFileStores` reads the stored definitions as well as the connected
     // registry (§1.4), so the table has to exist — the real boot path bootstraps

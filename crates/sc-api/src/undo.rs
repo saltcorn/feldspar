@@ -276,7 +276,7 @@ impl<'a> Reverser<'a> {
                 Ok((row, dropped))
             }
             .await;
-            let (row, dropped) = finish(&tx, written).await?;
+            let (row, dropped) = tx.finish(written).await?;
             Ok(Restored {
                 changeset: id,
                 row: redacted_json(&table, row),
@@ -363,7 +363,7 @@ impl<'a> Reverser<'a> {
                 }
             }
             .await;
-            let Some(row) = finish(&tx, written).await? else {
+            let Some(row) = tx.finish(written).await? else {
                 return Ok(None);
             };
             dropped.sort();
@@ -472,10 +472,10 @@ impl<'a> Reverser<'a> {
             match outcome {
                 // Nothing was written; nothing to keep.
                 Ok(refused @ UndoOutcome::Refused(_)) => {
-                    let _ = tx.rollback().await;
+                    tx.abandon().await;
                     Ok(refused)
                 }
-                other => finish(&tx, other).await,
+                other => tx.finish(other).await,
             }
         })
         .await
@@ -666,20 +666,6 @@ impl<'a> Reverser<'a> {
             }
         }
         Ok(())
-    }
-}
-
-/// Commit `outcome`'s transaction when it succeeded, roll it back when not.
-async fn finish<T>(tx: &SharedTx, outcome: Result<T>) -> Result<T> {
-    match outcome {
-        Ok(value) => {
-            tx.commit().await?;
-            Ok(value)
-        }
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(e)
-        }
     }
 }
 

@@ -25,6 +25,7 @@
 //! refusal, a publish's stamped source and the leave.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::{Socket, send};
 use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -34,7 +35,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode, header};
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use sc_app::{ApiConfig, Application, CodeFramework, FrameworkRef, StreamRef};
 use sc_auth::{RoleDef, SessionStore, UserUpdate, create_user, save_role};
 use sc_catalog::{Catalog, FileStoreId};
@@ -62,9 +63,6 @@ const COLLEAGUE: &str = "colleague@example.com";
 const PASSWORD: &str = "correct-horse";
 /// The tutorial's Member role.
 const ROLE_MEMBER: Role = Role::of(40);
-
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// A cookie-jar client addressing one host.
 struct Client {
@@ -334,10 +332,6 @@ fn todo_app() -> Application {
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"))
     .with_stream(StreamRef::new("boiler"))
-}
-
-async fn send(socket: &mut Socket, frame: Value) {
-    socket.send(Message::text(frame.to_string())).await.unwrap();
 }
 
 async fn next_frame(socket: &mut Socket) -> Option<Value> {
@@ -718,6 +712,7 @@ async fn elements_until(
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn part_two_notifications_and_progress() -> Result<()> {
     let tutorial = assumed().await?;
     let mut admin = tutorial.on(BASE_DOMAIN);
@@ -987,6 +982,7 @@ async fn diff_with(socket: &mut Socket, sub: &str, part: &str) -> Value {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn part_four_presence_on_the_board() -> Result<()> {
     const OUTSIDER: &str = "outsider@example.com";
     let tutorial = assumed().await?;

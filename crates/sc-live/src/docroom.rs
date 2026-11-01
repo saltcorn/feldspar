@@ -543,17 +543,9 @@ impl DocRoom {
             Ok::<_, Error>(())
         }
         .await;
-        match outcome {
-            Ok(()) => {
-                tx.commit().await?;
-                self.persisted.store(version, Ordering::Release);
-                Ok(true)
-            }
-            Err(e) => {
-                let _ = tx.rollback().await;
-                Err(e)
-            }
-        }
+        tx.finish(outcome).await?;
+        self.persisted.store(version, Ordering::Release);
+        Ok(true)
     }
 
     /// A member left: close the room — persisting first — when it was the last.

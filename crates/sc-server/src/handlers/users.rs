@@ -3,6 +3,7 @@
 use super::*;
 
 /// Register this domain's admin handlers on `reg`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
@@ -24,8 +25,8 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let obj = require_object(&ctx.body)?;
                 let number = role_field(obj, "role")?;
-                let mut role = RoleDef::new(number, non_empty_str_field(obj, "name")?.trim());
-                role.description = str_field(obj, "description")?.trim().to_owned();
+                let mut role = RoleDef::new(number, obj.non_empty_str_field("name")?.trim());
+                role.description = obj.str_field("description")?.trim().to_owned();
                 save_role(&catalog, &role).await?;
                 Ok(HandlerResponse::ok(role_json(&role)).with_status(201))
             }
@@ -85,7 +86,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let created = create_user_with(
                     &catalog,
                     NewUser {
-                        email: non_empty_str_field(obj, "email")?.to_owned(),
+                        email: obj.non_empty_str_field("email")?.to_owned(),
                         // Absent or blank asks for a generated password, which
                         // comes back in this response and nowhere else.
                         password: optional_str(obj, "password").into(),
@@ -116,7 +117,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &catalog,
                     id,
                     UserUpdate {
-                        email: Some(non_empty_str_field(obj, "email")?.to_owned()),
+                        email: Some(obj.non_empty_str_field("email")?.to_owned()),
                         role: Some(user_role_field(obj)?),
                         // Blank here means "leave it alone" — the form's password
                         // box is empty because the admin is not changing it, not
@@ -492,7 +493,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &catalog,
                     NewApiToken {
                         user_id: user.id(),
-                        label: str_field(obj, "label")?.to_owned(),
+                        label: obj.str_field("label")?.to_owned(),
                         grants,
                         expires_at,
                     },

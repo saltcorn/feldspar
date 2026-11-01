@@ -42,7 +42,7 @@ pub const ROLE_GUC: &str = "sc.role";
 /// same probe-free rule the runtime path keeps.
 ///
 /// The statement is whatever the caller built, and on a table without policies
-/// it reaches every row: so it takes an [`Unchecked`] (TODO-code-quality Q3.5),
+/// it reaches every row: so it takes an [`Unchecked`],
 /// whose authority is the caller context the GUCs are set from.
 pub async fn run_in_context(
     catalog: &Catalog,
@@ -173,16 +173,7 @@ async fn run_in_context_mode(
         Ok(stream) => stream.try_collect().await,
         Err(e) => Err(e),
     };
-    match outcome {
-        Ok(rows) => {
-            tx.commit().await?;
-            Ok(rows)
-        }
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(map_policy_violation(e))
-        }
-    }
+    sc_db::finish(tx, outcome.map_err(map_policy_violation)).await
 }
 
 /// A policy violation becomes a not-found, so a denied write is
@@ -468,12 +459,10 @@ fn policy_clause(
 
 /// Run a multi-statement DDL script in one transaction.
 async fn run_ddl(catalog: &Catalog, sql: &str) -> Result<()> {
-    let mut tx = catalog.primary_driver().begin().await?;
-    match tx.batch(sql).await {
-        Ok(()) => tx.commit().await,
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(e).context("applying row-level-security policies")
-        }
-    }
+    let sql = sql.to_owned();
+    sc_db::with_tx(catalog.primary_driver().as_ref(), |tx| {
+        Box::pin(async move { tx.batch(&sql).await })
+    })
+    .await
+    .context("applying row-level-security policies")
 }

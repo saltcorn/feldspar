@@ -36,6 +36,7 @@
 //! native tool type in the Responses API, but rig 0.41 cannot declare one or
 //! parse its calls, so every backend is offered this function tool (TODO 5.8).
 
+use sc_types::ArgsExt;
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
@@ -49,7 +50,7 @@ use super::change::{current, delete_tracked, edited_region, numbered, write_trac
 use super::matching::{self, Level, Search};
 use super::read::as_text;
 use super::state::{CodingState, stale_message};
-use crate::files::{FileScope, open_to_write, string_arg};
+use crate::files::{FileScope, open_to_write};
 use sc_api::mcp::arguments;
 
 /// The patch text.
@@ -406,7 +407,7 @@ struct Planned {
 /// Apply one patch, as the run's caller.
 pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) -> Result<Json> {
     let args = arguments(args, &[ARG_PATCH])?;
-    let text = string_arg(&args, ARG_PATCH)?;
+    let text = args.string_arg(ARG_PATCH)?;
     let patch = parse(&text)
         .map_err(|e| Error::invalid(format!("status: failed. The patch is malformed: {e}")))?;
 

@@ -4,6 +4,7 @@
 use super::*;
 
 /// Register this domain's admin handlers on `reg`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
@@ -30,7 +31,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             let catalog = catalog.clone();
             async move {
                 let obj = require_object(&ctx.body)?;
-                let name = non_empty_str_field(obj, "name")?.trim().to_owned();
+                let name = obj.non_empty_str_field("name")?.trim().to_owned();
                 let database = optional_str(obj, "database");
                 // One operation through the shared schema editor (§3.3): the
                 // identifier check and the live re-projection are its, so the
@@ -66,7 +67,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             let catalog = catalog.clone();
             async move {
                 let obj = require_object(&ctx.body)?;
-                let name = non_empty_str_field(obj, "name")?.trim().to_owned();
+                let name = obj.non_empty_str_field("name")?.trim().to_owned();
                 let document = obj
                     .get("csv")
                     .and_then(Json::as_str)
@@ -102,10 +103,10 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 use base64::Engine as _;
                 let obj = require_object(&ctx.body)?;
-                let name = non_empty_str_field(obj, "name")?.trim().to_owned();
-                let file_name = non_empty_str_field(obj, "file_name")?.to_owned();
+                let name = obj.non_empty_str_field("name")?.trim().to_owned();
+                let file_name = obj.non_empty_str_field("file_name")?.to_owned();
                 let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(str_field(obj, "content_base64")?.trim())
+                    .decode(obj.str_field("content_base64")?.trim())
                     .map_err(|e| Error::invalid(format!("`content_base64` is not base64 ({e})")))?;
                 let layer = optional_str(obj, "layer");
                 let (table, outcome) = sc_api::geo_import::create_table_from_geo_file(
@@ -174,7 +175,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let table = ctx.path_param("table")?.to_owned();
                 let obj = require_object(&ctx.body)?;
-                let name = non_empty_str_field(obj, "name")?.trim().to_owned();
+                let name = obj.non_empty_str_field("name")?.trim().to_owned();
                 let applied = schema_edit::apply(
                     &catalog,
                     &[schema_edit::Operation::RenameTable {
@@ -249,7 +250,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             let catalog = catalog.clone();
             async move {
                 let obj = require_object(&ctx.body)?;
-                let name = non_empty_str_field(obj, "name")?.to_owned();
+                let name = obj.non_empty_str_field("name")?.to_owned();
                 // No DDL and no settings: the table is already there, and this
                 // writes the row that puts it in the list.
                 let table = sc_api::metadata_tables::add(&catalog, &name).await?;
@@ -293,9 +294,9 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             let catalog = catalog.clone();
             async move {
                 let obj = require_object(&ctx.body)?;
-                let name = non_empty_str_field(obj, "name")?.trim().to_owned();
-                let module = non_empty_str_field(obj, "module")?.to_owned();
-                let provider = non_empty_str_field(obj, "provider")?.to_owned();
+                let name = obj.non_empty_str_field("name")?.trim().to_owned();
+                let module = obj.non_empty_str_field("module")?.to_owned();
+                let provider = obj.non_empty_str_field("provider")?.to_owned();
                 // No DDL: this writes the definition row and reloads, which is
                 // what makes the table exist and what asks the module for its
                 // columns.

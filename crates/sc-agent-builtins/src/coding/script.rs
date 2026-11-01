@@ -22,6 +22,7 @@
 //!
 //! [`FileStore`]: sc_files::FileStore
 
+use sc_types::ArgsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -34,7 +35,7 @@ use sc_types::Attrs;
 use serde_json::{Value as Json, json};
 use tokio::process::Command;
 
-use crate::files::{FileScope, config_count, string_arg};
+use crate::files::{FileScope, config_count};
 use sc_api::mcp::arguments;
 
 /// How long one script may run for.
@@ -85,7 +86,7 @@ pub async fn call(
 ) -> Result<Json> {
     let timeout = config_count(config, CFG_TIMEOUT, DEFAULT_TIMEOUT_SECONDS)?;
     let args = arguments(args, &[ARG_SCRIPT])?;
-    let script = string_arg(&args, ARG_SCRIPT)?;
+    let script = args.string_arg(ARG_SCRIPT)?;
 
     let project = project(scope, ctx.catalog, &crate::files::file_caller(ctx.caller)).await?;
     if !project.scripts.iter().any(|s| s == &script) {

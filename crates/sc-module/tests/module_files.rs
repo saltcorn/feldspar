@@ -81,6 +81,7 @@ mod deno {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn a_module_keeps_files_in_its_declared_area_and_nowhere_else() {
         skip_without!(have_npm(), "npm is not on the PATH");
         let db = TestDb::new().await.unwrap();

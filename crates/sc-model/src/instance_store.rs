@@ -108,7 +108,7 @@ pub async fn bootstrap_model_instances(catalog: &Catalog) -> Result<Table> {
     let table = catalog
         .bootstrap_table(INSTANCES_TABLE, &instance_fields())
         .await?;
-    // Where a fit's output frames go (analytics TODO A3.1).
+    // Where a fit's output frames go.
     crate::outputs::bootstrap_model_outputs(catalog).await?;
     Ok(table)
 }
@@ -203,7 +203,7 @@ pub async fn save_fitted_instance_with_outputs(
         write_instance(tx.as_mut(), instance, values).await
     }
     .await;
-    finish(tx, written).await
+    sc_db::finish(tx, written).await
 }
 
 /// The draws half of [`save_fitted_instance`], skipped entirely when there are
@@ -217,21 +217,6 @@ async fn write_draws_if_any(
         return Ok(());
     }
     write_draws(tx, instance, draws).await
-}
-
-/// Commit `tx` if `outcome` is a success and roll it back otherwise, answering
-/// `outcome`.
-pub(crate) async fn finish(tx: Box<dyn Transaction>, outcome: Result<()>) -> Result<()> {
-    match outcome {
-        Ok(()) => tx.commit().await,
-        Err(e) => {
-            // The rollback's own failure is not the news: the statement that
-            // failed is, and a connection that cannot roll back is dropped by
-            // the pool, which rolls back.
-            let _ = tx.rollback().await;
-            Err(e)
-        }
-    }
 }
 
 /// Run a statement on `tx` and collect what it answers.
@@ -372,7 +357,7 @@ pub async fn delete_model_instance(
         run(tx.as_mut(), Statement::from(delete)).await.map(drop)
     }
     .await;
-    finish(tx, deleted).await?;
+    sc_db::finish(tx, deleted).await?;
     discard_states(catalog, registry, instance.model, &[instance.state]).await?;
     Ok(true)
 }
@@ -513,7 +498,7 @@ pub async fn record_fit_progress(
     );
     let mut tx = catalog.primary(crate::INTERNAL_TABLES).begin().await?;
     let written = run(tx.as_mut(), Statement::from(update)).await.map(drop);
-    finish(tx, written).await?;
+    sc_db::finish(tx, written).await?;
     Ok(ProgressWrite::Running)
 }
 
@@ -554,7 +539,7 @@ pub async fn request_fit_cancel(catalog: &Catalog, id: InstanceId) -> Result<boo
     );
     let mut tx = catalog.primary(crate::INTERNAL_TABLES).begin().await?;
     let written = run(tx.as_mut(), Statement::from(update)).await.map(drop);
-    finish(tx, written).await?;
+    sc_db::finish(tx, written).await?;
     Ok(true)
 }
 

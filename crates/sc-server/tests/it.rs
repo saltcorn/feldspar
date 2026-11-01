@@ -11,6 +11,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "support.rs"]
+mod support;
+
 #[path = "admin_api.rs"]
 mod admin_api;
 #[path = "admin_applications_api.rs"]

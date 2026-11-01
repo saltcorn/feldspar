@@ -681,6 +681,7 @@ pub(crate) struct ScoredPart<'a> {
 
 /// The [`ROWS_OUTPUT`] frame of a predicting fit: the columns the model read
 /// (as the dataset had them), `split`, and the outcome's own columns.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn rows_output(
     outcome: &Outcome,
     encoding: &Encoding,

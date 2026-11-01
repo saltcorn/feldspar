@@ -243,6 +243,7 @@ pub(crate) fn uploader_of(user: Option<&User>, jar: &CookieJar, secure: bool) ->
 /// `POST {slot}`: check the caller, the size, the type and the hook, and
 /// record the upload.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn create(
     state: &AppState,
     app: &Arc<MountedApp>,

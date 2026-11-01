@@ -1,4 +1,4 @@
-//! Choosing the tests (analytics TODO A2.13): from the columns on the Y, X
+//! Choosing the tests: from the columns on the Y, X
 //! and Wrap drop zones and their types, as JMP's "Fit Y by X" does — the
 //! person never picks a test by name. The goals document's table:
 //!
@@ -23,6 +23,7 @@
 //! always shown.
 
 use sc_dataset::{ColType, StageShape};
+use sc_error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 use super::hypothesis::TestKind;
@@ -141,7 +142,7 @@ pub(crate) struct Choice {
 
 /// How a column on `channel` takes part: a number or a category, or the
 /// sentence saying why it cannot.
-fn kind_of(channel: Channel, f: &FieldDef, shape: &StageShape) -> Result<(Kind, ColType), String> {
+fn kind_of(channel: Channel, f: &FieldDef, shape: &StageShape) -> Result<(Kind, ColType)> {
     let ty = field_check(channel, f, shape, false)?;
     let key = shape.column(&f.field).is_some_and(|c| c.key.is_some());
     if key || f.bin.is_some() {
@@ -152,34 +153,41 @@ fn kind_of(channel: Channel, f: &FieldDef, shape: &StageShape) -> Result<(Kind, 
             Ok((Kind::Number, ty))
         }
         ColType::Text | ColType::Bool | ColType::Uuid => Ok((Kind::Category, ty)),
-        ColType::Date | ColType::Time | ColType::Timestamp => Err(format!(
+        ColType::Date | ColType::Time | ColType::Timestamp => Err(Error::invalid(format!(
             "`{}` is {}, and the tests compare numbers and groups; make a column of the year or month in the dataset to compare periods",
             f.field,
             crate::plot::validate::article(ty)
-        )),
-        ColType::Json | ColType::Bytes | ColType::Geometry => Err(format!(
+        ))),
+        ColType::Json | ColType::Bytes | ColType::Geometry => Err(Error::invalid(format!(
             "`{}` is {}, which cannot be tested",
             f.field,
             crate::plot::validate::article(ty)
-        )),
+        ))),
     }
 }
 
 /// The design the roles make, or the sentence saying why there is no test
 /// for them.
-pub(crate) fn choose(spec: &TestSpec, shape: &StageShape) -> Result<Choice, String> {
+pub(crate) fn choose(spec: &TestSpec, shape: &StageShape) -> Result<Choice> {
     if !(spec.level > 0.0 && spec.level < 1.0) {
-        return Err("a confidence level is between 0 and 1, such as 0.95".to_owned());
+        return Err(Error::invalid(
+            "a confidence level is between 0 and 1, such as 0.95",
+        ));
     }
     if !spec.mu.is_finite() {
-        return Err("the value a mean is tested against must be a number".to_owned());
+        return Err(Error::invalid(
+            "the value a mean is tested against must be a number",
+        ));
     }
     let by = match &spec.by {
         None => None,
         Some(f) => {
             let ty = field_check(Channel::Wrap, f, shape, true)?;
             if matches!(ty, ColType::Json | ColType::Bytes | ColType::Geometry) {
-                return Err(format!("`{}` cannot be a Wrap group", f.field));
+                return Err(Error::invalid(format!(
+                    "`{}` cannot be a Wrap group",
+                    f.field
+                )));
             }
             Some((f.clone(), ty))
         }
@@ -198,22 +206,20 @@ pub(crate) fn choose(spec: &TestSpec, shape: &StageShape) -> Result<Choice, Stri
     let x_typed = x.as_ref().map(|(f, (_, t))| (f.clone(), *t));
     if spec.paired {
         if y.len() != 2 {
-            return Err(
-                "paired mode compares two numbers measured on the same rows; put two columns on Y"
-                    .to_owned(),
-            );
+            return Err(Error::invalid(
+                "paired mode compares two numbers measured on the same rows; put two columns on Y",
+            ));
         }
         if x.is_some() {
-            return Err(
-                "paired mode compares the two columns on Y with each other; take the column off X"
-                    .to_owned(),
-            );
+            return Err(Error::invalid(
+                "paired mode compares the two columns on Y with each other; take the column off X",
+            ));
         }
         if let Some((f, _)) = y.iter().find(|(_, (k, _))| *k != Kind::Number) {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "paired mode compares numbers, and `{}` is not one",
                 f.field
-            ));
+            )));
         }
         return Ok(Choice {
             design: Design::Paired,
@@ -224,22 +230,21 @@ pub(crate) fn choose(spec: &TestSpec, shape: &StageShape) -> Result<Choice, Stri
     }
     let (yf, (yk, _)) = match y.as_slice() {
         [] => {
-            return Err("put a column on Y to test it".to_owned());
+            return Err(Error::invalid("put a column on Y to test it"));
         }
         [one] => one.clone(),
         _ => {
-            return Err(
-                "a test compares one column on Y; take the others off, or choose paired mode for two measurements of the same rows"
-                    .to_owned(),
-            );
+            return Err(Error::invalid(
+                "a test compares one column on Y; take the others off, or choose paired mode for two measurements of the same rows",
+            ));
         }
     };
     if let Some((xf, _)) = &x {
         if xf.field == yf.field {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "`{}` is on both X and Y; a test needs two different columns",
                 xf.field
-            ));
+            )));
         }
     }
     let design = match (yk, x.as_ref().map(|(_, (k, _))| *k)) {
@@ -358,7 +363,9 @@ mod tests {
 
     fn design(y: &[&str], x: Option<FieldDef>) -> Result<Design, String> {
         let y: Vec<FieldDef> = y.iter().map(|f| FieldDef::of(*f)).collect();
-        choose(&spec(&y, x), &shape()).map(|c| c.design)
+        choose(&spec(&y, x), &shape())
+            .map(|c| c.design)
+            .map_err(|e| e.message().to_owned())
     }
 
     #[test]
@@ -399,17 +406,22 @@ mod tests {
     fn paired_mode_takes_two_numbers() {
         let mut s = spec(&[FieldDef::of("before"), FieldDef::of("after")], None);
         s.paired = true;
-        assert_eq!(choose(&s, &shape()).map(|c| c.design), Ok(Design::Paired));
+        assert!(matches!(
+            choose(&s, &shape()).map(|c| c.design),
+            Ok(Design::Paired)
+        ));
         s.y.pop();
         assert!(
             choose(&s, &shape())
                 .unwrap_err()
+                .message()
                 .contains("two columns on Y")
         );
         s.y = vec![FieldDef::of("before"), FieldDef::of("street")];
         assert!(
             choose(&s, &shape())
                 .unwrap_err()
+                .message()
                 .contains("`street` is not one")
         );
         s.y = vec![FieldDef::of("before"), FieldDef::of("after")];
@@ -417,6 +429,7 @@ mod tests {
         assert!(
             choose(&s, &shape())
                 .unwrap_err()
+                .message()
                 .contains("take the column off X")
         );
     }
@@ -454,13 +467,19 @@ mod tests {
         );
         let mut s = spec(&[FieldDef::of("price")], None);
         s.by = Some(FieldDef::of("area"));
-        assert!(choose(&s, &shape()).unwrap_err().contains("bin it"));
+        assert!(
+            choose(&s, &shape())
+                .unwrap_err()
+                .message()
+                .contains("bin it")
+        );
         s.by = Some(FieldDef::binned("area"));
         assert!(choose(&s, &shape()).is_ok());
         s.level = 1.5;
         assert!(
             choose(&s, &shape())
                 .unwrap_err()
+                .message()
                 .contains("confidence level")
         );
     }

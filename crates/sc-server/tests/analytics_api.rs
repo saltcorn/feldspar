@@ -192,6 +192,7 @@ fn prices(name: &str) -> Value {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn datasets_are_created_read_edited_and_deleted_through_the_api() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;
 
@@ -905,6 +906,7 @@ async fn a_dashboards_panels_are_drawn_with_its_selections_and_filters() -> sc_e
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn panels_render_live_and_the_usage_index_finds_what_they_read() -> sc_error::Result<()> {
     let (mut client, db) = setup().await?;
     let dataset = client

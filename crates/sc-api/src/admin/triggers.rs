@@ -6,6 +6,7 @@
 use super::*;
 
 /// Declare this domain's endpoints on `set`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(set: &mut EndpointSet) {
     // A trigger is one event bound to one configured action (§10.2), stored in
     // `_fd_triggers`. These endpoints are the row ⇄ live-set path the SPA

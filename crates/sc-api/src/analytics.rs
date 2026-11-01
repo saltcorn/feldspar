@@ -27,6 +27,7 @@ fn api() -> PathSpec {
 }
 
 /// Register the Analytics UI's endpoints on `set`.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn register(set: &mut EndpointSet) {
     // --- datasets ------------------------------------------------------------
 

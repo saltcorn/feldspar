@@ -220,20 +220,12 @@ pub async fn redeem_password_token(
         return Ok(None);
     }
     let tx = SharedTx::begin_primary(catalog)?;
-    match spend_in(catalog, &tx, token, password).await {
-        Ok(outcome) => {
-            tx.commit().await?;
-            let Some(user_id) = outcome else {
-                return Ok(None);
-            };
-            crate::session::delete_sessions_for_user(catalog, user_id).await?;
-            load_user(catalog, user_id).await
-        }
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(e)
-        }
-    }
+    let spent = spend_in(catalog, &tx, token, password).await;
+    let Some(user_id) = tx.finish(spent).await? else {
+        return Ok(None);
+    };
+    crate::session::delete_sessions_for_user(catalog, user_id).await?;
+    load_user(catalog, user_id).await
 }
 
 /// The writes of [`redeem_password_token`], in one transaction: a password

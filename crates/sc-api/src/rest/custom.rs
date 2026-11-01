@@ -520,6 +520,7 @@ pub fn validate_custom_queries(queries: &[CustomQuery], tables: &[String]) -> Re
 const TABLE_OPS: [&str; 6] = ["list", "create", "update", "delete", "download", "upload"];
 
 /// Everything one custom query has to satisfy on its own.
+#[allow(clippy::too_many_lines)]
 fn validate_custom_query(q: &CustomQuery, tables: &[String]) -> Result<()> {
     if !is_identifier(&q.name) {
         return Err(Error::invalid(format!(

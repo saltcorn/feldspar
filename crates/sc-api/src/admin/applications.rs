@@ -6,6 +6,7 @@
 use super::*;
 
 /// Declare this domain's endpoints on `set`.
+#[allow(clippy::too_many_lines)]
 pub(super) fn register(set: &mut EndpointSet) {
     // An application is created in the admin UI and exists only as its stored
     // row (§13.2); these endpoints are the row ⇄ mounted-app path the SPA drives.

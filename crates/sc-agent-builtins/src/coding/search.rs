@@ -10,6 +10,7 @@
 //! cost as JSON. Past the cap it says so and says how to narrow the query,
 //! rather than letting the model believe it has seen every hit.
 
+use sc_types::ArgsExt;
 use std::collections::BTreeSet;
 
 use sc_agent::TraitContext;
@@ -19,7 +20,7 @@ use sc_llm::ToolSpec;
 use sc_types::Attrs;
 use serde_json::{Map, Value as Json, json};
 
-use crate::files::{FileScope, config_count, optional_bool_arg, optional_string_arg, string_arg};
+use crate::files::{FileScope, config_count};
 use sc_api::mcp::arguments;
 
 /// The ceiling on matches one call may return (also `find_files`' ceiling on
@@ -99,13 +100,13 @@ pub async fn call(
         ],
     )?;
 
-    let dir = optional_string_arg(&args, ARG_DIR)?;
-    let glob = optional_string_arg(&args, ARG_GLOB)?;
+    let dir = args.string_or_empty(ARG_DIR)?;
+    let glob = args.string_or_empty(ARG_GLOB)?;
     let context = context_arg(&args)?;
     let query = SearchQuery {
-        pattern: string_arg(&args, ARG_PATTERN)?,
-        regex: optional_bool_arg(&args, ARG_REGEX, false)?,
-        case_sensitive: optional_bool_arg(&args, ARG_CASE, false)?,
+        pattern: args.string_arg(ARG_PATTERN)?,
+        regex: args.optional_bool(ARG_REGEX)?.unwrap_or(false),
+        case_sensitive: args.optional_bool(ARG_CASE)?.unwrap_or(false),
         whole_word: false,
         glob: (!glob.trim().is_empty()).then_some(glob),
         dir: scope.resolve(&dir)?,
