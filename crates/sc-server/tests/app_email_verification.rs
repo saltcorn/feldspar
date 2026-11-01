@@ -42,7 +42,7 @@ use tower::ServiceExt;
 const BASE_DOMAIN: &str = "example.com";
 const CLUB: &str = "club.example.com";
 const LOUNGE: &str = "lounge.example.com";
-const ROLE_MEMBER: u8 = 80;
+const ROLE_MEMBER: Role = Role::of(80);
 
 /// A cookie-carrying client addressing one host, echoing CSRF on mutations.
 struct Client {
@@ -170,13 +170,13 @@ async fn setup() -> sc_error::Result<Fixture> {
     db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
-    save_role(&catalog, &RoleDef::new(Role::of(ROLE_MEMBER), "Member")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
     create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
 
     // Members read the member list; the public does not.
     let mut meta = TableMeta::new(sc_auth::USERS_TABLE);
     meta.access = AccessRules {
-        min_role_read: Role::of(ROLE_MEMBER),
+        min_role_read: ROLE_MEMBER,
         min_role_write: Role::ADMIN,
     };
     save_table_meta(&catalog, &meta).await?;
@@ -277,7 +277,7 @@ async fn a_sign_up_has_full_access_once_it_follows_the_emailed_link() -> sc_erro
     let stored = load_user_by_email(&fx.catalog, "sam@example.com")
         .await?
         .unwrap();
-    assert_eq!(stored.role(), Role::of(ROLE_MEMBER));
+    assert_eq!(stored.role(), ROLE_MEMBER);
     assert!(stored.email_unproven());
 
     let sent = fx.mailer.recorder.sent();

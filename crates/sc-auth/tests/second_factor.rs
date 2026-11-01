@@ -53,9 +53,9 @@ async fn fixture() -> Result<Fixture> {
     Ok(Fixture { catalog, _db: db })
 }
 
-async fn account(catalog: &Catalog, email: &str, role: u8) -> Result<Uuid> {
+async fn account(catalog: &Catalog, email: &str, role: sc_types::Role) -> Result<Uuid> {
     Ok(
-        create_user(catalog, email, "pw-123456", sc_types::Role::of(role))
+        create_user(catalog, email, "pw-123456", role)
             .await?
             .id(),
     )
@@ -83,7 +83,7 @@ fn code(secret: &str, steps: i64) -> String {
 async fn setting_up_takes_a_code_and_a_code_works_once() -> Result<()> {
     let f = fixture().await?;
     let cat = &f.catalog;
-    let id = account(cat, "ann@example.com", 1).await?;
+    let id = account(cat, "ann@example.com", sc_types::Role::ADMIN).await?;
     let user = load_user(cat, id).await?.unwrap();
     assert_eq!(
         second_factor_needed(cat, &user).await?,
@@ -137,7 +137,7 @@ async fn setting_up_takes_a_code_and_a_code_works_once() -> Result<()> {
         RECOVERY_CODE_COUNT - 1
     );
     // Another account's codes are no good here.
-    let other = account(cat, "bob@example.com", 1).await?;
+    let other = account(cat, "bob@example.com", sc_types::Role::ADMIN).await?;
     assert!(!verify_second_factor(cat, other, &codes[1]).await?);
 
     // New codes replace the old ones.
@@ -161,7 +161,7 @@ async fn a_role_can_require_one_and_a_challenge_is_spent_once() -> Result<()> {
         .attributes
         .insert(ATTR_REQUIRE_SECOND_FACTOR.into(), serde_json::json!(true));
     save_role(cat, &staff).await?;
-    let id = account(cat, "staff@example.com", 40).await?;
+    let id = account(cat, "staff@example.com", sc_types::Role::of(40)).await?;
     let user = load_user(cat, id).await?.unwrap();
     assert_eq!(
         second_factor_needed(cat, &user).await?,

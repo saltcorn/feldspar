@@ -36,7 +36,7 @@ use tower::ServiceExt;
 
 const BASE_DOMAIN: &str = "example.com";
 const CLUB: &str = "club.example.com";
-const ROLE_MEMBER: u8 = 80;
+const ROLE_MEMBER: Role = Role::of(80);
 const SESSION: &str = "sc_session";
 
 /// A cookie-carrying client addressing one host, echoing CSRF on mutations.
@@ -178,13 +178,13 @@ async fn setup() -> sc_error::Result<Fixture> {
     sc_auth::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_config::bootstrap_config(&catalog).await?;
-    save_role(&catalog, &RoleDef::new(Role::of(ROLE_MEMBER), "Member")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
     create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
     create_user(
         &catalog,
         "member@example.com",
         "member-pw",
-        Role::of(ROLE_MEMBER),
+        ROLE_MEMBER,
     )
     .await?;
 
