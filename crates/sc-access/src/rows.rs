@@ -9,7 +9,7 @@
 //! docs.
 //!
 //! Rows cross the wire as plain JSON objects keyed by column name;
-//! [`crate::convert`] bridges those to the query layer's [`Value`]. A row is
+//! [`sc_types::json`] bridges those to the query layer's [`Value`]. A row is
 //! addressed by its **single-column primary key** (composite keys are post-MVP).
 //! These functions do no authorization of their own — the caller enforces the
 //! endpoint's `AuthRequirement` (sc-api) first, so every API
@@ -35,8 +35,8 @@ use sc_query::{
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Map, Value as Json};
 
-use crate::convert::{json_to_value, value_to_json};
 use crate::user_rows;
+use sc_types::{json_to_value, value_to_json};
 
 /// Where a row operation's statement actually runs.
 ///
@@ -770,7 +770,7 @@ pub async fn fill_defaults(
     let user: Option<std::collections::BTreeMap<String, Value>> =
         user.and_then(Json::as_object).map(|u| {
             u.iter()
-                .map(|(k, v)| (k.clone(), sc_expr::value_from_json(v)))
+                .map(|(k, v)| (k.clone(), sc_types::value_from_json(v)))
                 .collect()
         });
     // The row the expressions see: what the body gives, coerced as the insert

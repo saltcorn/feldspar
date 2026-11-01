@@ -1,21 +1,9 @@
 //! How a row's values are spelt in a backup, and read back.
 //!
-//! The admin API's JSON ([`sc_types::value_to_json`]) is a wire shape for a
-//! screen, and three of its choices are wrong for an archive:
-//!
-//! - **Bytes** are an array of numbers there — about 32 bytes of parsed JSON per
-//!   byte of data, which is what made a 43 MB `bytea` table cost gigabytes to back
-//!   up. Here they are standard padded **base64**, a third larger than the bytes
-//!   and one string however long.
-//! - **Non-finite floats** become `null` there, silently. Here `NaN`, `Infinity`
-//!   and `-Infinity` are those strings, which the float parser the restore uses
-//!   already reads.
-//! - **Timestamps** are written with every sub-second digit they have, in UTC
-//!   (`Z`), so a nanosecond survives the round trip.
-//!
-//! Everything else — a decimal as a string, an integer as an exact JSON number,
-//! a UUID, a date, a time, text, JSON as itself — is spelt as the admin API spells
-//! it, because that spelling already loses nothing.
+//! The spelling is [`sc_types::Spelling::Archive`], kept beside the other three
+//! in `sc_types::json`, whose table says how it differs from the admin API's
+//! JSON: bytes in base64, non-finite floats named, timestamps with every
+//! sub-second digit in UTC.
 //!
 //! **Reading goes by the restoring table's column type**, not by the database
 //! that wrote the file: a `bytea` column decodes base64 whichever backend the
@@ -24,32 +12,16 @@
 //! [`sc_access::rows::column_value`], so a restored value is checked exactly as a
 //! value typed into a form would be.
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64;
-use chrono::SecondsFormat;
 use sc_catalog::Table;
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::Value;
-use sc_types::BasicType;
+use sc_types::{BasicType, Spelling, json_to_value_as, value_to_json_as};
 use serde_json::{Map, Value as Json};
 
 /// One value as a backup writes it.
 pub(super) fn value_to_json(value: &Value) -> Json {
-    match value {
-        Value::Bytes(bytes) => Json::String(BASE64.encode(bytes)),
-        Value::Float(f) if f.is_nan() => Json::String("NaN".to_owned()),
-        Value::Float(f) if f.is_infinite() => Json::String(
-            if f.is_sign_positive() {
-                "Infinity"
-            } else {
-                "-Infinity"
-            }
-            .to_owned(),
-        ),
-        Value::Timestamp(ts) => Json::String(ts.to_rfc3339_opts(SecondsFormat::AutoSi, true)),
-        other => sc_types::value_to_json(other),
-    }
+    value_to_json_as(value, Spelling::Archive)
 }
 
 /// One row as a backup writes it: `{ column: value, … }`.
@@ -75,33 +47,12 @@ pub(super) fn column_value(table: &Table, column: &str, json: &Json) -> Result<V
     if basic != BasicType::Bytes {
         return sc_access::rows::column_value(table, column, json);
     }
-    let value = match json {
-        Json::Null => Value::Null,
-        Json::String(text) => Value::Bytes(BASE64.decode(text).map_err(|e| {
-            Error::invalid(format!("`{column}`: the bytes are not valid base64: {e}"))
-        })?),
-        other => {
-            return Err(Error::invalid(format!(
-                "`{column}`: bytes are written as a base64 string, not {}",
-                kind_of(other)
-            )));
-        }
-    };
+    let value = json_to_value_as(&basic, json, Spelling::Archive)
+        .map_err(|e| Error::invalid(format!("`{column}`: {}", e.message())))?;
     type_
         .validate_with(&value, &field.base.attributes)
         .map_err(|e| Error::invalid(format!("`{column}`: {e}")))?;
     Ok(value)
-}
-
-fn kind_of(json: &Json) -> &'static str {
-    match json {
-        Json::Null => "null",
-        Json::Bool(_) => "a boolean",
-        Json::Number(_) => "a number",
-        Json::String(_) => "a string",
-        Json::Array(_) => "an array",
-        Json::Object(_) => "an object",
-    }
 }
 
 #[cfg(test)]

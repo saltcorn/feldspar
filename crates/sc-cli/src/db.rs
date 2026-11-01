@@ -7,7 +7,7 @@
 //!    individual `host`/`port`/`user`/`password`/`db` parts (`--db-host` etc.).
 //! 2. **The environment** — `DATABASE_URL`, or the conventional `PG*` variables.
 //! 3. **The configuration file** — the environment selected out of
-//!    `feldspar.toml` ([`crate::config_file`]), which is where a deployment keeps
+//!    `feldspar.toml` ([`sc_config_file`]), which is where a deployment keeps
 //!    production's, staging's and test's parameters side by side.
 //!
 //! A URL, wherever it comes from, wins wholesale over the parts; otherwise the
@@ -49,7 +49,7 @@ use sc_db_postgres::PgDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_error::{Error, Result};
 
-use crate::config_file::{self, Environment, SelectedEnvironment};
+use sc_config_file::{Environment, SelectedEnvironment};
 
 /// The serving settings of a selected environment: where this deployment's
 /// applications are reachable in a browser.
@@ -348,7 +348,7 @@ impl DbConfig {
             let flag = arg.as_ref().to_owned();
             *slot = Some(next_value(&mut it, &flag)?);
         }
-        cfg.selected = config_file::select(config_path.as_deref(), environment.as_deref())?;
+        cfg.selected = sc_config_file::select(config_path.as_deref(), environment.as_deref())?;
         Ok((cfg, rest))
     }
 
@@ -389,13 +389,13 @@ impl DbConfig {
 
     /// The TLS settings this host pins over `_fd_config`: the selected
     /// environment's ([`Serving::host_config`]), with `ssl_mode` taken from
-    /// [`FELDSPAR_SSL_MODE`](config_file::SSL_MODE_VAR) when that is set. The
+    /// [`FELDSPAR_SSL_MODE`](sc_config_file::SSL_MODE_VAR) when that is set. The
     /// variable outranks the file for the reason `DATABASE_URL` does: it is what
     /// a container image sets, and the image cannot see the file a user mounts.
     pub fn host_config(&self) -> sc_types::Attrs {
         with_ssl_mode(
             self.serving().host_config(),
-            env_var(config_file::SSL_MODE_VAR),
+            env_var(sc_config_file::SSL_MODE_VAR),
         )
     }
 
@@ -663,7 +663,7 @@ mod tests {
     /// a stored model holds, and a typo refused rather than dropped.
     #[test]
     fn the_file_s_llm_provider_becomes_a_checked_host_provider() {
-        let file = config_file::ConfigFile::parse(
+        let file = sc_config_file::ConfigFile::parse(
             r#"
 [environments.production.llm_provider]
 name = "hosted"

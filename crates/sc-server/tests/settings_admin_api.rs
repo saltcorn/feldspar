@@ -27,6 +27,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
 use sc_config::{
@@ -38,7 +39,7 @@ use sc_config::{
 };
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
-use sc_server::{AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router};
+use sc_server::{AppMounts, ServerConfig, admin_handlers, build_router};
 use sc_test_harness::{TestDb, TestSmtp};
 use sc_types::SECRET_SENTINEL;
 use serde_json::{Value, json};

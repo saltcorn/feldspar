@@ -43,9 +43,10 @@ use sc_error::{Error, Result};
 use sc_query::{Expr, OrderBy, Select, Source, Statement};
 use sc_types::{Attrs, validate_attrs};
 
-use crate::driver::{Clock, Driver};
+use crate::driver::Driver;
 use crate::machine::PendingForm;
 use crate::run::{mark_aborted, record, release, run_pending_form, run_state};
+use sc_types::clock::Clock;
 
 /// How long the lease taken for an inline drive lasts.
 ///

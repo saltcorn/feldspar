@@ -1,7 +1,7 @@
 //! `fs` from a **Python** body, against real directories and the real action
 //! (phase 3.2 and 3.5).
 //!
-//! `sc-core-actions/tests/code_files.rs`, question for question, in the other
+//! `sc-action-builtins/tests/code_files.rs`, question for question, in the other
 //! language — and pinned to bytes on a disk for the same reason: what can be
 //! wrong is what reached the filesystem and what was made of what came back, and
 //! a mocked store would assert those about a file that never existed. The whole
@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use sc_action::{ActionContext, Event, EventKind};
+use sc_action_builtins::builtin_actions;
 use sc_catalog::{Catalog, bootstrap_file_stores, save_file_store};
-use sc_core_actions::builtin_actions;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;

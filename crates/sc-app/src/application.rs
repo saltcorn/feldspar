@@ -16,7 +16,8 @@
 //! and the human-facing key that must be unique is its
 //! [`subdomain`](Application::subdomain), which is what routing dispatches on.
 
-use sc_catalog::{Attrs, FileStoreId};
+use sc_catalog::FileStoreId;
+use sc_types::Attrs;
 use sc_types::Role;
 use serde_json::Value as Json;
 use std::collections::BTreeMap;

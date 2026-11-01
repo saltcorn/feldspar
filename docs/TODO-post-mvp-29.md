@@ -190,7 +190,7 @@ and this milestone does not invent it.
 
 ## Phase 3 — `list_assets` and the session header
 
-- [x] 3.1 `sc-core-traits/src/coding/assets.rs`: the tool spec and call of §6, offered when
+- [x] 3.1 `sc-agent-builtins/src/coding/assets.rs`: the tool spec and call of §6, offered when
       `CFG_APPLICATION` is set and absent when it is not. The URL is built by the same `sc-app`
       helper Phase 1 serves through, so the tool cannot describe a URL the router does not
       answer.
@@ -270,7 +270,7 @@ It could not — no trait reached the web, and the only route was `shell_*` with
 on, i.e. `curl` returning raw HTML into the context. Design and the survey of how other agents
 bound a page's size are in `docs/TECHNICAL_DESIGN.md` §11.3, "The web".
 
-- [x] W.1 `sc-core-traits/src/http/guard.rs`: the host policy — public addresses only unless
+- [x] W.1 `sc-agent-builtins/src/http/guard.rs`: the host policy — public addresses only unless
       opened, an optional allow-list with subdomains, checked on every redirect hop; a resolver
       that filters what the client connects to.
 - [x] W.2 `http/client.rs`: redirects by hand, headers dropped on a host change, a whole-request

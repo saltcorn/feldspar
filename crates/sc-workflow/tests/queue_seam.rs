@@ -46,10 +46,11 @@ use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
 use sc_expr::{DenoEvaluator, JsEvaluator};
 use sc_test_harness::TestDb;
+use sc_types::clock::{Clock, ManualClock};
 use sc_types::{Attrs, BasicType, FormField, TypeRef};
 use sc_workflow::queue::WorkQueue;
 use sc_workflow::{
-    Clock, ManualClock, Next, Step, StepKind, Workflow, WorkflowEngineTask, bootstrap_run_traces,
+    Next, Step, StepKind, Workflow, WorkflowEngineTask, bootstrap_run_traces,
     bootstrap_workflow_versions, save_workflow, start_run,
 };
 use serde_json::{Value as Json, json};

@@ -173,7 +173,7 @@ pub use factory::{
 pub use framework::{
     AppRequest, AppResponse, Asset, AssetBundle, BuildSpec, CFG_CLIENT, CFG_COMMAND, CFG_OUTPUT,
     CFG_SOURCE, CFG_STORE, CODE_FRAMEWORK, CodeFramework, Framework, FrameworkInfo, InstallSpec,
-    Method, RequestBody, asset_content_type, code_config_spec, config_spec_in, default_csp_in,
+    RequestBody, asset_content_type, code_config_spec, config_spec_in, default_csp_in,
     framework_config_spec, framework_default_csp, framework_info_in, framework_serves_ui,
     registered_framework_info, registered_frameworks, serves_ui_in, validate_config_in,
     validate_config_structure_in, validate_framework_config, validate_framework_config_structure,

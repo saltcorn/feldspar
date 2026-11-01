@@ -134,13 +134,10 @@ pub mod pymodule;
 #[cfg(feature = "python-host")]
 mod runtime;
 
-/// The name this adapter is registered under, and the language an action's
-/// stored configuration names.
-///
-/// `sc-expr`'s, re-exported: the action that asks `ctx.adapter("python")` and the
-/// adapter that answers to it must agree, and they agree by sharing the string
-/// rather than by both spelling it correctly.
-pub use sc_expr::PYTHON;
+// The name this adapter is registered under is `sc_expr::PYTHON`: the action
+// that asks `ctx.adapter("python")` and the adapter that answers to it share
+// the string rather than both spelling it correctly.
+use sc_expr::PYTHON;
 
 /// The environment's surface, re-exported: a caller installing a Python module
 /// names these and has no reason to know which file they live in.

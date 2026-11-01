@@ -34,10 +34,11 @@ use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
 use sc_expr::{DenoEvaluator, JsEvaluator};
 use sc_test_harness::TestDb;
+use sc_types::clock::ManualClock;
 use sc_types::{Attrs, BasicType, FormField, TypeRef};
 use sc_workflow::{
-    ErrorPolicy, ManualClock, Next, Step, StepKind, Workflow, bootstrap_run_traces,
-    bootstrap_workflow_versions, save_workflow, start_run,
+    ErrorPolicy, Next, Step, StepKind, Workflow, bootstrap_run_traces, bootstrap_workflow_versions,
+    save_workflow, start_run,
 };
 use serde_json::{Value as Json, json};
 

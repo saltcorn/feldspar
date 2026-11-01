@@ -7,7 +7,7 @@
 //! real WebSocket client to it.
 //!
 //! **No vendor and no token** (decision 7). The provider is
-//! `sc_agent::testing::FakeProvider` behind the [`ProviderConnector`] seam, so
+//! `sc_agent::testing::FakeProvider` behind the [`sc_agent::ProviderConnector`] seam, so
 //! everything under test — the loop, the tool dispatch, the run rows, the socket
 //! — is the production code, and only what answers is scripted.
 //!
@@ -41,8 +41,8 @@ use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_llm::{ConnectedModel, LlmProvider};
 use sc_server::{
-    AGENT_CHAT_ROUTE, AgentServices, AppMounts, ProviderConnector, SESSION_COOKIE, ServerConfig,
-    admin_handlers, build_router_with_apps,
+    AGENT_CHAT_ROUTE, AgentServices, AppMounts, SESSION_COOKIE, ServerConfig, admin_handlers,
+    build_router_with_apps,
 };
 use sc_test_harness::TestDb;
 use sc_types::{BasicType, TypeRef};
@@ -60,13 +60,13 @@ type Socket =
 
 // --- the scripted provider, behind the production seam -----------------------
 
-/// A [`ProviderConnector`] that hands out one scripted provider, whatever agent
+/// A [`sc_agent::ProviderConnector`] that hands out one scripted provider, whatever agent
 /// asks. The seam decision 7 exists for: the loop, the traits and the socket are
 /// the real ones, and only the model is a script.
 struct Scripted(Arc<FakeProvider>);
 
 #[async_trait]
-impl ProviderConnector for Scripted {
+impl sc_agent::ProviderConnector for Scripted {
     async fn connect(
         &self,
         _catalog: &Catalog,
@@ -85,7 +85,7 @@ impl ProviderConnector for Scripted {
 struct Unreachable;
 
 #[async_trait]
-impl ProviderConnector for Unreachable {
+impl sc_agent::ProviderConnector for Unreachable {
     async fn connect(
         &self,
         _catalog: &Catalog,
@@ -135,7 +135,10 @@ impl Server {
 
 /// A server whose agents connect through `providers`, with `books` in the
 /// catalog and `agent` stored.
-async fn serve_with(agent: Agent, providers: Arc<dyn ProviderConnector>) -> Result<Server> {
+async fn serve_with(
+    agent: Agent,
+    providers: Arc<dyn sc_agent::ProviderConnector>,
+) -> Result<Server> {
     let db = TestDb::new().await?;
     db.client()
         .await?
@@ -759,7 +762,7 @@ async fn a_server_without_agents_closes_the_socket_with_the_reason() -> Result<(
 #[tokio::test]
 async fn the_chat_and_the_admin_api_share_one_trait_registry() -> Result<()> {
     let server = serve_with(reader(), Arc::new(Unreachable)).await?;
-    let services = AgentServices::new(Arc::new(sc_core_traits::builtin_traits()?));
+    let services = AgentServices::new(Arc::new(sc_agent_builtins::builtin_traits()?));
     // The agent saved through the API validates against the built-in set, which
     // is what `install_agents` assembled; nothing else could have saved it.
     let stored = sc_agent::load_agent_by_name(&server.catalog, "librarian")

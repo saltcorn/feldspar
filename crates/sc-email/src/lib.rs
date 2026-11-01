@@ -55,15 +55,11 @@ pub use relay::{
     SUBMISSION_STARTTLS_PORT, SUBMISSION_TLS_PORT, check_relay, relay_mailer, resolve_public,
     security_for_port,
 };
-// The address vocabulary, re-exported: a crate that builds a message should not
-// have to depend on the *settings* crate to name an address. Parsed there, and
-// only there, because the from-address is a setting and a setting is checked
-// where it is declared — this is that one grammar, borrowed.
-pub use sc_config::{Mailbox, parse_mailbox};
-// And the settings a server is described by, for a caller that names one of
-// its own ([`Mailer::send_via`]).
+// The address vocabulary and the settings a server is described by are
+// `sc-config`'s: the from-address is a setting, and a setting is parsed and
+// checked where it is declared.
 use sc_config::{CERTIFICATE_ACCEPT_ANY, SMTP_CERTIFICATE_CHECK, SMTP_CERTIFICATE_NAME};
-pub use sc_config::{EmailSettings, SmtpSecurity};
+use sc_config::{EmailSettings, Mailbox, SmtpSecurity, parse_mailbox};
 
 /// One message, independent of how it is sent.
 ///

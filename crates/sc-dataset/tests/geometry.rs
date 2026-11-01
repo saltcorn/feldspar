@@ -144,7 +144,7 @@ pub(crate) async fn rows(cat: &Catalog, def: &DatasetDef) -> Result<(Vec<String>
         page.columns.iter().map(|c| c.name.clone()).collect(),
         page.rows
             .iter()
-            .map(|r| r.iter().map(sc_dataset::value_json).collect())
+            .map(|r| r.iter().map(sc_types::value_to_analysis_json).collect())
             .collect(),
     ))
 }

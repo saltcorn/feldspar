@@ -29,7 +29,6 @@ use sc_error::Result;
 use sc_model::{
     Column, ColumnType, Dataset, DatasetOrder, DatasetShape, DatasetSource, Read, Split,
 };
-use sc_server::CatalogDatasetSource;
 use sc_test_harness::TestDb;
 
 /// Four houses in two neighbourhoods, with viewings hanging off them, and a
@@ -76,7 +75,7 @@ fn house_prices() -> Dataset {
 async fn a_dataset_is_one_language_for_fields_joins_and_aggregations() -> Result<()> {
     let db = TestDb::new().await?;
     let catalog = setup(&db).await?;
-    let source = CatalogDatasetSource::new(Arc::new(catalog));
+    let source = sc_model::CompiledSource::new(Arc::new(catalog));
 
     let frame = source.materialise(&house_prices(), 1000).await?;
 
@@ -124,7 +123,7 @@ async fn a_dataset_is_one_language_for_fields_joins_and_aggregations() -> Result
 async fn the_filter_restricts_the_rows_and_the_split_divides_them() -> Result<()> {
     let db = TestDb::new().await?;
     let catalog = setup(&db).await?;
-    let source = CatalogDatasetSource::new(Arc::new(catalog));
+    let source = sc_model::CompiledSource::new(Arc::new(catalog));
 
     let sold = house_prices().filtered("sold === true");
     let frame = source.materialise(&sold, 1000).await?;
@@ -146,7 +145,7 @@ async fn the_filter_restricts_the_rows_and_the_split_divides_them() -> Result<()
 async fn the_row_cap_is_refused_by_name_before_the_rows_are_read() -> Result<()> {
     let db = TestDb::new().await?;
     let catalog = setup(&db).await?;
-    let source = CatalogDatasetSource::new(Arc::new(catalog));
+    let source = sc_model::CompiledSource::new(Arc::new(catalog));
 
     let err = source
         .materialise(&house_prices(), 2)
@@ -166,7 +165,7 @@ async fn the_row_cap_is_refused_by_name_before_the_rows_are_read() -> Result<()>
 async fn a_keyless_table_reads_but_cannot_be_split() -> Result<()> {
     let db = TestDb::new().await?;
     let catalog = setup(&db).await?;
-    let source = CatalogDatasetSource::new(Arc::new(catalog));
+    let source = sc_model::CompiledSource::new(Arc::new(catalog));
 
     let ds = Dataset::new("readings")
         .column("sensor", "sensor")
@@ -185,7 +184,7 @@ async fn a_keyless_table_reads_but_cannot_be_split() -> Result<()> {
 async fn a_frame_comes_back_in_the_declared_order_with_ties_broken_by_the_key() -> Result<()> {
     let db = TestDb::new().await?;
     let catalog = setup(&db).await?;
-    let source = CatalogDatasetSource::new(Arc::new(catalog));
+    let source = sc_model::CompiledSource::new(Arc::new(catalog));
 
     // `region` ties in pairs (north: 1, 3; south: 2, 4), so the key decides
     // within each — ascending, whichever way the region sorts.
@@ -210,7 +209,7 @@ async fn a_frame_comes_back_in_the_declared_order_with_ties_broken_by_the_key() 
 async fn a_filter_matching_nothing_is_an_empty_frame_and_not_an_error() -> Result<()> {
     let db = TestDb::new().await?;
     let catalog = setup(&db).await?;
-    let source = CatalogDatasetSource::new(Arc::new(catalog));
+    let source = sc_model::CompiledSource::new(Arc::new(catalog));
 
     let ds = house_prices().filtered("bedrooms > 99");
     let frame = source.materialise(&ds, 1000).await?;

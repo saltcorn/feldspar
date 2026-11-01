@@ -20,6 +20,7 @@
 //! the latter — which is exactly the arrangement a real deployment has.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,10 +37,7 @@ use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps,
-};
+use sc_server::{AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps};
 use sc_test_harness::TestDb;
 use serde_json::{Value, json};
 use tower::ServiceExt;

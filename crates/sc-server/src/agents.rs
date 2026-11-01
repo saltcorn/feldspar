@@ -1,7 +1,7 @@
 //! Bringing the agents up at boot (§11.2, §11.4).
 //!
 //! The twin of [`triggers`](crate::triggers), and for the same reason: the trait
-//! seam is in `sc-agent` (layer 7), the built-in traits are in `sc-core-traits`
+//! seam is in `sc-agent` (layer 7), the built-in traits are in `sc-agent-builtins`
 //! (layer 9, above the row layer so a trait's write goes through `sc-api`), and
 //! neither knows about the other. This is where they are put together, once, by
 //! the process that is going to serve requests.
@@ -88,10 +88,10 @@ pub async fn install_agents_on(
     bootstrap_runs(catalog)
         .await
         .context("ensuring the runs table exists")?;
-    sc_core_traits::bootstrap_agent_memory(catalog)
+    sc_agent_builtins::bootstrap_agent_memory(catalog)
         .await
         .context("ensuring the agent memory table exists")?;
-    let registry = sc_core_traits::builtin_traits()
+    let registry = sc_agent_builtins::builtin_traits()
         .context("registering the built-in traits")?
         .with_host(host);
     let services = AgentServices::new(Arc::new(registry));
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn the_services_carry_the_built_in_traits_and_the_stored_connector() {
         let services = AgentServices::new(Arc::new(
-            sc_core_traits::builtin_traits().expect("the built-in traits assemble"),
+            sc_agent_builtins::builtin_traits().expect("the built-in traits assemble"),
         ));
         assert!(services.registry().get("query_table").is_some());
         assert!(services.registry().get("run_trigger").is_some());

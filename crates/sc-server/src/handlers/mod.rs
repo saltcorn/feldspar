@@ -25,6 +25,7 @@
 //! row refuse — which is what the field list's red banner is warning about.
 
 use sc_catalog::Authority;
+use sc_types::Attrs;
 use sc_types::Role;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -56,7 +57,7 @@ use sc_auth::{
     save_role, set_user_disabled, set_user_password, update_user,
 };
 use sc_catalog::{
-    Attrs, Catalog, ConstraintKind, DataField, DataFieldKind, DbConnectionDef, DbConnectionId,
+    Catalog, ConstraintKind, DataField, DataFieldKind, DbConnectionDef, DbConnectionId,
     FIELD_META_TABLE, FieldMeta, SchemaProjection, Table, TableConstraint,
     check_db_connection_saveable, check_file_store_saveable, connect_db_connection,
     connect_file_store_def, delete_db_connection, delete_file_store, file_kind_config_spec,
@@ -679,7 +680,7 @@ fn run_json(run: &sc_agent::Run) -> Json {
             sc_agent::RunKind::Agent => run
                 .agent_loop()
                 .ok()
-                .and_then(|state| sc_core_traits::run_plan(&state)),
+                .and_then(|state| sc_agent_builtins::run_plan(&state)),
             _ => None,
         };
         fields.insert(
@@ -691,7 +692,7 @@ fn run_json(run: &sc_agent::Run) -> Json {
 }
 
 /// A planner run's plan (matching `run_plan_schema`), every field present.
-fn run_plan_json(plan: &sc_core_traits::Plan) -> Json {
+fn run_plan_json(plan: &sc_agent_builtins::Plan) -> Json {
     let word = |value: Json| value.as_str().unwrap_or_default().to_owned();
     json!({
         "features": plan.features.iter().map(|f| json!({

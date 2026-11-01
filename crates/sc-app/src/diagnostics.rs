@@ -4,7 +4,7 @@
 //! that news is a list of file/line/message triples, not a wall of tool output.
 //! Two callers want exactly that list and would otherwise each parse it:
 //!
-//! - `sc_core_traits::build_application`, the agent trait whose whole argument
+//! - `sc_agent_builtins::build_application`, the agent trait whose whole argument
 //!   is that "the build's diagnostics are the tool result";
 //! - the MCP projection of `buildApplication` (§13.6), where a coding agent that
 //!   just changed a schema rebuilds the application it changed and has to be

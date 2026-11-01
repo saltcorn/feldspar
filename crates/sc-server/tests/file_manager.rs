@@ -9,6 +9,7 @@
 //! at a fresh temp directory, connected to the catalog by name.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -24,7 +25,7 @@ use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::{FileMeta, FileStore, LocalFileStore};
-use sc_server::{AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router};
+use sc_server::{AppMounts, ServerConfig, admin_handlers, build_router};
 use sc_test_harness::TestDb;
 use serde_json::{Value, json};
 use tower::ServiceExt;

@@ -10,7 +10,7 @@
 //! So this file holds the production pieces and nothing else: the catalog over
 //! Postgres, the `TableHost` an action builds, the ownership formula on the V8
 //! isolate, the dispatcher a write's event reaches. It mirrors
-//! `sc-core-actions/tests/run_js_code.rs`, question for question, and ends with
+//! `sc-action-builtins/tests/run_js_code.rs`, question for question, and ends with
 //! the one that is the point of the milestone — the same question in the two
 //! languages, answered the same way, **because it is the same plan**.
 

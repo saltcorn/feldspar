@@ -274,7 +274,7 @@ pub fn user_row_json(user: &User) -> Json {
         .extra()
         .iter()
         .filter(|(column, _)| !sc_auth::is_system_user_column(column))
-        .map(|(column, value)| (column.clone(), sc_access::convert::value_to_json(value)))
+        .map(|(column, value)| (column.clone(), sc_types::value_to_json(value)))
         .collect();
     json!({
         "id": user.id().to_string(),

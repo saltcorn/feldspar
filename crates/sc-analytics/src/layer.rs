@@ -37,10 +37,11 @@ use serde_json::{Map, Value as Json, json};
 use sc_catalog::Catalog;
 use sc_dataset::{
     Caller, ColType, DatasetDef, DatasetId, Op, OpStatus, Operation, Options, ROW_KEY, Reader,
-    Schema, Stage, StageColumn, compile, read_rows_with, value_json,
+    Schema, Stage, StageColumn, compile, read_rows_with,
 };
 use sc_error::{Error, Result};
 use sc_query::{Expr, OrderBy, Projection, Select, Source, UnOp, Value};
+use sc_types::value_to_analysis_json;
 
 use crate::plot::{DOMAIN_VALUES, Domain};
 
@@ -512,7 +513,7 @@ pub async fn layer_data(
     for (i, row) in rows.rows.iter().enumerate() {
         let shape = geometry
             .and_then(|g| row.get(g))
-            .map_or(Json::Null, value_json);
+            .map_or(Json::Null, value_to_analysis_json);
         if shape.is_null() {
             continue;
         }
@@ -520,7 +521,8 @@ pub async fn layer_data(
         for (name, at) in &carried {
             properties.insert(
                 name.clone(),
-                at.and_then(|a| row.get(a)).map_or(Json::Null, value_json),
+                at.and_then(|a| row.get(a))
+                    .map_or(Json::Null, value_to_analysis_json),
             );
         }
         let id = match rows.keys.get(i) {
@@ -608,7 +610,7 @@ pub async fn layer_domains(
                 let rows = run(&layer, select).await?;
                 let values: Vec<Json> = rows
                     .iter()
-                    .filter_map(|r| r.get_index(0).map(value_json))
+                    .filter_map(|r| r.get_index(0).map(value_to_analysis_json))
                     .collect();
                 (!values.is_empty()).then(|| Domain {
                     kind: "discrete",

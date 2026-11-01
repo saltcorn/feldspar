@@ -14,6 +14,7 @@
 //!    and the chosen model answers in place of the agent's own.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -35,9 +36,8 @@ use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
 use sc_llm::{ConnectedModel, LlmProvider};
 use sc_server::{
-    AGENT_CHAT_ROUTE, AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ProviderConnector,
-    SESSION_COOKIE, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
-    install_triggers,
+    AGENT_CHAT_ROUTE, AppMounts, MountedApp, SESSION_COOKIE, ServerConfig, admin_handlers,
+    build_router_with_apps, default_js_evaluator, install_triggers,
 };
 use sc_test_harness::Teardown;
 use sc_types::{BasicType, TypeRef};
@@ -63,7 +63,7 @@ struct Picking {
 }
 
 #[async_trait]
-impl ProviderConnector for Picking {
+impl sc_agent::ProviderConnector for Picking {
     async fn connect(
         &self,
         _catalog: &Catalog,
@@ -244,7 +244,7 @@ async fn serve(own: Vec<Reply>, fast: Vec<Reply>) -> Result<Server> {
 
     let own = Arc::new(FakeProvider::new(own));
     let fast = Arc::new(FakeProvider::new(fast));
-    let providers: Arc<dyn ProviderConnector> = Arc::new(Picking {
+    let providers: Arc<dyn sc_agent::ProviderConnector> = Arc::new(Picking {
         own: own.clone(),
         fast: fast.clone(),
     });
@@ -542,14 +542,14 @@ async fn ask_user_and_plan_approval_through_the_application_chat() -> Result<()>
     assert_eq!(question["kind"], "choice");
     let options = question["options"].as_array().unwrap();
     assert_eq!(options.len(), 3, "two options and discuss: {question}");
-    assert_eq!(options[2]["value"], sc_core_traits::DISCUSS_VALUE);
+    assert_eq!(options[2]["value"], sc_agent_builtins::DISCUSS_VALUE);
     assert_eq!(options[2]["label"], "Discuss instead");
 
     // "Discuss instead" reaches the model as the discuss prompt.
     let discussed = alice
         .chat(
             "asker",
-            json!({ "answers_request": question["id"], "value": sc_core_traits::DISCUSS_VALUE, "run": run }),
+            json!({ "answers_request": question["id"], "value": sc_agent_builtins::DISCUSS_VALUE, "run": run }),
         )
         .await;
     assert_eq!(done(&discussed)["answer"], "Let's talk about it.");
@@ -605,7 +605,7 @@ async fn ask_user_and_plan_approval_through_the_admin_chat() -> Result<()> {
     assert_eq!(question["kind"], "choice", "{asked:#?}");
     let discussed = socket_turn(
         &mut socket,
-        json!({ "type": "message", "answers_request": question["id"], "value": sc_core_traits::DISCUSS_VALUE }),
+        json!({ "type": "message", "answers_request": question["id"], "value": sc_agent_builtins::DISCUSS_VALUE }),
     )
     .await;
     assert_eq!(done(&discussed)["answer"], "Let's talk about it.");
@@ -649,7 +649,7 @@ async fn ask_user_and_plan_approval_through_the_admin_chat() -> Result<()> {
 #[tokio::test]
 async fn a_code_button_answers_without_the_model_on_both_surfaces() -> Result<()> {
     let server = serve(vec![Reply::says("Noted.")], Vec::new()).await?;
-    let control = sc_core_traits::button_control("Count books");
+    let control = sc_agent_builtins::button_control("Count books");
     assert_eq!(control, "js_count_books");
 
     // The application's chat lists the button, and a press is answered by the

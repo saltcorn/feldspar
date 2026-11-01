@@ -20,9 +20,10 @@ use sc_check::{
     Change, CheckEnv, ChecklistGrant, ChecklistInput, Editor, Outcome, ProposalChange, RunStatus,
     SkipReason, StepDraft, StepRegistry, edit, run_checklist, store,
 };
+use sc_config::Mailbox;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
-use sc_email::{Email, Mailbox, Mailer, RecordingMailer};
+use sc_email::{Email, Mailer, RecordingMailer};
 use sc_error::{Repr, Result};
 use sc_test_harness::TestDb;
 use sc_types::FormField;

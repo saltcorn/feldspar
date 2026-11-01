@@ -16,7 +16,7 @@
 //! A help topic is **just another document**: `ownership-formula` sits beside
 //! `tutorial-ownership` in the listing, is found by the same search and read by
 //! the same tool. It is a template filled in with what a screen is about
-//! (`sc-help`), so here it is rendered with an **empty** context — the general
+//! ([`help`]), so here it is rendered with an **empty** context — the general
 //! text the popup shows on a screen with no table — and given its title as a
 //! heading, which is all that makes it look like a file in `docs/`. A model has
 //! no use for knowing which of the two a page came from.
@@ -41,6 +41,7 @@
 //! lexical index finds a name exactly where a vector one finds things like it.
 //! The index is built on first use, once per process.
 
+pub mod help;
 mod text;
 pub mod tools;
 
@@ -123,10 +124,10 @@ fn sources() -> Vec<(String, String)> {
         .iter()
         .map(|(id, text)| ((*id).to_owned(), (*text).to_owned()))
         .collect();
-    for topic in sc_help::TOPICS {
-        // A topic that does not render is a bug `sc-help`'s own tests catch;
+    for topic in help::TOPICS {
+        // A topic that does not render is a bug `help`'s own tests catch;
         // here it would only cost the library one page, not the whole of it.
-        if let Ok(body) = sc_help::markdown(topic.id, &json!({})) {
+        if let Ok(body) = help::markdown(topic.id, &json!({})) {
             out.push((topic.id.to_owned(), format!("# {}\n\n{body}", topic.title)));
         }
     }

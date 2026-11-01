@@ -2,7 +2,7 @@
 //!
 //! The binary ([`main`](../main/index.html)) stays thin; the reusable pieces —
 //! parsing the database connection ([`DbConfig`]), reading the per-environment
-//! configuration file (`sc-config-file`, re-exported here as [`config_file`]),
+//! configuration file (the `sc-config-file` crate),
 //! the coding agent's evaluation harness ([`eval`]), the `i18n` commands and the
 //! domains they read ([`i18n`]), the `cmdstan` commands' arguments and status
 //! report ([`cmdstan`]), parsing the `api` commands' flags
@@ -33,12 +33,6 @@ pub mod python;
 pub mod setup;
 pub mod users;
 
-/// The `feldspar.toml` reader. It lives in its own layer-0 crate because the
-/// integration-test harness reads the same file (for the `test` environment),
-/// and the harness cannot depend on the binary that sits at the top of the
-/// workspace.
-pub use sc_config_file as config_file;
-
 use std::sync::Arc;
 
 use sc_catalog::{
@@ -49,7 +43,6 @@ use sc_db::DatabaseDriver;
 use sc_error::{Context, Error, Result};
 use sc_files::{FileStoreDef, connect_from_def};
 
-pub use config_file::{ConfigFile, Environment, SelectedEnvironment};
 pub use db::{DbConfig, Serving};
 
 /// The seccomp profile the Docker image runs under — `feldspar seccomp-profile`
@@ -160,7 +153,7 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
         .context("ensuring the runs table exists")?;
     // Long-term agent memory (TODO-agent-skills AS8.3): a system table with a
     // full-text constraint, read by the `memory` trait and the admin screen.
-    sc_core_traits::bootstrap_agent_memory(&catalog)
+    sc_agent_builtins::bootstrap_agent_memory(&catalog)
         .await
         .context("ensuring the agent memory table exists")?;
     // Checklists (TODO-checklists C1.1): what "working" means for an

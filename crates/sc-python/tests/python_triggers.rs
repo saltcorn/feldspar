@@ -1,7 +1,7 @@
 //! A **Python** body running other triggers — `trigger(name).run(...)` — against
 //! a real dispatcher, a real database and real trigger rows (phase 3.3 and 3.5).
 //!
-//! `sc-core-actions/tests/code_run_triggers.rs` in the other language, and it is
+//! `sc-action-builtins/tests/code_run_triggers.rs` in the other language, and it is
 //! the same file for the same reason: what is worth pinning is not the surface's
 //! shape but the **wiring** — that the call goes through *the* dispatcher, so the
 //! target's `only_if`, its floor, its disabled switch and the cascade bound all
@@ -20,8 +20,8 @@ use std::sync::Arc;
 use sc_action::{
     EventKind, MAX_DEPTH, Trigger, TriggerDispatcher, bootstrap_triggers, save_trigger,
 };
+use sc_action_builtins::builtin_actions;
 use sc_catalog::{Catalog, Principal};
-use sc_core_actions::builtin_actions;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};

@@ -262,7 +262,7 @@ impl<'e> Run<'e> {
 
     /// Call `tool_apps_web` and return its text and images.
     async fn call(&mut self, tool: &str, args: Json) -> (Result<String>, usize) {
-        let registry = sc_core_traits::builtin_traits().unwrap();
+        let registry = sc_agent_builtins::builtin_traits().unwrap();
         let coding = registry.require("coding").unwrap().clone();
         let previews: &dyn AppPreviewer = self.env.apps.as_ref();
         let browser: &dyn BrowserDriver = self.env.driver.as_ref();

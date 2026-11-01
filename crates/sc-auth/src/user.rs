@@ -27,8 +27,8 @@ use std::collections::BTreeMap;
 
 use sc_db::Row;
 use sc_error::{Error, Result};
-use sc_expr::value_from_json;
 use sc_query::Value;
+use sc_types::value_from_json;
 use serde::Serialize;
 use serde_json::Value as Json;
 use uuid::Uuid;
@@ -107,7 +107,7 @@ impl User {
     /// The inverse of that rendering, as far as JSON can express it: `id` is a
     /// uuid string (a user has no other kind of key), and every other key rides
     /// in [`extra`](User::extra) typed by its own JSON shape, because there is no
-    /// column behind it — [`sc_expr::value_from_json`], the same reading a
+    /// column behind it — [`sc_types::value_from_json`], the same reading a
     /// trigger's own bindings get. The `role` is the **event's**, passed in
     /// rather than read out of the object: it is the authority the request that
     /// caused the event was served at, and that is what a delegated operation

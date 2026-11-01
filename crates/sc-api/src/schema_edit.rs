@@ -9,7 +9,7 @@
 //! primary-key field is stored, the DDL-then-overlay sequence, the
 //! calculated-field check, the ownership validation and the RLS sync. That was fine while an
 //! HTTP request was the only way to change a schema. It stopped being fine the
-//! moment an **agent** could (§11.3's `admin_copilot`): `sc-core-traits` is
+//! moment an **agent** could (§11.3's `admin_copilot`): `sc-agent-builtins` is
 //! layer 9 and cannot name `sc-server`, so a trait that re-implemented any of it
 //! would be a second answer to "what does creating a field mean", and the two
 //! would drift within a release.
@@ -54,16 +54,16 @@
 //! *and* an edit, and a batch that half-applied for want of a grant is the state
 //! the transaction exists to avoid.
 
+use sc_types::Attrs;
 use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sc_catalog::{
-    ATTR_OWNERSHIP_FORMULA, Attrs, Catalog, ChangeLogFeature, ConstraintKind, DataField,
-    DataFieldKind, DbId, FIELD_META_TABLE, FieldId, FieldMeta, ReprojectedApp, SchemaChanged,
-    SchemaProjection, SchemaStep, Table, TableConstraint, TableMeta, create_constraint_steps,
-    disable_rls_sql, drop_constraint_steps, enable_rls_sql, formula_fields,
-    load_field_meta_by_field, load_table_meta_by_name, save_field_meta_row, save_table_meta_row,
-    validate_formula,
+    ATTR_OWNERSHIP_FORMULA, Catalog, ChangeLogFeature, ConstraintKind, DataField, DataFieldKind,
+    DbId, FIELD_META_TABLE, FieldId, FieldMeta, ReprojectedApp, SchemaChanged, SchemaProjection,
+    SchemaStep, Table, TableConstraint, TableMeta, create_constraint_steps, disable_rls_sql,
+    drop_constraint_steps, enable_rls_sql, formula_fields, load_field_meta_by_field,
+    load_table_meta_by_name, save_field_meta_row, save_table_meta_row, validate_formula,
 };
 use sc_db::{ColumnGenerator, ColumnRef, SchemaChange};
 use sc_error::{Error, Result};

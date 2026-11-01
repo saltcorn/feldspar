@@ -156,7 +156,7 @@ fn verify(method: &Method, uri: &Uri, headers: &HeaderMap, body: &[u8]) -> Resul
     let at = NaiveDateTime::parse_from_str(&header("x-amz-date")?, "%Y%m%dT%H%M%SZ")
         .map_err(|e| e.to_string())?
         .and_utc();
-    let expected = sc_server::s3_authorization(&sc_server::S3Signing {
+    let expected = sc_backup::s3::authorization(&sc_backup::s3::Signing {
         method: method.as_str(),
         path: uri.path(),
         query: &query_pairs(uri),
@@ -317,7 +317,7 @@ async fn an_automated_backup_goes_to_an_s3_bucket() -> sc_error::Result<()> {
         s3.put(name, b"x");
     }
 
-    let scheduler = sc_server::BackupScheduler::new(server.catalog.clone());
+    let scheduler = sc_backup::BackupScheduler::new(server.catalog.clone());
     assert_eq!(scheduler.tick(Utc::now()).await.len(), 1);
 
     let list = ok(&mut server, "GET", "/api/backup/schedules", None).await;
@@ -720,7 +720,7 @@ async fn an_automated_backup_goes_to_an_sftp_server() -> sc_error::Result<()> {
     }
 
     let now = Utc::now();
-    let scheduler = sc_server::BackupScheduler::new(server.catalog.clone());
+    let scheduler = sc_backup::BackupScheduler::new(server.catalog.clone());
     assert_eq!(scheduler.tick(now).await.len(), 1);
 
     let list = ok(&mut server, "GET", "/api/backup/schedules", None).await;

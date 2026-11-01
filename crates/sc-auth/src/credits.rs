@@ -1194,7 +1194,7 @@ fn row_json(row: &Row) -> Json {
         row.columns()
             .iter()
             .zip(row.values())
-            .map(|(c, v)| (c.clone(), sc_expr::value_to_json(v)))
+            .map(|(c, v)| (c.clone(), sc_types::value_to_script_json(v)))
             .collect(),
     )
 }

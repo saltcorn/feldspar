@@ -20,6 +20,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::admin_endpoints;
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_app::{
     ApiConfig, Application, BuildTemplate, DeclaredFile, FilePhase, FrameworkDecl, FrameworkHost,
     FrameworkRef, FrameworkSet, TargetRequirement, TargetRequirementKind, TargetTemplate,
@@ -31,9 +32,7 @@ use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_expr::Template;
 use sc_files::LocalFileStore;
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-};
+use sc_server::{AppMounts, ServerConfig, admin_handlers, build_router_with_apps};
 use sc_test_harness::TestDb;
 use sc_types::{BasicType, FormField};
 use serde_json::{Value, json};

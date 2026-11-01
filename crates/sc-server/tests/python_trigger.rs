@@ -29,14 +29,15 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_expr::{CodeAdapter, CodeCall};
 use sc_python::PythonState;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, PythonMode, ServerConfig, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_triggers_with_adapters, python_adapter,
+    AppMounts, PythonMode, ServerConfig, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_triggers_with_adapters, python_adapter,
 };
 use sc_test_harness::TestDb;
 use serde_json::{Value, json};
@@ -195,7 +196,7 @@ async fn setup(config: &ServerConfig) -> sc_error::Result<Server> {
         default_js_evaluator(),
         &agents,
         &models,
-        [python.clone() as Arc<dyn sc_server::CodeAdapter>],
+        [python.clone() as Arc<dyn sc_expr::CodeAdapter>],
     )
     .await?;
 

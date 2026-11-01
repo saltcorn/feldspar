@@ -49,10 +49,6 @@ use sc_stan::cmdstan::{Locations, Toolchain, discover};
 use sc_stan::compile::CompileCache;
 use sc_stan::run::ProcessBudget;
 
-/// The [`DatasetSource`] a running server has: a named dataset compiled by
-/// `sc-dataset` into one query over the catalog (analytics TODO A1.8).
-pub use sc_model::CompiledSource as CatalogDatasetSource;
-
 /// The model machinery a running server holds: the provider registry, the
 /// dataset seam, and the bound a read must stay under.
 ///
@@ -149,7 +145,7 @@ impl ModelServices {
             registry: Arc::new(RwLock::new(Arc::new(
                 base_registry(&stan).context("registering the built-in model providers")?,
             ))),
-            source: Arc::new(CatalogDatasetSource::new(Arc::clone(catalog))),
+            source: Arc::new(sc_model::CompiledSource::new(Arc::clone(catalog))),
             max_rows,
             stan,
             max_draws_response: Arc::new(AtomicU64::new(sc_model::DEFAULT_MAX_DRAWS_RESPONSE)),

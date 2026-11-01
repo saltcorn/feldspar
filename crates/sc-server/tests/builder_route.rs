@@ -23,6 +23,7 @@
 //!   application's, for the builder's own documents only.
 //! - **Admin only**, and a server **without the bundle** says so.
 
+use sc_api::auth::CSRF_COOKIE;
 use sc_types::Role;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,7 +33,7 @@ use axum::http::{Request, StatusCode, header};
 use sc_api::EndpointSet;
 use sc_auth::{SessionStore, User};
 use sc_server::{
-    BUILDER_BOOT_ID, BUILDER_CONTENT_SECURITY_POLICY, CSRF_COOKIE, HandlerRegistry, SESSION_COOKIE,
+    BUILDER_BOOT_ID, BUILDER_CONTENT_SECURITY_POLICY, HandlerRegistry, SESSION_COOKIE,
     ServerConfig, build_router, builder_content_security_policy,
 };
 use sc_viewpattern::Page;

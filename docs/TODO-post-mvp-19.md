@@ -978,7 +978,7 @@ Two corrections the phase forced, both found by a test rather than by reading:
 
 - [x] 2.1 `ActionServices.adapters` / `ActionContext::adapter(lang)` in `sc-action`, wired through
       `TriggerDispatcher::with_adapter`.
-- [x] 2.2 `sc-core-actions::run_python_code`: `code` + `timeout_ms` (same defaults, same ceiling),
+- [x] 2.2 `sc-action-builtins::run_python_code`: `code` + `timeout_ms` (same defaults, same ceiling),
       the editor language declared as `python`, the same `bindings()` rule as `run_js_code`
       (presence is scope, `context` only in a run), and the same five hosts built from the
       `ActionContext`.
@@ -1304,7 +1304,7 @@ Four smaller decisions worth naming:
    every other kind of breakage.
 
 `sc-python` therefore depends on `sc-module`, `sc-action`, `sc-catalog` and
-`sc-core-actions` now. The direction is forced and it is the right way round:
+`sc-action-builtins` now. The direction is forced and it is the right way round:
 the two languages share their **types** rather than their implementations, and
 the types are `sc-module`'s, while the interpreter is here. The composites are
 `sc_expr::ModuleFnHosts` and `sc_catalog::TableProviderHosts` — each beside the

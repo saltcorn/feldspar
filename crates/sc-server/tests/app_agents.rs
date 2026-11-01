@@ -15,6 +15,7 @@
 //! 5. **A client that goes away stops the agent**, and the run says `aborted`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -35,10 +36,7 @@ use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
 use sc_llm::{ConnectedModel, LlmDelta, LlmMessage, LlmProvider, LlmRequest, LlmStream};
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ProviderConnector, ServerConfig,
-    admin_handlers, build_router_with_apps,
-};
+use sc_server::{AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps};
 use sc_test_harness::Teardown;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value, json};
@@ -57,7 +55,7 @@ const ROLE_MEMBER: Role = Role::of(80);
 struct Scripted(Arc<dyn LlmProvider>);
 
 #[async_trait]
-impl ProviderConnector for Scripted {
+impl sc_agent::ProviderConnector for Scripted {
     async fn connect(
         &self,
         _catalog: &Catalog,
@@ -278,7 +276,7 @@ async fn serve(provider: Arc<dyn LlmProvider>, tools: sc_app::ToolDetail) -> Res
 
     // The tables; then the built-in traits and the test's own.
     sc_server::install_agents(&catalog).await?;
-    let mut registry = sc_core_traits::builtin_traits()?;
+    let mut registry = sc_agent_builtins::builtin_traits()?;
     registry.register(Arc::new(Interview))?;
     let services = sc_server::AgentServices::new(Arc::new(registry))
         .with_providers(Arc::new(Scripted(provider)));

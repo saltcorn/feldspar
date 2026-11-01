@@ -227,7 +227,7 @@ pub struct FormField {
     /// the admin UI shows a question-mark next to the sublabel (or the label)
     /// that opens the topic in a popup. A topic is a template the server fills
     /// in with what the screen is about — the table's fields, the trigger's
-    /// event — so `sc-help` names the topics and this names one of them.
+    /// event — so `sc_docs::help` names the topics and this names one of them.
     ///
     /// Presentation only, like [`sublabel`](FormField::sublabel).
     pub help_topic: Option<String>,

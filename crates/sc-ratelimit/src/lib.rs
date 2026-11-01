@@ -20,7 +20,7 @@
 //! the same as no bucket, so the sweep drops those and the table holds only the
 //! keys that have been busy lately.
 //!
-//! The clock is a parameter ([`Clock`]), so a test crosses a fifteen-minute
+//! The clock is a parameter ([`Clock`], its monotonic reading), so a test crosses a fifteen-minute
 //! window without waiting for it.
 
 use std::collections::HashMap;
@@ -28,6 +28,8 @@ use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+use sc_types::clock::{Clock, SystemClock};
 
 /// `max` hits per `window`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,58 +134,6 @@ fn unit(u: &str) -> Option<Duration> {
     })
 }
 
-/// Where the limiter reads the time from.
-pub trait Clock: Send + Sync {
-    /// Now.
-    fn now(&self) -> Instant;
-}
-
-/// The real clock.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now(&self) -> Instant {
-        Instant::now()
-    }
-}
-
-/// A clock a test moves by hand.
-#[derive(Debug)]
-pub struct ManualClock {
-    start: Instant,
-    offset: Mutex<Duration>,
-}
-
-impl Default for ManualClock {
-    fn default() -> ManualClock {
-        ManualClock {
-            start: Instant::now(),
-            offset: Mutex::new(Duration::ZERO),
-        }
-    }
-}
-
-impl ManualClock {
-    /// A clock standing at the moment it was made.
-    pub fn new() -> ManualClock {
-        ManualClock::default()
-    }
-
-    /// Move the clock on by `by`.
-    pub fn advance(&self, by: Duration) {
-        if let Ok(mut offset) = self.offset.lock() {
-            *offset += by;
-        }
-    }
-}
-
-impl Clock for ManualClock {
-    fn now(&self) -> Instant {
-        self.start + self.offset.lock().map(|o| *o).unwrap_or_default()
-    }
-}
-
 /// A refused hit: how long until one would be allowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limited {
@@ -274,7 +224,7 @@ impl Limiter {
 
     /// A limiter reading the time from `clock`.
     pub fn with_clock(clock: Arc<dyn Clock>) -> Limiter {
-        let swept = clock.now();
+        let swept = clock.instant();
         Limiter {
             clock,
             state: Mutex::new(State {
@@ -305,7 +255,7 @@ impl Limiter {
     /// one — for a limit on *failures*, which is checked before the attempt
     /// and hit only when it fails.
     pub fn peek(&self, key: &str, rate: Rate) -> Result<(), Limited> {
-        let now = self.clock.now();
+        let now = self.clock.instant();
         let Ok(state) = self.state.lock() else {
             return Ok(());
         };
@@ -341,7 +291,7 @@ impl Limiter {
     }
 
     fn with_bucket<T>(&self, key: &str, rate: Rate, f: impl FnOnce(&mut Bucket) -> T) -> T {
-        let now = self.clock.now();
+        let now = self.clock.instant();
         // A poisoned lock means a panic mid-update of a counter; counting on
         // from a fresh table is better than refusing every request after it.
         let mut state = self.state.lock().unwrap_or_else(|poisoned| {
@@ -502,9 +452,10 @@ pub fn client_ip(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sc_types::clock::ManualClock;
 
     fn limiter() -> (Arc<ManualClock>, Limiter) {
-        let clock = Arc::new(ManualClock::new());
+        let clock = Arc::new(ManualClock::default());
         let limiter = Limiter::with_clock(clock.clone());
         (clock, limiter)
     }
@@ -550,13 +501,13 @@ mod tests {
         let refused = limiter.hit("k", rate).unwrap_err();
         // One token is three seconds at 20 a minute.
         assert_eq!(refused.retry_after, Duration::from_secs(3));
-        clock.advance(Duration::from_secs(2));
+        clock.advance(chrono::TimeDelta::seconds(2));
         assert_eq!(limiter.hit("k", rate).unwrap_err().retry_after_secs(), 1);
-        clock.advance(Duration::from_secs(1));
+        clock.advance(chrono::TimeDelta::seconds(1));
         assert!(limiter.hit("k", rate).is_ok());
         assert!(limiter.hit("k", rate).is_err());
         // A long quiet refills the bucket, and no further than full.
-        clock.advance(Duration::from_secs(3600));
+        clock.advance(chrono::TimeDelta::seconds(3600));
         for _ in 0..20 {
             assert!(limiter.hit("k", rate).is_ok());
         }
@@ -586,7 +537,7 @@ mod tests {
         limiter.hit("k", rate).unwrap();
         limiter.hit("k", rate).unwrap();
         assert_eq!(limiter.peek("k", rate).unwrap_err().retry_after_secs(), 30);
-        clock.advance(Duration::from_secs(30));
+        clock.advance(chrono::TimeDelta::seconds(30));
         assert!(limiter.peek("k", rate).is_ok());
     }
 
@@ -607,7 +558,7 @@ mod tests {
                 .hit("busy", Rate::new(10, Duration::from_secs(3600)))
                 .unwrap();
         }
-        clock.advance(Duration::from_secs(61));
+        clock.advance(chrono::TimeDelta::seconds(61));
         limiter.hit("other", Rate::per_minute(10)).unwrap();
         // `quiet` refilled and was dropped; `busy` is still counting.
         assert_eq!(limiter.len(), 2);

@@ -30,9 +30,11 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use sc_action::TriggerDispatcher;
 use sc_agent::AppRequester;
+use sc_agent::browser::{
+    BrowserAction, BrowserDriver, BrowserRequest, BrowserTarget, PreviewTarget,
+};
 use sc_app::{AppId, Application};
 use sc_auth::User;
-use sc_browser::{BrowserAction, BrowserDriver, BrowserRequest, BrowserTarget, PreviewTarget};
 use sc_catalog::Catalog;
 use sc_error::{Error, Repr, Result};
 use sc_expr::JsEvaluator;
@@ -499,7 +501,7 @@ async fn clean_up(catalog: &Catalog, inserted: &[InsertedRow]) -> Vec<String> {
                 catalog,
                 &table,
                 &row.key,
-                sc_access::Unchecked::system("checklist: delete the rows a step inserted"),
+                sc_catalog::Unchecked::system("checklist: delete the rows a step inserted"),
             )
             .await
         }

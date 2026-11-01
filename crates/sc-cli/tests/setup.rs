@@ -11,13 +11,13 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use sc_cli::config_file::ConfigFile;
 use sc_cli::setup::{
     Choices, Database, DbKind, Family, Host, Merged, Mode, NODE_MAJOR, OPENRC_CONF, Prompter,
     RemotePostgres, SYSTEMD_TLS_DROPIN, ServiceManager, SetupArgs, Step, browser_check_argv,
     describe, environment_section, execute, merge_config, next_steps, npm_new_enough,
     parse_os_release, plan, python_check_argv, resolve, systemd_unit, tls_setting, ubuntu_like,
 };
+use sc_config_file::ConfigFile;
 
 fn args(list: &[&str]) -> SetupArgs {
     SetupArgs::parse(&list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>())

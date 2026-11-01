@@ -1059,10 +1059,7 @@ fn json_scope(query: &CustomQuery, req: &ApiRequest) -> Result<Attrs> {
         for param in &query.params {
             let value = bind(query, req, &param.name)?;
             if !value.is_null() {
-                args.insert(
-                    param.name.clone(),
-                    sc_access::convert::value_to_json(&value),
-                );
+                args.insert(param.name.clone(), sc_types::value_to_json(&value));
             }
         }
         let mut scope = Attrs::new();
@@ -1096,10 +1093,7 @@ fn json_scope(query: &CustomQuery, req: &ApiRequest) -> Result<Attrs> {
             &mut body
         };
         if !value.is_null() {
-            target.insert(
-                param.name.clone(),
-                sc_access::convert::value_to_json(&value),
-            );
+            target.insert(param.name.clone(), sc_types::value_to_json(&value));
         }
     }
     let mut scope = Attrs::new();
@@ -1125,7 +1119,7 @@ pub(crate) fn rows_to_json(rows: &[sc_db::Row]) -> Json {
             .map(|row| {
                 let mut out = serde_json::Map::new();
                 for (name, value) in row.columns().iter().zip(row.values()) {
-                    out.insert(name.clone(), sc_access::convert::value_to_json(value));
+                    out.insert(name.clone(), sc_types::value_to_json(value));
                 }
                 Json::Object(out)
             })

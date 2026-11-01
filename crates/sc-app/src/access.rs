@@ -167,7 +167,7 @@ pub(crate) fn validate_access(catalog: &Catalog, app: &Application) -> Result<()
 mod tests {
     use super::*;
     use crate::application::FrameworkRef;
-    use sc_catalog::Attrs;
+    use sc_types::Attrs;
     use uuid::Uuid;
 
     fn app() -> Application {

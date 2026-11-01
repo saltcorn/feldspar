@@ -87,8 +87,8 @@ replays `/complete?token=T` with the spoofed `Host` and the binding cookie and r
 ### 3. High — agents started by triggers run as admin (verified)
 
 - `crates/sc-agent/src/agent_trait.rs:375-379` — `RunCaller::system()` is `role: 1`.
-- `crates/sc-core-traits/src/run_agent.rs:160` — every trigger-started run uses `RunCaller::system()`.
-- `crates/sc-core-traits/src/coding.rs:512-519` — shell, process and module-install tools are offered
+- `crates/sc-agent-builtins/src/run_agent.rs:160` — every trigger-started run uses `RunCaller::system()`.
+- `crates/sc-agent-builtins/src/coding.rs:512-519` — shell, process and module-install tools are offered
   when `cx.caller.is_some_and(is_admin)`; `admin_copilot.rs:362` uses the same role check.
 
 **Attack.** An admin wires `run_agent` to an event a low-privilege or public user controls (insert into
@@ -103,15 +103,15 @@ process, module-install and copilot tools, or require a separate explicit opt-in
 
 ### 4. High — non-admin callers can execute host commands through coding agents (verified)
 
-- `crates/sc-core-traits/src/coding.rs:498-503` — `may_run_scripts` and `may_check` are not gated on
+- `crates/sc-agent-builtins/src/coding.rs:498-503` — `may_run_scripts` and `may_check` are not gated on
   the caller's role (unlike the shell at `:512`).
-- `crates/sc-core-traits/src/coding/script.rs:85-110` — `run_script` only checks the script name is
+- `crates/sc-agent-builtins/src/coding/script.rs:85-110` — `run_script` only checks the script name is
   declared in `package.json`, which the agent can write itself, then runs `npm run <x>` on the host.
 - `check` / `build_application` → `crates/sc-app/src/build.rs:1021,1324` run `sh -c <package.json
   script>` and the bundler unsandboxed with the server's environment (a model-written
   `vite.config.js` suffices).
 - `crates/sc-files/src/local.rs:77-92` (`resolve`) rejects only `..`; nothing on the write path
-  (`sc-files/src/git.rs:1091`, `sc-core-traits/src/files.rs:140-152,240-247,296`) refuses `.git/`.
+  (`sc-files/src/git.rs:1091`, `sc-agent-builtins/src/files.rs:140-152,240-247,296`) refuses `.git/`.
   Writing `.git/config` with `core.fsmonitor = "sh -c '…'"` (or `core.sshCommand`, `core.pager`, or a
   `.git/hooks/*` file) executes on the next `git status`/`add`/`commit` — and `run_git_operation`
   runs status after every operation (`git.rs:1426`; `coding/commit.rs:120,134`).
@@ -295,7 +295,7 @@ the same characters.
   blackhole proxy or request interception.
 - **`is_public` IPv6 gaps** (`sc-email/src/relay.rs:196`): 6to4 (`2002::/16`) and Teredo
   (`2001::/32`) can embed private IPv4.
-- **Fetch URL templates don't URL-encode values** (`sc-core-actions/src/fetch.rs:148`): row data can
+- **Fetch URL templates don't URL-encode values** (`sc-action-builtins/src/fetch.rs:148`): row data can
   inject `/../`, `?`, `#` into requests carrying admin-configured API headers.
 - **Git argument injection (admin-only)**: `git.rs:471-475` (`clone`) and `:850-862` (`checkout`)
   lack `--` and a leading-`-` check.
@@ -458,7 +458,7 @@ having signed in to that app). The script reads the host's own `__Host-sc_csrf` 
 `POST /backup/create`: the response is the whole instance (password hashes, Secret-field key, LLM
 keys, TLS private key). `/download` and `/upload` read and write any file store, including other
 apps' source; `/backup/upload` stages a crafted backup. A second route is `call_api`
-(`sc-core-traits/src/coding/call_api.rs:224-260`, `sc-server/src/requests.rs:70-100`), which sends
+(`sc-agent-builtins/src/coding/call_api.rs:224-260`, `sc-server/src/requests.rs:70-100`), which sends
 agent-chosen paths through this router: a prompt-injected triggered run whose `view_app_user` is an
 admin can POST `/backup/create`.
 
@@ -481,7 +481,7 @@ expiry.
 The #4 fix stops a non-admin caller from *running* scripts, checks and builds, but not from writing
 the files those later run, nor the Astro server entry that runs on every request.
 
-- `crates/sc-core-traits/src/files.rs:239-255` (`open_to_write`) refuses only `.git`; write access is
+- `crates/sc-agent-builtins/src/files.rs:239-255` (`open_to_write`) refuses only `.git`; write access is
   the store's read floor (`sc-files/src/access.rs:220-233`), public by default (`def.rs:176`). Build
   output has no owner.
 - **Astro server entry.** `crates/sc-app/src/server_render.rs:12-20,543-568`: `dist/_server/entry.js`
@@ -679,7 +679,7 @@ lower `MAX_DECODE_SIDE`.
 
 ### 27. `fetch` action with a templated host is an SSRF that returns the response
 
-`crates/sc-core-actions/src/fetch.rs:146-205` renders the URL from the event, checks only the
+`crates/sc-action-builtins/src/fetch.rs:146-205` renders the URL from the event, checks only the
 scheme (`:248-260`) and uses the unrestricted client; the parsed body is the action's result,
 returned to the caller of a directly-run trigger (`:44-47`), and non-2xx errors quote 300 characters
 of the body (`:194-201`). `send_email` applies `is_public` with IP pinning for exactly this reason
@@ -779,7 +779,7 @@ matches; re-check ownership before portal or saved-card use.
   static directory overlaps a store that uploads, File fields or non-admin agents write to.
   Refuse dot segments; refuse such overlaps or apply the user-content treatment.
 - **`secure_cookies` off behind a TLS proxy** (`sc-server/src/config.rs:100-102,322`,
-  `sc-cli/src/main.rs:182-188`): turned on only when Feldspar terminates TLS. Forgetting the flag
+  `sc-cli/src/commands/serve.rs:122-128`): turned on only when Feldspar terminates TLS. Forgetting the flag
   drops `Secure`, falls back to the tossable `sc_csrf` (undoing #6, and making an anonymous agent
   owner — a hash of the CSRF cookie, `uploads.rs:223-240` — fixable), and makes reset/invite links
   `http://`. Turn it on when a trusted proxy sends `X-Forwarded-Proto: https`, or refuse to start.
@@ -1134,7 +1134,7 @@ been demoted, disabled, force-logged-out or had their password reset.
 the handshake. `agent_chat_upgrade` (`crates/sc-server/src/chat.rs:130-150`) freezes the user as
 `RunCaller::user(user)`. `chat()` (`:177` onward) runs a turn for every message for the life of the
 socket and never re-reads the session. Tool gates read the frozen role
-(`crates/sc-core-traits/src/coding.rs:720`), so shell, module install, copilot and host-code tools
+(`crates/sc-agent-builtins/src/coding.rs:720`), so shell, module install, copilot and host-code tools
 stay available. Pings keep the socket open with no time limit.
 
 **Why existing guards don't stop it.** Only the app live hub registers as a session listener
@@ -1194,7 +1194,7 @@ earlier fixes:
 - Vendored v1 List / Edit / Feed / Filter action routes (expected to share #37).
 - How far code reaches after the #36 vm escape inside the view worker.
 - TNEF `PR_ATTACH_MIME_TAG` against `as_user_content`'s essence parsing and its PDF exemption.
-- Rust HTML in `sc-llm/listing.rs`, `sc-core-traits/http/document.rs`, `sc-email/mjml.rs`.
+- Rust HTML in `sc-llm/listing.rs`, `sc-agent-builtins/http/document.rs`, `sc-email/mjml.rs`.
 - Sync push, undo writes, `rest/custom.rs`, `calc_read.rs`.
 - sc-cli remote commands.
 
@@ -1236,7 +1236,7 @@ old `Option<&CallerContext>` with `None` silently failed closed on such a table,
 | sc-catalog `retention.rs` | retention: is the file still referenced |
 | sc-catalog `sync.rs` | sync: read the change log; read the change-log watermark |
 | sc-config `store.rs` | write configuration |
-| sc-core-traits `files.rs` (`AGENT_FILE_SCOPE`) | agent file scope: the coding trait's raw store. The file tools bind the run's caller (`open_at`, `open_to_write`, a `CheckedStore`); `find`, `search`, `view_app`'s assets and the skill and script readers check the caller themselves; the shell, commits and checks are offered to an administrator's run only |
+| sc-agent-builtins `files.rs` (`AGENT_FILE_SCOPE`) | agent file scope: the coding trait's raw store. The file tools bind the run's caller (`open_at`, `open_to_write`, a `CheckedStore`); `find`, `search`, `view_app`'s assets and the skill and script readers check the caller themselves; the shell, commits and checks are offered to an administrator's run only |
 | sc-dataset `access.rs` | dataset reader: the driver it reads the rows its caller's floors and RLS context decide through |
 | sc-live `docroom.rs` | live document: load the stored state; persist merged state (after the join's access check) (`Unchecked::system`) |
 | sc-llm `storage.rs` | LLM usage and conversation storage |
@@ -1249,13 +1249,13 @@ old `Option<&CallerContext>` with `None` silently failed closed on such a table,
 | sc-server `oauth.rs` | OAuth: store the tokens of a consent flow (`Unchecked::system`) |
 | sc-viewpattern `library.rs`, `store.rs` | apply library updates; write view-pattern definitions |
 | sc-workflow `driver.rs` | workflow: record run state |
-| `INTERNAL_TABLES` in the `lib.rs` of sc-action, sc-agent, sc-analytics, sc-api, sc-app, sc-auth, sc-check, sc-config, sc-core-traits, sc-dataset, sc-llm, sc-mcp, sc-model, sc-module, sc-stream, sc-viewpattern, sc-workflow | the crate's own tables (`_fd_*`, and `users` for sc-auth and sc-check's check users; sc-analytics' demo dataset; sc-api's change-log user names for the history reader): the one `Unchecked::system` each crate's stores reach `Catalog::primary` with, crate-private (Q3.5) |
+| `INTERNAL_TABLES` in the `lib.rs` of sc-action, sc-agent, sc-agent-builtins, sc-analytics, sc-api, sc-app, sc-auth, sc-check, sc-config, sc-dataset, sc-llm, sc-mcp, sc-model, sc-module, sc-stream, sc-viewpattern, sc-workflow | the crate's own tables (`_fd_*`, and `users` for sc-auth and sc-check's check users; sc-analytics' demo dataset; sc-api's change-log user names for the history reader): the one `Unchecked::system` each crate's stores reach `Catalog::primary` with, crate-private (Q3.5) |
 
 **Admin principals.** These run as role 1 but carry a user, for attribution, or are their own
 caller type. They are not yet `Authority::System`:
 
 - **Admin in the event user's name.** An action's rows: `sc_action::ActionContext::scoped`
-  (`action.rs`), which the row actions (sc-core-actions `rows_scope.rs`, `insert_row`,
+  (`action.rs`), which the row actions (sc-action-builtins `rows_scope.rs`, `insert_row`,
   `update_rows`, `delete_rows`, `embed_rows`) read and write through. A code body's `asAdmin()`
   handles: sc-api `code_host/mod.rs` (`admin`, `Actor::Admin`, through a `Scoped`), which a
   model write-back from a body shares (`models::write_posterior` takes the body's `Scoped`). They
@@ -1306,7 +1306,7 @@ that `check_access` / `check_write` passed for one path, and the only way to tha
 - **A store bound to the administrator** (`FileCaller::new(Role::ADMIN, …)`), who clears every
   rule: a code body's `asAdmin()` file operations (sc-api `code_host/files.rs`, `open`) and the
   file a body serves as admin (sc-api `rest/mod.rs`, `code_response`); `send_email`'s attachments
-  (sc-core-actions, the trigger's authority); a module's file surface, confined to its declared
+  (sc-action-builtins, the trigger's authority); a module's file surface, confined to its declared
   areas (sc-module `files.rs`); the server's own temporary folder for resumable uploads (sc-server
   `uploads.rs`, `server_store`, behind the upload record's application, slot and uploader check);
   and the IDE's language server (sc-server `lsp.rs`), the only binding `CheckedStore::local_root`
@@ -1317,7 +1317,7 @@ that `check_access` / `check_write` passed for one path, and the only way to tha
   upload slots (the slot's floor and hook, sc-server `uploads.rs`).
 - **`sc_dataset::Caller::admin()`**: model fits read their training rows (sc-model `source.rs`,
   sc-analytics `model_outputs.rs`). The dataset caller is not yet a `Principal` (Q1.8).
-- **`sc_agent::RunCaller::system()`**: trigger-started agent runs (sc-core-traits `run_agent.rs`,
+- **`sc_agent::RunCaller::system()`**: trigger-started agent runs (sc-agent-builtins `run_agent.rs`,
   sc-server `chat.rs`, sc-cli `eval.rs`). The run is marked triggered, so the server's own tools
   are withheld.
 

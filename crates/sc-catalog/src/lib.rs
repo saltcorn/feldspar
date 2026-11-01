@@ -97,8 +97,7 @@ pub use edited::{
 };
 pub use events::{LIVE_EVENTS, TRIGGER_EVENTS, TableEvents, TableWrite, WriteOp};
 pub use field::{
-    Attrs, BaseField, DataField, DataFieldKind, DbId, FieldId, FileOnConflict, FileOnDelete,
-    FileStoreId,
+    DataField, DataFieldKind, DbId, FieldId, FileOnConflict, FileOnDelete, FileStoreId,
 };
 pub use field_meta::{
     FIELD_META_TABLE, FieldMeta, FieldMetaId, KIND_CALC, KIND_FILE, KIND_KEY, KIND_PLAIN,
@@ -192,7 +191,7 @@ mod tests {
 
     #[test]
     fn base_field_label_defaults_to_name() {
-        let b = BaseField::new("count", TypeRef::Basic(BasicType::Int));
+        let b = sc_types::BaseField::new("count", TypeRef::Basic(BasicType::Int));
         assert_eq!(b.name, "count");
         assert_eq!(b.label, "count");
         assert!(b.attributes.is_empty());
@@ -346,25 +345,5 @@ mod tests {
         assert_eq!(table.access, AccessRules::default());
         assert_eq!(table.label, "_fd_config");
         assert_eq!(table.overlay, None);
-    }
-
-    #[test]
-    fn attrs_and_base_field_are_re_exported_from_sc_types_not_redefined() {
-        // Both moved down to `sc-types` (layer 3) so `FormField` — which carries
-        // a `BaseField` and describes `Attrs` entries — can live beside them.
-        // This crate re-exports both, so the old paths still resolve and every
-        // existing call site is untouched. These assignments compile only if the
-        // names are the *same* types, not look-alikes.
-        let attrs: Attrs = sc_types::Attrs::new();
-        let _: sc_types::Attrs = attrs;
-        let base: BaseField = sc_types::BaseField::new("x", TypeRef::Basic(BasicType::Text));
-        let _: sc_types::BaseField = base;
-
-        // `DataField` stays here — its `Key`/`File` kinds reference catalog ids —
-        // and still builds on the very same `BaseField`.
-        let mut field = DataField::plain("x", TypeRef::Basic(BasicType::Text));
-        field.base.attributes.insert("max".to_owned(), 10.into());
-        let _: &sc_types::BaseField = &field.base;
-        let _: &sc_types::Attrs = &field.base.attributes;
     }
 }

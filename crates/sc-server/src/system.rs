@@ -150,7 +150,7 @@ pub fn schedule_restart() {
     tokio::spawn(async {
         tokio::time::sleep(RESTART_DELAY).await;
         sc_log::log_info!("restarting at an administrator's request");
-        sc_core_traits::kill_all_processes();
+        sc_agent_builtins::kill_all_processes();
         std::process::exit(RESTART_EXIT_CODE);
     });
 }

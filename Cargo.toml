@@ -4,9 +4,6 @@ members = [
     # Layer 0 — foundations
     "crates/sc-error",
     "crates/sc-log",
-    # The in-memory token-bucket limiter and the client-IP rule (TODO F4.2):
-    # per-query limits, login throttling and a code body's `ratelimit`.
-    "crates/sc-ratelimit",
     "crates/sc-config-file",
     # Internationalisation (TODO "one catalogue, two runtimes"): the `Locale`,
     # the negotiation, the catalogue, the message format, the `t!` macros and
@@ -22,13 +19,11 @@ members = [
     # one SSRF rule, `PublicAddr`, and the HTTP client that connects to one.
     # Layer 0: it knows addresses and `reqwest`, nothing of the catalog.
     "crates/sc-net",
-    # The admin UI's help topics (v1's `help/*.tmd`): markdown templates filled
-    # in with what the screen is about and rendered to HTML. Layer 0 because it
-    # is handed plain JSON and knows nothing of the catalog.
-    "crates/sc-help",
     # The documentation agents read (`search_docs`, `read_docs`): `docs/`'s
-    # tutorials and references and the help topics, compiled in and indexed.
-    # Layer 0 beside `sc-help`, whose topics are among its documents.
+    # tutorials and references and the admin UI's help topics (v1's
+    # `help/*.tmd`, markdown templates filled in with what a screen is about),
+    # compiled in and indexed. Layer 0: it is handed plain JSON and knows
+    # nothing of the catalog.
     "crates/sc-docs",
     # Layer 1 — query language, expression language
     "crates/sc-query",
@@ -50,14 +45,15 @@ members = [
     "crates/sc-migrate",
     # Layer 3 — types
     "crates/sc-types",
+    # The in-memory token-bucket limiter and the client-IP rule (TODO F4.2):
+    # per-query limits, login throttling and a code body's `ratelimit`. Above
+    # `sc-types` for its clock (`sc_types::clock`), the one the workflow engine
+    # reads too.
+    "crates/sc-ratelimit",
     # Layer 4 — catalog
     "crates/sc-catalog",
     # Layer 5 — users/auth, files, configuration values
     "crates/sc-auth",
-    # The headless-browser seam (TODO-checklists C2.1): the `BrowserDriver`
-    # trait, its actions and the stable locators. Below the agents and the
-    # checklists, which both drive the browser; the server implements it.
-    "crates/sc-browser",
     "crates/sc-files",
     "crates/sc-config",
     # Datasets (analytics TODO A1): a base and an ordered list of operations,
@@ -138,13 +134,13 @@ members = [
     # Layer 9 — the core built-in actions (above the row layer, because three of
     # them write rows through it), the core built-in agent traits (above it for
     # exactly the same reason) and the server
-    "crates/sc-core-actions",
+    "crates/sc-action-builtins",
     # Checklists (TODO-checklists): what "working" means for an application,
     # as ordered steps run as one user. Above `sc-app` and `sc-agent` (it
     # builds an application and sends requests through `AppRequester`), below
     # the copilot and the server, which both offer its tools.
     "crates/sc-check",
-    "crates/sc-core-traits",
+    "crates/sc-agent-builtins",
     "crates/sc-backup",
     "crates/sc-server",
     # Layer 10 — CLI binary
@@ -169,7 +165,6 @@ sc-error = { path = "crates/sc-error" }
 sc-log = { path = "crates/sc-log" }
 sc-ratelimit = { path = "crates/sc-ratelimit" }
 sc-i18n = { path = "crates/sc-i18n" }
-sc-help = { path = "crates/sc-help" }
 sc-docs = { path = "crates/sc-docs" }
 # `feldspar.toml` — the deployment file naming this machine's databases. Layer 0
 # because both ends of the workspace read it: the binary, to know where the
@@ -197,7 +192,6 @@ sc-migrate = { path = "crates/sc-migrate" }
 sc-types = { path = "crates/sc-types" }
 sc-catalog = { path = "crates/sc-catalog" }
 sc-auth = { path = "crates/sc-auth" }
-sc-browser = { path = "crates/sc-browser" }
 sc-files = { path = "crates/sc-files" }
 sc-repomap = { path = "crates/sc-repomap" }
 sc-config = { path = "crates/sc-config" }
@@ -219,8 +213,8 @@ sc-api = { path = "crates/sc-api" }
 sc-app = { path = "crates/sc-app" }
 sc-viewpattern = { path = "crates/sc-viewpattern" }
 sc-check = { path = "crates/sc-check" }
-sc-core-actions = { path = "crates/sc-core-actions" }
-sc-core-traits = { path = "crates/sc-core-traits" }
+sc-action-builtins = { path = "crates/sc-action-builtins" }
+sc-agent-builtins = { path = "crates/sc-agent-builtins" }
 sc-backup = { path = "crates/sc-backup" }
 sc-server = { path = "crates/sc-server" }
 sc-test-harness = { path = "tests/harness" }

@@ -14,8 +14,9 @@ use serde_json::Value as Json;
 
 use crate::caller::Authority;
 use crate::catalog::Catalog;
-use crate::field::{Attrs, DataField};
+use crate::field::DataField;
 use crate::tx::SharedTx;
+use sc_types::Attrs;
 
 /// One row per registered device: whose it is, for which application, and the
 /// watermark of the last pull it confirmed having applied.

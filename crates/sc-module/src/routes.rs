@@ -37,7 +37,7 @@ use sc_error::{Error, Result};
 use sc_expr::{CodeHosts, TriggerHost};
 use serde_json::{Map, Value as Json, json};
 
-use crate::host::{CallHosts, ModuleHost, RouteManifest, SystemAsks};
+use crate::host::{Ask, AskSurface, Asks, CallHosts, ModuleHost, RouteManifest};
 use crate::module::ModuleLanguage;
 use crate::modules::{LoadedModule, ModuleSet};
 use crate::webhooks::{WebhookResponse, hook_segment, request_json, response_from};
@@ -187,7 +187,7 @@ pub async fn run_route(
     matched: &MatchedRoute<'_>,
     request: RouteRequest,
     caller: &Principal,
-    system: &dyn SystemAsks,
+    system: &dyn Ask,
     installation: Json,
 ) -> Result<WebhookResponse> {
     let module = loaded.module.name.as_str();
@@ -204,7 +204,7 @@ pub async fn run_route(
             ..CodeHosts::default()
         },
         schema: schema.as_deref(),
-        system: Some(system),
+        asks: Asks::default().with(AskSurface::System, system),
         ..CallHosts::default()
     };
     let mut arrived = request_json(&request.request);

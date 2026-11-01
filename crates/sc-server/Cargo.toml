@@ -40,10 +40,10 @@ sc-viewpattern.workspace = true
 sc-api.workspace = true
 sc-access.workspace = true
 # The trigger system, brought up at boot (`install_triggers`): the dispatcher
-# lives in `sc-action` and the built-in actions in `sc-core-actions`; this crate
+# lives in `sc-action` and the built-in actions in `sc-action-builtins`; this crate
 # is where they meet the catalog, because it is the one that serves requests.
 sc-action.workspace = true
-sc-core-actions.workspace = true
+sc-action-builtins.workspace = true
 # Modules: the `_fd_modules` table, the npm installer and the Node host whose
 # actions join the registry the dispatcher runs from (TODO "Modules").
 # `deno-host`: modules run on a `deno_runtime` worker **in this process** rather
@@ -65,8 +65,8 @@ sc-python.workspace = true
 sc-llm.workspace = true
 sc-mcp.workspace = true
 # The agents themselves (§11.2): the record, the trait seam, the loop and the
-# runs the chat socket drives. `sc-core-traits` is the built-in trait set the
-# registry is assembled from — the same arrangement `sc-core-actions` has with
+# runs the chat socket drives. `sc-agent-builtins` is the built-in trait set the
+# registry is assembled from — the same arrangement `sc-action-builtins` has with
 # the trigger dispatcher, and for the same reason: this crate is where the
 # registry meets the catalog, because it is the one that serves requests.
 sc-agent.workspace = true
@@ -96,7 +96,7 @@ sc-stream.workspace = true
 # access rules and the hub. This crate mounts `{mount}/live` and drives a
 # connection through them.
 sc-live.workspace = true
-sc-core-traits.workspace = true
+sc-agent-builtins.workspace = true
 # Checklists (TODO-checklists C1): the admin API, the MCP tools and the runner
 # with this server's application router.
 sc-check.workspace = true
@@ -106,7 +106,8 @@ sc-migrate.workspace = true
 sc-db-postgres.workspace = true
 sc-query.workspace = true
 sc-types.workspace = true
-sc-help.workspace = true
+# The help topics (`sc_docs::help`) `getHelp` renders.
+sc-docs.workspace = true
 # `statvfs`, for the size of the filesystem a module route reports
 # (`module_routes`).
 libc.workspace = true

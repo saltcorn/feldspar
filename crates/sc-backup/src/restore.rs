@@ -2800,7 +2800,7 @@ async fn restore_agent_memories(
     if !archive.contains(AGENT_MEMORY_FILE) {
         return;
     }
-    if let Err(e) = sc_core_traits::bootstrap_agent_memory(catalog).await {
+    if let Err(e) = sc_agent_builtins::bootstrap_agent_memory(catalog).await {
         report.skipped(format!("agents' memories: {}", e.causes()));
         return;
     }
@@ -2866,7 +2866,7 @@ async fn restore_agent_memory(
         .and_then(Json::as_str)
         .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
         .map_or_else(chrono::Utc::now, |at| at.with_timezone(&chrono::Utc));
-    let memory = sc_core_traits::memory::NewMemory {
+    let memory = sc_agent_builtins::memory::NewMemory {
         agent: text("agent"),
         user,
         run: None,
@@ -2875,7 +2875,7 @@ async fn restore_agent_memory(
         topic: text("topic"),
         contents: text("contents"),
     };
-    sc_core_traits::memory::import_memory(catalog, &memory, written_at).await
+    sc_agent_builtins::memory::import_memory(catalog, &memory, written_at).await
 }
 
 /// The triggers, or with `pass` set to [`TriggerPass::Retry`] only the ones of
@@ -3760,7 +3760,7 @@ async fn rows_of(catalog: &Catalog, table: &Table) -> Result<Vec<Json>> {
     let json = rows::list_rows(
         catalog,
         table,
-        sc_access::Unchecked::system("backup restore: read the accounts already here"),
+        sc_catalog::Unchecked::system("backup restore: read the accounts already here"),
     )
     .await?;
     Ok(match json {

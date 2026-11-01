@@ -9,8 +9,8 @@
 //! of, and that same declaration is what validates a saved agent.
 //!
 //! This crate registers **no traits at all**. The built-in set lives in
-//! `sc-core-traits` at layer 9, above the row layer, for the reason §10.1 gives
-//! for `sc-core-actions`: a trait that writes a row must go through `sc-api`'s
+//! `sc-agent-builtins` at layer 9, above the row layer, for the reason §10.1 gives
+//! for `sc-action-builtins`: a trait that writes a row must go through `sc-api`'s
 //! rows module so the write is coerced, validated and *observed* by triggers,
 //! and that module is above this one.
 //!

@@ -37,7 +37,8 @@ use sc_auth::{
     load_user_by_email, password_token_issued_within, redeem_password_token, user_email,
 };
 use sc_catalog::{Catalog, PublicBaseUrl};
-use sc_email::{Email, Mailer, parse_mailbox};
+use sc_config::{Mailbox, parse_mailbox};
+use sc_email::{Email, Mailer};
 use sc_error::{Error, Result};
 use sc_query::Value;
 use serde_json::{Map, Value as Json, json};
@@ -174,14 +175,14 @@ pub(crate) fn ok_schema() -> TypeSchema {
 
 /// A message's content before the link is known: subject, bodies, sender.
 struct Template {
-    from: Option<sc_email::Mailbox>,
+    from: Option<Mailbox>,
     subject: String,
     text: Option<String>,
     html: Option<String>,
 }
 
 impl Template {
-    fn render(&self, sender: sc_email::Mailbox, to: &str, link: &str) -> Result<Email> {
+    fn render(&self, sender: Mailbox, to: &str, link: &str) -> Result<Email> {
         let fill = |s: &str| {
             s.replace(LINK_PLACEHOLDER, link)
                 .replace(EMAIL_PLACEHOLDER, to)

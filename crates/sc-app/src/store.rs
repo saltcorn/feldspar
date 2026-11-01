@@ -19,10 +19,11 @@
 //! defaulted field: an app is its row, so a half-understood row is a
 //! misconfigured app the admin needs told about, not one to serve approximately.
 
-use sc_catalog::{Attrs, Catalog, FileStoreId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Value};
+use sc_types::Attrs;
 use sc_types::Role;
 use serde_json::{Value as Json, json};
 

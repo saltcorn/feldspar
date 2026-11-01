@@ -39,8 +39,8 @@ use sc_expr::{
 use sc_query::{Expr, OrderBy, Projection, Select, Source, Value};
 use serde_json::{Map, Value as Json};
 
-use crate::convert::value_to_json;
 use crate::rows;
+use sc_types::value_to_json;
 
 /// The check that stands behind every unchecked row operation this module
 /// makes for a caller: the floor it just compared, the formula it just

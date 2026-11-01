@@ -308,10 +308,10 @@ pub(crate) async fn answer(
         "inspect" => {
             let locator = match plan.get("locator").and_then(Json::as_str).map(str::trim) {
                 None | Some("") => None,
-                Some(raw) => Some(raw.parse::<sc_browser::Locator>()?),
+                Some(raw) => Some(raw.parse::<sc_agent::browser::Locator>()?),
             };
             let report = cx
-                .browser(sc_browser::BrowserAction::Inspect { locator })
+                .browser(sc_agent::browser::BrowserAction::Inspect { locator })
                 .await?;
             Ok(json!({
                 "url": report.url,

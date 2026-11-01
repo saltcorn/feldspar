@@ -39,6 +39,9 @@ sc-action.workspace = true
 # An application's invitation and forgotten-password endpoints send their links
 # by email, through the same `Mailer` a `send_email` action uses (§18.2).
 sc-email.workspace = true
+# The address vocabulary (`Mailbox`, `parse_mailbox`) the from-address setting is
+# declared and parsed with.
+sc-config.workspace = true
 # The row layer (`rows`) executes table CRUD for every API surface, so it speaks
 # the query language and the type system directly.
 sc-db.workspace = true

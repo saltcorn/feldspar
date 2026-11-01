@@ -363,7 +363,7 @@ pub struct McpTag {
     /// as a tool result with the tools' output and the file/line/message
     /// diagnostics parsed out of it.
     ///
-    /// The same decision `sc_core_traits::build_application` already made, for
+    /// The same decision `sc_agent_builtins::build_application` already made, for
     /// the same reason — a model told only "the build failed" cannot fix
     /// anything, and a failed build is the most useful answer this tool ever
     /// returns. It is declared here rather than inferred because only a person

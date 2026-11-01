@@ -62,7 +62,7 @@ fn attrs(value: serde_json::Value) -> Attrs {
 /// right answer to be near: `price = 10 * area`, and a `region` already one-hot
 /// encoded the way the host would have encoded it.
 fn training_frame() -> Frame {
-    let areas: Vec<f64> = (1..=40).map(|i| f64::from(i)).collect();
+    let areas: Vec<f64> = (1..=40).map(f64::from).collect();
     Frame::new(
         vec![
             (

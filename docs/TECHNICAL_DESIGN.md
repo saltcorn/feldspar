@@ -71,18 +71,18 @@ feldspar/
 │  │                              #    `is_public`, `PublicAddr`, the SSRF resolver and the
 │  │                              #    `PublicClient` the agent's http trait, `fetch` and MCP
 │  │                              #    send with; an SMTP override's pinned address
-│  ├─ sc-ratelimit/               # 0. in-memory token-bucket rate limiter keyed by string,
+│  ├─ sc-ratelimit/               # 3. in-memory token-bucket rate limiter keyed by string,
 │  │                              #    and the client-IP rule (queries, logins, code bodies)
 │  ├─ sc-i18n/                    # 0. Locale, negotiation, the Catalog, the message format,
 │  │                              #    CLDR plurals, `t!`/`tc!`, the `Translator` seam, and the
 │  │                              #    `core` catalogues. Layer 0 because sc-auth and sc-types
 │  │                              #    must be able to translate a sentence (§16.1); the
 │  │                              #    tree-sitter extractor is behind an `extract` feature
-│  ├─ sc-help/                    # 0. admin UI help topics: markdown templates filled in with
-│  │                              #    the screen's context, rendered to HTML
 │  ├─ sc-docs/                    # 0. the documentation agents read: docs/'s tutorials and
 │  │                              #    references and the help topics, compiled in, split into
-│  │                              #    sections, BM25-indexed; the search_docs/read_docs tools
+│  │                              #    sections, BM25-indexed; the search_docs/read_docs tools.
+│  │                              #    `help`: the admin UI's help topics, markdown templates
+│  │                              #    filled in with the screen's context, rendered to HTML
 │  ├─ sc-query/                   # 1. universal query language (enum AST) + SQL rendering trait
 │  ├─ sc-repomap/                 # 1. the coding agent's repo map: tree-sitter tags, personalised
 │  │                              #    PageRank, rendering to a token budget. No store, no deps
@@ -98,11 +98,6 @@ feldspar/
 │  ├─ sc-catalog/                 # 4. Catalog, Table, Field, TableProvider trait, cache
 │  ├─ sc-config/                  # 5. `_fd_config`: declared settings, validation, ACME cache
 │  ├─ sc-auth/                    # 5. User, Role, authz (ACL/RLS), sessions, OAuth2 provider
-│  ├─ sc-browser/                 # 5. the headless-browser seam: the `BrowserDriver` trait,
-│  │                              #    its actions and stable locators (`button "Save"`,
-│  │                              #    `label=Email`, `testid=…`), driven by the agents'
-│  │                              #    `view_app` and the checklists' `browser.*` steps alike;
-│  │                              #    `sc-server` implements it over Chromium
 │  ├─ sc-files/                   # 5. FileStore trait, drivers (local, S3, git), xattr metadata
 │  ├─ sc-dataset/                 # 5. Datasets (§14.4): a base and an ordered list of
 │  │                              #    operations, compiled into one sc-query statement; the
@@ -126,7 +121,12 @@ feldspar/
 │  │                              #    `_fd_workflow_versions`, `_fd_run_traces`, the engine
 │  │                              #    that advances a run of it (§10.3)
 │  ├─ sc-agent/                   # 7. Agent record + AgentTrait trait + registry + inference
-│  │                              #    loop + `_fd_agents`/`_fd_runs` storage (§11.2)
+│  │                              #    loop + `_fd_agents`/`_fd_runs` storage (§11.2). `browser`:
+│  │                              #    the headless-browser seam, the `BrowserDriver` trait, its
+│  │                              #    actions and stable locators (`button "Save"`,
+│  │                              #    `label=Email`, `testid=…`), driven by the agents'
+│  │                              #    `view_app` and the checklists' `browser.*` steps alike;
+│  │                              #    `sc-server` implements it over Chromium
 │  ├─ sc-model/                   # 6. Predictive models: a named dataset (sc-dataset) resolved,
 │  │                              #    the columnar Frame, the row-identity-hash split, the
 │  │                              #    DatasetSource + ModelProvider seams, `_fd_models` /
@@ -171,7 +171,7 @@ feldspar/
 │  │                              #    projection, the filter vocabulary and the read rule a
 │  │                              #    change is decided by); below sc-server, which mounts
 │  │                              #    `{mount}/live`
-│  ├─ sc-core-actions/            # 8. the built-in action set (insert_row, update_rows,
+│  ├─ sc-action-builtins/         # 8. the built-in action set (insert_row, update_rows,
 │  │                              #    delete_rows, fetch, run_js_code, run_python_code,
 │  │                              #    send_email, and fit_model) — above the row layer,
 │  │                              #    because a trigger's write goes *through* it (§10.1)
@@ -183,7 +183,7 @@ feldspar/
 │  ├─ sc-module/                  # 9. v1 plugins on a Deno worker in this process (§15.1),
 │  │                              #    and the view runtime: v1's vendored patterns run there
 │  ├─ sc-python/                  # 9. the Python code adapter (§15.2), over sc-module's seams
-│  ├─ sc-core-traits/             # 9. the built-in agent traits (table, trigger and coding
+│  ├─ sc-agent-builtins/          # 9. the built-in agent traits (table, trigger and coding
 │  │                              #    traits) + the `run_agent` action — same layer, same
 │  │                              #    reason: their writes go through the row layer (§11.3)
 │  ├─ sc-check/                   # 9. checklists (docs/CHECKLISTS.md): `_fd_checklist*`, the
@@ -222,7 +222,7 @@ The dependency graph of the crates that exist today. **An arrow points from a cr
 crate it depends on**, so every arrow runs from a higher layer to a lower one and the graph is
 acyclic by construction. Arrows implied by transitivity are omitted — the picture is the
 *transitive reduction*, so `sc-server → sc-catalog` is real but not drawn; it is reached through
-`sc-core-actions → sc-api → sc-action → sc-access → sc-auth → sc-catalog`. That is worth remembering when a box looks
+`sc-action-builtins → sc-api → sc-action → sc-access → sc-auth → sc-catalog`. That is worth remembering when a box looks
 sparser than it is — `sc-action` also depends directly on `sc-catalog`, `sc-db`, `sc-expr` and
 `sc-types`, all of which the one drawn arrow to `sc-email` already implies. The full
 direct-dependency lists follow the diagram.
@@ -232,14 +232,12 @@ graph TD
   cli["sc-cli"] --> server["sc-server"]
   cli --> cfgfile["sc-config-file"]
   cli --> dns["sc-dns"]
-  server --> coreact["sc-core-actions"]
+  server --> coreact["sc-action-builtins"]
   server --> backup["sc-backup"]
-  backup --> coretraits["sc-core-traits"]
+  backup --> coretraits["sc-agent-builtins"]
   server --> pg["sc-db-postgres"]
   server --> migrate["sc-migrate"]
   migrate --> db
-  server --> help["sc-help"]
-  help --> error
   coretraits --> agent["sc-agent"]
   coretraits --> app["sc-app"]
   coretraits --> repomap["sc-repomap"]
@@ -247,9 +245,6 @@ graph TD
   coretraits --> check["sc-check"]
   check --> agent
   check --> app
-  check --> browser["sc-browser"]
-  agent --> browser
-  browser --> auth
   mcp --> net["sc-net"]
   mcp --> catalog
   coreact --> api["sc-api"]
@@ -307,9 +302,10 @@ graph TD
   db --> query["sc-query"]
   expr --> query
   expr --> ratelimit["sc-ratelimit"]
+  ratelimit --> types
   api --> ratelimit
   api --> docs["sc-docs"]
-  docs --> help
+  docs --> error
   server --> ratelimit
   python --> expr
   files --> types["sc-types"]
@@ -330,18 +326,17 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-config-file` | `sc-error` |
 | `sc-dns` | `sc-error` |
 | `sc-net` | `sc-error` |
-| `sc-ratelimit` | — (nothing in the workspace) |
+| `sc-ratelimit` | `sc-types` |
 | `sc-query` | `sc-error` |
 | `sc-repomap` | — (nothing in the workspace) |
 | `sc-i18n` | `sc-error` |
-| `sc-help` | `sc-error` |
-| `sc-docs` | `sc-error` `sc-help` |
+| `sc-docs` | `sc-error` |
 | `sc-types` | `sc-error` `sc-i18n` `sc-query` |
 | `sc-db` | `sc-error` `sc-query` |
 | `sc-db-postgres` | `sc-db` `sc-error` `sc-log` `sc-query` |
 | `sc-db-sqlite` | `sc-db` `sc-error` `sc-log` `sc-query` |
 | `sc-migrate` | `sc-db` `sc-error` `sc-query` |
-| `sc-expr` | `sc-error` `sc-query` `sc-ratelimit` |
+| `sc-expr` | `sc-error` `sc-query` `sc-ratelimit` `sc-types` |
 | `sc-files` | `sc-error` `sc-types` |
 | `sc-catalog` | `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-error` `sc-expr` `sc-files` `sc-query` `sc-types` |
 | `sc-config` | `sc-catalog` `sc-db` `sc-error` `sc-i18n` `sc-log` `sc-query` `sc-types` |
@@ -356,21 +351,20 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-analytics` | `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-db-sqlite` `sc-error` `sc-model` `sc-query` `sc-types` |
 | `sc-stream` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
 | `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-types` |
-| `sc-browser` | `sc-auth` `sc-error` |
-| `sc-agent` | `sc-access` `sc-action` `sc-auth` `sc-browser` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
+| `sc-agent` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
-| `sc-api` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-dataset` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
+| `sc-api` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
 | `sc-app` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-stream` `sc-types` |
 | `sc-live` | `sc-access` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-stream` `sc-types` |
-| `sc-core-actions` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-net` `sc-query` `sc-types` |
+| `sc-action-builtins` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-config` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-net` `sc-query` `sc-types` |
 | `sc-viewpattern` | `sc-access` `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-types` |
-| `sc-module` | `sc-access` `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
-| `sc-python` | `sc-action` `sc-catalog` `sc-core-actions` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
-| `sc-check` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-browser` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
-| `sc-core-traits` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-query` `sc-repomap` `sc-types` |
-| `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-traits` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-server` | `sc-access` `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-help` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
+| `sc-module` | `sc-access` `sc-action` `sc-action-builtins` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
+| `sc-python` | `sc-action` `sc-action-builtins` `sc-catalog` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
+| `sc-check` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
+| `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-query` `sc-repomap` `sc-types` |
+| `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:
 
@@ -381,7 +375,7 @@ Four things the graph is worth reading for:
   `DatabaseDriver` trait in `sc-db` — which is what made adding `sc-db-sqlite` a matter of adding
   a crate rather than editing the middle of the stack, and is now demonstrated rather than
   claimed.
-- **`sc-core-actions` and `sc-core-traits` sit above `sc-api`/`sc-app`, not beside `sc-action`
+- **`sc-action-builtins` and `sc-agent-builtins` sit above `sc-api`/`sc-app`, not beside `sc-action`
   and `sc-agent`.** The built-in action set and the built-in agent traits are *users* of the row
   layer, not part of it — a trigger's write goes through the same path an HTTP request does
   (§10.1, §11.3), so they must be above everything that path touches.
@@ -2564,7 +2558,7 @@ The ten built-ins are `insert_row`, `update_rows`, `delete_rows`, `fetch`, `run_
 (§7.4a: a user formula, a role, a duration or an `expires_at` formula, a key formula that is per
 user, and `once`, which grants nothing if a grant with that key ever existed for the user — the
 card-less trial; never the admin role), and they live in
-**`sc-core-actions`, above the row layer**. That placement is the design's one real constraint on where an action may live: a
+**`sc-action-builtins`, above the row layer**. That placement is the design's one real constraint on where an action may live: a
 trigger's write goes through `sc-api`'s `rows` module, so it is coerced, validated,
 `File`-field-checked and *observed* exactly like an API caller's write. A second write path would
 quietly skip all of it. Two more are registered apart from the set, because each holds a seam a
@@ -2929,7 +2923,7 @@ everything else, so `Promise.all([fetch(a), fetch(b)])` really does issue both a
 body suspended on an endpoint costs a pending promise rather than an isolate.
 
 The seam is JSON here too — one request object in, one response object out
-(`sc_expr::FetchHost`, implemented in `sc-core-actions` over the same HTTP client the `fetch`
+(`sc_expr::FetchHost`, implemented in `sc-action-builtins` over the same HTTP client the `fetch`
 action uses) — so §15's other guest languages inherit `fetch` the way they inherit `db`.
 
 **The plan is the seam.** The fluent surface is JavaScript; what crosses into Rust is one plain
@@ -3790,7 +3784,7 @@ step, parallel steps, and the copilot that *writes* workflows (§11.6).
 
 ---
 
-## 11. Agents (`sc-llm`, `sc-agent`, `sc-core-traits`) and copilot (`sc-copilot`)
+## 11. Agents (`sc-llm`, `sc-agent`, `sc-agent-builtins`) and copilot (`sc-copilot`)
 
 *Designed for the sixth post-MVP milestone; §11.1–§11.5 are written for it, §11.6 is not.*
 
@@ -3808,9 +3802,9 @@ Three separations are load-bearing, and they are why this is three crates rather
   streaming, and nothing about Saltcorn. `sc-agent` knows agents, traits and the loop, and
   nothing about which vendor is on the other end.
 - **A trait that touches rows must sit above the row layer**, for the reason §10.1 gives for
-  `sc-core-actions`: a write goes through `sc-api`'s `rows` module so it is coerced, validated
+  `sc-action-builtins`: a write goes through `sc-api`'s `rows` module so it is coerced, validated
   and *observed*. So `sc-agent` (layer 7) owns the trait, the loop and the storage, and the
-  built-in traits live in `sc-core-traits` (layer 9), beside the built-in actions.
+  built-in traits live in `sc-agent-builtins` (layer 9), beside the built-in actions.
 - **An agent is a kind of `Action`** (GOALS, §10.2), but it is *not* stored as one. Its
   definition is its own record; `run_agent` is the one registered action that runs it. A trigger
   therefore fires an agent through machinery that already exists, and the agent stays editable
@@ -4322,7 +4316,7 @@ milestone, Phase 3, `sc_agent::control`):
   mode, so a scripted expectation about a mode is written as `Match::Offers` over the tools the
   request declares.
 
-### 11.3 The built-in traits (`sc-core-traits`)
+### 11.3 The built-in traits (`sc-agent-builtins`)
 
 Deliberately few, and split by what they touch. Each names its target in its configuration —
 there is no trait that can reach *any* table or *any* store, because "which tables may this
@@ -4568,7 +4562,7 @@ scope, so what it changed enters the change ledger and the model's reads of it g
   between two calls is not attributed to the shell.
 - **The repo map is its own crate.** `sc-repomap` has **no workspace dependencies** — the caller
   passes paths and bytes — which keeps tree-sitter's C builds out of everything that depends on
-  `sc-core-traits`, and the grammars sit behind a default `grammars` feature. Tags come from the
+  `sc-agent-builtins`, and the grammars sit behind a default `grammars` feature. Tags come from the
   grammars' own `tags.scm` with the references a code agent needs added (JSX components, exported
   constants, TS type aliases, enums and type references, Python `from` imports); ranking is
   personalised PageRank on Aider's weights, hand-rolled rather than adding a graph dependency.
@@ -4698,7 +4692,7 @@ and one refusal.
 
 - **The rule moved out of the handlers first.** Creating a table and creating a field existed only
   as closures inside `sc-server`'s admin handlers, which was fine while an HTTP request was the
-  only way to change a schema. `sc-core-traits` is layer 9 and cannot name `sc-server`, so the
+  only way to change a schema. `sc-agent-builtins` is layer 9 and cannot name `sc-server`, so the
   whole of it — the `type` → storage-type resolution, how a primary-key field is stored, the
   DDL-then-overlay sequence, the calculated-field check, `validate_ownership_settings` and
   `sync_table_rls` — is now `sc_api::schema_edit`, beside `rows` and for the same reason. The
@@ -5141,7 +5135,7 @@ history for that agent.
 
 ### 11.5 The agent as an action
 
-`run_agent` is a registered `Action` (in `sc-core-traits`, since it runs a loop whose tools
+`run_agent` is a registered `Action` (in `sc-agent-builtins`, since it runs a loop whose tools
 reach the row layer) taking an agent name and a prompt formula evaluated in the event's scope
 (§10.1). It makes an agent a trigger body without touching the trigger model: a row insert can
 start an agent with a prompt derived from the row, an application can expose it as
@@ -5157,7 +5151,7 @@ action returns a value (§10.1), and a caller who wants the deltas is a chat cli
   `run_agent` needs it for the same reason (decision 7: no test may need a key) and lives below
   the server. `sc-server` re-exports it and `AgentServices` carries it unchanged.
 - **`run_agent` is registered apart from the built-in action set**, through
-  `sc_core_traits::register_agent_actions`, because it needs two things assembled first that no
+  `sc_agent_builtins::register_agent_actions`, because it needs two things assembled first that no
   other action does: the trait registry the agents were validated against — one registry, or an
   agent would be accepted by the admin API and refused by the trigger — and this deployment's
   provider connector. The visible consequence is a **boot order**: `install_agents` runs before
@@ -7254,7 +7248,7 @@ break on its first edit gets stated — for `react`, that `src/feldspar/` is gen
 on every build.
 
 What the framework declares is *data*: trait names and their configuration (`BuilderAgentSpec`),
-because the traits live in `sc-core-traits` two layers above `sc-app` and a framework can only name
+because the traits live in `sc-agent-builtins` two layers above `sc-app` and a framework can only name
 them, exactly as an application names its API providers. Assembling that into an `Agent` and storing
 it is the server's, on `createApplication`, after the scaffold — the agent is pointed at the project
 the scaffold has just written. It is **not** fatal to the creation and is reported beside it
@@ -8368,8 +8362,8 @@ rather than accumulated.
 `sc_llm::ToolSpec` is `{ name, description, parameters }` and an MCP tool is `{ name,
 description, inputSchema }` — the same value with two spellings. So tier 1 is a rename.
 
-But `admin_copilot` lives in `sc-core-traits` (layer 9) and the projection belongs in `sc-api`
-(layer 8), so the **tool bodies move down**. `sc-core-traits::admin_copilot` becomes a thin
+But `admin_copilot` lives in `sc-agent-builtins` (layer 9) and the projection belongs in `sc-api`
+(layer 8), so the **tool bodies move down**. `sc-agent-builtins::admin_copilot` becomes a thin
 `AgentTrait` over them — the name, the six-checkbox form, its validation, and the translation
 from a run's `TraitContext` to a `ToolContext` — and the chat copilot and the MCP server become
 two callers of one implementation.
@@ -8394,7 +8388,7 @@ than that type itself: an agent's context carries a run id, a delegator and a Ja
 evaluator, none of which an administrative tool touches, and naming it would put `sc-api`
 below the agent loop for nothing.
 
-**There is no new crate.** One would need `sc-core-traits` to reach the copilot's tools and
+**There is no new crate.** One would need `sc-agent-builtins` to reach the copilot's tools and
 `sc-server` to reach the mount registry, inverting the layering in two directions at once.
 
 #### Reloading the catalog and rebuilding an application
@@ -8710,7 +8704,7 @@ a prediction.
 
 | Seam | Declared in | Implemented in | Installed by | What reaches it |
 |---|---|---|---|---|
-| `DatasetSource` | `sc-model` | `sc-model` (`CompiledSource`, over `sc-dataset`; re-exported by `sc-server` as `CatalogDatasetSource`) | `ModelServices` | every fit and prediction |
+| `DatasetSource` | `sc-model` | `sc-model` (`CompiledSource`, over `sc-dataset`) | `ModelServices` | every fit and prediction |
 | `ModelProviderHost` | `sc-model` | `sc-module`, `sc-python` | the module rebuild | the registry, for a module's provider |
 | `FitStarter` | `sc-model` | `sc-server` (`ModelServices`) | `register_model_actions` | the `fit_model` action |
 | `ModelHost` | `sc-catalog` | `sc-server` (`ModelServices`, over `sc_api::models`) | `Catalog::set_model_host`, at startup and on every module rebuild | `predict("…")` in a formula, and the code host's model handle |
@@ -11409,7 +11403,7 @@ synchronous because a publish is a send that never waits — and `LiveHub` imple
 installed on the catalog (`Catalog::set_live_host`) by the router, beside its session listener.
 Three publishers reach it without naming `sc-live`:
 
-- **The `publish` action** (`sc-core-actions`): `stream` (a picker the server fills with the
+- **The `publish` action** (`sc-action-builtins`): `stream` (a picker the server fills with the
   internal streams, `INTERNAL_STREAMS_QUERY`), `topic` (a formula; blank is `user.id` on a `user`
   stream and none on a `single` one; required on a `row` one) and `value` (a formula per key). As a
   workflow `Action` step it reads the run's event, so `user.id` is the user who started the run.
@@ -11741,7 +11735,7 @@ helper's transport. The scaffold's `AGENTS.md` (L5.7) has the TipTap and CodeMir
 
 **Tests.** `sc-types`: the type validates bytes. `sc-api` `tests/collab_doc.rs` (SQLite): absent
 from every read and the generated row type, refused by every write path with its sentence,
-written by the persister, refused by a filter and by a formula. `sc-core-actions`: an action's
+written by the persister, refused by a filter and by a formula. `sc-action-builtins`: an action's
 configuration may not name one. `sc-query`/`sc-db-sqlite`: `FOR UPDATE` rendered, or not.
 `sc-live`: the CRDT units; `doc_format.rs` (the JS fixture); `documents.rs` (SQLite) — relay to
 the others and not back, close with the last member, two rooms (two processes) persisting
@@ -12235,7 +12229,7 @@ Details the text above leaves open:
 
 #### The Undo action
 
-`undo` is a core action (`sc-core-actions`), so an application's button, a view's action or a
+`undo` is a core action (`sc-action-builtins`), so an application's button, a view's action or a
 trigger can call it. It steps back through **the caller's own session**:
 
 - **No `table` configured**: undo the most recent changeset of this session that still has
@@ -12252,7 +12246,7 @@ session (anonymous callers have none), or when the conflict check fails. It does
 picked. Redo is not a separate mechanism: it would be an undo of the session's last undo, and
 is left for later.
 
-**As built (H4).** `sc_core_actions::Undo` finds its changeset with
+**As built (H4).** `sc_action_builtins::Undo` finds its changeset with
 `sc_catalog::history::session_undo_target` (the event's changeset gives the session and the id
 of the running request, which is skipped), then calls H3's `Reverser::undo_changeset` as the
 event's caller, without `force`. The undo changeset inherits the session from the ambient
@@ -12546,7 +12540,7 @@ every configurable thing here already speaks (§6.2). So a module's action is re
 trigger form, validated on save and run by the dispatcher with no code anywhere that knows what
 a module is: `ModuleAction` is an ordinary `Action` whose `run` marshals the `ActionContext`
 into v1's argument object — and builds the same five host surfaces `run_js_code` builds, from
-the same `sc_core_actions::CodeSurfaces`, so a v1 plugin's `insertRow` carries the event's
+the same `sc_action_builtins::CodeSurfaces`, so a v1 plugin's `insertRow` carries the event's
 caller and this trigger's chain and is observed by triggers exactly as a `db.books.insert(…)`
 is. v1's `onLoad(configuration)` hook is called at load, because a plugin
 builds there the state its actions close over — `@saltcorn/mqtt`'s one action publishes through
@@ -13164,7 +13158,7 @@ call answers once `res` is ended, not once the callback returns, because a callb
 from a promise it did not return. Calls are bounded like a webhook's: 1 MiB body, 600 requests a
 minute per address, and the action wall clock. A throw is a 500 and the `error` event.
 
-**What a route reads of the installation** (the `system` ask surface, `SystemAsks`, carried only
+**What a route reads of the installation** (the `system` ask surface, `AskSurface::System`, carried only
 by a route's call). This is what `heartbeat-monitor` needs:
 - `require("systeminformation")` is answered by the host, not the npm package, which reads `/proc`
   and runs `df` outside a module's sandbox. Only `fsSize` (one entry: the filesystem holding the
@@ -13400,7 +13394,7 @@ the Python plugin API is better than the JavaScript one rather than merely diffe
 free — Python has `inspect.signature` and JavaScript does not.
 
 **Module code gets the real `db`.** `sc.db`, `sc.fetch`, `sc.fs`, `sc.trigger` and `sc.live` are
-the same surfaces a code body has, built by the same `sc_core_actions::CodeSurfaces`, so a plugin's
+the same surfaces a code body has, built by the same `sc_action_builtins::CodeSurfaces`, so a plugin's
 write carries the event's caller and this trigger's chain and its `fetch` is counted on the run's
 budget. §15.1's `File`/`User`/`getState` stubs, and the v1 `Table` and `Field` beside them, exist
 because v1's API is v1's; a Python plugin has no v1 to be compatible with, so it is handed the

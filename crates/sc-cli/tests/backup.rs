@@ -133,7 +133,7 @@ async fn a_backup_from_the_cli_restores_everything_but_tls_into_another_database
         stderr.contains("site.zip"),
         "it says what it wrote: {stderr}"
     );
-    let (contents, _) = sc_server::inspect_backup(&file, None)?;
+    let (contents, _) = sc_backup::inspect(&file, None)?;
     assert!(!contents.ssl, "the TLS settings are left out");
     assert!(contents.settings, "the other settings are in");
     let books = contents
@@ -165,7 +165,7 @@ async fn a_backup_from_the_cli_restores_everything_but_tls_into_another_database
     );
     let piped_file = tmp.path().join("piped.zip");
     std::fs::write(&piped_file, &piped.stdout)?;
-    let (piped_contents, _) = sc_server::inspect_backup(&piped_file, None)?;
+    let (piped_contents, _) = sc_backup::inspect(&piped_file, None)?;
     assert!(!piped_contents.ssl);
     assert_eq!(
         piped_contents

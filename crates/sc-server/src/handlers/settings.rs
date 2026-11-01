@@ -21,7 +21,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     ctx.query_get("event"),
                 )
                 .await?;
-                let page = sc_help::render(&topic, &context)?;
+                let page = sc_docs::help::render(&topic, &context)?;
                 Ok(HandlerResponse::ok(
                     json!({ "title": say(&page.title, &ctx.locale), "html": page.html }),
                 ))
@@ -438,7 +438,7 @@ const TEST_EMAIL_HTML: &str = "<p>This is a test message from Saltcorn.</p><p>If
                                it, the SMTP settings saved under Settings \u{2192} Email \
                                work.</p>";
 
-/// What a help topic is filled in with (`sc-help`'s module docs list the keys):
+/// What a help topic is filled in with (`sc_docs::help`'s module docs list the keys):
 /// the screen's table with its key fields' targets and the keys pointing back
 /// at it, the trigger's event, the admin's own user object, the users table's
 /// fields, and the tables and triggers a code body can reach.

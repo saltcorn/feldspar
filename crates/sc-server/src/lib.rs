@@ -90,25 +90,15 @@ mod webhooks;
 pub use admin_host::{AdminHost, HANDOFF_ROUTE, HANDOFF_TTL};
 pub use agents::{AgentServices, install_agents, install_agents_on};
 pub use apps::{AppMounts, MountedApp, build_and_mount, mount_all, subdomain_in, subdomain_of};
+pub use browser::{
+    BROWSER_NAMES, ChromiumDriver, DriverConfig, check_browser_sandbox, detect_browser,
+};
+pub use chat::AGENT_CHAT_ROUTE;
 pub use oauth::{
     BINDING_COOKIE as OAUTH_BINDING_COOKIE, CALLBACK_ROUTE as OAUTH_CALLBACK_ROUTE,
     COMPLETE_ROUTE as OAUTH_COMPLETE_ROUTE, CONSENT_ROUTE as OAUTH_CONSENT_ROUTE,
     PROVIDERS_ROUTE as OAUTH_PROVIDERS_ROUTE,
 };
-pub use sc_backup::{
-    Available as BackupContents, BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE, BackupPreferences,
-    BackupScheduler, RestoreReport, Selection as BackupSelection, available as backup_available,
-    inspect as inspect_backup, is_encrypted as backup_is_encrypted, restore_backup,
-    start_backup_scheduler, write_backup_stream, write_backup_to,
-};
-// The S3 request signer, for the fake S3 server the automated-backup tests
-// check every request's signature against.
-pub use browser::{
-    BROWSER_NAMES, ChromiumDriver, DriverConfig, check_browser_sandbox, detect_browser,
-};
-pub use chat::AGENT_CHAT_ROUTE;
-pub use sc_agent::{ProviderConnector, StoredProviders};
-pub use sc_backup::s3::{Signing as S3Signing, authorization as s3_authorization};
 
 /// The server's JavaScript evaluator: the `deno_core`-backed engine ownership
 /// formulas' reified path runs on (§7.3). Constructed once at boot and shared —
@@ -188,7 +178,7 @@ pub use config::{
 };
 pub use handler::{
     Admin, AdminSession, AnalyticsCaller, BoxFuture, Caller, Gate, HandlerCtx, HandlerFn,
-    HandlerRegistry, HandlerResponse, SessionAction, Who,
+    HandlerRegistry, HandlerResponse, Who,
 };
 pub use handlers::{admin_handlers, admin_handlers_with};
 pub use i18n::{LANG_COOKIE, LANG_QUERY};
@@ -197,8 +187,7 @@ pub use logging::log_requests;
 pub use lsp::{LSP_ROUTE, MAX_LANGUAGE_SERVERS};
 pub use mcp::{MCP_PROTOCOL_VERSION, MCP_ROUTE, MCP_SERVER_NAME};
 pub use models::{
-    CatalogDatasetSource, ModelServices, StanSettings, install_model_host, install_models,
-    install_models_with,
+    ModelServices, StanSettings, install_model_host, install_models, install_models_with,
 };
 pub use modules::ModuleServices;
 pub use observe::STREAM_OBSERVE_ROUTE;
@@ -208,21 +197,13 @@ pub use router::{
     ANALYTICS_PREFIX, BOOTSTRAP_HTML, CSRF_REQUEST_HEADER, IDE_PREFIX, URL_SCHEME_ATTRIBUTE,
     build_router, build_router_with_apps,
 };
-/// The guest-language adapter trait, re-exported: a caller that hands
-/// [`install_triggers_with_adapters`] a set of adapters needs to name it, and
-/// `sc-expr` is not otherwise its dependency.
-pub use sc_expr::CodeAdapter;
-/// Where the bundled modules are in the checkout, re-exported: `sc-cli` needs to
-/// name the fallback and `sc-module` is not otherwise its dependency.
-pub use sc_module::BUNDLED_IN_CHECKOUT;
 pub use security::{
     ANALYTICS_CONTENT_SECURITY_POLICY, IDE_CONTENT_SECURITY_POLICY,
     analytics_content_security_policy,
 };
 pub use security::{BUILDER_CONTENT_SECURITY_POLICY, builder_content_security_policy};
 pub use security::{
-    CONTENT_SECURITY_POLICY, CSRF_COOKIE, CSRF_HEADER, GUEST_COOKIE, PREVIEW_COOKIE,
-    SECURE_CSRF_COOKIE, SESSION_COOKIE, VISITOR_COOKIE, csrf_cookie,
+    CONTENT_SECURITY_POLICY, GUEST_COOKIE, PREVIEW_COOKIE, SESSION_COOKIE, VISITOR_COOKIE,
 };
 pub use serve::{serve, serve_browser};
 pub use streams::{StreamServices, TriggerBridge, install_streams, install_streams_with};

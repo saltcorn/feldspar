@@ -19,13 +19,14 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use sc_catalog::{
-    Attrs, Catalog, DataField, ProvidedTableDef, ProvidedWrites, TableMeta, TableProviderHost,
+    Catalog, DataField, ProvidedTableDef, ProvidedWrites, TableMeta, TableProviderHost,
     TableProviderKind, TableSource, bootstrap_table_meta, save_table_meta,
 };
 use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
 use sc_query::{BinOp, Expr, OrderBy, Select, Source, Value};
 use sc_test_harness::TestDb;
+use sc_types::Attrs;
 use sc_types::{BasicType, FormField, TypeRef};
 use serde_json::{Value as Json, json};
 

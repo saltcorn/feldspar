@@ -22,11 +22,10 @@ use sc_access::rows::Executor;
 use sc_catalog::{Authority, Catalog, Principal, SharedTx};
 use sc_email::Mailer;
 use sc_error::{Error, Result};
-use sc_expr::{
-    Ambient, CodeAdapter, ConsoleSink, Formula, JsEvaluator, SchemaShape, Template, value_from_json,
-};
+use sc_expr::{Ambient, CodeAdapter, ConsoleSink, Formula, JsEvaluator, SchemaShape, Template};
 use sc_query::Value;
 use sc_types::Role;
+use sc_types::value_from_json;
 use sc_types::{Attrs, FormField};
 use serde_json::Value as Json;
 

@@ -13,6 +13,7 @@
 //! - a role number taken out of a `Role` and ordered by hand (`role.get() < x`,
 //!   `n > i64::from(caller.role)`);
 //! - a `ROLE_ADMIN` / `ROLE_PUBLIC` constant: `Role::ADMIN` / `Role::PUBLIC` are the only ones.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
 
@@ -77,8 +78,8 @@ fn code_only(source: &str) -> String {
             let end = rest.find('\n').unwrap_or(rest.len());
             blank(&mut out, &rest[..end]);
             i += end;
-        } else if rest.starts_with("/*") {
-            let end = rest[2..].find("*/").map_or(rest.len(), |e| e + 4);
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            let end = after.find("*/").map_or(rest.len(), |e| e + 4);
             blank(&mut out, &rest[..end]);
             i += end;
         } else if let Some(len) = raw_string_len(rest) {

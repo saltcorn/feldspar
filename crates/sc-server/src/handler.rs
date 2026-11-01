@@ -49,8 +49,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-pub use sc_api::SessionAction;
-use sc_api::{AuthRequirement, EndpointSet, HandlerRef};
+use sc_api::{AuthRequirement, EndpointSet, HandlerRef, SessionAction};
 use sc_auth::{AuthenticatedUser, User};
 use sc_error::{Error, Result};
 use serde_json::Value;

@@ -28,11 +28,11 @@ use std::time::{Duration, Instant};
 
 use sc_action::TriggerDispatcher;
 use sc_agent::AppRequester;
-use sc_app::Application;
-use sc_auth::User;
-use sc_browser::{
+use sc_agent::browser::{
     BrowserAction, BrowserDriver, BrowserReport, BrowserRequest, BrowserTarget, PreviewTarget,
 };
+use sc_app::Application;
+use sc_auth::User;
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_expr::JsEvaluator;

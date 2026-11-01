@@ -25,6 +25,7 @@
 //!   the real host, and the Analytics workspace reports on the two tables.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::CSRF_COOKIE;
 use sc_catalog::Authority;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -39,8 +40,8 @@ use sc_catalog::{Catalog, DataField};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, MountedApp, ServerConfig, VISITOR_COOKIE, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_triggers,
+    AppMounts, MountedApp, ServerConfig, VISITOR_COOKIE, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_triggers,
 };
 use sc_test_harness::Teardown;
 use sc_types::{Attrs, BasicType, TypeRef};

@@ -41,7 +41,8 @@ use uuid::Uuid;
 
 use crate::apps::MountedApp;
 use crate::router::{AppState, app_caller, enforce_auth, json_error, log_failure};
-use crate::security::{SESSION_COOKIE, csrf_cookie};
+use crate::security::SESSION_COOKIE;
+use sc_api::auth::csrf_cookie;
 
 /// The protocol version this server speaks, and the only one.
 const TUS_VERSION: &str = "1.0.0";

@@ -538,7 +538,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                     "rows": page
                         .rows
                         .iter()
-                        .map(|r| Json::Array(r.iter().map(sc_dataset::value_json).collect()))
+                        .map(|r| Json::Array(r.iter().map(sc_types::value_to_analysis_json).collect()))
                         .collect::<Vec<_>>(),
                     "total": page.total,
                 })))
@@ -571,7 +571,10 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                     sc_dataset::column_values(&catalog, &access.caller, stage, &column, limit)
                         .await?;
                 Ok(HandlerResponse::ok(Json::Array(
-                    values.iter().map(sc_dataset::value_json).collect(),
+                    values
+                        .iter()
+                        .map(sc_types::value_to_analysis_json)
+                        .collect(),
                 )))
             }
         }

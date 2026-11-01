@@ -14,6 +14,7 @@
 //! and `modules_no_node.rs` is the test that says so with the `PATH` stripped.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_catalog::Authority;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,8 +29,8 @@ use sc_catalog::{Catalog, DataField};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ModuleServices, ServerConfig, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_agents, install_triggers,
+    AppMounts, ModuleServices, ServerConfig, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_agents, install_triggers,
 };
 use sc_test_harness::TestDb;
 use sc_types::{BasicType, SECRET_SENTINEL, TypeRef};
@@ -610,7 +611,7 @@ async fn a_module_that_claims_a_built_ins_name_is_reported_and_does_not_take_it(
     // not depend on what somebody installed.
     assert_eq!(
         registry.require("insert_row").unwrap().description(),
-        sc_core_actions::InsertRow.description()
+        sc_action_builtins::InsertRow.description()
     );
 
     Ok(())

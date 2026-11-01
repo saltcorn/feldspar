@@ -9,6 +9,7 @@
 //! choosing (F1.4), and the 500 with no stack that a mistake becomes for an
 //! anonymous caller — but not for an admin.
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;
 use std::sync::Arc;
 
@@ -22,8 +23,8 @@ use sc_catalog::{Catalog, TableMeta, bootstrap_table_meta, save_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, SESSION_COOKIE, ServerConfig, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_triggers,
+    AppMounts, MountedApp, SESSION_COOKIE, ServerConfig, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_triggers,
 };
 use sc_test_harness::TestDb;
 use serde_json::{Value, json};

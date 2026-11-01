@@ -40,7 +40,7 @@ use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
 
-use crate::host::CreditAsks;
+use crate::host::Ask;
 
 /// One module's credit grants, over one call.
 pub struct ModuleCredits<'a> {
@@ -134,7 +134,7 @@ impl ModuleCredits<'_> {
 }
 
 #[async_trait::async_trait]
-impl CreditAsks for ModuleCredits<'_> {
+impl Ask for ModuleCredits<'_> {
     async fn ask(&self, plan: Json) -> Result<Json> {
         let Json::Object(plan) = plan else {
             return Err(Error::invalid("a credits ask is an object with an `op`"));

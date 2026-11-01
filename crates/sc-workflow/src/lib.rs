@@ -71,7 +71,7 @@ pub mod validate;
 pub mod versions;
 pub mod workflow;
 
-pub use driver::{Advanced, Clock, Driver, ManualClock, SystemClock, node_id, start_run};
+pub use driver::{Advanced, Driver, node_id, start_run};
 pub use engine::{DEFAULT_LEASE_SECONDS, DEFAULT_POLL_SECONDS, WorkflowEngineTask};
 pub use machine::{Conclusion, Decision, PendingForm, WorkflowRun};
 pub use ops::{

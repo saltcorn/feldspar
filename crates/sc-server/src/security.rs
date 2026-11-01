@@ -64,16 +64,12 @@ pub const PREVIEW_COOKIE: &str = "sc_preview";
 pub const VISITOR_COOKIE: &str = "sc_visitor";
 /// How long the visitor cookie lasts, in days.
 pub const VISITOR_COOKIE_DAYS: i64 = 365;
-/// Name of the CSRF double-submit cookie (readable by the SPA), and the header a
-/// mutating request must echo it in.
-///
-/// Both come from `sc-api`, which is where the wire contract is stated: the
-/// server enforces the check here and the generated TypeScript client satisfies
-/// it, and a second spelling of either name is exactly how those two stop
-/// agreeing.
-pub use sc_api::auth::{
-    CLIENT_KIND_HEADER, CSRF_COOKIE, CSRF_HEADER, NATIVE_CLIENT, SECURE_CSRF_COOKIE, csrf_cookie,
-};
+// The CSRF double-submit cookie (readable by the SPA), and the header a
+// mutating request must echo it in, are `sc_api::auth`'s, which is where the
+// wire contract is stated: the server enforces the check here and the generated
+// TypeScript client satisfies it, and a second spelling of either name is
+// exactly how those two stop agreeing.
+use sc_api::auth::{CLIENT_KIND_HEADER, CSRF_HEADER, NATIVE_CLIENT, csrf_cookie};
 
 /// The strict Content-Security-Policy served with every response. No
 /// `unsafe-inline` **script**: executable code loads only from the app's own

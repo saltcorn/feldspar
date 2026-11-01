@@ -37,6 +37,7 @@
 mod attrs;
 mod basic;
 pub mod catchall;
+pub mod clock;
 mod field;
 pub mod geometry;
 pub mod i18n;
@@ -56,7 +57,10 @@ pub use field::{
 };
 pub use geometry::GeometryKind;
 pub use i18n::{translate_field, translate_spec};
-pub use json::{json_to_value, value_to_json};
+pub use json::{
+    Spelling, json_to_value, json_to_value_as, value_from_json, value_to_analysis_json,
+    value_to_json, value_to_json_as, value_to_script_json,
+};
 pub use operation::{Operation, OperationScope};
 pub use rich::{RichType, RichTypeRef, registered_rich_types, rich_type, rich_type_config_spec};
 pub use rich_types::{

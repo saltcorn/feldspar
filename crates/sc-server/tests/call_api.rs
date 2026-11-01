@@ -209,7 +209,7 @@ impl Env {
         mode: RunMode,
         args: Json,
     ) -> Result<String> {
-        let registry = sc_core_traits::builtin_traits().unwrap();
+        let registry = sc_agent_builtins::builtin_traits().unwrap();
         let coding_trait = registry.require("coding").unwrap().clone();
         let services = self.agents.registry().view_services();
         let requests = services.requests().expect("installed").as_ref();
@@ -399,7 +399,7 @@ async fn call_api_needs_someone_to_send_as_and_a_served_application() -> Result<
 
     // An application nothing is mounted at is refused rather than reaching the
     // admin routes its host would otherwise fall through to.
-    let registry = sc_core_traits::builtin_traits().unwrap();
+    let registry = sc_agent_builtins::builtin_traits().unwrap();
     let coding_trait = registry.require("coding").unwrap().clone();
     let services = env.agents.registry().view_services();
     let requests = services.requests().unwrap().as_ref();
@@ -486,7 +486,7 @@ async fn an_anonymous_visitor_never_sends_as_view_app_user() -> Result<()> {
 #[tokio::test]
 async fn call_api_is_offered_wherever_there_is_an_application() -> Result<()> {
     let env = setup("offered").await?;
-    let registry = sc_core_traits::builtin_traits().unwrap();
+    let registry = sc_agent_builtins::builtin_traits().unwrap();
     let coding_trait = registry.require("coding").unwrap().clone();
     let caps = sc_llm::ModelCapabilities::built_in("", "");
     let mut no_app = coding();

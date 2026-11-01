@@ -8,6 +8,7 @@
 //! finished in another browser, write nothing.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,8 +24,8 @@ use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ModuleServices, OAUTH_BINDING_COOKIE, ServerConfig,
-    admin_handlers, build_router_with_apps, default_js_evaluator, install_agents, install_triggers,
+    AppMounts, ModuleServices, OAUTH_BINDING_COOKIE, ServerConfig, admin_handlers,
+    build_router_with_apps, default_js_evaluator, install_agents, install_triggers,
 };
 use sc_test_harness::TestDb;
 use sc_types::Attrs;

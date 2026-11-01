@@ -10,6 +10,7 @@
 //! after `fit_model` and under a caller's authority. The Python handle is
 //! `sc-python`'s `python_models.rs`.
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_catalog::Authority;
 use sc_types::Role;
 use std::collections::HashMap;
@@ -31,8 +32,8 @@ use sc_model::{
     SizeExpr,
 };
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ModelServices, ServerConfig, StanSettings, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_triggers, start_workflow_engine,
+    AppMounts, ModelServices, ServerConfig, StanSettings, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_triggers, start_workflow_engine,
 };
 use sc_test_harness::TestDb;
 use sc_types::{Attrs, BasicType, FormField};

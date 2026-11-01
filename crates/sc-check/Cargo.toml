@@ -43,8 +43,6 @@ sc-viewpattern.workspace = true
 sc-agent.workspace = true
 # The tool specs offered to the copilot and the MCP server.
 sc-llm.workspace = true
-# The headless browser the `browser.*` steps drive, and its locators (C2).
-sc-browser.workspace = true
 # The internal store a failed browser step's screenshot is kept in (C2.5).
 sc-files.workspace = true
 async-trait.workspace = true
@@ -58,6 +56,8 @@ tokio = { workspace = true, features = ["time"] }
 [dev-dependencies]
 sc-db-postgres.workspace = true
 sc-email.workspace = true
+# `Mailbox`, the address a recorded message is checked against.
+sc-config.workspace = true
 sc-test-harness.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 

@@ -30,19 +30,20 @@ use sc_catalog::{Catalog, DataFieldKind, Table};
 use sc_error::{Error, Result};
 use sc_expr::{
     AggFunc, CalcFields, Env, Formula, JOIN, Operation, TranslateError, UserEnv, aggregate_expr,
-    join_path_expr, translate, translate_value, value_from_json,
+    join_path_expr, translate, translate_value,
 };
 use sc_query::{
     BinOp, Expr, Nulls, OrderBy, OrderDir, Projection, Statement, UnOp, Value, rewrite_named_params,
 };
+use sc_types::value_from_json;
 use serde::Deserialize;
 use serde_json::Value as Json;
 
-use sc_access::convert::value_to_json;
 use sc_access::filter::{self, FilterKey, JoinedColumn};
 use sc_access::ownership::{self, AggregateGuard, JoinAccess};
 use sc_access::rows::{self, RowQuery};
 use sc_access::user_rows;
+use sc_types::value_to_json;
 
 use super::HostLimits;
 

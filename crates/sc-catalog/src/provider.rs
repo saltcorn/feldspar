@@ -623,14 +623,15 @@ impl ProvidedTableProvider {
                     self.table, self.provider, self.module
                 )));
             };
-            record.insert((*column).to_owned(), sc_expr::value_to_json(value));
+            record.insert((*column).to_owned(), sc_types::value_to_script_json(value));
         }
         Ok(Json::Object(record))
     }
 
     /// The primary key of one row, as the module speaks it.
     fn key_of(&self, pk: &str, row: &ValueRow) -> Json {
-        row.get(pk).map_or(Json::Null, sc_expr::value_to_json)
+        row.get(pk)
+            .map_or(Json::Null, sc_types::value_to_script_json)
     }
 
     async fn run_insert(&self, insert: &Insert) -> Result<Vec<Row>> {
@@ -680,7 +681,7 @@ impl ProvidedTableProvider {
         for (record, key) in written {
             match (pk, key.is_null()) {
                 (Some(pk), false) => {
-                    let filter = Expr::col(pk).eq(Expr::lit(sc_expr::value_from_json(&key)));
+                    let filter = Expr::col(pk).eq(Expr::lit(sc_types::value_from_json(&key)));
                     let mut found = self.matching(Some(&filter)).await?;
                     match found.pop() {
                         Some(row) => rows.push(row),
@@ -764,7 +765,7 @@ impl ProvidedTableProvider {
         }
         let set: Vec<Expr> = keys
             .iter()
-            .map(|key| Expr::lit(sc_expr::value_from_json(key)))
+            .map(|key| Expr::lit(sc_types::value_from_json(key)))
             .collect();
         let filter = Expr::In {
             e: Box::new(Expr::col(pk)),

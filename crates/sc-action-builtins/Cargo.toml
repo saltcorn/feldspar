@@ -1,0 +1,94 @@
+[package]
+name = "sc-action-builtins"
+description = "The built-in trigger actions: row writes, fetch, run_js_code, send_email, fit_model and the rest (layer 9)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# One integration-test binary per crate rather than one per file: every test
+# target in this workspace statically links V8, so ~400 MB of binary and a
+# multi-second link were being paid per *file*. `tests/it.rs` aggregates them.
+autotests = false
+
+[dependencies]
+sc-error.workspace = true
+# The extension point these implement, and the shared machinery every action's
+# configuration goes through: the formula scope, the settings parsers and the
+# event's bindings (`sc_action::scope`).
+sc-action.workspace = true
+# The row layer. This is what fixes this crate *above* `sc-api`: a trigger's
+# write must be the same write an API caller makes — same coercion, same
+# rich-type and File-field validation, and (Phase 4) the same events — so it goes
+# through `rows` rather than around it.
+sc-api.workspace = true
+sc-access.workspace = true
+sc-catalog.workspace = true
+# `ROLE_ADMIN` and the users table: the authority an action's write runs under,
+# and the columns the caller object is typed against.
+sc-auth.workspace = true
+# `Expr`/`Value` for the translated `where` predicate and the values a formula is
+# evaluated against.
+sc-query.workspace = true
+sc-expr.workspace = true
+sc-types.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+# `send_email`'s message and its MJML compiler. The transport itself is handed
+# to the action through `ActionContext`, so this dependency is for the
+# *message*, not for a way to send one.
+sc-email.workspace = true
+# The address grammar (`Mailbox`, `parse_mailbox`) and an SMTP override's
+# settings (`EmailSettings`, `SmtpSecurity`), declared with the settings.
+sc-config.workspace = true
+# The public-only client a templated host is fetched with, and the one rule
+# for an SMTP override's literal host (TODO-code-quality Q4.3).
+sc-net.workspace = true
+# `fit_model` (milestone 31 §2): the provider registry a fit is validated
+# against, the `FitStarter` seam a fit is started through, and the instance it
+# reads back. This crate is layer 9 and `sc-model` is layer 6, so the
+# dependency runs the way every other one here does.
+sc-model.workspace = true
+# `fit_model` waits for the fit it started by reading its row back on a timer;
+# `fetch` resolves a templated host itself, to keep to public addresses.
+tokio = { workspace = true, features = ["time", "net"] }
+# `send_email`'s attachments: the store the row's file path points into is read
+# through `FileStore`, and `mime_for_path` types the part from the file's own
+# extension — the same inference the File field's `mime_allow` check uses, so a
+# file is described the same way wherever it is described.
+sc-files.workspace = true
+# The `fetch` action's HTTP client (§10.1) — and a code body's `fetch`, which
+# sends through the same one. Pure-Rust TLS; see the workspace manifest for why
+# it is `rustls-tls` with no default features.
+reqwest.workspace = true
+# A response that is not text, and a request body that is not text, cross the
+# code seam base64'd: the seam is JSON, and JSON has no bytes.
+base64.workspace = true
+# A role grant's period and its user (TODO-payments P3.4, `grant_role`).
+chrono.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+# Every action is pinned against a real database (principle 4) and, where its
+# configuration is formulas, the real V8 engine — a mock evaluator would hide
+# exactly the mistakes these tests exist to catch.
+sc-db.workspace = true
+sc-db-postgres.workspace = true
+sc-test-harness.workspace = true
+sc-expr = { workspace = true, features = ["eval"] }
+# `RecordingMailer`, which is what makes `send_email`'s tests assertions about
+# the message rather than about a return value, and `bootstrap_config` for the
+# settings table the settings-backed mailer reads.
+sc-email.workspace = true
+# `net`/`io-util`/`time` are for the `fetch` tests' one-shot HTTP listener: the
+# action is pinned against a real socket rather than a mocked client, so the
+# request it builds and the response it parses are the real bytes.
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "time"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

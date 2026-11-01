@@ -54,7 +54,7 @@ pub use def::{
 };
 pub use read::{
     MAX_PAGE, Page, Rows, StagePage, column_values, count, count_with, last_stage, read_page,
-    read_rows, read_rows_with, read_stage, value_json,
+    read_rows, read_rows_with, read_stage,
 };
 pub use shape::{ColType, ForeignKey, Grain, Schema, StageColumn, StageShape, TableInfo};
 pub use snapshot::Snapshot;

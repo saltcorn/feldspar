@@ -26,6 +26,7 @@
 //!
 //! Both need the built Saltcorn UI bundle, and skip without it.
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;
 use std::collections::HashMap;
 use std::io::Read;
@@ -43,9 +44,8 @@ use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::FileStoreDef;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ModuleServices, SESSION_COOKIE, ServerConfig,
-    admin_handlers, build_and_mount, build_router_with_apps, default_js_evaluator, install_agents,
-    install_triggers,
+    AppMounts, ModuleServices, SESSION_COOKIE, ServerConfig, admin_handlers, build_and_mount,
+    build_router_with_apps, default_js_evaluator, install_agents, install_triggers,
 };
 use sc_test_harness::TestDb;
 use sc_viewpattern::{LibraryItem, Page, View};

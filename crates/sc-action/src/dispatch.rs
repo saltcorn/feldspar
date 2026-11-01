@@ -58,12 +58,10 @@ use sc_catalog::{
 };
 use sc_email::Mailer;
 use sc_error::{Error, Result};
-use sc_expr::{
-    Ambient, CodeAdapter, ConsoleLine, ConsoleSink, Formula, JsEvaluator, Operation,
-    value_from_json,
-};
+use sc_expr::{Ambient, CodeAdapter, ConsoleLine, ConsoleSink, Formula, JsEvaluator, Operation};
 use sc_query::Value;
 use sc_types::Attrs;
+use sc_types::value_from_json;
 use serde_json::Value as Json;
 
 use crate::action::ActionContext;

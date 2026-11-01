@@ -398,16 +398,89 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
       re-exports what it exported before, so callers did not change. TECHNICAL_DESIGN §2's tree,
       graph and table updated. The existing backup tests (sc-server `backup_*`, sc-backup's unit
       tests) cover it.)
-- [ ] Q5.6 Merge `sc-browser` into sc-agent, and `sc-help` into sc-docs.
-- [ ] Q5.7 Collapse the six `*Asks` traits in `sc-module/src/host.rs` into one `Ask` trait, or use
+- [x] Q5.6 Merge `sc-browser` into sc-agent, and `sc-help` into sc-docs.
+      (`sc_agent::browser` (the former `sc-browser/src/lib.rs`, with `locator.rs` under it) and
+      `sc_docs::help` (the former `sc-help/src/lib.rs`, its `topics/` beside `sc-docs/src`), moved
+      with `git mv`, not rewritten. `sc_agent::view` still re-exports the browser seam, so
+      `sc_agent::BrowserDriver` is unchanged; sc-check names `sc_agent::browser::…`, and the
+      server's `getHelp` calls `sc_docs::help::render`. Neither crate name was serialized anywhere
+      (the help topic ids are strings of their own). TECHNICAL_DESIGN §2 (tree, graph, table) and
+      the comments that named the old crates are updated. Tests: the moved unit tests
+      (`browser::locator::tests`, `help::tests`) and sc-docs' library tests, which read the help
+      topics through `read_docs`.)
+- [x] Q5.7 Collapse the six `*Asks` traits in `sc-module/src/host.rs` into one `Ask` trait, or use
       the concrete types; replace the bag of `Option<&dyn …>` parameters with a struct.
-- [ ] Q5.8 Rename `sc-core-traits` → `sc-agent-builtins` and `sc-core-actions` →
+      (`sc_module::Ask` (one `ask(plan) -> Result<Json>`), keyed by `AskSurface` (`Service`,
+      `Roles`, `Credits`, `OAuth`, `System`, `Check`: the wire name the host script sends, and the
+      sentence a call that lacks the surface is refused with). `Asks` holds one slot per surface;
+      `CallHosts` carries one `Asks` instead of six `Option<&dyn …>` fields, built with
+      `with_ask(surface, &ask)`, and the worker's `Surfaces` carries the same value, so
+      `serve` looks a surface up instead of matching six arms. The refusal sentences and the wire
+      names are unchanged. The concrete types were not used: two of the six (`System`, `Check`)
+      are implemented by sc-server, which sc-module cannot name. Tests:
+      `host::tests::every_ask_surface_is_named_as_the_host_script_asks_for_it`,
+      `host::tests::a_call_carries_only_the_asks_it_was_given`.)
+- [x] Q5.8 Rename `sc-core-traits` → `sc-agent-builtins` and `sc-core-actions` →
       `sc-action-builtins` (names to confirm). Optionally move `coding/` into its own crate.
-- [ ] Q5.9 `sc-expr/src/code.rs`: host traits to `host.rs`, tests to `code/tests.rs`.
+      (Renamed with `git mv` and every reference updated: manifests, `use` paths, comments,
+      TECHNICAL_DESIGN §2, the security review, the TODO files, `ui/admin/src/agentForm.ts`. The
+      closed CHANGELOG entries and the review (dated evidence) keep the old names. Compatibility:
+      no crate name, module path or type name is serialized — a trait or action is stored by its
+      own name (`coding`, `run_js_code`), there is no tracing target or log filter, and no env or
+      config key names a crate. `coding/` stays: it uses `files`, `table`, `build_application`
+      and the crate's config constants, so a crate of its own would need those moved too.)
+- [x] Q5.9 `sc-expr/src/code.rs`: host traits to `host.rs`, tests to `code/tests.rs`.
       `sc-cli/src/main.rs`: subcommands to modules.
-- [ ] Q5.10 Remove alias re-exports (`CatalogDatasetSource`, sc-cli's renamed sc-app functions,
+      (`sc-expr/src/code/host.rs`: the host traits (`CodeHost`, `FetchHost`, `FileHost`,
+      `TriggerHost`, `LiveHost`, `ModuleFnHost`), `ModuleFnHosts` with its tests, `CodeAdapter`
+      and `SchemaSnapshot`; `code.rs` re-exports them, so no path changed. `code/tests.rs`: the
+      former `mod tests` and `ratelimit_tests`. The four warnings `cargo check -p sc-expr
+      --no-default-features` printed are gone. `sc-cli/src/main.rs` keeps `main`, the dispatch
+      and the usage text (3.5k → 400 lines); each subcommand is a module of `src/commands/`
+      (serve, api, app, agent, auth, backup, check, cmdstan, config, demo, i18n, mcp_token,
+      migrate, module, python, users), the shared `Services` / `install_services` /
+      `serving_defaults` in `commands::serve`. Moved, not rewritten. Tests: the moved sc-expr
+      tests; the sc-cli tests that run the binary.)
+- [x] Q5.10 Remove alias re-exports (`CatalogDatasetSource`, sc-cli's renamed sc-app functions,
       sc-email's re-export of sc-config's mail settings, …).
-- [ ] Q5.11 One Value↔JSON conversion (sc-types) instead of four; one `Clock` trait.
+      (Removed, callers naming the defining crate: `CatalogDatasetSource` (`sc_model::CompiledSource`);
+      sc-cli's `source_location` / `project_dir`, `config_file` (the crate), the `ConfigFile` /
+      `Environment` re-exports and `LlmTranslator` / `parse_answer`; sc-email's `Mailbox`,
+      `parse_mailbox`, `EmailSettings`, `SmtpSecurity` (sc-api and sc-action-builtins now depend
+      on sc-config); sc-server's sc-backup block (`BackupSelection`, `inspect_backup`, … and the
+      `S3Signing` / `s3_authorization` renames), `ProviderConnector`, `StoredProviders`,
+      `SessionAction`, `CodeAdapter` (sc-cli depends on sc-expr), `BUNDLED_IN_CHECKOUT` and the
+      CSRF names it took from `sc_api::auth`; `sc_app::Method`; `sc_catalog::{Attrs, BaseField}`;
+      `sc_access::Unchecked` and `sc_access::convert`; `sc_python::PYTHON`; `sc_api::mcp`'s two
+      docs tool names; sc-agent-builtins' copilot tool names and `table`'s filter and `arguments`
+      re-exports; `sc_workflow::{Clock, …}` and `sc_expr::value_*_json` (Q5.11). Kept, as the
+      only cross-crate `pub use`s left: sc-migrate's `Row`, `Result`, `Value` (with `BoxFuture`),
+      the documented surface a migration is written with ("one needs nothing but this crate",
+      `crates/sc-migrate/src/lib.rs`); and `sc_agent_builtins::tool_names::docs`, one entry of the
+      tool-name catalogue the admin UI and the collision check read, where every entry is a
+      renamed `tool_name`. None of the removed names was part of a plugin or extension API:
+      modules are JavaScript and see none of them.)
+- [x] Q5.11 One Value↔JSON conversion (sc-types) instead of four; one `Clock` trait.
+      (`sc_types::json` is the one module. The four writers differed on purpose, so they are the
+      four cases of `Spelling` in one `match`, with the table of differences in the module docs:
+      `Wire` (the API: decimal as a string, bytes as numbers; `value_to_json`), `Script` (formulas
+      and code bodies: decimal as a number, bytes `null`; was `sc_expr::value_to_json`),
+      `Analysis` (a dataset's grid: decimal as a number, otherwise the wire; was
+      `sc_dataset::value_json`) and `Archive` (a backup: bytes in base64, NaN/±∞ named, timestamps
+      to the nanosecond in UTC; was `sc-backup`'s `values.rs`). Each spelling's output is exactly
+      what it was, including the two ways a decimal becomes a float (rust_decimal's conversion
+      for a formula, the parse of its digits for a grid), which can differ in the last bit.
+      Reading: `json_to_value` (by column type), `json_to_value_as` (an archive's base64 bytes)
+      and `value_from_json` (no column; was in sc-expr). `value_to_script_json` and
+      `value_to_analysis_json` name two spellings for `map`. sc-expr now depends on sc-types.
+      `sc_types::clock::Clock` replaces sc-ratelimit's (monotonic `Instant`) and sc-workflow's
+      (wall `DateTime<Utc>`): one trait with both readings, `now()` and `instant()`;
+      `SystemClock`, and a `ManualClock` that moves both together. sc-ratelimit now depends on
+      sc-types (it moves from layer 0 to beside sc-types). Tests:
+      `json::tests::the_four_spellings_differ_only_where_the_table_says`,
+      `json::tests::an_archive_reads_bytes_as_base64_and_everything_else_as_the_wire_does`,
+      `json::tests::a_typeless_json_value_reads_as_its_own_shape_and_round_trips` (moved),
+      `clock::tests::*`; the existing sc-backup, sc-ratelimit and sc-workflow clock tests.)
 
 ## Q6 — Code hygiene and tests (§3.2, §3.4, §3.6–3.8)
 

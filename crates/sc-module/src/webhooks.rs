@@ -45,7 +45,7 @@ use sc_types::Role;
 use serde_json::{Map, Value as Json, json};
 
 use crate::files::{ModuleFiles, file_areas};
-use crate::host::{CallHosts, ModuleHost};
+use crate::host::{AskSurface, Asks, CallHosts, ModuleHost};
 use crate::module::ModuleLanguage;
 use crate::modules::{LoadedModule, ModuleSet};
 use crate::services::ScopedTables;
@@ -188,13 +188,10 @@ pub async fn run_webhook(
         },
         schema: schema.as_deref(),
         views: None,
-        service: None,
         module_files: Some(&files),
-        roles: Some(&roles),
-        credits: Some(&credits),
-        oauth: None,
-        system: None,
-        check: None,
+        asks: Asks::default()
+            .with(AskSurface::Roles, &roles)
+            .with(AskSurface::Credits, &credits),
     };
     let answer = host
         .run_webhook(module, webhook, request_json(&request), call)

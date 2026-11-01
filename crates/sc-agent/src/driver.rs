@@ -1909,7 +1909,7 @@ fn principal_of(caller: &RunCaller) -> sc_catalog::Principal {
         let mut fields: serde_json::Map<String, Json> = u
             .extra()
             .iter()
-            .map(|(k, v)| (k.clone(), sc_expr::value_to_json(v)))
+            .map(|(k, v)| (k.clone(), sc_types::value_to_script_json(v)))
             .collect();
         fields.insert("id".to_owned(), Json::String(u.id().to_string()));
         fields.insert("role".to_owned(), Json::from(u.role()));

@@ -37,9 +37,10 @@ use sc_catalog::{Catalog, Table, prefetch_bindings};
 use sc_error::{Error, Result};
 use sc_expr::{
     Ambient, AmbientValues, Analysis, Formula, FormulaCall, Operation, RenderMode, SchemaShape,
-    TableShape, Template, value_from_json,
+    TableShape, Template,
 };
 use sc_query::Value;
+use sc_types::value_from_json;
 use sc_types::{Attrs, BasicType, TypeRef, json_to_value};
 use serde_json::{Map, Value as Json};
 

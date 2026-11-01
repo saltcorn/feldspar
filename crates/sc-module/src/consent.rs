@@ -52,7 +52,7 @@ use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
 
-use crate::host::OAuthAsks;
+use crate::host::Ask;
 
 /// Where a consent flow's browser half starts: `<prefix>/<id>`, on the host the
 /// application is served on.
@@ -158,7 +158,7 @@ pub struct ConsentAsks<'a> {
 }
 
 #[async_trait::async_trait]
-impl OAuthAsks for ConsentAsks<'_> {
+impl Ask for ConsentAsks<'_> {
     async fn ask(&self, plan: Json) -> Result<Json> {
         let flow = consent_flow(self.catalog, self.module, self.user, &plan)?;
         let id = flows().begin(flow);

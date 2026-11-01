@@ -14,7 +14,6 @@ use sc_catalog::Catalog;
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::Value;
-use serde_json::Value as Json;
 
 use crate::access::{Caller, Reader};
 use crate::compile::{Library, Options, Restriction, Stage, compile};
@@ -216,21 +215,6 @@ pub fn last_stage(
         .last()
         .cloned()
         .map_err(|e| Error::invalid(format!("the dataset `{}` does not read: {e}", def.name)))
-}
-
-/// A value as the JSON a grid shows: numbers as numbers, including a decimal
-/// (an analysis wants arithmetic, not the string that keeps its last digit),
-/// and dates and times as ISO strings.
-pub fn value_json(value: &Value) -> Json {
-    match value {
-        Value::Decimal(d) => d
-            .to_string()
-            .parse::<f64>()
-            .ok()
-            .and_then(serde_json::Number::from_f64)
-            .map_or(Json::Null, Json::Number),
-        other => sc_types::value_to_json(other),
-    }
 }
 
 /// Each value as its column's type says it is, where a backend hands back

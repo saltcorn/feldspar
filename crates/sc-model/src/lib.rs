@@ -41,7 +41,7 @@
 //!
 //! The price is that this crate cannot read a row, and it does not pretend
 //! otherwise: reading is a **seam** ([`DatasetSource`]) that somebody above the
-//! row layer fills in (`sc_server::models::CatalogDatasetSource`), exactly as
+//! row layer fills in (`CompiledSource`, which `sc-server` installs), exactly as
 //! `sc-agent` declares `ProviderConnector` and `sc-server` supplies it. Going
 //! around the row layer instead would mean a dataset that ignored non-stored
 //! calculated fields, ownership and row-level security, and that could not read

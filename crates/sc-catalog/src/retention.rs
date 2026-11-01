@@ -25,9 +25,10 @@ use serde_json::Value as Json;
 use crate::catalog::Catalog;
 use crate::change_log::{ATTR_HISTORY, CHANGES_TABLE};
 use crate::changeset::CHANGESETS_TABLE;
-use crate::field::{Attrs, DbId};
+use crate::field::DbId;
 use crate::sync::SYNC_KEYS_TABLE;
 use crate::table::Table;
+use sc_types::Attrs;
 
 /// How long sync keeps an entry a later one has superseded: what a device's
 /// field-wise merge looks back over (S3.3). A device whose last pull is older

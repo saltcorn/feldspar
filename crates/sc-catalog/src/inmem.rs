@@ -168,13 +168,13 @@ pub fn value_row(fields: &[DataField], json: &Json) -> ValueRow {
 ///
 /// `sc-api`'s `json_to_value` is the same idea against a column an admin
 /// declared, and this cannot call it (it is two layers up). The difference from
-/// `sc_expr::value_from_json`, which this falls back to, is that a field's type
+/// `sc_types::value_from_json`, which this falls back to, is that a field's type
 /// is known here: a date the provider answered as a string comes back as a
 /// [`Value::Date`], so ordering by it sorts by date rather than by spelling.
 fn coerce(json: &Json, field: &DataField) -> Value {
     use sc_types::BasicType;
     let Some(basic) = field.base.type_.as_basic() else {
-        return sc_expr::value_from_json(json);
+        return sc_types::value_from_json(json);
     };
     if json.is_null() {
         return Value::Null;
@@ -216,7 +216,7 @@ fn coerce(json: &Json, field: &DataField) -> Value {
                 .map_or(Value::Null, Value::Timestamp),
             _ => Value::Null,
         },
-        _ => sc_expr::value_from_json(json),
+        _ => sc_types::value_from_json(json),
     }
 }
 
@@ -695,7 +695,7 @@ fn json_path(value: &Value, path: &[JsonStep]) -> Value {
             _ => Json::Null,
         };
     }
-    sc_expr::value_from_json(&current)
+    sc_types::value_from_json(&current)
 }
 
 fn binary(op: BinOp, l: &Value, r: &Value) -> Result<Value> {
@@ -1067,7 +1067,7 @@ fn where_object(expr: &Expr) -> Option<serde_json::Map<String, Json>> {
             let mut values = Vec::with_capacity(list.len());
             for item in list {
                 let Expr::Lit(value) = item else { return None };
-                values.push(sc_expr::value_to_json(value));
+                values.push(sc_types::value_to_script_json(value));
             }
             let mut inner = serde_json::Map::new();
             inner.insert("in".into(), Json::Array(values));
@@ -1093,7 +1093,7 @@ fn json_pair(key: &str, value: Json, equal: bool) -> Json {
 fn column_and_literal(l: &Expr, r: &Expr) -> Option<(String, Json)> {
     match (l, r) {
         (Expr::Col(col), Expr::Lit(value)) | (Expr::Lit(value), Expr::Col(col)) => {
-            Some((col.column.clone(), sc_expr::value_to_json(value)))
+            Some((col.column.clone(), sc_types::value_to_script_json(value)))
         }
         _ => None,
     }

@@ -425,7 +425,7 @@ async fn rows_of(cat: &sc_catalog::Catalog, def: &DatasetDef) -> Result<Vec<Vec<
     Ok(page
         .rows
         .iter()
-        .map(|r| r.iter().map(sc_dataset::value_json).collect())
+        .map(|r| r.iter().map(sc_types::value_to_analysis_json).collect())
         .collect())
 }
 

@@ -27,6 +27,7 @@
 //!   endpoint.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;
 use std::collections::HashMap;
 use std::io::Read;
@@ -43,8 +44,8 @@ use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::FileStoreDef;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-    default_js_evaluator, install_agents, install_triggers,
+    AppMounts, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
+    install_agents, install_triggers,
 };
 use sc_test_harness::TestDb;
 use sc_types::{BasicType, TypeRef};
@@ -3883,7 +3884,7 @@ async fn an_automated_backup_writes_and_prunes_its_directory() -> sc_error::Resu
         std::fs::write(dest.join(name), b"x").unwrap();
     }
 
-    let scheduler = sc_server::BackupScheduler::new(server.catalog.clone());
+    let scheduler = sc_backup::BackupScheduler::new(server.catalog.clone());
     let ran = scheduler.tick(now).await;
     assert_eq!(ran.len(), 1);
     // Not due again a minute later.
@@ -4678,10 +4679,10 @@ async fn a_password_protected_backup_restores_with_its_password() -> sc_error::R
     // The library calls the CLI makes: the same file, by path.
     let path = temp_dir().join("protected.zip");
     std::fs::write(&path, &archive).unwrap();
-    assert!(sc_server::backup_is_encrypted(&path)?);
-    assert!(sc_server::inspect_backup(&path, None).is_err());
-    assert!(sc_server::inspect_backup(&path, Some("nope")).is_err());
-    let (contents, _) = sc_server::inspect_backup(&path, Some(SECRET))?;
+    assert!(sc_backup::is_encrypted(&path)?);
+    assert!(sc_backup::inspect(&path, None).is_err());
+    assert!(sc_backup::inspect(&path, Some("nope")).is_err());
+    let (contents, _) = sc_backup::inspect(&path, Some(SECRET))?;
     assert_eq!(contents.tables[0].name, "books");
     Ok(())
 }
@@ -4709,7 +4710,7 @@ async fn an_automated_backup_can_be_password_protected() -> sc_error::Result<()>
     let id = created["id"].as_str().unwrap().to_owned();
     assert_eq!(created["password"], json!(sc_types::SECRET_SENTINEL));
 
-    let scheduler = sc_server::BackupScheduler::new(server.catalog.clone());
+    let scheduler = sc_backup::BackupScheduler::new(server.catalog.clone());
     assert_eq!(scheduler.tick(chrono::Utc::now()).await.len(), 1);
     let list = ok(&mut server, "GET", "/api/backup/schedules", None).await;
     let entry = &list.as_array().unwrap()[0];

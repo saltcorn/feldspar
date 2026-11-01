@@ -16,6 +16,7 @@
 //!   over either is a JSON `413`, not axum's plain text.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -37,8 +38,8 @@ use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_files::{FileMeta, FileStore, LocalFileStore};
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, FILE_PATH_HEADER, FILE_URL_HEADER, MountedApp,
-    ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator, install_triggers,
+    AppMounts, FILE_PATH_HEADER, FILE_URL_HEADER, MountedApp, ServerConfig, admin_handlers,
+    build_router_with_apps, default_js_evaluator, install_triggers,
 };
 use sc_test_harness::Teardown;
 use serde_json::{Value, json};
@@ -819,7 +820,7 @@ async fn the_body_limits_are_settings_and_refuse_with_json() -> sc_error::Result
     let backup = admin
         .send(
             "POST",
-            sc_server::BACKUP_CREATE_ROUTE,
+            sc_backup::BACKUP_CREATE_ROUTE,
             &json_ct,
             Body::from(vec![b' '; 5000]),
         )

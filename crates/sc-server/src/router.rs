@@ -51,11 +51,12 @@ use crate::lsp::{LSP_ROUTE, ServerSlots, language_server_upgrade, server_slots};
 use crate::mcp::MCP_ROUTE;
 use crate::observe::{STREAM_OBSERVE_ROUTE, stream_observe_upgrade};
 use crate::security::{
-    ANALYTICS_CONTENT_SECURITY_POLICY, AnonymousCaller, CONTENT_SECURITY_POLICY, CSRF_HEADER,
-    CsrfPolicy, GUEST_COOKIE, IDE_CONTENT_SECURITY_POLICY, PREVIEW_COOKIE, SESSION_COOKIE,
+    ANALYTICS_CONTENT_SECURITY_POLICY, AnonymousCaller, CONTENT_SECURITY_POLICY, CsrfPolicy,
+    GUEST_COOKIE, IDE_CONTENT_SECURITY_POLICY, PREVIEW_COOKIE, SESSION_COOKIE,
     admin_content_security_policy, build_cookie, csrf_middleware, is_native_client,
     upgrade_origin_allowed, upgrade_origin_refused,
 };
+use sc_api::auth::CSRF_HEADER;
 use sc_backup::{BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE};
 
 /// A WebSocket upgrade, **if this request is one** — the extractor the fallback
@@ -1868,7 +1869,7 @@ async fn dispatch_app(
     // it: what a rendered form carries, and what `req.csrfToken()` answers.
     req.csrf_token = csrf
         .or_else(|| {
-            jar.get(crate::security::csrf_cookie(state.secure_cookies))
+            jar.get(sc_api::auth::csrf_cookie(state.secure_cookies))
                 .map(|c| c.value().to_owned())
         })
         .unwrap_or_default();

@@ -67,9 +67,9 @@ use super::args;
 use super::context::{RequestContext, request_context};
 use super::loader::{ChildKey, ChildLoader, ChildRequest};
 use super::names::{self, RelationNames};
-use sc_access::convert::value_to_json;
 use sc_access::ownership;
 use sc_access::rows::{self, RowQuery};
+use sc_types::value_to_json;
 
 /// The shape every resolver in this module has.
 pub type Resolver =

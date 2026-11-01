@@ -91,7 +91,7 @@ pub async fn available(catalog: &Catalog) -> Result<Available> {
         let count = rows::count_rows(
             catalog,
             &table,
-            sc_access::Unchecked::system("backup: count rows"),
+            sc_catalog::Unchecked::system("backup: count rows"),
         )
         .await
         .unwrap_or(0);
@@ -129,7 +129,7 @@ pub async fn available(catalog: &Catalog) -> Result<Available> {
         Some(users) => rows::count_rows(
             catalog,
             &users,
-            sc_access::Unchecked::system("backup: count rows"),
+            sc_catalog::Unchecked::system("backup: count rows"),
         )
         .await
         .unwrap_or(0),

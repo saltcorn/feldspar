@@ -757,7 +757,7 @@ mod tests {
             "books",
             FrameworkRef {
                 name: "saltcorn-ui".to_owned(),
-                config: sc_catalog::Attrs::new(),
+                config: sc_types::Attrs::new(),
             },
         )
     }

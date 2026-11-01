@@ -24,7 +24,7 @@ sc-action.workspace = true
 sc-api.workspace = true
 sc-app.workspace = true
 sc-agent.workspace = true
-sc-core-traits.workspace = true
+sc-agent-builtins.workspace = true
 sc-dataset.workspace = true
 sc-analytics.workspace = true
 sc-llm.workspace = true
@@ -41,7 +41,9 @@ async-trait.workspace = true
 base64.workspace = true
 bytes.workspace = true
 chrono.workspace = true
-serde_json.workspace = true
+# Restoring a backup must give back the exact float written: deno_core turns this on in the
+# server binary, but the backup crate must not depend on that.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 uuid.workspace = true
 rust_decimal.workspace = true
 # The backup archive: an installation's metadata, rows and files as one zip.

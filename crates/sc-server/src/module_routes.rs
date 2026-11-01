@@ -289,7 +289,7 @@ pub(crate) struct SystemFacts<'a> {
 }
 
 #[async_trait::async_trait]
-impl sc_module::SystemAsks for SystemFacts<'_> {
+impl sc_module::Ask for SystemFacts<'_> {
     async fn ask(&self, plan: Json) -> Result<Json> {
         match plan.get("op").and_then(Json::as_str).unwrap_or_default() {
             "fs_size" => fs_size(self.data_dir),

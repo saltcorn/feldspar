@@ -106,10 +106,10 @@ pub use deno::{DenoModuleHost, PoolBounds};
 pub use frameworks::ModuleFrameworks;
 pub use functions::ModuleFunctions;
 pub use host::{
-    ActionManifest, CallHosts, CheckAsks, CheckStepManifest, FrameworkManifest, FunctionArg,
-    FunctionManifest, ModelProviderManifest, ModuleHost, ModuleManifest, OAuthAsks, RouteManifest,
-    ServiceAsks, ServiceManifest, SystemAsks, TableProviderManifest, UnsupportedEntity,
-    WebhookManifest, prime_v8,
+    ActionManifest, Ask, AskSurface, Asks, CallHosts, CheckStepManifest, FrameworkManifest,
+    FunctionArg, FunctionManifest, ModelProviderManifest, ModuleHost, ModuleManifest,
+    RouteManifest, ServiceManifest, TableProviderManifest, UnsupportedEntity, WebhookManifest,
+    prime_v8,
 };
 pub use install::{
     InstalledPackage, Installer, MIN_NPM_VERSION, have_node, have_npm, npm_too_old, npm_version,

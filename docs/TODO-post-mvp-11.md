@@ -348,7 +348,7 @@ assignments. Every terminal is one plan and one round trip.
       against the table, every Ⱶ-path through `ownership::join_guard`, and refuses anything
       else by name.
 - [x] **One `where` lowering**: move the object-DSL walk out of
-      `sc-core-traits::table::{where_expr, required_where, condition_expr}` into
+      `sc-agent-builtins::table::{where_expr, required_where, condition_expr}` into
       `sc_api::filter` beside the comparison vocabulary it already calls, add the `and` /
       `or` / `not` combinators there, and have the agent traits call the moved function.
       (Their tests come along and must still pass unchanged.) The moved walk now delegates

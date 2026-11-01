@@ -67,7 +67,6 @@
 //! an abandoned approval are all tested by moving the clock; **no test sleeps**.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
 use sc_action::{ActionContext, Event, EventBindings, Trigger, TriggerDispatcher};
@@ -76,6 +75,7 @@ use sc_catalog::{Catalog, SharedTx};
 use sc_error::{Error, Result};
 use sc_expr::{Formula, Operation};
 use sc_types::Attrs;
+use sc_types::clock::Clock;
 use serde_json::Value as Json;
 
 use crate::machine::{Conclusion, Decision, WorkflowRun};
@@ -83,64 +83,6 @@ use crate::run::{record, release, run_chain, run_event, run_state, run_version, 
 use crate::traces::{RunTrace, TraceOutcome, trace_insert};
 use crate::versions::{require_current_workflow, require_workflow_version};
 use crate::workflow::Workflow;
-
-/// Where the engine reads the time.
-///
-/// A trait rather than `Utc::now()` at the call site for the reason the
-/// scheduler's `tick(now)` is a parameter: a workflow's whole vocabulary is
-/// deadlines — a retry's backoff, a `Wait`, an approval's timeout — and a test
-/// that had to wait for one would be a test nobody runs.
-pub trait Clock: Send + Sync {
-    /// What time it is.
-    fn now(&self) -> DateTime<Utc>;
-}
-
-/// The clock a server runs on.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc::now()
-    }
-}
-
-/// A clock a test moves by hand.
-///
-/// Public rather than `#[cfg(test)]` because the engine's callers test through it
-/// too: an end-to-end test that suspends a run for a day has to be able to make
-/// tomorrow happen.
-pub struct ManualClock(Mutex<DateTime<Utc>>);
-
-impl ManualClock {
-    /// A clock reading `at`.
-    pub fn new(at: DateTime<Utc>) -> ManualClock {
-        ManualClock(Mutex::new(at))
-    }
-
-    /// Move it forward.
-    pub fn advance(&self, by: chrono::Duration) {
-        if let Ok(mut now) = self.0.lock() {
-            *now += by;
-        }
-    }
-
-    /// Move it to an instant.
-    pub fn set(&self, at: DateTime<Utc>) {
-        if let Ok(mut now) = self.0.lock() {
-            *now = at;
-        }
-    }
-}
-
-impl Clock for ManualClock {
-    fn now(&self) -> DateTime<Utc> {
-        match self.0.lock() {
-            Ok(now) => *now,
-            Err(poisoned) => *poisoned.into_inner(),
-        }
-    }
-}
 
 /// What one [`advance`](Driver::advance) did.
 #[derive(Debug, Clone, PartialEq)]

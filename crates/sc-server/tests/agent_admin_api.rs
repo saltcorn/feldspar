@@ -25,11 +25,12 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_agent::{ATTR_PARENT_RUN, Agent, AgentLoop, EnabledTrait, Run, RunCaller, save_run};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::{Catalog, DataField};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
-use sc_server::{AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router};
+use sc_server::{AppMounts, ServerConfig, admin_handlers, build_router};
 use sc_test_harness::TestDb;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value, json};
@@ -592,13 +593,13 @@ async fn a_planner_runs_plan_and_diff_include_its_sessions() -> sc_error::Result
 
     let mut planner = AgentLoop::new(20);
     planner.push_user("add a filter to the tasks page")?;
-    let plan_state = sc_core_traits::CodingState {
-        plan: Some(sc_core_traits::Plan {
-            features: vec![sc_core_traits::Feature {
+    let plan_state = sc_agent_builtins::CodingState {
+        plan: Some(sc_agent_builtins::Plan {
+            features: vec![sc_agent_builtins::Feature {
                 id: "filter".to_owned(),
                 title: "Filter tasks".to_owned(),
                 pages: vec!["/tasks".to_owned()],
-                status: sc_core_traits::FeatureStatus::InProgress,
+                status: sc_agent_builtins::FeatureStatus::InProgress,
                 runs: vec![first.id.0.to_string()],
                 ..Default::default()
             }],
@@ -618,9 +619,9 @@ async fn a_planner_runs_plan_and_diff_include_its_sessions() -> sc_error::Result
     // The first session changed `App.tsx`; the second added `filter.ts` and
     // changed `App.tsx` again, from what the first left.
     let mut first_state = first.agent_loop()?;
-    let mut ledger = sc_core_traits::Ledger::default();
+    let mut ledger = sc_agent_builtins::Ledger::default();
     ledger.touch("web/src/App.tsx", Some(b"export const App = 0;\n"));
-    let touched = sc_core_traits::CodingState {
+    let touched = sc_agent_builtins::CodingState {
         ledger,
         ..Default::default()
     };
@@ -629,10 +630,10 @@ async fn a_planner_runs_plan_and_diff_include_its_sessions() -> sc_error::Result
     first.record(&first_state);
     save_run(&catalog, &first).await?;
     let mut second_state = second.agent_loop()?;
-    let mut ledger = sc_core_traits::Ledger::default();
+    let mut ledger = sc_agent_builtins::Ledger::default();
     ledger.touch("web/src/App.tsx", Some(b"export const App = 1;\n"));
     ledger.touch("web/src/filter.ts", None);
-    let touched = sc_core_traits::CodingState {
+    let touched = sc_agent_builtins::CodingState {
         ledger,
         ..Default::default()
     };
@@ -811,7 +812,7 @@ async fn the_posted_agent_is_the_stored_agent() -> sc_error::Result<()> {
 /// and one can be deleted.
 #[tokio::test]
 async fn the_admin_lists_searches_and_deletes_agent_memories() {
-    use sc_core_traits::memory::{NewMemory, store_memory};
+    use sc_agent_builtins::memory::{NewMemory, store_memory};
     let (mut client, catalog, _db) = setup().await.unwrap();
     let (ada, bob) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
     for (user, personal, contents) in [

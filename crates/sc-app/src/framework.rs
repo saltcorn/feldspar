@@ -29,7 +29,7 @@ use crate::react::{
     CFG_PROJECT, REACT_FRAMEWORK, check_project_name, react_config_spec, react_csp,
 };
 
-pub use sc_api::Method;
+use sc_api::Method;
 
 /// A request routed to an application's framework: the method, the path **within
 /// the application** (e.g. `/`, `/assets/app.js`, `/posts/42`), and what a

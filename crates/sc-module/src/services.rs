@@ -74,7 +74,7 @@ use serde_json::{Value as Json, json};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::files::{FileArea, ModuleFiles, file_areas};
-use crate::host::{CallHosts, ModuleHost, ServiceAsks};
+use crate::host::{Ask, AskSurface, Asks, CallHosts, ModuleHost};
 use crate::module::ModuleLanguage;
 use crate::modules::ModuleSet;
 
@@ -447,13 +447,11 @@ async fn serve_once(
         },
         schema: schema.as_deref(),
         views: None,
-        service: Some(&asks),
         module_files: Some(&files),
-        roles: Some(&roles),
-        credits: Some(&credits),
-        oauth: None,
-        system: None,
-        check: None,
+        asks: Asks::default()
+            .with(AskSurface::Service, &asks)
+            .with(AskSurface::Roles, &roles)
+            .with(AskSurface::Credits, &credits),
     };
     let run = shared.host.run_service(module, service, call);
     tokio::pin!(run);
@@ -766,7 +764,7 @@ struct Subscriptions<'a> {
 }
 
 #[async_trait::async_trait]
-impl ServiceAsks for Subscriptions<'_> {
+impl Ask for Subscriptions<'_> {
     async fn ask(&self, plan: Json) -> Result<Json> {
         let Some(table) = plan.get("subscribe").and_then(Json::as_str) else {
             return Err(Error::invalid(format!(

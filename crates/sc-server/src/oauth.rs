@@ -919,7 +919,7 @@ async fn store_tokens(
         &table,
         &store.id,
         &Value::Object(values),
-        sc_access::Unchecked::system("OAuth: store the tokens of a consent flow"),
+        sc_catalog::Unchecked::system("OAuth: store the tokens of a consent flow"),
     )
     .await
     .map_err(failed)?;

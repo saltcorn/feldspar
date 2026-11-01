@@ -33,10 +33,11 @@ use serde_json::{Value as Json, json};
 use sc_catalog::Catalog;
 use sc_dataset::{
     Base, Caller, ColType, DatasetDef, Grain, Op, OpStatus, Operation, Options, Schema, SortKey,
-    SortOp, StageColumn, compile, read_rows_with, value_json,
+    SortOp, StageColumn, compile, read_rows_with,
 };
 use sc_error::{Error, Result};
 use sc_query::Value;
+use sc_types::value_to_analysis_json;
 
 use crate::layer::{EXTRA_OP, LayerRequest, Prepared, prepare_with};
 
@@ -128,7 +129,7 @@ pub async fn layer_rows(
         .map(|r| {
             shown
                 .iter()
-                .map(|i| r.get(*i).map_or(Json::Null, value_json))
+                .map(|i| r.get(*i).map_or(Json::Null, value_to_analysis_json))
                 .collect()
         })
         .collect();
@@ -345,7 +346,7 @@ async fn geometries_of(
         }
         if let Some(shape) = at
             .and_then(|a| read.rows[i].get(a))
-            .map(value_json)
+            .map(value_to_analysis_json)
             .filter(|j| !j.is_null())
         {
             out.push(shape);

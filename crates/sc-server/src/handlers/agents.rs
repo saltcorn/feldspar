@@ -180,7 +180,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let id = sc_agent::RunId(parse_uuid(ctx.path_param("id")?, "run")?);
                 let run = sc_agent::require_run(&catalog, id).await?;
-                let (scopes, runs) = sc_core_traits::agent_run_diff(&catalog, &run).await?;
+                let (scopes, runs) = sc_agent_builtins::agent_run_diff(&catalog, &run).await?;
                 Ok(HandlerResponse::ok(json!({
                     "run": run.id.0,
                     "runs": runs.iter().map(|r| r.0).collect::<Vec<_>>(),
@@ -250,7 +250,7 @@ pub(crate) fn run_part_json(stored: &sc_agent::StoredPart) -> Json {
 }
 
 /// One scope's changes (matching `run_diff_schema`).
-fn scope_diff_json(scope: &sc_core_traits::ScopeDiff) -> Json {
+fn scope_diff_json(scope: &sc_agent_builtins::ScopeDiff) -> Json {
     let diff = &scope.diff;
     json!({
         "store": scope.scope.store,
@@ -258,9 +258,9 @@ fn scope_diff_json(scope: &sc_core_traits::ScopeDiff) -> Json {
         "files": diff.files.iter().map(|f| json!({
             "path": f.path,
             "status": match f.status {
-                sc_core_traits::ChangeStatus::Added => "added",
-                sc_core_traits::ChangeStatus::Modified => "modified",
-                sc_core_traits::ChangeStatus::Deleted => "deleted",
+                sc_agent_builtins::ChangeStatus::Added => "added",
+                sc_agent_builtins::ChangeStatus::Modified => "modified",
+                sc_agent_builtins::ChangeStatus::Deleted => "deleted",
             },
             "added": f.added,
             "removed": f.removed,

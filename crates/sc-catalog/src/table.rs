@@ -15,10 +15,11 @@ use sc_db::PhysicalTable;
 use sc_types::{BaseField, BasicType, RichTypeRef, TypeRef};
 
 use crate::constraint::TableConstraint;
-use crate::field::{Attrs, DataField, DataFieldKind, DbId, FieldId};
+use crate::field::{DataField, DataFieldKind, DbId, FieldId};
 use crate::field_meta::FieldMeta;
 use crate::provider::ProvidedWrites;
 use crate::table_meta::{TableMeta, TableMetaId};
+use sc_types::Attrs;
 
 /// A way in which a stored `_fd_fields` overlay row did **not** cleanly apply to
 /// the introspected field it names (design §3.2).

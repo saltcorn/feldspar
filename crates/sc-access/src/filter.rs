@@ -119,7 +119,7 @@ impl Operand<'_> {
     fn value(&self, operand: &Json) -> Result<Value> {
         match self {
             Operand::Column { table, column } => rows::column_value(table, column, operand),
-            Operand::Untyped { .. } => Ok(sc_expr::value_from_json(operand)),
+            Operand::Untyped { .. } => Ok(sc_types::value_from_json(operand)),
         }
     }
 

@@ -14,12 +14,12 @@
 //!
 //! ## Why the traits are named as strings
 //!
-//! The trait itself (`coding`) lives in `sc-core-traits`,
+//! The trait itself (`coding`) lives in `sc-agent-builtins`,
 //! which is layer 9 and sits *above* this crate — as it must, since a trait's
 //! writes go through the row layer. A framework here can therefore only *name* the
 //! trait it wants and the settings to give it, exactly as an application names its
 //! API providers rather than holding them. That the names and the configuration
-//! keys still match the real traits is asserted from above, in `sc-core-traits`'
+//! keys still match the real traits is asserted from above, in `sc-agent-builtins`'
 //! own tests, where both sides are visible at once.
 //!
 //! Assembling a spec into an [`Agent`](sc_agent::Agent) and storing it is the

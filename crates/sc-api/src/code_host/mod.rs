@@ -133,9 +133,9 @@ use sc_error::{Error, Repr, Result};
 use sc_expr::{CodeHost, DEFAULT_MAX_HOST_CALLS, JsEvaluator};
 use serde_json::Value as Json;
 
-use sc_access::convert::value_to_json;
 use sc_access::ownership;
 use sc_access::rows;
+use sc_types::value_to_json;
 
 pub use files::{FileStoreHost, MAX_COPY_BYTES, MAX_FILE_BYTES, set_file_limits};
 pub use models::CODE_MAX_DRAWS;

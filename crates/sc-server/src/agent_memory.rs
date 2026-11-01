@@ -3,12 +3,12 @@
 //!
 //! Admin-only, and the only place every user's personal memories are read
 //! together: everywhere else a personal memory is read back for its own user
-//! alone (`sc_core_traits::memory::MemoryReader`).
+//! alone (`sc_agent_builtins::memory::MemoryReader`).
 
 use std::sync::Arc;
 
+use sc_agent_builtins::memory::{MemoryFilter, MemoryReader, delete_memory, list_memories};
 use sc_catalog::Catalog;
-use sc_core_traits::memory::{MemoryFilter, MemoryReader, delete_memory, list_memories};
 use sc_error::Error;
 use serde_json::{Value as Json, json};
 

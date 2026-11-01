@@ -38,8 +38,8 @@ use std::sync::Arc;
 use common::{fixture, have_npm, surfaces, temp_root};
 use sc_action::ActionRegistry;
 use sc_catalog::{
-    Attrs, Catalog, ProvidedTableDef, ProvidedWrites, TableMeta, TableProviderHost,
-    bootstrap_table_meta, save_table_meta,
+    Catalog, ProvidedTableDef, ProvidedWrites, TableMeta, TableProviderHost, bootstrap_table_meta,
+    save_table_meta,
 };
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -50,6 +50,7 @@ use sc_module::{
 };
 use sc_query::{Assignment, BinOp, Delete, Expr, Insert, Projection, Statement, Update, Value};
 use sc_test_harness::TestDb;
+use sc_types::Attrs;
 use serde_json::json;
 
 const PROVIDER: &str = "PostgreSQL table";

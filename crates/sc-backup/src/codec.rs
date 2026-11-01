@@ -10,6 +10,7 @@
 //! the codecs are built from (`str_field`, `optional_bool`, …) are here too,
 //! and the handlers use them as well.
 
+use sc_types::Attrs;
 use sc_types::Role;
 use std::collections::BTreeMap;
 
@@ -24,9 +25,8 @@ use sc_app::{
 };
 use sc_auth::RoleDef;
 use sc_catalog::{
-    ATTR_OWNERSHIP_FORMULA, Attrs, Catalog, ConstraintKind, DataField, DataFieldKind,
-    DbConnectionDef, DbConnectionId, FieldId, FileOnConflict, FileOnDelete, FileStoreId, Table,
-    TableConstraint,
+    ATTR_OWNERSHIP_FORMULA, Catalog, ConstraintKind, DataField, DataFieldKind, DbConnectionDef,
+    DbConnectionId, FieldId, FileOnConflict, FileOnDelete, FileStoreId, Table, TableConstraint,
 };
 use sc_error::{Error, Result};
 use sc_files::{

@@ -5,7 +5,7 @@
 //! an admin writes a `run_js_code` body that reads, joins, aggregates and writes,
 //! presses Run, and **the rows are there**. Every layer under that is tested on
 //! its own — `sc-expr` proves a chain becomes a plan, `sc-api` proves a plan
-//! becomes a statement and a statement answers, `sc-core-actions` proves the
+//! becomes a statement and a statement answers, `sc-action-builtins` proves the
 //! action binds `db` and delegates to the event's caller — and none of them
 //! proves the button. So this file drives the assembled router: create the
 //! trigger over HTTP, run it over HTTP, and read the written rows back over HTTP,
@@ -19,12 +19,13 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-    default_js_evaluator, install_triggers,
+    AppMounts, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
+    install_triggers,
 };
 use sc_test_harness::TestDb;
 use serde_json::{Value, json};

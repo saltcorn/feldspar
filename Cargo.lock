@@ -8988,6 +8988,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-action-builtins"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "reqwest",
+ "sc-access",
+ "sc-action",
+ "sc-api",
+ "sc-auth",
+ "sc-catalog",
+ "sc-config",
+ "sc-db",
+ "sc-db-postgres",
+ "sc-email",
+ "sc-error",
+ "sc-expr",
+ "sc-files",
+ "sc-model",
+ "sc-net",
+ "sc-query",
+ "sc-test-harness",
+ "sc-types",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "sc-agent"
 version = "0.1.0"
 dependencies = [
@@ -9000,7 +9030,6 @@ dependencies = [
  "sc-action",
  "sc-agent",
  "sc-auth",
- "sc-browser",
  "sc-catalog",
  "sc-db",
  "sc-db-postgres",
@@ -9013,6 +9042,52 @@ dependencies = [
  "sc-types",
  "serde",
  "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "sc-agent-builtins"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "htmd",
+ "image",
+ "libc",
+ "lru 0.12.5",
+ "markup5ever_rcdom",
+ "regex-lite",
+ "reqwest",
+ "sc-access",
+ "sc-action",
+ "sc-action-builtins",
+ "sc-agent",
+ "sc-api",
+ "sc-app",
+ "sc-auth",
+ "sc-catalog",
+ "sc-check",
+ "sc-db",
+ "sc-db-postgres",
+ "sc-docs",
+ "sc-error",
+ "sc-expr",
+ "sc-files",
+ "sc-llm",
+ "sc-log",
+ "sc-mcp",
+ "sc-net",
+ "sc-query",
+ "sc-repomap",
+ "sc-test-harness",
+ "sc-types",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "similar",
  "tokio",
  "uuid",
 ]
@@ -9057,6 +9132,7 @@ dependencies = [
  "sc-action",
  "sc-auth",
  "sc-catalog",
+ "sc-config",
  "sc-dataset",
  "sc-db",
  "sc-db-postgres",
@@ -9156,13 +9232,13 @@ dependencies = [
  "sc-access",
  "sc-action",
  "sc-agent",
+ "sc-agent-builtins",
  "sc-analytics",
  "sc-api",
  "sc-app",
  "sc-auth",
  "sc-catalog",
  "sc-config",
- "sc-core-traits",
  "sc-dataset",
  "sc-db",
  "sc-db-postgres",
@@ -9187,16 +9263,6 @@ dependencies = [
  "tokio",
  "uuid",
  "zip",
-]
-
-[[package]]
-name = "sc-browser"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "sc-auth",
- "sc-error",
- "uuid",
 ]
 
 [[package]]
@@ -9235,8 +9301,8 @@ dependencies = [
  "sc-api",
  "sc-app",
  "sc-auth",
- "sc-browser",
  "sc-catalog",
+ "sc-config",
  "sc-db",
  "sc-db-postgres",
  "sc-email",
@@ -9266,15 +9332,16 @@ dependencies = [
  "reqwest",
  "sc-action",
  "sc-agent",
+ "sc-agent-builtins",
  "sc-analytics",
  "sc-api",
  "sc-app",
  "sc-auth",
+ "sc-backup",
  "sc-catalog",
  "sc-check",
  "sc-config",
  "sc-config-file",
- "sc-core-traits",
  "sc-dataset",
  "sc-db",
  "sc-db-postgres",
@@ -9333,82 +9400,6 @@ dependencies = [
  "sc-error",
  "serde",
  "toml",
-]
-
-[[package]]
-name = "sc-core-actions"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "reqwest",
- "sc-access",
- "sc-action",
- "sc-api",
- "sc-auth",
- "sc-catalog",
- "sc-config",
- "sc-db",
- "sc-db-postgres",
- "sc-email",
- "sc-error",
- "sc-expr",
- "sc-files",
- "sc-model",
- "sc-net",
- "sc-query",
- "sc-test-harness",
- "sc-types",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "sc-core-traits"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "bytes",
- "chrono",
- "htmd",
- "image",
- "libc",
- "lru 0.12.5",
- "markup5ever_rcdom",
- "regex-lite",
- "reqwest",
- "sc-access",
- "sc-action",
- "sc-agent",
- "sc-api",
- "sc-app",
- "sc-auth",
- "sc-catalog",
- "sc-check",
- "sc-core-actions",
- "sc-db",
- "sc-db-postgres",
- "sc-docs",
- "sc-error",
- "sc-expr",
- "sc-files",
- "sc-llm",
- "sc-log",
- "sc-mcp",
- "sc-net",
- "sc-query",
- "sc-repomap",
- "sc-test-harness",
- "sc-types",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "similar",
- "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -9497,8 +9488,9 @@ dependencies = [
 name = "sc-docs"
 version = "0.1.0"
 dependencies = [
+ "minijinja",
+ "pulldown-cmark",
  "sc-error",
- "sc-help",
  "serde_json",
 ]
 
@@ -9544,6 +9536,7 @@ dependencies = [
  "sc-query",
  "sc-ratelimit",
  "sc-test-harness",
+ "sc-types",
  "serde_json",
  "sha2 0.10.9",
  "swc_common 24.0.0",
@@ -9570,16 +9563,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
-]
-
-[[package]]
-name = "sc-help"
-version = "0.1.0"
-dependencies = [
- "minijinja",
- "pulldown-cmark",
- "sc-error",
- "serde_json",
 ]
 
 [[package]]
@@ -9734,11 +9717,11 @@ dependencies = [
  "rust_decimal",
  "sc-access",
  "sc-action",
+ "sc-action-builtins",
  "sc-api",
  "sc-app",
  "sc-auth",
  "sc-catalog",
- "sc-core-actions",
  "sc-db",
  "sc-db-postgres",
  "sc-error",
@@ -9776,9 +9759,9 @@ dependencies = [
  "futures",
  "pyo3",
  "sc-action",
+ "sc-action-builtins",
  "sc-api",
  "sc-catalog",
- "sc-core-actions",
  "sc-db",
  "sc-db-postgres",
  "sc-error",
@@ -9809,6 +9792,10 @@ dependencies = [
 [[package]]
 name = "sc-ratelimit"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "sc-types",
+]
 
 [[package]]
 name = "sc-repomap"
@@ -9851,7 +9838,9 @@ dependencies = [
  "rustls-webpki 0.103.13",
  "sc-access",
  "sc-action",
+ "sc-action-builtins",
  "sc-agent",
+ "sc-agent-builtins",
  "sc-analytics",
  "sc-api",
  "sc-app",
@@ -9860,17 +9849,15 @@ dependencies = [
  "sc-catalog",
  "sc-check",
  "sc-config",
- "sc-core-actions",
- "sc-core-traits",
  "sc-dataset",
  "sc-db",
  "sc-db-postgres",
  "sc-db-sqlite",
+ "sc-docs",
  "sc-email",
  "sc-error",
  "sc-expr",
  "sc-files",
- "sc-help",
  "sc-i18n",
  "sc-live",
  "sc-llm",
@@ -9963,6 +9950,7 @@ dependencies = [
 name = "sc-types"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "regex-lite",
  "rust_decimal",

@@ -44,6 +44,9 @@ sc-error = { workspace = true }
 sc-query = { workspace = true }
 # A code body's `ratelimit` (TODO F4.5) counts in the process's limiter.
 sc-ratelimit = { workspace = true }
+# A value as JavaScript sees it (`sc_types::Spelling::Script`): the one
+# Value↔JSON conversion, with its four spellings side by side.
+sc-types = { workspace = true }
 serde_json = { workspace = true }
 swc_common = { workspace = true }
 swc_ecma_ast = { workspace = true }

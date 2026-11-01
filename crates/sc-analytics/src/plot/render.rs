@@ -39,7 +39,6 @@ use std::sync::Arc;
 use sc_catalog::Catalog;
 use sc_dataset::{
     Caller, ColType, Grain, Options, Reader, Schema, StageColumn, StageShape, compile, scramble,
-    value_json,
 };
 use sc_db::{ColumnDef, DatabaseDriver, Row, SchemaChange};
 use sc_error::{Error, Result};
@@ -47,6 +46,7 @@ use sc_query::{
     BinOp, CaseArm, Expr, Insert, Nulls, OrderBy, OrderDir, Projection, Select, Source, Statement,
     UnOp, Value,
 };
+use sc_types::value_to_analysis_json;
 use serde::Serialize;
 use serde_json::{Value as Json, json};
 
@@ -880,7 +880,7 @@ impl<'a> Renderer<'a> {
         let select = grouped(points, columns, keys.len(), MAX_GROUP_ROWS + 1);
         let out = plan.out.unwrap_or(Channel::Y);
         self.grouped_layer(keys, select, total, &[out.as_str()], |values| {
-            vec![value_json(&values[0])]
+            vec![value_to_analysis_json(&values[0])]
         })
         .await
     }
@@ -954,9 +954,9 @@ impl<'a> Renderer<'a> {
             vec![match (function, input_ty) {
                 (AggregateFn::Min | AggregateFn::Max, ColType::Bool) => match v {
                     Value::Int(n) => json!(*n != 0),
-                    other => value_json(other),
+                    other => value_to_analysis_json(other),
                 },
-                _ => value_json(v),
+                _ => value_to_analysis_json(v),
             }]
         })
         .await
@@ -1117,7 +1117,7 @@ impl<'a> Renderer<'a> {
                 let values = row.into_values();
                 let (k, rest) = values.split_at(keys.len());
                 let mut out = key_values(keys, k);
-                out.push(value_json(&rest[0]));
+                out.push(value_to_analysis_json(&rest[0]));
                 outliers.rows.push(out);
             }
         }
@@ -1511,7 +1511,7 @@ impl<'a> Renderer<'a> {
             let values = row.into_values();
             let (k, rest) = values.split_at(keys.len());
             let mut line = key_values(&keys, k);
-            line.extend(rest.iter().map(value_json));
+            line.extend(rest.iter().map(value_to_analysis_json));
             out.push(line);
         }
         let mut names = key_columns(&keys);
@@ -1675,10 +1675,10 @@ impl<'a> Renderer<'a> {
                     {
                         match value {
                             Value::Int(b) => json!(*b != 0),
-                            other => value_json(other),
+                            other => value_to_analysis_json(other),
                         }
                     }
-                    _ => value_json(value),
+                    _ => value_to_analysis_json(value),
                 });
             }
             out.push((k.to_vec(), line));
@@ -2256,7 +2256,7 @@ pub(crate) fn key_values(keys: &[Key], values: &[Value]) -> Vec<Json> {
             },
             None => out.push(match (k.ty, value) {
                 (ColType::Bool, Value::Int(n)) => json!(*n != 0),
-                _ => value_json(value),
+                _ => value_to_analysis_json(value),
             }),
         }
     }
@@ -2282,7 +2282,7 @@ pub(crate) fn same_keys(a: &[Value], b: &[Value]) -> bool {
 
 fn compare_keys(a: &[Value], b: &[Value]) -> std::cmp::Ordering {
     for (x, y) in a.iter().zip(b) {
-        let o = compare_json(&value_json(x), &value_json(y));
+        let o = compare_json(&value_to_analysis_json(x), &value_to_analysis_json(y));
         if o != std::cmp::Ordering::Equal {
             return o;
         }

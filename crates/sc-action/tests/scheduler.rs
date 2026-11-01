@@ -18,7 +18,7 @@
 //! - a disabled trigger does not fire, and switching it back on does not make it
 //!   run everything it missed.
 //!
-//! The action is written here rather than borrowed from `sc-core-actions`
+//! The action is written here rather than borrowed from `sc-action-builtins`
 //! because two of those claims need one that is *slow* and one that counts its
 //! own runs, and neither is something a built-in action should be able to do.
 

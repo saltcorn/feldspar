@@ -4,6 +4,7 @@
 //! DB-backed tests arrive in the second half of the Phase 6 server subphase.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER, SECURE_CSRF_COOKIE};
 use sc_types::Role;
 use std::sync::Arc;
 
@@ -13,8 +14,8 @@ use axum::http::{Request, StatusCode, header};
 use sc_api::{AuthRequirement, Endpoint, EndpointSet, Method, PathSpec};
 use sc_auth::{SessionStore, User};
 use sc_server::{
-    CONTENT_SECURITY_POLICY, CSRF_COOKIE, CSRF_HEADER, HandlerRegistry, HandlerResponse,
-    SECURE_CSRF_COOKIE, SESSION_COOKIE, ServerConfig, build_router,
+    CONTENT_SECURITY_POLICY, HandlerRegistry, HandlerResponse, SESSION_COOKIE, ServerConfig,
+    build_router,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;

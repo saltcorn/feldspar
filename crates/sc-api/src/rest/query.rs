@@ -40,9 +40,9 @@ use serde_json::{Map, Value as Json};
 
 use crate::provider::ApiRequest;
 use crate::query_string::{self, KEY_SELECT};
-use sc_access::convert::value_to_json;
 use sc_access::ownership;
 use sc_access::rows::RowQuery;
+use sc_types::value_to_json;
 
 /// How deep a `select` may nest embeds.
 ///

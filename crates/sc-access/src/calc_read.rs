@@ -31,12 +31,13 @@ use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_expr::{
     AmbientValues, Analysis, CalcFields, Env, Formula, FormulaCall, Operation, SchemaShape,
-    TranslateError, UserEnv, translate_value, value_from_json,
+    TranslateError, UserEnv, translate_value,
 };
 use sc_query::{Expr, InSet, OrderBy, Projection, Value};
+use sc_types::value_from_json;
 use serde_json::Value as Json;
 
-use crate::convert::value_to_json;
+use sc_types::value_to_json;
 
 /// How a read computes `table`'s non-stored calculated fields: the ones SQL
 /// projects, and the ones computed after the rows are fetched.

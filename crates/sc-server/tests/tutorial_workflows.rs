@@ -1,7 +1,7 @@
 //! The workflows tutorial, executed: the program `docs/tutorial-workflows.md`
 //! asks the reader to draw, saved and run for real (§10.3, TODO 8.1).
 //!
-//! The precedent is `sc-core-actions`' `tutorial_triggers.rs`, and the reason is
+//! The precedent is `sc-action-builtins`' `tutorial_triggers.rs`, and the reason is
 //! the same: a tutorial is a promise that the words in the boxes work, and the
 //! ways it stops being true are quiet ones — a formula rule tightens, an action
 //! renames a setting, a step kind gains a required field. None of those break a
@@ -38,13 +38,14 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-    default_js_evaluator, install_triggers, start_workflow_engine,
+    AppMounts, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
+    install_triggers, start_workflow_engine,
 };
 use sc_test_harness::TestDb;
 use serde_json::{Value, json};

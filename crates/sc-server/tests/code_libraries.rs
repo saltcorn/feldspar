@@ -15,6 +15,7 @@
 //!   syntax error is refused with the line.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_catalog::Authority;
 use sc_types::Role;
 use std::collections::HashMap;
@@ -36,8 +37,8 @@ use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_files::{FileMeta, FileStore, LocalFileStore};
 use sc_server::{
-    AppMounts, BackupSelection, CSRF_COOKIE, CSRF_HEADER, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_triggers,
+    AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_triggers,
 };
 use sc_test_harness::Teardown;
 use serde_json::{Value, json};
@@ -591,19 +592,19 @@ async fn the_admin_api_manages_libraries_and_says_who_uses_them() -> sc_error::R
 async fn a_backup_carries_the_libraries_to_a_second_installation() -> sc_error::Result<()> {
     let tmp = TempDir::new("backup");
     let first = setup(&tmp, "first").await?;
-    let available = sc_server::backup_available(&first.catalog).await?;
+    let available = sc_backup::available(&first.catalog).await?;
     assert_eq!(available.code_libraries, 6);
-    let mut selection = BackupSelection::everything(&available);
+    let mut selection = sc_backup::Selection::everything(&available);
     selection.code_libraries = true;
     let archive = tmp.path().join("backup.zip");
-    sc_server::write_backup_to(
+    sc_backup::write_backup_to(
         &first.catalog,
         &selection,
         None,
         std::fs::File::create(&archive)?,
     )
     .await?;
-    let (contents, _) = sc_server::inspect_backup(&archive, None)?;
+    let (contents, _) = sc_backup::inspect(&archive, None)?;
     assert_eq!(contents.code_libraries, 6);
 
     // A second installation with its own `auth`: restore adds and keeps.
@@ -625,12 +626,12 @@ async fn a_backup_carries_the_libraries_to_a_second_installation() -> sc_error::
     }
     // Restore just the libraries: `two` has a different id on this installation,
     // so its own `greet` is refused by name; the rest arrive.
-    let only = BackupSelection {
+    let only = sc_backup::Selection {
         code_libraries: true,
-        ..BackupSelection::default()
+        ..sc_backup::Selection::default()
     };
     let report =
-        sc_server::restore_backup(&second.catalog, &second.apps, &archive, None, &only).await?;
+        sc_backup::restore_backup(&second.catalog, &second.apps, &archive, None, &only).await?;
     let text = format!("{report:?}");
     assert!(text.contains("its code was kept"), "{text}");
     let restored = sc_catalog::list_code_libraries(&second.catalog).await?;

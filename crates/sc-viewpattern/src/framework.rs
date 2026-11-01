@@ -51,11 +51,12 @@ use std::sync::{Arc, OnceLock, RwLock};
 use async_trait::async_trait;
 use bytes::Bytes;
 use sc_action::TriggerDispatcher;
+use sc_api::Method;
 use sc_api::SessionAction;
 use sc_api::code_host::{FileStoreHost, TableHost, TriggerRunHost, schema_snapshot};
 use sc_app::{
     AppRequest, AppResponse, Application, BuildSpec, CspPolicy, Framework, FrameworkFactory,
-    FrameworkInfo, Method, MountContext, RequestBody, TriggerRef,
+    FrameworkInfo, MountContext, RequestBody, TriggerRef,
 };
 use sc_auth::User;
 use sc_catalog::Catalog;
@@ -1408,7 +1409,7 @@ fn v1_page_globals(csrf_token: &str) -> String {
 }
 
 /// The surfaces one render reaches, on the viewer's terms — built the way
-/// `sc_core_actions::code_body::Hosts` builds a code body's from its event, with
+/// `sc_action_builtins::code_body::Hosts` builds a code body's from its event, with
 /// the request's user as the caller. No `fetch`: the view runtime is granted no
 /// network.
 struct ViewerHosts<'a> {

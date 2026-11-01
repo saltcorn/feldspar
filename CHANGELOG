@@ -2,6 +2,78 @@
 
 Changes in reverse chronological order.
 
+## Code quality Q5 (part 2): crate merges and renames, one `Ask`, split files, no alias re-exports, one Value↔JSON module, one clock
+
+The second half of the sixth milestone of `TODO-code-quality.md` (§1, §2, §3 of the review):
+Q5.6 to Q5.11. Nothing changes on the wire, in stored data or in the schema: no crate name,
+module path or type name is serialized anywhere (traits and actions are stored by their own
+names, there are no tracing targets or log filters, and no env or config key names a crate), and
+every JSON spelling a value had is the one it has now.
+
+sc-backup now turns on serde_json's `float_roundtrip` itself. The server binary already had it
+(deno_core enables it), but built on its own the crate parsed some floats one ulp off on restore,
+which `values::tests::every_kind_of_value_survives_the_round_trip` caught.
+
+**Two merges (Q5.6).** `sc-browser` is `sc_agent::browser` and `sc-help` is `sc_docs::help`,
+moved with `git mv`. `sc_agent::BrowserDriver` and the other names `sc_agent::view` re-exported
+are unchanged; sc-check names `sc_agent::browser::…`; `getHelp` calls `sc_docs::help::render`.
+
+**Two renames (Q5.8).** `sc-core-traits` is `sc-agent-builtins` and `sc-core-actions` is
+`sc-action-builtins`, with every reference in the manifests, the code, TECHNICAL_DESIGN §2, the
+security review, the TODO files and the admin UI's one comment. The CHANGELOG's past entries and
+the code-quality review (dated evidence) keep the old names. `coding/` stays inside
+`sc-agent-builtins`: it uses that crate's `files`, `table` and `build_application` modules and
+its configuration constants, so a crate of its own would have meant moving those too.
+
+**One `Ask` (Q5.7).** The six `*Asks` traits of sc-module (`ServiceAsks`, `RoleAsks`,
+`CreditAsks`, `OAuthAsks`, `SystemAsks`, `CheckAsks`), which all had the same
+`ask(plan) -> Result<Json>`, are one `sc_module::Ask`, keyed by `AskSurface`. `CallHosts` carries
+one `Asks` (a slot per surface) instead of six `Option<&dyn …>` fields, and the worker looks a
+surface up by the name the host script sends rather than matching six arms. The wire names and
+the sentence a call without the surface is refused with are unchanged.
+
+**Split files (Q5.9).** `sc-expr/src/code.rs` (13.6k lines) keeps the runtime; the host traits,
+`ModuleFnHosts` (with its tests), `CodeAdapter` and `SchemaSnapshot` are in `code/host.rs` and
+the tests in `code/tests.rs`. `sc-cli/src/main.rs` (3.5k lines) keeps `main`, the dispatch and
+the usage text; each subcommand is a module of `src/commands/`. Both moves are mechanical.
+
+**Alias re-exports removed (Q5.10).** Callers name the crate a thing is defined in:
+`sc_model::CompiledSource` (was `sc_server::CatalogDatasetSource`), `sc_app::app_source_location`
+and `store_dir` (sc-cli's renamed copies), `sc_config::{Mailbox, parse_mailbox, EmailSettings,
+SmtpSecurity}` (re-exported by sc-email), `sc_backup::{Selection, inspect, available, …}` and
+`sc_backup::s3::{Signing, authorization}` (sc-server's renamed block), `sc_api::auth`'s CSRF names,
+`sc_types::{Attrs, BaseField}`, `sc_catalog::Unchecked`, `sc_api::Method`, `sc_expr::CodeAdapter`,
+`sc_module::BUNDLED_IN_CHECKOUT`, `sc_config_file`, and others listed in the TODO note. sc-api and
+sc-action-builtins now depend on sc-config, and sc-cli on sc-backup and sc-expr, for what they
+used to reach through a re-export. Two cross-crate `pub use`s are left on purpose: sc-migrate's
+`Row` / `Result` / `Value`, the documented surface a migration is written with, and
+`tool_names::docs` in sc-agent-builtins' tool-name catalogue.
+
+**One Value↔JSON module (Q5.11).** `sc_types::json` holds every conversion. The four writers
+spelt a value differently on purpose, so they are the four cases of `sc_types::Spelling` in one
+`match`, with a table of the differences in the module docs: `Wire` (the API), `Script`
+(formulas and code bodies; was `sc_expr::value_to_json`), `Analysis` (a dataset's grid; was
+`sc_dataset::value_json`) and `Archive` (a backup; was in sc-backup's `values.rs`). Each produces
+exactly what it did before. `value_from_json` (JSON with no column behind it) moved from sc-expr;
+`json_to_value_as` reads an archive's base64 bytes. `sc_access::convert` is gone. sc-expr now
+depends on sc-types. **One clock:** `sc_types::clock::Clock` replaces sc-ratelimit's (a monotonic
+`Instant`) and sc-workflow's (a wall-clock `DateTime<Utc>`) with one trait that has both readings,
+`now()` and `instant()`; `ManualClock` moves both together and takes a `chrono::TimeDelta`.
+sc-ratelimit now depends on sc-types.
+
+- **Behaviour changes:** none intended. Two error messages are composed differently but read
+  the same: a backup's bad bytes still say "`` `c` ``: the bytes are not valid base64: …".
+
+Also: the pre-existing clippy findings in `sc-types/tests/role_guard.rs` and
+`sc-python/tests/bundled_sklearn.rs` are fixed. TECHNICAL_DESIGN §2's tree, graph and table
+are updated for all of the above.
+
+Tests: `sc_module::host::tests` (every surface named as the host script asks for it; a call
+carries only the asks it was given), `sc_types::json::tests` (the four spellings differ only where
+the table says; an archive reads base64 bytes; the typeless reading, moved from sc-expr),
+`sc_types::clock::tests` (a manual clock moves both readings; the system clock), and the moved
+tests of everything that moved.
+
 ## Code quality Q5 (part 1): services, schema snapshots, typed admin host, handler split, sc-backup
 
 The first half of the sixth milestone of `TODO-code-quality.md` (§1, §2, §3.1 of the review):

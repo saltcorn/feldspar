@@ -1,7 +1,7 @@
 //! [`FakeProvider`]: a model that says what it was told to say.
 //!
 //! Behind the `testing` **feature**, not `#[cfg(test)]`, and deliberately
-//! (decision 7): `sc-core-traits` tests its traits through a whole run, and
+//! (decision 7): `sc-agent-builtins` tests its traits through a whole run, and
 //! `sc-server` tests the chat socket through one, so a fake that existed only
 //! inside this crate's own test build is one neither could reach. It is a
 //! first-class part of the crate.

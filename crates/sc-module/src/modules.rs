@@ -12,8 +12,8 @@
 use std::sync::Arc;
 
 use sc_action::ActionRegistry;
+use sc_action_builtins::CodeSurfaces;
 use sc_catalog::Catalog;
-use sc_core_actions::CodeSurfaces;
 use sc_error::Result;
 use sc_types::{Attrs, FormField};
 use sc_viewpattern::{BUILTIN_PATTERNS, PatternInfo, PluginAssets};

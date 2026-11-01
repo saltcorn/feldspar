@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use sc_check::{DeclaredStep, StepAsks, StepDecl, StepType, StepWorker};
 use sc_error::Result;
-use sc_module::{CallHosts, CheckAsks, CheckStepManifest, ModuleHost, ModuleSet};
+use sc_module::{Ask, AskSurface, CallHosts, CheckStepManifest, ModuleHost, ModuleSet};
 use serde_json::Value as Json;
 
 /// Install the step types the modules in `set` declare, in place of the last
@@ -88,7 +88,7 @@ impl StepWorker for ModuleStepWorker {
         let bridge = AskBridge(asks);
         // The `check` surface and nothing else: a step reaches the database,
         // the router and the browser only through the run it is a step of.
-        let call = CallHosts::default().with_check(&bridge);
+        let call = CallHosts::default().with_ask(AskSurface::Check, &bridge);
         self.host.run_check_step(module, step, request, call).await
     }
 }
@@ -97,7 +97,7 @@ impl StepWorker for ModuleStepWorker {
 struct AskBridge<'a>(&'a dyn StepAsks);
 
 #[async_trait::async_trait]
-impl CheckAsks for AskBridge<'_> {
+impl Ask for AskBridge<'_> {
     async fn ask(&self, plan: Json) -> Result<Json> {
         self.0.ask(plan).await
     }

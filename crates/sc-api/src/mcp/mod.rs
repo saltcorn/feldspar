@@ -12,7 +12,7 @@
 //! [`crate::schema_edit`]'s module comment was written to prevent,
 //! moved up one level: two bodies that check grants slightly differently and
 //! drift within a release. So the bodies live at the lowest layer that can hold
-//! them, and the copilot — `sc-core-traits`'s `admin_copilot` — and the MCP
+//! them, and the copilot — `sc-agent-builtins`'s `admin_copilot` — and the MCP
 //! server are both thin things over a [`ToolSet`].
 //!
 //! ## What a caller supplies, and what it does not
@@ -79,7 +79,6 @@ use crate::schema_edit::{self, Grants};
 pub use code_api::{JS_CODE_API, TOOL_DESCRIBE_CODE_API};
 pub use endpoint_tool::{BODY_KEY, ProjectedCall, Projection, check_caller};
 pub use json_schema::{json_schema, object_schema, scalar_schema};
-pub use sc_docs::tools::{TOOL_READ_DOCS, TOOL_SEARCH_DOCS};
 pub use schema::{TOOL_DESCRIBE, TOOL_EDIT};
 pub use triggers::{
     TOOL_DELETE_TRIGGER, TOOL_DESCRIBE_ACTION, TOOL_DESCRIBE_TRIGGERS, TOOL_SAVE_TRIGGER,
@@ -765,7 +764,10 @@ mod tests {
         assert_eq!(set.all_names().len(), 9);
         assert!(set.offers(TOOL_DESCRIBE) && set.offers(TOOL_EDIT));
         assert!(set.offers(TOOL_DESCRIBE_CODE_API));
-        assert!(set.offers(TOOL_SEARCH_DOCS) && set.offers(TOOL_READ_DOCS));
+        assert!(
+            set.offers(sc_docs::tools::TOOL_SEARCH_DOCS)
+                && set.offers(sc_docs::tools::TOOL_READ_DOCS)
+        );
         assert!(!set.offers(TOOL_SAVE_TRIGGER));
 
         let set = ToolSet::core(Grants::all(), Areas::all());

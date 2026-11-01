@@ -293,7 +293,7 @@ async fn a_green_check_mounts_the_runs_preview_and_leaves_the_live_mount() -> sc
 
     let tmp = TempDir::new("check");
     let env = setup(&tmp, Duration::from_secs(3600)).await?;
-    let registry = sc_core_traits::builtin_traits()?;
+    let registry = sc_agent_builtins::builtin_traits()?;
     let coding = registry.require("coding")?.clone();
     let config: sc_types::Attrs = [
         ("store", json!("apps")),

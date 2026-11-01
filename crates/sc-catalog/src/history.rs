@@ -19,8 +19,8 @@ use uuid::Uuid;
 use crate::catalog::Catalog;
 use crate::change_log::{ATTR_HISTORY, CHANGES_TABLE};
 use crate::changeset::CHANGESETS_TABLE;
-use crate::field::Attrs;
 use crate::table::Table;
+use sc_types::Attrs;
 
 /// A changeset as the log keeps it, without the session key, which is for
 /// finding a session's changesets (the Undo action) and is never shown.

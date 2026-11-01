@@ -519,7 +519,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let run = sc_workflow::resume_run(
                     &catalog,
                     &dispatcher,
-                    &sc_workflow::SystemClock,
+                    &sc_types::clock::SystemClock,
                     id,
                     values,
                 )
@@ -543,7 +543,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 };
                 let run = sc_workflow::cancel_run(
                     &catalog,
-                    &sc_workflow::SystemClock,
+                    &sc_types::clock::SystemClock,
                     id,
                     reason.as_deref(),
                 )
@@ -564,9 +564,13 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 let dispatcher = triggers_of(&apps)?;
                 let id = sc_agent::RunId(parse_uuid(ctx.path_param("id")?, "run")?);
-                let run =
-                    sc_workflow::retry_run(&catalog, &dispatcher, &sc_workflow::SystemClock, id)
-                        .await?;
+                let run = sc_workflow::retry_run(
+                    &catalog,
+                    &dispatcher,
+                    &sc_types::clock::SystemClock,
+                    id,
+                )
+                .await?;
                 Ok(HandlerResponse::ok(
                     run_json_with_workflow(&catalog, &run, &ctx.locale).await?,
                 ))
@@ -700,12 +704,12 @@ async fn internal_stream_names(catalog: &Catalog) -> Result<Vec<String>> {
 }
 
 /// Fill in the options of every field declaring
-/// [`INTERNAL_STREAMS_QUERY`](sc_core_actions::INTERNAL_STREAMS_QUERY) — the
+/// [`INTERNAL_STREAMS_QUERY`](sc_action_builtins::INTERNAL_STREAMS_QUERY) — the
 /// arrangement [`resolve_model_options`] has, for its reason.
 fn resolve_internal_streams(spec: Vec<FormField>, streams: &[String]) -> Vec<FormField> {
     spec.into_iter()
         .map(|field| match field.query() {
-            Some(q) if q == sc_core_actions::INTERNAL_STREAMS_QUERY => {
+            Some(q) if q == sc_action_builtins::INTERNAL_STREAMS_QUERY => {
                 field.with_resolved_options(streams.to_vec())
             }
             _ => field,

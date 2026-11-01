@@ -9,13 +9,14 @@ use std::sync::Arc;
 
 use chrono::NaiveDate;
 use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId};
-use sc_dataset::{DatasetDef, Page, StagePage, read_stage, value_json};
+use sc_dataset::{DatasetDef, Page, StagePage, read_stage};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
 use sc_query::{Expr, Insert, Statement, Value};
 use sc_test_harness::TestDb;
+use sc_types::value_to_analysis_json;
 use sc_types::{BasicType, TypeRef};
 use serde_json::Value as Json;
 
@@ -255,7 +256,7 @@ pub async fn read(fx: &Fixture, def: &DatasetDef, upto: Option<usize>) -> Result
 pub fn json_rows(page: &StagePage) -> Vec<Vec<Json>> {
     page.rows
         .iter()
-        .map(|r| r.iter().map(value_json).collect())
+        .map(|r| r.iter().map(value_to_analysis_json).collect())
         .collect()
 }
 

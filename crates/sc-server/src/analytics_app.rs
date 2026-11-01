@@ -29,9 +29,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use sc_analytics::app::{ANALYTICS_FRAMEWORK, AnalyticsConfig, analytics_config_spec};
+use sc_api::Method;
 use sc_app::{
     AppRequest, AppResponse, Application, BuildSpec, CspPolicy, Framework, FrameworkFactory,
-    FrameworkInfo, Method, MountContext,
+    FrameworkInfo, MountContext,
 };
 use sc_catalog::Catalog;
 use sc_error::Result;

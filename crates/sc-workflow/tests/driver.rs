@@ -32,14 +32,14 @@ use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
 use sc_expr::{DenoEvaluator, JsEvaluator};
 use sc_test_harness::TestDb;
+use sc_types::clock::{Clock, ManualClock};
 use sc_types::{Attrs, BasicType, FormField, TypeRef};
 use sc_workflow::machine::WorkflowRun;
 use sc_workflow::queue::WorkQueue;
 use sc_workflow::{
-    Advanced, Assignment, Backoff, BranchArm, DatabaseQueue, Driver, ErrorPolicy, ManualClock,
-    Next, RunTrace, Step, StepKind, TraceOutcome, Workflow, WorkflowEngineTask,
-    bootstrap_run_traces, bootstrap_workflow_versions, list_run_traces, run_state, save_workflow,
-    start_run,
+    Advanced, Assignment, Backoff, BranchArm, DatabaseQueue, Driver, ErrorPolicy, Next, RunTrace,
+    Step, StepKind, TraceOutcome, Workflow, WorkflowEngineTask, bootstrap_run_traces,
+    bootstrap_workflow_versions, list_run_traces, run_state, save_workflow, start_run,
 };
 use serde_json::{Value as Json, json};
 
@@ -857,7 +857,7 @@ async fn the_engine_task_advances_a_run_whose_timer_has_come_round() -> Result<(
         Arc::clone(&catalog),
         Arc::clone(&dispatcher),
         queue,
-        Arc::clone(&clock) as Arc<dyn sc_workflow::Clock>,
+        Arc::clone(&clock) as Arc<dyn Clock>,
     ));
     // Installed on the dispatcher: from here a workflow trigger starts a run.
     dispatcher.set_workflow_engine(Arc::clone(&engine) as Arc<dyn sc_action::WorkflowEngine>);
@@ -1370,7 +1370,7 @@ async fn a_workflow_that_starts_a_workflow_carries_the_chain_and_is_bounded_by_i
         Arc::clone(&catalog),
         Arc::clone(&dispatcher),
         queue,
-        Arc::clone(&clock) as Arc<dyn sc_workflow::Clock>,
+        Arc::clone(&clock) as Arc<dyn Clock>,
     ));
     dispatcher.set_workflow_engine(Arc::clone(&engine) as Arc<dyn sc_action::WorkflowEngine>);
 

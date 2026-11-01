@@ -368,7 +368,7 @@ async fn a_session_is_minted_with_no_server_running() -> sc_error::Result<()> {
 #[test]
 fn the_wire_names_match_the_servers() {
     assert_eq!(sc_server::SESSION_COOKIE, "sc_session");
-    assert_eq!(sc_server::CSRF_COOKIE, "sc_csrf");
-    assert_eq!(sc_server::SECURE_CSRF_COOKIE, "__Host-sc_csrf");
-    assert_eq!(sc_server::CSRF_HEADER, "x-csrf-token");
+    assert_eq!(sc_api::auth::CSRF_COOKIE, "sc_csrf");
+    assert_eq!(sc_api::auth::SECURE_CSRF_COOKIE, "__Host-sc_csrf");
+    assert_eq!(sc_api::auth::CSRF_HEADER, "x-csrf-token");
 }

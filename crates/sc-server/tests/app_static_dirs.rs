@@ -20,6 +20,7 @@
 //!   fallback still answers a path no directory claims.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -37,10 +38,7 @@ use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::{FileMeta, FileStore, LocalFileStore};
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps,
-};
+use sc_server::{AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps};
 use sc_test_harness::TestDb;
 use serde_json::json;
 use tower::ServiceExt;
@@ -576,7 +574,7 @@ async fn a_directory_naming_an_undeclared_store_serves_nothing() -> sc_error::Re
 #[tokio::test]
 async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()> {
     use sc_agent::{RunCaller, RunId, RunMode, ToolsContext, TraitContext};
-    use sc_core_traits::builtin_traits;
+    use sc_agent_builtins::builtin_traits;
     use sc_types::Attrs;
 
     let tmp = TempDir::new("list-assets");
@@ -609,14 +607,14 @@ async fn list_assets_returns_the_urls_the_router_serves() -> sc_error::Result<()
     let config: Attrs = [
         ("store".to_owned(), json!("apps")),
         ("root".to_owned(), json!("web")),
-        (sc_core_traits::CFG_APPLICATION.to_owned(), json!("blog")),
+        (sc_agent_builtins::CFG_APPLICATION.to_owned(), json!("blog")),
     ]
     .into_iter()
     .collect();
 
     // Offered because the trait names an application — and named after the
     // scope, like every other tool this trait contributes.
-    let tool = sc_core_traits::tool_names::list_assets(&sc_core_traits::FileScope {
+    let tool = sc_agent_builtins::tool_names::list_assets(&sc_agent_builtins::FileScope {
         store: "apps".to_owned(),
         root: "web".to_owned(),
     });

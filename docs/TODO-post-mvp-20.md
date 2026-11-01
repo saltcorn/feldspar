@@ -124,7 +124,7 @@ the same reason as the session cache's.
 ### 3. Grants are the copilot's grants
 
 A token carries the **same six flags** `admin_copilot` carries
-([`admin_copilot.rs`](../crates/sc-core-traits/src/admin_copilot.rs)): the four
+([`admin_copilot.rs`](../crates/sc-agent-builtins/src/admin_copilot.rs)): the four
 `schema_edit::Grants` — create, edit, drop, access changes — and the two areas,
 `allow_triggers` and `allow_applications`.
 
@@ -216,16 +216,16 @@ a decision about someone's context window and should be argued for, not accumula
 inputSchema }`. They are the same value with two spellings, which is why tier 1 is a rename
 and not a rewrite.
 
-But `admin_copilot` lives in `sc-core-traits` (layer 9) and the MCP projection belongs in
+But `admin_copilot` lives in `sc-agent-builtins` (layer 9) and the MCP projection belongs in
 `sc-api` (layer 8), so the tool **bodies** move down: `admin_copilot/{schema,triggers,apps}.rs`
 already touch only the catalog, `schema_edit` and the trigger set, all of which are layer 8 or
-below. They become `sc-api::mcp::tools`, and `sc-core-traits::admin_copilot` becomes a thin
+below. They become `sc-api::mcp::tools`, and `sc-agent-builtins::admin_copilot` becomes a thin
 `AgentTrait` over them.
 
 This is the milestone's one refactor and it should be done first, because the alternative is
 two implementations of `edit_schema` — one for the chat copilot and one for MCP — differing
 in which grants they check, which is precisely the failure `schema_edit`'s module comment was
-written to prevent. **No new crate.** A `sc-mcp` crate would need `sc-core-traits` to reach
+written to prevent. **No new crate.** A `sc-mcp` crate would need `sc-agent-builtins` to reach
 the copilot tools and `sc-server` to reach the mount registry, which inverts the layering in
 two directions at once.
 
@@ -294,7 +294,7 @@ unknown tool, a bad revision, a refused credential.
 
 ## Phase 1 — The refactor: one implementation of the administrative tools
 
-- [x] 1.1 Move `admin_copilot/{schema,triggers,apps}.rs` bodies from `sc-core-traits` into
+- [x] 1.1 Move `admin_copilot/{schema,triggers,apps}.rs` bodies from `sc-agent-builtins` into
       `sc-api::mcp::tools`, keeping the tool names, the JSON schemas and the grant checks
       exactly as they are. Nothing about the built-in copilot's behaviour changes.
       **Two-thirds of it went there**: `schema.rs` and `triggers.rs` are `sc-api::mcp`'s, and
@@ -302,7 +302,7 @@ unknown tool, a bad revision, a refused credential.
       whose storage is `sc-app`'s — a layer *above* `sc-api`, so §7's "all of which are layer 8
       or below" holds for six of the nine and not for the other three. The set is one value
       either way (1.3).
-- [x] 1.2 `sc-core-traits::admin_copilot` becomes a thin `AgentTrait` over them: `config_spec`,
+- [x] 1.2 `sc-agent-builtins::admin_copilot` becomes a thin `AgentTrait` over them: `config_spec`,
       `validate_config` and the area filtering stay; `tools` and `call` delegate.
 - [x] 1.3 A `ToolSet` value in `sc-api::mcp`: the tools, their `ToolSpec`s, and one `call`,
       parameterised by the caller's `User` and their grants — so the copilot passes an agent's
@@ -442,7 +442,7 @@ unknown tool, a bad revision, a refused credential.
       "does this want a rebuild?" — answered `None` for every application the server actually
       mounts. Nothing had consumed the answer before.
 - [x] 5.2 `buildApplication` as a tier-2 tool, with the build's diagnostics as the result —
-      the same decision [`build_application.rs`](../crates/sc-core-traits/src/build_application.rs)
+      the same decision [`build_application.rs`](../crates/sc-agent-builtins/src/build_application.rs)
       already made, for the same reason.
       Tagged in 4.2; what this phase added is the **result shape**. The endpoint reports a
       failed build as an error, because a screen wants a red box — so the tag says

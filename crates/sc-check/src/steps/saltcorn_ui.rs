@@ -13,7 +13,7 @@
 //!   deleted field as an empty cell and answer 200, which is the quiet
 //!   breakage a checklist exists to catch.
 
-use sc_browser::Locator;
+use sc_agent::browser::Locator;
 use sc_error::Error;
 use sc_types::{BasicType, FormField};
 use serde_json::{Value as Json, json};

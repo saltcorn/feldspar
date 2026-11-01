@@ -9,6 +9,12 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# The clock (`sc_types::clock`), the one the workflow engine reads too.
+sc-types.workspace = true
+
+[dev-dependencies]
+# `ManualClock::advance` takes a `chrono::TimeDelta`.
+chrono.workspace = true
 
 [lints]
 workspace = true

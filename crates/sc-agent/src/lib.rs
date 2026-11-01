@@ -3,7 +3,7 @@
 //! Layer 7. This crate knows **agents, traits and the loop, and nothing about
 //! which vendor is on the other end** — that is [`sc_llm`]'s, below it. It also
 //! knows nothing about *which* traits exist: it defines what a trait is, and the
-//! built-in set lives in `sc-core-traits` at layer 9, above the row layer, so a
+//! built-in set lives in `sc-agent-builtins` at layer 9, above the row layer, so a
 //! trait that writes a row goes through `sc-api` and its write is coerced,
 //! validated and observed like any other.
 //!
@@ -56,6 +56,7 @@ pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> = sc_catalog::U
 
 pub mod agent;
 pub mod agent_trait;
+pub mod browser;
 pub mod context;
 pub mod control;
 pub mod delegate;

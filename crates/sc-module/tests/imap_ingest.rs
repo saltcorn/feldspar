@@ -287,7 +287,7 @@ pub(crate) mod deno {
             .configuration
             .insert("ca_certificates".into(), json!(ca));
         save_module(cat, &module).await.unwrap();
-        let mut registry = sc_core_actions::builtin_actions().unwrap();
+        let mut registry = sc_action_builtins::builtin_actions().unwrap();
         let set = ModuleSet::load(cat, &host, &installer, &surfaces(), &mut registry)
             .await
             .unwrap();

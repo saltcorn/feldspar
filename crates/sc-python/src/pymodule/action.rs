@@ -22,7 +22,7 @@
 //!
 //! # And it reaches the same five surfaces a body does
 //!
-//! Built by [`CodeSurfaces`] — `sc_core_actions`', the very ones `run_js_code`
+//! Built by [`CodeSurfaces`] — `sc_action_builtins`', the very ones `run_js_code`
 //! and `run_python_code` build — so a module's write carries the event's caller
 //! and this trigger's chain, its `fetch` is counted on the run's budget, and its
 //! `trigger(…)` goes through *the* dispatcher. §2: a Python plugin has no v1 to
@@ -32,7 +32,7 @@
 use std::sync::Arc;
 
 use sc_action::{Action, ActionContext, Event};
-use sc_core_actions::CodeSurfaces;
+use sc_action_builtins::CodeSurfaces;
 use sc_error::Result;
 use sc_types::{Attrs, FormField};
 use serde_json::{Map, Value as Json};

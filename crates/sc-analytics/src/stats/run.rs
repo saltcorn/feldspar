@@ -16,9 +16,10 @@ use std::collections::HashMap;
 
 use sc_catalog::Catalog;
 use sc_dataset::Caller;
-use sc_dataset::{ColType, StageShape, scramble, value_json};
+use sc_dataset::{ColType, StageShape, scramble};
 use sc_error::Result;
 use sc_query::{BinOp, Expr, Nulls, OrderBy, OrderDir, Projection, Select, Source, UnOp, Value};
+use sc_types::value_to_analysis_json;
 use serde::Serialize;
 use serde_json::Value as Json;
 
@@ -302,7 +303,7 @@ fn canon(values: &[Value]) -> String {
     for value in values {
         match f64_of(value) {
             Some(x) => out.push_str(&format!("n{x:e}|")),
-            None => out.push_str(&format!("{}|", value_json(value))),
+            None => out.push_str(&format!("{}|", value_to_analysis_json(value))),
         }
     }
     out
@@ -858,7 +859,10 @@ impl Tester<'_> {
             let mut x_levels = xs.order;
             let mut y_levels = ys.order;
             let order = |a: &(Vec<Value>, u64), b: &(Vec<Value>, u64)| {
-                crate::plot::render::compare_json(&value_json(&a.0[0]), &value_json(&b.0[0]))
+                crate::plot::render::compare_json(
+                    &value_to_analysis_json(&a.0[0]),
+                    &value_to_analysis_json(&b.0[0]),
+                )
             };
             x_levels.sort_by(order);
             y_levels.sort_by(order);

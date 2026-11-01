@@ -13,9 +13,10 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use sc_cli::i18n::{
     Coverage, DOMAINS, Domain, I18nArgs, Kind, catalogue_locales, coverage, domain, find_root,
-    load_catalogue, parse_answer, save_catalogue, scan_domain,
+    load_catalogue, save_catalogue, scan_domain,
 };
 use sc_i18n::{Catalog, Locale, Message, Translator, translate_missing};
+use sc_server::parse_answer;
 use serde_json::{Value as Json, json};
 
 fn root() -> PathBuf {

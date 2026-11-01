@@ -11,7 +11,7 @@
 //! layer can emit events without knowing whether anything listens.
 //!
 //! It holds no actions itself — the core set is a crate of its own
-//! (`sc-core-actions`, above the row layer, because three of them write rows) —
+//! (`sc-action-builtins`, above the row layer, because three of them write rows) —
 //! but it does hold the machinery *every* action's configuration goes through:
 //! what a configured formula may name ([`action_shape`], [`EVENT_SCOPE`]), what an
 //! event binds it to ([`EventBindings`]), and how a setting is parsed
@@ -39,7 +39,7 @@
 //!
 //! Layering: this is the lowest crate that both holds a [`Catalog`](sc_catalog::Catalog)
 //! and needs the formula language, and nothing below it may depend on it. Two
-//! crates above it do. `sc-core-actions` holds the built-in actions that **write
+//! crates above it do. `sc-action-builtins` holds the built-in actions that **write
 //! rows** (`insert_row`/`update_rows`/`delete_rows`), which must go through the
 //! row layer so a trigger's write is coerced, validated and observable exactly
 //! like an API caller's; the rule is "an action lives where the things it needs

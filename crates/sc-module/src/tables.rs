@@ -48,14 +48,15 @@
 //! Running it twice is a no-op, which is what lets it run on **every** load:
 //! install, upgrade, a configuration change and a restart are one path.
 
+use sc_types::Attrs;
 use sc_types::Role;
 use std::collections::BTreeSet;
 
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation, TableSettings};
 use sc_catalog::{
-    Attrs, Catalog, ConstraintKind, DataField, DataFieldKind, FILE_STORES_TABLE, FieldId,
-    FileStoreId, ModuleTables, Table, TableConstraint, connect_file_store_def,
-    load_file_store_by_name, save_file_store,
+    Catalog, ConstraintKind, DataField, DataFieldKind, FILE_STORES_TABLE, FieldId, FileStoreId,
+    ModuleTables, Table, TableConstraint, connect_file_store_def, load_file_store_by_name,
+    save_file_store,
 };
 use sc_error::{Error, Result};
 use serde::Deserialize;

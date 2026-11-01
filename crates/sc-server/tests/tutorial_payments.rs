@@ -25,9 +25,10 @@ use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation, TableSetting
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, TriggerRef};
 use sc_auth::{SessionStore, create_user};
 use sc_catalog::{Catalog, DataFieldKind, FieldId, FileStoreId};
+use sc_config::parse_mailbox;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
-use sc_email::{Mailer, RecordingMailer, parse_mailbox};
+use sc_email::{Mailer, RecordingMailer};
 use sc_server::{
     AppMounts, GUEST_COOKIE, ModuleServices, MountedApp, ServerConfig, admin_handlers,
     base_action_registry, build_router_with_apps, default_js_evaluator, install_agents,

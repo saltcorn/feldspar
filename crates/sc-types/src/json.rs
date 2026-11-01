@@ -1,29 +1,51 @@
-//! Converting between JSON (the wire shape of the typed API) and the query
-//! layer's [`Value`] (technical design §13.2, §4).
+//! Converting between JSON and the query layer's [`Value`]: the one module
+//! that does it (technical design §13.2, §4).
 //!
-//! Row endpoints exchange plain JSON objects, but the query layer speaks
-//! [`Value`]. These two helpers bridge them: [`json_to_value`] coerces an
-//! incoming JSON scalar to the [`Value`] variant a column's [`BasicType`] calls
-//! for (so a `timestamptz` column receives a real timestamp, not a string), and
-//! [`value_to_json`] renders a value read back from the database as natural JSON
-//! (not the tagged `{"type":…,"value":…}` form `Value`'s own `Serialize` emits).
+//! ## Four readers, four spellings
 //!
-//! ## Why it is *here*
+//! A value is written as JSON for four readers, and they want four slightly
+//! different things. The differences are deliberate, so they are kept here, side
+//! by side, as the cases of [`Spelling`], rather than as four functions in four
+//! crates:
 //!
-//! It started in `sc-api`, whose row endpoints are its heaviest user, and moved
-//! down when a second, much lower caller appeared: a trigger's `only_if` reads an
-//! event's row, which arrives as JSON and must be **typed by its columns** before
-//! a Ⱶ-path prefetch can correlate on it (a `uuid` key compared as text is a SQL
-//! error, not a mismatch). That is a fact about types and values, not about an
-//! API, so it belongs at layer 3 where both callers can reach it.
-//! `sc_access::convert` re-exports both names, so the API side is unchanged.
+//! | value | [`Wire`](Spelling::Wire) | [`Script`](Spelling::Script) | [`Analysis`](Spelling::Analysis) | [`Archive`](Spelling::Archive) |
+//! |---|---|---|---|---|
+//! | decimal | string (exact) | number (`f64`) | number (`f64`, parsed from its digits) | string (exact) |
+//! | bytes | array of numbers | `null` | array of numbers | base64 string |
+//! | NaN, ±∞ | `null` | `null` | `null` | `"NaN"`, `"Infinity"`, `"-Infinity"` |
+//! | timestamp | RFC 3339, as many sub-second digits as chrono picks | the same | the same | RFC 3339 in UTC (`Z`), every sub-second digit |
 //!
-//! Not to be confused with [`sc_expr::value_to_json`], which renders the *same*
-//! values for **JavaScript**: a decimal becomes a number there and a string here,
-//! because one feeds arithmetic in an isolate and the other a wire response that
-//! must not lose precision.
+//! Everything else — null, a boolean, an integer as an exact JSON number, text,
+//! a UUID, a date, a time, JSON as itself — is spelt the same for all four.
+//!
+//! - **Wire** ([`value_to_json`]): a typed API response and the admin API — a
+//!   decimal must not lose its last digit on the way to a screen.
+//! - **Script**: what a formula or a code body sees in JavaScript, where a
+//!   decimal feeds arithmetic. An `i64` beyond 2^53 loses precision there (JS
+//!   numbers are `f64`), and a `bytea` column has no JS literal.
+//! - **Analysis**: a dataset's grid and plots: numbers as numbers, including a
+//!   decimal, and otherwise the wire's spelling.
+//! - **Archive**: a backup. The wire's bytes cost about 32 bytes of parsed JSON
+//!   per byte of data and its `null` for a non-finite float loses the value, so
+//!   a backup writes base64 and names the non-finite floats; a timestamp keeps
+//!   its nanoseconds.
+//!
+//! ## Reading
+//!
+//! [`json_to_value`] coerces JSON to the [`Value`] a column's [`BasicType`]
+//! calls for (so a `timestamptz` column receives a real timestamp, not a
+//! string); [`json_to_value_as`] reads a [`Spelling`], which differs from it only
+//! for an archive's bytes. [`value_from_json`] reads JSON that has **no column
+//! behind it** — a trigger event's row, the caller object — as the value its own
+//! shape implies.
+//!
+//! These live at layer 3 because a trigger's `only_if` types an event's row by
+//! its columns, three layers below any API, and the formula engine (`sc-expr`)
+//! renders values for JavaScript.
 
-use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use chrono::{DateTime, NaiveDate, NaiveTime, SecondsFormat, Utc};
 use rust_decimal::Decimal;
 use sc_error::{Error, Result};
 use sc_query::Value;
@@ -33,25 +55,146 @@ use crate::BasicType;
 use std::str::FromStr;
 use uuid::Uuid;
 
-/// Render a [`Value`] read from the database as natural JSON for an API response.
+/// Who a value is spelt for. See the [module documentation](self) for the
+/// table of what differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spelling {
+    /// An API response: nothing is lost, a decimal is a string.
+    Wire,
+    /// JavaScript (a formula, a code body): a decimal is a number, bytes are
+    /// `null`.
+    Script,
+    /// A dataset's grid: a decimal is a number, the rest as on the wire.
+    Analysis,
+    /// A backup: bytes in base64, non-finite floats named, timestamps in full.
+    Archive,
+}
+
+/// Render a [`Value`] read from the database as natural JSON for an API response
+/// — the [`Wire`](Spelling::Wire) spelling.
 ///
 /// Temporal and decimal values become strings (ISO-8601 / plain decimal) so no
 /// precision is lost; `Bytes` becomes an array of byte values; `Json` passes
-/// through unchanged.
+/// through unchanged. Not the tagged `{"type":…,"value":…}` form `Value`'s own
+/// `Serialize` emits.
 pub fn value_to_json(value: &Value) -> Json {
-    match value {
-        Value::Null => Json::Null,
-        Value::Bool(b) => Json::Bool(*b),
-        Value::Int(i) => Json::from(*i),
-        Value::Float(f) => serde_json::Number::from_f64(*f).map_or(Json::Null, Json::Number),
-        Value::Text(s) => Json::String(s.clone()),
-        Value::Bytes(b) => Json::Array(b.iter().map(|byte| Json::from(*byte)).collect()),
-        Value::Json(j) => j.clone(),
-        Value::Uuid(u) => Json::String(u.to_string()),
-        Value::Date(d) => Json::String(d.to_string()),
-        Value::Time(t) => Json::String(t.to_string()),
-        Value::Timestamp(ts) => Json::String(ts.to_rfc3339()),
-        Value::Decimal(d) => Json::String(d.to_string()),
+    value_to_json_as(value, Spelling::Wire)
+}
+
+/// [`value_to_json_as`] in the [`Script`](Spelling::Script) spelling: a value as
+/// JavaScript sees it. Named for passing to `map`.
+pub fn value_to_script_json(value: &Value) -> Json {
+    value_to_json_as(value, Spelling::Script)
+}
+
+/// [`value_to_json_as`] in the [`Analysis`](Spelling::Analysis) spelling: a value
+/// as a dataset's grid shows it. Named for passing to `map`.
+pub fn value_to_analysis_json(value: &Value) -> Json {
+    value_to_json_as(value, Spelling::Analysis)
+}
+
+/// Render a [`Value`] as JSON for `spelling`'s reader.
+pub fn value_to_json_as(value: &Value, spelling: Spelling) -> Json {
+    match (spelling, value) {
+        (_, Value::Null) => Json::Null,
+        (_, Value::Bool(b)) => Json::Bool(*b),
+        (_, Value::Int(i)) => Json::from(*i),
+        (Spelling::Archive, Value::Float(f)) if f.is_nan() => Json::String("NaN".to_owned()),
+        (Spelling::Archive, Value::Float(f)) if f.is_infinite() => Json::String(
+            if f.is_sign_positive() {
+                "Infinity"
+            } else {
+                "-Infinity"
+            }
+            .to_owned(),
+        ),
+        (_, Value::Float(f)) => number(*f),
+        (_, Value::Text(s)) => Json::String(s.clone()),
+        (Spelling::Script, Value::Bytes(_)) => Json::Null,
+        (Spelling::Archive, Value::Bytes(b)) => Json::String(BASE64.encode(b)),
+        (Spelling::Wire | Spelling::Analysis, Value::Bytes(b)) => {
+            Json::Array(b.iter().map(|byte| Json::from(*byte)).collect())
+        }
+        (_, Value::Json(j)) => j.clone(),
+        (_, Value::Uuid(u)) => Json::String(u.to_string()),
+        (_, Value::Date(d)) => Json::String(d.to_string()),
+        (_, Value::Time(t)) => Json::String(t.to_string()),
+        (Spelling::Archive, Value::Timestamp(ts)) => {
+            Json::String(ts.to_rfc3339_opts(SecondsFormat::AutoSi, true))
+        }
+        (_, Value::Timestamp(ts)) => Json::String(ts.to_rfc3339()),
+        (Spelling::Wire | Spelling::Archive, Value::Decimal(d)) => Json::String(d.to_string()),
+        // Two ways to a float, kept as they were: rust_decimal's own conversion
+        // for a formula, and the correctly rounded parse of the digits for a grid.
+        // They can differ in the last bit, and a formula's result must not change.
+        (Spelling::Script, Value::Decimal(d)) => number(f64::try_from(*d).unwrap_or(f64::NAN)),
+        (Spelling::Analysis, Value::Decimal(d)) => {
+            number(d.to_string().parse::<f64>().unwrap_or(f64::NAN))
+        }
+    }
+}
+
+/// A float as a JSON number, or `null` where JSON has none (NaN, ±∞).
+fn number(f: f64) -> Json {
+    serde_json::Number::from_f64(f).map_or(Json::Null, Json::Number)
+}
+
+/// A JSON value read as the [`Value`] its own shape implies — the inverse of
+/// the [`Script`](Spelling::Script) spelling as far as JSON can express it (a
+/// timestamp that became a string comes back as text).
+///
+/// This is for values that arrive as JSON with **no column behind them**: a
+/// trigger event's row, the caller object, an action's computed setting. Where a
+/// column *is* known the caller should coerce to its type instead
+/// ([`json_to_value`]), which recovers the uuid, timestamp and decimal this
+/// leaves as text — the distinction matters only for SQL translation, since a
+/// reified evaluation renders both back to the same JS value.
+pub fn value_from_json(json: &Json) -> Value {
+    match json {
+        Json::Null => Value::Null,
+        Json::Bool(b) => Value::Bool(*b),
+        Json::Number(n) => match (n.as_i64(), n.as_f64()) {
+            (Some(i), _) => Value::Int(i),
+            (None, Some(f)) => Value::Float(f),
+            // Not representable as either: `serde_json` cannot produce this, and
+            // carrying the digits as text loses nothing that was there.
+            (None, None) => Value::Text(n.to_string()),
+        },
+        Json::String(s) => Value::Text(s.clone()),
+        // A composite has one faithful `Value`, and it is the JSON itself.
+        Json::Array(_) | Json::Object(_) => Value::Json(json.clone()),
+    }
+}
+
+/// Read JSON written in `spelling` as the value a column of type `basic` holds.
+///
+/// Only an [archive](Spelling::Archive)'s bytes read differently from
+/// [`json_to_value`]: a base64 string. Its named non-finite floats are already
+/// read by the float parser.
+pub fn json_to_value_as(basic: &BasicType, json: &Json, spelling: Spelling) -> Result<Value> {
+    match (spelling, basic, json) {
+        (Spelling::Archive, BasicType::Bytes, Json::String(text)) => BASE64
+            .decode(text)
+            .map(Value::Bytes)
+            .map_err(|e| Error::invalid(format!("the bytes are not valid base64: {e}"))),
+        (Spelling::Archive, BasicType::Bytes, Json::Null) => Ok(Value::Null),
+        (Spelling::Archive, BasicType::Bytes, other) => Err(Error::invalid(format!(
+            "bytes are written as a base64 string, not {}",
+            kind_of(other)
+        ))),
+        _ => json_to_value(basic, json),
+    }
+}
+
+/// What kind of JSON value `json` is, as a sentence says it.
+fn kind_of(json: &Json) -> &'static str {
+    match json {
+        Json::Null => "null",
+        Json::Bool(_) => "a boolean",
+        Json::Number(_) => "a number",
+        Json::String(_) => "a string",
+        Json::Array(_) => "an array",
+        Json::Object(_) => "an object",
     }
 }
 
@@ -234,5 +377,131 @@ mod tests {
     fn text_column_stringifies_non_strings() {
         let v = json_to_value(&BasicType::Text, &Json::from(3_i64)).unwrap();
         assert_eq!(v, Value::Text("3".into()));
+    }
+
+    #[test]
+    fn a_typeless_json_value_reads_as_its_own_shape_and_round_trips() {
+        use serde_json::json;
+        assert_eq!(value_from_json(&json!(null)), Value::Null);
+        assert_eq!(value_from_json(&json!(false)), Value::Bool(false));
+        assert_eq!(value_from_json(&json!(4)), Value::Int(4));
+        assert_eq!(value_from_json(&json!(1.5)), Value::Float(1.5));
+        assert_eq!(value_from_json(&json!("x")), Value::Text("x".into()));
+        let obj = json!({ "a": [1, 2] });
+        assert_eq!(value_from_json(&obj), Value::Json(obj.clone()));
+        // The pair agrees in both directions for everything JSON can say, which
+        // is what lets an event's row be bound without a column to type it.
+        for value in [
+            json!(null),
+            json!(true),
+            json!(2),
+            json!(1.5),
+            json!("s"),
+            obj,
+        ] {
+            assert_eq!(
+                value_to_json_as(&value_from_json(&value), Spelling::Script),
+                value
+            );
+        }
+    }
+
+    /// The module documentation's table, cell by cell: the four spellings agree
+    /// on everything but decimals, bytes, non-finite floats and timestamps.
+    #[test]
+    fn the_four_spellings_differ_only_where_the_table_says() {
+        use chrono::TimeZone;
+        use serde_json::json;
+        let all = [
+            Spelling::Wire,
+            Spelling::Script,
+            Spelling::Analysis,
+            Spelling::Archive,
+        ];
+        let spell = |v: &Value| all.map(|s| value_to_json_as(v, s));
+
+        let decimal = Value::Decimal(Decimal::from_str("12.50").unwrap());
+        assert_eq!(
+            spell(&decimal),
+            [json!("12.50"), json!(12.5), json!(12.5), json!("12.50")]
+        );
+        let bytes = Value::Bytes(b"hi".to_vec());
+        assert_eq!(
+            spell(&bytes),
+            [
+                json!([104, 105]),
+                json!(null),
+                json!([104, 105]),
+                json!("aGk=")
+            ]
+        );
+        assert_eq!(
+            spell(&Value::Float(f64::NAN)),
+            [json!(null), json!(null), json!(null), json!("NaN")]
+        );
+        assert_eq!(spell(&Value::Float(f64::INFINITY))[3], json!("Infinity"));
+        let ts = Value::Timestamp(
+            Utc.with_ymd_and_hms(2026, 1, 2, 3, 4, 5).unwrap() + chrono::Duration::nanoseconds(7),
+        );
+        let [wire, script, analysis, archive] = spell(&ts);
+        assert_eq!(wire, json!("2026-01-02T03:04:05.000000007+00:00"));
+        assert_eq!(script, wire);
+        assert_eq!(analysis, wire);
+        assert_eq!(archive, json!("2026-01-02T03:04:05.000000007Z"));
+
+        let uuid = Uuid::new_v4();
+        for same in [
+            Value::Null,
+            Value::Bool(true),
+            Value::Int(i64::MAX),
+            Value::Float(0.25),
+            Value::Text("t".into()),
+            Value::Uuid(uuid),
+            Value::Date(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap()),
+            Value::Time(NaiveTime::from_hms_opt(1, 2, 3).unwrap()),
+            Value::Json(json!({"a": [1]})),
+        ] {
+            let [wire, rest @ ..] = spell(&same);
+            assert!(rest.iter().all(|r| *r == wire), "{same:?}");
+        }
+    }
+
+    #[test]
+    fn an_archive_reads_bytes_as_base64_and_everything_else_as_the_wire_does() {
+        assert_eq!(
+            json_to_value_as(&BasicType::Bytes, &Json::from("aGk="), Spelling::Archive).unwrap(),
+            Value::Bytes(b"hi".to_vec())
+        );
+        assert!(
+            json_to_value_as(
+                &BasicType::Bytes,
+                &Json::from("not base64!"),
+                Spelling::Archive
+            )
+            .is_err()
+        );
+        assert!(json_to_value_as(&BasicType::Bytes, &Json::from(7), Spelling::Archive).is_err());
+        assert_eq!(
+            json_to_value_as(&BasicType::Bytes, &Json::Null, Spelling::Archive).unwrap(),
+            Value::Null
+        );
+        match json_to_value_as(
+            &BasicType::Float,
+            &Json::from("-Infinity"),
+            Spelling::Archive,
+        ) {
+            Ok(Value::Float(f)) => assert!(f.is_infinite() && f.is_sign_negative()),
+            other => panic!("{other:?}"),
+        }
+        // On the wire, bytes are an array of numbers.
+        assert_eq!(
+            json_to_value_as(
+                &BasicType::Bytes,
+                &serde_json::json!([1, 2]),
+                Spelling::Wire
+            )
+            .unwrap(),
+            Value::Bytes(vec![1, 2])
+        );
     }
 }

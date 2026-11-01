@@ -2,35 +2,24 @@
 //!
 //! The technical design (§6.2) separates a **database** field ([`DataField`] —
 //! a column in a table) from a [**form** field](sc_types::FormField), and shares
-//! their common shape in [`BaseField`]. The MVP models `DataField` fully —
+//! their common shape in [`BaseField`](sc_types::BaseField). The MVP models `DataField` fully —
 //! including the `Key` and `File` kinds, even though the admin UI only exercises
 //! `Plain` — so the data model is right from the start (calculated fields are
 //! post-MVP; see the crate root).
 //!
 //! Only `DataField` and the identifiers live here. `BaseField` and `FormField`
-//! are in `sc-types` beside [`Attrs`], which they carry and describe. What keeps
+//! are in `sc-types` beside [`Attrs`](sc_types::Attrs), which they carry and describe. What keeps
 //! `DataField` up here is its [`Key`](DataFieldKind::Key)/[`File`](DataFieldKind::File)
 //! kinds, which reference catalog identifiers, and its `Column`/`ColumnDef`
-//! bridge — none of which `BaseField` ever needed. All three are re-exported
-//! from this crate, so a caller reaching for `sc_catalog::BaseField` still finds
-//! it.
+//! bridge — none of which `BaseField` ever needed.
 
 use sc_db::{Column, ColumnDef, ColumnGenerator};
 use sc_types::TypeRef;
 
-/// Type-specific attributes carried by a field or table, always a JSON object
-/// (technical design §6, §9: "a sparse value goes into `attributes`").
-///
-/// Defined in `sc-types` beside [`FormField`](sc_types::FormField), which
-/// describes one entry of it (§6.1), and re-exported here because fields and
-/// tables are where the catalog meets it.
-pub use sc_types::Attrs;
-
-/// Properties shared by every field (technical design §6.2).
-///
-/// Defined in `sc-types` beside [`FormField`](sc_types::FormField), the other
-/// half of §6.2's split, and re-exported here beside [`DataField`].
-pub use sc_types::BaseField;
+// A field's type-specific attributes (`Attrs`) and the properties every field
+// shares (`BaseField`) are `sc-types`'s, beside `FormField`, which describes an
+// entry of the one and is the other half of §6.2's split with the other.
+use sc_types::{Attrs, BaseField};
 
 /// Identifies a field within a table. As with [`TableId`], the MVP identity is
 /// the field (column) name.

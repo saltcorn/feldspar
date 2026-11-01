@@ -15,6 +15,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
@@ -22,8 +23,8 @@ use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_model::{FitResult, Frame, ModelProvider, OutcomeSpec, Prediction};
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-    default_js_evaluator, install_triggers,
+    AppMounts, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
+    install_triggers,
 };
 use sc_test_harness::TestDb;
 use sc_types::{Attrs, FormField};

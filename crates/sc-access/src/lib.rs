@@ -20,12 +20,11 @@
 //!   row-level security — as the guarded `*_as` functions, and [`write_as`] the
 //!   REST API's write rule built from it.
 //! - [`filter`], [`search`] and [`vector`] are the filtering vocabulary every
-//!   syntax lowers through; [`user_rows`] the users table's own rules;
-//!   [`convert`] the bridge from JSON to the query layer's `Value`; and
-//!   [`calc_read`] calculated fields on the read path.
+//!   syntax lowers through; [`user_rows`] the users table's own rules
+//!   (the bridge from JSON to the query layer's `Value` is `sc_types::json`'s);
+//!   and [`calc_read`] calculated fields on the read path.
 
 pub mod calc_read;
-pub mod convert;
 pub mod filter;
 pub mod ownership;
 pub mod rows;
@@ -63,5 +62,3 @@ pub fn admin_access(
     })
 }
 pub use user_rows::{ADMIN_ONLY_WRITE, api_row};
-// The token the unchecked operations take, re-exported beside them.
-pub use sc_catalog::Unchecked;

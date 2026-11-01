@@ -30,7 +30,7 @@ use sc_types::Role;
 use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
 
-use crate::host::RoleAsks;
+use crate::host::Ask;
 use crate::permissions::ModulePermissions;
 
 /// One module's role grants, over one call.
@@ -120,7 +120,7 @@ impl<'a> ModuleRoles<'a> {
 }
 
 #[async_trait::async_trait]
-impl RoleAsks for ModuleRoles<'_> {
+impl Ask for ModuleRoles<'_> {
     async fn ask(&self, plan: Json) -> Result<Json> {
         let Json::Object(plan) = plan else {
             return Err(Error::invalid("a roles ask is an object with an `op`"));

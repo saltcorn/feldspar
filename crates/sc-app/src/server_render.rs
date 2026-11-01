@@ -66,10 +66,9 @@ use serde_json::{Value as Json, json};
 
 use crate::application::Application;
 use crate::build::BuildReport;
-use crate::framework::{
-    Asset, AssetBundle, BuildSpec, CodeFramework, Framework, Method, RequestBody,
-};
+use crate::framework::{Asset, AssetBundle, BuildSpec, CodeFramework, Framework, RequestBody};
 use crate::{AppRequest, AppResponse};
+use sc_api::Method;
 
 /// The action a server entry runs on — the JavaScript code body's.
 const RUN_JS: &str = "run_js_code";

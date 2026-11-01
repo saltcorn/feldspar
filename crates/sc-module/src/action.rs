@@ -11,7 +11,7 @@
 //!
 //! # And it reaches the same surfaces a code body does
 //!
-//! Built by [`CodeSurfaces`] — `sc_core_actions`', the very ones `run_js_code`
+//! Built by [`CodeSurfaces`] — `sc_action_builtins`', the very ones `run_js_code`
 //! and `PyModuleAction` build — so a v1 plugin's `books.insertRow(row)` carries
 //! the event's caller and this trigger's chain, and its `run_trigger` goes
 //! through *the* dispatcher. This is what the v1 `Table` inside the module runs
@@ -22,14 +22,14 @@ use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{Action, ActionContext, Event};
-use sc_core_actions::CodeSurfaces;
+use sc_action_builtins::CodeSurfaces;
 use sc_error::Result;
 use sc_types::{Attrs, FormField};
 use serde_json::{Map, Value as Json, json};
 
 use crate::consent::ConsentAsks;
 use crate::files::{FileArea, ModuleFiles};
-use crate::host::{CallHosts, ModuleHost};
+use crate::host::{AskSurface, CallHosts, ModuleHost};
 
 /// One action supplied by one module.
 pub struct ModuleAction {
@@ -192,9 +192,9 @@ impl Action for ModuleAction {
                 args,
                 CallHosts::new(hosts.surfaces(), hosts.schema())
                     .with_module_files(&files)
-                    .with_roles(&roles)
-                    .with_credits(&credits)
-                    .with_oauth(&oauth),
+                    .with_ask(AskSurface::Roles, &roles)
+                    .with_ask(AskSurface::Credits, &credits)
+                    .with_ask(AskSurface::OAuth, &oauth),
             )
             .await
     }

@@ -23,9 +23,10 @@ use sc_catalog::{
 };
 use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
-use sc_expr::{Formula, ModuleFnHost, ModuleFunction, SchemaShape, TableShape, value_to_json};
+use sc_expr::{Formula, ModuleFnHost, ModuleFunction, SchemaShape, TableShape};
 use sc_query::Value;
 use sc_test_harness::TestDb;
+use sc_types::value_to_json;
 use sc_types::{BasicType, TypeRef};
 use serde_json::Value as Json;
 

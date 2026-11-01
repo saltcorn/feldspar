@@ -47,9 +47,9 @@ use super::args;
 use super::context::{RequestContext, request_context};
 use super::errors;
 use super::resolve::{self, Resolver, RowValue};
-use sc_access::convert::value_to_json;
 use sc_access::ownership;
 use sc_access::rows;
+use sc_types::value_to_json;
 
 /// `insert_X(object: …)` — the row to write.
 pub const ARG_OBJECT: &str = "object";

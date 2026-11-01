@@ -28,9 +28,10 @@ use serde_json::Value as Json;
 
 use crate::catalog::{Catalog, SchemaStep};
 use crate::changeset::{CHANGE_LOG_GUC, CHANGESET_GUC, CHANGESETS_TABLE, changesets_fields};
-use crate::field::{Attrs, DataField};
+use crate::field::DataField;
 use crate::sync::sync_enabled;
 use crate::table::Table;
+use sc_types::Attrs;
 
 /// The change log: one entry per recorded insert, update or delete.
 pub const CHANGES_TABLE: &str = "_fd_changes";

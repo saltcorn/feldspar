@@ -4,7 +4,7 @@
 //! changes nothing that is served, and nothing inside the server gives a run a
 //! browser. Both belong to the server layer: a preview is a second mount in
 //! `sc-server`'s registry, and the browser is a headless Chromium it drives. A
-//! trait in `sc-core-traits` can name neither, so this module is the seam, in
+//! trait in `sc-agent-builtins` can name neither, so this module is the seam, in
 //! the shape the evaluator and the dispatcher already have on
 //! [`TraitContext`](crate::TraitContext): a capability the deployment has or has
 //! not got, reached through `require_*`, whose absence is a configuration error
@@ -14,9 +14,9 @@
 //!   application.
 //! - [`BrowserDriver`] performs one [`BrowserAction`] in the run's own browser
 //!   context, as a session for the run's caller or signed out, and reports what
-//!   the page is now. The trait lives in `sc-browser`, below this crate, so
-//!   the checklist runner drives the same browser (TODO-checklists C2.1); it
-//!   is re-exported here.
+//!   the page is now. The trait is [`crate::browser`]'s, which
+//!   the checklist runner drives too (TODO-checklists C2.1); it is
+//!   re-exported here.
 //! - [`AppRequester`] sends one HTTP request to an application through the
 //!   server's own router, as a session for a user or as nobody, and hands back
 //!   the response — `call_api`'s way of seeing what an endpoint answers.
@@ -38,11 +38,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use sc_auth::User;
-pub use sc_browser::{
+pub use crate::browser::{
     BrowserAction, BrowserDriver, BrowserReport, BrowserRequest, BrowserTarget, Element,
     ElementInfo, Locator, PreviewTarget, TextMatch,
 };
+use sc_auth::User;
 use sc_error::Result;
 use serde_json::Value as Json;
 

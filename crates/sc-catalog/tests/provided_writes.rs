@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use sc_catalog::{
-    Attrs, Catalog, DataField, ProvidedTableDef, ProvidedWrites, TableMeta, TableProviderHost,
+    Catalog, DataField, ProvidedTableDef, ProvidedWrites, TableMeta, TableProviderHost,
     TableProviderKind, bootstrap_table_meta, save_table_meta,
 };
 use sc_db_postgres::PgDriver;
@@ -30,6 +30,7 @@ use sc_query::{
     Assignment, BinOp, Delete, Expr, Insert, Projection, Select, Source, Statement, Update, Value,
 };
 use sc_test_harness::TestDb;
+use sc_types::Attrs;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value as Json, json};
 
