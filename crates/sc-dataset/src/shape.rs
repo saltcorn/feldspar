@@ -322,8 +322,8 @@ impl Schema {
         Ok(Schema {
             shape,
             tables,
-            native_temporal_types: catalog.primary().capabilities().native_temporal_types,
-            spatial: catalog.primary().spatial().require(),
+            native_temporal_types: catalog.primary_info().capabilities().native_temporal_types,
+            spatial: catalog.primary_info().spatial().require(),
         })
     }
 

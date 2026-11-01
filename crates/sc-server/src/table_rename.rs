@@ -490,7 +490,7 @@ impl Rename<'_> {
 /// Every row of `table`, whole.
 async fn all_rows(catalog: &Catalog, table: &str) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::ADMIN_TASKS)
         .query(&Statement::from(Select::from(Source::table(table))))
         .await?
         .try_collect()
@@ -499,7 +499,7 @@ async fn all_rows(catalog: &Catalog, table: &str) -> Result<Vec<Row>> {
 
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::ADMIN_TASKS)
         .query(&statement)
         .await?
         .try_collect()

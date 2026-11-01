@@ -815,18 +815,30 @@ pub async fn aggregate_grouped_as(
     role: Role,
     user: Option<&User>,
 ) -> Result<Vec<BTreeMap<String, Value>>> {
-    match aggregate_guard(cat, table, &table.name, role, user)? {
+    let ctx = principal_at(role, user);
+    aggregate_grouped_by(cat, table, projections, query, &ctx, user).await
+}
+
+/// [`aggregate_grouped_as`] for a caller who is already a [`Principal`] (see
+/// [`read_row_values_by`]).
+pub(crate) async fn aggregate_grouped_by(
+    cat: &Catalog,
+    table: &Table,
+    projections: Vec<Projection>,
+    query: &rows::RowQuery,
+    ctx: &Principal,
+    user: Option<&User>,
+) -> Result<Vec<BTreeMap<String, Value>>> {
+    match aggregate_guard(cat, table, &table.name, ctx.role, user)? {
         AggregateGuard::InContext => {
-            let ctx = principal_at(role, user);
-            rows::aggregate_grouped(cat, table, projections, query, decided(&ctx)).await
+            rows::aggregate_grouped(cat, table, projections, query, decided(ctx)).await
         }
         AggregateGuard::Predicate(pred) => {
             let query = match pred {
                 Some(pred) => query.clone().and_filter(pred),
                 None => query.clone(),
             };
-            let ctx = principal_at(role, user);
-            rows::aggregate_grouped(cat, table, projections, &query, decided(&ctx)).await
+            rows::aggregate_grouped(cat, table, projections, &query, decided(ctx)).await
         }
     }
 }

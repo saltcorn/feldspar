@@ -205,7 +205,11 @@ impl std::fmt::Debug for Reader {
 impl Reader {
     /// `caller`'s view of the catalog's primary database, as the catalog is now.
     pub fn new(catalog: &Catalog, caller: &Caller) -> Result<Reader> {
-        let db = Arc::clone(catalog.primary());
+        // The reader applies its caller's floors and, on an RLS table, runs in the
+        // caller's context: the driver is how it reaches the rows it decides.
+        let db = Arc::clone(catalog.primary(sc_catalog::Unchecked::system(
+            "dataset reader: the rows its caller's floors and RLS context decide",
+        )));
         let row_level_security = db.capabilities().row_level_security;
         Ok(Reader {
             inner: Arc::new(ReaderInner {

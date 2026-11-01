@@ -106,9 +106,9 @@ pub(super) async fn answer(host: &TableHost<'_>, request: Json) -> Result<Json> 
         // The admin's authority, in the event's user's name.
         Actor::Admin(_) => (
             Role::ADMIN,
-            sc_auth::User::from_json(Role::ADMIN, host.user.as_ref())?,
+            sc_auth::User::from_json(Role::ADMIN, host.caller.user.as_ref())?,
         ),
-        Actor::Caller { role, user } => (*role, user.clone()),
+        Actor::Caller { principal, user } => (principal.role, user.clone()),
     };
     let evaluator = host.evaluator.as_ref();
     let reader = HistoryReader {

@@ -433,7 +433,14 @@ fn stan_provider(catalog: &Arc<Catalog>, settings: &StanSettings) -> StanProvide
         .make
         .unwrap_or_else(|| PathBuf::from("make"));
     StanProvider::new(
-        Arc::new(move |name: &str| stores.require_file_store(name)),
+        // A Stan model's program is read from the store its definition names
+        // (an admin's configuration), by the fit the server runs.
+        Arc::new(move |name: &str| {
+            stores.require_file_store(
+                name,
+                sc_catalog::Unchecked::system("Stan: read a model's program from its store"),
+            )
+        }),
         discover(&locations),
     )
     .with_scratch(std::env::temp_dir().join("feldspar-stan"))

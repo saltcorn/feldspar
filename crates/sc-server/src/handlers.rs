@@ -64,9 +64,8 @@ use sc_catalog::{
 use sc_email::Mailer;
 use sc_error::{Context as _, Error, Result};
 use sc_files::{
-    CheckedStore, Entry, FileMeta, FileStore, FileStoreDef, FileStoreDefId, VisibleEntry,
-    backend_config_spec, backend_operations, check_access, display_config, effective_min_role,
-    list_visible, registered_backends, run_backend_operation,
+    CheckedStore, Entry, FileMeta, FileStoreDef, FileStoreDefId, VisibleEntry, backend_config_spec,
+    backend_operations, display_config, registered_backends, run_backend_operation,
 };
 use sc_i18n::Locale;
 use sc_i18n::t;
@@ -291,7 +290,7 @@ pub fn admin_handlers_with(
         move |ctx| {
             let catalog = catalog.clone();
             async move {
-                let rls = catalog.primary().capabilities().row_level_security;
+                let rls = catalog.primary_info().capabilities().row_level_security;
                 let tables = catalog.tables()?;
                 let out: Vec<Json> = tables
                     .iter()
@@ -327,7 +326,7 @@ pub fn admin_handlers_with(
                     &schema_edit::ApplyOptions::default(),
                 )
                 .await?;
-                let rls = catalog.primary().capabilities().row_level_security;
+                let rls = catalog.primary_info().capabilities().row_level_security;
                 Ok(HandlerResponse::ok(table_json(
                     &catalog,
                     &catalog.require(&name)?,
@@ -364,7 +363,7 @@ pub fn admin_handlers_with(
                     sc_access::admin_access(&admin_caller(ctx.user()))?,
                 )
                 .await?;
-                let rls = catalog.primary().capabilities().row_level_security;
+                let rls = catalog.primary_info().capabilities().row_level_security;
                 Ok(HandlerResponse::ok(json!({
                     "table": table_json(&catalog, &table, rls, &ctx.locale),
                     "inserted": outcome.inserted,
@@ -397,7 +396,7 @@ pub fn admin_handlers_with(
                     sc_access::admin_access(&admin_caller(ctx.user()))?,
                 )
                 .await?;
-                let rls = catalog.primary().capabilities().row_level_security;
+                let rls = catalog.primary_info().capabilities().row_level_security;
                 Ok(HandlerResponse::ok(json!({
                     "table": table_json(&catalog, &table, rls, &ctx.locale),
                     "inserted": outcome.inserted,
@@ -463,7 +462,7 @@ pub fn admin_handlers_with(
                     &schema_edit::ApplyOptions::default(),
                 )
                 .await?;
-                let rls = catalog.primary().capabilities().row_level_security;
+                let rls = catalog.primary_info().capabilities().row_level_security;
                 Ok(HandlerResponse::ok(json!({
                     "table": table_json(&catalog, &catalog.require(&name)?, rls, &ctx.locale),
                     "notes": applied.notes,
@@ -500,7 +499,7 @@ pub fn admin_handlers_with(
                     &schema_edit::ApplyOptions::default(),
                 )
                 .await?;
-                let rls = catalog.primary().capabilities().row_level_security;
+                let rls = catalog.primary_info().capabilities().row_level_security;
                 Ok(HandlerResponse::ok(table_json(
                     &catalog,
                     &catalog.require(&table.name)?,
@@ -534,7 +533,7 @@ pub fn admin_handlers_with(
                 // No DDL and no settings: the table is already there, and this
                 // writes the row that puts it in the list.
                 let table = sc_api::metadata_tables::add(&catalog, &name).await?;
-                let rls = catalog.primary().capabilities().row_level_security;
+                let rls = catalog.primary_info().capabilities().row_level_security;
                 Ok(
                     HandlerResponse::ok(table_json(&catalog, &table, rls, &ctx.locale))
                         .with_status(201),
@@ -590,7 +589,7 @@ pub fn admin_handlers_with(
                     object_field(obj, "configuration")?,
                 )
                 .await?;
-                let rls = catalog.primary().capabilities().row_level_security;
+                let rls = catalog.primary_info().capabilities().row_level_security;
                 Ok(
                     HandlerResponse::ok(table_json(&catalog, &table, rls, &ctx.locale))
                         .with_status(201),
@@ -629,7 +628,7 @@ pub fn admin_handlers_with(
                 let configuration = sc_types::merge_secrets(&spec, &stored, &submitted);
                 let table =
                     sc_api::provided_tables::configure(&catalog, &name, configuration).await?;
-                let rls = catalog.primary().capabilities().row_level_security;
+                let rls = catalog.primary_info().capabilities().row_level_security;
                 Ok(HandlerResponse::ok(table_json(
                     &catalog,
                     &table,
@@ -1744,7 +1743,7 @@ pub fn admin_handlers_with(
                     // control view can draw itself; every other backend leaves it
                     // null and every other client ignores it.
                     "data": outcome.data,
-                    "connected": catalog.file_store(&def.name)?.is_some(),
+                    "connected": catalog.has_file_store(&def.name)?,
                 })))
             }
         }
@@ -2559,7 +2558,7 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let name = ctx.path_param("store")?.to_owned();
-                let (store, floor) = resolve_store(&catalog, &name).await?;
+                let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
                 // `dir` is optional-ish: an absent/empty value lists the root.
                 let dir = obj.get("dir").and_then(Json::as_str).unwrap_or("");
@@ -2569,8 +2568,7 @@ pub fn admin_handlers_with(
                 // read, which is what the owner and access columns are drawn
                 // from — the alternative is a second `get_meta` per row, or a
                 // request per row from the browser.
-                let caller = file_caller(&ctx);
-                let visible = list_visible(store.as_ref(), floor, dir, &caller).await?;
+                let visible = files.list(dir).await?;
                 let out = listing_json(&catalog, &visible).await?;
                 Ok(HandlerResponse::ok(Json::Array(out)))
             }
@@ -2583,29 +2581,25 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let name = ctx.path_param("store")?.to_owned();
-                let (store, floor) = resolve_store(&catalog, &name).await?;
+                let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
                 let dir = obj.get("dir").and_then(Json::as_str).unwrap_or("");
-                let caller = file_caller(&ctx);
                 // The directory a search starts in is reached like any other, so
                 // one rooted where the caller may not go is refused rather than
                 // quietly answering nothing.
-                check_access(store.as_ref(), floor, dir, &caller).await?;
+                files.check_read(dir).await?;
                 let query = non_empty_str_field(obj, "query")?.to_owned();
                 let max_results = match obj.get("max_results").and_then(Json::as_i64) {
                     Some(n) if n >= 1 => n as usize,
                     _ => sc_files::DEFAULT_MAX_FOUND,
                 };
-                let found =
-                    sc_files::find_files(store.as_ref(), floor, &caller, dir, &query, max_results)
-                        .await?;
-                // The hits arrive as bare entries; the columns beside the name
-                // are the same ones a listing shows, read the same way.
-                let visible = with_meta(store.as_ref(), floor, found.entries).await?;
+                // The columns beside each hit's name are the same ones a listing
+                // shows, read the same way.
+                let (visible, truncated) = files.find_files(dir, &query, max_results).await?;
                 let entries = listing_json(&catalog, &visible).await?;
                 Ok(HandlerResponse::ok(json!({
                     "entries": entries,
-                    "truncated": found.truncated,
+                    "truncated": truncated,
                 })))
             }
         }
@@ -2617,9 +2611,8 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let name = ctx.path_param("store")?.to_owned();
-                let (store, floor) = resolve_store(&catalog, &name).await?;
-                let caller = file_caller(&ctx);
-                check_access(store.as_ref(), floor, "", &caller).await?;
+                let files = resolve_store(&catalog, &name, &ctx).await?;
+                files.check_read("").await?;
                 let extensions: Vec<String> = ctx
                     .query_get("extensions")
                     .unwrap_or("")
@@ -2632,9 +2625,7 @@ pub fn admin_handlers_with(
                         "say which files to list: `extensions`, e.g. png,jpg",
                     ));
                 }
-                let found =
-                    sc_files::find_by_extension(store.as_ref(), floor, &caller, "", &extensions)
-                        .await?;
+                let found = files.find_by_extension("", &extensions).await?;
                 Ok(HandlerResponse::ok(json!({
                     "paths": found.entries.into_iter().map(|e| e.path).collect::<Vec<_>>(),
                     "truncated": found.truncated,
@@ -2670,14 +2661,13 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let name = ctx.path_param("store")?.to_owned();
-                let (store, floor) = resolve_store(&catalog, &name).await?;
+                let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
                 let dir = obj.get("dir").and_then(Json::as_str).unwrap_or("");
-                let caller = file_caller(&ctx);
                 // The directory the search starts in is reached like any other,
                 // so a search rooted somewhere the caller may not go is refused
                 // rather than quietly returning nothing.
-                check_access(store.as_ref(), floor, dir, &caller).await?;
+                files.check_read(dir).await?;
 
                 let glob = obj
                     .get("glob")
@@ -2703,7 +2693,7 @@ pub fn admin_handlers_with(
                 // The caller's own role, so the walk skips what a listing would
                 // have hidden: a search must not report a line out of a file the
                 // caller could not open.
-                let found = sc_files::search_store(store.as_ref(), floor, &caller, &query).await?;
+                let found = files.search(&query).await?;
                 let matches: Vec<Json> = found
                     .hits
                     .iter()
@@ -2732,10 +2722,9 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let name = ctx.path_param("store")?.to_owned();
-                let (store, floor) = resolve_store(&catalog, &name).await?;
+                let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?;
-                let files = CheckedStore::new(store.clone(), floor, file_caller(&ctx));
                 let bytes = files.read(path).await?;
                 // Always provide base64 (for binary download); add a decoded
                 // `text` when the bytes are valid UTF-8 (for the text editor).
@@ -2759,14 +2748,14 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let name = ctx.path_param("store")?.to_owned();
-                let (store, floor) = resolve_store(&catalog, &name).await?;
+                let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?.to_owned();
-                let files = CheckedStore::new(store.clone(), floor, file_caller(&ctx));
+                let file = files.writable(&path).await?;
                 let data = file_body_bytes(obj)?;
                 let size = data.len();
-                files.write(&path, data).await?;
-                record_owner(store.as_ref(), &path, ctx.user()).await;
+                file.write(data).await?;
+                file.claim().await;
                 Ok(HandlerResponse::ok(file_entry_written_json(&path, size)).with_status(201))
             }
         }
@@ -2778,13 +2767,12 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let name = ctx.path_param("store")?.to_owned();
-                let (store, floor) = resolve_store(&catalog, &name).await?;
+                let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?.to_owned();
-                CheckedStore::new(store.clone(), floor, file_caller(&ctx))
-                    .mkdir(&path)
-                    .await?;
-                record_owner(store.as_ref(), &path, ctx.user()).await;
+                let dir = files.writable(&path).await?;
+                dir.mkdir().await?;
+                dir.claim().await;
                 Ok(HandlerResponse::ok(directory_entry_json(&path)).with_status(201))
             }
         }
@@ -2796,12 +2784,10 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let name = ctx.path_param("store")?.to_owned();
-                let (store, floor) = resolve_store(&catalog, &name).await?;
+                let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?.to_owned();
-                let deleted = CheckedStore::new(store.clone(), floor, file_caller(&ctx))
-                    .delete(&path)
-                    .await?;
+                let deleted = files.delete(&path).await?;
                 Ok(HandlerResponse::ok(json!({ "deleted": deleted })))
             }
         }
@@ -2813,16 +2799,14 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let name = ctx.path_param("store")?.to_owned();
-                let (store, floor) = resolve_store(&catalog, &name).await?;
+                let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
                 let from = non_empty_str_field(obj, "from")?.to_owned();
                 let to = non_empty_str_field(obj, "to")?.to_owned();
                 // Both ends are checked: reading from a restricted place and
                 // writing into one are each things the rule governs, and a move
                 // does both.
-                CheckedStore::new(store.clone(), floor, file_caller(&ctx))
-                    .rename(&from, &to)
-                    .await?;
+                files.rename(&from, &to).await?;
                 Ok(HandlerResponse::ok(entry_json(&renamed_entry(&to))))
             }
         }
@@ -2838,13 +2822,13 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let name = ctx.path_param("store")?.to_owned();
-                let (store, floor) = resolve_store(&catalog, &name).await?;
+                let files = resolve_store(&catalog, &name, &ctx).await?;
                 let path = ctx.path_param("path")?.to_owned();
-                let files = CheckedStore::new(store.clone(), floor, file_caller(&ctx));
+                let file = files.writable(&path).await?;
                 let data = ctx.raw_body()?.clone();
                 let size = data.len();
-                files.write(&path, data).await?;
-                record_owner(store.as_ref(), &path, ctx.user()).await;
+                file.write(data).await?;
+                file.claim().await;
                 Ok(HandlerResponse::ok(file_entry_written_json(&path, size)).with_status(201))
             }
         }
@@ -2858,13 +2842,13 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let name = ctx.path_param("store")?.to_owned();
-                let (store, floor) = resolve_store(&catalog, &name).await?;
+                let files = resolve_store(&catalog, &name, &ctx).await?;
                 let path = ctx.path_param("path")?.to_owned();
-                check_access(store.as_ref(), floor, &path, &file_caller(&ctx)).await?;
-                // Streamed by the shared builder, with Range, and saved under
-                // the file's own name (`attributes.filename`, else the basename).
+                // Checked by the store the caller is bound to; streamed by the
+                // shared builder, with Range, and saved under the file's own
+                // name (`attributes.filename`, else the basename).
                 Ok(HandlerResponse::serve_file(
-                    sc_files::ServeFile::new(store, path).download(true),
+                    files.serve(&path).await?.download(true),
                 ))
             }
         }
@@ -2876,13 +2860,11 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let name = ctx.path_param("store")?.to_owned();
-                let (store, floor) = resolve_store(&catalog, &name).await?;
+                let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?.to_owned();
-                let meta = CheckedStore::new(store.clone(), floor, file_caller(&ctx))
-                    .get_meta(&path)
-                    .await?;
-                let effective = effective_min_role(store.as_ref(), floor, &path).await?;
+                let meta = files.get_meta(&path).await?;
+                let effective = files.effective_min_role(&path).await?;
                 Ok(HandlerResponse::ok(file_meta_json(&path, &meta, effective)))
             }
         }
@@ -2894,11 +2876,10 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let name = ctx.path_param("store")?.to_owned();
-                let (store, floor) = resolve_store(&catalog, &name).await?;
+                let files = resolve_store(&catalog, &name, &ctx).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?.to_owned();
-                let files = CheckedStore::new(store.clone(), floor, file_caller(&ctx));
-                files.check_write(&path).await?;
+                let file = files.writable(&path).await?;
 
                 let min_role = optional_role(obj, "min_role")?;
                 let attributes = match obj.get("attributes") {
@@ -2920,14 +2901,14 @@ pub fn admin_handlers_with(
                     // Not something this dialog edits, and not something it may
                     // silently drop: the owner is who created the entry, and
                     // rewriting the access rule does not change that.
-                    owner: store.get_meta(&path).await.unwrap_or_default().owner,
+                    owner: file.get_meta().await.unwrap_or_default().owner,
                     attributes,
                 };
-                files.set_meta(&path, &meta).await?;
+                file.set_meta(&meta).await?;
                 // Recomputed after the write, so the response reflects what now
                 // applies rather than what was asked for — they differ whenever a
                 // parent directory is more restrictive than the rule just set.
-                let effective = effective_min_role(store.as_ref(), floor, &path).await?;
+                let effective = files.effective_min_role(&path).await?;
                 Ok(HandlerResponse::ok(file_meta_json(&path, &meta, effective)))
             }
         }
@@ -4347,8 +4328,7 @@ pub fn admin_handlers_with(
                     &model,
                     &instance,
                     &write,
-                    &sc_api::models::Writer::Context(&authority),
-                    &rows::Executor::Pooled,
+                    &sc_access::Scoped::new(&catalog, sc_catalog::Authority::Caller(&authority)),
                 )
                 .await?;
                 Ok(HandlerResponse::ok(written))
@@ -7022,7 +7002,7 @@ pub fn admin_handlers_with(
                     Select::from(Source::table(USERS_TABLE)).columns(vec![Projection::all()]);
                 select.order = vec![OrderBy::asc(Expr::col(COL_EMAIL))];
                 let rows = catalog
-                    .primary()
+                    .primary(crate::ADMIN_TASKS)
                     .query(&Statement::from(select))
                     .await?
                     .try_collect()
@@ -8874,7 +8854,7 @@ fn parse_str_array(obj: &Map<String, Json>, key: &str) -> Result<Vec<String>> {
 /// is connected on one machine and not on another, and that difference is
 /// exactly what the admin needs to see.
 pub(crate) fn file_store_json(catalog: &Catalog, def: &FileStoreDef) -> Result<Json> {
-    let connected = catalog.file_store(&def.name)?;
+    let git = catalog.file_store_is_git_repo(&def.name)?;
     Ok(json!({
         "id": Some(def.id.0),
         "name": def.name,
@@ -8895,12 +8875,12 @@ pub(crate) fn file_store_json(catalog: &Catalog, def: &FileStoreDef) -> Result<J
         // leave the admin with nowhere to learn where their files are.
         "config": Json::Object(shown_config(def)),
         "min_role": def.min_role,
-        "connected": connected.is_some(),
+        "connected": git.is_some(),
         // Only meaningful when not connected; a connected store has had any
         // recorded reason cleared, so this is null for a working store.
         "error": catalog.file_store_error(&def.name)?,
         // A property of the instance, so null when there is no instance to ask.
-        "is_git_repo": connected.map(|store| store.is_git_repo()),
+        "is_git_repo": git,
     }))
 }
 
@@ -9163,17 +9143,23 @@ fn object_field(obj: &Map<String, Json>, key: &str) -> Result<sc_types::Attrs> {
 /// `--file-store` — which has no definition — has no floor. That is correct
 /// rather than a gap: an ephemeral developer store has no configured policy, and
 /// inventing a restrictive default would break the workflow the flag exists for.
+///
+/// Answered as a [`CheckedStore`] with the request's caller bound
+/// (TODO-code-quality Q3.6): every operation a file endpoint makes is checked
+/// by the store it holds, rather than by a call it has to remember to make.
 async fn resolve_store(
     catalog: &Catalog,
     name: &str,
-) -> Result<(Arc<dyn sc_files::FileStore>, Option<Role>)> {
-    let store = catalog.require_file_store(name)?;
+    ctx: &crate::handler::HandlerCtx<impl crate::handler::Who>,
+) -> Result<CheckedStore> {
+    // Read whatever the caller's role: the floor is reported (a file's
+    // effective rule), not only checked.
     let floor = load_file_store_by_name(catalog, name)
         .await
         .ok()
         .flatten()
         .and_then(|def| def.min_role);
-    Ok((store, floor))
+    catalog.checked_file_store(name, floor, file_caller(ctx))
 }
 
 /// The caller as a file rule sees them: their role, and the id the owner rule
@@ -9262,7 +9248,9 @@ fn renamed_entry(to: &str) -> Entry {
 /// because a developer running with the flag would otherwise see an empty
 /// file-stores screen and have no way to reach the store they just connected.
 fn ephemeral_file_store_json(catalog: &Catalog, name: &str) -> Result<Json> {
-    let store = catalog.require_file_store(name)?;
+    let git = catalog
+        .file_store_is_git_repo(name)?
+        .ok_or_else(|| Error::not_found(format!("file store `{name}` is not connected")))?;
     Ok(json!({
         "id": Json::Null,
         "name": name,
@@ -9275,7 +9263,7 @@ fn ephemeral_file_store_json(catalog: &Catalog, name: &str) -> Result<Json> {
         // It is in the registry, so by construction it is connected.
         "connected": true,
         "error": Json::Null,
-        "is_git_repo": Some(store.is_git_repo()),
+        "is_git_repo": Some(git),
     }))
 }
 
@@ -12485,37 +12473,6 @@ async fn owner_label(catalog: &Catalog, id: &str) -> Json {
         .and_then(|u| u.extra().get("email"))
         .and_then(|value| value.as_text().map(str::to_owned));
     Json::String(email.unwrap_or_else(|| id.to_owned()))
-}
-
-/// Attach each entry's own metadata and the rule that reaches it — the shape a
-/// listing produces, for entries that did not come from one.
-///
-/// A name search's hits are scattered across the tree, so unlike a listing there
-/// is no directory floor common to them all: each one's ancestors are walked.
-async fn with_meta(
-    store: &dyn FileStore,
-    floor: Option<Role>,
-    entries: Vec<Entry>,
-) -> Result<Vec<VisibleEntry>> {
-    let mut out = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let meta = store.get_meta(&entry.path).await.unwrap_or_default();
-        let effective_min_role = effective_min_role(store, floor, &entry.path).await?;
-        out.push(VisibleEntry {
-            entry,
-            meta,
-            effective_min_role,
-        });
-    }
-    Ok(out)
-}
-
-/// Record the signed-in admin as the creator of `path`, unless an owner is
-/// already recorded ([`sc_files::record_owner`]).
-async fn record_owner(store: &dyn FileStore, path: &str, user: Option<&sc_auth::User>) {
-    if let Some(user) = user {
-        sc_files::record_owner(store, path, &user.id().to_string()).await;
-    }
 }
 
 /// The entry JSON returned after a successful `writeFile`: a file (never a

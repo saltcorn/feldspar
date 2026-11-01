@@ -392,7 +392,7 @@ impl FileCatalogStore {
     }
 
     fn store(&self, cat: &Catalog) -> Result<Arc<dyn FileStore>> {
-        cat.require_file_store(&self.store)
+        cat.require_file_store(&self.store, crate::APP_SOURCES)
     }
 }
 
@@ -693,12 +693,16 @@ pub async fn delete_application_translations(cat: &Catalog, application: AppId) 
 }
 
 async fn run(cat: &Catalog, statement: Statement) -> Result<()> {
-    cat.primary().query(&statement).await?.try_collect().await?;
+    cat.primary(crate::INTERNAL_TABLES)
+        .query(&statement)
+        .await?
+        .try_collect()
+        .await?;
     Ok(())
 }
 
 async fn rows(cat: &Catalog, select: Select) -> Result<Vec<Row>> {
-    cat.primary()
+    cat.primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

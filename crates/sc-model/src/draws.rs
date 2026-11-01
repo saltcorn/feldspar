@@ -98,7 +98,7 @@ pub async fn bootstrap_model_draws(catalog: &Catalog) -> Result<Table> {
     let table = catalog
         .bootstrap_table(DRAWS_TABLE, &draws_fields())
         .await?;
-    let dialect = catalog.primary().dialect();
+    let dialect = catalog.primary_dialect();
     catalog
         .apply_schema_batch(&[SchemaStep::Sql(format!(
             "CREATE INDEX IF NOT EXISTS {} ON {} ({}, {})",

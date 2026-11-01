@@ -187,3 +187,58 @@ async fn only_the_system_and_an_administrator_make_an_unchecked_token() -> Resul
     assert_eq!(titles(&all), ["from a job"]);
     Ok(())
 }
+
+/// TODO-code-quality Q3.4: a holder that loaded its caller's user (an agent
+/// run, a code body's `forUser`) hands it on, and the formula decides with it;
+/// a user that is not the principal's is refused rather than used. A caller's
+/// aggregate goes through the same rule as their read.
+#[tokio::test]
+async fn a_scope_decides_with_the_loaded_user_and_refuses_anyone_elses() -> Result<()> {
+    let (catalog, _teardown) = notes().await?;
+    let mut table = staff_only(&catalog)?;
+    table.ownership = Some(sc_expr::Formula::parse("owner === user.email")?);
+    let system = Scoped::system(&catalog, "test: seed");
+    for (title, owner) in [("mine", "a@x"), ("also mine", "a@x"), ("theirs", "b@x")] {
+        system
+            .insert(&table, &json!({ "title": title, "owner": owner }))
+            .await?;
+    }
+
+    let alice = caller(Role::of(80), "a@x");
+    let loaded = sc_auth::User::from_json(alice.role, alice.user.as_ref())?;
+    let scoped = Scoped::new(&catalog, Authority::Caller(&alice)).with_user(loaded.as_ref());
+    let mut seen = titles(&scoped.read(&table, &RowQuery::new()).await?)
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    seen.sort();
+    assert_eq!(seen, ["also mine", "mine"]);
+
+    // Two of the three rows are hers, and the count says so.
+    let count = vec![sc_query::Projection::expr_as(
+        sc_query::Expr::Agg {
+            func: "count".to_owned(),
+            distinct: false,
+            args: Vec::new(),
+        },
+        "n",
+    )];
+    let grouped = scoped
+        .aggregate_grouped(&table, count.clone(), &RowQuery::new())
+        .await?;
+    assert_eq!(grouped[0].get("n"), Some(&sc_query::Value::Int(2)));
+    // The public role is below the floor and has no user for the formula to
+    // grant a row to: it counts none, never the table.
+    let public = Principal::anonymous(Role::PUBLIC);
+    let none = Scoped::new(&catalog, Authority::Caller(&public))
+        .aggregate_grouped(&table, count, &RowQuery::new())
+        .await?;
+    assert_eq!(none[0].get("n"), Some(&sc_query::Value::Int(0)));
+
+    // Somebody else's user on alice's principal decides nothing.
+    let bob = caller(Role::of(80), "b@x");
+    let bobs = sc_auth::User::from_json(bob.role, bob.user.as_ref())?;
+    let mixed = Scoped::new(&catalog, Authority::Caller(&alice)).with_user(bobs.as_ref());
+    assert!(mixed.read(&table, &RowQuery::new()).await.is_err());
+    Ok(())
+}

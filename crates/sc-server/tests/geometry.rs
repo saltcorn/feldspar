@@ -398,7 +398,7 @@ async fn a_geometry_field_is_refused_where_there_is_no_postgis() -> sc_error::Re
     // it — and a role that may not install it.
     let db = TestDb::new().await?;
     let mut h = setup(db, "refused").await?;
-    if h.catalog.primary().spatial().is_available() {
+    if h.catalog.primary_info().spatial().is_available() {
         // A machine whose test role may install PostGIS into every database.
         eprintln!("skipped: PostGIS was installed into a plain test database");
         return Ok(());

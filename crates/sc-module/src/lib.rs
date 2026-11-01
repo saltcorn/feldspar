@@ -57,6 +57,13 @@
 //! ([`ModuleManifest::unsupported`](host::ModuleManifest::unsupported)) so an
 //! admin knows what they are not getting, and loading them is a later milestone.
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
+    sc_catalog::Unchecked::system("sc-module: the module store");
+
 pub mod action;
 pub mod bounds;
 pub mod bundled;

@@ -26,7 +26,13 @@
 //!   keeps the pair in `_fd_sync_keys`: later changes naming `-17`, as their key
 //!   or in a foreign key, are translated, in this upload or any later one.
 
-use sc_catalog::Authority;
+/// What stands behind the sync bookkeeping statements a push runs as its
+/// caller (`_fd_sync_devices`, `_fd_sync_keys`): each names only the caller's
+/// own device, which was looked up by the caller's id, and runs in the caller's
+/// context so the change log attributes it (TODO-code-quality Q3.5).
+const OWN_DEVICE: &str = "sync: the statement names only the caller's own device";
+
+use sc_catalog::Unchecked;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -320,11 +326,11 @@ impl Device<'_> {
         let sql = format!(
             "UPDATE {devices} SET last_mutation = $1 \
              WHERE id = $2 AND coalesce(last_mutation, 0) < $1 RETURNING id",
-            devices = cat.primary().dialect().quote_ident(&self.table.name),
+            devices = cat.primary_dialect().quote_ident(&self.table.name),
         );
         let claimed = tx
             .run(
-                Authority::Caller(self.context),
+                Unchecked::vouched(self.context, OWN_DEVICE),
                 &Statement::raw(sql, vec![Value::Int(mutation), Value::Uuid(self.id)]),
             )
             .await?;
@@ -497,7 +503,7 @@ impl Device<'_> {
     async fn made_key(&self, tx: &SharedTx, mutation: i64, table: &str) -> Result<Option<String>> {
         let rows = tx
             .run(
-                Authority::Caller(self.context),
+                Unchecked::vouched(self.context, OWN_DEVICE),
                 &Statement::raw(
                     format!(
                         "SELECT row_key FROM \"{SYNC_KEYS_TABLE}\" \
@@ -529,10 +535,10 @@ impl Device<'_> {
     ) -> Result<()> {
         let sql = format!(
             "INSERT INTO {keys} (client_id, mutation, table_name, row_key) VALUES ($1, $2, $3, $4)",
-            keys = cat.primary().dialect().quote_ident(SYNC_KEYS_TABLE),
+            keys = cat.primary_dialect().quote_ident(SYNC_KEYS_TABLE),
         );
         tx.run(
-            Authority::Caller(self.context),
+            Unchecked::vouched(self.context, OWN_DEVICE),
             &Statement::raw(
                 sql,
                 vec![

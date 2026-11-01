@@ -1214,7 +1214,10 @@ where
             .filter(Expr::col(COL_USER_ID_TARGET).eq(Expr::lit(user)))
             .for_update();
         if tx
-            .run(Authority::system("credits ledger"), &Statement::from(lock))
+            .run(
+                sc_catalog::Unchecked::system("credits ledger"),
+                &Statement::from(lock),
+            )
             .await?
             .is_empty()
         {
@@ -1249,7 +1252,7 @@ async fn account_in(tx: &SharedTx, user: Uuid, written: &mut Written) -> Result<
         .for_update();
     if let Some(row) = tx
         .run(
-            Authority::system("credits ledger"),
+            sc_catalog::Unchecked::system("credits ledger"),
             &Statement::from(select),
         )
         .await?
@@ -1307,7 +1310,7 @@ async fn balance_in(tx: &SharedTx, user: Uuid) -> Result<CreditBalance> {
         .filter(Expr::col(COL_CREDIT_USER).eq(Expr::lit(user)));
     let account = tx
         .run(
-            Authority::system("credits ledger"),
+            sc_catalog::Unchecked::system("credits ledger"),
             &Statement::from(select),
         )
         .await?
@@ -1351,7 +1354,7 @@ async fn live_buckets(
         select = select.for_update();
     }
     tx.run(
-        Authority::system("credits ledger"),
+        sc_catalog::Unchecked::system("credits ledger"),
         &Statement::from(select),
     )
     .await?
@@ -1413,7 +1416,7 @@ async fn find_entry(tx: &SharedTx, source: &str, key: &str) -> Result<Option<Cre
         )
         .limit(1);
     tx.run(
-        Authority::system("credits ledger"),
+        sc_catalog::Unchecked::system("credits ledger"),
         &Statement::from(select),
     )
     .await?
@@ -1432,7 +1435,7 @@ async fn find_bucket(tx: &SharedTx, source: &str, key: &str) -> Result<Option<Cr
         .limit(1)
         .for_update();
     tx.run(
-        Authority::system("credits ledger"),
+        sc_catalog::Unchecked::system("credits ledger"),
         &Statement::from(select),
     )
     .await?
@@ -1446,7 +1449,7 @@ async fn load_bucket(tx: &SharedTx, id: Uuid) -> Result<Option<CreditBucket>> {
         .filter(Expr::col(COL_CREDIT_ID).eq(Expr::lit(id)))
         .limit(1);
     tx.run(
-        Authority::system("credits ledger"),
+        sc_catalog::Unchecked::system("credits ledger"),
         &Statement::from(select),
     )
     .await?
@@ -1521,7 +1524,7 @@ async fn insert_returning(
         values.into_iter().map(|(c, e)| (c.to_owned(), e)).unzip();
     let insert = Insert::row(table, columns, exprs).returning(vec![Projection::all()]);
     tx.run(
-        Authority::system("credits ledger"),
+        sc_catalog::Unchecked::system("credits ledger"),
         &Statement::from(insert),
     )
     .await?
@@ -1540,7 +1543,7 @@ async fn update_returning(
     let by_id = || Expr::col(COL_CREDIT_ID).eq(Expr::lit(id));
     let old = tx
         .run(
-            Authority::system("credits ledger"),
+            sc_catalog::Unchecked::system("credits ledger"),
             &Statement::from(Select::from(Source::table(table)).filter(by_id())),
         )
         .await?
@@ -1555,7 +1558,7 @@ async fn update_returning(
     };
     let new = tx
         .run(
-            Authority::system("credits ledger"),
+            sc_catalog::Unchecked::system("credits ledger"),
             &Statement::from(update),
         )
         .await?
@@ -1712,7 +1715,7 @@ fn account_from_row(row: &Row) -> Result<Account> {
 
 async fn rows(catalog: &Catalog, statement: Statement) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()

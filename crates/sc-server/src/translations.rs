@@ -204,7 +204,7 @@ fn source_tree(
     let Ok(source) = sc_app::app_source_from_config(&app.framework) else {
         return Ok(None);
     };
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::ADMIN_TASKS)?;
     Ok(Some((store, source.build.source_dir)))
 }
 

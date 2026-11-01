@@ -74,7 +74,7 @@ fn uncached(catalog: &Arc<Catalog>) -> SessionStore {
 /// How many session rows there are.
 async fn session_rows(catalog: &Catalog) -> Result<usize> {
     Ok(catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(Select::from(Source::table(
             SESSIONS_TABLE,
         ))))
@@ -255,7 +255,7 @@ async fn a_deleted_users_session_stops_resolving_and_never_blocked_the_delete() 
     // removed, and this is the assertion that would fail if a foreign key were
     // ever added without an `ON DELETE` action.
     f.catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(
             Delete::from(USERS_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(user.id()))),
         ))
@@ -312,7 +312,7 @@ async fn a_role_change_reaches_a_live_session() -> Result<()> {
 
     // Demote them in the users table, touching no session.
     f.catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(
             sc_query::Update::new(
                 USERS_TABLE,

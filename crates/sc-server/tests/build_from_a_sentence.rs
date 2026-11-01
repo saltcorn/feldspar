@@ -368,7 +368,11 @@ async fn a_file_store_is_created_and_named_by_the_application() -> sc_error::Res
     assert_eq!(store["created"], json!("notes-code"), "{store}");
     let dir = PathBuf::from(store["directory"].as_str().unwrap());
     assert!(dir.is_dir() && dir.starts_with(data_dir()), "{store}");
-    assert!(catalog.file_store("notes-code")?.is_some());
+    assert!(
+        catalog
+            .file_store("notes-code", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
 
     let created = call(
         &router,

@@ -44,7 +44,7 @@ pub async fn authenticate(catalog: &Catalog, email: &str, password: &str) -> Res
         .filter(Expr::col(COL_EMAIL).eq(Expr::lit(email)))
         .limit(1);
     let rows = catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

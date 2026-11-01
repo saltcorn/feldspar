@@ -613,7 +613,7 @@ async fn restore_user_references(
                 let update = sc_query::Update::new(table.name.clone(), assignments)
                     .filter(Expr::col(sc_auth::COL_ID).eq(Expr::lit(id)));
                 catalog
-                    .primary()
+                    .primary(crate::ADMIN_TASKS)
                     .query(&Statement::from(update))
                     .await?
                     .try_collect()
@@ -1372,7 +1372,11 @@ async fn rewind_identities(catalog: &Catalog, table: &Table, report: &mut Restor
             column: field.base.name.clone(),
             generator: Some(ColumnGenerator::Identity),
         };
-        if let Err(e) = catalog.primary().apply_schema(&change).await {
+        if let Err(e) = catalog
+            .primary(crate::ADMIN_TASKS)
+            .apply_schema(&change)
+            .await
+        {
             report.skipped(format!(
                 "the numbering of `{}.{}` could not be wound past the restored rows: {}",
                 table.name,
@@ -1667,7 +1671,7 @@ async fn insert_batch(catalog: &Catalog, table: &Table, batch: &[Json]) -> Resul
         rows,
         ..Insert::row(table.name.clone(), columns, Vec::new())
     });
-    let driver = catalog.primary();
+    let driver = catalog.primary(crate::ADMIN_TASKS);
     if !driver.capabilities().change_triggers {
         driver.query(&insert).await?.try_collect().await?;
         return Ok(());
@@ -1787,7 +1791,7 @@ async fn restore_file_store(
             }
         }
     } else {
-        match catalog.require_file_store(name) {
+        match catalog.require_file_store(name, crate::ADMIN_TASKS) {
             Ok(store) => store,
             Err(_) => {
                 report.skipped(format!(

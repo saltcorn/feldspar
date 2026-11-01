@@ -192,7 +192,11 @@ async fn a_store_is_created_listed_and_connected_through_the_api() -> sc_error::
 
     // It is connected in the live registry, so the file manager can reach it
     // with no restart.
-    assert!(catalog.file_store("docs")?.is_some());
+    assert!(
+        catalog
+            .file_store("docs", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
 
     // And it is listed with its definition intact.
     let (_, body) = client.send("GET", "/api/file-stores", None).await;
@@ -320,7 +324,7 @@ async fn editing_repoints_live_and_renaming_disconnects_the_old_name() -> sc_err
     let id = created["id"].as_str().unwrap().to_owned();
 
     let before = catalog
-        .require_file_store("docs")?
+        .require_file_store("docs", sc_catalog::Unchecked::system("test"))?
         .read("marker.txt")
         .await?;
     assert_eq!(&before[..], b"old");
@@ -344,7 +348,7 @@ async fn editing_repoints_live_and_renaming_disconnects_the_old_name() -> sc_err
 
     // The new name serves the new directory, immediately.
     let after = catalog
-        .require_file_store("handbook")?
+        .require_file_store("handbook", sc_catalog::Unchecked::system("test"))?
         .read("marker.txt")
         .await?;
     assert_eq!(&after[..], b"new");
@@ -353,7 +357,9 @@ async fn editing_repoints_live_and_renaming_disconnects_the_old_name() -> sc_err
     // disconnect the old handle would still be serving the old directory under
     // a name that no longer has a definition.
     assert!(
-        catalog.file_store("docs")?.is_none(),
+        catalog
+            .file_store("docs", sc_catalog::Unchecked::system("test"))?
+            .is_none(),
         "a rename must disconnect the old name"
     );
 
@@ -388,7 +394,11 @@ async fn deleting_removes_the_definition_and_stops_it_serving() -> sc_error::Res
         )
         .await;
     let id = created["id"].as_str().unwrap().to_owned();
-    assert!(catalog.file_store("scratch")?.is_some());
+    assert!(
+        catalog
+            .file_store("scratch", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
 
     let (status, body) = client
         .send("DELETE", &format!("/api/file-stores/{id}"), None)
@@ -397,7 +407,9 @@ async fn deleting_removes_the_definition_and_stops_it_serving() -> sc_error::Res
     assert_eq!(body["deleted"], json!(true));
 
     assert!(
-        catalog.file_store("scratch")?.is_none(),
+        catalog
+            .file_store("scratch", sc_catalog::Unchecked::system("test"))?
+            .is_none(),
         "a delete must disconnect the handle, not just drop the row"
     );
     let (_, body) = client.send("GET", "/api/file-stores", None).await;
@@ -463,7 +475,11 @@ async fn a_store_used_by_an_application_cannot_be_deleted() -> sc_error::Result<
     );
 
     // Refused, not half-done: still defined and still serving.
-    assert!(catalog.file_store("apps")?.is_some());
+    assert!(
+        catalog
+            .file_store("apps", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
     let (_, body) = client.send("GET", "/api/file-stores", None).await;
     assert_eq!(body.as_array().unwrap().len(), 1);
 

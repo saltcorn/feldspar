@@ -515,7 +515,7 @@ pub struct Listing {
 /// Every catalogue entry, with whether it is here already and whether it can
 /// be got.
 pub async fn list(catalog: &Catalog) -> Result<Vec<Listing>> {
-    let spatial = catalog.primary().spatial();
+    let spatial = catalog.primary_info().spatial();
     let library = sc_dataset::load_library(catalog).await?;
     let mut out = Vec::new();
     for entry in catalogue()? {

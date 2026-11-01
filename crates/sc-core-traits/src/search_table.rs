@@ -340,15 +340,11 @@ async fn search(
             .order_by(vec![sc_access::search::relevance(&search)])
             .searching(search)
             .limit(ceiling.saturating_add(1));
-        let found = sc_access::read_rows_as(
-            catalog,
-            table,
-            &query,
-            caller.role,
-            caller.user.as_ref(),
-            evaluator,
-        )
-        .await?;
+        let me = caller.principal();
+        let found = caller
+            .scoped(catalog, &me, evaluator)
+            .read(table, &query)
+            .await?;
         for row in found.as_array().into_iter().flatten() {
             let key = row.get(&pk).cloned().unwrap_or(Json::Null).to_string();
             if !seen.insert(key) {

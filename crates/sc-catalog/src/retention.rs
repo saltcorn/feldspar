@@ -22,7 +22,6 @@ use sc_error::Result;
 use sc_query::{Statement, Value};
 use serde_json::Value as Json;
 
-use crate::caller::Authority;
 use crate::catalog::Catalog;
 use crate::change_log::{ATTR_HISTORY, CHANGES_TABLE};
 use crate::changeset::CHANGESETS_TABLE;
@@ -109,7 +108,7 @@ fn removable(
 
 async fn query(catalog: &Catalog, sql: String, binds: Vec<Value>) -> Result<Vec<sc_db::Row>> {
     catalog
-        .primary()
+        .primary_driver()
         .query(&Statement::raw(sql, binds))
         .await?
         .try_collect()
@@ -119,10 +118,15 @@ async fn query(catalog: &Catalog, sql: String, binds: Vec<Value>) -> Result<Vec<
 /// Run the cleanup as at `now`. A no-op on a backend with no change log.
 pub async fn clean_change_log(catalog: &Catalog, now: DateTime<Utc>) -> Result<Cleanup> {
     let mut done = Cleanup::default();
-    if !catalog.primary().capabilities().change_triggers || catalog.get(CHANGES_TABLE)?.is_none() {
+    if !catalog.primary_driver().capabilities().change_triggers
+        || catalog.get(CHANGES_TABLE)?.is_none()
+    {
         return Ok(done);
     }
-    let log = catalog.primary().dialect().quote_ident(CHANGES_TABLE);
+    let log = catalog
+        .primary_driver()
+        .dialect()
+        .quote_ident(CHANGES_TABLE);
     let tables: Vec<Table> = catalog
         .tables()?
         .into_iter()
@@ -188,7 +192,7 @@ pub async fn clean_change_log(catalog: &Catalog, now: DateTime<Utc>) -> Result<C
             .map(|t| Json::String(t.name.clone()))
             .collect(),
     );
-    let in_names = crate::change_log::json_texts_sql(catalog.primary().dialect(), "$1");
+    let in_names = crate::change_log::json_texts_sql(catalog.primary_driver().dialect(), "$1");
     let rows = query(
         catalog,
         format!("DELETE FROM {log} WHERE table_name NOT IN ({in_names}) RETURNING seq"),
@@ -214,7 +218,7 @@ pub async fn clean_change_log(catalog: &Catalog, now: DateTime<Utc>) -> Result<C
                 continue;
             }
         }
-        let Ok(Some(store)) = catalog.file_store(store) else {
+        let Ok(Some(store)) = catalog.raw_file_store(store) else {
             continue;
         };
         match store.delete(path).await {
@@ -226,7 +230,10 @@ pub async fn clean_change_log(catalog: &Catalog, now: DateTime<Utc>) -> Result<C
         }
     }
 
-    let sets = catalog.primary().dialect().quote_ident(CHANGESETS_TABLE);
+    let sets = catalog
+        .primary_driver()
+        .dialect()
+        .quote_ident(CHANGESETS_TABLE);
     let rows = query(
         catalog,
         format!(
@@ -242,7 +249,10 @@ pub async fn clean_change_log(catalog: &Catalog, now: DateTime<Utc>) -> Result<C
     done.changesets = rows.len() as u64;
 
     if catalog.get(SYNC_KEYS_TABLE)?.is_some() {
-        let keys = catalog.primary().dialect().quote_ident(SYNC_KEYS_TABLE);
+        let keys = catalog
+            .primary_driver()
+            .dialect()
+            .quote_ident(SYNC_KEYS_TABLE);
         let rows = query(
             catalog,
             format!("DELETE FROM {keys} WHERE at < $1 RETURNING at"),
@@ -266,7 +276,7 @@ async fn file_referenced(
     // Quoted up front: the dialect is not `Send`, so it is not held across
     // the awaits below.
     let (quoted_table, quoted_column, log) = {
-        let dialect = catalog.primary().dialect();
+        let dialect = catalog.primary_driver().dialect();
         (
             dialect.quote_ident(&table.name),
             dialect.quote_ident(column),
@@ -281,8 +291,8 @@ async fn file_referenced(
         vec![Value::Text(path.to_owned())],
     );
     // Row-level security must not hide a row from the question.
-    let system = Authority::system("retention: is the file still referenced");
-    if !crate::rls::run_in_context_read_only(catalog, &system.as_principal(), &row)
+    let system = crate::Unchecked::system("retention: is the file still referenced");
+    if !crate::rls::run_in_context_read_only(catalog, system, &row)
         .await?
         .is_empty()
     {

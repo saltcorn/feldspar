@@ -152,7 +152,7 @@ async fn the_database_refuses_a_second_row_claiming_one_version() -> Result<()> 
         ],
     );
     let err = catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(insert))
         .await
         .err()
@@ -205,7 +205,7 @@ async fn a_stored_version_whose_document_names_another_workflow_is_refused() -> 
         ],
     );
     catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(insert))
         .await?
         .try_collect()

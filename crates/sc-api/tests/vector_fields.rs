@@ -231,7 +231,7 @@ async fn postgres_stores_pgvector_and_reads_nearest_first() -> Result<()> {
 async fn postgres_without_pgvector_refuses_a_vector_field_naming_the_extension() -> Result<()> {
     let db = TestDb::new().await?;
     let catalog = catalog(Arc::new(PgDriver::from_pool(db.pool().clone()))).await?;
-    if catalog.primary().vector().is_available() {
+    if catalog.primary_info().vector().is_available() {
         // This machine's default template has pgvector; nothing to refuse.
         return Ok(());
     }
@@ -305,7 +305,12 @@ async fn a_scan_past_the_limit_is_refused_on_sqlite() -> Result<()> {
         ),
         Vec::new(),
     );
-    catalog.primary().query(&fill).await?.try_collect().await?;
+    catalog
+        .primary(sc_catalog::Unchecked::system("test"))
+        .query(&fill)
+        .await?
+        .try_collect()
+        .await?;
     let err = titles(&catalog, &[("nearest", "embedding.[1,0]")])
         .await
         .unwrap_err()

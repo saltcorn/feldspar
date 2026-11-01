@@ -131,7 +131,7 @@ pub async fn load_display_part(
         )
         .limit(1);
     let rows: Vec<Row> = catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()
@@ -185,7 +185,7 @@ fn bad(column: &str) -> Error {
 
 async fn exec(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()

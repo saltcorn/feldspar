@@ -28,7 +28,6 @@
 //! from ([`placed_library_ids`], with the set-level answers on
 //! [`ViewSet`](crate::ViewSet)).
 
-use sc_catalog::Authority;
 use std::collections::BTreeSet;
 
 use sc_app::{AppId, Application, load_application};
@@ -352,7 +351,7 @@ pub async fn apply_library_updates_in(
         )
         .filter(scoped(application, update.library_id));
         tx.run(
-            Authority::system("apply library updates"),
+            sc_catalog::Unchecked::system("apply library updates"),
             &Statement::from(statement),
         )
         .await?;

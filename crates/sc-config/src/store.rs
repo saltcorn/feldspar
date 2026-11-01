@@ -15,7 +15,6 @@
 //! failure this whole arrangement exists to prevent. [`delete_config`] is the
 //! way out.
 
-use sc_catalog::Authority;
 use sc_catalog::{Catalog, DataField, SharedTx, Table};
 use sc_db::Row;
 use sc_error::{Error, Result};
@@ -197,7 +196,7 @@ pub async fn set_config_many(catalog: &Catalog, values: &Attrs) -> Result<()> {
             let delete =
                 Delete::from(CONFIG_TABLE).filter(Expr::col(COL_KEY).eq(Expr::lit(key.as_str())));
             tx.run(
-                Authority::system("write configuration"),
+                sc_catalog::Unchecked::system("write configuration"),
                 &Statement::from(delete),
             )
             .await?;
@@ -211,7 +210,7 @@ pub async fn set_config_many(catalog: &Catalog, values: &Attrs) -> Result<()> {
                     ],
                 );
                 tx.run(
-                    Authority::system("write configuration"),
+                    sc_catalog::Unchecked::system("write configuration"),
                     &Statement::from(insert),
                 )
                 .await?;
@@ -399,7 +398,7 @@ fn bad_column(column: &str, expected: &str, got: Option<&Value>) -> Error {
 /// Run a statement that returns no rows of interest.
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()
@@ -410,7 +409,7 @@ async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
 /// Run a select and collect its rows.
 async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

@@ -52,23 +52,14 @@ pub async fn call(
 ) -> Result<Json> {
     let writable = writable_fields(table, config)?;
     let body = row_body(table, &writable, args)?;
-    let row = sc_access::insert_row_as(
-        ctx.catalog,
-        table,
-        &body,
-        ctx.caller.role,
-        ctx.caller.user.as_ref(),
-        ctx.evaluator,
-        // A tool call is not a trigger firing: the write this raises is at
-        // depth 0, marked if the run's prompt came from outside the console.
-        &ctx.caller.tool_chain(),
-        // An agent run is its own unit of durability — its own run row,
-        // persisted after every step — so its tools' writes commit as they
-        // are made, even when the run was started by a workflow step
-        // (§10.3, decision 6).
-        &sc_access::rows::Executor::Pooled,
-    )
-    .await?;
+    // The run's caller, with the chain a tool call's write carries: depth 0
+    // (a tool call is not a trigger firing), marked if the run's prompt came
+    // from outside the console. On the pool: an agent run is its own unit of
+    // durability — its own run row, persisted after every step — so its tools'
+    // writes commit as they are made, even when the run was started by a
+    // workflow step (§10.3, decision 6).
+    let me = ctx.principal();
+    let row = ctx.scoped(&me).insert(table, &body).await?;
     // The whole stored row, not the fields that were sent: the model needs
     // the primary key the database chose to be able to refer to what it just
     // created, and the defaults it did not set are the other half of the

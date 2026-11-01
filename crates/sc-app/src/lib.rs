@@ -42,6 +42,24 @@
 //! record itself is created by the server, which is the layer that knows agents
 //! exist.
 
+/// The raw file store an application's sources are in (TODO-code-quality
+/// Q3.6): the one `Unchecked::system` the build pipeline (build, scaffold,
+/// targets, catalogues) makes, listed in docs/SECURITY_REVIEW_2026-10.md's
+/// system-authority inventory. Crate-private, so nothing outside the crate
+/// borrows it; a caller's files go through `Catalog::checked_file_store`.
+pub(crate) const APP_SOURCES: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
+    "sc-app: an application's source store, which its build, scaffold, targets and \
+     catalogues read and write (an admin-started task)",
+);
+
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
+    "sc-app: the application, build, host, upload-slot and translation stores",
+);
+
 mod access;
 mod api;
 mod application;

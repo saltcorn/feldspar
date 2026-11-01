@@ -86,7 +86,10 @@ async fn a_required_column_reaches_a_table_with_no_rows() -> sc_error::Result<()
     assert!(added.required, "added as NOT NULL, as declared");
 
     // And it is genuinely NOT NULL in the database, not merely in the cache.
-    let physical = cat.primary().introspect().await?;
+    let physical = cat
+        .primary(sc_catalog::Unchecked::system("test"))
+        .introspect()
+        .await?;
     let widgets = physical
         .iter()
         .find(|t| t.name == "_fd_widgets")

@@ -58,8 +58,8 @@ async fn a_sqlite_file_is_a_whole_installation() -> sc_error::Result<()> {
     // The backend says what it cannot do, and the layers above read this rather
     // than assuming Postgres: no policies, so authorization is enforced above
     // the database.
-    assert!(!catalog.primary().capabilities().row_level_security);
-    assert!(catalog.primary().capabilities().returning);
+    assert!(!catalog.primary_info().capabilities().row_level_security);
+    assert!(catalog.primary_info().capabilities().returning);
 
     // --- a table an admin would make ----------------------------------------
     catalog

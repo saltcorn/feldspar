@@ -490,7 +490,7 @@ pub async fn applications_exposing_agent(catalog: &Catalog, name: &str) -> Resul
 async fn stored_agent_floors(catalog: &Catalog) -> Result<BTreeMap<String, Option<u8>>> {
     let select = Select::from(Source::table(AGENTS_TABLE));
     let rows: Vec<sc_db::Row> = catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

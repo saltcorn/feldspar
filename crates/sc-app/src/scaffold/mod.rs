@@ -87,7 +87,7 @@ pub async fn scaffold_app(
     let source = app_source_from_config(&app.framework)?;
     let project = source.build.source_dir.clone();
 
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     if !is_empty_dir(store.as_ref(), &project).await? {
         return Err(Error::invalid(format!(
             "cannot scaffold into {} of file store `{}`: it is not empty. \
@@ -405,7 +405,7 @@ pub async fn emit_app_runtime(
     require_api_provider(app)?;
     let set = installed_frameworks();
     let project = &source.build.source_dir;
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     let endpoints = app_endpoints_with(app, cat, dispatcher)?;
     require_auth_endpoints_for_source(app, &endpoints, store.as_ref(), project).await?;
 
@@ -499,7 +499,7 @@ pub async fn update_app_client(
 ) -> Result<ClientUpdate> {
     if require_scaffoldable(app).is_ok() {
         let source = app_source_from_config(&app.framework)?;
-        let store = cat.require_file_store(&source.store.0)?;
+        let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
         if is_empty_dir(store.as_ref(), &source.build.source_dir).await? {
             return scaffold_app(cat, app, dispatcher)
                 .await

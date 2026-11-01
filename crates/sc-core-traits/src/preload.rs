@@ -300,15 +300,12 @@ async fn preloaded_rows(config: &Attrs, cx: &SessionContext<'_>) -> Result<Strin
         .map(|key| vec![OrderBy::asc(Expr::col(key.clone()))])
         .unwrap_or_default();
     let query = RowQuery::new().where_(filter).order_by(order).limit(limit);
-    let found = sc_access::read_rows_as(
-        cx.catalog,
-        &table,
-        &query,
-        cx.caller.role,
-        cx.caller.user.as_ref(),
-        cx.evaluator,
-    )
-    .await?;
+    let me = cx.caller.principal();
+    let found = cx
+        .caller
+        .scoped(cx.catalog, &me, cx.evaluator)
+        .read(&table, &query)
+        .await?;
     let rows: Vec<Json> = found
         .as_array()
         .cloned()
@@ -484,8 +481,7 @@ impl AgentTrait for PreloadCode {
             "trigger_row".to_owned(),
             cx.row.cloned().unwrap_or(Json::Null),
         );
-        let caller = sc_access::principal_at(cx.caller.role, cx.caller.user.as_ref())
-            .chained(cx.caller.tool_chain());
+        let caller = cx.caller.principal();
         let result = dispatcher
             .run_code(
                 cx.catalog,

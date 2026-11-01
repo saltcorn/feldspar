@@ -164,11 +164,10 @@ async fn evaluate(
     limits: &SandboxLimits,
 ) -> Result<Json> {
     let evaluator = ctx.require_evaluator()?;
-    let caller = sc_access::principal_at(ctx.caller.role, ctx.caller.user.as_ref());
+    let caller = ctx.principal();
     let table = (grants.tables != TableAccess::None).then(|| SandboxTables {
         inner: TableHost::new(ctx.catalog)
-            .caused_by(caller.role, caller.user.clone())
-            .chained(ctx.caller.tool_chain())
+            .for_caller(&caller)
             // The caller's authority is the ceiling: a plan that names none,
             // or names the admin, runs as the caller.
             .viewer_only()

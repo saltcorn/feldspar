@@ -1130,7 +1130,7 @@ fn pk_expr(table: &Table, pk: &Json) -> Result<Expr> {
 /// comment separates nothing and that `x::text` is a cast. Its rewritten text is
 /// thrown away: what runs is what the body wrote.
 pub(crate) fn statement(cat: &Catalog, plan: &SqlPlan) -> Result<Statement> {
-    let dialect = cat.primary().dialect();
+    let dialect = cat.primary_dialect();
     let named = rewrite_named_params(dialect, &plan.sql)
         .map_err(|e| Error::invalid(format!("this code body's SQL {e}")))?;
     if named.statements == 0 {

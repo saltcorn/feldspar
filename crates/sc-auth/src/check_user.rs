@@ -47,7 +47,7 @@ pub async fn set_check_user(catalog: &Catalog, id: Uuid, on: bool) -> Result<Use
     )
     .filter(Expr::col(COL_ID).eq(Expr::lit(id)));
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(update))
         .await?
         .try_collect()

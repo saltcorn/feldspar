@@ -110,8 +110,8 @@ pub use file_stores::{
     QUERY_STORE_FILES, StoreFileSetting, bootstrap_file_stores, check_file_store_saveable,
     choosable_file_stores, connect_all_file_stores, connect_file_store_def, delete_file_store,
     file_store_field_references, file_store_settings, list_file_stores, load_file_store,
-    load_file_store_by_name, resolve_options, save_file_store, store_file_settings,
-    unique_file_store_name,
+    load_file_store_by_name, open_checked_store, resolve_options, save_file_store,
+    store_file_settings, unique_file_store_name,
 };
 pub use model_host::{ModelHost, ModelSummary, PredictRows, check_model_calls};
 pub use module_tables::{ModuleTableClaim, ModuleTables};

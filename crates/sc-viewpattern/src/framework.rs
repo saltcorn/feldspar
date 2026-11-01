@@ -1719,25 +1719,19 @@ pub async fn serve_store_file(
             None => return Ok(AppResponse::not_found()),
         },
     };
-    let Ok(store) = cat.require_file_store(&store_name) else {
+    if !cat.has_file_store(&store_name)? {
         return Ok(AppResponse::not_found());
-    };
-    let floor = sc_catalog::load_file_store_by_name(cat, &store_name)
-        .await?
-        .and_then(|def| def.min_role);
+    }
     let caller = sc_files::FileCaller::new(
         user.map_or(Role::PUBLIC, |u| u.role()),
         user.map(|u| u.id().to_string()),
     );
-    if sc_files::check_access(store.as_ref(), floor, &path, &caller)
-        .await
-        .is_err()
-    {
-        return Ok(AppResponse::not_found());
+    // Every read checked for the viewer (TODO-code-quality Q3.6).
+    let store = sc_catalog::open_checked_store(cat, &store_name, caller).await?;
+    match store.serve(&path).await {
+        Ok(file) => Ok(AppResponse::serve_file(file)),
+        Err(_) => Ok(AppResponse::not_found()),
     }
-    Ok(AppResponse::serve_file(sc_files::ServeFile::new(
-        store, path,
-    )))
 }
 
 fn is_xhr(req: &AppRequest) -> bool {

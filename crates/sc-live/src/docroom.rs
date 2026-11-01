@@ -496,9 +496,7 @@ impl DocRoom {
                 .columns(vec![Projection::expr(Expr::col(self.target.field.clone()))])
                 .filter(filter)
                 .for_update();
-            let found = tx
-                .run(PERSIST.authority(), &Statement::from(select))
-                .await?;
+            let found = tx.run(PERSIST, &Statement::from(select)).await?;
             let row = found.first().ok_or_else(|| {
                 Error::not_found(format!(
                     "the row `{}` of `{}` holding this document is gone",

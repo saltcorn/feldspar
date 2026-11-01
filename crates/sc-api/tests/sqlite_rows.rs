@@ -143,12 +143,13 @@ async fn a_caller_context_read_runs_where_there_are_no_policies() -> sc_error::R
         .await?;
 
     let caller = sc_catalog::Principal::anonymous(Role::ADMIN);
+    let access = sc_catalog::Unchecked::admin(&caller).expect("an administrator");
     let statement = Statement::from(Select::from(Source::table("book")));
-    let rows = sc_catalog::run_in_context(&catalog, &caller, &statement).await?;
+    let rows = sc_catalog::run_in_context(&catalog, access, &statement).await?;
     assert_eq!(rows.len(), 1);
 
     // …and the read-only form, which a custom SQL query declared read-only uses.
-    let rows = sc_catalog::run_in_context_read_only(&catalog, &caller, &statement).await?;
+    let rows = sc_catalog::run_in_context_read_only(&catalog, access, &statement).await?;
     assert_eq!(rows.len(), 1);
 
     // A write in a read-only transaction is still refused — by the database,
@@ -159,7 +160,7 @@ async fn a_caller_context_read_runs_where_there_are_no_policies() -> sc_error::R
         vec![Expr::lit("The Waves")],
     ));
     assert!(
-        sc_catalog::run_in_context_read_only(&catalog, &caller, &write)
+        sc_catalog::run_in_context_read_only(&catalog, access, &write)
             .await
             .is_err(),
         "a read-only transaction must refuse a write"
@@ -168,7 +169,7 @@ async fn a_caller_context_read_runs_where_there_are_no_policies() -> sc_error::R
     // The connection that transaction used goes back to the pool usable: a
     // `query_only` left on it would make the next writer fail.
     catalog
-        .provider(&table, sc_catalog::Unchecked::system("test"))?
+        .provider(&table, access)?
         .write(&Statement::from(Insert::row(
             "book",
             vec!["title".into()],

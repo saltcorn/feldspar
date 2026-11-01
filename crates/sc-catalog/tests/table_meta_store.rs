@@ -197,7 +197,7 @@ async fn an_overlay_outlives_the_table_it_overlays_and_says_so() -> Result<()> {
 
     // Drop the table underneath the row — a restore, or a migration run outside
     // Saltcorn, does exactly this.
-    cat.primary()
+    cat.primary(sc_catalog::Unchecked::system("test"))
         .apply_schema(&SchemaChange::DropTable {
             name: "books".to_owned(),
             if_exists: false,

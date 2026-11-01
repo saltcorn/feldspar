@@ -431,7 +431,9 @@ async fn a_directory_the_caller_may_not_open_is_neither_listed_nor_searched() ->
     env.put(&dir, "private/closed.ts", "const secret = 2;\n")?;
 
     // Admin-only on the directory, which the whole path below it inherits (§9).
-    let store = env.catalog.require_file_store("code")?;
+    let store = env
+        .catalog
+        .require_file_store("code", sc_catalog::Unchecked::system("test"))?;
     store
         .set_meta(
             "private",

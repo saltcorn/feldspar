@@ -91,12 +91,25 @@ pub(crate) fn language_server_root(
     let Some(catalog) = catalog else {
         return Err("this server has no catalog, so it has no file stores".to_owned());
     };
-    let handle = catalog
-        .file_store(store)
+    if !catalog
+        .has_file_store(store)
         .map_err(|e| format!("file store {store}: {e}"))?
-        .ok_or_else(|| format!("the file store {store} is not connected"))?;
+    {
+        return Err(format!("the file store {store} is not connected"));
+    }
+    // The language server is a process over the whole tree, which no path rule
+    // reaches into: the store is bound to the administrator the socket was
+    // opened for (the route admits an admin session only, and the bridge lives
+    // as long as it does), and only an administrator's binding answers a root.
+    let handle = catalog
+        .checked_file_store(
+            store,
+            None,
+            sc_files::FileCaller::new(sc_types::Role::ADMIN, None),
+        )
+        .map_err(|e| format!("file store {store}: {e}"))?;
     let root = handle
-        .local_path("")
+        .local_root()
         .map_err(|e| format!("file store {store}: {e}"))?
         .ok_or_else(|| {
             format!("{store} has no local path, so it can be edited but not type-checked")

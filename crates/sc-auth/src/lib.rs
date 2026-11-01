@@ -41,6 +41,14 @@
 //! — the payments module does), and the first write made without them creates
 //! them; until then every read answers as if they were empty.
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
+    "sc-auth: users, sessions, tokens, roles, grants and the credits ledger",
+);
+
 mod check_user;
 mod create;
 mod credits;

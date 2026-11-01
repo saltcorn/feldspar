@@ -171,15 +171,8 @@ impl AgentTrait for QueryTable {
             query = query.searching(search);
         }
         let query = query.order_by(order).limit(limit.saturating_add(1));
-        let found = sc_access::read_rows_as(
-            ctx.catalog,
-            &table,
-            &query,
-            ctx.caller.role,
-            ctx.caller.user.as_ref(),
-            ctx.evaluator,
-        )
-        .await?;
+        let me = ctx.principal();
+        let found = ctx.scoped(&me).read(&table, &query).await?;
 
         let mut rows: Vec<Json> = found.as_array().cloned().unwrap_or_default();
         let more = rows.len() as u64 > limit;

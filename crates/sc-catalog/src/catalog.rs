@@ -331,6 +331,11 @@ impl DriverInfo {
         self.0.dialect().is_sqlite()
     }
 
+    /// The DDL `change` would run, rendered and not run.
+    pub fn render_ddl(&self, change: &sc_db::SchemaChange) -> Result<String> {
+        self.0.render_ddl(change)
+    }
+
     /// Whether the database can store geometries (PostGIS), and why not.
     pub fn spatial(&self) -> sc_db::SpatialSupport {
         self.0.spatial()
@@ -389,9 +394,32 @@ impl Catalog {
         Ok(catalog)
     }
 
-    /// The primary database driver.
-    pub fn primary(&self) -> &Arc<dyn DatabaseDriver> {
+    /// The primary database driver: every statement it runs reaches every row,
+    /// so it takes an [`Unchecked`](crate::Unchecked) (TODO-code-quality Q3.5).
+    ///
+    /// A crate's own internal tables (`_fd_*`) are reached through one
+    /// crate-private helper per crate that makes the token once, with the
+    /// reason, and is listed in docs/SECURITY_REVIEW_2026-10.md's inventory.
+    /// What a caller needs to know about the database without running a
+    /// statement — its dialect, its capabilities — is
+    /// [`primary_info`](Catalog::primary_info).
+    pub fn primary(&self, _access: crate::Unchecked<'_>) -> &Arc<dyn DatabaseDriver> {
         &self.primary
+    }
+
+    /// [`primary`](Catalog::primary) for this crate's own statements.
+    pub(crate) fn primary_driver(&self) -> &Arc<dyn DatabaseDriver> {
+        &self.primary
+    }
+
+    /// The primary database's SQL dialect.
+    pub fn primary_dialect(&self) -> &dyn sc_query::SqlDialect {
+        self.primary.dialect()
+    }
+
+    /// The primary database's dialect and capabilities, without its driver.
+    pub fn primary_info(&self) -> DriverInfo {
+        DriverInfo(Arc::clone(&self.primary))
     }
 
     /// The id of the primary database — what a table's
@@ -2057,8 +2085,31 @@ impl Catalog {
         Ok(guard.iter().map(|(_, events)| Arc::clone(events)).collect())
     }
 
-    /// The connected file store with the given name, if any.
-    pub fn file_store(&self, name: &str) -> Result<Option<Arc<dyn FileStore>>> {
+    /// The connected file store with the given name, if any — the raw store,
+    /// whose operations check nobody's access, so it takes an
+    /// [`Unchecked`](crate::Unchecked) (TODO-code-quality Q3.6). A caller's
+    /// files are reached through [`checked_file_store`](Catalog::checked_file_store).
+    pub fn file_store(
+        &self,
+        name: &str,
+        _access: crate::Unchecked<'_>,
+    ) -> Result<Option<Arc<dyn FileStore>>> {
+        self.raw_file_store(name)
+    }
+
+    /// The connected file store with the given name, or a
+    /// [`NotFound`](Error::NotFound) error. Takes an [`Unchecked`](crate::Unchecked),
+    /// as [`file_store`](Catalog::file_store) does.
+    pub fn require_file_store(
+        &self,
+        name: &str,
+        _access: crate::Unchecked<'_>,
+    ) -> Result<Arc<dyn FileStore>> {
+        self.require_raw_file_store(name)
+    }
+
+    /// [`file_store`](Catalog::file_store) for this crate's own use.
+    pub(crate) fn raw_file_store(&self, name: &str) -> Result<Option<Arc<dyn FileStore>>> {
         let guard = self
             .file_stores
             .read()
@@ -2066,11 +2117,39 @@ impl Catalog {
         Ok(guard.get(name).cloned())
     }
 
-    /// The connected file store with the given name, or a
-    /// [`NotFound`](Error::NotFound) error.
-    pub fn require_file_store(&self, name: &str) -> Result<Arc<dyn FileStore>> {
-        self.file_store(name)?
+    /// [`require_file_store`](Catalog::require_file_store) for this crate's own use.
+    pub(crate) fn require_raw_file_store(&self, name: &str) -> Result<Arc<dyn FileStore>> {
+        self.raw_file_store(name)?
             .ok_or_else(|| Error::not_found(format!("file store `{name}` is not connected")))
+    }
+
+    /// The connected store `name` with `caller` bound to it: every operation
+    /// checks the path-cumulative rule first ([`sc_files::CheckedStore`]).
+    /// `floor` is the store definition's `min_role` — what
+    /// [`load_file_store_by_name`](crate::load_file_store_by_name) reads, and
+    /// what [`open_checked_store`](crate::open_checked_store) reads for you.
+    pub fn checked_file_store(
+        &self,
+        name: &str,
+        floor: Option<sc_types::Role>,
+        caller: sc_files::FileCaller,
+    ) -> Result<sc_files::CheckedStore> {
+        Ok(sc_files::CheckedStore::new(
+            self.require_raw_file_store(name)?,
+            floor,
+            caller,
+        ))
+    }
+
+    /// Whether the connected store of that name is a git working copy;
+    /// `None` when no store of that name is connected.
+    pub fn file_store_is_git_repo(&self, name: &str) -> Result<Option<bool>> {
+        Ok(self.raw_file_store(name)?.map(|store| store.is_git_repo()))
+    }
+
+    /// Whether a file store of that name is connected.
+    pub fn has_file_store(&self, name: &str) -> Result<bool> {
+        Ok(self.raw_file_store(name)?.is_some())
     }
 
     /// The names of every connected file store, sorted.

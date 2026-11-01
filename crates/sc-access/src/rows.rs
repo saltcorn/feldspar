@@ -1189,6 +1189,11 @@ fn files_removed_on_delete(table: &Table) -> Vec<(&str, &str)> {
 ///
 /// Like a trigger's failure, a removal that fails is reported, not raised: the
 /// row is already gone, and the caller's delete succeeded.
+/// The system authority a delete's `remove_file` cleanup reaches the store
+/// with: the row is already gone, and the file it named goes with it.
+const FILE_CLEANUP: Unchecked<'static> =
+    Unchecked::system("file cleanup: remove the file a deleted row named");
+
 async fn remove_deleted_files(
     catalog: &Catalog,
     table: &Table,
@@ -1196,7 +1201,7 @@ async fn remove_deleted_files(
     executor: &Executor,
 ) {
     for (column, store_name) in files_removed_on_delete(table) {
-        let store = match catalog.file_store(store_name) {
+        let store = match catalog.file_store(store_name, FILE_CLEANUP) {
             Ok(Some(store)) => store,
             _ => continue,
         };
@@ -1524,7 +1529,7 @@ fn validate_file_write(
         _ => return Ok(()),
     };
 
-    if catalog.file_store(&store.0)?.is_none() {
+    if !catalog.has_file_store(&store.0)? {
         return Err(Error::invalid(format!(
             "`{column}`: file store `{}` is not resolvable",
             store.0
@@ -1570,16 +1575,12 @@ async fn may_attach_file(
     if caller.is_admin() {
         return Ok(true);
     }
-    let files = catalog.require_file_store(&store.0)?;
-    if !matches!(files.stat(path).await, Ok(Some(stat)) if !stat.is_dir) {
+    let files = sc_catalog::open_checked_store(catalog, &store.0, caller).await?;
+    // Both or neither: a file the caller may write, and one that is there.
+    let Ok(file) = files.writable(path).await else {
         return Ok(false);
-    }
-    let floor = sc_catalog::load_file_store_by_name(catalog, &store.0)
-        .await?
-        .and_then(|def| def.min_role);
-    Ok(sc_files::check_write(files.as_ref(), floor, path, &caller)
-        .await
-        .is_ok())
+    };
+    Ok(matches!(file.stat().await, Ok(Some(stat)) if !stat.is_dir))
 }
 
 /// The refusal for a path [`may_attach_file`] turned down. One message whether
@@ -1788,17 +1789,19 @@ pub(crate) async fn run_read_in(
         // a step transaction has several writers, and each one's statements are
         // decided by the policies as *itself* (`SharedTx::run`).
         return tx
-            .run(context, &Statement::Select(Box::new(select.clone())))
+            .run(access, &Statement::Select(Box::new(select.clone())))
             .await;
     }
     // The system reaches an RLS table's policies as the admin role (`Authority`).
     let system = context.is_system().then(|| context.as_principal());
     let principal = context.principal().or(system.as_deref());
     match in_context(table, principal, reaches_rls) {
-        Some(context) => {
+        // The context is `access`'s own authority (the admin role with no user
+        // for the system), which is what `run_in_context` sets the GUCs from.
+        Some(_) => {
             sc_catalog::run_in_context(
                 catalog,
-                context,
+                access,
                 &Statement::Select(Box::new(select.clone())),
             )
             .await
@@ -1827,9 +1830,10 @@ async fn run_write_in(
 ) -> Result<Vec<Row>> {
     let context = access.authority();
     let outcome = match executor.serving(table) {
-        Some(tx) => tx.run(context, &statement).await,
+        Some(tx) => tx.run(access, &statement).await,
         None => match write_context(table, context) {
-            Some(context) => sc_catalog::run_in_context(catalog, &context, &statement).await,
+            // The context is `access`'s own authority (see `run_read_in`).
+            Some(_) => sc_catalog::run_in_context(catalog, access, &statement).await,
             None => match catalog.provider(table, access)?.write(&statement).await {
                 Ok(stream) => stream.try_collect().await,
                 Err(e) => Err(e),

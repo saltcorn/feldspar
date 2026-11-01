@@ -398,7 +398,7 @@ pub fn connect_file_stores(catalog: &Catalog, specs: &[String]) -> Result<()> {
                 "invalid --file-store `{spec}`: the name must not be empty"
             )));
         }
-        if catalog.file_store(name)?.is_some() {
+        if catalog.has_file_store(name)? {
             return Err(Error::config(format!(
                 "--file-store `{name}` clashes with a configured file store of the same name; \
                  rename one, or drop the flag and edit the store in the admin UI"

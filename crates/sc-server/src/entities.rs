@@ -123,7 +123,7 @@ async fn list_entities(
 
     // --- tables
     let edited = sc_catalog::updated_at_by(catalog, sc_catalog::TABLE_EDITS_TABLE, "name").await?;
-    let rls = catalog.primary().capabilities().row_level_security;
+    let rls = catalog.primary_info().capabilities().row_level_security;
     for table in catalog.tables()?.iter().filter(|t| !t.is_hidden()) {
         let mut details = Vec::new();
         if let Some((_, provider)) = table.provider() {
@@ -172,7 +172,7 @@ async fn list_entities(
     };
     for def in stores {
         let mut details = vec![def.backend.clone()];
-        if catalog.file_store(&def.name)?.is_none() {
+        if !catalog.has_file_store(&def.name)? {
             details.push("not connected".to_owned());
         }
         let definition = if deep {

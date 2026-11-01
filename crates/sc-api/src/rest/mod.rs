@@ -59,15 +59,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use sc_auth::{User, authenticate};
-use sc_catalog::{
-    Authority, Catalog, DataFieldKind, FileOnConflict, Principal, Table, Unchecked,
-    load_file_store_by_name,
-};
+use sc_catalog::{Authority, Catalog, DataFieldKind, FileOnConflict, Principal, Table, Unchecked};
 use sc_error::{Error, Repr, Result};
 use sc_expr::{JsEvaluator, Operation};
-use sc_files::{
-    FileCaller, ServeFile, check_access, check_write, record_owner, validate_file_path,
-};
+use sc_files::{FileCaller, validate_file_path};
 use sc_query::Value;
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value as Json, json};
@@ -99,6 +94,12 @@ const RLS_RULE: &str = "the table's RLS policies (REST provider, run_rls)";
 /// The check that stands behind a file download or upload's unchecked read and
 /// write of the row: the REST read or write rule the route applied first.
 const REST_RULE: &str = "the REST read / write rule (REST provider, file routes)";
+
+/// The check that stands behind a custom SQL query's statement (§13.4): the
+/// statement is admin-authored configuration, the endpoint's floor admitted
+/// the caller, and it runs in the caller's context so an RLS table's policies
+/// decide what it reaches (TODO-code-quality Q3.5).
+const CUSTOM_QUERY_RULE: &str = "an admin-authored custom query behind its endpoint's floor";
 
 /// The provider's registered name.
 pub const REST_PROVIDER: &str = "rest";
@@ -895,10 +896,13 @@ impl RestProvider {
         }
         let statement = custom::custom_statement(cat, query, req)?;
         let caller = ownership::principal_of(user);
+        // The statement is the admin's own (§13.4), run as the caller so an RLS
+        // table's policies decide; the endpoint's floor was the check.
+        let access = Unchecked::vouched(&caller, CUSTOM_QUERY_RULE);
         let rows = if query.read_only() {
-            sc_catalog::run_in_context_read_only(cat, &caller, &statement).await
+            sc_catalog::run_in_context_read_only(cat, access, &statement).await
         } else {
-            sc_catalog::run_in_context(cat, &caller, &statement).await
+            sc_catalog::run_in_context(cat, access, &statement).await
         }?;
         Ok(ApiResponse::ok(custom::rows_to_json(&rows)))
     }
@@ -1725,35 +1729,29 @@ async fn code_response(
         if file.path.split('/').any(|s| s == ".." || s.is_empty()) {
             return not_found();
         }
-        let Ok(store) = cat.require_file_store(&file.store) else {
+        // The body's `asAdmin()` file is served as the administrator's, who
+        // clears every rule (and whose floor is not read); any other as the
+        // request's user, through the store's rules.
+        let caller = match file.authority == "admin" {
+            true => FileCaller::new(Role::ADMIN, None),
+            false => file_caller(user),
+        };
+        let Ok(store) = sc_catalog::open_checked_store(cat, &file.store, caller).await else {
             return not_found();
         };
-        if file.authority != "admin" {
-            let floor = match load_file_store_by_name(cat, &file.store).await {
-                Ok(def) => def.and_then(|d| d.min_role),
-                Err(_) => return not_found(),
-            };
-            if check_access(store.as_ref(), floor, &file.path, &file_caller(user))
-                .await
-                .is_err()
-            {
-                return not_found();
-            }
-        }
+        let Ok(serve) = store.serve(&file.path).await else {
+            return not_found();
+        };
         // `cache-control` is the builder's to set, so the body's choice is
         // handed to it rather than added beside its default.
         let cache_control = headers
             .iter()
             .position(|(name, _)| name == "cache-control")
             .map(|at| headers.remove(at).1);
-        let serve = ServeFile {
-            store,
-            path: file.path,
-            filename: file.filename,
-            download: file.download,
-            content_type: file.content_type,
-            cache_control,
-        };
+        let mut serve = serve.download(file.download);
+        serve.filename = file.filename;
+        serve.content_type = file.content_type;
+        serve.cache_control = cache_control;
         return ApiResponse {
             file: Some(Box::new(serve)),
             headers,
@@ -1876,23 +1874,19 @@ async fn download_inner(
             )));
         }
     };
-    let store = cat.require_file_store(store_name)?;
-    let floor = store_floor(cat, store_name).await?;
+    let store = checked_store(cat, store_name, caller).await?;
     // A file the caller may not read is not found, exactly as a missing one is
     // (§13.2): "forbidden" would confirm it exists.
-    if check_access(store.as_ref(), floor, &path, caller)
-        .await
-        .is_err()
-    {
+    let Ok(serve) = store.serve(&path).await else {
         return Err(Error::not_found(format!(
             "row {id} has no file in `{field}`"
         )));
-    }
+    };
     // Served by the transport's file builder (TODO F2, §2.2): streamed, with
     // Range, and named for the original upload. The content type is the one
     // the path guesses, exactly as the field's MIME allow-list is enforced —
     // the two must agree on what a path is.
-    Ok(ApiResponse::serve_file(ServeFile::new(store, path)))
+    Ok(ApiResponse::serve_file(serve))
 }
 
 /// Store an upload's bytes behind a row's `File` field (§4).
@@ -1955,8 +1949,7 @@ async fn upload_inner(
     let path = upload_path(folder, filename);
     validate_file_path(&path, folder, mime_allow).map_err(|e| rows::field_error(field, e))?;
 
-    let store = cat.require_file_store(store_name)?;
-    let floor = store_floor(cat, store_name).await?;
+    let store = checked_store(cat, store_name, caller).await?;
     // A field that keeps what is there gives the upload the first free
     // `name_n.ext` instead: nothing is replaced, so there is nothing to check
     // write access to below. Only the name changes, never the folder, so the
@@ -1964,26 +1957,22 @@ async fn upload_inner(
     // still holds for any rule about where the file lives.
     let path = match on_conflict {
         FileOnConflict::Overwrite => path,
-        FileOnConflict::Suffix => sc_files::free_path(store.as_ref(), &path).await?,
+        FileOnConflict::Suffix => store.free_path(&path).await?,
     };
     // The field's folder is where the admin said uploads land, and the table's
     // write rule already let this caller upload, so a **new** file needs nothing
     // more — that is what makes a min_role 1 folder a private drop box (§2.1).
     // Replacing a file that is there is a write to it: somebody else's upload,
     // or a file the caller could not otherwise change, is refused.
-    if store.stat(&path).await?.is_some() {
-        check_write(store.as_ref(), floor, &path, caller).await?;
-    }
+    let file = store.deposit(&path).await?;
 
     // The row must exist (and be writable by the caller) before the bytes land:
     // failing afterwards would leave an orphaned file no row references.
     rows::read_field(cat, table, field, id, context).await?;
-    store.write(&path, data).await?;
+    file.write(data).await?;
     // The uploader owns it (§2.1), so they can read it back however private
     // the folder is.
-    if let Some(owner) = &caller.user_id {
-        record_owner(store.as_ref(), &path, owner).await;
-    }
+    file.claim().await;
     let updated = rows::attach_uploaded_file(cat, table, id, field, &path, context).await?;
     Ok(ApiResponse::with_status(201, updated))
 }
@@ -2019,13 +2008,16 @@ fn file_field<'t>(
     }
 }
 
-/// The store-wide access floor from the store's stored definition, `None` for a
-/// store with no definition row (an ephemeral `--file-store`) — the same answer
-/// the admin file endpoints resolve.
-async fn store_floor(cat: &Catalog, store: &str) -> Result<Option<Role>> {
-    Ok(load_file_store_by_name(cat, store)
-        .await?
-        .and_then(|def| def.min_role))
+/// The `File` field's store as `caller` reaches it: its floor from the store's
+/// stored definition (`None` for a store with no definition row, an ephemeral
+/// `--file-store` — the same answer the admin file endpoints resolve), and
+/// every operation checked (TODO-code-quality Q3.6).
+async fn checked_store(
+    cat: &Catalog,
+    store: &str,
+    caller: &FileCaller,
+) -> Result<sc_files::CheckedStore> {
+    sc_catalog::open_checked_store(cat, store, caller.clone()).await
 }
 
 /// Captured path parameters.

@@ -370,7 +370,15 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
             sqlite: None,
         },
     };
-    sc_migrate::run_one(server.catalog.primary().as_ref(), &[RECORDED], RECORDED.id).await?;
+    sc_migrate::run_one(
+        server
+            .catalog
+            .primary(sc_catalog::Unchecked::system("test"))
+            .as_ref(),
+        &[RECORDED],
+        RECORDED.id,
+    )
+    .await?;
     server.catalog.reload().await?;
 
     let report = ok(
@@ -383,7 +391,7 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
     assert_eq!(report["warnings"], json!([]), "{report}");
     let migrations = server
         .catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&sc_query::Statement::raw(
             "SELECT id FROM \"_fd_migrations\"",
             Vec::new(),

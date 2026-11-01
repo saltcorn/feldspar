@@ -494,7 +494,7 @@ async fn events(catalog: &Catalog) -> Result<()> {
         f = hash(1_583_458_089, 784_588_716),
     );
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::raw(sql, Vec::new()))
         .await?
         .try_collect()
@@ -811,7 +811,7 @@ async fn insert(
             returning: Vec::new(),
         };
         catalog
-            .primary()
+            .primary(crate::INTERNAL_TABLES)
             .query(&Statement::from(insert))
             .await?
             .try_collect()

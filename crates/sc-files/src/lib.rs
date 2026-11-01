@@ -38,7 +38,7 @@ pub use backend::{
     display_config, git_config_spec, local_config_spec, registered_backends, relocate_for_restore,
     run_backend_operation, validate_file_store_config,
 };
-pub use checked::CheckedStore;
+pub use checked::{CheckedStore, Readable, Writable};
 pub use def::{
     ATTR_CLONE_PATH, CFG_BRANCH, CFG_CREATE, CFG_DIR, CFG_KEY_PATH, CFG_PATH, CFG_PUBLIC_KEY,
     CFG_URL, FileStoreDef, FileStoreDefId, GIT_BACKEND, LOCAL_BACKEND,

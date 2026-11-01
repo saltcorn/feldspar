@@ -66,7 +66,6 @@
 //! the only thing that holds a real one. A retry's backoff, a day-long `Wait` and
 //! an abandoned approval are all tested by moving the clock; **no test sleeps**.
 
-use sc_catalog::Authority;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
@@ -610,13 +609,13 @@ impl<'a> Driver<'a> {
         // No caller context: these are the engine's own `_fd_*` tables, which
         // carry no policies (§9) and are not reachable by an application's rows.
         tx.run(
-            Authority::system("workflow: record run state"),
+            sc_catalog::Unchecked::system("workflow: record run state"),
             &sc_query::Statement::from(run_update(run)),
         )
         .await?;
         for trace in traces {
             tx.run(
-                Authority::system("workflow: record run state"),
+                sc_catalog::Unchecked::system("workflow: record run state"),
                 &sc_query::Statement::from(trace_insert(trace)),
             )
             .await?;

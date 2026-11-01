@@ -637,7 +637,7 @@ async fn create_file_stores(
         .filter_map(|f| f.file_store.as_deref().map(str::trim))
         .collect();
     for name in wanted {
-        if catalog.file_store(name)?.is_some() {
+        if catalog.has_file_store(name)? {
             continue;
         }
         if catalog.get(FILE_STORES_TABLE)?.is_none() {

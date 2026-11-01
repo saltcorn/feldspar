@@ -19,7 +19,6 @@
 //!
 //! Effects outside the database (an email a trigger sent) are not undone.
 
-use sc_catalog::Authority;
 use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -625,7 +624,7 @@ impl<'a> Reverser<'a> {
         table: &Table,
         values: &Map<String, Json>,
     ) -> Result<()> {
-        let quote = |ident: &str| self.catalog.primary().dialect().quote_ident(ident);
+        let quote = |ident: &str| self.catalog.primary_dialect().quote_ident(ident);
         for field in &table.fields {
             let DataFieldKind::Key {
                 target_table,
@@ -648,7 +647,8 @@ impl<'a> Reverser<'a> {
                         column = sc_catalog::as_text_sql(&format!("t.{}", quote(&target_field.0))),
                     );
                     let stmt = Statement::raw(sql, vec![Value::Text(text.clone())]);
-                    !tx.run(Authority::Caller(&self.checking()), &stmt)
+                    let checking = self.checking();
+                    !tx.run(sc_access::admin_access(&checking)?, &stmt)
                         .await?
                         .is_empty()
                 }
@@ -702,7 +702,7 @@ async fn current_row(
     key: &str,
 ) -> Result<Option<Map<String, Json>>> {
     let sql = {
-        let dialect = catalog.primary().dialect();
+        let dialect = catalog.primary_dialect();
         let quote = |ident: &str| dialect.quote_ident(ident);
         format!(
             "SELECT {row} AS row FROM {name} t WHERE {key} = $1",
@@ -713,7 +713,7 @@ async fn current_row(
     };
     let found = tx
         .run(
-            Authority::Caller(context),
+            sc_access::admin_access(context)?,
             &Statement::raw(sql, vec![Value::Text(key.to_owned())]),
         )
         .await?;

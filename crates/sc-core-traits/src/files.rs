@@ -208,8 +208,15 @@ impl FileScope {
     /// The two travel together because every access check needs both, and a
     /// caller that forgot the floor would be applying the per-file rules while
     /// ignoring the store-wide one.
+    ///
+    /// The **raw** store (TODO-code-quality Q3.6): the file tools reach it
+    /// through [`open_at`] / [`open_to_write`], which bind the run's caller
+    /// ([`CheckedStore`]); the coding trait's other tools check the caller
+    /// themselves (`find`, `search`, `view_app`'s assets, the skill and script
+    /// readers) or are offered to an administrator's run only (the shell,
+    /// commits, checks). Listed in docs/SECURITY_REVIEW_2026-10.md's inventory.
     pub async fn connect(&self, catalog: &Catalog) -> Result<(Arc<dyn FileStore>, Option<Role>)> {
-        let store = catalog.require_file_store(&self.store)?;
+        let store = catalog.require_file_store(&self.store, AGENT_FILE_SCOPE)?;
         let floor = load_file_store_by_name(catalog, &self.store)
             .await
             .ok()
@@ -218,6 +225,12 @@ impl FileScope {
         Ok((store, floor))
     }
 }
+
+/// The system authority an agent's file scope reaches its raw store with
+/// ([`FileScope::connect`]).
+const AGENT_FILE_SCOPE: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
+    "agent file scope: the coding trait's store, whose tools check the run's caller",
+);
 
 /// Everything one file tool needs, resolved: the store with the run's caller
 /// bound to it ([`CheckedStore`], whose every operation checks the
@@ -328,7 +341,7 @@ pub async fn check_scope(check: &TraitCheck<'_>) -> Result<FileScope> {
     let defined = load_file_store_by_name(check.catalog, &scope.store)
         .await?
         .is_some();
-    if !defined && check.catalog.require_file_store(&scope.store).is_err() {
+    if !defined && !check.catalog.has_file_store(&scope.store)? {
         return Err(Error::invalid(format!(
             "no file store named `{}`",
             scope.store

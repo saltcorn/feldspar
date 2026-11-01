@@ -178,15 +178,11 @@ async fn table_prompts(
     let (table, label_field, prompt_field, pk) = table_source(catalog, config)?;
     let filter = where_expr(&table, &all_fields(&table), config.get(CFG_PROMPT_WHERE))?;
     let query = RowQuery::new().where_(filter).limit(MAX_PICKER_ROWS);
-    let found = sc_access::read_rows_as(
-        catalog,
-        &table,
-        &query,
-        caller.role,
-        caller.user.as_ref(),
-        evaluator,
-    )
-    .await?;
+    let me = caller.principal();
+    let found = caller
+        .scoped(catalog, &me, evaluator)
+        .read(&table, &query)
+        .await?;
     let text = |v: Option<&Json>| match v {
         Some(Json::String(s)) => s.trim().to_owned(),
         Some(Json::Null) | None => String::new(),

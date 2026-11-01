@@ -119,7 +119,7 @@ pub async fn bootstrap_agent_memory(catalog: &Catalog) -> Result<Table> {
     };
     let constraint =
         TableConstraint::new(TableConstraint::derived_name(MEMORY_TABLE, &kind, ""), kind);
-    let dialect = catalog.primary().dialect();
+    let dialect = catalog.primary_dialect();
     let steps = create_constraint_steps(
         dialect,
         &SchemaProjection::new(vec![table.clone()]),
@@ -537,7 +537,7 @@ fn memory_from_row(row: &Row) -> Result<MemoryEntry> {
 
 async fn exec(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()
@@ -547,7 +547,7 @@ async fn exec(catalog: &Catalog, statement: Statement) -> Result<()> {
 
 async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

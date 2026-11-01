@@ -779,7 +779,11 @@ pub async fn describe_custom_query(
     if query.is_code() {
         return Ok(Vec::new());
     }
-    let driver = catalog.primary();
+    // Prepared to learn its columns, not run: the query is the admin's own
+    // configuration (§13.4).
+    let driver = catalog.primary(sc_catalog::Unchecked::system(
+        "custom query: describe the columns of an admin-authored statement",
+    ));
     let (named, types) = prepare(catalog, query)?;
 
     let described = driver
@@ -911,7 +915,7 @@ pub fn undeclared_params_note(query: &CustomQuery) -> Option<String> {
 /// be two answers, and the one that is wrong is the one nobody is reading until
 /// a caller hits it.
 fn prepare(catalog: &Catalog, query: &CustomQuery) -> Result<(sc_query::NamedSql, Vec<String>)> {
-    let named = rewrite_named_params(catalog.primary().dialect(), &query.code)
+    let named = rewrite_named_params(catalog.primary_dialect(), &query.code)
         .map_err(|e| Error::invalid(format!("custom query `{}`: {e}", query.name)))?;
     let types = named
         .params

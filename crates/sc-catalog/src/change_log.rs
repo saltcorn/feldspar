@@ -108,10 +108,10 @@ const CHANGESET_TX_GUC: &str = "sc.changeset_tx";
 /// trigger: switching a table's sync or history on is refused there with a
 /// sentence saying so.
 pub async fn bootstrap_change_log(catalog: &Catalog) -> Result<()> {
-    if !catalog.primary().capabilities().change_triggers {
+    if !catalog.primary_driver().capabilities().change_triggers {
         return Ok(());
     }
-    let sqlite = catalog.primary().dialect().is_sqlite();
+    let sqlite = catalog.primary_driver().dialect().is_sqlite();
     if sqlite && catalog.get(CHANGES_TABLE)?.is_none() {
         // Its own DDL on SQLite, for `AUTOINCREMENT`: `seq` is the watermark
         // there, and must never be given out twice.
@@ -129,7 +129,7 @@ pub async fn bootstrap_change_log(catalog: &Catalog) -> Result<()> {
         .bootstrap_table(CHANGES_TABLE, &changes_fields())
         .await?;
     crate::sync::bootstrap_sync_clients(catalog).await?;
-    let dialect = catalog.primary().dialect();
+    let dialect = catalog.primary_driver().dialect();
     let table = dialect.quote_ident(CHANGES_TABLE);
     let function = if sqlite {
         crate::change_log_sqlite::bootstrap_sql()
@@ -433,7 +433,7 @@ pub fn change_log_key(
 ) -> Result<String> {
     let name = &table.name;
     let feature = feature.name();
-    if !catalog.primary().capabilities().change_triggers {
+    if !catalog.primary_driver().capabilities().change_triggers {
         return Err(Error::invalid(format!(
             "{feature} needs a database that can record changes with triggers, and this \
              one cannot"

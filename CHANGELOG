@@ -5,8 +5,8 @@ Changes in reverse chronological order.
 ## Code quality Q3: `sc-access` and capability handles
 
 The fourth milestone of `TODO-code-quality.md` (§2, §4.4 of the review). Nothing changes on the
-wire, in stored data or in the schema. Q3.4, Q3.5 and Q3.6 are partly done; what remains is
-recorded under each in TODO-code-quality.md.
+wire, in stored data or in the schema. Two behaviour changes, both in a code body's delegated
+file operations, are listed under the file stores below.
 
 **`sc-access`, the row-access layer (Q3.1, Q3.2).** `rows`, `ownership`, `write_as`, `filter`,
 `convert` and `user_rows` moved out of sc-api into a new crate, with what they need (`calc_read`,
@@ -35,8 +35,17 @@ The row layer's no-caller shortcuts that hid a system authority (`create_row(cat
 body)`, `update_row`, `delete_row`, `list_rows`, `read_field`) are gone, and the `_ctx` forms took
 their names (`create_row_ctx` → `create_row`, … `delete_all_rows_ctx` → `delete_all_rows`).
 `write_document_in` takes the token too. Their callers now write the reason down: backup restore,
-checklist cleanup, OAuth token storage, the sync device rows, a live document's load. Still
-reachable without a token: `Catalog::primary()`, `SharedTx::run` and `run_in_context`.
+checklist cleanup, OAuth token storage, the sync device rows, a live document's load.
+
+`Catalog::primary`, `SharedTx::run` and `sc_catalog::run_in_context` / `run_in_context_read_only`
+take the token as well, and `SharedTx::batch` (raw SQL) is crate-private (the unused
+`SharedTx::apply_schema` is gone). `Catalog::primary_info` and `primary_dialect` answer the dialect
+and capabilities, which is what most of the ~170 `primary()` callers wanted. A crate's internal
+stores (`_fd_*`) reach the driver with one crate-private `INTERNAL_TABLES` token per crate
+(17 crates), and sc-server's admin tasks (backup and restore, clear all, table rename, the user
+lists, system info) with one `ADMIN_TASKS`, rather than a token per statement. New vouched
+callers: a custom SQL query (`CUSTOM_QUERY_RULE`), a delegated `db.sql()` (`CODE_SQL_RULE`) and a
+sync push's own-device bookkeeping (`OWN_DEVICE`).
 - **Behaviour change:** a CSV import, CSV export, geo import, public dataset install and the
   admin row endpoints are refused (`auth`) when handed a principal that is not an administrator's.
   Every caller hands them one today.
@@ -50,26 +59,59 @@ layer's, with the token their authority makes. `Scoped::system(catalog, reason)`
 `Authority::system`. `Scoped::unchecked()` hands an admin or system scope's token on for the
 operations it does not wrap.
 
-**`ActionContext::scoped` and `caller` (Q3.4, part).** sc-action now depends on sc-access. An
+**`ActionContext::scoped` and `caller` (Q3.4).** sc-action now depends on sc-access. An
 action is handed the trigger's authority — the administrator in the event's user's name, with the
 chain, on the workflow step's transaction — as a `Scoped`, and the event's caller as a `Principal`
 (`ctx.caller()`). The row actions (`insert_row`, `update_rows`, `delete_rows` and their `where`
 read, `embed_rows`) write through `scoped()` instead of building the principal from
 `event.user`; the code-body hosts, `undo` and `run_agent` take the caller from `caller()` instead
-of `event.role` / `event.user`. Same authority as before. Agent tool contexts and the code-body
-hosts themselves do not carry a `Scoped` yet.
+of `event.role` / `event.user`. Same authority as before.
 
-**`sc_files::CheckedStore` (Q3.6, part).** A file store with its floor and a `FileCaller` bound:
-`read`, `open_read`, `stat`, `get_meta` check `check_access`; `write`, `mkdir`, `delete`, `rename`
-(both ends), `set_meta` check `check_write`; `list` filters. The admin file manager's endpoints
-(read, write, upload, mkdir, delete, rename, file metadata) and the agents' file tools (`open_at`,
-`open_to_write`, and the coding traits' edit, write, patch and view-image) use it, so the check is
-no longer a separate call before each operation.
+**Agent tools and code-body hosts on `Scoped` (Q3.4).** sc-agent depends on sc-access.
+`TraitContext::principal()` is the run's caller as a principal (the role, the user's fields, the
+tool chain), and `TraitContext::scoped(&principal)` the handle every tool's rows go through
+(`RunCaller::principal` / `scoped` for helpers that take the caller): `query_table`,
+`edit_table_rows`, the `write` matcher, `search_table`, `similar_rows`, `prompt_picker` and the
+preloads no longer call the `*_as` functions with a role and a user. `TableHost` and
+`TriggerRunHost` carry the event's caller as a `Principal` (`for_caller`), and `TableHost`'s reads,
+aggregates and writes run through a `Scoped` built from the plan's actor — admin in the event's
+user's name, or the delegated caller (`asUser()`, `forUser`, public) — on the run's executor and
+engine. `models::write_posterior` takes a `Scoped` in place of `models::Writer`. `Scoped` gained
+`with_user` (decide with the user as its row was loaded, so a formula over a typed field of the
+user sees what it always saw; a user that is not the principal's is refused) and
+`aggregate_grouped`. Same authority on every path.
+
+**`sc_files::CheckedStore` (Q3.6).** A file store with its floor and a `FileCaller` bound.
+`readable(path)` / `writable(path)` check `check_access` / `check_write` and answer a grant whose
+operations (read, stream, stat, metadata, write, append, concat, mkdir, delete, rename within the
+store, record the owner) reach that path only; `read`, `write`, `delete`, `rename`, … are those in
+one call. `deposit(path)` is the drop-box rule: a new file needs nothing beyond the route's own
+rule, and replacing one is a write. `serve(path)` answers a `ServeFile`, whose store and path are
+now private (`path()`, `store_name()`, `stat()`, `open_read()`). `list`, `find_files`,
+`find_by_extension` and `search` filter for the caller; `local_root` answers only an
+administrator's binding. `Catalog::file_store` / `require_file_store` take an `Unchecked`; a route
+opens `Catalog::checked_file_store` or `sc_catalog::open_checked_store` (which reads the floor),
+and `has_file_store` / `file_store_is_git_repo` answer the connection questions. Through it: the
+admin file manager (every endpoint, `downloadFile` and find / search included), the agents' file
+tools, the REST provider's `File` routes and a code response's file, the code-body `fs` host, an
+application's static directories and `/files/serve`, the upload slots (the server's temporary
+folder bound to the administrator, the finished file deposited by the uploader), the IDE's
+language server, `send_email`'s attachments and a module's file surface. The build pipeline,
+backup and restore, translations, Stan programs and the coding trait's internal tools keep the raw
+store, with a token each, listed in docs/SECURITY_REVIEW_2026-10.md's inventory.
+- **Behaviour change:** a code body's delegated (`asUser()`) copy or move into *another* store
+  that sets a rule (`write(file, { minRole })`) is judged against the destination store's floor.
+  It was the source store's, and a source floor tighter than both rules hid a loosening.
+- **Behaviour change:** a delegated move across two stores needs the source readable as well as
+  writable (its bytes are read). Within one store a move still needs only the write.
 
 Tests: `crates/sc-access/tests/scoped.rs` (a caller below the floor is refused and the system is
 not; an ownership formula narrows a caller's read; only the system and an administrator make an
-unchecked token), `action_context::an_action_is_handed_the_triggers_authority_and_the_events_caller`
-(sc-action). The existing row-layer tests moved to the new signatures.
+unchecked token; a scope decides with the loaded user, counts through the rule and refuses another
+user), `action_context::an_action_is_handed_the_triggers_authority_and_the_events_caller`
+(sc-action), `crates/sc-files/tests/checked_store.rs` (grants, the drop box, no rename across
+stores, `local_root`), `code_files::a_delegated_copy_into_another_store_may_not_loosen_its_rule`
+(sc-core-actions). The existing tests moved to the new signatures.
 
 ## Code quality Q2: authenticated users and proof-carrying extractors
 

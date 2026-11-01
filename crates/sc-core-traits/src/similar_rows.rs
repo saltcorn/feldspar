@@ -451,15 +451,9 @@ impl Plan {
                 to: NearestTo::Vector(vector),
             })
             .limit(read);
-        let found = sc_access::read_rows_as(
-            catalog,
-            &self.vectors,
-            &query,
-            caller.role,
-            caller.user.as_ref(),
-            evaluator,
-        )
-        .await?;
+        let me = caller.principal();
+        let scope = caller.scoped(catalog, &me, evaluator);
+        let found = scope.read(&self.vectors, &query).await?;
         let found: Vec<Json> = found.as_array().cloned().unwrap_or_default();
         let Some((key, target)) = &self.relation else {
             return Ok(found.iter().map(|r| project(r, &self.shown)).collect());
@@ -483,15 +477,9 @@ impl Plan {
             &all_fields(&self.documents),
             Some(&json!({ target.as_str(): { "in": ids } })),
         )?;
-        let docs = sc_access::read_rows_as(
-            catalog,
-            &self.documents,
-            &RowQuery::new().where_(filter),
-            caller.role,
-            caller.user.as_ref(),
-            evaluator,
-        )
-        .await?;
+        let docs = scope
+            .read(&self.documents, &RowQuery::new().where_(filter))
+            .await?;
         let docs: Vec<Json> = docs.as_array().cloned().unwrap_or_default();
         Ok(ids
             .iter()

@@ -273,7 +273,7 @@ impl<'a> HistoryReader<'a> {
         let Some(users) = self.catalog.get(sc_auth::USERS_TABLE)? else {
             return Ok(BTreeMap::new());
         };
-        let dialect = self.catalog.primary().dialect();
+        let dialect = self.catalog.primary_dialect();
         let sql = format!(
             "SELECT {id}, {email} FROM {users} WHERE {id_text} IN ({ids})",
             id = dialect.quote_ident(sc_auth::COL_ID),
@@ -285,7 +285,7 @@ impl<'a> HistoryReader<'a> {
         let ids = Json::Array(ids.iter().map(|id| Json::String(id.to_string())).collect());
         let rows = self
             .catalog
-            .primary()
+            .primary(crate::INTERNAL_TABLES)
             .query(&Statement::raw(sql, vec![Value::Json(ids)]))
             .await?
             .try_collect()

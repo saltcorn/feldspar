@@ -27,7 +27,7 @@ pub fn app_source_location(app: &Application) -> Result<(String, String)> {
 /// The absolute directory `dir` of the connected store `store`.
 pub fn store_dir(catalog: &Catalog, store: &str, dir: &str) -> Result<PathBuf> {
     let connected = catalog
-        .file_store(store)?
+        .file_store(store, crate::APP_SOURCES)?
         .ok_or_else(|| Error::not_found(format!("file store `{store}` is not connected")))?;
     connected.local_path(dir)?.ok_or_else(|| {
         Error::invalid(format!(

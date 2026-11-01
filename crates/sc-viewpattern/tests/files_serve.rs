@@ -59,8 +59,8 @@ async fn an_owned_file_is_served_to_its_owner_and_not_found_to_anyone_else() -> 
 
     let served = serve_store_file(&app, &catalog, Some(&ada), &path).await?;
     let file = served.file.expect("the owner is served the file");
-    assert_eq!(file.path, "private/ada.png");
-    assert_eq!(file.store.name(), "media");
+    assert_eq!(file.path(), "private/ada.png");
+    assert_eq!(file.store_name(), "media");
 
     for (who, user) in [("another user", Some(&bob)), ("anonymous", None)] {
         let answer = serve_store_file(&app, &catalog, user, &path).await?;
@@ -122,10 +122,7 @@ async fn a_public_stores_git_dir_dotfiles_and_escaping_links_are_not_served() ->
             let answer = serve_store_file(&app, &catalog, user, path).await?;
             if let Some(file) = &answer.file {
                 // The builder opens the file; an escaping link must fail there.
-                assert!(
-                    file.store.read(&file.path).await.is_err(),
-                    "{path:?} was served"
-                );
+                assert!(file.open_read(None).await.is_err(), "{path:?} was served");
             } else {
                 assert_eq!(answer.status, 404, "{path:?}");
             }

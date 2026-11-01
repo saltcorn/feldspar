@@ -517,10 +517,9 @@ pub struct TraitCheck<'a> {
 /// default: [`Run::new`](crate::Run::new) takes one, so a run that never decided
 /// cannot exist.
 ///
-/// The two fields are what a trait hands to the row layer:
-/// `sc_access::principal_at(caller.role, caller.user.as_ref())` is the whole
-/// conversion, and it is spelled at the call site rather than here because
-/// `sc-api` is above this crate.
+/// A tool's rows go through [`TraitContext::scoped`]: the run's caller as a
+/// [`Principal`](sc_catalog::Principal) ([`TraitContext::principal`]) bound
+/// to the catalog, with the user as it was loaded (TODO-code-quality Q3.4).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunCaller {
     /// The user every tool runs as, or `None` for a system or anonymous run.
@@ -675,6 +674,29 @@ impl RunCaller {
         }
     }
 
+    /// This caller as a principal (TODO-code-quality Q3.4): the role, the
+    /// user's fields as the ownership rule renders them
+    /// (`sc_access::principal_at`), and the [`tool_chain`](Self::tool_chain)
+    /// a write made by one of the run's tools carries.
+    pub fn principal(&self) -> sc_catalog::Principal {
+        sc_access::principal_at(self.role, self.user.as_ref()).chained(self.tool_chain())
+    }
+
+    /// `catalog` with `principal` — this caller's [`principal`](Self::principal)
+    /// — bound, the user as it was loaded and `evaluator` deciding an
+    /// ownership formula the translator refuses: the handle a tool's rows go
+    /// through. On the pool (see [`TraitContext::scoped`]).
+    pub fn scoped<'p>(
+        &'p self,
+        catalog: &'p Catalog,
+        principal: &'p sc_catalog::Principal,
+        evaluator: Option<&Arc<dyn JsEvaluator>>,
+    ) -> sc_access::Scoped<'p> {
+        sc_access::Scoped::new(catalog, sc_catalog::Authority::Caller(principal))
+            .with_user(self.user.as_ref())
+            .with_evaluator(evaluator.cloned())
+    }
+
     /// Whether this caller meets a role floor — how an agent's `min_role` and a
     /// trigger's are both checked.
     ///
@@ -690,9 +712,10 @@ impl RunCaller {
 /// Borrowed rather than owned (hence the lifetime): a call is a single `await` on
 /// the driver's stack.
 pub struct TraitContext<'a> {
-    /// The data layer. A trait that touches rows goes through the row layer
-    /// (`sc-api`, above this crate) with [`caller`](TraitContext::caller), rather
-    /// than reaching the driver directly.
+    /// The data layer: the schema, the configuration, the services. A trait
+    /// that touches rows goes through [`scoped`](TraitContext::scoped), with
+    /// [`caller`](TraitContext::caller) bound; the catalog's own rows need an
+    /// `Unchecked` token.
     pub catalog: &'a Catalog,
     /// Who this tool runs as.
     pub caller: &'a RunCaller,
@@ -881,6 +904,26 @@ impl TraitContext<'_> {
 
     /// The engine, or the configuration error that says the server has none.
     ///
+    /// The run's caller as a principal (TODO-code-quality Q3.4): its role, its
+    /// user's fields as the ownership rule renders them
+    /// (`sc_access::principal_at`), and the [`tool_chain`](RunCaller::tool_chain)
+    /// a write made by a tool carries — depth 0, marked untrusted for a run
+    /// whose prompt came from outside the console.
+    pub fn principal(&self) -> sc_catalog::Principal {
+        self.caller.principal()
+    }
+
+    /// The catalog with `principal` — this context's [`principal`](Self::principal)
+    /// — bound: the handle every tool's row read and write goes through, so a
+    /// tool cannot reach a row its caller may not (§7.3's rule for a caller
+    /// below the floor, the row layer for the system and an administrator). The
+    /// user is the run's own, as it was loaded, and the formula engine is this
+    /// context's. On the pool: an agent run is its own unit of durability, so
+    /// its tools' writes commit as they are made (§10.3, decision 6).
+    pub fn scoped<'p>(&'p self, principal: &'p sc_catalog::Principal) -> sc_access::Scoped<'p> {
+        self.caller.scoped(self.catalog, principal, self.evaluator)
+    }
+
     /// Fail closed and fail loudly: a trait that cannot evaluate an ownership
     /// formula must not fall back to reading the rows anyway.
     pub fn require_evaluator(&self) -> Result<&Arc<dyn JsEvaluator>> {

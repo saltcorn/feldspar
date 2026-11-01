@@ -2721,7 +2721,7 @@ impl Plan {
     /// order the caller wrote it, then the policy DDL, which is emitted last
     /// because it may reference columns the DDL above it creates.
     fn steps(&mut self, catalog: &Catalog) -> Result<Vec<SchemaStep>> {
-        let dialect = catalog.primary().dialect();
+        let dialect = catalog.primary_dialect();
         // A full-text index is dropped *before* the columns change: on SQLite
         // it is kept by triggers that name every text column, and SQLite
         // refuses to drop or retype a column a trigger names. Its rebuild, if
@@ -2808,7 +2808,7 @@ impl Plan {
 /// changes it in: the log is kept in Saltcorn's own database, once it has been
 /// bootstrapped there.
 fn has_change_log(catalog: &Catalog, projection: &SchemaProjection, table: &str) -> bool {
-    catalog.primary().capabilities().change_triggers
+    catalog.primary_info().capabilities().change_triggers
         && catalog
             .get(sc_catalog::CHANGES_TABLE)
             .is_ok_and(|log| log.is_some())
@@ -2832,7 +2832,7 @@ fn rename_in_change_log_sql(
     if !has_change_log(catalog, projection, table) {
         return None;
     }
-    let dialect = catalog.primary().dialect();
+    let dialect = catalog.primary_dialect();
     if dialect.is_sqlite() {
         let path =
             |key: &str| dialect.quote_literal(&format!("$.\"{}\"", key.replace('"', "\\\"")));
@@ -2887,7 +2887,7 @@ fn rename_in_change_log_tables_sql(
     if !has_change_log(catalog, projection, from) {
         return None;
     }
-    let dialect = catalog.primary().dialect();
+    let dialect = catalog.primary_dialect();
     let (from, to) = (dialect.quote_literal(from), dialect.quote_literal(to));
     let mut sql = format!(
         "UPDATE {log} SET table_name = {to} WHERE table_name = {from};\n\
@@ -2918,7 +2918,7 @@ fn forget_in_change_log_sql(
     if !has_change_log(catalog, projection, table) {
         return None;
     }
-    let dialect = catalog.primary().dialect();
+    let dialect = catalog.primary_dialect();
     let table = dialect.quote_literal(table);
     Some(format!(
         "DELETE FROM {log} WHERE table_name = {table};\n\
@@ -3022,7 +3022,7 @@ fn validate_ownership(
     if !table.rls_enabled {
         return Ok(());
     }
-    if !catalog.primary().capabilities().row_level_security {
+    if !catalog.primary_info().capabilities().row_level_security {
         return Err(Error::invalid(
             "the connected database does not support row-level security",
         ));

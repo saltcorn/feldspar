@@ -688,12 +688,19 @@ async fn attachments(ctx: &ActionContext<'_>) -> Result<Vec<Attachment>> {
             continue;
         };
         let failed = |what: String| Error::invalid(format!("trigger `{}`: {what}", ctx.trigger));
-        let store = ctx.catalog.file_store(&store.0)?.ok_or_else(|| {
-            failed(format!(
+        if !ctx.catalog.has_file_store(&store.0)? {
+            return Err(failed(format!(
                 "`{name}`: file store `{}` is not connected, so `{path}` cannot be attached",
                 store.0
-            ))
-        })?;
+            )));
+        }
+        // The trigger's authority — the administrator's, which clears every
+        // file rule (TODO-code-quality Q3.6).
+        let store = ctx.catalog.checked_file_store(
+            &store.0,
+            None,
+            sc_files::FileCaller::new(sc_types::Role::ADMIN, None),
+        )?;
         let bytes = store
             .read(path)
             .await

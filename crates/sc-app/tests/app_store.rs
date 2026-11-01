@@ -476,7 +476,10 @@ async fn a_defined_but_unconnected_store_is_still_choosable() -> Result<()> {
     bootstrap(&cat).await?;
 
     // Defined, never connected — nothing was ever mounted at `/srv/x`.
-    assert!(cat.file_store("apps")?.is_none());
+    assert!(
+        cat.file_store("apps", sc_catalog::Unchecked::system("test"))?
+            .is_none()
+    );
 
     let app = Application::new(
         "Blog",

@@ -296,7 +296,10 @@ async fn two_streams_may_not_answer_to_one_name() -> Result<()> {
         ],
     );
     assert!(
-        cat.primary().query(&Statement::from(insert)).await.is_err(),
+        cat.primary(sc_catalog::Unchecked::system("test"))
+            .query(&Statement::from(insert))
+            .await
+            .is_err(),
         "the database is the authority on the name being unique"
     );
     Ok(())
@@ -418,6 +421,9 @@ async fn damage(catalog: &Catalog, id: StreamId, column: &str, value: Value) -> 
         vec![Assignment::new(column.to_owned(), Expr::Lit(value))],
     )
     .filter(Expr::col("id").eq(Expr::Lit(Value::Uuid(id.0))));
-    catalog.primary().query(&Statement::from(update)).await?;
+    catalog
+        .primary(sc_catalog::Unchecked::system("test"))
+        .query(&Statement::from(update))
+        .await?;
     Ok(())
 }

@@ -30,6 +30,13 @@
 //! both to the built-in copilot agent and to the administration MCP server
 //! (§13.6), rather than implemented once per caller.
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
+    sc_catalog::Unchecked::system("sc-api: the change log's user names for the history reader");
+
 pub mod auth;
 // The host behind a code body's `db` (§10.1): plans in, rows out.
 pub mod code_host;

@@ -101,6 +101,13 @@
 //!   whose world changed underneath it leaves the live set with a reason instead
 //!   of failing mid-conversation.
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
+    sc_catalog::Unchecked::system("sc-core-traits: the agents' memory store (`_fd_agent_memory`)");
+
 mod admin_copilot;
 mod ask_user;
 mod build_application;

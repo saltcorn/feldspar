@@ -166,7 +166,7 @@ async fn the_command_writes_a_session_a_browser_could_use() -> sc_error::Result<
     // not a pile of live sessions.
     let stored: i64 = server
         .catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&sc_query::Statement::from(
             sc_query::Select::from(sc_query::Source::table(sc_auth::SESSIONS_TABLE)).filter(
                 sc_query::Expr::col(sc_auth::COL_SESSION_TOKEN_HASH)

@@ -352,7 +352,7 @@ async fn settings_outlive_their_table_and_can_be_cleaned_up() -> sc_error::Resul
 
     // Drop the table outside Saltcorn — a restore, or a migration run by hand.
     catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .apply_schema(&sc_db::SchemaChange::DropTable {
             name: "books".to_owned(),
             if_exists: false,
@@ -385,7 +385,7 @@ async fn settings_outlive_their_table_and_can_be_cleaned_up() -> sc_error::Resul
     // And an orphan can be cleaned up by name, which is the only handle there
     // is when the table it names is gone.
     catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .apply_schema(&sc_db::SchemaChange::DropTable {
             name: "books".to_owned(),
             if_exists: false,

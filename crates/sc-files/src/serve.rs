@@ -17,10 +17,12 @@ use crate::store::FileStore;
 /// Which file to serve, and how.
 #[derive(Clone)]
 pub struct ServeFile {
-    /// The store the file is in.
-    pub store: Arc<dyn FileStore>,
+    /// The store the file is in. Private, with [`path`](ServeFile::path): a
+    /// `ServeFile` handed out by a [`CheckedStore`](crate::CheckedStore) is a
+    /// grant for one path, and its operations below reach that path only.
+    store: Arc<dyn FileStore>,
     /// Its store-relative path.
-    pub path: String,
+    path: String,
     /// The name to give it in `Content-Disposition`, in place of the file's own
     /// (`attributes.filename`, else the storage basename).
     pub filename: Option<String>,
@@ -36,6 +38,34 @@ pub struct ServeFile {
 }
 
 impl ServeFile {
+    /// The file's store-relative path.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// The name of the store the file is in.
+    pub fn store_name(&self) -> &str {
+        self.store.name()
+    }
+
+    /// What is at the path, if anything.
+    pub async fn stat(&self) -> sc_error::Result<Option<crate::FileStat>> {
+        self.store.stat(&self.path).await
+    }
+
+    /// The file's metadata.
+    pub async fn get_meta(&self) -> sc_error::Result<crate::FileMeta> {
+        self.store.get_meta(&self.path).await
+    }
+
+    /// A stream over the file, or a byte range of it.
+    pub async fn open_read(
+        &self,
+        range: Option<std::ops::Range<u64>>,
+    ) -> sc_error::Result<crate::BoxAsyncRead> {
+        self.store.open_read(&self.path, range).await
+    }
+
     /// Serve `path` from `store`, named and typed as the file itself says.
     pub fn new(store: Arc<dyn FileStore>, path: impl Into<String>) -> ServeFile {
         ServeFile {

@@ -109,7 +109,7 @@ pub async fn install(
             quoted(&present)
         )));
     }
-    let spatial = catalog.primary().spatial();
+    let spatial = catalog.primary_info().spatial();
     if entry.needs_spatial()
         && let Err(reason) = spatial.require()
     {

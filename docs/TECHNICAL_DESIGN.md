@@ -345,7 +345,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-stream` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
 | `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-types` |
 | `sc-browser` | `sc-auth` `sc-error` |
-| `sc-agent` | `sc-action` `sc-auth` `sc-browser` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
+| `sc-agent` | `sc-access` `sc-action` `sc-auth` `sc-browser` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
 | `sc-api` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-dataset` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
 | `sc-app` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-stream` `sc-types` |

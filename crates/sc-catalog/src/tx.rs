@@ -66,12 +66,12 @@
 use sc_types::Role;
 use std::sync::{Arc, Mutex as SyncMutex, MutexGuard};
 
-use sc_db::{DatabaseDriver, Row, SchemaChange};
+use sc_db::{DatabaseDriver, Row};
 use sc_error::{Error, Result};
 use sc_query::Statement;
 use tokio::sync::Mutex;
 
-use crate::caller::Authority;
+use crate::caller::{Authority, Unchecked};
 use crate::catalog::Catalog;
 use crate::field::DbId;
 use crate::rls::{map_policy_violation, set_caller_context};
@@ -225,7 +225,19 @@ impl SharedTx {
     /// statement by *this* writer — see the module documentation. A policy
     /// violation comes back as a [`NotFound`](Error::not_found), the same
     /// probe-free reading [`run_in_context`](crate::run_in_context) gives it.
-    pub async fn run(&self, authority: Authority<'_>, stmt: &Statement) -> Result<Vec<Row>> {
+    ///
+    /// The statement reaches every row its policies (if any) let `access`'s
+    /// authority reach, so it takes an [`Unchecked`] (TODO-code-quality Q3.5).
+    pub async fn run(&self, access: Unchecked<'_>, stmt: &Statement) -> Result<Vec<Row>> {
+        self.run_as(access.authority(), stmt).await
+    }
+
+    /// [`run`](SharedTx::run) for this crate's own statements.
+    pub(crate) async fn run_as(
+        &self,
+        authority: Authority<'_>,
+        stmt: &Statement,
+    ) -> Result<Vec<Row>> {
         let mut open = self.inner.lock().await;
         if self.caller_gucs {
             // The system runs as the admin role with no user (`Authority`).
@@ -248,15 +260,11 @@ impl SharedTx {
         outcome.map_err(map_policy_violation).map_err(poisoned)
     }
 
-    /// Apply a schema change inside the transaction.
-    pub async fn apply_schema(&self, change: &SchemaChange) -> Result<()> {
-        let mut open = self.inner.lock().await;
-        open.handle(&self.driver).await?.apply_schema(change).await
-    }
-
     /// Run a raw SQL batch inside the transaction — savepoints, and the DDL the
-    /// structured [`SchemaChange`] does not model.
-    pub async fn batch(&self, sql: &str) -> Result<()> {
+    /// structured [`SchemaChange`](sc_db::SchemaChange) does not model. Crate-private: raw SQL
+    /// reaches every row, and nothing outside the catalog runs it on a shared
+    /// transaction (TODO-code-quality Q3.5).
+    pub(crate) async fn batch(&self, sql: &str) -> Result<()> {
         let mut open = self.inner.lock().await;
         open.handle(&self.driver).await?.batch(sql).await
     }

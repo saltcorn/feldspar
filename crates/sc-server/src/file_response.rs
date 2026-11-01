@@ -237,8 +237,7 @@ pub(crate) async fn serve(
     uri: &Uri,
     headers: &HeaderMap,
 ) -> Response {
-    let store = file.store.as_ref();
-    let stat = match store.stat(&file.path).await {
+    let stat = match file.stat().await {
         Ok(Some(stat)) if !stat.is_dir => stat,
         Ok(_) => return missing(),
         Err(e) => {
@@ -247,7 +246,7 @@ pub(crate) async fn serve(
         }
     };
     let size = stat.size;
-    let etag = cheap_etag(&file.path, size, stat.modified.as_deref());
+    let etag = cheap_etag(file.path(), size, stat.modified.as_deref());
     let last_modified = stat.modified.as_deref().and_then(http_date);
 
     let mut out = HeaderMap::new();
@@ -279,7 +278,7 @@ pub(crate) async fn serve(
     // The file's own metadata, read once when either the type or the name is
     // left to it.
     let meta = if file.content_type.is_none() || file.filename.is_none() {
-        store.get_meta(&file.path).await.ok()
+        file.get_meta().await.ok()
     } else {
         None
     };
@@ -293,17 +292,17 @@ pub(crate) async fn serve(
         .clone()
         .or_else(|| attribute(CONTENT_TYPE_ATTRIBUTE))
         .unwrap_or_else(|| {
-            sc_files::mime_for_path(&file.path)
+            sc_files::mime_for_path(file.path())
                 .unwrap_or_else(|| "application/octet-stream".to_owned())
         });
     put(header::CONTENT_TYPE, &content_type);
     let name = match &file.filename {
         Some(name) => name.clone(),
         None => attribute(FILENAME_ATTRIBUTE).unwrap_or_else(|| {
-            file.path
+            file.path()
                 .rsplit('/')
                 .next()
-                .unwrap_or(&file.path)
+                .unwrap_or(file.path())
                 .to_owned()
         }),
     };
@@ -351,7 +350,7 @@ pub(crate) async fn serve(
     if method == Method::HEAD {
         return (status, out).into_response();
     }
-    let reader = match store.open_read(&file.path, range).await {
+    let reader = match file.open_read(range).await {
         Ok(reader) => reader,
         Err(e) => {
             crate::router::log_failure("opening a file to serve", &e);

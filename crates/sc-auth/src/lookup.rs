@@ -95,7 +95,7 @@ async fn one(catalog: &Catalog, select: Select) -> Result<Option<User>> {
 /// The user row a select finds, at its base role.
 async fn base(catalog: &Catalog, select: Select) -> Result<Option<User>> {
     let rows: Vec<Row> = catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

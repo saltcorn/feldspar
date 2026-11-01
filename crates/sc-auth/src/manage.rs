@@ -297,7 +297,7 @@ async fn write(catalog: &Catalog, id: Uuid, assignments: Vec<Assignment>) -> Res
 
 async fn rows(catalog: &Catalog, statement: Statement) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()

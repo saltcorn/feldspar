@@ -24,7 +24,6 @@
 //! had one — listed, found by id and by name, with its models — and every
 //! writer refuses it. Callers never need to know which kind they hold.
 
-use sc_catalog::Authority;
 use sc_catalog::{
     Catalog, ConstraintKind, DataField, DataFieldKind, FieldId, SchemaStep, SharedTx, Table,
     TableConstraint, TableId,
@@ -361,7 +360,7 @@ fn bad_column(column: &str, expected: &str, got: Option<&Value>) -> Error {
 /// Run a statement that returns no rows of interest.
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()
@@ -372,7 +371,7 @@ async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
 /// Run a select and collect its rows.
 async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()
@@ -838,7 +837,7 @@ async fn in_transaction(catalog: &Catalog, statements: Vec<Statement>) -> Result
     for statement in &statements {
         if let Err(e) = tx
             .run(
-                Authority::system("LLM usage and conversation storage"),
+                sc_catalog::Unchecked::system("LLM usage and conversation storage"),
                 statement,
             )
             .await

@@ -386,7 +386,7 @@ fn bad(column: &str, expected: &str) -> Error {
 
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary_driver()
         .query(&statement)
         .await?
         .try_collect()
@@ -396,7 +396,7 @@ async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
 
 async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary_driver()
         .query(&Statement::from(select))
         .await?
         .try_collect()

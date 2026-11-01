@@ -75,7 +75,7 @@ pub(crate) async fn fill(cat: &Catalog) -> Result<DatasetId> {
         returning: Vec::new(),
     };
     let run = |i: Insert| async move {
-        cat.primary()
+        cat.primary(sc_catalog::Unchecked::system("test"))
             .query(&Statement::from(i))
             .await?
             .try_collect()

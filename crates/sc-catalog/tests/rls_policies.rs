@@ -131,19 +131,34 @@ async fn run_in_context_sets_the_caller_gucs_a_policy_reads() -> Result<()> {
         Role::of(80),
         Some(serde_json::json!({ "email": "alice@example.com" })),
     );
-    let rows = run_in_context(&catalog, &alice, &select).await?;
+    let rows = run_in_context(
+        &catalog,
+        sc_catalog::Unchecked::vouched(&alice, "test"),
+        &select,
+    )
+    .await?;
     assert_eq!(rows.len(), 1);
 
     // An admin context (role 1) clears the role floor and sees both rows even
     // though the table is FORCE'd.
     let admin = Principal::anonymous(Role::ADMIN);
-    let rows = run_in_context(&catalog, &admin, &select).await?;
+    let rows = run_in_context(
+        &catalog,
+        sc_catalog::Unchecked::vouched(&admin, "test"),
+        &select,
+    )
+    .await?;
     assert_eq!(rows.len(), 2);
 
     // An anonymous context (role 100, no user) sees nothing — the policy fails
     // closed when the user GUC is unset.
     let anon = Principal::anonymous(Role::PUBLIC);
-    let rows = run_in_context(&catalog, &anon, &select).await?;
+    let rows = run_in_context(
+        &catalog,
+        sc_catalog::Unchecked::vouched(&anon, "test"),
+        &select,
+    )
+    .await?;
     assert!(rows.is_empty());
     Ok(())
 }

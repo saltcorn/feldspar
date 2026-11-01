@@ -402,7 +402,7 @@ async fn emit_client_is_a_no_op_without_a_client_path() -> Result<()> {
     assert!(written.is_empty());
 
     // Nothing was written to the store.
-    let store = cat.require_file_store("apps")?;
+    let store = cat.require_file_store("apps", sc_catalog::Unchecked::system("test"))?;
     assert!(store.list("").await?.is_empty());
     Ok(())
 }

@@ -802,7 +802,7 @@ fn bad_column(column: &str, expected: &str, got: Option<&Value>) -> Error {
 /// Run a statement that returns no rows of interest.
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary_driver()
         .query(&statement)
         .await?
         .try_collect()
@@ -813,7 +813,7 @@ async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
 /// Run a select and collect its rows.
 async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary_driver()
         .query(&Statement::from(select))
         .await?
         .try_collect()

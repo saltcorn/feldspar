@@ -17,7 +17,6 @@
 //!   back to (TODO.md "Live updates" L3.1).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use sc_catalog::Authority;
 use sc_types::Role;
 use std::sync::{Arc, Mutex};
 
@@ -88,7 +87,7 @@ async fn a_shared_transaction_begins_when_it_is_first_used() -> Result<()> {
     // And a handle whose transaction is finished refuses by name rather than
     // quietly writing somewhere else.
     let err = tx
-        .run(Authority::system("test"), &select())
+        .run(sc_catalog::Unchecked::system("test"), &select())
         .await
         .expect_err("finished");
     assert!(err.to_string().contains("already been committed"), "{err}");
@@ -107,20 +106,33 @@ async fn what_it_writes_is_private_until_it_commits() -> Result<()> {
     .await?;
 
     let tx = SharedTx::begin_primary(&catalog)?;
-    tx.run(Authority::system("test"), &insert(1, "alice@example.com"))
-        .await?;
+    tx.run(
+        sc_catalog::Unchecked::system("test"),
+        &insert(1, "alice@example.com"),
+    )
+    .await?;
     assert!(tx.has_begun().await);
     // A clone is a handle on the *same* transaction: it sees the row, and what
     // it writes joins it — which is what lets the row layer, an action and a
     // cascading trigger share one.
     let also = tx.clone();
     assert_eq!(
-        also.run(Authority::system("test"), &select()).await?.len(),
+        also.run(sc_catalog::Unchecked::system("test"), &select())
+            .await?
+            .len(),
         1
     );
-    also.run(Authority::system("test"), &insert(2, "bob@example.com"))
-        .await?;
-    assert_eq!(tx.run(Authority::system("test"), &select()).await?.len(), 2);
+    also.run(
+        sc_catalog::Unchecked::system("test"),
+        &insert(2, "bob@example.com"),
+    )
+    .await?;
+    assert_eq!(
+        tx.run(sc_catalog::Unchecked::system("test"), &select())
+            .await?
+            .len(),
+        2
+    );
     // Nobody else can see either of them yet.
     assert_eq!(committed(&db).await, 0);
 
@@ -129,10 +141,16 @@ async fn what_it_writes_is_private_until_it_commits() -> Result<()> {
 
     // The same again, committed: both land at once.
     let tx = SharedTx::begin_primary(&catalog)?;
-    tx.run(Authority::system("test"), &insert(1, "alice@example.com"))
-        .await?;
-    tx.run(Authority::system("test"), &insert(2, "bob@example.com"))
-        .await?;
+    tx.run(
+        sc_catalog::Unchecked::system("test"),
+        &insert(1, "alice@example.com"),
+    )
+    .await?;
+    tx.run(
+        sc_catalog::Unchecked::system("test"),
+        &insert(2, "bob@example.com"),
+    )
+    .await?;
     tx.commit().await?;
     assert_eq!(committed(&db).await, 2);
     Ok(())
@@ -159,7 +177,12 @@ async fn every_statement_carries_its_own_caller_to_the_policies() -> Result<()> 
 
     let tx = SharedTx::begin_primary(&catalog)?;
     let admin = Principal::anonymous(Role::ADMIN);
-    assert_eq!(tx.run(Authority::Caller(&admin), &select()).await?.len(), 2);
+    assert_eq!(
+        tx.run(sc_catalog::Unchecked::vouched(&admin, "test"), &select())
+            .await?
+            .len(),
+        2
+    );
 
     // Alice, on the same transaction the admin just used: her row only. Without
     // re-applying the GUCs per statement this would still be the admin's read.
@@ -167,14 +190,26 @@ async fn every_statement_carries_its_own_caller_to_the_policies() -> Result<()> 
         Role::of(80),
         Some(serde_json::json!({ "email": "alice@example.com" })),
     );
-    let rows = tx.run(Authority::Caller(&alice), &select()).await?;
+    let rows = tx
+        .run(sc_catalog::Unchecked::vouched(&alice, "test"), &select())
+        .await?;
     assert_eq!(rows.len(), 1);
 
     // The system is the admin role (`Authority`), not "whoever went last":
     // both rows, after Alice's statement left her GUCs in force…
-    assert_eq!(tx.run(Authority::system("test"), &select()).await?.len(), 2);
+    assert_eq!(
+        tx.run(sc_catalog::Unchecked::system("test"), &select())
+            .await?
+            .len(),
+        2
+    );
     // …and Alice after the system is Alice again.
-    assert_eq!(tx.run(Authority::Caller(&alice), &select()).await?.len(), 1);
+    assert_eq!(
+        tx.run(sc_catalog::Unchecked::vouched(&alice, "test"), &select())
+            .await?
+            .len(),
+        1
+    );
     tx.rollback().await?;
     Ok(())
 }
@@ -209,8 +244,11 @@ async fn an_after_commit_callback_runs_only_once_the_commit_has_succeeded() -> R
 
     let heard = Heard::default();
     let tx = SharedTx::begin_primary(&catalog)?;
-    tx.run(Authority::system("test"), &insert(1, "alice@example.com"))
-        .await?;
+    tx.run(
+        sc_catalog::Unchecked::system("test"),
+        &insert(1, "alice@example.com"),
+    )
+    .await?;
     tx.after_commit(heard.note("first"));
     // From a clone, as a listener the write was handed to would.
     tx.clone().after_commit(heard.note("second"));
@@ -225,8 +263,11 @@ async fn an_after_commit_callback_runs_only_once_the_commit_has_succeeded() -> R
 
     let heard = Heard::default();
     let tx = SharedTx::begin_primary(&catalog)?;
-    tx.run(Authority::system("test"), &insert(2, "bob@example.com"))
-        .await?;
+    tx.run(
+        sc_catalog::Unchecked::system("test"),
+        &insert(2, "bob@example.com"),
+    )
+    .await?;
     tx.after_commit(heard.note("rolled back"));
     tx.rollback().await?;
     tx.after_commit(heard.note("after the rollback"));
@@ -250,8 +291,11 @@ async fn a_commit_that_fails_runs_no_callbacks() -> Result<()> {
     let heard = Heard::default();
     let tx = SharedTx::begin_primary(&catalog)?;
     tx.defer_constraints().await?;
-    tx.run(Authority::system("test"), &insert(1, "nobody@example.com"))
-        .await?;
+    tx.run(
+        sc_catalog::Unchecked::system("test"),
+        &insert(1, "nobody@example.com"),
+    )
+    .await?;
     tx.after_commit(heard.note("announced"));
     tx.commit()
         .await
@@ -275,26 +319,38 @@ async fn rolling_back_to_a_savepoint_drops_the_callbacks_added_since() -> Result
 
     let heard = Heard::default();
     let tx = SharedTx::begin_primary(&catalog)?;
-    tx.run(Authority::system("test"), &insert(1, "alice@example.com"))
-        .await?;
+    tx.run(
+        sc_catalog::Unchecked::system("test"),
+        &insert(1, "alice@example.com"),
+    )
+    .await?;
     tx.after_commit(heard.note("1"));
 
     tx.savepoint("row").await?;
-    tx.run(Authority::system("test"), &insert(2, "bob@example.com"))
-        .await?;
+    tx.run(
+        sc_catalog::Unchecked::system("test"),
+        &insert(2, "bob@example.com"),
+    )
+    .await?;
     tx.after_commit(heard.note("2"));
     tx.release_savepoint("row").await?;
 
     tx.savepoint("row").await?;
-    tx.run(Authority::system("test"), &insert(3, "carol@example.com"))
-        .await?;
+    tx.run(
+        sc_catalog::Unchecked::system("test"),
+        &insert(3, "carol@example.com"),
+    )
+    .await?;
     tx.after_commit(heard.note("3"));
     tx.rollback_to_savepoint("row").await?;
     assert_eq!(tx.after_commit_pending(), 2);
 
     // The savepoint survives being rolled back to, as in SQL.
-    tx.run(Authority::system("test"), &insert(4, "dave@example.com"))
-        .await?;
+    tx.run(
+        sc_catalog::Unchecked::system("test"),
+        &insert(4, "dave@example.com"),
+    )
+    .await?;
     tx.after_commit(heard.note("4"));
     tx.release_savepoint("row").await?;
 
@@ -317,7 +373,12 @@ async fn a_snapshot_transaction_reads_one_moment_and_writes_nothing() -> Result<
     .await?;
 
     let tx = SharedTx::begin_snapshot(&catalog).await?;
-    assert_eq!(tx.run(Authority::system("test"), &select()).await?.len(), 1);
+    assert_eq!(
+        tx.run(sc_catalog::Unchecked::system("test"), &select())
+            .await?
+            .len(),
+        1
+    );
 
     // Committed elsewhere, after the snapshot was taken.
     db.client()
@@ -327,13 +388,15 @@ async fn a_snapshot_transaction_reads_one_moment_and_writes_nothing() -> Result<
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     assert_eq!(committed(&db).await, 2);
     assert_eq!(
-        tx.run(Authority::system("test"), &select()).await?.len(),
+        tx.run(sc_catalog::Unchecked::system("test"), &select())
+            .await?
+            .len(),
         1,
         "the second read sees the moment of the first"
     );
 
     let err = tx
-        .run(Authority::system("test"), &insert(3, "cy"))
+        .run(sc_catalog::Unchecked::system("test"), &insert(3, "cy"))
         .await
         .expect_err("a snapshot transaction is read-only");
     assert!(err.to_string().contains("read-only"), "{err}");

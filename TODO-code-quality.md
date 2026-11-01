@@ -130,49 +130,76 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
       (`sc_access::Scoped`: `read` / `read_values` / `insert` / `update` / `delete`, through the
       ownership rule for a caller and the unchecked row layer for the system or an administrator;
       plus the executor and the formula engine. Test: `crates/sc-access/tests/scoped.rs`.)
-- [~] Q3.4 `ActionContext` carries a `Scoped` instead of `catalog: &Catalog` + `event.role` /
+- [x] Q3.4 `ActionContext` carries a `Scoped` instead of `catalog: &Catalog` + `event.role` /
       `event.user`. Same for agent tool contexts, module bridges and code-body hosts (`db`, `fs`,
       `Table`).
-      Done: `ActionContext::scoped()` (the trigger's authority: admin in the event's user's name,
-      the chain, the step's transaction, the engine) and `ActionContext::caller()` (the event's
-      caller as a `Principal`). The row actions (`insert_row`, `update_rows`, `delete_rows`, their
-      `where` read, `embed_rows`) go through `scoped()`; the code-body hosts, `undo` and
-      `run_agent` take the caller from `caller()`; no action reads `event.role` / `event.user` to
-      decide authority. `ActionContext.catalog` stays public (schema, services); its rows need an
-      `Unchecked` (Q3.5). Remaining: agent tool contexts (`TraitContext` is still `catalog` + a
-      `RunCaller`; the tools call the guarded `*_as` functions with its role and user), and the
-      code-body hosts (`TableHost`, `FileStoreHost`, `TriggerRunHost`, which the module bridges
-      also use) still take a catalog and a role and user rather than a `Scoped`: their authority
-      changes per plan (`asUser()`, `forUser`, public), and a `Scoped` re-reads its user from
-      the principal's JSON, where `TableHost` keeps the `User` loaded from the row, so moving them
-      needs that difference settled first.
-- [~] Q3.5 Make unchecked catalog row access and `driver_for` / `driver_named` / `database`
+      (`ActionContext::scoped()` (the trigger's authority: admin in the event's user's name, the
+      chain, the step's transaction, the engine) and `ActionContext::caller()` (the event's caller
+      as a `Principal`); the row actions go through `scoped()`, and no action reads `event.role` /
+      `event.user` to decide authority. `ActionContext.catalog` stays public for the schema and
+      the services; its rows need an `Unchecked` (Q3.5). Agent tools: `TraitContext::principal()`
+      / `scoped(&principal)` (and `RunCaller::principal` / `scoped` for the helpers that take a
+      caller); `query_table`, `edit_table_rows`, the `write` matcher, `search_table`,
+      `similar_rows`, `prompt_picker` and the preloads read and write through it, and the
+      run-a-trigger / run-code tools take `principal()`. Code-body hosts: `TableHost` and
+      `TriggerRunHost` carry the event's caller as a `Principal` (`for_caller`; `caused_by` /
+      `chained` set its parts) and `FileStoreHost` its `FileCaller` (`for_caller`); `TableHost`
+      resolves a plan's authority to an actor, and its reads, aggregates, inserts, updates and
+      deletes run through a `Scoped` built from it (`db.sql()` takes the actor's token; row
+      history keeps its own reader, at the actor's role and user) — the admin in the event's user's name, or the delegated caller
+      (`asUser()`, a named `forUser`, public) with the chain — on the run's executor and engine;
+      a model write-back takes the same `Scoped` (`models::Writer` is gone). The module bridges
+      (webhooks, services, routes, files) build these hosts, so they go through it too. The noted
+      difference is settled by `Scoped::with_user`: a holder that loaded its caller's user (an
+      agent run, `forUser`) hands it on, so an ownership formula sees the typed values it always
+      saw, and a user that is not the principal's is refused. Same authority on every path; a
+      delegated read still goes through the pool, as the `*_as` reads always did. Tests:
+      `scoped::a_scope_decides_with_the_loaded_user_and_refuses_anyone_elses` (sc-access); the
+      code-host, agent-tool and module suites.)
+- [x] Q3.5 Make unchecked catalog row access and `driver_for` / `driver_named` / `database`
       `pub(crate)` to sc-catalog / sc-access, or require an `Unchecked` token that only
       `Authority::System` produces. Fix every caller the compiler then names.
-      Done: `sc_catalog::Unchecked`. `Catalog::provider`, `driver_for` and `driver_named` and
-      every unchecked operation of `sc_access::rows` take one; `Catalog::database` is
-      crate-private (`driver_info` gives the dialect and capabilities, `is_connected` the state).
-      The row layer's no-caller shortcuts (`create_row(catalog, table, body)` …) are gone: the
-      `_ctx` forms took their names and take the token. Made by `Unchecked::system(reason)`,
-      `Unchecked::admin(principal)` (refuses a non-admin; an admin meets every floor) or
+      (`sc_catalog::Unchecked`. `Catalog::provider`, `driver_for`, `driver_named`, `primary`,
+      `SharedTx::run`, `run_in_context` / `run_in_context_read_only` and every unchecked operation
+      of `sc_access::rows` take one; `Catalog::database` and `SharedTx::batch` are crate-private
+      (the unused `SharedTx::apply_schema` is gone). `primary_info` / `primary_dialect` answer the
+      dialect and capabilities, which is what most callers of `primary()` wanted. Made by
+      `Unchecked::system(reason)`, `Unchecked::admin(principal)` (refuses a non-admin) or
       `Unchecked::vouched(principal, by)` where a named check already decided (the ownership
-      functions, the REST write rule, an RLS table's policies, the REST file routes). The last is a
-      deviation from "only `Authority::System`": the REST provider decides its own rule and still
-      has to hand the row layer the caller for the RLS GUCs and the event. All three are in
-      docs/SECURITY_REVIEW_2026-10.md's inventory. Remaining: `Catalog::primary()` (≈170 uses, the
-      internal `_fd_*` stores), `SharedTx::run` and `sc_catalog::run_in_context` are still
-      reachable from a `&Catalog` without a token.
-- [~] Q3.6 `FileStore` operations go through a scoped handle that checks access, so
+      functions, the REST write rule, an RLS table's policies, the REST file routes, a custom SQL
+      query, a delegated `db.sql()`, a sync push's own-device bookkeeping) — a deviation from
+      "only `Authority::System`": those providers decide their own rule and still hand the row
+      layer the caller for the RLS GUCs and the event. Internal stores: one crate-private
+      `INTERNAL_TABLES` token per crate (17 crates) rather than a token per statement, and
+      sc-server's admin tasks one `ADMIN_TASKS`. All of them are in
+      docs/SECURITY_REVIEW_2026-10.md's inventory. Tests: the gate is the compiler's;
+      `crates/sc-access/tests/scoped.rs` covers who may make a token.)
+- [x] Q3.6 `FileStore` operations go through a scoped handle that checks access, so
       `check_access` / `check_write` cannot be skipped.
-      Done: `sc_files::CheckedStore` (a store, its floor and a `FileCaller`; every read checks
-      `check_access`, every write `check_write`, `list` filters). The admin file manager's
-      endpoints and the agents' file tools (`open_at` / `open_to_write`, the coding traits' edit,
-      write, patch and view-image) use it. Remaining: the REST provider's file routes (an upload
-      to a new path deliberately skips `check_write`, the drop-box rule, which `CheckedStore`
-      cannot express yet), the code-body `file` host, the admin download route
-      (`downloadFile`, which streams), an application's `/files/serve` route (`router.rs`), the
-      upload slots (`uploads.rs`), the IDE and the LSP, and the raw store: `Catalog::file_store`
-      still hands out an `Arc<dyn FileStore>` without a token.
+      (`sc_files::CheckedStore`: a store, its floor and a `FileCaller`. `readable` / `writable`
+      hand out a grant for one path once `check_access` / `check_write` passed, and the grant's
+      operations (read, stream, stat, metadata, write, append, concat, mkdir, delete, rename
+      within the store, record the owner) reach that path only; `deposit` is the drop-box rule (a
+      new file needs nothing more than the route's own rule; replacing one is a write); `serve`
+      answers a `ServeFile`, whose store is now private; `list`, `find_files`,
+      `find_by_extension`, `search` filter; `local_root` answers only an administrator's binding.
+      `Catalog::file_store` / `require_file_store` take an `Unchecked`; a caller's route opens
+      `Catalog::checked_file_store` / `sc_catalog::open_checked_store`. Through it: the admin
+      file manager (every endpoint, `downloadFile` included), the REST provider's `File` routes
+      (download, upload by `deposit`, a code response's file), the code-body `fs` host, an
+      application's static directories (`router.rs`) and `/files/serve` (sc-viewpattern), the
+      upload slots (`uploads.rs`: the server's temporary folder bound to the administrator, the
+      finished file a `deposit` by the uploader), the IDE (its file endpoints) and the LSP
+      (`local_root`), `send_email`'s attachments and a module's file surface. Still on the raw
+      store, with a token and an inventory entry: the build pipeline (`APP_SOURCES`), backup and
+      restore, translations' source tree (`ADMIN_TASKS`), Stan programs, the coding trait's
+      internal tools (`AGENT_FILE_SCOPE`: they check the caller themselves or are admin-only).
+      **Behaviour change:** a delegated (`asUser()`) copy or move into another store that sets a
+      rule is judged against the destination store's floor (it was the source store's, which
+      could hide a loosening), and a delegated move across stores needs the source readable as
+      well as writable. Tests: `crates/sc-files/tests/checked_store.rs`,
+      `code_files::a_delegated_copy_into_another_store_may_not_loosen_its_rule`
+      (sc-core-actions).)
 
 ## Q4 — Trust-boundary newtypes (§4.6)
 

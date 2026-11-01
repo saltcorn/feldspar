@@ -431,7 +431,7 @@ pub async fn delete_model(
         .into_iter()
         .map(|i| i.state)
         .collect();
-    let mut tx = catalog.primary().begin().await?;
+    let mut tx = catalog.primary(crate::INTERNAL_TABLES).begin().await?;
     let deleted = async {
         crate::instance_store::delete_instances_on(catalog, tx.as_mut(), id).await?;
         let delete = Delete::from(MODELS_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(id.0)));
@@ -693,7 +693,7 @@ async fn load_one(catalog: &Catalog, filter: Expr) -> Result<Option<Model>> {
 /// Run a statement that returns no rows of interest.
 pub(crate) async fn exec(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()
@@ -704,7 +704,7 @@ pub(crate) async fn exec(catalog: &Catalog, statement: Statement) -> Result<()> 
 /// Run a select and collect its rows.
 pub(crate) async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

@@ -612,12 +612,16 @@ fn record_from_row(row: &Row) -> Result<UploadRecord> {
 }
 
 async fn run(cat: &Catalog, statement: Statement) -> Result<()> {
-    cat.primary().query(&statement).await?.try_collect().await?;
+    cat.primary(crate::INTERNAL_TABLES)
+        .query(&statement)
+        .await?
+        .try_collect()
+        .await?;
     Ok(())
 }
 
 async fn rows(cat: &Catalog, select: Select) -> Result<Vec<Row>> {
-    cat.primary()
+    cat.primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

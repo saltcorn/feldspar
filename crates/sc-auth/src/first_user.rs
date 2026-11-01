@@ -65,7 +65,7 @@ fn one_user_probe() -> Statement {
 /// normal login screen and the create-first-user screen.
 pub async fn any_user_exists(catalog: &Catalog) -> Result<bool> {
     let rows = catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&one_user_probe())
         .await?
         .try_collect()
@@ -94,7 +94,7 @@ pub async fn create_first_user(catalog: &Catalog, email: &str, password: &str) -
     let password_hash = hash_password(password)?;
     let id = Uuid::new_v4();
 
-    let mut tx = catalog.primary().begin().await?;
+    let mut tx = catalog.primary(crate::INTERNAL_TABLES).begin().await?;
 
     // Re-check the precondition inside the transaction so this really is the
     // *first* user.

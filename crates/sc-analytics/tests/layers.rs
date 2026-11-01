@@ -60,7 +60,7 @@ pub(crate) async fn insert(
             .collect(),
         returning: Vec::new(),
     };
-    cat.primary()
+    cat.primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(insert))
         .await?
         .try_collect()
@@ -489,7 +489,7 @@ async fn a_layer_says_why_it_cannot_be_drawn() -> Result<()> {
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let cat = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
-    if !cat.primary().spatial().is_available() {
+    if !cat.primary_info().spatial().is_available() {
         sc_dataset::bootstrap_datasets(&cat).await?;
         let e = refusal(
             layer_data(

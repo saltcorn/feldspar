@@ -224,7 +224,7 @@ async fn deleting_a_field_or_dropping_its_table_leaves_the_bytes_alone() -> Resu
     assert!(file.exists(), "forgetting the field left the file in place");
 
     // Dropping the whole table likewise touches no bytes in the store.
-    cat.primary()
+    cat.primary(sc_catalog::Unchecked::system("test"))
         .apply_schema(&SchemaChange::DropTable {
             name: "documents".to_owned(),
             if_exists: false,

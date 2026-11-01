@@ -302,7 +302,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         let mut select = Select::from(Source::table(USERS_TABLE)).columns(vec![Projection::all()]);
         select.order = vec![OrderBy::asc(Expr::col(COL_EMAIL))];
         let rows = catalog
-            .primary()
+            .primary(crate::ADMIN_TASKS)
             .query(&Statement::from(select))
             .await?
             .try_collect()

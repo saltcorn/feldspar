@@ -57,25 +57,17 @@ pub async fn call(
     let filter = required_where(table, &all_fields(table), args.get(ARG_WHERE))?;
     let matched = matching_ids(ctx, table, Some(filter), ceiling, "delete").await?;
 
+    // The run's caller, with the chain a tool call's write carries: depth 0
+    // (a tool call is not a trigger firing), marked if the run's prompt came
+    // from outside the console. On the pool: an agent run is its own unit of
+    // durability — its own run row, persisted after every step — so its tools'
+    // writes commit as they are made, even when the run was started by a
+    // workflow step (§10.3, decision 6).
+    let me = ctx.principal();
+    let scope = ctx.scoped(&me);
     let mut ids = Vec::with_capacity(matched.len());
     for (id, id_json) in &matched {
-        sc_access::delete_row_as(
-            ctx.catalog,
-            table,
-            id,
-            ctx.caller.role,
-            ctx.caller.user.as_ref(),
-            ctx.evaluator,
-            // A tool call is not a trigger firing: the write this raises is at
-            // depth 0, marked if the run's prompt came from outside the console.
-            &ctx.caller.tool_chain(),
-            // An agent run is its own unit of durability — its own run row,
-            // persisted after every step — so its tools' writes commit as they
-            // are made, even when the run was started by a workflow step
-            // (§10.3, decision 6).
-            &sc_access::rows::Executor::Pooled,
-        )
-        .await?;
+        scope.delete(table, id).await?;
         ids.push(id_json.clone());
     }
     Ok(json!({ "table": table.name, "deleted": ids.len(), "ids": ids }))

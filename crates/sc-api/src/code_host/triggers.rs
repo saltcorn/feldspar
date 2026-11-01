@@ -82,15 +82,13 @@ pub struct TriggerRunHost<'a> {
     /// `trigger("name")` does to the database is as much the step's work as what
     /// the body did itself, and lands where the step lands.
     tx: Option<SharedTx>,
-    /// The role the event was served at — what a delegated run is checked
-    /// against, and public for an event with no caller at all.
-    role: Role,
-    /// The event's caller, as the event carries it: what the trigger that runs
-    /// sees as `user`, whichever authority it runs under.
-    user: Option<Json>,
-    /// The triggers that led here, including the one running. The child event
-    /// carries it, which is what bounds the cascade.
-    chain: Vec<String>,
+    /// The event's caller, as a principal (TODO-code-quality Q3.4): the role
+    /// it was served at — what a delegated run is checked against, and public
+    /// for an event with no caller at all; the user, as the event carries it —
+    /// what the trigger that runs sees as `user`, whichever authority it runs
+    /// under; and the triggers that led here, including the one running, which
+    /// the child event carries and which bounds the cascade.
+    caller: Principal,
     /// How many other triggers this run may run.
     max_runs: u32,
     /// How many it has run.
@@ -107,9 +105,7 @@ impl<'a> TriggerRunHost<'a> {
         TriggerRunHost {
             dispatcher,
             catalog,
-            role: Role::PUBLIC,
-            user: None,
-            chain: Vec::new(),
+            caller: Principal::anonymous(Role::PUBLIC),
             tx: None,
             max_runs: DEFAULT_MAX_TRIGGER_RUNS,
             runs: AtomicU32::new(0),
@@ -131,15 +127,25 @@ impl<'a> TriggerRunHost<'a> {
     /// fields, exactly as `Event::caller` carries them.
     #[must_use]
     pub fn caused_by(mut self, role: Role, user: Option<Json>) -> TriggerRunHost<'a> {
-        self.role = role;
-        self.user = user;
+        self.caller.role = role;
+        self.caller.user = user;
+        self
+    }
+
+    /// Attach the event's caller as a principal — its role, its user and the
+    /// chain that led here: `caused_by` and `chained` in one.
+    #[must_use]
+    pub fn for_caller(mut self, caller: &Principal) -> TriggerRunHost<'a> {
+        self.caller.role = caller.role;
+        self.caller.user = caller.user.clone();
+        self.caller.chain = caller.chain.clone();
         self
     }
 
     /// Attach the trigger chain that led here — what bounds the cascade.
     #[must_use]
     pub fn chained(mut self, chain: Vec<String>) -> TriggerRunHost<'a> {
-        self.chain = chain;
+        self.caller.chain = chain;
         self
     }
 
@@ -187,7 +193,7 @@ impl<'a> TriggerRunHost<'a> {
             // admin's authority is the *trigger's*, and the run still carries
             // who caused it.
             Authority::Default | Authority::Admin | Authority::User => (
-                Principal::new(self.role, self.user.clone()).in_current_origin(),
+                Principal::new(self.caller.role, self.caller.user.clone()).in_current_origin(),
                 None,
             ),
             Authority::Public => (Principal::new(Role::PUBLIC, None), None),
@@ -219,7 +225,7 @@ impl<'a> TriggerRunHost<'a> {
         }
         // The caller carries the chain that led here, so the trigger that runs
         // sees who caused it and the cascade bound counts this level.
-        let caller = caller.chained(self.chain.clone());
+        let caller = caller.chained(self.caller.chain.clone());
         let run = self.dispatcher.run_trigger_in(
             self.catalog,
             name,

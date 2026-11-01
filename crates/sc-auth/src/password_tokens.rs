@@ -44,7 +44,6 @@ use argon2::password_hash::rand_core::{OsRng, RngCore};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{Duration, Utc};
-use sc_catalog::Authority;
 use sc_catalog::{Catalog, DataField, SharedTx, Table};
 use sc_db::Row;
 use sc_error::{Error, Result};
@@ -262,7 +261,7 @@ async fn spend_in(
     };
     let spent = tx
         .run(
-            Authority::system("password token: spend"),
+            sc_catalog::Unchecked::system("password token: spend"),
             &Statement::from(delete),
         )
         .await?;
@@ -292,7 +291,7 @@ async fn spend_in(
     };
     if tx
         .run(
-            Authority::system("password token: spend"),
+            sc_catalog::Unchecked::system("password token: spend"),
             &Statement::from(update),
         )
         .await?
@@ -303,7 +302,7 @@ async fn spend_in(
     let others =
         Delete::from(PASSWORD_TOKENS_TABLE).filter(Expr::col(COL_USER).eq(Expr::lit(user_id)));
     tx.run(
-        Authority::system("password token: spend"),
+        sc_catalog::Unchecked::system("password token: spend"),
         &Statement::from(others),
     )
     .await?;
@@ -452,7 +451,7 @@ fn token_hash(token: &str) -> String {
 
 async fn rows(catalog: &Catalog, statement: Statement) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()

@@ -172,7 +172,11 @@ async fn old_installation(cat: &Catalog) -> Result<()> {
 }
 
 async fn run(cat: &Catalog, statement: Statement) -> Result<Vec<sc_db::Row>> {
-    cat.primary().query(&statement).await?.try_collect().await
+    cat.primary(sc_catalog::Unchecked::system("test"))
+        .query(&statement)
+        .await?
+        .try_collect()
+        .await
 }
 
 /// What the migration leaves: every dataset and every model's references,

@@ -467,7 +467,7 @@ fn from_row(row: &Row) -> Result<Workspace> {
 
 async fn exec(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()
@@ -477,7 +477,7 @@ async fn exec(catalog: &Catalog, statement: Statement) -> Result<()> {
 
 async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

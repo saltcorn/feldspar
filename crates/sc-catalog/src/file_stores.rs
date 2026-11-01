@@ -205,6 +205,30 @@ pub async fn load_file_store_by_name(
     load_one(catalog, Expr::col(COL_NAME).eq(Expr::lit(name))).await
 }
 
+/// The connected store `name` as `caller` reaches it, its floor read from the
+/// stored definition (`None` for a store with no definition row — an
+/// ephemeral `--file-store` — the answer every file route resolves for one).
+/// An administrator clears every floor, so for one it is not read.
+///
+/// The way a route reaches a caller's files (TODO-code-quality Q3.6): every
+/// operation of the [`CheckedStore`](sc_files::CheckedStore) checks the
+/// path-cumulative rule, where the raw store
+/// ([`Catalog::file_store`](crate::Catalog::file_store)) takes a token.
+pub async fn open_checked_store(
+    catalog: &Catalog,
+    name: &str,
+    caller: sc_files::FileCaller,
+) -> Result<sc_files::CheckedStore> {
+    let store = catalog.require_raw_file_store(name)?;
+    let floor = match caller.is_admin() {
+        true => None,
+        false => load_file_store_by_name(catalog, name)
+            .await?
+            .and_then(|def| def.min_role),
+    };
+    Ok(sc_files::CheckedStore::new(store, floor, caller))
+}
+
 /// Every stored definition, ordered by name — what the server connects at boot
 /// and what the admin UI lists.
 pub async fn list_file_stores(catalog: &Catalog) -> Result<Vec<FileStoreDef>> {
@@ -621,7 +645,7 @@ fn bad_column(column: &str, expected: &str, got: Option<&Value>) -> Error {
 /// Run a statement that returns no rows of interest.
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary_driver()
         .query(&statement)
         .await?
         .try_collect()
@@ -632,7 +656,7 @@ async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
 /// Run a select and collect its rows.
 async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary_driver()
         .query(&Statement::from(select))
         .await?
         .try_collect()

@@ -730,7 +730,7 @@ pub fn app_graphql(app: &Application, cat: &Catalog) -> Result<Option<AppGraphql
 /// (§13.2) — so the file describes exactly what a query in this project may name,
 /// and calculated fields are omitted because they are not columns.
 pub fn app_schema_sql(app: &Application, cat: &Catalog) -> Result<String> {
-    let driver = cat.primary();
+    let driver = cat.primary_info();
     let mut sql = String::new();
     for table in app_tables(app, cat)? {
         let change = sc_db::SchemaChange::CreateTable {

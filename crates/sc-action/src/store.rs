@@ -435,7 +435,7 @@ async fn load_one(catalog: &Catalog, filter: Expr) -> Result<Option<Trigger>> {
 /// Run a statement that returns no rows of interest.
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()
@@ -446,7 +446,7 @@ async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
 /// Run a select and collect its rows.
 async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

@@ -317,7 +317,10 @@ async fn a_table_without_the_index_is_scanned_only_while_it_is_small() -> Result
     rust.sort();
     assert_eq!(rust, ["Java and Rust", "Rust in production"]);
 
-    let mut tx = catalog.primary().begin().await?;
+    let mut tx = catalog
+        .primary(sc_catalog::Unchecked::system("test"))
+        .begin()
+        .await?;
     tx.batch(
         "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5000) \
          INSERT INTO posts (title) SELECT 'filler ' || i FROM n",

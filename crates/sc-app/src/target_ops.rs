@@ -71,7 +71,7 @@ pub async fn run_target_operation(
     let settings = merge_secrets(&spec, &app.framework.config, form_settings);
 
     let source = app_source_from_config(&app.framework)?;
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     let context = json!({
         "app": {
             "name": app.name,

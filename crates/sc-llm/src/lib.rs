@@ -52,6 +52,13 @@
 //! value. What *is* guaranteed is that it does not leave through the API —
 //! see [`sc_types::redact_attrs`] and [`FormField::secret`](sc_types::FormField::secret).
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
+    sc_catalog::Unchecked::system("sc-llm: LLM usage and conversation storage");
+
 pub mod anthropic;
 pub mod capabilities;
 pub mod def;

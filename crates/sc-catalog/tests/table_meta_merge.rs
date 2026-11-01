@@ -50,7 +50,10 @@ async fn create_books(cat: &Catalog) -> Result<()> {
 /// The table as introspection alone would produce it — the "before this feature
 /// existed" reference the merge must not disturb.
 async fn from_introspection(cat: &Catalog, name: &str) -> Result<Table> {
-    let physicals = cat.primary().introspect().await?;
+    let physicals = cat
+        .primary(sc_catalog::Unchecked::system("test"))
+        .introspect()
+        .await?;
     let physical = physicals
         .iter()
         .find(|p| p.name == name)
@@ -214,7 +217,7 @@ async fn a_system_table_ignores_an_overlay_inserted_behind_the_api() -> Result<(
             Expr::Lit(Value::Json(serde_json::json!({}))),
         ],
     );
-    cat.primary()
+    cat.primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(insert))
         .await?
         .try_collect()

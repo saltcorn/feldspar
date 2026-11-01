@@ -154,7 +154,7 @@ impl std::fmt::Display for SyncWatermark {
 }
 
 fn require_sync(catalog: &Catalog) -> Result<()> {
-    if catalog.primary().capabilities().change_triggers {
+    if catalog.primary_driver().capabilities().change_triggers {
         Ok(())
     } else {
         Err(Error::invalid(
@@ -169,9 +169,9 @@ fn require_sync(catalog: &Catalog) -> Result<()> {
 /// it sees, so what the reads return and what the watermark names agree.
 pub async fn sync_watermark(catalog: &Catalog, tx: &SharedTx) -> Result<SyncWatermark> {
     require_sync(catalog)?;
-    if catalog.primary().dialect().is_sqlite() {
+    if catalog.primary_driver().dialect().is_sqlite() {
         let rows = tx
-            .run(
+            .run_as(
                 Authority::system("sync: read the change-log watermark"),
                 &Statement::raw(
                     format!(
@@ -191,7 +191,7 @@ pub async fn sync_watermark(catalog: &Catalog, tx: &SharedTx) -> Result<SyncWate
         };
     }
     let rows = tx
-        .run(
+        .run_as(
             Authority::system("sync: read the change-log watermark"),
             &Statement::raw("SELECT txid_current_snapshot()::text", Vec::new()),
         )
@@ -244,7 +244,7 @@ pub async fn changed_entries(
     until: &SyncWatermark,
 ) -> Result<Vec<ChangedEntry>> {
     require_sync(catalog)?;
-    let (sql, binds) = if catalog.primary().dialect().is_sqlite() {
+    let (sql, binds) = if catalog.primary_driver().dialect().is_sqlite() {
         (
             format!(
                 "SELECT row_key, op, old_values, seq FROM \"{log}\" \
@@ -268,7 +268,7 @@ pub async fn changed_entries(
                    AND NOT txid_visible_in_snapshot(txid, $5::text::txid_snapshot) \
                  ORDER BY seq",
                 log = catalog
-                    .primary()
+                    .primary_driver()
                     .dialect()
                     .quote_ident(crate::change_log::CHANGES_TABLE),
             ),
@@ -282,7 +282,7 @@ pub async fn changed_entries(
         )
     };
     let rows = tx
-        .run(
+        .run_as(
             Authority::system("sync: read the change log"),
             &Statement::raw(sql, binds),
         )

@@ -14,5 +14,5 @@ use crate::Catalog;
 /// [`Catalog::init`] only *asks*, so a test or a command that never boots a
 /// server never tries to change the database.
 pub async fn bootstrap_spatial(catalog: &Catalog) -> Result<SpatialSupport> {
-    catalog.primary().enable_spatial().await
+    catalog.primary_driver().enable_spatial().await
 }

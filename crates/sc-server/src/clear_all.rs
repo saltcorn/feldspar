@@ -409,7 +409,7 @@ async fn delete_rows(catalog: &Catalog, table: &str) -> Result<()> {
         }
     }
     catalog
-        .primary()
+        .primary(crate::ADMIN_TASKS)
         .query(&Statement::from(delete))
         .await?
         .try_collect()

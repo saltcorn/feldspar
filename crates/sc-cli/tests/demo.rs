@@ -22,7 +22,7 @@ async fn houses(cat: &Catalog) -> Result<Vec<String>> {
     let mut select = Select::from(Source::table("houses"));
     select.order = vec![OrderBy::asc(Expr::col("id"))];
     let rows = cat
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(select))
         .await?
         .try_collect()
@@ -64,7 +64,7 @@ async fn events(cat: &Catalog) -> Result<Vec<String>> {
     select.group = vec![Expr::col("kind")];
     select.order = vec![OrderBy::asc(Expr::col("kind"))];
     let rows = cat
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(select))
         .await?
         .try_collect()
@@ -95,7 +95,7 @@ async fn count(cat: &Catalog, table: &str) -> Result<i64> {
         args: Vec::new(),
     })]);
     let rows = cat
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(select))
         .await?
         .try_collect()
@@ -191,7 +191,7 @@ async fn the_demo(cat: &Catalog, backend: &str) -> Result<(Vec<String>, Vec<Stri
         vec!["name".into()],
         vec![Expr::lit("Newtown")],
     );
-    cat.primary()
+    cat.primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(insert))
         .await?
         .try_collect()

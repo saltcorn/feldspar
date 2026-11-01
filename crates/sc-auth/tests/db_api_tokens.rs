@@ -91,7 +91,7 @@ fn new_token(user: &User, label: &str) -> NewApiToken {
 /// stored rather than what the API says is.
 async fn raw_rows(catalog: &Catalog) -> Result<Vec<sc_db::Row>> {
     catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(Select::from(Source::table(
             API_TOKENS_TABLE,
         ))))
@@ -402,7 +402,7 @@ async fn expire(f: &Fixture, id: uuid::Uuid, at: chrono::DateTime<Utc>) -> Resul
     )
     .filter(Expr::col(COL_TOKEN_ID).eq(Expr::lit(id)));
     f.catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(update))
         .await?
         .try_collect()

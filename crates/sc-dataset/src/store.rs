@@ -432,7 +432,7 @@ async fn load_one(catalog: &Catalog, filter: Expr) -> Result<Option<DatasetDef>>
 
 async fn exec(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()
@@ -442,7 +442,7 @@ async fn exec(catalog: &Catalog, statement: Statement) -> Result<()> {
 
 pub(crate) async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

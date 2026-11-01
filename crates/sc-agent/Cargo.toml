@@ -43,6 +43,9 @@ sc-browser.workspace = true
 # could not reach one must say so rather than invent a second way to fire an
 # event. Layer 6, below this crate; nothing here knows which triggers exist.
 sc-action.workspace = true
+# `Scoped`: the handle a tool's row reads and writes go through, with the run's
+# caller bound (TODO-code-quality Q3.4). Layer 6, below this crate.
+sc-access.workspace = true
 async-trait.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true

@@ -147,7 +147,7 @@ async fn insert_user_marked(
 
     let insert = Insert::row(USERS_TABLE, columns, values);
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(insert))
         .await?
         .try_collect()

@@ -234,7 +234,7 @@ pub async fn list_workflow_runs(
     select.limit = Some(limit as u64);
     select.offset = Some(offset as u64);
     let rows: Vec<Row> = catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

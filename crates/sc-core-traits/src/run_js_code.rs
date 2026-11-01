@@ -186,8 +186,7 @@ impl AgentTrait for RunJsCode {
             scope.insert(argument.name, value);
         }
         scope.insert(ALL_ARGS.to_owned(), Json::Object(given));
-        let caller = sc_access::principal_at(ctx.caller.role, ctx.caller.user.as_ref())
-            .chained(ctx.caller.tool_chain());
+        let caller = ctx.principal();
         dispatcher
             .run_code(
                 ctx.catalog,
@@ -226,8 +225,7 @@ impl AgentTrait for RunJsCode {
         let dispatcher = ctx.require_triggers()?;
         let mut scope = Attrs::new();
         scope.insert("row".to_owned(), row.cloned().unwrap_or(Json::Null));
-        let caller = sc_access::principal_at(ctx.caller.role, ctx.caller.user.as_ref())
-            .chained(ctx.caller.tool_chain());
+        let caller = ctx.principal();
         let result = dispatcher
             .run_code(
                 ctx.catalog,

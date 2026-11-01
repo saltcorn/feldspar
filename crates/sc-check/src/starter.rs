@@ -207,7 +207,7 @@ async fn check_users(catalog: &Catalog) -> Result<Vec<(Uuid, String, Role)>> {
     let mut select = Select::from(Source::table(USERS_TABLE)).columns(vec![Projection::all()]);
     select.order = vec![OrderBy::asc(Expr::col(COL_EMAIL))];
     let rows = catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

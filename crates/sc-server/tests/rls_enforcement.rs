@@ -404,7 +404,7 @@ async fn a_forgotten_caller_context_sees_no_rows() -> sc_error::Result<()> {
     // all; with it, the role and user settings read NULL and every policy
     // denies. Fail closed is a property of the policy, not a guard.
     let rows: Vec<sc_db::Row> = catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&sc_query::Statement::Select(Box::new(
             sc_query::Select::from(sc_query::Source::table("posts"))
                 .columns(vec![sc_query::Projection::all()]),

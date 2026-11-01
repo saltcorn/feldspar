@@ -194,7 +194,7 @@ pub async fn save_fitted_instance_with_outputs(
         }
     }
     let values = instance_values(instance)?;
-    let mut tx = catalog.primary().begin().await?;
+    let mut tx = catalog.primary(crate::INTERNAL_TABLES).begin().await?;
     let written = async {
         write_draws_if_any(tx.as_mut(), instance.id, draws).await?;
         if !outputs.is_empty() {
@@ -360,7 +360,7 @@ pub async fn delete_model_instance(
     };
     let draws = catalog.get(DRAWS_TABLE)?.is_some();
     let outputs = catalog.get(OUTPUTS_TABLE)?.is_some();
-    let mut tx = catalog.primary().begin().await?;
+    let mut tx = catalog.primary(crate::INTERNAL_TABLES).begin().await?;
     let deleted = async {
         if draws {
             delete_instance_draws(tx.as_mut(), id).await?;
@@ -511,7 +511,7 @@ pub async fn record_fit_progress(
                 },
             )),
     );
-    let mut tx = catalog.primary().begin().await?;
+    let mut tx = catalog.primary(crate::INTERNAL_TABLES).begin().await?;
     let written = run(tx.as_mut(), Statement::from(update)).await.map(drop);
     finish(tx, written).await?;
     Ok(ProgressWrite::Running)
@@ -552,7 +552,7 @@ pub async fn request_fit_cancel(catalog: &Catalog, id: InstanceId) -> Result<boo
             .eq(Expr::lit(id.0))
             .and(Expr::col(COL_STATUS).eq(Expr::lit(FitStatus::Fitting.as_str()))),
     );
-    let mut tx = catalog.primary().begin().await?;
+    let mut tx = catalog.primary(crate::INTERNAL_TABLES).begin().await?;
     let written = run(tx.as_mut(), Statement::from(update)).await.map(drop);
     finish(tx, written).await?;
     Ok(true)

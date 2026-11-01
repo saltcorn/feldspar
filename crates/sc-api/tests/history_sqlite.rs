@@ -74,7 +74,7 @@ async fn edit(catalog: &Catalog, op: schema_edit::Operation) -> Result<()> {
 
 async fn rows_of(catalog: &Catalog, sql: &str) -> Result<Vec<sc_db::Row>> {
     catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::raw(sql, Vec::new()))
         .await?
         .try_collect()
@@ -133,7 +133,10 @@ fn request() -> Arc<Changeset> {
 /// Statements run in one transaction under `changeset`'s settings, the way
 /// `set_caller_context` passes them.
 async fn in_changeset(catalog: &Catalog, changeset: &Changeset, sql: &str) -> Result<()> {
-    let mut tx = catalog.primary().begin().await?;
+    let mut tx = catalog
+        .primary(sc_catalog::Unchecked::system("test"))
+        .begin()
+        .await?;
     tx.set_local("sc.role", "1").await?;
     tx.set_local("sc.user", "").await?;
     tx.set_local("sc.changeset", &changeset.guc_value(None))

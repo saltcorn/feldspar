@@ -9,7 +9,6 @@
 //! is an error naming the table and the column, never a silently defaulted field.
 
 use sc_app::{AppId, Application, load_application};
-use sc_catalog::Authority;
 use sc_catalog::{Catalog, SharedTx};
 use sc_db::Row;
 use sc_error::{Error, Result};
@@ -371,7 +370,7 @@ async fn run_on(catalog: &Catalog, tx: Option<&SharedTx>, statement: Statement) 
     match tx {
         Some(tx) => tx
             .run(
-                Authority::system("write view-pattern definitions"),
+                sc_catalog::Unchecked::system("write view-pattern definitions"),
                 &statement,
             )
             .await
@@ -470,7 +469,7 @@ pub(crate) fn bad_column(table: &str, column: &str, expected: &str, got: Option<
 /// Run a statement that returns no rows of interest.
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()
@@ -482,7 +481,7 @@ async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
 pub(crate) async fn rows(catalog: &Catalog, table: &str, filter: Expr) -> Result<Vec<Row>> {
     let select = Select::from(Source::table(table)).filter(filter);
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()
@@ -493,7 +492,7 @@ pub(crate) async fn rows(catalog: &Catalog, table: &str, filter: Expr) -> Result
 pub(crate) async fn load_one(catalog: &Catalog, table: &str, filter: Expr) -> Result<Option<Row>> {
     let select = Select::from(Source::table(table)).filter(filter).limit(1);
     Ok(catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

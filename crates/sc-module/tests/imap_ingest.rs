@@ -523,7 +523,9 @@ await db.mail_log.insert({
         assert_eq!(orders[0]["customer"], json!("customer1@example.com"));
         assert_eq!(orders[0]["attachments"], json!(1));
         let pdf = orders[0]["pdf"].as_str().unwrap().to_owned();
-        let store = cat.require_file_store("mail_files").unwrap();
+        let store = cat
+            .require_file_store("mail_files", sc_catalog::Unchecked::system("test"))
+            .unwrap();
         assert_eq!(
             store.read(&pdf).await.unwrap().as_ref(),
             b"%PDF-1.4 order 1"

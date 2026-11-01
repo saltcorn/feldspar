@@ -2140,9 +2140,9 @@ async fn serve_static_dir(
     let Some(catalog) = state.apps.catalog() else {
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "no catalog");
     };
-    let Ok(store) = catalog.require_file_store(&dir.store.0) else {
+    if !matches!(catalog.has_file_store(&dir.store.0), Ok(true)) {
         return missing();
-    };
+    }
 
     // A caller the application does not let in (TODO F9) is served as nobody:
     // a file open to the public role is part of the sign-in surface (a page
@@ -2156,19 +2156,18 @@ async fn serve_static_dir(
         user.as_ref().map(|u| u.id().to_string()),
     );
 
-    let floor = match sc_catalog::load_file_store_by_name(catalog, &dir.store.0).await {
-        Ok(def) => def.and_then(|def| def.min_role),
+    // The store with the viewer bound (TODO-code-quality Q3.6): the read is
+    // checked by the store, not by a call made beside it.
+    let store = match sc_catalog::open_checked_store(catalog, &dir.store.0, caller).await {
+        Ok(store) => store,
         Err(e) => {
             log_failure("reading a static directory's file store", &e);
             return json_error(StatusCode::INTERNAL_SERVER_ERROR, "file store unreadable");
         }
     };
-    if sc_files::check_access(store.as_ref(), floor, &path, &caller)
-        .await
-        .is_err()
-    {
+    let Ok(file) = store.serve(&path).await else {
         return missing();
-    }
+    };
 
     // The shared builder (TODO F2, §2.2): streamed, with Range (so a video
     // seeks), the cheap ETag and the file's own name. The content type is the
@@ -2176,7 +2175,7 @@ async fn serve_static_dir(
     // Revalidated rather than cached blind: an admin who replaces a logo must
     // not have to explain a stale one, and the ETag makes the second request
     // cheap anyway.
-    let file = sc_files::ServeFile::new(store, path.clone())
+    let file = file
         .content_type(sc_app::asset_content_type(&path))
         .cache_control("private, no-cache, must-revalidate");
     crate::file_response::serve(&file, method, uri, headers).await

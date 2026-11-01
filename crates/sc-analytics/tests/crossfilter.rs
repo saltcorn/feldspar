@@ -75,7 +75,7 @@ async fn insert(cat: &Catalog, table: &str, columns: &[&str], rows: Vec<Vec<Valu
             .collect(),
         returning: Vec::new(),
     };
-    cat.primary()
+    cat.primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(insert))
         .await?
         .try_collect()

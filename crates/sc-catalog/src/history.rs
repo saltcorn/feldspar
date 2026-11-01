@@ -178,23 +178,23 @@ const CHANGESET_COLUMNS: &str = "s.id, s.at AS cs_at, s.user_id, s.source, s.app
 const HAS_VALUES: &str = "(c.old_values IS NOT NULL OR c.new_values IS NOT NULL)";
 
 fn quote(catalog: &Catalog, ident: &str) -> String {
-    catalog.primary().dialect().quote_ident(ident)
+    catalog.primary_driver().dialect().quote_ident(ident)
 }
 
 /// The `n`th bind's placeholder: `$n` on Postgres, `?n` on SQLite, which numbers
 /// a `$n` by where it first appears rather than by `n`.
 fn ph(catalog: &Catalog, n: usize) -> String {
-    catalog.primary().dialect().placeholder(n)
+    catalog.primary_driver().dialect().placeholder(n)
 }
 
 /// The tables named by the JSON array bound at `n`, as a subquery for `IN`.
 fn in_tables(catalog: &Catalog, n: usize) -> String {
-    crate::change_log::json_texts_sql(catalog.primary().dialect(), &ph(catalog, n))
+    crate::change_log::json_texts_sql(catalog.primary_driver().dialect(), &ph(catalog, n))
 }
 
 async fn query(catalog: &Catalog, sql: String, binds: Vec<Value>) -> Result<Vec<sc_db::Row>> {
     catalog
-        .primary()
+        .primary_driver()
         .query(&Statement::raw(sql, binds))
         .await?
         .try_collect()
@@ -361,7 +361,7 @@ async fn current_row(
     table: &Table,
     key: &str,
 ) -> Result<Option<Map<String, Json>>> {
-    let dialect = catalog.primary().dialect();
+    let dialect = catalog.primary_driver().dialect();
     let sql = format!(
         "SELECT {row} AS row FROM {table} t WHERE {key} = {p1}",
         row = crate::change_log::row_json_sql(dialect, table, "t"),
@@ -496,8 +496,10 @@ pub async fn list_changesets(
           ORDER BY s.at DESC, s.id LIMIT {limit} OFFSET {offset}",
         log = quote(catalog, CHANGES_TABLE),
         sets = quote(catalog, CHANGESETS_TABLE),
-        tables =
-            crate::change_log::json_distinct_array_sql(catalog.primary().dialect(), "c.table_name"),
+        tables = crate::change_log::json_distinct_array_sql(
+            catalog.primary_driver().dialect(),
+            "c.table_name"
+        ),
         in_tables = in_tables(catalog, 1),
         limit = filter.limit,
         offset = filter.offset,

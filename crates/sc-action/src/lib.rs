@@ -48,6 +48,14 @@
 //! regardless: the row layer raises an event through a seam the catalog holds
 //! (Phase 4), never by calling in here.
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
+    "sc-action: the trigger and schedule store (`_fd_triggers`, `_fd_trigger_log`)",
+);
+
 mod action;
 mod dispatch;
 mod engine;

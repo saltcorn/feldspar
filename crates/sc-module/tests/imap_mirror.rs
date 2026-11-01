@@ -199,7 +199,7 @@ mod deno {
             .insert("path".into(), json!(uploads_dir.display().to_string()));
         sc_catalog::save_file_store(&cat, &uploads).await.unwrap();
         sc_catalog::connect_file_store_def(&cat, &uploads).unwrap();
-        cat.require_file_store("uploads")
+        cat.require_file_store("uploads", sc_catalog::Unchecked::system("test"))
             .unwrap()
             .write("quotes/q-17.pdf", b"%PDF quote 17".to_vec().into())
             .await

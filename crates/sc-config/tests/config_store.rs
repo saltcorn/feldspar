@@ -160,7 +160,7 @@ async fn a_stray_row_is_reported_rather_than_read() -> Result<()> {
         vec![Expr::lit("legacy_setting"), Expr::lit(json!("x"))],
     );
     catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(insert))
         .await?
         .try_collect()

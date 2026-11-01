@@ -8996,6 +8996,7 @@ dependencies = [
  "futures",
  "regex-lite",
  "rust_decimal",
+ "sc-access",
  "sc-action",
  "sc-agent",
  "sc-auth",

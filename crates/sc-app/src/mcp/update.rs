@@ -990,7 +990,7 @@ fn change_static_dirs(
 
     let mut connected = Vec::new();
     for dir in additions(section)? {
-        if catalog.file_store(&dir.store.0)?.is_none() {
+        if !catalog.has_file_store(&dir.store.0)? {
             return Err(Error::invalid(format!(
                 "there is no file store `{}`; the file stores are {}. Nothing was changed.",
                 dir.store.0,
@@ -1101,7 +1101,7 @@ fn change_uploads(
     };
     let mut connected = Vec::new();
     for slot in added {
-        if catalog.file_store(&slot.store)?.is_none() {
+        if !catalog.has_file_store(&slot.store)? {
             return Err(Error::invalid(format!(
                 "there is no file store `{}`; the file stores are {}. Nothing was changed.",
                 slot.store,

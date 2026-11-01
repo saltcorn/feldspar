@@ -261,7 +261,9 @@ async fn a_mangled_column_is_reported_not_defaulted() -> Result<()> {
         )],
     )
     .filter(Expr::col("id").eq(Expr::Lit(Value::Uuid(trigger.id.0))));
-    cat.primary().query(&Statement::from(update)).await?;
+    cat.primary(sc_catalog::Unchecked::system("test"))
+        .query(&Statement::from(update))
+        .await?;
 
     let err = list_triggers(&cat).await.err().unwrap().to_string();
     assert!(err.contains("audit"), "{err}");
@@ -297,7 +299,7 @@ async fn the_cache_drops_what_cannot_fire_and_says_why() -> Result<()> {
 
     // Drop the table behind the trigger's back — a schema change nobody told
     // Saltcorn about, which is exactly the case a restored dump produces.
-    cat.primary()
+    cat.primary(sc_catalog::Unchecked::system("test"))
         .apply_schema(&SchemaChange::DropTable {
             name: "books".to_owned(),
             if_exists: false,
@@ -384,7 +386,9 @@ async fn a_row_whose_body_and_action_disagree_is_refused_by_name() -> Result<()>
         vec![Assignment::new("action".to_owned(), Expr::lit("notify"))],
     )
     .filter(Expr::col("id").eq(Expr::Lit(Value::Uuid(trigger.id.0))));
-    cat.primary().query(&Statement::from(update)).await?;
+    cat.primary(sc_catalog::Unchecked::system("test"))
+        .query(&Statement::from(update))
+        .await?;
 
     let err = list_triggers(&cat).await.err().unwrap().to_string();
     assert!(err.contains("approve_orders"), "{err}");

@@ -324,7 +324,7 @@ async fn write_entries<W: Write + Seek>(
     let mut sealed_rows = false;
 
     // --- tables: the overlay, the columns, and the rows ---------------------
-    let rls = catalog.primary().capabilities().row_level_security;
+    let rls = catalog.primary_info().capabilities().row_level_security;
     let has_field_meta = catalog.get(FIELD_META_TABLE)?.is_some();
     for name in &selection.tables {
         let table = catalog.require(name)?;
@@ -461,7 +461,7 @@ async fn write_entries<W: Write + Seek>(
         // A defined store that is not connected right now backs up as its
         // definition and no files, rather than failing the whole backup: the
         // definition is the part that is hard to recreate by hand.
-        if let Ok(store) = catalog.require_file_store(&def.name) {
+        if let Ok(store) = catalog.require_file_store(&def.name, crate::ADMIN_TASKS) {
             for (path, size) in walk(store.as_ref(), "").await? {
                 let written = copy_file(
                     store.as_ref(),
@@ -979,16 +979,20 @@ enum RowSource<'a> {
 
 impl<'a> RowSource<'a> {
     async fn open(catalog: &'a Catalog) -> Result<RowSource<'a>> {
-        Ok(match catalog.primary().begin_snapshot().await? {
-            Some(tx) => RowSource::Snapshot(tx),
-            None => RowSource::Direct(catalog),
-        })
+        Ok(
+            match catalog.primary(crate::ADMIN_TASKS).begin_snapshot().await? {
+                Some(tx) => RowSource::Snapshot(tx),
+                None => RowSource::Direct(catalog),
+            },
+        )
     }
 
     async fn query(&mut self, statement: &Statement) -> Result<Vec<Row>> {
         let rows = match self {
             RowSource::Snapshot(tx) => tx.query(statement).await?,
-            RowSource::Direct(catalog) => catalog.primary().query(statement).await?,
+            RowSource::Direct(catalog) => {
+                catalog.primary(crate::ADMIN_TASKS).query(statement).await?
+            }
         };
         rows.try_collect().await
     }

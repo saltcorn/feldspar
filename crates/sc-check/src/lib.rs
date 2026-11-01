@@ -29,6 +29,13 @@
 //! - [`edit`] — every change to a checklist, and the agent policy of §4.
 //! - [`tools`] — the agent tools, shared by the copilot and the MCP server.
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
+    sc_catalog::Unchecked::system("sc-check: the checklist store and its check users");
+
 pub mod declared;
 pub mod edit;
 pub mod model;

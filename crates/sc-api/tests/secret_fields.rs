@@ -84,7 +84,7 @@ fn admin() -> Result<User> {
 async fn stored(catalog: &Catalog) -> Result<Vec<Json>> {
     let select = Select::from(Source::table("accounts"));
     let rows = catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(select))
         .await?
         .try_collect()

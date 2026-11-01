@@ -261,7 +261,7 @@ async fn metadata_a_body_sets_is_the_stores_own() -> Result<()> {
     assert_eq!(out["attributes"]["origin"], json!("trigger"));
     // The same metadata the store itself reads: a body's `setMeta` is not a
     // second place rules are kept.
-    let store = catalog.require_file_store("docs")?;
+    let store = catalog.require_file_store("docs", sc_catalog::Unchecked::system("test"))?;
     let meta = store.get_meta("secret.txt").await?;
     assert_eq!(meta.min_role, Some(Role::of(10)));
     assert_eq!(
@@ -282,7 +282,7 @@ async fn a_delegated_body_obeys_the_folder_rule_and_the_trigger_does_not() -> Re
     std::fs::write(dir.join("open.txt"), "public").unwrap();
     // Admin-only, on the *folder* — the file below it carries no rule of its own,
     // which is the whole point of the rule being path-cumulative.
-    let store = catalog.require_file_store("docs")?;
+    let store = catalog.require_file_store("docs", sc_catalog::Unchecked::system("test"))?;
     store
         .set_meta(
             "private",
@@ -389,7 +389,7 @@ async fn a_delegated_write_is_the_callers_and_nobody_else_may_change_it() -> Res
         json!("mine"),
         "the owner reads it past the rule"
     );
-    let store = catalog.require_file_store("docs")?;
+    let store = catalog.require_file_store("docs", sc_catalog::Unchecked::system("test"))?;
     assert_eq!(
         store.get_meta("drops/a-dir").await?.owner.as_deref(),
         Some("user-a")
@@ -547,5 +547,69 @@ async fn a_store_that_is_not_connected_is_named_when_it_is_asked_for() -> Result
     assert!(said.contains("docs"), "and what there is instead: {said}");
 
     std::fs::remove_dir_all(&dir).ok();
+    Ok(())
+}
+
+/// TODO-code-quality Q3.6: a delegated copy into **another** store that asks
+/// for a rule is judged by the destination store's own floor — the store the
+/// entry is in — so it may tighten the rule there and never loosen it. (It
+/// was judged by the source store's floor, which, tighter than both rules,
+/// hid the loosening.)
+#[tokio::test]
+async fn a_delegated_copy_into_another_store_may_not_loosen_its_rule() -> Result<()> {
+    let db = TestDb::new().await?;
+    let (catalog, dir) = setup(&db, "copy-rule").await?;
+    let archive = temp_dir("copy-rule-archive");
+    catalog.connect_file_store(Arc::new(LocalFileStore::new("archive", &archive)?))?;
+    // `docs` is closed to everyone below role 10; its file is user-a's own.
+    let mut def = FileStoreDef::local("docs", dir.to_string_lossy());
+    def.min_role = Some(Role::of(10));
+    save_file_store(&catalog, &def).await?;
+    let raw = |name: &str| {
+        catalog
+            .require_file_store(name, sc_catalog::Unchecked::system("test: seed"))
+            .unwrap()
+    };
+    let mine = FileMeta {
+        owner: Some("user-a".to_owned()),
+        ..FileMeta::default()
+    };
+    std::fs::write(dir.join("mine.txt"), "new").unwrap();
+    raw("docs").set_meta("mine.txt", &mine).await?;
+    // In `archive` (no floor), user-a's file is closed to everyone below 40.
+    std::fs::write(archive.join("kept.txt"), "old").unwrap();
+    raw("archive")
+        .set_meta(
+            "kept.txt",
+            &FileMeta {
+                min_role: Some(Role::of(40)),
+                ..mine.clone()
+            },
+        )
+        .await?;
+
+    let out = run(
+        &catalog,
+        &fired_by("user-a"),
+        r#"const from = fs("docs").asUser().open("mine.txt");
+           const to = fs("archive").asUser().open("kept.txt");
+           const said = {};
+           try { await to.write(from, { minRole: 100 }); said.loosened = "done"; }
+           catch (e) { said.loosened = "refused"; }
+           try { await to.write(from, { minRole: 1 }); said.tightened = "done"; }
+           catch (e) { said.tightened = "refused"; }
+           return said;"#,
+    )
+    .await?;
+    assert_eq!(out["loosened"], json!("refused"), "{out}");
+    assert_eq!(out["tightened"], json!("done"), "{out}");
+    assert_eq!(on_disk(&archive, "kept.txt").unwrap(), "new");
+    assert_eq!(
+        raw("archive").get_meta("kept.txt").await?.min_role,
+        Some(Role::ADMIN)
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&archive).ok();
     Ok(())
 }

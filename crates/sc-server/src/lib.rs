@@ -19,6 +19,17 @@
 //! [`admin_handlers`]; they are resolved by name against the [`sc_api`] admin
 //! endpoint set at dispatch time.
 
+/// The administrator's tasks' access to the primary database and to the raw
+/// file stores (TODO-code-quality Q3.5, Q3.6): the one `Unchecked::system` the
+/// admin handlers that run their own statements make (each behind an admin
+/// session), listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const ADMIN_TASKS: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
+    "sc-server: an administrator's task on the primary database or a raw file store (backup and \
+         restore, clear all, table rename, the user and checklist-user lists, system info, an \
+         application's translation catalogues)",
+);
+
 mod admin_host;
 mod admin_session;
 mod agents;

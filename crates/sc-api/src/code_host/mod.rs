@@ -126,8 +126,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use async_trait::async_trait;
+use sc_access::Scoped;
 use sc_auth::User;
-use sc_catalog::{Catalog, Principal, SharedTx, Table};
+use sc_catalog::{Authority as ScopedAuthority, Catalog, Principal, SharedTx, Table, Unchecked};
 use sc_error::{Error, Repr, Result};
 use sc_expr::{CodeHost, DEFAULT_MAX_HOST_CALLS, JsEvaluator};
 use serde_json::Value as Json;
@@ -183,18 +184,21 @@ pub struct TableHost<'a> {
     /// fired it. `sc_expr::CodeCall` therefore borrows its host too, and the code
     /// runtime bridges the borrow across to its isolate thread.
     catalog: &'a Catalog,
-    /// The role the event was served at — what a delegated operation is checked
-    /// against, and public for an event with no caller at all.
-    role: Role,
-    /// The event's caller, as the event carries it. Attached to every statement:
-    /// on an RLS table it is what the policies read, and off one it is what the
-    /// **event** this run raises reports as its cause. Under `asUser()` it is
-    /// also read back as an [`sc_auth::User`], which is what §7.3's rule takes.
-    user: Option<Json>,
-    /// The triggers that led here, including the one running. A write this host
-    /// makes carries it, so `Event::firing`'s cascade bound applies to a code
-    /// body exactly as it does to an action.
-    chain: Vec<String>,
+    /// The event's caller, as a principal (TODO-code-quality Q3.4): the role
+    /// it was served at — what a delegated operation is checked against, and
+    /// public for an event with no caller at all; the user, as the event
+    /// carries it, attached to every statement (on an RLS table it is what the
+    /// policies read, and off one it is what the **event** this run raises
+    /// reports as its cause; under `asUser()` it is also read back as an
+    /// [`sc_auth::User`], which is what §7.3's rule takes); and the triggers
+    /// that led here, including the one running, which a write this host makes
+    /// carries, so `Event::firing`'s cascade bound applies to a code body
+    /// exactly as it does to an action.
+    ///
+    /// Every operation runs through an [`sc_access::Scoped`] built from it
+    /// ([`scope`](TableHost::scope)); the origin and the changeset are the task's at
+    /// the time of each call, as they always were.
+    caller: Principal,
     /// The bounds.
     limits: HostLimits,
     /// The formula engine, for a delegated operation whose ownership formula the
@@ -225,9 +229,7 @@ impl<'a> TableHost<'a> {
     pub fn new(catalog: &'a Catalog) -> TableHost<'a> {
         TableHost {
             catalog,
-            role: Role::PUBLIC,
-            user: None,
-            chain: Vec::new(),
+            caller: Principal::anonymous(Role::PUBLIC),
             limits: HostLimits::default(),
             evaluator: None,
             executor: rows::Executor::Pooled,
@@ -266,8 +268,22 @@ impl<'a> TableHost<'a> {
     /// `asUser()` in a scheduled trigger honestly means.
     #[must_use]
     pub fn caused_by(mut self, role: Role, user: Option<Json>) -> TableHost<'a> {
-        self.role = role;
-        self.user = user;
+        self.caller.role = role;
+        self.caller.user = user;
+        self
+    }
+
+    /// Attach the event's caller as a principal — its role, its user and the
+    /// chain that led here (`ActionContext::caller`): [`caused_by`] and
+    /// [`chained`] in one.
+    ///
+    /// [`caused_by`]: TableHost::caused_by
+    /// [`chained`]: TableHost::chained
+    #[must_use]
+    pub fn for_caller(mut self, caller: &Principal) -> TableHost<'a> {
+        self.caller.role = caller.role;
+        self.caller.user = caller.user.clone();
+        self.caller.chain = caller.chain.clone();
         self
     }
 
@@ -298,7 +314,7 @@ impl<'a> TableHost<'a> {
     /// Attach the trigger chain that led here.
     #[must_use]
     pub fn chained(mut self, chain: Vec<String>) -> TableHost<'a> {
-        self.chain = chain;
+        self.caller.chain = chain;
         self
     }
 
@@ -367,12 +383,12 @@ impl<'a> TableHost<'a> {
             )));
         }
         let mut query = read.query;
-        if let Actor::Caller { role, user } = actor {
+        if let Actor::Caller { principal, user } = actor {
             match ownership::aggregate_guard(
                 self.catalog,
                 &read.table,
                 &read.table.name,
-                *role,
+                principal.role,
                 user.as_ref(),
             ) {
                 Ok(ownership::AggregateGuard::Predicate(Some(pred))) => {
@@ -429,23 +445,17 @@ impl<'a> TableHost<'a> {
         match authority.resolve(&self.default_authority) {
             // `Default` cannot survive the resolve: the host's own default is
             // never `Default` (`defaulting_to` resolves it on the way in).
-            Authority::Default | Authority::Admin => Ok(Actor::Admin(self.caller())),
-            Authority::User => Ok(Actor::Caller {
-                role: self.role,
-                user: User::from_json(self.role, self.user.as_ref())?,
-            }),
+            Authority::Default | Authority::Admin => Ok(Actor::Admin(self.admin())),
+            Authority::User => Ok(self.delegated(
+                self.caller.role,
+                User::from_json(self.caller.role, self.caller.user.as_ref())?,
+            )),
             // The public role with nobody in it, which the seam can already
             // express and which no lookup can improve on.
-            Authority::Public => Ok(Actor::Caller {
-                role: Role::PUBLIC,
-                user: None,
-            }),
+            Authority::Public => Ok(self.delegated(Role::PUBLIC, None)),
             Authority::Named(id) => {
                 let user = load_named_user(self.catalog, &id).await?;
-                Ok(Actor::Caller {
-                    role: user.role(),
-                    user: Some(user),
-                })
+                Ok(self.delegated(user.role(), Some(user)))
             }
         }
     }
@@ -458,23 +468,21 @@ impl<'a> TableHost<'a> {
     /// answered without a lookup, since the caller is already here.
     fn viewer_actor(&self, authority: &Authority) -> Result<Actor> {
         let caller = || -> Result<Actor> {
-            Ok(Actor::Caller {
-                role: self.role,
-                user: User::from_json(self.role, self.user.as_ref())?,
-            })
+            Ok(self.delegated(
+                self.caller.role,
+                User::from_json(self.caller.role, self.caller.user.as_ref())?,
+            ))
         };
         match authority {
             Authority::Default | Authority::Admin | Authority::User => caller(),
-            Authority::Public => Ok(Actor::Caller {
-                role: Role::PUBLIC,
-                user: None,
-            }),
+            Authority::Public => Ok(self.delegated(Role::PUBLIC, None)),
             Authority::Named(id) => {
                 let named = match id {
                     Json::String(text) => Some(text.as_str()),
                     _ => None,
                 };
                 let own = self
+                    .caller
                     .user
                     .as_ref()
                     .and_then(|u| u.get("id"))
@@ -516,36 +524,17 @@ impl<'a> TableHost<'a> {
     async fn select(&self, plan: &Plan, actor: &Actor) -> Result<Json> {
         let read = plan::read(self.catalog, plan, &self.limits, actor.role())?;
         if read.cursor.is_some()
-            && let Actor::Caller { role, user } = actor
+            && let Actor::Caller { principal, user } = actor
         {
-            self.streamable(&read.table, *role, user.as_ref())?;
+            self.streamable(&read.table, principal.role, user.as_ref())?;
         }
-        let values = match actor {
-            Actor::Admin(context) => {
-                rows::list_row_values_in(
-                    self.catalog,
-                    &read.table,
-                    &read.query,
-                    sc_access::admin_access(context)?,
-                    &self.executor,
-                )
-                .await?
-            }
-            // §7.3's rule, in the one place it lives: the formula narrows the
-            // rows in the `WHERE` where it can and row by row where it cannot,
-            // and the bound is applied after it either way.
-            Actor::Caller { role, user } => {
-                ownership::read_row_values_as(
-                    self.catalog,
-                    &read.table,
-                    &read.query,
-                    *role,
-                    user.as_ref(),
-                    self.evaluator.as_ref(),
-                )
-                .await?
-            }
-        };
+        // For a delegated read, §7.3's rule, in the one place it lives: the
+        // formula narrows the rows in the `WHERE` where it can and row by row
+        // where it cannot, and the bound is applied after it either way.
+        let values = self
+            .read_scope(actor)
+            .read_values(&read.table, &read.query)
+            .await?;
         // The cap is enforced on what came back rather than by trimming it: a
         // body handed 1000 of 4000 rows would go on to compute a wrong answer out
         // of a right-looking one, and never know.
@@ -579,30 +568,13 @@ impl<'a> TableHost<'a> {
     /// do: a scalar terminal answers a value, and a grouped one answers rows.
     async fn aggregate(&self, plan: &Plan, actor: &Actor) -> Result<Json> {
         let agg = plan::aggregate(self.catalog, plan, &self.limits, actor.role())?;
-        let values = match actor {
-            Actor::Admin(context) => {
-                rows::aggregate_grouped(
-                    self.catalog,
-                    &agg.table,
-                    agg.projections,
-                    &agg.query,
-                    sc_access::admin_access(context)?,
-                )
-                .await?
-            }
-            Actor::Caller { role, user } => {
-                self.delegable_aggregate(&agg.table, *role, user.as_ref())?;
-                ownership::aggregate_grouped_as(
-                    self.catalog,
-                    &agg.table,
-                    agg.projections,
-                    &agg.query,
-                    *role,
-                    user.as_ref(),
-                )
-                .await?
-            }
-        };
+        if let Actor::Caller { principal, user } = actor {
+            self.delegable_aggregate(&agg.table, principal.role, user.as_ref())?;
+        }
+        let values = self
+            .scope(actor)
+            .aggregate_grouped(&agg.table, agg.projections, &agg.query)
+            .await?;
         let group = |values: &std::collections::BTreeMap<String, sc_query::Value>| {
             let mut out = serde_json::Map::with_capacity(agg.keys.len());
             for key in &agg.keys {
@@ -654,19 +626,24 @@ impl<'a> TableHost<'a> {
     /// the escape hatch.
     async fn sql(&self, plan: &SqlPlan) -> Result<Json> {
         let statement = plan::statement(self.catalog, plan)?;
-        let context = self.actor(&plan.authority).await?.context(&self.chain);
+        let actor = self.actor(&plan.authority).await?;
+        // The body's own statement, at the actor's role and user: the admin's
+        // (who meets every floor) or, delegated, vouched for by the rule this
+        // escape hatch is admitted on — admin-authored SQL whose only row rule
+        // is the policies the caller context reaches.
+        let access = match &actor {
+            Actor::Admin(context) => sc_access::admin_access(context)?,
+            Actor::Caller { principal, .. } => Unchecked::vouched(principal, CODE_SQL_RULE),
+        };
         let rows = match &self.executor {
             // Inside a step's transaction the statement joins it, so a `db.sql()`
             // sees what the step has written and what it writes is undone with
             // the step. The GUCs are applied per statement there, which is what
             // keeps `asUser()` meaning to raw SQL exactly what it means to the
             // chain (§10.3, decision 6).
-            rows::Executor::Transaction(tx) => {
-                tx.run(sc_catalog::Authority::Caller(&context), &statement)
-                    .await?
-            }
+            rows::Executor::Transaction(tx) => tx.run(access, &statement).await?,
             rows::Executor::Pooled => {
-                sc_catalog::run_in_context(self.catalog, &context, &statement).await?
+                sc_catalog::run_in_context(self.catalog, access, &statement).await?
             }
         };
         self.within_cap(
@@ -691,33 +668,10 @@ impl<'a> TableHost<'a> {
     /// delegated write is an event exactly as an admin's is.
     async fn insert(&self, plan: &Plan, actor: &Actor) -> Result<Json> {
         let insertion = plan::insert(self.catalog, plan, &self.limits)?;
+        let scope = self.scope(actor);
         let mut written = Vec::with_capacity(insertion.rows.len());
         for row in &insertion.rows {
-            written.push(match actor {
-                Actor::Admin(context) => {
-                    rows::create_row_in(
-                        self.catalog,
-                        &insertion.table,
-                        row,
-                        sc_access::admin_access(context)?,
-                        &self.executor,
-                    )
-                    .await?
-                }
-                Actor::Caller { role, user } => {
-                    ownership::insert_row_as(
-                        self.catalog,
-                        &insertion.table,
-                        row,
-                        *role,
-                        user.as_ref(),
-                        self.evaluator.as_ref(),
-                        &self.chain,
-                        &self.executor,
-                    )
-                    .await?
-                }
-            });
+            written.push(scope.insert(&insertion.table, row).await?);
         }
         for row in &mut written {
             if self.viewer_only {
@@ -748,29 +702,10 @@ impl<'a> TableHost<'a> {
     async fn write(&self, plan: &Plan, actor: &Actor) -> Result<Json> {
         let write = plan::write(self.catalog, plan, &self.limits, actor.role())?;
         let table = &write.matched.table;
-        let values = match actor {
-            Actor::Admin(context) => {
-                rows::list_row_values_in(
-                    self.catalog,
-                    table,
-                    &write.matched.query,
-                    sc_access::admin_access(context)?,
-                    &self.executor,
-                )
-                .await?
-            }
-            Actor::Caller { role, user } => {
-                ownership::read_row_values_as(
-                    self.catalog,
-                    table,
-                    &write.matched.query,
-                    *role,
-                    user.as_ref(),
-                    self.evaluator.as_ref(),
-                )
-                .await?
-            }
-        };
+        let values = self
+            .read_scope(actor)
+            .read_values(table, &write.matched.query)
+            .await?;
         let verb = match plan.op {
             Op::Update => "update",
             _ => "delete",
@@ -781,57 +716,16 @@ impl<'a> TableHost<'a> {
             "add a `.limit()` or narrow the `.where()`",
         )?;
 
+        let scope = self.scope(actor);
         let mut ids = Vec::with_capacity(values.len());
         for row in &values {
             let (id, key) = rows::row_key(table, &write.pk, row)?;
-            match (actor, &write.values) {
-                (Actor::Admin(context), Some(assignments)) => {
-                    rows::update_row_in(
-                        self.catalog,
-                        table,
-                        &id,
-                        assignments,
-                        sc_access::admin_access(context)?,
-                        &self.executor,
-                    )
-                    .await?;
+            match &write.values {
+                Some(assignments) => {
+                    scope.update(table, &id, assignments).await?;
                 }
-                (Actor::Admin(context), None) => {
-                    rows::delete_row_in(
-                        self.catalog,
-                        table,
-                        &id,
-                        sc_access::admin_access(context)?,
-                        &self.executor,
-                    )
-                    .await?;
-                }
-                (Actor::Caller { role, user }, Some(assignments)) => {
-                    ownership::update_row_as(
-                        self.catalog,
-                        table,
-                        &id,
-                        assignments,
-                        *role,
-                        user.as_ref(),
-                        self.evaluator.as_ref(),
-                        &self.chain,
-                        &self.executor,
-                    )
-                    .await?;
-                }
-                (Actor::Caller { role, user }, None) => {
-                    ownership::delete_row_as(
-                        self.catalog,
-                        table,
-                        &id,
-                        *role,
-                        user.as_ref(),
-                        self.evaluator.as_ref(),
-                        &self.chain,
-                        &self.executor,
-                    )
-                    .await?;
+                None => {
+                    scope.delete(table, &id).await?;
                 }
             }
             ids.push(key);
@@ -868,10 +762,47 @@ impl<'a> TableHost<'a> {
 
     /// The caller every statement of this run carries: **admin, in the event's
     /// user's name**, with the trigger chain that led here.
-    fn caller(&self) -> Principal {
-        Principal::new(Role::ADMIN, self.user.clone())
-            .chained(self.chain.clone())
+    fn admin(&self) -> Principal {
+        Principal::new(Role::ADMIN, self.caller.user.clone())
+            .chained(self.caller.chain.clone())
             .in_current_origin()
+    }
+
+    /// A delegated actor: `user` at `role`, as §7.3's rule takes them, with the
+    /// chain that led here — the principal the guarded functions always built
+    /// (`ownership::principal_at`), and the user as it was loaded.
+    fn delegated(&self, role: Role, user: Option<User>) -> Actor {
+        Actor::Caller {
+            principal: ownership::principal_at(role, user.as_ref())
+                .chained(self.caller.chain.clone()),
+            user,
+        }
+    }
+
+    /// The handle `actor`'s operations run through, on this run's executor and
+    /// with its formula engine (TODO-code-quality Q3.4): the row layer for the
+    /// admin, the ownership rule for a delegated caller.
+    fn scope<'s>(&'s self, actor: &'s Actor) -> Scoped<'s> {
+        let scoped = match actor {
+            Actor::Admin(context) => Scoped::new(self.catalog, ScopedAuthority::Caller(context)),
+            Actor::Caller { principal, user } => {
+                Scoped::new(self.catalog, ScopedAuthority::Caller(principal))
+                    .with_user(user.as_ref())
+            }
+        };
+        scoped
+            .in_executor(self.executor.clone())
+            .with_evaluator(self.evaluator.clone())
+    }
+
+    /// [`scope`](TableHost::scope) for a read: a delegated read goes through
+    /// the pool, as it always has (the ownership functions' reads were never
+    /// handed the step's transaction); the admin's reads join it.
+    fn read_scope<'s>(&'s self, actor: &'s Actor) -> Scoped<'s> {
+        match actor {
+            Actor::Admin(_) => self.scope(actor),
+            Actor::Caller { .. } => self.scope(actor).in_executor(rows::Executor::Pooled),
+        }
     }
 
     /// §5's one asymmetry, said in the code body's own terms.
@@ -993,12 +924,14 @@ pub(crate) async fn load_named_user(catalog: &Catalog, id: &Json) -> Result<User
 enum Actor {
     /// Admin, in the event's user's name, with the chain that led here.
     Admin(Principal),
-    /// The event's caller. `user` is `None` for an event that carries nobody — a
-    /// scheduled or startup trigger — which then reads as the public role.
+    /// The event's caller (or the public role, or a named user). `user` is
+    /// `None` for an event that carries nobody — a scheduled or startup
+    /// trigger — which then reads as the public role.
     Caller {
-        /// The role every floor is checked against.
-        role: Role,
-        /// The user an ownership formula and an RLS policy read.
+        /// The role every floor is checked against, the user's fields an RLS
+        /// policy reads, and the chain a write's event carries.
+        principal: Principal,
+        /// The user an ownership formula reads, as it was loaded.
         user: Option<User>,
     },
 }
@@ -1009,26 +942,16 @@ impl Actor {
     fn role(&self) -> Role {
         match self {
             Actor::Admin(_) => Role::ADMIN,
-            Actor::Caller { role, .. } => *role,
-        }
-    }
-
-    /// The caller context a statement of this authority runs under — the GUCs an
-    /// RLS policy reads, and the chain a write's event carries.
-    ///
-    /// The chain-and-row-layer operations never ask: `Admin` already **is** the
-    /// context they were built from, and a delegated one is built by
-    /// `ownership`'s own `*_as` functions. `db.sql()` asks, because it is the one
-    /// operation that reaches the database without either of those in front of it.
-    fn context(&self, chain: &[String]) -> Principal {
-        match self {
-            Actor::Admin(context) => context.clone(),
-            Actor::Caller { role, user } => {
-                ownership::principal_at(*role, user.as_ref()).chained(chain.to_vec())
-            }
+            Actor::Caller { principal, .. } => principal.role,
         }
     }
 }
+
+/// What stands behind a delegated `db.sql()`'s unchecked statement: the SQL is
+/// the body's own — server-side configuration an administrator wrote, the
+/// rule custom SQL queries are admitted on (§13.4) — and it runs in the
+/// caller's context, so an RLS table's policies decide what it reaches.
+const CODE_SQL_RULE: &str = "a code body's admin-authored db.sql(), in its caller's context";
 
 #[async_trait]
 impl CodeHost for TableHost<'_> {

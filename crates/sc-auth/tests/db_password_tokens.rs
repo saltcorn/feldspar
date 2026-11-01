@@ -61,7 +61,7 @@ fn patient(email: &str) -> NewUser {
 
 async fn count(catalog: &Catalog, table: &str) -> Result<usize> {
     let rows: Vec<sc_db::Row> = catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(Select::from(Source::table(table))))
         .await?
         .try_collect()
@@ -88,7 +88,7 @@ async fn an_invited_account_chooses_its_password_with_its_token_once() -> Result
     // The token is stored as a hash, never as itself.
     let stored: Vec<sc_db::Row> = f
         .catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(Select::from(Source::table(
             PASSWORD_TOKENS_TABLE,
         ))))
@@ -181,7 +181,7 @@ async fn a_reset_ends_the_users_sessions_and_a_bad_token_is_just_none() -> Resul
         )],
     );
     f.catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(expire))
         .await?
         .try_collect()

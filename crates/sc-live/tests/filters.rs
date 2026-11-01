@@ -157,7 +157,7 @@ async fn the_rust_verdict_is_the_sqlite_reads() -> Result<()> {
     let driver: Arc<dyn DatabaseDriver> = Arc::new(SqliteDriver::open_in_memory()?);
     let catalog = Arc::new(Catalog::init(driver).await?);
     assert_eq!(
-        LikeRules::of(catalog.primary().dialect()),
+        LikeRules::of(catalog.primary_dialect()),
         LikeRules::SQLITE,
         "SQLite's dialect says its LIKE folds case"
     );
@@ -170,7 +170,7 @@ async fn the_rust_verdict_is_the_postgres_reads() -> Result<()> {
     let driver: Arc<dyn DatabaseDriver> = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver).await?);
     assert_eq!(
-        LikeRules::of(catalog.primary().dialect()),
+        LikeRules::of(catalog.primary_dialect()),
         LikeRules::POSTGRES
     );
     parity(catalog).await

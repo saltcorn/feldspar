@@ -56,15 +56,8 @@ pub async fn matching_ids(
     let query = RowQuery::new()
         .where_(filter)
         .limit(ceiling.saturating_add(1));
-    let found = sc_access::read_rows_as(
-        ctx.catalog,
-        table,
-        &query,
-        ctx.caller.role,
-        ctx.caller.user.as_ref(),
-        ctx.evaluator,
-    )
-    .await?;
+    let me = ctx.principal();
+    let found = ctx.scoped(&me).read(table, &query).await?;
     let rows: Vec<Json> = found.as_array().cloned().unwrap_or_default();
     if rows.len() as u64 > ceiling {
         return Err(Error::invalid(format!(

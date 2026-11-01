@@ -131,7 +131,9 @@ mod deno {
 
         // In the store: the type and the name kept, no temporary left behind,
         // and nothing written anywhere else.
-        let files = cat.require_file_store("fm_files").unwrap();
+        let files = cat
+            .require_file_store("fm_files", sc_catalog::Unchecked::system("test"))
+            .unwrap();
         let big = files.stat("docs/big-stream.bin").await.unwrap().unwrap();
         assert_eq!(big.size, 20 * MB);
         let meta = files.get_meta("docs/a/hello.txt").await.unwrap();
@@ -169,7 +171,9 @@ mod deno {
         );
         assert!(files.stat("other/x.txt").await.unwrap().is_none());
         assert!(files.stat("docs-x/x.txt").await.unwrap().is_none());
-        let other = cat.require_file_store("fm_other").unwrap();
+        let other = cat
+            .require_file_store("fm_other", sc_catalog::Unchecked::system("test"))
+            .unwrap();
         assert!(other.stat("docs/x.txt").await.unwrap().is_none());
 
         // --- From an action -----------------------------------------------------

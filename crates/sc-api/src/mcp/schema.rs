@@ -69,7 +69,10 @@ impl AdminTool for EditSchema {
     }
 
     fn description(&self, catalog: &Catalog, grants: &Grants) -> String {
-        edit_description(grants, catalog.primary().capabilities().row_level_security)
+        edit_description(
+            grants,
+            catalog.primary_info().capabilities().row_level_security,
+        )
     }
 
     fn parameters(&self) -> Json {
@@ -137,7 +140,7 @@ fn describe(catalog: &Catalog, args: &Json) -> Result<Json> {
             }
         )));
     }
-    let rls_available = catalog.primary().capabilities().row_level_security;
+    let rls_available = catalog.primary_info().capabilities().row_level_security;
     let described: Vec<Json> = tables
         .iter()
         .filter(|t| only.is_none_or(|name| t.name == name))
@@ -888,7 +891,7 @@ fn check_file_stores(catalog: &Catalog, operations: &[Operation]) -> Result<()> 
     });
     for kind in kinds {
         if let DataFieldKind::File { store, .. } = kind
-            && catalog.file_store(&store.0)?.is_none()
+            && !catalog.has_file_store(&store.0)?
         {
             let names = catalog.file_store_names()?;
             return Err(Error::invalid(format!(

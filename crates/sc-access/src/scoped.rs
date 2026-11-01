@@ -41,6 +41,10 @@ pub struct Scoped<'a> {
     who: Authority<'a>,
     executor: Executor,
     evaluator: Option<Arc<dyn JsEvaluator>>,
+    /// The caller's user as its row was loaded, when the holder has it
+    /// ([`with_user`](Scoped::with_user)); otherwise read back from the
+    /// principal's JSON.
+    user: Option<&'a User>,
 }
 
 /// How one operation is decided: unchecked (system, administrator) or by the
@@ -58,6 +62,7 @@ impl<'a> Scoped<'a> {
             who,
             executor: Executor::Pooled,
             evaluator: catalog.formula_evaluator(),
+            user: None,
         }
     }
 
@@ -81,6 +86,23 @@ impl<'a> Scoped<'a> {
     #[must_use]
     pub fn with_evaluator(mut self, evaluator: Option<Arc<dyn JsEvaluator>>) -> Scoped<'a> {
         self.evaluator = evaluator;
+        self
+    }
+
+    /// Decide a caller's operations with `user` — the caller's own user, typed
+    /// as it was loaded from its row — rather than the user read back from the
+    /// principal's JSON.
+    ///
+    /// The two differ in the types of the user's extra fields: a row's uuid or
+    /// date is a typed value, and its JSON is text. An ownership formula that
+    /// compares `user.org` with a uuid column binds whichever it is handed, so
+    /// a holder that loaded the user (an agent run's caller, a code body's
+    /// `forUser`) hands it on and the formula sees what it saw before
+    /// (TODO-code-quality Q3.4). Refused at the first operation when `user` is
+    /// not the principal's (a different id, or a principal with no user).
+    #[must_use]
+    pub fn with_user(mut self, user: Option<&'a User>) -> Scoped<'a> {
+        self.user = user;
         self
     }
 
@@ -136,8 +158,48 @@ impl<'a> Scoped<'a> {
             // `unchecked` answers for every system authority.
             return Err(Error::msg("a system authority without an unchecked token"));
         };
-        let user = User::from_json(principal.role, principal.user.as_ref())?;
+        let user = match self.user {
+            Some(user) => {
+                if principal.user_id() != Some(user.id().to_string().as_str()) {
+                    return Err(Error::msg(
+                        "a scoped handle's user is not its principal's: refusing to decide \
+                         one caller's access with another's user",
+                    ));
+                }
+                Some(user.clone())
+            }
+            None => User::from_json(principal.role, principal.user.as_ref())?,
+        };
         Ok(Decided::Checked(principal, user))
+    }
+
+    /// One aggregate read of `table` per group — `projections` over the rows
+    /// `query` leaves that this authority may read. For a caller, the
+    /// ownership rule's aggregate ([`ownership::aggregate_grouped_as`]): the
+    /// floor, a translatable formula in the `WHERE`, or the table's policies;
+    /// a formula only the evaluator can decide is refused.
+    pub async fn aggregate_grouped(
+        &self,
+        table: &Table,
+        projections: Vec<sc_query::Projection>,
+        query: &RowQuery,
+    ) -> Result<Vec<BTreeMap<String, Value>>> {
+        match self.decided()? {
+            Decided::Unchecked(access) => {
+                rows::aggregate_grouped(self.catalog, table, projections, query, access).await
+            }
+            Decided::Checked(principal, user) => {
+                ownership::aggregate_grouped_by(
+                    self.catalog,
+                    table,
+                    projections,
+                    query,
+                    principal,
+                    user.as_ref(),
+                )
+                .await
+            }
+        }
     }
 
     /// The rows of `table` `query` asks for that this authority may read, as
