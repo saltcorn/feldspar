@@ -2,6 +2,19 @@
 
 Changes in reverse chronological order.
 
+## CI: clippy and rustfmt clean under the current stable toolchain
+
+A newer toolchain made both CI checks fail on code that had not changed (on `main` as well):
+
+- `clippy::result_large_err` on the functions in `sc-server/src/second_factor.rs` (module-level
+  allow) and `build_agent.rs`'s `authenticated` / `held_job` that return `Result<_, Response>`.
+  Allowed with the reason `builder.rs` already gives: the `Err` is the response to send, returned
+  unchanged by the handler, not an error being propagated, so boxing it buys nothing.
+- `sc-python/src/env.rs`: one expression reformatted by rustfmt.
+
+No behaviour change. `cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo fmt --all --check` pass.
+
 ## Migration: end administrators' sessions at upgrade (security review #15)
 
 This branch scopes a session to the host that issued it: a token issued on an application's host

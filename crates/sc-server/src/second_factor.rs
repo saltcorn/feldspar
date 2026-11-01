@@ -40,6 +40,10 @@
 //! fifteen minutes and it is refused with a `429` until the window passes,
 //! which makes guessing a six-digit code that lasts 30 seconds hopeless.
 
+// `clippy::result_large_err` does not apply: every `Err` here is the response to
+// send, returned unchanged by the route handler (as in `builder.rs`).
+#![allow(clippy::result_large_err)]
+
 use axum::Extension;
 use axum::Json;
 use axum::body::Bytes;
