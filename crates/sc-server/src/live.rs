@@ -36,7 +36,7 @@
 //! A `user` stream's subscriber names no topic and is put on their own user
 //! id; an anonymous caller is told the stream is not there. A `row` stream's
 //! subscriber names a row's key, and is let in only if **the application's
-//! REST read of that row, as them,** returns it ([`sc_api::row_readable_as`]) —
+//! REST read of that row, as them,** returns it ([`sc_access::row_readable_as`]) —
 //! a missing row and a forbidden one are the same `unavailable`. A row
 //! subscription then watches its row's table and every table the table's
 //! ownership formula reads ([`sc_live::read_rule_tables`]); a write to one
@@ -61,7 +61,7 @@
 //! A page publishes on a subscription it holds. Whether it may is decided when
 //! the subscription is attached, by [`sc_live::may_publish`] — the stream's
 //! `client_publish`, and on a `row` topic the caller's **update** access to the
-//! row ([`sc_api::row_updatable_as`]) — sent as `can_publish` in `ready`, and
+//! row ([`sc_access::row_updatable_as`]) — sent as `can_publish` in `ready`, and
 //! decided again whenever the subscription's read access is (a touched row, the
 //! clock). A refused publish is `unavailable`, worded like any absence. The
 //! element is the hub's to stamp ([`Connection::publish`]): `source` is
@@ -911,7 +911,7 @@ impl Live {
             Ok(Some(found)) => found,
             _ => return false,
         };
-        match sc_api::row_updatable_as(
+        match sc_access::row_updatable_as(
             &self.env.catalog,
             &found,
             key,
@@ -1392,8 +1392,8 @@ impl Live {
             // a stream nobody can be sent anything from.
             _ => return Err(format!("its table `{table}` is not there")),
         };
-        let like = match self.env.catalog.driver_for(&found) {
-            Ok(driver) => LikeRules::of(driver.as_ref()),
+        let like = match self.env.catalog.driver_info(&found.database) {
+            Ok(info) => LikeRules::of(info.dialect()),
             Err(_) => LikeRules::POSTGRES,
         };
         let filter = RowFilter::parse(&found, filter, like)
@@ -1500,7 +1500,7 @@ impl Live {
             _ => return RowFact::Unreadable,
         };
         let user = self.caller.user.as_ref();
-        match sc_api::row_readable_as(
+        match sc_access::row_readable_as(
             &self.env.catalog,
             &found,
             key,

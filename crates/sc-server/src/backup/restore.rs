@@ -35,7 +35,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use sc_api::{rows, schema_edit};
+use sc_access::rows;
+use sc_api::schema_edit;
 use sc_catalog::{
     Catalog, ConstraintKind, DataFieldKind, Table, TableConstraint, load_file_store_by_name,
 };
@@ -3749,7 +3750,12 @@ fn array_list(document: &Json) -> Vec<Json> {
 /// Every row of a table as JSON — the restore's own read, for the accounts that
 /// are already here.
 async fn rows_of(catalog: &Catalog, table: &Table) -> Result<Vec<Json>> {
-    let json = rows::list_rows(catalog, table).await?;
+    let json = rows::list_rows(
+        catalog,
+        table,
+        sc_access::Unchecked::system("backup restore: read the accounts already here"),
+    )
+    .await?;
     Ok(match json {
         Json::Array(values) => values,
         _ => Vec::new(),

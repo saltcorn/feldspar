@@ -24,7 +24,7 @@
 //!
 //! ## Who may read an image
 //!
-//! [`sc_api::RowImage`]: the role floor, then the table's ownership formula —
+//! [`sc_access::RowImage`]: the role floor, then the table's ownership formula —
 //! `owner === user.id` as a field comparison, anything else reified in the
 //! evaluator with its Ⱶ/Ↄ values prefetched once per image. Two economies keep
 //! a thousand subscribers from costing a thousand evaluations:
@@ -39,7 +39,7 @@
 //! ## What is sent
 //!
 //! `{op, key, row?}`, where `row` is the new image in **the REST read's
-//! projection** ([`sc_api::api_row`]) — the users table's password hash is
+//! projection** ([`sc_access::api_row`]) — the users table's password hash is
 //! not in it, because no API returns it — and is absent for `leave`, `delete`
 //! and a stream whose payload is only the key.
 
@@ -49,7 +49,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use sc_api::RowImage;
+use sc_access::RowImage;
 use sc_auth::User;
 use sc_catalog::{Catalog, WriteOp};
 use sc_expr::JsEvaluator;
@@ -475,7 +475,7 @@ fn sent(
         && delivered.carries_row()
         && let Some(row) = new
     {
-        value.insert(KEY_ROW.to_owned(), sc_api::api_row(table, row));
+        value.insert(KEY_ROW.to_owned(), sc_access::api_row(table, row));
     }
     Json::Object(value)
 }

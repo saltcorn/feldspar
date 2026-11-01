@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sc_auth::User;
-use sc_catalog::{Authority, Catalog, Principal, Table};
+use sc_catalog::{Catalog, Principal, Table, Unchecked};
 use sc_error::{Error, Result};
 use sc_expr::{Formula, JsEvaluator, Operation};
 use sc_query::Value;
@@ -29,7 +29,7 @@ use crate::rows::{self, Executor};
 
 /// Why a write was refused before it reached the database.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Denied {
+pub enum Denied {
     /// Below the table's write floor, with no ownership formula to extend it.
     Floor,
     /// The ownership formula refused the row; the sentence says how.
@@ -37,7 +37,7 @@ pub(crate) enum Denied {
 }
 
 impl Denied {
-    pub(crate) fn message(&self) -> &'static str {
+    pub fn message(&self) -> &'static str {
         match self {
             Denied::Floor => "insufficient privilege",
             Denied::Ownership(why) => why,
@@ -45,8 +45,12 @@ impl Denied {
     }
 }
 
+/// The check that stands behind this module's unchecked writes: the rule
+/// above, applied before each one.
+const RULE: &str = "the REST write rule (sc-access write_as.rs)";
+
 /// Everything a write as somebody needs besides the row.
-pub(crate) struct Caller<'a> {
+pub struct Caller<'a> {
     pub user: Option<&'a User>,
     pub evaluator: Option<&'a Arc<dyn JsEvaluator>>,
     /// Who the write's event reports as its cause (§10.2), and an RLS table's
@@ -75,13 +79,13 @@ fn formula<'t>(
 }
 
 /// Insert `body`, answering the inserted row.
-pub(crate) async fn create(
+pub async fn create(
     cat: &Catalog,
     table: &Table,
     body: &Json,
     caller: &Caller<'_>,
 ) -> Result<std::result::Result<Json, Denied>> {
-    let context = Authority::Caller(caller.context);
+    let context = Unchecked::vouched(caller.context, RULE);
     if table.rls_enabled {
         return Ok(Ok(rows::create_row_in(
             cat,
@@ -128,14 +132,14 @@ pub(crate) async fn create(
 }
 
 /// Update the row keyed `id` with `body`, answering the updated row.
-pub(crate) async fn update(
+pub async fn update(
     cat: &Catalog,
     table: &Table,
     id: &str,
     body: &Json,
     caller: &Caller<'_>,
 ) -> Result<std::result::Result<Json, Denied>> {
-    let context = Authority::Caller(caller.context);
+    let context = Unchecked::vouched(caller.context, RULE);
     if table.rls_enabled {
         return Ok(Ok(rows::update_row_guarded_in(
             cat,
@@ -201,13 +205,13 @@ pub(crate) async fn update(
 }
 
 /// Delete the row keyed `id`.
-pub(crate) async fn delete(
+pub async fn delete(
     cat: &Catalog,
     table: &Table,
     id: &str,
     caller: &Caller<'_>,
 ) -> Result<std::result::Result<(), Denied>> {
-    let context = Authority::Caller(caller.context);
+    let context = Unchecked::vouched(caller.context, RULE);
     let guard = if table.rls_enabled {
         None
     } else {
@@ -227,7 +231,7 @@ pub(crate) async fn delete(
 /// The row keyed `id` with the values `formula` needs, when the formula grants
 /// `op` on it; otherwise the same not-found a missing row gets, so a refusal
 /// does not tell the caller the row exists.
-pub(crate) async fn owned_row(
+pub async fn owned_row(
     cat: &Catalog,
     table: &Table,
     formula: &Formula,
@@ -239,7 +243,7 @@ pub(crate) async fn owned_row(
 }
 
 /// [`owned_row`] for a caller with no write in hand (a file download).
-pub(crate) async fn owned_row_as(
+pub async fn owned_row_as(
     cat: &Catalog,
     table: &Table,
     formula: &Formula,

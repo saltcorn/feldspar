@@ -2,7 +2,7 @@
 //! (the milestone "Tables in code", phase 4).
 //!
 //! Nothing here can be proved against a plan. The whole claim of §5 is that a
-//! delegated operation goes through [`sc_api::ownership`]'s `*_as` functions —
+//! delegated operation goes through [`sc_access::ownership`]'s `*_as` functions —
 //! §7.3's rule, the same functions the agent tools use — and every consequence
 //! that matters is a consequence of *those* running: the formula narrows a read
 //! in the `WHERE` where it can and row by row where it cannot, an update is

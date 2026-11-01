@@ -88,7 +88,7 @@ pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) ->
     }
 
     let (store, path) = open_to_write(scope, ctx, &rel).await?;
-    let Some(bytes) = current(store.as_ref(), &path, &rel).await? else {
+    let Some(bytes) = current(&store, &path, &rel).await? else {
         return Err(Error::invalid(format!(
             "`{rel}` does not exist. To create it, use `{}`.",
             super::write::tool_name(scope)
@@ -115,14 +115,7 @@ pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) ->
         }
     };
     state.edit_applied(Some(level));
-    write_tracked(
-        store.as_ref(),
-        &mut state,
-        &path,
-        Some(&bytes),
-        edited.into_bytes(),
-    )
-    .await?;
+    write_tracked(&store, &mut state, &path, Some(&bytes), edited.into_bytes()).await?;
     state.store(ctx.state());
     Ok(Json::String(summary))
 }

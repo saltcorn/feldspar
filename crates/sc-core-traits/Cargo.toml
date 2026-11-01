@@ -28,6 +28,7 @@ sc-docs.workspace = true
 # access rule an API caller's does, and a trait's write (Phase 3's later items)
 # through the same coercion, validation and events.
 sc-api.workspace = true
+sc-access.workspace = true
 sc-catalog.workspace = true
 # The trigger set and the dispatcher `run_trigger` runs one through — the same
 # dispatcher every other event fires on, so an agent is one more thing that can

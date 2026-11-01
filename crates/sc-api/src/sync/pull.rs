@@ -27,9 +27,9 @@ use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
 
 use super::device::{check_device, devices_table};
-use crate::ownership;
-use crate::rows::{self, Executor, RowQuery};
 use crate::schema::{StructField, TypeSchema};
+use sc_access::ownership;
+use sc_access::rows::{self, Executor, RowQuery};
 
 /// How many keys one read asks for: a long `IN (…)` list is still one
 /// statement, but not an unbounded one.
@@ -119,6 +119,7 @@ pub(crate) async fn pull(
         &devices,
         &request.client_id.to_string(),
         &Json::Object(seen),
+        sc_catalog::Unchecked::system("sync: record what the caller's device has applied"),
     )
     .await?;
 

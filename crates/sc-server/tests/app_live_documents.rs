@@ -373,19 +373,21 @@ async fn setup() -> Result<Server> {
     let (alice, bob, carol) = (server.id(ALICE), server.id(BOB), server.id(CAROL));
     let notes = catalog.require("notes")?;
     for (id, title) in [(1, "Plans"), (2, "Big")] {
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             &catalog,
             &notes,
             &json!({ "id": id, "title": title, "owner": alice }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
     let shares = catalog.require("shares")?;
     for (id, member, can_edit) in [(1, &bob, false), (2, &carol, true)] {
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             &catalog,
             &shares,
             &json!({ "id": id, "note": 1, "member": member, "can_edit": can_edit }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
@@ -655,7 +657,14 @@ async fn losing_edit_access_is_read_only_and_losing_read_access_is_revoked() -> 
 
     // The share stops allowing edits: Carol is sent the document again,
     // read-only, and her next edit is refused.
-    sc_api::rows::update_row(&server.catalog, &shares, "2", &json!({ "can_edit": false })).await?;
+    sc_access::rows::update_row(
+        &server.catalog,
+        &shares,
+        "2",
+        &json!({ "can_edit": false }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let again = frame_for(&mut carol, "d", "doc_sync").await;
     assert_eq!(again["read_only"], true, "{again}");
     let edit = browser(&again).append_paragraph("late").unwrap();
@@ -666,12 +675,25 @@ async fn losing_edit_access_is_read_only_and_losing_read_access_is_revoked() -> 
     );
 
     // And back.
-    sc_api::rows::update_row(&server.catalog, &shares, "2", &json!({ "can_edit": true })).await?;
+    sc_access::rows::update_row(
+        &server.catalog,
+        &shares,
+        "2",
+        &json!({ "can_edit": true }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let again = frame_for(&mut carol, "d", "doc_sync").await;
     assert_eq!(again["read_only"], false, "{again}");
 
     // The share goes: the subscription is revoked.
-    sc_api::rows::delete_row(&server.catalog, &shares, "2").await?;
+    sc_access::rows::delete_row(
+        &server.catalog,
+        &shares,
+        "2",
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let revoked = frame_for(&mut carol, "d", "revoked").await;
     assert_eq!(revoked["sub"], "d");
     Ok(())
@@ -689,14 +711,15 @@ async fn a_large_document_opens_and_a_long_paste_is_accepted() -> Result<()> {
     let state = big.state();
     assert!(state.len() > 1024 * 1024, "{}", state.len());
     let notes = server.catalog.require("notes")?;
-    sc_api::rows::write_document_in(
+    sc_access::rows::write_document_in(
         &server.catalog,
         &notes,
         "2",
         "body",
         &state,
         None,
-        &sc_api::rows::Executor::Pooled,
+        sc_catalog::Unchecked::system("test"),
+        &sc_access::rows::Executor::Pooled,
     )
     .await?;
     let (mut alice, sync) = open(&server, ALICE, 2).await;

@@ -1,6 +1,5 @@
 //! `delete_rows` — delete every row a predicate selects.
 
-use sc_catalog::Authority;
 use sc_error::Result;
 use sc_expr::Operation;
 use sc_types::{BasicType, FormField};
@@ -9,7 +8,7 @@ use serde_json::{Value as Json, json};
 use sc_action::{Action, ActionContext, ConfigCheck};
 
 use crate::rows_scope::{CFG_TABLE, CFG_WHERE, Scope, row_id, target_table, where_formula};
-use sc_api::rows;
+use sc_access::rows;
 
 /// Delete the rows of a table that a `where` formula selects.
 ///
@@ -65,18 +64,10 @@ impl Action for DeleteRows {
             .matching_rows(&table, &predicate, &[], Operation::Delete)
             .await?;
 
-        let authority = scope.authority();
         let mut ids = Vec::with_capacity(matched.len());
         for values in &matched {
             let (id, id_json) = row_id(&table, &pk, values)?;
-            rows::delete_row_in(
-                ctx.catalog,
-                &table,
-                &id,
-                Authority::Caller(&authority),
-                scope.executor(),
-            )
-            .await?;
+            scope.scoped().delete(&table, &id).await?;
             ids.push(id_json);
         }
         Ok(json!({ "deleted": ids.len(), "ids": ids }))

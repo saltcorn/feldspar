@@ -8,7 +8,7 @@
 //! because a delete that took the first 20 of 200 rows is the worst of both
 //! outcomes.
 //!
-//! Rows go one at a time by primary key through [`sc_api::delete_row_as`], so
+//! Rows go one at a time by primary key through [`sc_access::delete_row_as`], so
 //! each is checked against §7.3 and each raises its own delete event carrying
 //! the row as it was — the only copy of it anyone will get.
 
@@ -59,7 +59,7 @@ pub async fn call(
 
     let mut ids = Vec::with_capacity(matched.len());
     for (id, id_json) in &matched {
-        sc_api::delete_row_as(
+        sc_access::delete_row_as(
             ctx.catalog,
             table,
             id,
@@ -73,7 +73,7 @@ pub async fn call(
             // persisted after every step — so its tools' writes commit as they
             // are made, even when the run was started by a workflow step
             // (§10.3, decision 6).
-            &sc_api::rows::Executor::Pooled,
+            &sc_access::rows::Executor::Pooled,
         )
         .await?;
         ids.push(id_json.clone());

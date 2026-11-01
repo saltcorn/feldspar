@@ -4,13 +4,13 @@
 //! reverting a row to a version.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use sc_catalog::Authority;
 use sc_types::Role;
 use std::sync::Arc;
 
+use sc_access::rows;
 use sc_api::history::HistoryReader;
+use sc_api::schema_edit;
 use sc_api::undo::{Reverser, UndoOutcome};
-use sc_api::{rows, schema_edit};
 use sc_auth::User;
 use sc_catalog::{
     Catalog, Changeset, ChangesetSource, Principal, bootstrap_change_log, bootstrap_field_meta,
@@ -87,26 +87,45 @@ async fn action(f: impl std::future::Future<Output = Result<()>>) -> Result<Uuid
 
 async fn insert(catalog: &Catalog, table: &str, body: Json) -> Result<String> {
     let table = catalog.require(table)?;
-    let row = rows::create_row_ctx(catalog, &table, &body, Authority::Caller(&caller())).await?;
+    let row = rows::create_row(
+        catalog,
+        &table,
+        &body,
+        sc_catalog::Unchecked::vouched(&caller(), "test"),
+    )
+    .await?;
     Ok(row["id"].to_string())
 }
 
 async fn update(catalog: &Catalog, table: &str, id: &str, body: Json) -> Result<()> {
     let table = catalog.require(table)?;
-    rows::update_row_ctx(catalog, &table, id, &body, Authority::Caller(&caller())).await?;
+    rows::update_row(
+        catalog,
+        &table,
+        id,
+        &body,
+        sc_catalog::Unchecked::vouched(&caller(), "test"),
+    )
+    .await?;
     Ok(())
 }
 
 async fn delete(catalog: &Catalog, table: &str, id: &str) -> Result<()> {
     let table = catalog.require(table)?;
-    rows::delete_row_ctx(catalog, &table, id, Authority::Caller(&caller())).await?;
+    rows::delete_row(
+        catalog,
+        &table,
+        id,
+        sc_catalog::Unchecked::vouched(&caller(), "test"),
+    )
+    .await?;
     Ok(())
 }
 
 /// Row `id` of `table` now, or `None`.
 async fn get(catalog: &Catalog, table: &str, id: &str) -> Result<Option<Json>> {
     let table = catalog.require(table)?;
-    let rows = rows::list_rows(catalog, &table).await?;
+    let rows = rows::list_rows(catalog, &table, sc_catalog::Unchecked::system("test")).await?;
     Ok(rows
         .as_array()
         .unwrap()

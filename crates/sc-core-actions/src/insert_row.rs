@@ -1,6 +1,5 @@
 //! `insert_row` — insert a row whose fields are computed from the event.
 
-use sc_catalog::Authority;
 use std::collections::BTreeMap;
 
 use sc_error::Result;
@@ -11,7 +10,6 @@ use serde_json::{Map, Value as Json};
 use sc_action::{Action, ActionContext, ConfigCheck, EVENT_SCOPE, check_formula, formula_map};
 
 use crate::rows_scope::{CFG_TABLE, CFG_VALUES, Scope, target_table, writable_field};
-use sc_api::rows;
 
 /// Insert one row into a configured table, each field a formula over the event.
 ///
@@ -68,13 +66,6 @@ impl Action for InsertRow {
                 .await?;
             body.insert(field.clone(), value);
         }
-        rows::create_row_in(
-            ctx.catalog,
-            &table,
-            &Json::Object(body),
-            Authority::Caller(&scope.authority()),
-            scope.executor(),
-        )
-        .await
+        scope.scoped().insert(&table, &Json::Object(body)).await
     }
 }

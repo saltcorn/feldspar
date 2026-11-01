@@ -71,7 +71,7 @@ impl<'a> Configurer<'a> {
         // links are relative to it, and a request's own base URL reaches
         // `req.get_base_url()` directly (see the framework's `snapshot`).
         let snapshot = application_snapshot(catalog, app, &set, "", triggers).await?;
-        let caller = sc_api::principal_at(Role::ADMIN, user);
+        let caller = sc_access::principal_at(Role::ADMIN, user);
         Ok(Configurer {
             runtime,
             catalog,

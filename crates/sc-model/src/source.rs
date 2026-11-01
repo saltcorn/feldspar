@@ -3,7 +3,7 @@
 //! This crate is at layer 6 so a module can supply a model provider (see the
 //! crate docs), and the row layer is at layer 8 — so reading is a **seam** that
 //! somebody above the row layer fills in. `sc_server::models::CatalogDatasetSource`
-//! is that somebody, over `sc_api::rows`, which is what makes a dataset see the
+//! is that somebody, over `sc_access::rows`, which is what makes a dataset see the
 //! non-stored calculated fields, the ownership rule, row-level security and a
 //! provided table. Going around the row layer would mean a dataset that saw none
 //! of those.

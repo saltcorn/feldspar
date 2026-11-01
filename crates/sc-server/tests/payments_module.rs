@@ -471,7 +471,13 @@ async fn setup(tag: &str) -> sc_error::Result<(Server, Value)> {
         json!({ "name": "held", "adapter": "fake", "mode": "test", "webhook_secret": SECRET,
                 "settings": { "webhooks": "hold", "grants_in_test_mode": true } }),
     ] {
-        sc_api::rows::create_row(&catalog, &accounts, &row).await?;
+        sc_access::rows::create_row(
+            &catalog,
+            &accounts,
+            &row,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
 
     // The shop: its tables, its checkouts, and its triggers on what the payments do.
@@ -1040,24 +1046,32 @@ async fn a_guest_pays_for_their_own_order_and_the_apps_trigger_marks_it_paid()
         json!({ "id": 1, "name": "Tea", "price": 450 }),
         json!({ "id": 2, "name": "Cup", "price": 250 }),
     ] {
-        sc_api::rows::create_row(&server.catalog, &products, &product).await?;
+        sc_access::rows::create_row(
+            &server.catalog,
+            &products,
+            &product,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
 
     // Ann, a guest, has an open order of her own: two teas and a cup, with no prices on it.
     let mut ann = Browser::new(&server);
     let ann_session = ann.guest().await;
-    let order = sc_api::rows::create_row(
+    let order = sc_access::rows::create_row(
         &server.catalog,
         &orders,
         &json!({ "session_id": ann_session, "status": "open", "email": "ann@example.com" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let order_id = order["id"].as_i64().unwrap();
     for (product, quantity) in [(1, 2), (2, 1)] {
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             &server.catalog,
             &lines,
             &json!({ "order": order_id, "product": product, "quantity": quantity }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
@@ -1198,16 +1212,18 @@ async fn rows_keyed_by_text_and_by_uuid_are_paid_for_and_found_again() -> sc_err
     }
     let (server, _) = setup("keys").await?;
     let booking = "6f1c2d3e-4b5a-4c6d-8e7f-0123456789ab";
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         &server.catalog,
         &server.catalog.require("invoices")?,
         &json!({ "number": "INV-7", "amount": 12000, "status": "sent" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         &server.catalog,
         &server.catalog.require("bookings")?,
         &json!({ "id": booking, "deposit": 5000, "status": "held" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
 
@@ -1624,7 +1640,13 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
         json!({ "id": 2, "name": "Pro", "stripe_price": "price_pro", "role": 60 }),
         json!({ "id": 3, "name": "Staff", "stripe_price": "price_staff", "role": 40 }),
     ] {
-        sc_api::rows::create_row(catalog, &plans, &plan).await?;
+        sc_access::rows::create_row(
+            catalog,
+            &plans,
+            &plan,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
     let ada_id = server
         .rows("SELECT id FROM users WHERE email = 'ada@example.com'")

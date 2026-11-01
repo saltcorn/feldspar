@@ -41,8 +41,8 @@ use sc_error::{Error, Result};
 use super::plan::Authority;
 use super::{Actor, TableHost};
 use crate::history::{HistoryReader, redacted};
-use crate::rows::Executor;
 use crate::undo::Reverser;
+use sc_access::rows::Executor;
 
 /// One `history` request.
 #[derive(Debug, serde::Deserialize)]

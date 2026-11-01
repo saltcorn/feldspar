@@ -14,7 +14,7 @@
 //! would be a second answer to "what does creating a field mean", and the two
 //! would drift within a release.
 //!
-//! So the rule lives here, beside [`rows`](crate::rows) and for the same reason:
+//! So the rule lives here, beside [`rows`](sc_access::rows) and for the same reason:
 //! the admin API and an agent are two callers of one implementation, not two
 //! implementations. The handlers are thin callers of this module exactly as the
 //! REST provider is a thin caller of `rows`.
@@ -54,7 +54,6 @@
 //! *and* an edit, and a batch that half-applied for want of a grant is the state
 //! the transaction exists to avoid.
 
-use sc_catalog::Authority;
 use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1145,7 +1144,7 @@ impl Plan {
         // connection called `reporting`" is reported while the whole batch is
         // still a plan and nothing has been applied.
         let database = parse_database(database);
-        catalog.driver_named(&database)?;
+        catalog.driver_info(&database)?;
         let mut table = Table::projected(database, name, Vec::new(), Vec::new());
         // In the projection before the fields resolve, so a self-referencing key
         // (`employees.manager` → `employees`) finds its own primary key — which
@@ -1898,11 +1897,11 @@ impl Plan {
             if let Some(live) = catalog.get(&table)?
                 && live.field(&field).is_some_and(|f| !f.is_calc())
             {
-                let nulls = crate::rows::count_rows_where(
+                let nulls = sc_access::rows::count_rows_where(
                     catalog,
                     &live,
                     Some(Expr::unary(UnOp::IsNull, Expr::col(field.as_str()))),
-                    Authority::system("schema edit: check existing rows"),
+                    sc_catalog::Unchecked::system("schema edit: check existing rows"),
                 )
                 .await?;
                 if nulls > 0 {
@@ -2146,10 +2145,7 @@ impl Plan {
             // content from the table *by name*, which the rename does not
             // follow: it is dropped under the old name and built again,
             // under the name derived from the new one.
-            if catalog
-                .driver_named(&projected.database)?
-                .dialect()
-                .is_sqlite()
+            if catalog.driver_info(&projected.database)?.is_sqlite()
                 && let Some(fts) = projected
                     .constraints
                     .iter()
@@ -3259,7 +3255,7 @@ fn check_spatial(catalog: &Catalog, database: &DbId, field: &DataField) -> Resul
         return Ok(());
     }
     catalog
-        .driver_named(database)?
+        .driver_info(database)?
         .spatial()
         .require()
         .map_err(|reason| {
@@ -3277,7 +3273,7 @@ fn check_vector(catalog: &Catalog, database: &DbId, field: &DataField) -> Result
         return Ok(());
     }
     catalog
-        .driver_named(database)?
+        .driver_info(database)?
         .vector()
         .require()
         .map_err(|reason| {

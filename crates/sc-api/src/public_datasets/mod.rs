@@ -14,7 +14,7 @@
 //! table gets the types, labels, keys and references a person would have given
 //! it — `gapminder.country` is a key to `gapminder_countries`, the Northwind
 //! employees point at their managers — rather than whatever the cells look
-//! like. The rows still go in through the row layer ([`crate::rows`]), so they
+//! like. The rows still go in through the row layer ([`sc_access::rows`]), so they
 //! are held to the rules every write is.
 //!
 //! [`install`] is the whole operation: download every file first (a network

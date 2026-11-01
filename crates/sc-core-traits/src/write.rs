@@ -6,7 +6,7 @@
 //! of its three decisions is a promise, and two of them are safety properties
 //! that must not be able to differ between the two.
 //!
-//! **The rows are selected through [`sc_api::read_rows_as`]** — the caller's own
+//! **The rows are selected through [`sc_access::read_rows_as`]** — the caller's own
 //! read. So a tool can only change rows the same caller could have been shown,
 //! and an agent chatting with a user whose ownership formula hides half the
 //! table cannot update the half it cannot see. That is a stronger rule than the
@@ -36,7 +36,7 @@ use sc_error::{Error, Result};
 use sc_query::Expr;
 use serde_json::Value as Json;
 
-use sc_api::rows::{self, RowQuery};
+use sc_access::rows::{self, RowQuery};
 
 use crate::table::row_id;
 
@@ -56,7 +56,7 @@ pub async fn matching_ids(
     let query = RowQuery::new()
         .where_(filter)
         .limit(ceiling.saturating_add(1));
-    let found = sc_api::read_rows_as(
+    let found = sc_access::read_rows_as(
         ctx.catalog,
         table,
         &query,

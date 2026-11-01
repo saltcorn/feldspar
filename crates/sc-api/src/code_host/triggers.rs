@@ -193,7 +193,7 @@ impl<'a> TriggerRunHost<'a> {
             Authority::Public => (Principal::new(Role::PUBLIC, None), None),
             Authority::Named(id) => {
                 let user = super::load_named_user(self.catalog, id).await?;
-                let caller = crate::ownership::principal_at(user.role(), Some(&user));
+                let caller = sc_access::ownership::principal_at(user.role(), Some(&user));
                 (caller, Some(user))
             }
         };

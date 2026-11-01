@@ -41,7 +41,7 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use sc_agent::{Signal, TraitContext};
 use sc_error::{Error, Result};
-use sc_files::FileStore;
+use sc_files::CheckedStore;
 use sc_llm::ToolSpec;
 use serde_json::{Value as Json, json};
 
@@ -410,7 +410,9 @@ pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) ->
     let patch = parse(&text)
         .map_err(|e| Error::invalid(format!("status: failed. The patch is malformed: {e}")))?;
 
-    let (store, _) = scope.connect(ctx.catalog).await?;
+    // Every read and write of the plan is checked for the run's caller.
+    let (store, floor) = scope.connect(ctx.catalog).await?;
+    let store = CheckedStore::new(store, floor, crate::files::file_caller(ctx.caller));
     let mut state = CodingState::load(ctx.state());
     let read_tool = super::read::tool_name(scope);
 
@@ -429,7 +431,7 @@ pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) ->
     for op in &patch.ops {
         match op {
             Op::Add { path: rel, content } => {
-                let (path, now) = plan_view(scope, ctx, store.as_ref(), &plan, rel).await?;
+                let (path, now) = plan_view(scope, ctx, &store, &plan, rel).await?;
                 if let Some(bytes) = &now {
                     guard(&state, &plan, &path, bytes, rel, &read_tool).map_err(refuse)?;
                 }
@@ -437,7 +439,7 @@ pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) ->
                 upsert(&mut plan, &path, rel, now, Some(content.clone()));
             }
             Op::Delete { path: rel } => {
-                let (path, now) = plan_view(scope, ctx, store.as_ref(), &plan, rel).await?;
+                let (path, now) = plan_view(scope, ctx, &store, &plan, rel).await?;
                 let Some(bytes) = now else {
                     return Err(refuse(format!(
                         "`{rel}` cannot be deleted: it does not exist."
@@ -452,7 +454,7 @@ pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) ->
                 move_to,
                 hunks,
             } => {
-                let (path, now) = plan_view(scope, ctx, store.as_ref(), &plan, rel).await?;
+                let (path, now) = plan_view(scope, ctx, &store, &plan, rel).await?;
                 let Some(bytes) = now else {
                     return Err(refuse(format!(
                         "`{rel}` cannot be updated: it does not exist. Use `{ADD}` to create it."
@@ -489,8 +491,7 @@ pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) ->
                         upsert(&mut plan, &path, rel, Some(bytes), Some(updated.text));
                     }
                     Some(to_rel) => {
-                        let (to, existing) =
-                            plan_view(scope, ctx, store.as_ref(), &plan, to_rel).await?;
+                        let (to, existing) = plan_view(scope, ctx, &store, &plan, to_rel).await?;
                         if existing.is_some() {
                             return Err(refuse(format!(
                                 "`{rel}` cannot be moved to `{to_rel}`: that file already exists."
@@ -515,7 +516,7 @@ pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) ->
         let result = match &planned.after {
             Some(text) => {
                 write_tracked(
-                    store.as_ref(),
+                    &store,
                     &mut state,
                     path,
                     planned.before.as_deref(),
@@ -524,7 +525,7 @@ pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) ->
                 .await
             }
             None => match &planned.before {
-                Some(before) => delete_tracked(store.as_ref(), &mut state, path, before).await,
+                Some(before) => delete_tracked(&store, &mut state, path, before).await,
                 None => Ok(()),
             },
         };
@@ -563,7 +564,7 @@ pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) ->
 async fn plan_view(
     scope: &FileScope,
     ctx: &TraitContext<'_>,
-    store: &dyn FileStore,
+    store: &CheckedStore,
     plan: &BTreeMap<String, Planned>,
     rel: &str,
 ) -> Result<(String, Option<Bytes>)> {

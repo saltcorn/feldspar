@@ -36,9 +36,9 @@ use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
 
 use crate::history::{HistoryReader, not_found, redacted};
-use crate::ownership::principal_at;
-use crate::rows::{self, Executor};
-use crate::write_as::{self, Caller, Denied};
+use sc_access::ownership::principal_at;
+use sc_access::rows::{self, Executor};
+use sc_access::write_as::{self, Caller, Denied};
 
 /// Who is restoring or undoing: their role and user, and the evaluator a
 /// write rule may need.

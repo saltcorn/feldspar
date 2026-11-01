@@ -309,6 +309,39 @@ pub enum SchemaStep {
     Sql(String),
 }
 
+/// A database's SQL dialect and capabilities, without its driver
+/// ([`Catalog::driver_info`]): what a caller that renders or plans a statement
+/// needs to know about the database, and nothing it could run a statement with.
+#[derive(Clone)]
+pub struct DriverInfo(Arc<dyn DatabaseDriver>);
+
+impl DriverInfo {
+    /// The database's SQL dialect.
+    pub fn dialect(&self) -> &dyn sc_query::SqlDialect {
+        self.0.dialect()
+    }
+
+    /// What the database supports.
+    pub fn capabilities(&self) -> sc_db::DbCapabilities {
+        self.0.capabilities()
+    }
+
+    /// Whether this is a SQLite database.
+    pub fn is_sqlite(&self) -> bool {
+        self.0.dialect().is_sqlite()
+    }
+
+    /// Whether the database can store geometries (PostGIS), and why not.
+    pub fn spatial(&self) -> sc_db::SpatialSupport {
+        self.0.spatial()
+    }
+
+    /// Whether the database can store vectors (pgvector), and why not.
+    pub fn vector(&self) -> sc_db::VectorSupport {
+        self.0.vector()
+    }
+}
+
 impl Catalog {
     /// Build a catalog from a primary driver, loading its tables from
     /// introspection.
@@ -839,7 +872,7 @@ impl Catalog {
             .filter(|f| f.primary_key)
             .map(|f| f.base.name.clone())
             .collect();
-        self.driver_named(database)?
+        self.driver_of(database)?
             .apply_schema(&SchemaChange::CreateTable {
                 name: name.clone(),
                 columns,
@@ -868,7 +901,7 @@ impl Catalog {
     /// asking here.
     fn driver_for_table(&self, name: &str) -> Result<Arc<dyn DatabaseDriver>> {
         match self.get(name)? {
-            Some(table) => self.driver_for(&table),
+            Some(table) => self.driver_of_table(&table),
             None => Ok(self.primary.clone()),
         }
     }
@@ -1002,7 +1035,7 @@ impl Catalog {
     /// `sc_api::schema_edit` refuses such a batch outright rather than pretending
     /// otherwise.
     pub async fn apply_schema_batch_in(&self, database: &DbId, steps: &[SchemaStep]) -> Result<()> {
-        let driver = self.driver_named(database)?;
+        let driver = self.driver_of(database)?;
         let sqlite = driver.dialect().is_sqlite();
         let mut tx = driver.begin().await?;
         for step in steps {
@@ -1316,7 +1349,21 @@ impl Catalog {
     /// say so. Falling back to the primary would run somebody's query against
     /// the wrong database — the same table name, different rows — which is a
     /// failure nobody would see until the data was wrong.
-    pub fn provider(&self, table: &Table) -> Result<Arc<dyn TableProvider>> {
+    ///
+    /// A provider reads and writes every row, so it takes an
+    /// [`Unchecked`](crate::Unchecked) (TODO-code-quality Q3.5): a caller's rows
+    /// are reached through `sc_access::Scoped`.
+    pub fn provider(
+        &self,
+        table: &Table,
+        _access: crate::Unchecked<'_>,
+    ) -> Result<Arc<dyn TableProvider>> {
+        self.provider_of(table)
+    }
+
+    /// [`provider`](Catalog::provider) for this crate's own reads and writes
+    /// (prefetching a formula's join values, the change log, table metadata).
+    pub(crate) fn provider_of(&self, table: &Table) -> Result<Arc<dyn TableProvider>> {
         // A **provided** table has no driver at all: its rows come from a
         // module. The dispatch is here rather than in the caller because that is
         // the whole point of the trait — `rows.rs`, the REST provider, a view and
@@ -1342,7 +1389,7 @@ impl Catalog {
             )));
         }
         Ok(Arc::new(DriverTableProvider::new(
-            self.driver_for(table)?,
+            self.driver_of_table(table)?,
             table.fields.clone(),
         )))
     }
@@ -1474,7 +1521,21 @@ impl Catalog {
 
     /// The driver of the database hosting `table` — the primary, or the
     /// secondary connection whose name the table's [`DbId`] carries.
-    pub fn driver_for(&self, table: &Table) -> Result<Arc<dyn DatabaseDriver>> {
+    ///
+    /// The driver runs any statement, so it takes an
+    /// [`Unchecked`](crate::Unchecked) (TODO-code-quality Q3.5). What a caller
+    /// only needs to know about the database — its dialect, its capabilities —
+    /// is [`driver_info`](Catalog::driver_info).
+    pub fn driver_for(
+        &self,
+        table: &Table,
+        _access: crate::Unchecked<'_>,
+    ) -> Result<Arc<dyn DatabaseDriver>> {
+        self.driver_of_table(table)
+    }
+
+    /// [`driver_for`](Catalog::driver_for) for this crate's own use.
+    pub(crate) fn driver_of_table(&self, table: &Table) -> Result<Arc<dyn DatabaseDriver>> {
         if table.database == self.primary_db {
             return Ok(self.primary.clone());
         }
@@ -1488,7 +1549,25 @@ impl Catalog {
 
     /// The driver of the database with this id: the primary, or a connected
     /// secondary.
-    pub fn driver_named(&self, database: &DbId) -> Result<Arc<dyn DatabaseDriver>> {
+    ///
+    /// Gated like [`driver_for`](Catalog::driver_for).
+    pub fn driver_named(
+        &self,
+        database: &DbId,
+        _access: crate::Unchecked<'_>,
+    ) -> Result<Arc<dyn DatabaseDriver>> {
+        self.driver_of(database)
+    }
+
+    /// What a caller may know about the database with this id without being
+    /// handed its driver: its SQL dialect and capabilities. An error when no
+    /// such connection is connected, as for [`driver_named`](Catalog::driver_named).
+    pub fn driver_info(&self, database: &DbId) -> Result<DriverInfo> {
+        self.driver_of(database).map(DriverInfo)
+    }
+
+    /// [`driver_named`](Catalog::driver_named) for this crate's own use.
+    pub(crate) fn driver_of(&self, database: &DbId) -> Result<Arc<dyn DatabaseDriver>> {
         if *database == self.primary_db {
             return Ok(self.primary.clone());
         }
@@ -1542,8 +1621,15 @@ impl Catalog {
         Ok(existed)
     }
 
-    /// The connected secondary database with the given name, if any.
-    pub fn database(&self, name: &str) -> Result<Option<Arc<dyn DatabaseDriver>>> {
+    /// Whether a secondary database is connected under `name`.
+    pub fn is_connected(&self, name: &str) -> Result<bool> {
+        Ok(self.database(name)?.is_some())
+    }
+
+    /// The connected secondary database with the given name, if any. Crate-
+    /// private (TODO-code-quality Q3.5): outside this crate a driver is reached
+    /// through [`driver_named`](Catalog::driver_named) and an `Unchecked`.
+    pub(crate) fn database(&self, name: &str) -> Result<Option<Arc<dyn DatabaseDriver>>> {
         let guard = self
             .databases
             .read()

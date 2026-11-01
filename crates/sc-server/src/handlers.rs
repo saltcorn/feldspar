@@ -9,7 +9,7 @@
 //! to the dispatcher via [`SessionAction`](crate::SessionAction).
 //!
 //! Data crosses the wire as plain JSON. The row endpoints are thin wrappers over
-//! [`sc_api::rows`], the shared row-CRUD layer an application's REST API runs
+//! [`sc_access::rows`], the shared row-CRUD layer an application's REST API runs
 //! too — the admin API is not a privileged special case, it is the same
 //! machinery (design §13.1). A row is addressed by its single-column primary
 //! key; `createTable` invents none (GOALS), so a new table has no key until a
@@ -24,6 +24,7 @@ use std::sync::Arc;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
+use sc_access::rows::{self, require_object};
 use sc_action::{
     ATTR_DAY_OF_WEEK, ATTR_HOUR, ATTR_MINUTE, EventKind, Trigger, TriggerBody, TriggerId,
     delete_trigger, list_triggers, load_trigger, save_trigger,
@@ -31,7 +32,6 @@ use sc_action::{
 use sc_api::auth::{credentials, user_row_json, user_summary_json};
 use sc_api::csv as csv_rows;
 use sc_api::history::HistoryReader;
-use sc_api::rows::{self, require_object};
 use sc_api::schema_edit;
 use sc_api::undo::Reverser;
 use sc_api::{ApiRequest, GRAPHQL_PROVIDER, Method as ApiMethod};
@@ -64,8 +64,8 @@ use sc_catalog::{
 use sc_email::Mailer;
 use sc_error::{Context as _, Error, Result};
 use sc_files::{
-    Entry, FileMeta, FileStore, FileStoreDef, FileStoreDefId, VisibleEntry, backend_config_spec,
-    backend_operations, check_access, check_write, display_config, effective_min_role,
+    CheckedStore, Entry, FileMeta, FileStore, FileStoreDef, FileStoreDefId, VisibleEntry,
+    backend_config_spec, backend_operations, check_access, display_config, effective_min_role,
     list_visible, registered_backends, run_backend_operation,
 };
 use sc_i18n::Locale;
@@ -361,7 +361,7 @@ pub fn admin_handlers_with(
                     &name,
                     &optional_str(obj, "database"),
                     &document,
-                    Authority::Caller(&admin_caller(ctx.user())),
+                    sc_access::admin_access(&admin_caller(ctx.user()))?,
                 )
                 .await?;
                 let rls = catalog.primary().capabilities().row_level_security;
@@ -394,7 +394,7 @@ pub fn admin_handlers_with(
                     &file_name,
                     &bytes,
                     Some(layer.trim()).filter(|l| !l.is_empty()),
-                    Authority::Caller(&admin_caller(ctx.user())),
+                    sc_access::admin_access(&admin_caller(ctx.user()))?,
                 )
                 .await?;
                 let rls = catalog.primary().capabilities().row_level_security;
@@ -1035,7 +1035,7 @@ pub fn admin_handlers_with(
                     &catalog,
                     &table,
                     &query,
-                    Authority::Caller(&admin_caller(ctx.user())),
+                    sc_access::admin_access(&admin_caller(ctx.user()))?,
                 )
                 .await?;
                 // The data editor is a client like any other: it may write a
@@ -1061,7 +1061,7 @@ pub fn admin_handlers_with(
                     &catalog,
                     &table,
                     filter,
-                    Authority::Caller(&admin_caller(ctx.user())),
+                    sc_access::admin_access(&admin_caller(ctx.user()))?,
                 )
                 .await?;
                 Ok(HandlerResponse::ok(json!({ "count": count })))
@@ -1075,11 +1075,11 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let table = catalog.require(ctx.path_param("table")?)?;
-                let row = rows::create_row_ctx(
+                let row = rows::create_row(
                     &catalog,
                     &table,
                     &ctx.body,
-                    Authority::Caller(&admin_caller(ctx.user())),
+                    sc_access::admin_access(&admin_caller(ctx.user()))?,
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
@@ -1097,12 +1097,12 @@ pub fn admin_handlers_with(
             async move {
                 let table = catalog.require(ctx.path_param("table")?)?;
                 let id = ctx.path_param("id")?;
-                let row = rows::update_row_ctx(
+                let row = rows::update_row(
                     &catalog,
                     &table,
                     id,
                     &ctx.body,
-                    Authority::Caller(&admin_caller(ctx.user())),
+                    sc_access::admin_access(&admin_caller(ctx.user()))?,
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
@@ -1122,11 +1122,11 @@ pub fn admin_handlers_with(
                 let id = ctx.path_param("id")?;
                 // The row layer hands back the row it removed; the admin API
                 // acknowledges, as it does for every other delete it serves.
-                rows::delete_row_ctx(
+                rows::delete_row(
                     &catalog,
                     &table,
                     id,
-                    Authority::Caller(&admin_caller(ctx.user())),
+                    sc_access::admin_access(&admin_caller(ctx.user()))?,
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
@@ -1141,10 +1141,10 @@ pub fn admin_handlers_with(
             let catalog = catalog.clone();
             async move {
                 let table = catalog.require(ctx.path_param("table")?)?;
-                let deleted = rows::delete_all_rows_ctx(
+                let deleted = rows::delete_all_rows(
                     &catalog,
                     &table,
-                    Authority::Caller(&admin_caller(ctx.user())),
+                    sc_access::admin_access(&admin_caller(ctx.user()))?,
                 )
                 .await?;
                 if deleted > 0 {
@@ -1324,7 +1324,7 @@ pub fn admin_handlers_with(
                 let document = csv_rows::export_table(
                     &catalog,
                     &table,
-                    Authority::Caller(&admin_caller(ctx.user())),
+                    sc_access::admin_access(&admin_caller(ctx.user()))?,
                 )
                 .await?;
                 // The browser saves the file, so the server says what to call
@@ -1353,7 +1353,7 @@ pub fn admin_handlers_with(
                     &catalog,
                     &table,
                     &document,
-                    Authority::Caller(&admin_caller(ctx.user())),
+                    sc_access::admin_access(&admin_caller(ctx.user()))?,
                 )
                 .await?;
                 // An import is row by row, so any row that went in counts.
@@ -2735,8 +2735,8 @@ pub fn admin_handlers_with(
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?;
-                check_access(store.as_ref(), floor, path, &file_caller(&ctx)).await?;
-                let bytes = store.read(path).await?;
+                let files = CheckedStore::new(store.clone(), floor, file_caller(&ctx));
+                let bytes = files.read(path).await?;
                 // Always provide base64 (for binary download); add a decoded
                 // `text` when the bytes are valid UTF-8 (for the text editor).
                 let text = std::str::from_utf8(&bytes)
@@ -2762,10 +2762,10 @@ pub fn admin_handlers_with(
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?.to_owned();
-                check_write(store.as_ref(), floor, &path, &file_caller(&ctx)).await?;
+                let files = CheckedStore::new(store.clone(), floor, file_caller(&ctx));
                 let data = file_body_bytes(obj)?;
                 let size = data.len();
-                store.write(&path, data).await?;
+                files.write(&path, data).await?;
                 record_owner(store.as_ref(), &path, ctx.user()).await;
                 Ok(HandlerResponse::ok(file_entry_written_json(&path, size)).with_status(201))
             }
@@ -2781,8 +2781,9 @@ pub fn admin_handlers_with(
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?.to_owned();
-                check_write(store.as_ref(), floor, &path, &file_caller(&ctx)).await?;
-                store.mkdir(&path).await?;
+                CheckedStore::new(store.clone(), floor, file_caller(&ctx))
+                    .mkdir(&path)
+                    .await?;
                 record_owner(store.as_ref(), &path, ctx.user()).await;
                 Ok(HandlerResponse::ok(directory_entry_json(&path)).with_status(201))
             }
@@ -2798,8 +2799,9 @@ pub fn admin_handlers_with(
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?.to_owned();
-                check_write(store.as_ref(), floor, &path, &file_caller(&ctx)).await?;
-                let deleted = store.delete(&path).await?;
+                let deleted = CheckedStore::new(store.clone(), floor, file_caller(&ctx))
+                    .delete(&path)
+                    .await?;
                 Ok(HandlerResponse::ok(json!({ "deleted": deleted })))
             }
         }
@@ -2818,10 +2820,9 @@ pub fn admin_handlers_with(
                 // Both ends are checked: reading from a restricted place and
                 // writing into one are each things the rule governs, and a move
                 // does both.
-                let caller = file_caller(&ctx);
-                check_write(store.as_ref(), floor, &from, &caller).await?;
-                check_write(store.as_ref(), floor, &to, &caller).await?;
-                store.rename(&from, &to).await?;
+                CheckedStore::new(store.clone(), floor, file_caller(&ctx))
+                    .rename(&from, &to)
+                    .await?;
                 Ok(HandlerResponse::ok(entry_json(&renamed_entry(&to))))
             }
         }
@@ -2839,10 +2840,10 @@ pub fn admin_handlers_with(
                 let name = ctx.path_param("store")?.to_owned();
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let path = ctx.path_param("path")?.to_owned();
-                check_write(store.as_ref(), floor, &path, &file_caller(&ctx)).await?;
+                let files = CheckedStore::new(store.clone(), floor, file_caller(&ctx));
                 let data = ctx.raw_body()?.clone();
                 let size = data.len();
-                store.write(&path, data).await?;
+                files.write(&path, data).await?;
                 record_owner(store.as_ref(), &path, ctx.user()).await;
                 Ok(HandlerResponse::ok(file_entry_written_json(&path, size)).with_status(201))
             }
@@ -2878,8 +2879,9 @@ pub fn admin_handlers_with(
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?.to_owned();
-                check_access(store.as_ref(), floor, &path, &file_caller(&ctx)).await?;
-                let meta = store.get_meta(&path).await?;
+                let meta = CheckedStore::new(store.clone(), floor, file_caller(&ctx))
+                    .get_meta(&path)
+                    .await?;
                 let effective = effective_min_role(store.as_ref(), floor, &path).await?;
                 Ok(HandlerResponse::ok(file_meta_json(&path, &meta, effective)))
             }
@@ -2895,7 +2897,8 @@ pub fn admin_handlers_with(
                 let (store, floor) = resolve_store(&catalog, &name).await?;
                 let obj = require_object(&ctx.body)?;
                 let path = non_empty_str_field(obj, "path")?.to_owned();
-                check_write(store.as_ref(), floor, &path, &file_caller(&ctx)).await?;
+                let files = CheckedStore::new(store.clone(), floor, file_caller(&ctx));
+                files.check_write(&path).await?;
 
                 let min_role = optional_role(obj, "min_role")?;
                 let attributes = match obj.get("attributes") {
@@ -2920,7 +2923,7 @@ pub fn admin_handlers_with(
                     owner: store.get_meta(&path).await.unwrap_or_default().owner,
                     attributes,
                 };
-                store.set_meta(&path, &meta).await?;
+                files.set_meta(&path, &meta).await?;
                 // Recomputed after the write, so the response reflects what now
                 // applies rather than what was asked for — they differ whenever a
                 // parent directory is more restrictive than the rule just set.
@@ -9425,7 +9428,7 @@ pub(crate) fn file_store_from_body(id: FileStoreDefId, body: &Json) -> Result<Fi
 /// through this, so an endpoint added later cannot return a password without
 /// building the JSON by hand.
 fn db_connection_json(catalog: &Catalog, def: &DbConnectionDef) -> Result<Json> {
-    let connected = catalog.database(&def.name)?.is_some();
+    let connected = catalog.is_connected(&def.name)?;
     let error = catalog.database_error(&def.name)?;
     // How many of the catalog's tables this connection actually contributed —
     // the number that answers "did it work", where `connected` only answers "did
@@ -12689,13 +12692,15 @@ async fn random_row(
         return Ok(None);
     };
     let table = catalog.require(name)?;
-    let count = rows::count_rows_where(catalog, &table, None, Authority::Caller(caller)).await?;
+    let count =
+        rows::count_rows_where(catalog, &table, None, sc_access::admin_access(caller)?).await?;
     if count <= 0 {
         return Ok(None);
     }
     let offset = (uuid::Uuid::new_v4().as_u128() % count as u128) as u64;
     let query = rows::RowQuery::new().limit(1).offset(offset);
-    let read = rows::list_rows_query(catalog, &table, &query, Authority::Caller(caller)).await?;
+    let read =
+        rows::list_rows_query(catalog, &table, &query, sc_access::admin_access(caller)?).await?;
     Ok(match read {
         Json::Array(rows) => rows.into_iter().next(),
         _ => None,
@@ -12721,7 +12726,7 @@ fn provided_configuration(table: &Table) -> sc_types::Attrs {
 /// the user's own for the reason it always was: this endpoint is admin-only, and
 /// the row editor must work on a FORCE'd table.
 fn admin_caller(user: Option<&sc_auth::User>) -> sc_catalog::Principal {
-    sc_api::principal_at(Role::ADMIN, user)
+    sc_access::principal_at(Role::ADMIN, user)
 }
 
 /// A user's LLM credits as the admin user page shows them: the balance, every

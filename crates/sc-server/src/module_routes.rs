@@ -189,7 +189,7 @@ async fn route_caller(
     headers: &HeaderMap,
     anonymous: bool,
 ) -> std::result::Result<sc_catalog::Principal, Box<Response>> {
-    let nobody = sc_api::principal_of(None);
+    let nobody = sc_access::principal_of(None);
     if anonymous {
         return Ok(nobody);
     }
@@ -201,7 +201,7 @@ async fn route_caller(
             )));
         };
         return match sc_auth::authenticate_route_token(catalog, &token).await {
-            Ok(caller) => Ok(sc_api::principal_of(Some(&caller.user))),
+            Ok(caller) => Ok(sc_access::principal_of(Some(&caller.user))),
             Err(e) => Err(Box::new(json_error(
                 StatusCode::UNAUTHORIZED,
                 e.to_string(),
@@ -210,7 +210,7 @@ async fn route_caller(
     }
     Ok(session_user(state, jar)
         .await?
-        .map_or(nobody, |user| sc_api::principal_of(Some(&user))))
+        .map_or(nobody, |user| sc_access::principal_of(Some(&user))))
 }
 
 /// Whether `request` is a `POST` to a module route that declared `noCsrf` —

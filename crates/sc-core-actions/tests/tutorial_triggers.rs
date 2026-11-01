@@ -26,11 +26,11 @@ use sc_catalog::Authority;
 use sc_types::Role;
 use std::sync::Arc;
 
+use sc_access::rows;
 use sc_action::{
     ATTR_HOUR, ATTR_MINUTE, EventKind, Schedule, Trigger, TriggerDispatcher, bootstrap_triggers,
     save_trigger,
 };
-use sc_api::rows;
 use sc_catalog::{Catalog, Principal, TableEvents};
 use sc_core_actions::builtin_actions;
 use sc_db::DatabaseDriver;
@@ -186,12 +186,12 @@ impl Tutorial {
     async fn tick(&self, id: &str, done: bool, member: &str) -> Result<()> {
         let tasks = self.catalog.require("tasks")?;
         let caller = Principal::new(Role::of(40), Some(json!({ "email": member })));
-        rows::update_row_ctx(
+        rows::update_row(
             &self.catalog,
             &tasks,
             id,
             &json!({ "done": done }),
-            Authority::Caller(&caller),
+            sc_catalog::Unchecked::vouched(&caller, "test"),
         )
         .await?;
         Ok(())
@@ -252,6 +252,7 @@ async fn the_audit_trigger_fires_on_becoming_done_and_only_then() -> Result<()> 
         &t.catalog,
         &tasks,
         &json!({ "title": "Draft the report", "done": false, "owner": member }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let id = created["id"].as_i64().expect("an id").to_string();
@@ -296,6 +297,7 @@ async fn the_none_trigger_archives_the_callers_own_finished_tasks() -> Result<()
             &t.catalog,
             &tasks,
             &json!({ "title": title, "done": done, "owner": owner }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
@@ -317,7 +319,7 @@ async fn the_none_trigger_archives_the_callers_own_finished_tasks() -> Result<()
     // The member's finished task is gone; their unfinished one and the other
     // member's finished one are untouched — `owner === user.email` is doing the
     // selecting.
-    let left = rows::list_rows(&t.catalog, &tasks).await?;
+    let left = rows::list_rows(&t.catalog, &tasks, sc_catalog::Unchecked::system("test")).await?;
     let titles: Vec<&str> = left
         .as_array()
         .expect("an array")
@@ -368,6 +370,7 @@ async fn the_code_body_reads_the_tasks_and_writes_an_audit_row_for_each() -> Res
             &t.catalog,
             &tasks,
             &json!({ "title": title, "done": done, "owner": member }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
@@ -421,6 +424,7 @@ async fn the_grouped_read_answers_one_row_per_owner_as_the_document_prints_it() 
             &t.catalog,
             &tasks,
             &json!({ "title": title, "done": done, "owner": owner }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
@@ -456,6 +460,7 @@ async fn the_streamed_sweep_writes_the_same_rows_the_read_one_does() -> Result<(
             &t.catalog,
             &tasks,
             &json!({ "title": title, "done": done, "owner": member }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
@@ -505,6 +510,7 @@ async fn a_body_runs_the_other_two_triggers_the_tutorial_wrote() -> Result<()> {
             &t.catalog,
             &tasks,
             &json!({ "title": title, "done": done, "owner": member }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }

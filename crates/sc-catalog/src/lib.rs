@@ -62,10 +62,10 @@ mod wakeups;
 
 pub use admin_host::{AdminCall, AdminHost};
 pub use caller::{
-    Authority, CallingApp, Origin, Principal, SystemReason, TaskScope, UNTRUSTED_ORIGIN,
+    Authority, CallingApp, Origin, Principal, SystemReason, TaskScope, UNTRUSTED_ORIGIN, Unchecked,
     current_origin, is_untrusted_chain, spawn_scoped, untrusted_chain, with_origin,
 };
-pub use catalog::{Catalog, ProvidedTableIssue, SchemaStep};
+pub use catalog::{Catalog, DriverInfo, ProvidedTableIssue, SchemaStep};
 pub use change_log::{
     CHANGES_TABLE, ChangeLogFeature, as_text_sql, bootstrap_change_log, change_log_enabled,
     change_log_key, disable_change_log_sql, enable_change_log_sql, history_enabled,

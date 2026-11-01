@@ -10,8 +10,8 @@
 
 use std::sync::Arc;
 
+use sc_access::rows;
 use sc_action::{Event, EventKind, Trigger, TriggerDispatcher, bootstrap_triggers, save_trigger};
-use sc_api::rows;
 use sc_catalog::{Catalog, TableEvents};
 use sc_core_actions::builtin_actions;
 use sc_db::DatabaseDriver;
@@ -98,20 +98,29 @@ async fn a_failed_send_on_a_row_update_raises_the_error_event_naming_the_row() -
         &catalog,
         &mails,
         &json!({ "recipient": "ada@example.com", "status": "draft" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let second = rows::create_row(
         &catalog,
         &mails,
         &json!({ "recipient": "bob@example.com", "status": "draft" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let id = first["id"].as_i64().expect("an id").to_string();
 
     // The write itself succeeds: the failure happens after it committed.
-    rows::update_row(&catalog, &mails, &id, &json!({ "status": "sending" })).await?;
+    rows::update_row(
+        &catalog,
+        &mails,
+        &id,
+        &json!({ "status": "sending" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
 
-    let all = rows::list_rows(&catalog, &mails).await?;
+    let all = rows::list_rows(&catalog, &mails, sc_catalog::Unchecked::system("test")).await?;
     let row = |id: &serde_json::Value| {
         all.as_array()
             .and_then(|a| a.iter().find(|r| r["id"] == *id))
@@ -139,6 +148,7 @@ async fn a_request_error_leaves_the_rows_alone() -> Result<()> {
         &catalog,
         &mails,
         &json!({ "recipient": "ada@example.com", "status": "draft" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
 
@@ -152,7 +162,7 @@ async fn a_request_error_leaves_the_rows_alone() -> Result<()> {
     assert_eq!(runs.len(), 1);
     assert!(runs[0].outcome.is_ok(), "{:?}", runs[0].outcome);
 
-    let all = rows::list_rows(&catalog, &mails).await?;
+    let all = rows::list_rows(&catalog, &mails, sc_catalog::Unchecked::system("test")).await?;
     assert_eq!(all[0]["status"], json!("draft"), "{all}");
     Ok(())
 }

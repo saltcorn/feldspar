@@ -201,27 +201,29 @@ async fn setup() -> sc_error::Result<Booted> {
         sc_auth::save_role(catalog, &sc_auth::RoleDef::new(Role::of(role), name)).await?;
     }
     // Step 1: the test account, the plan with its credits; Step 4: the pack.
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         catalog,
         &catalog.require("pay_accounts")?,
         &json!({ "name": "tea", "adapter": "fake", "mode": "test",
                  "webhook_secret": "any random text",
                  "settings": { "grants_in_test_mode": true,
                                "prices": { "price_assistant": { "amount": 500 } } } }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     create_tables(catalog).await?;
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         catalog,
         &catalog.require("plans")?,
         &json!({ "id": 1, "name": "Assistant", "price": "5 € a month", "stripe_price": "price_assistant",
-                 "role": 70, "credits": 100, "rollover": "capped", "rollover_cap": 50 }),
+                 "role": 70, "credits": 100, "rollover": "capped", "rollover_cap": 50 }), sc_catalog::Unchecked::system("test"),
     )
     .await?;
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         catalog,
         &catalog.require("credit_packs")?,
         &json!({ "id": 1, "name": "100 credits", "price": 200, "units": 100 }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
 

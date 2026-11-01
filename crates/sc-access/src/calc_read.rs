@@ -40,7 +40,7 @@ use crate::convert::value_to_json;
 
 /// How a read computes `table`'s non-stored calculated fields: the ones SQL
 /// projects, and the ones computed after the rows are fetched.
-pub(crate) struct CalcPlan {
+pub struct CalcPlan {
     /// The translatable fields, each aliased to its name.
     pub(crate) projections: Vec<Projection>,
     /// The rest, in dependency order.
@@ -61,7 +61,7 @@ struct AfterRead {
 
 impl CalcPlan {
     /// The plan for `table`'s calculated fields.
-    pub(crate) fn of(catalog: &Catalog, table: &Table) -> Result<CalcPlan> {
+    pub fn of(catalog: &Catalog, table: &Table) -> Result<CalcPlan> {
         let calc = calc_map(table);
         let mut plan = CalcPlan {
             projections: Vec::new(),
@@ -117,7 +117,7 @@ impl CalcPlan {
     /// Refuse a filter or an ordering that names a field computed after the
     /// read, with the sentence saying why. `doing` is what the caller was
     /// doing with it: "filter on", "sort by".
-    pub(crate) fn refuse_in_query<'a>(
+    pub fn refuse_in_query<'a>(
         &self,
         names: impl IntoIterator<Item = &'a str>,
         doing: &str,

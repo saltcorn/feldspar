@@ -50,7 +50,7 @@ mod loader;
 mod mutate;
 pub mod names;
 mod resolve;
-// Fixtures for this module's unit tests, and for `crate::filter`'s — the
+// Fixtures for this module's unit tests, and for `sc_access::filter`'s — the
 // comparison vocabulary is shared, so the table it is tested against is too.
 #[cfg(test)]
 pub(crate) mod testing;

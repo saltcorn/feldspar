@@ -251,7 +251,7 @@ async fn call_function(
     );
     let mut scope = Attrs::new();
     scope.insert("args".to_owned(), argument.clone());
-    let caller = sc_api::principal_at(ctx.caller.role, ctx.caller.user.as_ref())
+    let caller = sc_access::principal_at(ctx.caller.role, ctx.caller.user.as_ref())
         .chained(ctx.caller.tool_chain());
     // In an application's chat, its own libraries over the instance's.
     let application = caller.app.as_ref().map(|app| app.id);

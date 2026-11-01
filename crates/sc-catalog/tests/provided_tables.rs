@@ -216,7 +216,7 @@ async fn the_catalogs_provider_serves_its_rows_through_the_ordinary_read_path() 
 
     // A plain `SELECT *`, exactly as `rows.rs` builds one.
     let rows = catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .query(&Select::from(Source::table("headlines")))
         .await?
         .try_collect()
@@ -240,7 +240,7 @@ async fn the_catalogs_provider_serves_its_rows_through_the_ordinary_read_path() 
     select.order = vec![OrderBy::desc(Expr::col("votes"))];
     select.limit = Some(1);
     let rows = catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .query(&select)
         .await?
         .try_collect()
@@ -279,7 +279,11 @@ async fn a_read_only_provider_refuses_a_write_and_says_which_method_is_missing()
         vec!["title".to_owned()],
         vec![Expr::lit("new")],
     )));
-    let Err(err) = catalog.provider(&table)?.write(&insert).await else {
+    let Err(err) = catalog
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
+        .write(&insert)
+        .await
+    else {
         panic!("a provided table must refuse a write");
     };
     let err = err.to_string();
@@ -330,7 +334,7 @@ async fn a_process_with_no_module_host_still_lists_the_table_and_says_why() -> R
         catalog.provided_table_issues()
     );
     // And a read of it says the same thing rather than reaching for a driver.
-    let Err(err) = catalog.provider(&table) else {
+    let Err(err) = catalog.provider(&table, sc_catalog::Unchecked::system("test")) else {
         panic!("a provided table needs a module host to be served at all");
     };
     let err = err.to_string();

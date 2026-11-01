@@ -138,7 +138,7 @@ impl AgentTrait for RunTrigger {
             Json::Null => json!({}),
             other => other.clone(),
         };
-        let caller = sc_api::principal_at(ctx.caller.role, ctx.caller.user.as_ref())
+        let caller = sc_access::principal_at(ctx.caller.role, ctx.caller.user.as_ref())
             .chained(ctx.caller.tool_chain());
         let result = dispatcher
             .run_trigger(ctx.catalog, &name, payload, Authority::Caller(&caller))

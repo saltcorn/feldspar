@@ -168,7 +168,7 @@ impl PartialEq for SharedTx {
 impl SharedTx {
     /// A transaction on `database`, to be begun when something first needs it.
     pub fn begin(catalog: &Catalog, database: &DbId) -> Result<SharedTx> {
-        let driver = catalog.driver_named(database)?;
+        let driver = catalog.driver_of(database)?;
         Ok(SharedTx::begin_on(&driver, database.clone()))
     }
 

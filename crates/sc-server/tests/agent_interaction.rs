@@ -233,10 +233,11 @@ async fn serve(own: Vec<Reply>, fast: Vec<Reply>) -> Result<Server> {
         (1, "Librarian", "Answer as a librarian would.", true),
         (2, "Retired", "Never shown.", false),
     ] {
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             &catalog,
             &personas,
             &json!({ "id": id, "name": name, "prompt": prompt, "active": active }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }

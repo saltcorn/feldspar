@@ -3,12 +3,12 @@
 //! dropped column, secrets, and changesets.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use sc_catalog::Authority;
 use sc_types::Role;
 use std::sync::Arc;
 
+use sc_access::rows;
 use sc_api::history::HistoryReader;
-use sc_api::{rows, schema_edit};
+use sc_api::schema_edit;
 use sc_auth::User;
 use sc_catalog::{
     Catalog, Changeset, ChangesetSource, DataFieldKind, Principal, SecretKey, bootstrap_change_log,
@@ -102,7 +102,13 @@ fn caller(who: &str) -> Principal {
 async fn create(catalog: &Catalog, who: &str, body: Json) -> Result<String> {
     let notes = catalog.require("notes")?;
     let row = act(async {
-        rows::create_row_ctx(catalog, &notes, &body, Authority::Caller(&caller(who))).await
+        rows::create_row(
+            catalog,
+            &notes,
+            &body,
+            sc_catalog::Unchecked::vouched(&caller(who), "test"),
+        )
+        .await
     })
     .await?;
     Ok(row["id"].to_string())
@@ -111,7 +117,14 @@ async fn create(catalog: &Catalog, who: &str, body: Json) -> Result<String> {
 async fn update(catalog: &Catalog, who: &str, id: &str, body: Json) -> Result<()> {
     let notes = catalog.require("notes")?;
     act(async {
-        rows::update_row_ctx(catalog, &notes, id, &body, Authority::Caller(&caller(who))).await
+        rows::update_row(
+            catalog,
+            &notes,
+            id,
+            &body,
+            sc_catalog::Unchecked::vouched(&caller(who), "test"),
+        )
+        .await
     })
     .await?;
     Ok(())
@@ -119,8 +132,16 @@ async fn update(catalog: &Catalog, who: &str, id: &str, body: Json) -> Result<()
 
 async fn delete(catalog: &Catalog, who: &str, id: &str) -> Result<()> {
     let notes = catalog.require("notes")?;
-    act(async { rows::delete_row_ctx(catalog, &notes, id, Authority::Caller(&caller(who))).await })
-        .await?;
+    act(async {
+        rows::delete_row(
+            catalog,
+            &notes,
+            id,
+            sc_catalog::Unchecked::vouched(&caller(who), "test"),
+        )
+        .await
+    })
+    .await?;
     Ok(())
 }
 

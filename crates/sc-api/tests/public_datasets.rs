@@ -14,7 +14,6 @@
 //! `FELDSPAR_PUBLIC_DATA_CACHE` to a directory to download each file once, and
 //! `FELDSPAR_PUBLIC_DATASETS` to a comma-separated list of keys to install only those.
 
-use sc_catalog::Authority;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -191,7 +190,7 @@ async fn northwind_is_installed_with_its_references_and_a_dataset() -> Result<()
         "northwind",
         &northwind(),
         &progress,
-        Authority::system("test"),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     assert_eq!(installed.tables.len(), 11);
@@ -311,7 +310,7 @@ async fn northwind_is_installed_with_its_references_and_a_dataset() -> Result<()
         "northwind",
         &Fixtures(HashMap::new()),
         &progress,
-        Authority::system("test"),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     assert_eq!(again.dataset_id, installed.dataset_id);
@@ -333,7 +332,7 @@ async fn a_missing_plane_or_airport_is_no_reference_and_a_point_is_kept_with_pos
         "nycflights13",
         &nycflights(),
         &progress,
-        Authority::system("test"),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
 
@@ -389,7 +388,7 @@ async fn a_row_that_will_not_go_in_leaves_no_table_and_says_where_it_was() -> Re
         "gapminder",
         &bad,
         &progress,
-        Authority::system("test"),
+        sc_catalog::Unchecked::system("test"),
     )
     .await
     .unwrap_err()
@@ -417,7 +416,7 @@ async fn a_row_that_will_not_go_in_leaves_no_table_and_says_where_it_was() -> Re
         "gapminder",
         &Fixtures(HashMap::new()),
         &progress,
-        Authority::system("test"),
+        sc_catalog::Unchecked::system("test"),
     )
     .await
     .unwrap_err()
@@ -435,7 +434,7 @@ async fn a_row_that_will_not_go_in_leaves_no_table_and_says_where_it_was() -> Re
         "gapminder",
         &good,
         &progress,
-        Authority::system("test"),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let countries = rows(
@@ -495,7 +494,7 @@ async fn a_spatial_dataset_needs_postgis() -> Result<()> {
         "eu_nuts_regions",
         &nuts(),
         &progress,
-        Authority::system("test"),
+        sc_catalog::Unchecked::system("test"),
     )
     .await
     .unwrap_err()
@@ -517,7 +516,7 @@ async fn the_nuts_hierarchy_is_written_parents_first_with_multipolygons() -> Res
         "eu_nuts_regions",
         &nuts(),
         &progress,
-        Authority::system("test"),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let regions = rows(
@@ -622,7 +621,7 @@ async fn every_public_dataset_installs_from_its_source() -> Result<()> {
             &entry.key,
             &fetch,
             &progress,
-            Authority::system("test"),
+            sc_catalog::Unchecked::system("test"),
         )
         .await
         {

@@ -23,6 +23,7 @@ sc-action.workspace = true
 # rich-type and File-field validation, and (Phase 4) the same events — so it goes
 # through `rows` rather than around it.
 sc-api.workspace = true
+sc-access.workspace = true
 sc-catalog.workspace = true
 # `ROLE_ADMIN` and the users table: the authority an action's write runs under,
 # and the columns the caller object is typed against.

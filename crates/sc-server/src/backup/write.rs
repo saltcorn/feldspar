@@ -35,10 +35,9 @@
 //!   up — `pg_dump`'s arrangement, and the answer to "what if a table changes
 //!   underneath a half-written file".
 
-use sc_catalog::Authority;
 use std::io::{Seek, Write};
 
-use sc_api::rows;
+use sc_access::rows;
 use sc_catalog::{Catalog, FIELD_META_TABLE, Table, list_field_meta_for_table, list_file_stores};
 use sc_db::{Row, Transaction};
 use sc_error::{Error, Result};
@@ -88,9 +87,13 @@ pub async fn available(catalog: &Catalog) -> Result<Available> {
         if table.database != sc_catalog::DbId::primary() {
             continue;
         }
-        let count = rows::count_rows(catalog, &table, Authority::system("backup: count rows"))
-            .await
-            .unwrap_or(0);
+        let count = rows::count_rows(
+            catalog,
+            &table,
+            sc_access::Unchecked::system("backup: count rows"),
+        )
+        .await
+        .unwrap_or(0);
         tables.push(
             Item::new(table.name.clone())
                 .labelled(table.label.clone())
@@ -122,9 +125,13 @@ pub async fn available(catalog: &Catalog) -> Result<Available> {
         .collect();
 
     let users = match catalog.get(sc_auth::USERS_TABLE)? {
-        Some(users) => rows::count_rows(catalog, &users, Authority::system("backup: count rows"))
-            .await
-            .unwrap_or(0),
+        Some(users) => rows::count_rows(
+            catalog,
+            &users,
+            sc_access::Unchecked::system("backup: count rows"),
+        )
+        .await
+        .unwrap_or(0),
         None => 0,
     };
 

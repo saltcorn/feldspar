@@ -14,8 +14,8 @@ use sc_error::{Error, Result};
 use sc_query::Value;
 use serde_json::{Value as Json, json};
 
-use crate::rows::require_object;
 use crate::schema::{StructField, TypeSchema};
+use sc_access::rows::require_object;
 
 /// Name of the CSRF double-submit cookie the server hands every browser client
 /// (non-`HttpOnly`, so the client can read it).
@@ -274,7 +274,7 @@ pub fn user_row_json(user: &User) -> Json {
         .extra()
         .iter()
         .filter(|(column, _)| !sc_auth::is_system_user_column(column))
-        .map(|(column, value)| (column.clone(), crate::convert::value_to_json(value)))
+        .map(|(column, value)| (column.clone(), sc_access::convert::value_to_json(value)))
         .collect();
     json!({
         "id": user.id().to_string(),

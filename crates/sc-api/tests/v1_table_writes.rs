@@ -13,7 +13,7 @@
 //!   than a SQL statement.
 //! - **whose write it is, is v1's argument.** `insertRow(row, user)` lowers to
 //!   the plan's `{ user: id }` authority, and the named user goes through
-//!   `sc_api::ownership`'s `*_as` functions — §7.3's rule, checked on the row as
+//!   `sc_access::ownership`'s `*_as` functions — §7.3's rule, checked on the row as
 //!   it is *and* on the row as it would become.
 //! - **a refusal reads as v1's refusal.** `updateRow` answers a string and
 //!   `tryUpdateRow` an `{ error }`, because that is what a v1 plugin branches on.

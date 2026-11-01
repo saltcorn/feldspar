@@ -45,10 +45,11 @@ impl Action for Stamp {
     async fn run(&self, ctx: &mut ActionContext<'_>) -> Result<Json> {
         let order = ctx.event.payload["order_id"].clone();
         let audit = ctx.catalog.get("audit")?.expect("the audit table");
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             ctx.catalog,
             &audit,
             &json!({ "order_id": order, "note": "stamped" }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await
     }

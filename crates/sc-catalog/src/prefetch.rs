@@ -243,7 +243,7 @@ async fn resolve_agg_relation(
         .columns(vec![Projection::all()])
         .filter(Expr::col(agg.key_field.clone()).eq(Expr::lit(parent_value)));
     let fetched: Vec<Row> = cat
-        .provider(&child)?
+        .provider_of(&child)?
         .query(&select)
         .await?
         .try_collect()
@@ -303,7 +303,7 @@ async fn resolve_join_value(
             .filter(Expr::col(target_field.0.clone()).eq(Expr::lit(value)))
             .limit(1);
         let fetched: Vec<Row> = cat
-            .provider(&target)?
+            .provider_of(&target)?
             .query(&select)
             .await?
             .try_collect()

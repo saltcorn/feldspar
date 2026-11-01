@@ -462,7 +462,12 @@ async fn a_modules_consent_flow_stores_the_tokens_in_its_row() -> sc_error::Resu
     }
     // …and revealed to the server's own reader.
     let table = server.catalog.require("oa_accounts")?;
-    let rows = sc_api::rows::list_rows(&server.catalog, &table).await?;
+    let rows = sc_access::rows::list_rows(
+        &server.catalog,
+        &table,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let mut revealed = rows[0].clone();
     sc_catalog::secrets::reveal_json(&server.catalog, &table, &mut revealed)?;
     assert_eq!(revealed["access_token"], json!("at-two"));

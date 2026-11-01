@@ -18,11 +18,11 @@
 //!
 //! It offers no tool.
 
+use sc_access::rows::RowQuery;
 use sc_agent::{
     AgentTrait, ChoiceOption, ComposerControl, ControlKind, ControlsContext, ToolsContext,
     TraitCheck, TraitContext, Turn,
 };
-use sc_api::rows::RowQuery;
 use sc_catalog::{Catalog, Table};
 use sc_error::{Error, Result};
 use sc_llm::ToolSpec;
@@ -178,7 +178,7 @@ async fn table_prompts(
     let (table, label_field, prompt_field, pk) = table_source(catalog, config)?;
     let filter = where_expr(&table, &all_fields(&table), config.get(CFG_PROMPT_WHERE))?;
     let query = RowQuery::new().where_(filter).limit(MAX_PICKER_ROWS);
-    let found = sc_api::read_rows_as(
+    let found = sc_access::read_rows_as(
         catalog,
         &table,
         &query,

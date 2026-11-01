@@ -223,14 +223,25 @@ impl Server {
         };
         match mode {
             Some(mode) => {
-                sc_api::rows::update_row(&self.catalog, &links, id, &json!({ "mode": mode }))
-                    .await
-                    .unwrap();
+                sc_access::rows::update_row(
+                    &self.catalog,
+                    &links,
+                    id,
+                    &json!({ "mode": mode }),
+                    sc_catalog::Unchecked::system("test"),
+                )
+                .await
+                .unwrap();
             }
             None => {
-                sc_api::rows::delete_row(&self.catalog, &links, id)
-                    .await
-                    .unwrap();
+                sc_access::rows::delete_row(
+                    &self.catalog,
+                    &links,
+                    id,
+                    sc_catalog::Unchecked::system("test"),
+                )
+                .await
+                .unwrap();
             }
         }
     }
@@ -419,10 +430,11 @@ async fn setup() -> Result<Server> {
     };
     let owner = alice.id().hyphenated().to_string();
     let notes = catalog.require("notes")?;
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         &catalog,
         &notes,
         &json!({ "id": 1, "title": "Plans", "owner": owner }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let links = catalog.require("share_links")?;
@@ -431,10 +443,11 @@ async fn setup() -> Result<Server> {
         (2, "read-token", "read"),
         (3, "stale-token", "expired"),
     ] {
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             &catalog,
             &links,
             &json!({ "id": id, "note": 1, "token": token, "mode": mode }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }

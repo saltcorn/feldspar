@@ -55,6 +55,7 @@ sc-catalog.workspace = true
 # depends on it); this names the edge. `sc-files` for the local store a declared
 # file field gets when none of its name exists.
 sc-api.workspace = true
+sc-access.workspace = true
 # The admin role a module's **service** writes at (TODO-imap M5): the module's
 # own authority, over its own tables.
 sc-auth.workspace = true

@@ -141,7 +141,7 @@ impl Operand<'_> {
 }
 
 /// [`comparison`] against whatever the operand is coerced by.
-pub(crate) fn comparison_on(on: &Operand, col: Expr, op: &str, operand: &Json) -> Result<Expr> {
+pub fn comparison_on(on: &Operand, col: Expr, op: &str, operand: &Json) -> Result<Expr> {
     let lit = |operand: &Json| -> Result<Expr> { Ok(Expr::lit(on.value(operand)?)) };
     let binary = |op: BinOp, operand: &Json| -> Result<Expr> {
         Ok(Expr::binary(op, col.clone(), lit(operand)?))
@@ -240,7 +240,7 @@ pub fn api_where(table: &Table, where_: Option<&Json>) -> Result<Option<Expr>> {
 
 /// What a filter key that is **not** a column of the table being read may turn
 /// out to be, in a surface that has such keys.
-pub(crate) enum FilterKey {
+pub enum FilterKey {
     /// A Ⱶ-path: the column the comparison is against, in the table it belongs
     /// to — the *target* table, since that is the value being compared, and the
     /// literal is coerced against it. Boxed because it carries a whole [`Table`]
@@ -252,13 +252,13 @@ pub(crate) enum FilterKey {
 }
 
 /// A Ⱶ-path, resolved to the correlated subquery it stands for.
-pub(crate) struct JoinedColumn {
+pub struct JoinedColumn {
     /// The table the compared column belongs to.
-    pub(crate) table: Table,
+    pub table: Table,
     /// Its name there.
-    pub(crate) column: String,
+    pub column: String,
     /// The expression that reads it from a row of the table being filtered.
-    pub(crate) expr: Expr,
+    pub expr: Expr,
 }
 
 /// [`where_expr`] where a key the table does not declare may still resolve — a
@@ -272,7 +272,7 @@ pub(crate) struct JoinedColumn {
 /// `Ok(None)` means "not a key I know", and the ordinary unknown-field refusal
 /// follows; an `Err` is a key that *was* one and was malformed, which is a better
 /// message than "no such field".
-pub(crate) fn where_resolved(
+pub fn where_resolved(
     table: &Table,
     fields: &[String],
     where_: Option<&Json>,
@@ -400,7 +400,7 @@ fn combined(
 /// mean the null tests (`{"eq": null}` is "unset", and SQL's `=` is never true of
 /// one), and an **empty** `in` list is refused rather than lowered to a
 /// membership test nothing can satisfy.
-pub(crate) fn condition_on(on: &Operand, column: Expr, condition: &Json) -> Result<Expr> {
+pub fn condition_on(on: &Operand, column: Expr, condition: &Json) -> Result<Expr> {
     let col = || column.clone();
     let name = on.name();
     if let Json::Object(map) = condition
@@ -468,7 +468,7 @@ pub fn queryable_field<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graphql::testing::{id_field, plain_field, table_of, typed_field};
+    use crate::testing::{id_field, plain_field, table_of, typed_field};
     use sc_query::SqlDialect;
     use sc_types::BasicType;
 

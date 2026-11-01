@@ -29,8 +29,9 @@ sc-expr.workspace = true
 # L3.8): the REST read's projection (`api_row`), its filter vocabulary
 # (`filter::api_where`) and its read rule applied to a row image (`RowImage`).
 # The same functions, so a page can never be sent what a REST read would not
-# return. This is why the crate sits at layer 8, above `sc-api`.
-sc-api.workspace = true
+# return. They are `sc-access`'s, the row-access layer, not `sc-api`'s
+# (TODO-code-quality Q3.2), so this crate does not depend on the wire formats.
+sc-access.workspace = true
 # The filter's predicate is an `sc_query::Expr`, evaluated here; the database a
 # table lives on decides what `LIKE` means (`sc_db::DatabaseDriver::dialect`).
 sc-db.workspace = true

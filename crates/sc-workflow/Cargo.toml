@@ -52,12 +52,12 @@ chrono.workspace = true
 # The reified evaluator a step's formulas are actually run through, so the
 # driver's tests exercise the isolate rather than a stand-in for it.
 sc-expr = { workspace = true, features = ["eval"] }
-# The **row layer**, for the step-transaction tests only: what a step's action
+# The **row layer** (`sc-access`), for the step-transaction tests only: what a step's action
 # writes has to be written the way a real action writes it — through `rows`, with
 # the executor the step's transaction gives it — or the test would be asserting
 # about a statement no action makes. A dev-only edge, and dev edges are not part
 # of the layering (see `repo_hygiene`).
-sc-api.workspace = true
+sc-access.workspace = true
 sc-auth.workspace = true
 sc-db-postgres.workspace = true
 # The live hub and a `table_changes` stream, for "a step's write is announced

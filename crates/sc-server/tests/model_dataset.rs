@@ -3,7 +3,7 @@
 //!
 //! `sc-model` cannot read a row — it is at layer 6 so a module can supply a
 //! model provider — so it declares `DatasetSource` and this crate fills it in
-//! over `sc_api::rows`. What that buys is what this file pins:
+//! over `sc_access::rows`. What that buys is what this file pins:
 //!
 //!   - the four things GOALS asks a dataset for are **one language**: a plain
 //!     field, an arithmetic expression, a Ⱶ-join path and a Ↄ-aggregation all

@@ -926,9 +926,15 @@ async fn store_tokens(
         "the account could not be connected: its row could not be written".to_owned()
     };
     let table = catalog.require(&store.table).map_err(failed)?;
-    sc_api::rows::update_row(catalog, &table, &store.id, &Value::Object(values))
-        .await
-        .map_err(failed)?;
+    sc_access::rows::update_row(
+        catalog,
+        &table,
+        &store.id,
+        &Value::Object(values),
+        sc_access::Unchecked::system("OAuth: store the tokens of a consent flow"),
+    )
+    .await
+    .map_err(failed)?;
     Ok(())
 }
 

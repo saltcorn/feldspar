@@ -55,7 +55,7 @@ pub const ADMIN_ONLY_WRITE: &str = "admin_only_write";
 const ADMIN_ONLY_SYSTEM_COLUMNS: [&str; 4] = [COL_ID, COL_EMAIL, COL_DISABLED, COL_EMAIL_VERIFIED];
 
 /// Whether `table` is the users table.
-pub(crate) fn is_users(table: &Table) -> bool {
+pub fn is_users(table: &Table) -> bool {
     table.name == USERS_TABLE
 }
 
@@ -63,7 +63,7 @@ pub(crate) fn is_users(table: &Table) -> bool {
 /// [`is_api_hidden_column`](sc_auth::is_api_hidden_column), the one statement
 /// of the rule, and any `collab_doc` field (live updates L5.1), which is left
 /// out of a read altogether rather than sent as null.
-pub(crate) fn is_hidden_column(table: &Table, column: &str) -> bool {
+pub fn is_hidden_column(table: &Table, column: &str) -> bool {
     sc_auth::is_api_hidden_column(&table.name, column)
         || table.field(column).is_some_and(DataField::is_collab_doc)
 }
@@ -71,7 +71,7 @@ pub(crate) fn is_hidden_column(table: &Table, column: &str) -> bool {
 /// `table`'s field `name`, unless it is hidden from APIs — the lookup a caller's
 /// `select`, filter or ordering resolves a column name through, so naming the
 /// password hash is exactly as good as naming a column that is not there.
-pub(crate) fn visible_field<'a>(table: &'a Table, name: &str) -> Option<&'a DataField> {
+pub fn visible_field<'a>(table: &'a Table, name: &str) -> Option<&'a DataField> {
     if is_hidden_column(table, name) {
         return None;
     }
@@ -81,7 +81,7 @@ pub(crate) fn visible_field<'a>(table: &'a Table, name: &str) -> Option<&'a Data
 /// The columns a row read projects: all of them, or — for the users table, and
 /// a table with a `collab_doc` field — every stored column but the hidden ones,
 /// named one by one.
-pub(crate) fn projection(table: &Table) -> Vec<Projection> {
+pub fn projection(table: &Table) -> Vec<Projection> {
     if !is_users(table) && !table.fields.iter().any(DataField::is_collab_doc) {
         return vec![Projection::all()];
     }
@@ -164,7 +164,7 @@ fn written_role(table: &Table, obj: &Map<String, Json>) -> Result<Option<Role>> 
 }
 
 /// Whether `column` of `table` carries [`ADMIN_ONLY_WRITE`].
-pub(crate) fn is_admin_only_write(table: &Table, column: &str) -> bool {
+pub fn is_admin_only_write(table: &Table, column: &str) -> bool {
     table
         .field(column)
         .is_some_and(|f| f.base.attributes.get(ADMIN_ONLY_WRITE) == Some(&Json::Bool(true)))

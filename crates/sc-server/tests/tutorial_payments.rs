@@ -556,12 +556,13 @@ async fn setup(tag: &str) -> sc_error::Result<Shop> {
         registries,
         ..
     } = boot(tag).await?;
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         &catalog,
         &catalog.require("pay_accounts")?,
         &json!({ "name": "shop", "adapter": "fake", "mode": "test",
                  "webhook_secret": "any random text",
                  "settings": { "grants_in_test_mode": true } }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
 
@@ -604,12 +605,19 @@ async fn setup(tag: &str) -> sc_error::Result<Shop> {
         json!({ "id": 2, "name": "Teapot", "price": 2500, "stock": 3 }),
         json!({ "id": 3, "name": "The tea guide", "price": 900 }),
     ] {
-        sc_api::rows::create_row(&catalog, &products, &product).await?;
+        sc_access::rows::create_row(
+            &catalog,
+            &products,
+            &product,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         &catalog,
         &catalog.require("product_files")?,
         &json!({ "product": 3, "file": "tea-guide.pdf" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
 

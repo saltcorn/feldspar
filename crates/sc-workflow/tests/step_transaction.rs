@@ -17,18 +17,17 @@
 //! commit, and a rollback means it never happens (TODO.md "Live updates" L3.1).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use sc_catalog::Authority;
 use sc_types::Role;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use chrono::Utc;
+use sc_access::rows;
 use sc_action::{
     Action, ActionContext, ActionRegistry, Event, EventKind, Trigger, TriggerBody,
     TriggerDispatcher, TriggerId,
 };
 use sc_agent::{RunState, bootstrap_runs, require_run};
-use sc_api::rows;
 use sc_catalog::{Catalog, DataField, Principal, TableEvents};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -84,7 +83,7 @@ impl Action for WriteOrder {
             ctx.catalog,
             &orders,
             &json!({ "id": id, "total": 100 }),
-            Authority::Caller(&caller),
+            sc_catalog::Unchecked::vouched(&caller, "test"),
             &executor,
         )
         .await?;
@@ -95,7 +94,7 @@ impl Action for WriteOrder {
             ctx.catalog,
             &orders,
             None,
-            Authority::Caller(&caller),
+            sc_catalog::Unchecked::vouched(&caller, "test"),
             &executor,
         )
         .await?
@@ -141,7 +140,7 @@ impl Action for WriteAudit {
             ctx.catalog,
             &audit,
             &json!({ "id": id, "note": "seen" }),
-            Authority::Caller(&caller),
+            sc_catalog::Unchecked::vouched(&caller, "test"),
             &rows::Executor::of(ctx.transaction()),
         )
         .await?;
@@ -256,7 +255,7 @@ fn start_event() -> Event {
 /// connection, which is the whole point — it sees only what committed.
 async fn ids(catalog: &Catalog, table: &str) -> Result<Vec<i64>> {
     let table = catalog.require(table)?;
-    let rows = rows::list_rows(catalog, &table).await?;
+    let rows = rows::list_rows(catalog, &table, sc_catalog::Unchecked::system("test")).await?;
     Ok(rows
         .as_array()
         .map(|rows| {

@@ -10,8 +10,8 @@
 
 use std::sync::Arc;
 
+use sc_access::rows;
 use sc_action::{EventKind, Trigger, TriggerDispatcher, bootstrap_triggers, save_trigger};
-use sc_api::rows;
 use sc_catalog::{Catalog, TableEvents};
 use sc_core_actions::builtin_actions;
 use sc_db::DatabaseDriver;
@@ -72,7 +72,7 @@ async fn setup(db: &TestDb) -> Result<Arc<Catalog>> {
 /// The one place, as stored.
 async fn place(catalog: &Catalog) -> Result<Json> {
     let places = catalog.require("places")?;
-    let all = rows::list_rows(catalog, &places).await?;
+    let all = rows::list_rows(catalog, &places, sc_catalog::Unchecked::system("test")).await?;
     Ok(all
         .as_array()
         .and_then(|a| a.first())
@@ -91,6 +91,7 @@ async fn coordinates_follow_the_address_on_insert_and_update_and_only_then() -> 
         &catalog,
         &places,
         &json!({ "name": "HQ", "address": "Berlin" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let id = created["id"].as_i64().expect("an id").to_string();
@@ -105,19 +106,39 @@ async fn coordinates_follow_the_address_on_insert_and_update_and_only_then() -> 
     assert_eq!(p["lookups"], json!(1), "{p}");
 
     // The address changes: the update fires it.
-    rows::update_row(&catalog, &places, &id, &json!({ "address": "Hamburg" })).await?;
+    rows::update_row(
+        &catalog,
+        &places,
+        &id,
+        &json!({ "address": "Hamburg" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let p = place(&catalog).await?;
     assert_eq!(p["lat"], json!(7.0), "{p}");
     assert_eq!(p["lookups"], json!(2), "{p}");
 
     // Some other field changes: an update, but the address is the same.
-    rows::update_row(&catalog, &places, &id, &json!({ "name": "Head office" })).await?;
+    rows::update_row(
+        &catalog,
+        &places,
+        &id,
+        &json!({ "name": "Head office" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let p = place(&catalog).await?;
     assert_eq!(p["lookups"], json!(2), "{p}");
     assert_eq!(p["name"], json!("Head office"));
 
     // A delete is neither write, and is not listened for.
-    rows::delete_row(&catalog, &places, &id).await?;
+    rows::delete_row(
+        &catalog,
+        &places,
+        &id,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert_eq!(place(&catalog).await?, Json::Null);
     Ok(())
 }

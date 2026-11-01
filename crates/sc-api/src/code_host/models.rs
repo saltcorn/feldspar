@@ -287,7 +287,7 @@ pub(super) async fn predict_through(
     rows: &[Json],
     detail: bool,
 ) -> Result<Json> {
-    let pk = crate::rows::single_pk(table).ok();
+    let pk = sc_access::rows::single_pk(table).ok();
     let mut keys = Vec::new();
     let mut literals = Vec::new();
     // For each row, whether it is keyed and its index among its kind.

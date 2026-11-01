@@ -168,7 +168,13 @@ async fn a_module_step_type_runs_in_its_worker_through_host_calls() -> sc_error:
         .await?;
     let notes = catalog.get("notes")?.expect("the table");
     for title in ["first", "second"] {
-        sc_api::rows::create_row(&catalog, &notes, &json!({ "title": title })).await?;
+        sc_access::rows::create_row(
+            &catalog,
+            &notes,
+            &json!({ "title": title }),
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
     let admin = sc_auth::load_user_by_email(&catalog, "admin@example.com")
         .await?
@@ -243,7 +249,8 @@ async fn a_module_step_type_runs_in_its_worker_through_host_calls() -> sc_error:
         "{}",
         run.steps[0].message
     );
-    let rows = sc_api::rows::list_rows(&catalog, &notes).await?;
+    let rows =
+        sc_access::rows::list_rows(&catalog, &notes, sc_catalog::Unchecked::system("test")).await?;
     assert_eq!(rows.as_array().map(Vec::len), Some(2), "{rows}");
     Ok(())
 }

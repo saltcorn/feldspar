@@ -3,7 +3,7 @@
 //!
 //! `sc-model` is at layer 6 so a module can supply a model provider — the same
 //! placement argument `sc-action` carries — and the price is that it cannot read
-//! a row: `sc_api::rows` is layer 8. So it declares
+//! a row: `sc_access::rows` is layer 8. So it declares
 //! [`DatasetSource`](sc_model::DatasetSource) and this is where the seam is
 //! filled in, exactly as `sc-agent` declares `ProviderConnector` and
 //! [`agents`](crate::agents) supplies it.

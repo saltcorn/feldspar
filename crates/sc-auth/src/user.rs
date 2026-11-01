@@ -101,7 +101,7 @@ impl User {
     }
 
     /// Build a user from the **JSON object an event carries as its caller** —
-    /// the shape `sc_api::principal_of` renders a user's fields into, which is
+    /// the shape `sc_access::principal_of` renders a user's fields into, which is
     /// also what the formula language binds `user` to.
     ///
     /// The inverse of that rendering, as far as JSON can express it: `id` is a

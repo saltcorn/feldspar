@@ -203,7 +203,7 @@ async fn setup() -> sc_error::Result<Booted> {
         sc_auth::save_role(catalog, &sc_auth::RoleDef::new(Role::of(role), name)).await?;
     }
     // Step 1: the test account, with the plans' prices, and the plans.
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         catalog,
         &catalog.require("pay_accounts")?,
         &json!({ "name": "saas", "adapter": "fake", "mode": "test",
@@ -211,6 +211,7 @@ async fn setup() -> sc_error::Result<Booted> {
                  "settings": { "grants_in_test_mode": true,
                                "prices": { "price_basic": { "amount": 500 },
                                            "price_pro": { "amount": 1500 } } } }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     create_tables(catalog).await?;
@@ -219,7 +220,13 @@ async fn setup() -> sc_error::Result<Booted> {
         json!({ "id": 1, "name": "Basic", "price": "5 € a month", "stripe_price": "price_basic", "role": 70 }),
         json!({ "id": 2, "name": "Pro", "price": "15 € a month", "stripe_price": "price_pro", "role": 60 }),
     ] {
-        sc_api::rows::create_row(catalog, &plans, &plan).await?;
+        sc_access::rows::create_row(
+            catalog,
+            &plans,
+            &plan,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
 
     // Step 2: the plan binding, in the module's settings.

@@ -130,7 +130,7 @@ pub(crate) async fn require_answerable(
     table: &Table,
     search: &TextSearch,
 ) -> Result<()> {
-    let sqlite = cat.driver_named(&table.database)?.dialect().is_sqlite();
+    let sqlite = cat.driver_info(&table.database)?.is_sqlite();
     if is_indexed(table, search, sqlite) {
         return Ok(());
     }
@@ -152,7 +152,7 @@ pub(crate) async fn require_answerable(
         "n",
     )]);
     let rows = cat
-        .provider(table)?
+        .provider(table, crate::SCAN_COUNT)?
         .query(&count)
         .await?
         .try_collect()

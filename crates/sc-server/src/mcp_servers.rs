@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use sc_api::rows::require_object;
+use sc_access::rows::require_object;
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_mcp::{McpServerDef, McpServerDefId, McpTransport};

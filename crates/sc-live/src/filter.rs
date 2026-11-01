@@ -6,7 +6,7 @@
 //! others. So the filter is the REST read's own:
 //!
 //! - **The same vocabulary, by the same function.** The object is lowered by
-//!   [`sc_api::filter::api_where`], the walk every non-URL surface (an agent's
+//!   [`sc_access::filter::api_where`], the walk every non-URL surface (an agent's
 //!   tool, a code body's `.where()`) uses, over the fields an application's
 //!   REST read may filter on. An unknown field, the users table's password
 //!   hash and a calculated field are refused exactly as REST refuses them, and
@@ -40,9 +40,8 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use sc_catalog::Table;
-use sc_db::DatabaseDriver;
 use sc_error::{Error, Result};
-use sc_query::{BinOp, Expr, InSet, UnOp, Value};
+use sc_query::{BinOp, Expr, InSet, SqlDialect, UnOp, Value};
 use sc_types::BasicType;
 use serde_json::Value as Json;
 
@@ -71,11 +70,9 @@ impl LikeRules {
         backslash_escapes: false,
     };
 
-    /// The rules of the database `driver` talks to, read off its dialect: a
-    /// dialect that renders `ILIKE` as `LIKE` has a `LIKE` that already folds
-    /// case — SQLite's.
-    pub fn of(driver: &dyn DatabaseDriver) -> LikeRules {
-        let dialect = driver.dialect();
+    /// The rules of a database, read off its dialect: a dialect that renders
+    /// `ILIKE` as `LIKE` has a `LIKE` that already folds case — SQLite's.
+    pub fn of(dialect: &dyn SqlDialect) -> LikeRules {
         if dialect.binary_op(BinOp::ILike) == dialect.binary_op(BinOp::Like) {
             LikeRules::SQLITE
         } else {
@@ -109,7 +106,7 @@ impl RowFilter {
     /// every part of it can be evaluated here. An `Err` is the `invalid` the
     /// subscriber is told, naming what was wrong.
     pub fn parse(table: &Table, filter: Option<&Json>, like: LikeRules) -> Result<RowFilter> {
-        let expr = sc_api::filter::api_where(table, filter)?;
+        let expr = sc_access::filter::api_where(table, filter)?;
         if let Some(expr) = &expr {
             check(table, expr)?;
         }
@@ -464,7 +461,7 @@ pub(crate) mod tests {
     }
 
     fn row(json: Json) -> BTreeMap<String, Value> {
-        sc_api::rows::row_json_values(&cards(), &json)
+        sc_access::rows::row_json_values(&cards(), &json)
     }
 
     fn matches(filter: Json, row_json: Json) -> bool {

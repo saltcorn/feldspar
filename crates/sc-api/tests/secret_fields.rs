@@ -8,13 +8,13 @@
 //! that sends the sentinel back keeps the stored value, and a secret can be no
 //! key, no unique column, no filter and no ordering.
 
-use sc_catalog::Authority;
 use sc_types::Role;
 use std::sync::Arc;
 
+use sc_access::rows;
 use sc_api::code_host::TableHost;
 use sc_api::schema_edit::{self, ApplyOptions, FieldSettings, FieldSpec, Operation};
-use sc_api::{ApiProvider, ApiRequest, GraphqlProvider, Method, RestProvider, rows};
+use sc_api::{ApiProvider, ApiRequest, GraphqlProvider, Method, RestProvider};
 use sc_auth::User;
 use sc_catalog::{
     Catalog, DataField, DataFieldKind, SecretKey, bootstrap_field_meta, bootstrap_table_meta,
@@ -198,23 +198,38 @@ async fn the_column_holds_an_envelope_and_every_client_surface_the_sentinel() ->
     );
 
     // A live change's row (`useLiveRows`) is held to the same projection.
-    let written = rows::list_rows(&catalog, &table).await?;
-    let live = sc_api::api_row(&table, &written[0]);
+    let written = rows::list_rows(&catalog, &table, sc_catalog::Unchecked::system("test")).await?;
+    let live = sc_access::api_row(&table, &written[0]);
     assert_eq!(live["password"], SECRET_SENTINEL);
     never_plaintext("a live change", &live);
 
     // A CSV export, which the data editor offers.
-    let csv = sc_api::csv::export_table(&catalog, &table, Authority::system("test")).await?;
+    let csv =
+        sc_api::csv::export_table(&catalog, &table, sc_catalog::Unchecked::system("test")).await?;
     assert!(
         csv.contains(SECRET_SENTINEL) && !csv.contains(PLAINTEXT),
         "{csv}"
     );
 
     // Writing a new value replaces it; null clears it, and reads as null.
-    rows::update_row(&catalog, &table, &id, &json!({ "password": "new" })).await?;
+    rows::update_row(
+        &catalog,
+        &table,
+        &id,
+        &json!({ "password": "new" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let replaced = stored(&catalog).await?[0]["password"].clone();
     assert_ne!(replaced, json!(envelope));
-    rows::update_row(&catalog, &table, &id, &json!({ "password": null })).await?;
+    rows::update_row(
+        &catalog,
+        &table,
+        &id,
+        &json!({ "password": null }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let list = rest
         .handle(ApiRequest::get("/api/accounts"), &catalog, Some(&user))
         .await?;
@@ -230,6 +245,7 @@ async fn server_side_code_reads_the_plaintext_and_a_view_does_not() -> Result<()
         &catalog,
         &table,
         &json!({ "label": "a", "password": PLAINTEXT }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let plan = json!({ "op": "select", "table": "accounts", "select": ["label", "password"] });
@@ -362,7 +378,7 @@ async fn a_secret_is_no_key_no_constraint_no_filter_and_no_ordering() -> Result<
     // A formula cannot name it: an ownership rule over it reads an unknown field.
     let fields: Vec<String> = table.fields.iter().map(|f| f.base.name.clone()).collect();
     refused(
-        sc_api::filter::queryable_field(&table, &fields, "password", "where").unwrap_err(),
+        sc_access::filter::queryable_field(&table, &fields, "password", "where").unwrap_err(),
         "a GraphQL where",
     );
     let shape = catalog.schema_shape()?;
@@ -399,7 +415,13 @@ async fn a_server_with_secret_values_and_no_key_file_refuses_to_start() -> Resul
     sc_catalog::secrets::check_key_at(&catalog, &path).await?;
 
     let table = catalog.require("accounts")?;
-    rows::create_row(&catalog, &table, &json!({ "password": PLAINTEXT })).await?;
+    rows::create_row(
+        &catalog,
+        &table,
+        &json!({ "password": PLAINTEXT }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let message = sc_catalog::secrets::check_key_at(&catalog, &path)
         .await
         .unwrap_err()

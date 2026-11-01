@@ -8945,11 +8945,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-access"
+version = "0.1.0"
+dependencies = [
+ "sc-auth",
+ "sc-catalog",
+ "sc-db",
+ "sc-db-sqlite",
+ "sc-error",
+ "sc-expr",
+ "sc-files",
+ "sc-llm",
+ "sc-query",
+ "sc-test-harness",
+ "sc-types",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "sc-action"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "sc-access",
  "sc-catalog",
  "sc-db",
  "sc-db-postgres",
@@ -9030,6 +9052,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "rust_decimal",
+ "sc-access",
  "sc-action",
  "sc-auth",
  "sc-catalog",
@@ -9069,6 +9092,7 @@ dependencies = [
  "chrono",
  "image",
  "regex-lite",
+ "sc-access",
  "sc-action",
  "sc-api",
  "sc-auth",
@@ -9155,6 +9179,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "regex-lite",
+ "sc-access",
  "sc-action",
  "sc-agent",
  "sc-api",
@@ -9268,6 +9293,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "reqwest",
+ "sc-access",
  "sc-action",
  "sc-api",
  "sc-auth",
@@ -9303,6 +9329,7 @@ dependencies = [
  "markup5ever_rcdom",
  "regex-lite",
  "reqwest",
+ "sc-access",
  "sc-action",
  "sc-agent",
  "sc-api",
@@ -9521,7 +9548,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
- "sc-api",
+ "sc-access",
  "sc-auth",
  "sc-catalog",
  "sc-db",
@@ -9648,6 +9675,7 @@ dependencies = [
  "futures",
  "node_resolver",
  "rust_decimal",
+ "sc-access",
  "sc-action",
  "sc-api",
  "sc-app",
@@ -9755,6 +9783,7 @@ dependencies = [
  "rustls-acme",
  "rustls-pemfile",
  "rustls-webpki 0.103.13",
+ "sc-access",
  "sc-action",
  "sc-agent",
  "sc-analytics",
@@ -9884,6 +9913,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "sc-access",
  "sc-action",
  "sc-api",
  "sc-app",
@@ -9910,9 +9940,9 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "sc-access",
  "sc-action",
  "sc-agent",
- "sc-api",
  "sc-auth",
  "sc-catalog",
  "sc-db",

@@ -110,12 +110,12 @@ pub async fn call(
     let (named, where_, bytes) = match (rel.is_empty(), url.is_empty()) {
         (false, true) => {
             let (store, path) = open_at(scope, ctx, &rel).await?;
-            let bytes = read(store.as_ref(), &path, &rel, scope).await?;
+            let bytes = read(&store, &path, &rel, scope).await?;
             (rel, String::new(), bytes)
         }
         (true, false) => {
             let (store, path, dir) = open_url(scope, config, &url, ctx).await?;
-            let bytes = read(store.as_ref(), &path, &url, scope).await?;
+            let bytes = read(&store, &path, &url, scope).await?;
             (url, format!(" (`{path}` in store `{dir}`)"), bytes)
         }
         _ => {
@@ -159,7 +159,7 @@ async fn open_url(
     config: &Attrs,
     url: &str,
     ctx: &TraitContext<'_>,
-) -> Result<(std::sync::Arc<dyn sc_files::FileStore>, String, String)> {
+) -> Result<(sc_files::CheckedStore, String, String)> {
     let app = assets::application(ctx.catalog, config).await?;
     // The path of an absolute URL, and neither query nor fragment: what the
     // router matches on.
@@ -184,20 +184,15 @@ async fn open_url(
     }
     let store_path = dir.resolve(rest).ok_or_else(not_served)?;
     let (store, floor) = assets::dir_scope(dir).connect(ctx.catalog).await?;
-    sc_files::check_access(
-        store.as_ref(),
-        floor,
-        &store_path,
-        &crate::files::file_caller(ctx.caller),
-    )
-    .await?;
+    let store = sc_files::CheckedStore::new(store, floor, crate::files::file_caller(ctx.caller));
+    store.check_read(&store_path).await?;
     Ok((store, store_path, dir.store.0.clone()))
 }
 
 /// The file's bytes, refusing a directory, a missing file and one too large to
 /// be an image worth sending.
 async fn read(
-    store: &dyn sc_files::FileStore,
+    store: &sc_files::CheckedStore,
     path: &str,
     named: &str,
     scope: &FileScope,

@@ -49,7 +49,10 @@ fn feldspar(args: &[&str]) -> (bool, String, String) {
 /// The titles in `books` with their covers' bytes, sorted by title.
 async fn titles(catalog: &Catalog) -> sc_error::Result<Vec<(String, Vec<u8>)>> {
     let rows = catalog
-        .provider(&catalog.require("books")?)?
+        .provider(
+            &catalog.require("books")?,
+            sc_catalog::Unchecked::system("test"),
+        )?
         .query(&Select::from(Source::table("books")))
         .await?
         .try_collect()
@@ -102,7 +105,10 @@ async fn a_backup_from_the_cli_restores_everything_but_tls_into_another_database
     source.reload().await?;
     for (title, seed) in [("Orlando", 3), ("The Waves", 7)] {
         source
-            .provider(&source.require("books")?)?
+            .provider(
+                &source.require("books")?,
+                sc_catalog::Unchecked::system("test"),
+            )?
             .write(&Statement::from(Insert::row(
                 "books",
                 vec!["title".into(), "cover".into()],

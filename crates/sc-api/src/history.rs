@@ -25,7 +25,7 @@ use sc_query::{Statement, Value};
 use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
 
-use crate::ownership::{RowImage, row_readable_as};
+use sc_access::ownership::{RowImage, row_readable_as};
 
 /// Who is reading history: their role and user, and the evaluator a reified
 /// read rule needs.

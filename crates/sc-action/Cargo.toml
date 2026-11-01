@@ -20,6 +20,11 @@ sc-types.workspace = true
 # An action reads and writes rows, so it needs the catalog. This is also what
 # fixes the crate at layer 6: everything above it may call in, nothing below.
 sc-catalog.workspace = true
+# The row-access layer: `ActionContext::scoped` hands an action a
+# `sc_access::Scoped` — the catalog with the trigger's authority bound to it —
+# rather than leaving the action to remember whose authority it writes under
+# (TODO-code-quality Q3.4). `sc-access` sits below this crate.
+sc-access.workspace = true
 # The formula language an action's configuration is written in (decision 7).
 # The `eval` feature is deliberately *not* enabled here: this crate holds the
 # `JsEvaluator` seam, the server supplies the engine.

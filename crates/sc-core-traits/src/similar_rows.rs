@@ -6,7 +6,7 @@
 //! embedded with **the field's own model** — the one its rows were embedded
 //! with, since a distance between vectors of two models means nothing — and
 //! the nearest rows are read as the run's caller through the row layer's
-//! nearest read (`sc_api::vector`).
+//! nearest read (`sc_access::vector`).
 //!
 //! A vector often belongs to a **chunk** of a document rather than to the
 //! document: `chunks(doc → docs, text, embedding)`. With a `relation` — a key
@@ -24,9 +24,9 @@
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
+use sc_access::rows::RowQuery;
+use sc_access::vector::{Nearest, NearestTo};
 use sc_agent::{AgentTrait, RunCaller, ToolsContext, TraitCheck, TraitContext, Turn};
-use sc_api::rows::RowQuery;
-use sc_api::vector::{Nearest, NearestTo};
 use sc_catalog::{Catalog, DataFieldKind, Table};
 use sc_error::{Error, Result};
 use sc_expr::JsEvaluator;
@@ -244,7 +244,7 @@ impl AgentTrait for SimilarRows {
             .vectors
             .field(&plan.vector_field)
             .ok_or_else(|| Error::msg("the vector field went missing"))?;
-        let embedded = sc_api::vector::embed_texts_metered(
+        let embedded = sc_access::vector::embed_texts_metered(
             ctx.catalog,
             &plan.vectors,
             field,
@@ -333,11 +333,12 @@ impl SimilarRows {
             .vectors
             .field(&plan.vector_field)
             .ok_or_else(|| Error::msg("the vector field went missing"))?;
-        let vector = sc_api::vector::embed_texts(catalog, &plan.vectors, field, &[text.to_owned()])
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::msg("the embedding provider returned no vector"))?;
+        let vector =
+            sc_access::vector::embed_texts(catalog, &plan.vectors, field, &[text.to_owned()])
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| Error::msg("the embedding provider returned no vector"))?;
         if let Ok(mut cache) = self.cache.lock() {
             cache.put(key, vector.clone());
         }
@@ -369,7 +370,7 @@ impl Plan {
         if vector_field.is_empty() {
             return Err(Error::invalid(format!("`{CFG_VECTOR_FIELD}` is required")));
         }
-        sc_api::vector::vector_field(&vectors, &vector_field)?;
+        sc_access::vector::vector_field(&vectors, &vector_field)?;
         let relation_name = config_str(config, CFG_RELATION);
         let (relation, documents) = if relation_name.is_empty() {
             (None, vectors.clone())
@@ -450,7 +451,7 @@ impl Plan {
                 to: NearestTo::Vector(vector),
             })
             .limit(read);
-        let found = sc_api::read_rows_as(
+        let found = sc_access::read_rows_as(
             catalog,
             &self.vectors,
             &query,
@@ -482,7 +483,7 @@ impl Plan {
             &all_fields(&self.documents),
             Some(&json!({ target.as_str(): { "in": ids } })),
         )?;
-        let docs = sc_api::read_rows_as(
+        let docs = sc_access::read_rows_as(
             catalog,
             &self.documents,
             &RowQuery::new().where_(filter),

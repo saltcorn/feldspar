@@ -115,7 +115,7 @@ fn table_json(by_name: &HashMap<&str, &Table>, table: &Table) -> Json {
     let fields: Vec<Json> = table
         .fields
         .iter()
-        .filter(|f| !crate::user_rows::is_hidden_column(table, &f.base.name))
+        .filter(|f| !sc_access::user_rows::is_hidden_column(table, &f.base.name))
         .map(|f| field_json(by_name, table, f))
         .collect();
     json!({

@@ -15,7 +15,7 @@
 //!   change nobody can find the other half of.
 //!
 //! Each selected row is then written **one at a time, by primary key**, through
-//! [`sc_api::update_row_as`] — so every changed row is checked against §7.3
+//! [`sc_access::update_row_as`] — so every changed row is checked against §7.3
 //! twice (granted on the row as it is, and on the row as it would become) and
 //! raises its own update event carrying its own row, exactly as the action of
 //! the same name does.
@@ -88,7 +88,7 @@ pub async fn call(
 
     let mut ids = Vec::with_capacity(matched.len());
     for (id, id_json) in &matched {
-        sc_api::update_row_as(
+        sc_access::update_row_as(
             ctx.catalog,
             table,
             id,
@@ -103,7 +103,7 @@ pub async fn call(
             // persisted after every step — so its tools' writes commit as they
             // are made, even when the run was started by a workflow step
             // (§10.3, decision 6).
-            &sc_api::rows::Executor::Pooled,
+            &sc_access::rows::Executor::Pooled,
         )
         .await?;
         ids.push(id_json.clone());

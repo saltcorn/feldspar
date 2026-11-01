@@ -110,6 +110,14 @@ feldspar/
 │  ├─ sc-llm/                     # 6. object-safe LlmProvider seam over a provider crate
 │  │                              #    (OpenAI Responses + Anthropic), `_fd_llm_providers` (§11.1)
 │  ├─ sc-email/                   # 6. Email, the Mailer transport seam, SMTP over lettre (§18.2)
+│  ├─ sc-access/                  # 6. the row-access layer: table row CRUD (`rows`), the
+│  │                              #    ownership rule (`ownership`, `write_as`), the filter,
+│  │                              #    search and vector vocabulary, and `Scoped` — a catalog
+│  │                              #    with an `Authority` bound, the handle actions, agents
+│  │                              #    and code bodies read and write rows through. The
+│  │                              #    unchecked row operations take an `Unchecked` token
+│  │                              #    (sc-catalog) that only the system, an administrator or a
+│  │                              #    named check can make (code-quality review §2, §4.4)
 │  ├─ sc-workflow/                # 7. durable workflows: the program a trigger body can be,
 │  │                              #    `_fd_workflow_versions`, `_fd_run_traces`, the engine
 │  │                              #    that advances a run of it (§10.3)
@@ -155,7 +163,7 @@ feldspar/
 │  │                              #    `table_changes` streams (sc-catalog's `TableEvents`),
 │  │                              #    deciding per element and per subscriber what each is sent,
 │  │                              #    and the collaborative documents' rooms (`yrs`, Yjs's CRDT).
-│  │                              #    Above sc-stream, sc-auth and sc-api (whose row layer is the
+│  │                              #    Above sc-stream, sc-auth and sc-access (whose row layer is the
 │  │                              #    projection, the filter vocabulary and the read rule a
 │  │                              #    change is decided by); below sc-server, which mounts
 │  │                              #    `{mount}/live`
@@ -206,7 +214,7 @@ The dependency graph of the crates that exist today. **An arrow points from a cr
 crate it depends on**, so every arrow runs from a higher layer to a lower one and the graph is
 acyclic by construction. Arrows implied by transitivity are omitted — the picture is the
 *transitive reduction*, so `sc-server → sc-catalog` is real but not drawn; it is reached through
-`sc-core-actions → sc-api → sc-auth → sc-catalog`. That is worth remembering when a box looks
+`sc-core-actions → sc-api → sc-action → sc-access → sc-auth → sc-catalog`. That is worth remembering when a box looks
 sparser than it is — `sc-action` also depends directly on `sc-catalog`, `sc-db`, `sc-expr` and
 `sc-types`, all of which the one drawn arrow to `sc-email` already implies. The full
 direct-dependency lists follow the diagram.
@@ -253,7 +261,7 @@ graph TD
   server --> stream["sc-stream"]
   server --> live["sc-live"]
   live --> stream
-  live --> api
+  live --> access["sc-access"]
   stream --> auth
   app --> stream
   module --> stream
@@ -267,11 +275,10 @@ graph TD
   module --> action["sc-action"]
   app --> api
   agent --> action
-  agent --> auth["sc-auth"]
-  agent --> llm["sc-llm"]
   api --> action
-  api --> auth
-  api --> llm
+  action --> access
+  access --> auth["sc-auth"]
+  access --> llm["sc-llm"]
   action --> email["sc-email"]
   email --> config["sc-config"]
   config --> catalog["sc-catalog"]
@@ -329,8 +336,9 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-email` | `sc-catalog` `sc-config` `sc-error` |
 | `sc-auth` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
 | `sc-llm` | `sc-catalog` `sc-config` `sc-db` `sc-error` `sc-log` `sc-query` `sc-types` |
+| `sc-access` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-query` `sc-types` |
 | `sc-mcp` | `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-query` `sc-types` |
-| `sc-action` | `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-query` `sc-types` |
+| `sc-action` | `sc-access` `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-dataset` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-model` | `sc-catalog` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-analytics` | `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-db-sqlite` `sc-error` `sc-model` `sc-query` `sc-types` |
@@ -339,16 +347,16 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-browser` | `sc-auth` `sc-error` |
 | `sc-agent` | `sc-action` `sc-auth` `sc-browser` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
-| `sc-api` | `sc-action` `sc-auth` `sc-catalog` `sc-dataset` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
-| `sc-app` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-stream` `sc-types` |
-| `sc-live` | `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-stream` `sc-types` |
-| `sc-core-actions` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-query` `sc-types` |
-| `sc-viewpattern` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-types` |
-| `sc-module` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
+| `sc-api` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-dataset` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
+| `sc-app` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-stream` `sc-types` |
+| `sc-live` | `sc-access` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-stream` `sc-types` |
+| `sc-core-actions` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-query` `sc-types` |
+| `sc-viewpattern` | `sc-access` `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-types` |
+| `sc-module` | `sc-access` `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
 | `sc-python` | `sc-action` `sc-catalog` `sc-core-actions` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
-| `sc-check` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-browser` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
-| `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-repomap` `sc-types` |
-| `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-help` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-check` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-browser` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
+| `sc-core-traits` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-repomap` `sc-types` |
+| `sc-server` | `sc-access` `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-help` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:

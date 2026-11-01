@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use sc_api::rows;
+use sc_access::rows;
 use sc_catalog::{
     Catalog, DataField, DataFieldKind, FieldMeta, FileStoreId, bootstrap_field_meta,
     bootstrap_file_stores, connect_all_file_stores, delete_field_meta, delete_file_store,
@@ -90,14 +90,20 @@ async fn a_file_field_validates_store_folder_and_mime_on_write() -> Result<()> {
         &cat,
         &table,
         &json!({ "id": "00000000-0000-0000-0000-000000000001", "cover": "covers/a.png" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     assert_eq!(ok["cover"], json!("covers/a.png"));
 
     // Outside the field's folder.
-    let outside = rows::create_row(&cat, &table, &json!({ "cover": "elsewhere/a.png" }))
-        .await
-        .expect_err("outside the folder");
+    let outside = rows::create_row(
+        &cat,
+        &table,
+        &json!({ "cover": "elsewhere/a.png" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await
+    .expect_err("outside the folder");
     assert!(matches!(outside.repr(), Repr::Invalid(_)), "{outside:?}");
     assert!(
         outside.to_string().contains("cover"),
@@ -109,9 +115,14 @@ async fn a_file_field_validates_store_folder_and_mime_on_write() -> Result<()> {
     );
 
     // A disallowed MIME type (a GIF where only PNG is allowed).
-    let wrong_mime = rows::create_row(&cat, &table, &json!({ "cover": "covers/a.gif" }))
-        .await
-        .expect_err("disallowed mime");
+    let wrong_mime = rows::create_row(
+        &cat,
+        &table,
+        &json!({ "cover": "covers/a.gif" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await
+    .expect_err("disallowed mime");
     assert!(
         matches!(wrong_mime.repr(), Repr::Invalid(_)),
         "{wrong_mime:?}"
@@ -123,7 +134,7 @@ async fn a_file_field_validates_store_folder_and_mime_on_write() -> Result<()> {
     );
 
     // Only the valid row was written.
-    let listed = rows::list_rows(&cat, &table).await?;
+    let listed = rows::list_rows(&cat, &table, sc_catalog::Unchecked::system("test")).await?;
     assert_eq!(listed.as_array().map_or(0, Vec::len), 1);
 
     std::fs::remove_dir_all(&dir).ok();
@@ -155,9 +166,14 @@ async fn a_reference_into_an_unresolvable_store_is_refused_naming_it() -> Result
     .await?;
     let table = cat.require("documents")?;
 
-    let err = rows::create_row(&cat, &table, &json!({ "cover": "a.png" }))
-        .await
-        .expect_err("the store does not resolve");
+    let err = rows::create_row(
+        &cat,
+        &table,
+        &json!({ "cover": "a.png" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await
+    .expect_err("the store does not resolve");
     assert!(matches!(err.repr(), Repr::Invalid(_)), "{err:?}");
     assert!(err.to_string().contains("ghost"), "names the store: {err}");
     assert!(err.to_string().contains("cover"), "names the field: {err}");

@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use sc_api::rows;
+use sc_access::rows;
 use sc_catalog::{Catalog, Table};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -79,10 +79,12 @@ fn people_with_rich_fields(mut table: Table) -> Table {
 
 /// The number of rows currently in `table`.
 async fn row_count(catalog: &Catalog, table: &Table) -> Result<usize> {
-    Ok(rows::list_rows(catalog, table)
-        .await?
-        .as_array()
-        .map_or(0, Vec::len))
+    Ok(
+        rows::list_rows(catalog, table, sc_catalog::Unchecked::system("test"))
+            .await?
+            .as_array()
+            .map_or(0, Vec::len),
+    )
 }
 
 #[tokio::test]
@@ -91,7 +93,13 @@ async fn a_row_satisfying_every_rich_rule_is_written() -> Result<()> {
     let catalog = catalog_with_people(&db).await?;
     let table = people_with_rich_fields(catalog.require("people")?);
 
-    let row = rows::create_row(&catalog, &table, &json!({ "name": "Ann", "age": 30 })).await?;
+    let row = rows::create_row(
+        &catalog,
+        &table,
+        &json!({ "name": "Ann", "age": 30 }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert_eq!(row["name"], json!("Ann"));
     assert_eq!(row["age"], json!(30));
     assert_eq!(row_count(&catalog, &table).await?, 1);
@@ -117,9 +125,14 @@ async fn each_rich_violation_is_a_named_400_and_writes_no_row() -> Result<()> {
     ];
 
     for (body, field, fragment) in cases {
-        let err = rows::create_row(&catalog, &table, body)
-            .await
-            .expect_err("the rich rule should reject this row");
+        let err = rows::create_row(
+            &catalog,
+            &table,
+            body,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await
+        .expect_err("the rich rule should reject this row");
 
         // `Invalid` is what the router maps to a 400 (not a 422): the rejection
         // is the request's fault, and the message reaches an app's user.
@@ -151,9 +164,14 @@ async fn a_wrong_family_value_is_rejected_by_field_before_any_write() -> Result<
 
     // A non-numeric age never coerces to the `int8` the `Integer` sits on, so it
     // fails at the coercion step — still an `Invalid` naming the field.
-    let err = rows::create_row(&catalog, &table, &json!({ "name": "Ann", "age": "old" }))
-        .await
-        .expect_err("a non-numeric age is not a valid integer");
+    let err = rows::create_row(
+        &catalog,
+        &table,
+        &json!({ "name": "Ann", "age": "old" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await
+    .expect_err("a non-numeric age is not a valid integer");
     assert!(matches!(err.repr(), Repr::Invalid(_)), "{err:?}");
     assert!(err.to_string().contains("age"), "{err}");
 

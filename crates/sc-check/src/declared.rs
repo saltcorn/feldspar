@@ -331,7 +331,7 @@ pub(crate) async fn answer(
         "rows" => {
             let table = crate::steps::data::table(cx, plan)?;
             let filter =
-                sc_api::filter::api_where(&table, plan.get("where").filter(|w| !w.is_null()))?;
+                sc_access::filter::api_where(&table, plan.get("where").filter(|w| !w.is_null()))?;
             let limit = plan
                 .get("limit")
                 .and_then(Json::as_u64)

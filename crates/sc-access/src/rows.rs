@@ -4,7 +4,7 @@
 //! admin API's row endpoints and an application's REST API: same tables, same
 //! query layer, same wire shape. So it lives here once, below both, rather than
 //! in either. `sc-server`'s admin handlers call these functions, and so does
-//! [`RestProvider`](crate::RestProvider) — which is what makes "the app's API and
+//! `sc_api::RestProvider` — which is what makes "the app's API and
 //! the admin API are the same machinery" true in the code and not just in the
 //! docs.
 //!
@@ -12,14 +12,19 @@
 //! [`crate::convert`] bridges those to the query layer's [`Value`]. A row is
 //! addressed by its **single-column primary key** (composite keys are post-MVP).
 //! These functions do no authorization of their own — the caller enforces the
-//! endpoint's [`AuthRequirement`](crate::AuthRequirement) first, so every API
-//! surface goes through the same §7 layer.
+//! endpoint's `AuthRequirement` (sc-api) first, so every API
+//! surface goes through the same §7 layer. That is why each operation takes an
+//! [`Unchecked`] token rather than an `Authority`: the system, an
+//! administrator, or a caller a named check already decided for
+//! (TODO-code-quality Q3.5). Anybody else reads and writes through
+//! [`Scoped`](crate::Scoped).
 
 use std::borrow::Cow;
 
 use crate::calc_read::CalcPlan;
 use sc_catalog::{
-    Authority, Catalog, DataField, DataFieldKind, Principal, SharedTx, Table, TableWrite, WriteOp,
+    Authority, Catalog, DataField, DataFieldKind, Principal, SharedTx, Table, TableWrite,
+    Unchecked, WriteOp,
 };
 use sc_db::Row;
 use sc_error::{Error, Repr, Result};
@@ -92,46 +97,34 @@ impl Executor {
     }
 }
 
-/// Every row of `table`, as a JSON array of objects.
-pub async fn list_rows(catalog: &Catalog, table: &Table) -> Result<Json> {
-    list_rows_where(
-        catalog,
-        table,
-        None,
-        Authority::system("row layer without a caller: list rows"),
-    )
-    .await
-}
-
-/// Every row of `table`, optionally through an RLS caller context — the entry
-/// point the admin API uses so its own row viewer works on an RLS-enabled
-/// (FORCE'd) table: role 1 clears every policy's role floor, so an admin sees
-/// and edits everything, while a non-RLS table takes the ordinary path.
-pub async fn list_rows_ctx(
-    catalog: &Catalog,
-    table: &Table,
-    context: Authority<'_>,
-) -> Result<Json> {
+/// Every row of `table`, as a JSON array of objects — through an RLS caller
+/// context on an RLS-enabled (FORCE'd) table: the admin API's row viewer passes
+/// the admin, whose role clears every policy's role floor, while a non-RLS table
+/// takes the ordinary path.
+pub async fn list_rows(catalog: &Catalog, table: &Table, context: Unchecked<'_>) -> Result<Json> {
     list_rows_where(catalog, table, None, context).await
 }
 
-/// [`update_row`] optionally through an RLS caller context (admin API).
-pub async fn update_row_ctx(
+/// Update the row of `table` whose primary key is `id`, returning the updated
+/// row. The primary key addresses the row and is not reassignable through the
+/// body.
+pub async fn update_row(
     catalog: &Catalog,
     table: &Table,
     id: &str,
     body: &Json,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<Json> {
     update_row_guarded(catalog, table, id, body, None, context).await
 }
 
-/// [`delete_row`] optionally through an RLS caller context (admin API).
-pub async fn delete_row_ctx(
+/// Delete the row of `table` whose primary key is `id`, returning the deleted
+/// row.
+pub async fn delete_row(
     catalog: &Catalog,
     table: &Table,
     id: &str,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<Json> {
     delete_row_guarded(catalog, table, id, None, context).await
 }
@@ -147,7 +140,7 @@ pub async fn list_rows_where(
     catalog: &Catalog,
     table: &Table,
     filter: Option<Expr>,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<Json> {
     list_rows_query(catalog, table, &RowQuery::new().where_(filter), context).await
 }
@@ -362,7 +355,7 @@ pub async fn list_rows_query(
     catalog: &Catalog,
     table: &Table,
     query: &RowQuery,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<Json> {
     let query = &*crate::vector::prepare(catalog, table, query).await?;
     let plan = CalcPlan::of(catalog, table)?;
@@ -392,7 +385,7 @@ pub async fn list_row_values(
     catalog: &Catalog,
     table: &Table,
     query: &RowQuery,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
     list_row_values_in(catalog, table, query, context, &Executor::Pooled).await
 }
@@ -404,7 +397,7 @@ pub async fn list_row_values_in(
     catalog: &Catalog,
     table: &Table,
     query: &RowQuery,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
     executor: &Executor,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
     let query = &*crate::vector::prepare(catalog, table, query).await?;
@@ -445,7 +438,7 @@ pub async fn aggregate_values(
     table: &Table,
     aggregates: Vec<Projection>,
     filter: Option<Expr>,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<std::collections::BTreeMap<String, Value>> {
     let query = RowQuery::new().where_(filter);
     let grouped = aggregate_grouped(catalog, table, aggregates, &query, context).await?;
@@ -471,7 +464,7 @@ pub async fn aggregate_grouped(
     table: &Table,
     projections: Vec<Projection>,
     query: &RowQuery,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
     // A count or a sum over a filter the row read would refuse is refused the
     // same way, so a grid's count and its rows cannot disagree about why.
@@ -498,7 +491,7 @@ const ROW_COUNT_KEY: &str = "_fd_count";
 /// find out how many there are would make the page cost what the data costs.
 /// It goes through the same read path, so an RLS-enforced table counts the rows
 /// the caller may see rather than the rows that exist.
-pub async fn count_rows(catalog: &Catalog, table: &Table, context: Authority<'_>) -> Result<i64> {
+pub async fn count_rows(catalog: &Catalog, table: &Table, context: Unchecked<'_>) -> Result<i64> {
     count_rows_where(catalog, table, None, context).await
 }
 
@@ -512,7 +505,7 @@ pub async fn count_rows_where(
     catalog: &Catalog,
     table: &Table,
     filter: Option<Expr>,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<i64> {
     let count = sc_expr::aggregate_expr(&sc_expr::AggFunc::Count, false, None, &table.name)?;
     let values = aggregate_values(
@@ -543,7 +536,7 @@ pub async fn count_rows_where(
 /// caller that runs it completes the rows with [`CalcPlan::complete`]; one
 /// that only renders it (a code body's query plan) gets the statement the
 /// database would run.
-pub(crate) fn read_select(catalog: &Catalog, table: &Table, query: &RowQuery) -> Result<Select> {
+pub fn read_select(catalog: &Catalog, table: &Table, query: &RowQuery) -> Result<Select> {
     planned_select(table, &CalcPlan::of(catalog, table)?, query)
 }
 
@@ -604,12 +597,12 @@ fn planned_select(table: &Table, plan: &CalcPlan, query: &RowQuery) -> Result<Se
 /// `Int(1)` from `Text("1")` and so cannot collapse two different keys into one
 /// bucket. An absent column groups as `NULL`, which is where it belongs: a child
 /// row whose key is null belongs to no parent.
-pub(crate) fn group_key(value: Option<&Value>) -> String {
+pub fn group_key(value: Option<&Value>) -> String {
     format!("{:?}", value.unwrap_or(&Value::Null))
 }
 
 /// One fetched row as a map from column name to its value.
-pub(crate) fn row_values(row: &Row) -> std::collections::BTreeMap<String, Value> {
+pub fn row_values(row: &Row) -> std::collections::BTreeMap<String, Value> {
     row.columns()
         .iter()
         .cloned()
@@ -629,7 +622,7 @@ pub async fn select_values(
     catalog: &Catalog,
     table: &Table,
     filter: Option<Expr>,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
     select_values_in(catalog, table, filter, context, &Executor::Pooled).await
 }
@@ -641,7 +634,7 @@ pub async fn select_values_in(
     catalog: &Catalog,
     table: &Table,
     filter: Option<Expr>,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
     executor: &Executor,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>> {
     let plan = CalcPlan::of(catalog, table)?;
@@ -658,37 +651,25 @@ pub async fn select_values_in(
 }
 
 /// Insert a row from a JSON object, returning the inserted row (with any
-/// database-generated columns filled in).
-pub async fn create_row(catalog: &Catalog, table: &Table, body: &Json) -> Result<Json> {
-    create_row_ctx(
-        catalog,
-        table,
-        body,
-        Authority::system("row layer without a caller: create row"),
-    )
-    .await
-}
-
-/// [`create_row`] routed through an RLS caller context (§7.3) when one is
-/// given — the insert runs in a transaction with the caller's role/identity
-/// set, so an `INSERT` a policy's `WITH CHECK` rejects surfaces as the same
-/// not-found a missing row gets.
-pub async fn create_row_ctx(
+/// database-generated columns filled in) — routed through an RLS caller context
+/// (§7.3) on an RLS table, so an `INSERT` a policy's `WITH CHECK` rejects
+/// surfaces as the same not-found a missing row gets.
+pub async fn create_row(
     catalog: &Catalog,
     table: &Table,
     body: &Json,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<Json> {
     create_row_in(catalog, table, body, context, &Executor::Pooled).await
 }
 
-/// [`create_row_ctx`] on a caller's [`Executor`] — the same insert, the same
+/// [`create_row`] on a caller's [`Executor`] — the same insert, the same
 /// coercion, the same event, run wherever the caller says.
 pub async fn create_row_in(
     catalog: &Catalog,
     table: &Table,
     body: &Json,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
     executor: &Executor,
 ) -> Result<Json> {
     let body = &fill_defaults(
@@ -702,7 +683,7 @@ pub async fn create_row_in(
     let obj = require_object(body)?;
     reject_calc_writes(table, obj)?;
     reject_document_writes(table, obj)?;
-    user_rows::check_insert(table, obj, context)?;
+    user_rows::check_insert(table, obj, context.authority())?;
     let mut columns = Vec::with_capacity(obj.len());
     let mut values = Vec::with_capacity(obj.len());
     for (key, json) in obj {
@@ -712,7 +693,7 @@ pub async fn create_row_in(
             continue;
         };
         validate_file_write(catalog, table, key, &value)?;
-        if !may_attach_file(catalog, table, key, &value, context).await? {
+        if !may_attach_file(catalog, table, key, &value, context.authority()).await? {
             return Err(not_attachable(key, &value));
         }
         columns.push(key.clone());
@@ -738,7 +719,7 @@ pub async fn create_row_in(
         WriteOp::Insert,
         &row,
         None,
-        context,
+        context.authority(),
         executor,
     )
     .await;
@@ -848,44 +829,29 @@ pub async fn fill_defaults(
     Ok(Json::Object(filled))
 }
 
-/// Update the row of `table` whose primary key is `id`, returning the updated
-/// row. The primary key addresses the row and is not reassignable through the
-/// body.
-pub async fn update_row(catalog: &Catalog, table: &Table, id: &str, body: &Json) -> Result<Json> {
-    update_row_guarded(
-        catalog,
-        table,
-        id,
-        body,
-        None,
-        Authority::system("row layer without a caller: update row"),
-    )
-    .await
-}
-
 /// [`update_row`] with an extra `guard` predicate ANDed into the WHERE —
 /// ownership enforcement's translated formula (§7.3) — and an optional RLS
 /// caller `context`. A row the guard (or a policy) excludes produces the
 /// **same** not-found as a row that is not there: a caller must not be able to
 /// probe which rows exist beyond the ones they may reach.
-pub(crate) async fn update_row_guarded(
+pub async fn update_row_guarded(
     catalog: &Catalog,
     table: &Table,
     id: &str,
     body: &Json,
     guard: Option<Expr>,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<Json> {
     update_row_guarded_in(catalog, table, id, body, guard, context, &Executor::Pooled).await
 }
 
-/// [`update_row_ctx`] on a caller's [`Executor`] — see [`create_row_in`].
+/// [`update_row`] on a caller's [`Executor`] — see [`create_row_in`].
 pub async fn update_row_in(
     catalog: &Catalog,
     table: &Table,
     id: &str,
     body: &Json,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
     executor: &Executor,
 ) -> Result<Json> {
     update_row_guarded_in(catalog, table, id, body, None, context, executor).await
@@ -897,7 +863,7 @@ pub(crate) async fn update_row_guarded_in(
     id: &str,
     body: &Json,
     guard: Option<Expr>,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
     executor: &Executor,
 ) -> Result<Json> {
     let obj = require_object(body)?;
@@ -912,13 +878,13 @@ pub(crate) async fn update_row_guarded_in(
 /// decided the caller may put a file at that path (a new name, or one they may
 /// replace), and it must not depend on the store having recorded them as its
 /// owner — a backend that keeps no metadata records nobody.
-pub(crate) async fn attach_uploaded_file(
+pub async fn attach_uploaded_file(
     catalog: &Catalog,
     table: &Table,
     id: &str,
     field: &str,
     path: &str,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<Json> {
     let mut obj = Map::new();
     obj.insert(field.to_owned(), Json::String(path.to_owned()));
@@ -942,6 +908,7 @@ pub(crate) async fn attach_uploaded_file(
 /// only writer of a `collab_doc` column; every API refuses one
 /// ([`reject_document_writes`]). The caller holds the row's lock, in
 /// `executor`'s transaction, and has merged what was stored.
+#[allow(clippy::too_many_arguments)]
 pub async fn write_document_in(
     catalog: &Catalog,
     table: &Table,
@@ -949,6 +916,7 @@ pub async fn write_document_in(
     field: &str,
     state: &[u8],
     mirror: Option<(&str, &str)>,
+    context: Unchecked<'_>,
     executor: &Executor,
 ) -> Result<Json> {
     if !table.field(field).is_some_and(DataField::is_collab_doc) {
@@ -965,17 +933,7 @@ pub async fn write_document_in(
     if let Some((column, text)) = mirror {
         obj.insert(column.to_owned(), Json::String(text.to_owned()));
     }
-    update_row_unchecked_in(
-        catalog,
-        table,
-        id,
-        &obj,
-        None,
-        Authority::system("live document: persist merged state"),
-        executor,
-        true,
-    )
-    .await
+    update_row_unchecked_in(catalog, table, id, &obj, None, context, executor, true).await
 }
 
 /// The update itself, after the refusals that depend on who is writing.
@@ -987,17 +945,18 @@ async fn update_row_unchecked_in(
     id: &str,
     obj: &Map<String, Json>,
     guard: Option<Expr>,
-    context: Authority<'_>,
+    access: Unchecked<'_>,
     executor: &Executor,
     check_attach: bool,
 ) -> Result<Json> {
+    let context = access.authority();
     reject_calc_writes(table, obj)?;
     let guard = user_rows::and_guard(guard, user_rows::update_guard(table, id, obj, context)?);
     let pk = single_pk(table)?;
     // An `embed_from` field is computed again when the update changes what its
     // formula reads (TODO-agent-skills AS2.5).
     let embedded = crate::vector::embed_update(catalog, table, obj, || {
-        read_row_in(catalog, table, &pk, id, context, executor)
+        read_row_in(catalog, table, &pk, id, access, executor)
     })
     .await?;
     let obj = &*embedded;
@@ -1021,7 +980,7 @@ async fn update_row_unchecked_in(
             let select = Select::from(Source::table(table.name.clone()))
                 .columns(vec![Projection::expr(Expr::col(key.as_str()))])
                 .filter(filter);
-            let stored = run_read_in(catalog, table, &select, context, false, executor).await?;
+            let stored = run_read_in(catalog, table, &select, access, false, executor).await?;
             let stored = stored
                 .first()
                 .ok_or_else(|| Error::not_found(format!("no row with {pk} = {id}")))?;
@@ -1046,7 +1005,7 @@ async fn update_row_unchecked_in(
             let select = Select::from(Source::table(table.name.clone()))
                 .columns(user_rows::projection(table))
                 .filter(filter);
-            let rows = run_read_in(catalog, table, &select, context, false, executor).await?;
+            let rows = run_read_in(catalog, table, &select, access, false, executor).await?;
             let row = rows
                 .first()
                 .ok_or_else(|| Error::not_found(format!("no row with {pk} = {id}")))?;
@@ -1060,7 +1019,7 @@ async fn update_row_unchecked_in(
     // the pair: dispatch is after-commit by design (decision 1), and a row that
     // changed in between is a race the event reports rather than prevents.
     let old_row = match catalog.observes_writes(&table.name, WriteOp::Update) {
-        true => read_row_in(catalog, table, &pk, id, context, executor).await?,
+        true => read_row_in(catalog, table, &pk, id, access, executor).await?,
         false => None,
     };
     let plan = CalcPlan::of(catalog, table)?;
@@ -1072,7 +1031,7 @@ async fn update_row_unchecked_in(
         filter: Some(guarded_filter(table, &pk, id, guard)?),
         returning,
     };
-    let rows = run_write_in(catalog, table, Statement::from(update), context, executor).await?;
+    let rows = run_write_in(catalog, table, Statement::from(update), access, executor).await?;
     let rows = complete_written(catalog, table, &plan, rows, executor).await?;
     let row = rows
         .into_iter()
@@ -1092,45 +1051,24 @@ async fn update_row_unchecked_in(
     Ok(row)
 }
 
-/// Delete the row of `table` whose primary key is `id`, returning **the row as
-/// it was**. Deleting a row that is not there is a
-/// [`NotFound`](Error::NotFound), not a silent success.
-///
-/// The statement has to read the row back anyway — a delete event carries the
-/// only copy of it anyone will ever get — so returning it costs nothing and is
-/// the one moment it can be had. What a *caller* does with it is theirs to
-/// decide: the REST projection answers `{"deleted": true}`, because that is its
-/// wire contract, and the GraphQL one answers with the row, because that is
-/// what `delete_X_by_pk: X` promised. Neither shape belongs here.
-pub async fn delete_row(catalog: &Catalog, table: &Table, id: &str) -> Result<Json> {
-    delete_row_guarded(
-        catalog,
-        table,
-        id,
-        None,
-        Authority::system("row layer without a caller: delete row"),
-    )
-    .await
-}
-
 /// [`delete_row`] with an extra `guard` predicate and optional RLS `context`;
 /// same probe-free rule as [`update_row_guarded`].
-pub(crate) async fn delete_row_guarded(
+pub async fn delete_row_guarded(
     catalog: &Catalog,
     table: &Table,
     id: &str,
     guard: Option<Expr>,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<Json> {
     delete_row_guarded_in(catalog, table, id, guard, context, &Executor::Pooled).await
 }
 
-/// [`delete_row_ctx`] on a caller's [`Executor`] — see [`create_row_in`].
+/// [`delete_row`] on a caller's [`Executor`] — see [`create_row_in`].
 pub async fn delete_row_in(
     catalog: &Catalog,
     table: &Table,
     id: &str,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
     executor: &Executor,
 ) -> Result<Json> {
     delete_row_guarded_in(catalog, table, id, None, context, executor).await
@@ -1141,10 +1079,10 @@ pub(crate) async fn delete_row_guarded_in(
     table: &Table,
     id: &str,
     guard: Option<Expr>,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
     executor: &Executor,
 ) -> Result<Json> {
-    let guard = user_rows::and_guard(guard, user_rows::delete_guard(table, context)?);
+    let guard = user_rows::and_guard(guard, user_rows::delete_guard(table, context.authority())?);
     let pk = single_pk(table)?;
     let delete = Delete {
         table: table.name.clone(),
@@ -1168,7 +1106,7 @@ pub(crate) async fn delete_row_guarded_in(
         WriteOp::Delete,
         &row,
         None,
-        context,
+        context.authority(),
         executor,
     )
     .await;
@@ -1183,17 +1121,17 @@ pub(crate) async fn delete_row_guarded_in(
 /// trigger watching deletes is watching these as well. The whole rows are read
 /// back only when something is listening: otherwise a constant is all the
 /// count needs, and emptying a large table does not ship it to the server.
-pub async fn delete_all_rows_ctx(
+pub async fn delete_all_rows(
     catalog: &Catalog,
     table: &Table,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<u64> {
     let executor = Executor::Pooled;
     let observed = catalog.observes_writes(&table.name, WriteOp::Delete);
     let removes_files = !files_removed_on_delete(table).is_empty();
     let delete = Delete {
         table: table.name.clone(),
-        filter: user_rows::delete_guard(table, context)?,
+        filter: user_rows::delete_guard(table, context.authority())?,
         returning: if observed || removes_files {
             user_rows::projection(table)
         } else {
@@ -1217,7 +1155,7 @@ pub async fn delete_all_rows_ctx(
                 WriteOp::Delete,
                 &row,
                 None,
-                context,
+                context.authority(),
                 &executor,
             )
             .await;
@@ -1325,7 +1263,7 @@ async fn still_referenced(
         catalog,
         table,
         &select,
-        Authority::system("file cleanup: is the file still referenced"),
+        Unchecked::system("file cleanup: is the file still referenced"),
         false,
         executor,
     )
@@ -1387,12 +1325,12 @@ async fn read_row_in(
     table: &Table,
     pk: &str,
     id: &str,
-    context: Authority<'_>,
+    access: Unchecked<'_>,
     executor: &Executor,
 ) -> Result<Option<Json>> {
     let filter = pk_filter(table, pk, id)?;
     let select = read_select(catalog, table, &RowQuery::new().where_(Some(filter)))?;
-    let rows = run_read_in(catalog, table, &select, context, false, executor).await?;
+    let rows = run_read_in(catalog, table, &select, access, false, executor).await?;
     Ok(rows.first().map(row_to_json))
 }
 
@@ -1409,7 +1347,7 @@ fn guarded_filter(table: &Table, pk: &str, id: &str, guard: Option<Expr>) -> Res
 /// values an ownership formula is checked against before an insert or update
 /// (§7.3) sees the database. Unknown columns are refused by name, exactly as
 /// the write itself would.
-pub(crate) fn coerce_row_values(
+pub fn coerce_row_values(
     table: &Table,
     body: &Json,
 ) -> Result<std::collections::BTreeMap<String, Value>> {
@@ -1425,26 +1363,15 @@ pub(crate) fn coerce_row_values(
 /// for a caller that needs it for something other than serving the row (an
 /// application's file endpoints resolve a `File` field's stored path this way,
 /// §4). A missing row is a [`NotFound`](Error::not_found), exactly as
-/// [`update_row`] reports one; an unknown column is refused by name.
-pub async fn read_field(catalog: &Catalog, table: &Table, column: &str, id: &str) -> Result<Value> {
-    read_field_ctx(
-        catalog,
-        table,
-        column,
-        id,
-        Authority::system("row layer without a caller: read field"),
-    )
-    .await
-}
-
-/// [`read_field`] routed through an RLS caller context (§7.3) when one is
-/// given, so a cell a policy withholds is a not-found rather than a leak.
-pub(crate) async fn read_field_ctx(
+/// [`update_row`] reports one; an unknown column is refused by name. Routed
+/// through an RLS caller context (§7.3) on an RLS table, so a cell a policy
+/// withholds is a not-found rather than a leak.
+pub async fn read_field(
     catalog: &Catalog,
     table: &Table,
     column: &str,
     id: &str,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<Value> {
     if table.field(column).is_none() {
         return Err(Error::invalid(format!(
@@ -1506,7 +1433,7 @@ async fn complete_written(
 
 /// Refuse a write that names a non-stored calculated field — it has no column
 /// (Phase 8). Called by insert and update before building the statement.
-fn reject_calc_writes(table: &Table, columns: &Map<String, Json>) -> Result<()> {
+pub fn reject_calc_writes(table: &Table, columns: &Map<String, Json>) -> Result<()> {
     for key in columns.keys() {
         if table.field(key).is_some_and(|f| f.is_calc()) {
             return Err(Error::invalid(format!(
@@ -1682,10 +1609,7 @@ fn not_attachable(column: &str, value: &Value) -> Error {
 /// A column the table does not declare, and one whose text will not parse as
 /// its declared type, is carried as the JSON it arrived as rather than dropped:
 /// a value nobody asked about must not silently disappear on the way back.
-pub(crate) fn json_row_values(
-    table: &Table,
-    row: &Json,
-) -> std::collections::BTreeMap<String, Value> {
+pub fn json_row_values(table: &Table, row: &Json) -> std::collections::BTreeMap<String, Value> {
     let mut values = std::collections::BTreeMap::new();
     let Json::Object(obj) = row else {
         return values;
@@ -1726,7 +1650,7 @@ fn storage_type(type_: &TypeRef) -> BasicType {
 /// (so it stays a 400) and prefixing the field name (§2.3). The specific
 /// violation — from either coercion or validation, both `Invalid` — is kept; any
 /// other kind falls back to its full display.
-pub(crate) fn field_error(column: &str, e: Error) -> Error {
+pub fn field_error(column: &str, e: Error) -> Error {
     let detail = match e.repr() {
         Repr::Invalid(message) => message.clone(),
         _ => e.to_string(),
@@ -1752,7 +1676,7 @@ pub fn single_pk(table: &Table) -> Result<String> {
 }
 
 /// The primary key of a **read** row, in the two forms a caller writing that row
-/// back needs: the string [`update_row_ctx`] and [`delete_row_ctx`] address it by,
+/// back needs: the string [`update_row`] and [`delete_row`] address it by,
 /// and the JSON an answer reports it as.
 ///
 /// One function because there is one rule and it is easy to get subtly wrong: the
@@ -1833,7 +1757,7 @@ pub(crate) async fn run_read(
     catalog: &Catalog,
     table: &Table,
     select: &Select,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
     reaches_rls: bool,
 ) -> Result<Vec<Row>> {
     run_read_in(
@@ -1854,10 +1778,11 @@ pub(crate) async fn run_read_in(
     catalog: &Catalog,
     table: &Table,
     select: &Select,
-    context: Authority<'_>,
+    access: Unchecked<'_>,
     reaches_rls: bool,
     executor: &Executor,
 ) -> Result<Vec<Row>> {
+    let context = access.authority();
     if let Some(tx) = executor.serving(table) {
         // The caller travels with the statement here, not with the transaction:
         // a step transaction has several writers, and each one's statements are
@@ -1880,7 +1805,7 @@ pub(crate) async fn run_read_in(
         }
         None => {
             catalog
-                .provider(table)?
+                .provider(table, access)?
                 .query(select)
                 .await?
                 .try_collect()
@@ -1897,14 +1822,15 @@ async fn run_write_in(
     catalog: &Catalog,
     table: &Table,
     statement: Statement,
-    context: Authority<'_>,
+    access: Unchecked<'_>,
     executor: &Executor,
 ) -> Result<Vec<Row>> {
+    let context = access.authority();
     let outcome = match executor.serving(table) {
         Some(tx) => tx.run(context, &statement).await,
         None => match write_context(table, context) {
             Some(context) => sc_catalog::run_in_context(catalog, &context, &statement).await,
-            None => match catalog.provider(table)?.write(&statement).await {
+            None => match catalog.provider(table, access)?.write(&statement).await {
                 Ok(stream) => stream.try_collect().await,
                 Err(e) => Err(e),
             },
@@ -1955,7 +1881,7 @@ fn constraint_message(table: &Table, error: Error) -> Error {
 /// (optionally ` (constraint "…")`) followed by the statement, so the message is
 /// everything before the SQLSTATE. A chain in any other shape is returned whole:
 /// a half-parsed error is worse than a verbose one.
-pub(crate) fn database_message(chain: &str) -> String {
+pub fn database_message(chain: &str) -> String {
     let start = chain.find(": ").map_or(0, |i| i + 2);
     match chain[start..].find(" [") {
         Some(end) => chain[start..start + end].trim().to_owned(),

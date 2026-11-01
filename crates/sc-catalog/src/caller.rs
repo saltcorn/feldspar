@@ -361,6 +361,105 @@ impl<'a> Authority<'a> {
     }
 }
 
+impl<'a> Authority<'a> {
+    /// This authority as an [`Unchecked`] token: the system's, or an
+    /// administrator's (who meets every floor, so skipping the check decides
+    /// nothing); `None` for anybody else, who goes through the ownership rule.
+    pub fn unchecked(self) -> Option<Unchecked<'a>> {
+        match self {
+            Authority::System(_) => Some(Unchecked {
+                who: self,
+                by: None,
+            }),
+            Authority::Caller(principal) => Unchecked::admin(principal),
+        }
+    }
+}
+
+/// Permission to read or write rows **without** a table's role floors and
+/// ownership formula (code-quality review §4.4, TODO-code-quality Q3.5).
+///
+/// The row layer's unchecked operations (`sc_access::rows`), a table's provider
+/// ([`Catalog::provider`](crate::Catalog::provider)) and a database's driver
+/// ([`Catalog::driver_for`](crate::Catalog::driver_for),
+/// [`driver_named`](crate::Catalog::driver_named)) take one, so a caller that
+/// holds only a `&Catalog` and a [`Principal`] cannot reach rows past the rule:
+/// it goes through `sc_access::Scoped`, or it writes down why it may skip it.
+/// There are three ways to make one, each greppable:
+///
+/// - [`Unchecked::system`]: the server's own authority, with a reason. Listed in
+///   docs/SECURITY_REVIEW_2026-10.md's system-authority inventory.
+/// - [`Unchecked::admin`]: an administrator's principal. An administrator meets
+///   every role floor, which is when the ownership rule is not consulted, so
+///   unchecked and checked access are the same; any other principal is refused.
+/// - [`Unchecked::vouched`]: a caller whose access a named check already
+///   decided (the REST provider's own rule, the ownership functions themselves).
+///   Listed in the same inventory, with the check that stands behind it.
+///
+/// It still carries the authority: the role and user an RLS table's policies
+/// read, and the caller the write's event reports.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Unchecked<'a> {
+    who: Authority<'a>,
+    /// The check that stood behind a [`vouched`](Unchecked::vouched) caller.
+    by: Option<&'static str>,
+}
+
+impl Unchecked<'static> {
+    /// The server's own authority, for `reason` — [`Authority::system`]'s
+    /// unchecked form.
+    pub const fn system(reason: &'static str) -> Unchecked<'static> {
+        Unchecked {
+            who: Authority::system(reason),
+            by: None,
+        }
+    }
+}
+
+impl<'a> Unchecked<'a> {
+    /// `principal`'s unchecked access, when it is an administrator's; `None`
+    /// otherwise.
+    pub fn admin(principal: &'a Principal) -> Option<Unchecked<'a>> {
+        principal.role.is_admin().then_some(Unchecked {
+            who: Authority::Caller(principal),
+            by: None,
+        })
+    }
+
+    /// `principal`'s access, which the check named `by` has already decided.
+    ///
+    /// Not a way round the rule: each call site is listed in the
+    /// system-authority inventory with the check that stands behind it.
+    pub const fn vouched(principal: &'a Principal, by: &'static str) -> Unchecked<'a> {
+        Unchecked {
+            who: Authority::Caller(principal),
+            by: Some(by),
+        }
+    }
+
+    /// The authority the operation still runs under: what an RLS table's
+    /// policies read and the write's event reports.
+    pub fn authority(self) -> Authority<'a> {
+        self.who
+    }
+
+    /// The caller, or `None` for the system.
+    pub fn principal(self) -> Option<&'a Principal> {
+        self.who.principal()
+    }
+
+    /// The check a vouched caller's access was decided by.
+    pub fn vouched_by(self) -> Option<&'static str> {
+        self.by
+    }
+}
+
+impl<'a> From<Unchecked<'a>> for Authority<'a> {
+    fn from(unchecked: Unchecked<'a>) -> Authority<'a> {
+        unchecked.who
+    }
+}
+
 impl Principal {
     /// The signed-in user's id, as the user object carries it (`id`).
     pub fn user_id(&self) -> Option<&str> {

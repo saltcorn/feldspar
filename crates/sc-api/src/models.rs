@@ -12,7 +12,6 @@
 //! `predict("…")`, the read path's calculated fields and a code body's
 //! `m.predict(…)` all end here.
 
-use sc_catalog::Authority;
 use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -133,10 +132,10 @@ pub async fn predict_for(
                 return Ok(Vec::new());
             }
             let target = catalog.require(table)?;
-            let pk = crate::rows::single_pk(&target)?;
+            let pk = sc_access::rows::single_pk(&target)?;
             let mut asked = Vec::with_capacity(keys.len());
             for key in keys {
-                asked.push(crate::rows::column_value(&target, &pk, key)?);
+                asked.push(sc_access::rows::column_value(&target, &pk, key)?);
             }
             let restrict = Expr::In {
                 e: Box::new(Expr::col(pk.clone())),
@@ -244,7 +243,7 @@ fn grain_refusal(model: &Model) -> Option<String> {
     }
 }
 
-use crate::rows;
+use sc_access::rows;
 
 /// Statistics that may go into an integer field, rounded: the effective sample
 /// sizes, which are counts of draws.
@@ -255,11 +254,13 @@ const COUNT_STATISTICS: [&str; 2] = ["ess_bulk", "ess_tail"];
 /// The same two shapes a code body's `db` handle has: a context the row layer
 /// writes under as it is (the admin API's, and an undelegated body's — admin,
 /// in the event's user's name, with its trigger chain), and a **delegated**
-/// caller, whose every write goes through [`crate::ownership`]'s `*_as`
+/// caller, whose every write goes through [`sc_access::ownership`]'s `*_as`
 /// functions so §7.3's rule decides it exactly as it decides
 /// `db.counties.asUser().update(…)`.
 pub enum Writer<'a> {
-    /// Written under this context, through the row layer.
+    /// Written under this context, through the row layer: an administrator's
+    /// (the admin API's, or admin in the event's user's name). Any other
+    /// principal is refused (`sc_access::admin_access`).
     Context(&'a Principal),
     /// Written as this caller, through the ownership rule.
     As {
@@ -284,8 +285,14 @@ impl Writer<'_> {
     ) -> Result<Json> {
         match self {
             Writer::Context(context) => {
-                rows::create_row_in(catalog, table, body, Authority::Caller(context), executor)
-                    .await
+                rows::create_row_in(
+                    catalog,
+                    table,
+                    body,
+                    sc_access::admin_access(context)?,
+                    executor,
+                )
+                .await
             }
             Writer::As {
                 role,
@@ -293,7 +300,7 @@ impl Writer<'_> {
                 evaluator,
                 chain,
             } => {
-                crate::ownership::insert_row_as(
+                sc_access::ownership::insert_row_as(
                     catalog, table, body, *role, *user, *evaluator, chain, executor,
                 )
                 .await
@@ -316,7 +323,7 @@ impl Writer<'_> {
                     table,
                     key,
                     body,
-                    Authority::Caller(context),
+                    sc_access::admin_access(context)?,
                     executor,
                 )
                 .await
@@ -327,7 +334,7 @@ impl Writer<'_> {
                 evaluator,
                 chain,
             } => {
-                crate::ownership::update_row_as(
+                sc_access::ownership::update_row_as(
                     catalog, table, key, body, *role, *user, *evaluator, chain, executor,
                 )
                 .await

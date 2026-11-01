@@ -770,7 +770,7 @@ impl SaltcornUiFramework {
         let Some(table) = cat.get(table_name)? else {
             return no_table();
         };
-        let deleted = sc_api::delete_row_as(
+        let deleted = sc_access::delete_row_as(
             cat,
             &table,
             id,
@@ -778,7 +778,7 @@ impl SaltcornUiFramework {
             req.user.as_ref(),
             self.evaluator.as_ref(),
             &[],
-            &sc_api::rows::Executor::Pooled,
+            &sc_access::rows::Executor::Pooled,
         )
         .await;
         match deleted {
@@ -1424,7 +1424,7 @@ impl<'a> ViewerHosts<'a> {
         triggers: Option<&'a TriggerDispatcher>,
         declared: &'a [TriggerRef],
     ) -> ViewerHosts<'a> {
-        let caller = sc_api::principal_of(user);
+        let caller = sc_access::principal_of(user);
         ViewerHosts {
             // The viewer's authority is the ceiling (7.2): a read a pattern
             // leaves unmarked is the viewer's, not the admin's it would be in a

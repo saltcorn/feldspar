@@ -21,7 +21,7 @@
 //! that wrote the file: a `bytea` column decodes base64 whichever backend the
 //! backup came from, which is what lets a SQLite backup restore into Postgres and
 //! the other way round. Every type but bytes is read by the row API's own
-//! [`sc_api::rows::column_value`], so a restored value is checked exactly as a
+//! [`sc_access::rows::column_value`], so a restored value is checked exactly as a
 //! value typed into a form would be.
 
 use base64::Engine as _;
@@ -73,7 +73,7 @@ pub(super) fn column_value(table: &Table, column: &str, json: &Json) -> Result<V
         None => BasicType::from_sql_type(type_.sql_type()),
     };
     if basic != BasicType::Bytes {
-        return sc_api::rows::column_value(table, column, json);
+        return sc_access::rows::column_value(table, column, json);
     }
     let value = match json {
         Json::Null => Value::Null,

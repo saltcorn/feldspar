@@ -67,7 +67,7 @@ async fn create_first_user_flow() -> sc_error::Result<()> {
 
     // Exactly one row, and its stored password is a hash — never the plaintext.
     let users = catalog.require(USERS_TABLE)?;
-    let provider = catalog.provider(&users)?;
+    let provider = catalog.provider(&users, sc_catalog::Unchecked::system("test"))?;
     let rows = provider
         .query(&Select::from(Source::table(USERS_TABLE)).columns(vec![
             Projection::expr(Expr::col(COL_ID)),

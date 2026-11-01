@@ -226,7 +226,9 @@ async fn deliveries(catalog: &Catalog) -> Vec<Value> {
         .get("hook_deliveries")
         .unwrap()
         .expect("declared table");
-    let rows = sc_api::rows::list_rows(catalog, &table).await.unwrap();
+    let rows = sc_access::rows::list_rows(catalog, &table, sc_catalog::Unchecked::system("test"))
+        .await
+        .unwrap();
     let mut rows = rows.as_array().cloned().unwrap_or_default();
     rows.sort_by_key(|r| r["id"].as_i64());
     rows
@@ -327,7 +329,12 @@ async fn a_webhook_receives_the_bytes_writes_its_own_table_and_answers() -> sc_e
     assert!(trespass.contains("cannot run its own SQL"), "{trespass}");
     assert_eq!(rows[1]["rest"], json!(""));
     let users = server.catalog.get("users").unwrap().unwrap();
-    let all = sc_api::rows::list_rows(&server.catalog, &users).await?;
+    let all = sc_access::rows::list_rows(
+        &server.catalog,
+        &users,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert!(
         !all.to_string().contains("intruder@example.com"),
         "the module wrote a table it did not declare"
@@ -410,7 +417,13 @@ async fn a_webhook_receives_the_bytes_writes_its_own_table_and_answers() -> sc_e
     )
     .await?;
     let notes = server.catalog.require("notes")?;
-    sc_api::rows::create_row(&server.catalog, &notes, &json!({ "note": "kept" })).await?;
+    sc_access::rows::create_row(
+        &server.catalog,
+        &notes,
+        &json!({ "note": "kept" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let id = installed["id"].as_str().unwrap().to_owned();
     let (status, configured) = server
         .admin
@@ -440,10 +453,14 @@ async fn a_webhook_receives_the_bytes_writes_its_own_table_and_answers() -> sc_e
     let users = looked["users"]["refused"].as_str().unwrap_or_default();
     assert!(users.contains("may reach only the tables"), "{looked}");
     assert_eq!(
-        sc_api::rows::list_rows(&server.catalog, &notes)
-            .await?
-            .as_array()
-            .map(Vec::len),
+        sc_access::rows::list_rows(
+            &server.catalog,
+            &notes,
+            sc_catalog::Unchecked::system("test")
+        )
+        .await?
+        .as_array()
+        .map(Vec::len),
         Some(1),
         "the webhook wrote a table it may only read"
     );

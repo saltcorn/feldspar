@@ -266,15 +266,18 @@ impl<'a> Hosts<'a> {
             true => Authority::User,
             false => Authority::Admin,
         };
+        // The event's caller, as the context resolves it: what a delegated
+        // (`asUser()`) operation of each handle acts as.
+        let caller = ctx.caller();
         Hosts {
             // The `db` handle, for this run only: the call budget is counted on
             // it, and the event's caller and this trigger's chain ride on every
             // statement it makes — so a write from the body is an event that
             // says who caused it and how deep in a cascade it already is.
             table: TableHost::new(ctx.catalog)
-                .caused_by(ctx.event.role, ctx.event.user.clone())
+                .caused_by(caller.role, caller.user.clone())
                 .defaulting_to(default.clone())
-                .chained(ctx.chain.clone())
+                .chained(caller.chain.clone())
                 // The step's transaction, when this body is a workflow step:
                 // what it writes commits with the step or is rolled back with
                 // it, and what it reads sees what the step has already written
@@ -289,7 +292,7 @@ impl<'a> Hosts<'a> {
             // `as_user` is checked against it, and the admin's authority clears
             // every one.
             files: FileStoreHost::new(ctx.catalog)
-                .caused_by(ctx.event.role, ctx.event.user.as_ref())
+                .caused_by(caller.role, caller.user.as_ref())
                 .defaulting_to(default.clone())
                 // Where the custom query's application serves files, so
                 // `file.url()` can say (TODO F2.8); none for a trigger.
@@ -303,9 +306,9 @@ impl<'a> Hosts<'a> {
             // other cascade stops at.
             triggers: ctx.triggers().map(|d| {
                 TriggerRunHost::new(d, ctx.catalog)
-                    .caused_by(ctx.event.role, ctx.event.user.clone())
+                    .caused_by(caller.role, caller.user.clone())
                     .defaulting_to(default.clone())
-                    .chained(ctx.chain.clone())
+                    .chained(caller.chain.clone())
                     .in_transaction(ctx.transaction())
             }),
             // This server's tables as the guest sees them without asking — what

@@ -2,6 +2,75 @@
 
 Changes in reverse chronological order.
 
+## Code quality Q3: `sc-access` and capability handles
+
+The fourth milestone of `TODO-code-quality.md` (§2, §4.4 of the review). Nothing changes on the
+wire, in stored data or in the schema. Q3.4, Q3.5 and Q3.6 are partly done; what remains is
+recorded under each in TODO-code-quality.md.
+
+**`sc-access`, the row-access layer (Q3.1, Q3.2).** `rows`, `ownership`, `write_as`, `filter`,
+`convert` and `user_rows` moved out of sc-api into a new crate, with what they need (`calc_read`,
+`search`, `vector`); the files were moved, not rewritten. It sits at layer 6, below `sc-action`,
+and depends on the catalog, sc-auth, sc-files and sc-llm (a vector field's embeddings). sc-api
+keeps the wire formats, the admin endpoint table, the code host, CSV, sync, undo and history, and
+no longer re-exports the row layer: every caller names `sc_access`. `sc-live` and sc-workflow's
+test edge no longer depend on sc-api. The items sc-api's REST, GraphQL and code-host modules used
+across the new boundary became `pub`. TECHNICAL_DESIGN §2's crate graph and table are updated.
+
+**`sc_catalog::Unchecked` (Q3.5).** The row operations that do not apply a table's floors and
+ownership formula take a token instead of an `Authority`: every unchecked function of
+`sc_access::rows`, `Catalog::provider`, `Catalog::driver_for`, `Catalog::driver_named`, and
+`sc_access::vector::embed_rows`. `Catalog::database` is crate-private; `Catalog::driver_info`
+(dialect, capabilities, PostGIS / pgvector support) and `Catalog::is_connected` answer what callers
+used the driver for. A token is made three ways, each greppable and listed in
+docs/SECURITY_REVIEW_2026-10.md's inventory:
+- `Unchecked::system(reason)`: the server's own authority (`Authority::system`'s unchecked form).
+- `Unchecked::admin(principal)`, or `sc_access::admin_access` for an error: only an
+  administrator's principal, who meets every floor, so the check decides nothing.
+- `Unchecked::vouched(principal, by)`: a caller whose access a named check already decided — the
+  ownership functions, the REST write rule (`write_as`), an RLS table's policies (REST `run_rls`)
+  and the REST file routes.
+
+The row layer's no-caller shortcuts that hid a system authority (`create_row(catalog, table,
+body)`, `update_row`, `delete_row`, `list_rows`, `read_field`) are gone, and the `_ctx` forms took
+their names (`create_row_ctx` → `create_row`, … `delete_all_rows_ctx` → `delete_all_rows`).
+`write_document_in` takes the token too. Their callers now write the reason down: backup restore,
+checklist cleanup, OAuth token storage, the sync device rows, a live document's load. Still
+reachable without a token: `Catalog::primary()`, `SharedTx::run` and `run_in_context`.
+- **Behaviour change:** a CSV import, CSV export, geo import, public dataset install and the
+  admin row endpoints are refused (`auth`) when handed a principal that is not an administrator's.
+  Every caller hands them one today.
+- `LikeRules::of` (sc-live) takes the dialect rather than the driver.
+
+**`sc_access::Scoped` (Q3.3).** A catalog with an `Authority` bound, and its executor and formula
+engine: `read` / `read_values` / `insert` / `update` / `delete`. A caller's operations are the
+ownership rule's (the guarded `*_as` functions, refactored into `_by` forms that take the caller's
+`Principal` and read the user back from it); the system's and an administrator's are the row
+layer's, with the token their authority makes. `Scoped::system(catalog, reason)` is greppable like
+`Authority::system`. `Scoped::unchecked()` hands an admin or system scope's token on for the
+operations it does not wrap.
+
+**`ActionContext::scoped` and `caller` (Q3.4, part).** sc-action now depends on sc-access. An
+action is handed the trigger's authority — the administrator in the event's user's name, with the
+chain, on the workflow step's transaction — as a `Scoped`, and the event's caller as a `Principal`
+(`ctx.caller()`). The row actions (`insert_row`, `update_rows`, `delete_rows` and their `where`
+read, `embed_rows`) write through `scoped()` instead of building the principal from
+`event.user`; the code-body hosts, `undo` and `run_agent` take the caller from `caller()` instead
+of `event.role` / `event.user`. Same authority as before. Agent tool contexts and the code-body
+hosts themselves do not carry a `Scoped` yet.
+
+**`sc_files::CheckedStore` (Q3.6, part).** A file store with its floor and a `FileCaller` bound:
+`read`, `open_read`, `stat`, `get_meta` check `check_access`; `write`, `mkdir`, `delete`, `rename`
+(both ends), `set_meta` check `check_write`; `list` filters. The admin file manager's endpoints
+(read, write, upload, mkdir, delete, rename, file metadata) and the agents' file tools (`open_at`,
+`open_to_write`, and the coding traits' edit, write, patch and view-image) use it, so the check is
+no longer a separate call before each operation.
+
+Tests: `crates/sc-access/tests/scoped.rs` (a caller below the floor is refused and the system is
+not; an ownership formula narrows a caller's read; only the system and an administrator make an
+unchecked token), `action_context::an_action_is_handed_the_triggers_authority_and_the_events_caller`
+(sc-action). The existing row-layer tests moved to the new signatures.
+
 ## Code quality Q2: authenticated users and proof-carrying extractors
 
 The third milestone of `TODO-code-quality.md` (§4.3, §4.5 of the review). Nothing changes in

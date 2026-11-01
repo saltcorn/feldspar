@@ -706,7 +706,7 @@ async fn an_owner_may_update_their_own_account() -> Result<()> {
         let (accounts, evaluator, id, user) = (&accounts, &evaluator, &id, user.clone());
         let cat = &cat;
         async move {
-            sc_api::update_row_as(
+            sc_access::update_row_as(
                 cat,
                 accounts,
                 id,
@@ -715,7 +715,7 @@ async fn an_owner_may_update_their_own_account() -> Result<()> {
                 Some(&user),
                 Some(evaluator),
                 &[],
-                &sc_api::rows::Executor::Pooled,
+                &sc_access::rows::Executor::Pooled,
             )
             .await
         }

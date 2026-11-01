@@ -38,7 +38,7 @@ async fn catalog(db: &TestDb) -> sc_error::Result<Catalog> {
 
 async fn insert_row(cat: &Catalog, table: &str, id: &str, name: &str) -> sc_error::Result<()> {
     let t = cat.require(table)?;
-    cat.provider(&t)?
+    cat.provider(&t, sc_catalog::Unchecked::system("test"))?
         .write(&Statement::from(Insert::row(
             table,
             vec!["id".into(), "name".into()],

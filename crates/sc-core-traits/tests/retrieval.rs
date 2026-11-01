@@ -439,10 +439,11 @@ async fn chunks_env() -> Result<Option<Env>> {
     .await?;
     let chunks = env.catalog.require("chunks")?;
     for (id, doc, body, owner, v) in VECTORS {
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             &env.catalog,
             &chunks,
             &json!({"id": id, "doc": doc, "body": body, "owner": owner, "embedding": v}),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }

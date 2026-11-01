@@ -1209,8 +1209,9 @@ earlier fixes:
 
 Every place the server acts with admin authority that no signed-in admin gave it. Keep this list
 current: a new entry is a decision someone should be able to review. Find them with
-`grep -rn 'Authority::system(' crates` (excluding tests), plus the admin principals listed after
-the table.
+`grep -rn 'Authority::system(\|Unchecked::system(\|Scoped::system(' crates` (excluding tests),
+plus the admin principals and the vouched callers listed after the table. `Unchecked::system` is
+the same authority in the form the unchecked row layer takes (Q3.5, below).
 
 `Authority::System` (`sc-catalog/src/caller.rs`) is the admin role with no user. On a
 row-level-security table it sets `sc.role` to the admin's, so a system job sees every row. The
@@ -1220,33 +1221,65 @@ old `Option<&CallerContext>` with `None` silently failed closed on such a table,
 | Crate / file | Reason (the `Authority::system` label) |
 |---|---|
 | sc-action `scheduler.rs` | scheduled trigger (the event has no caller) |
-| sc-api `ownership.rs` | ownership check: read the existing row; read the row a formula decides |
-| sc-api `rows.rs` | file cleanup: is the file still referenced; live document: persist merged state |
-| sc-api `rows.rs` | row layer without a caller: list / create / update / delete rows, read field. Callers: backup restore, checklist cleanup (sc-check `runner.rs`), OAuth token storage (sc-server `oauth.rs`), sync device rows (sc-api `sync/`), live document load (sc-live `docroom.rs`), table rename (sc-server `table_rename.rs`) |
-| sc-api `schema_edit.rs` | schema edit: check existing rows (an admin's schema batch) |
-| sc-api `sync/device.rs` | sync: look up the caller's device (filtered by the caller's id) |
+| sc-access `ownership.rs` | ownership check: read the existing row; read the row a formula decides (`Unchecked::system`) |
+| sc-access `rows.rs` | file cleanup: is the file still referenced (`Unchecked::system`) |
+| sc-access `lib.rs` | row layer: count the rows a scan would read — the scan limit a text search or nearest-neighbour read checks before it runs as its caller (`Unchecked::system`) |
+| sc-api `schema_edit.rs` | schema edit: check existing rows (an admin's schema batch; `Unchecked::system`) |
+| sc-api `sync/device.rs` | sync: register the caller's device; look up the caller's device (filtered by the caller's id) (`Unchecked::system`) |
+| sc-api `sync/pull.rs` | sync: record what the caller's device has applied (`Unchecked::system`) |
+| sc-check `runner.rs` | checklist: delete the rows a step inserted (`Unchecked::system`) |
 | sc-app `server_render.rs` | prerender: build static pages; refresh a static page (an admin-started build) |
 | sc-auth `credits.rs` | credits ledger (internal table) |
 | sc-auth `password_tokens.rs` | password token: spend (internal table) |
 | sc-catalog `retention.rs` | retention: is the file still referenced |
 | sc-catalog `sync.rs` | sync: read the change log; read the change-log watermark |
 | sc-config `store.rs` | write configuration |
-| sc-live `docroom.rs` | live document: persist merged state (after the join's access check) |
+| sc-live `docroom.rs` | live document: load the stored state; persist merged state (after the join's access check) (`Unchecked::system`) |
 | sc-llm `storage.rs` | LLM usage and conversation storage |
 | sc-module `credits.rs` | module credits: grant / revoke / set low-balance threshold (the module's declared permission) |
-| sc-server `backup/write.rs` | backup: count rows |
+| sc-server `backup/restore.rs` | backup restore: read the accounts already here (`Unchecked::system`) |
+| sc-server `backup/write.rs` | backup: count rows (`Unchecked::system`) |
+| sc-server `oauth.rs` | OAuth: store the tokens of a consent flow (`Unchecked::system`) |
 | sc-viewpattern `library.rs`, `store.rs` | apply library updates; write view-pattern definitions |
 | sc-workflow `driver.rs` | workflow: record run state |
 
 **Admin principals.** These run as role 1 but carry a user, for attribution, or are their own
 caller type. They are not yet `Authority::System`:
 
-- **Admin in the event user's name.** A code body's `asAdmin()` handles: sc-api
-  `code_host/mod.rs` (`caller`) and sc-core-actions `rows_scope.rs` (`authority`). They write as
-  admin, but the change log and events name the user who caused the run.
-- **An admin's own request at an explicit role.** `sc_api::principal_at(Role::ADMIN, user)` in
-  sc-server `handlers.rs` (admin row endpoints), sc-server `public_datasets.rs`, sc-viewpattern
-  `configure.rs`, sc-api `undo.rs`. A signed-in admin is the caller here, so these are `Caller`.
+- **Admin in the event user's name.** An action's rows: `sc_action::ActionContext::scoped`
+  (`action.rs`), which the row actions (sc-core-actions `rows_scope.rs`, `insert_row`,
+  `update_rows`, `delete_rows`, `embed_rows`) read and write through. A code body's `asAdmin()`
+  handles: sc-api `code_host/mod.rs` (`caller`, `Actor::Admin`) and `models.rs`
+  (`Writer::Context`). They write as admin, but the change log and events name the user who
+  caused the run.
+- **An admin's own request at an explicit role.** `sc_access::principal_at(Role::ADMIN, user)` in
+  sc-server `handlers.rs` (admin row endpoints, CSV and geo import / export, a trigger's test
+  run), sc-server `public_datasets.rs`, sc-viewpattern `configure.rs`, sc-api `undo.rs`. A
+  signed-in admin is the caller here, so these are `Caller`.
+
+Where one of these reaches the unchecked row layer it goes through `sc_access::admin_access`
+(`Unchecked::admin`), which refuses a principal whose role is not the administrator's.
+
+**Unchecked row access (TODO-code-quality Q3.5).** The row layer's operations that do not apply
+a table's floors and ownership formula (`sc_access::rows`), `Catalog::provider`,
+`Catalog::driver_for` and `Catalog::driver_named` take an `sc_catalog::Unchecked`; the catalog's
+`database()` is crate-private (`driver_info` answers the dialect and capabilities, `is_connected`
+whether a connection is up). An `Unchecked` is made by `Unchecked::system(reason)` (the table
+above), `Unchecked::admin(principal)` (an administrator, who meets every floor, so the check
+decides nothing) or `Unchecked::vouched(principal, by)`, where a named check already decided. A
+caller's rows otherwise go through `sc_access::Scoped`, whose operations are the ownership rule's.
+Find the vouched ones with `grep -rn 'Unchecked::vouched(' crates`:
+
+| Crate / file | `by` | The check that stands behind it |
+|---|---|---|
+| sc-access `ownership.rs` (`decided`) | `OWNERSHIP_RULE` | the `*_as` / `Scoped` function making the call has just compared the floor, evaluated the formula, or routes an RLS table's statement through its policies |
+| sc-access `write_as.rs` | `RULE` | the REST write rule (`write_as::create` / `update` / `delete`), applied before each write |
+| sc-api `rest/mod.rs` (`run_rls`) | `RLS_RULE` | the table is RLS-enabled: every statement runs in a caller-context transaction and the policies decide |
+| sc-api `rest/mod.rs` (`download_ctx`, `upload_ctx`) | `REST_RULE` | the route's REST read or write rule (floor, then ownership formula), applied before the file route reads or attaches the row's file |
+
+Not yet gated, and still reachable from a `&Catalog`: `Catalog::primary()` (the primary database's
+driver, which the internal `_fd_*` stores use), `SharedTx::run`, and `sc_catalog::run_in_context`
+(custom SQL queries and a code body's `db.sql()`).
 - **`sc_dataset::Caller::admin()`**: model fits read their training rows (sc-model `source.rs`,
   sc-analytics `model_outputs.rs`). The dataset caller is not yet a `Principal` (Q1.8).
 - **`sc_agent::RunCaller::system()`**: trigger-started agent runs (sc-core-traits `run_agent.rs`,

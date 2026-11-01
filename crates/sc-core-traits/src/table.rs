@@ -15,9 +15,9 @@ use sc_error::{Error, Result};
 use sc_types::{Attrs, BasicType};
 use serde_json::{Map, Value as Json, json};
 
-use sc_api::rows;
+use sc_access::rows;
 
-/// The `where` object's lowering, which lives in `sc_api::filter` beside the
+/// The `where` object's lowering, which lives in `sc_access::filter` beside the
 /// comparison vocabulary it calls.
 ///
 /// It was written here, for these tools, and it moved when a **code body** grew
@@ -26,7 +26,7 @@ use sc_api::rows;
 /// model's filter and an admin's code body gained them together. The tools keep
 /// naming them through this module, because "what a table trait's `where` is" is
 /// still this module's promise to the model.
-pub use sc_api::filter::{queryable_field, required_where, where_expr};
+pub use sc_access::filter::{queryable_field, required_where, where_expr};
 
 /// The table a trait is configured against. Every table trait has one, and
 /// **only** one: "which tables may this agent reach?" must be answerable off the

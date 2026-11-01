@@ -13,7 +13,6 @@
 //! Neither needs a server or a harness: a SQLite database is a file.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use sc_catalog::Authority;
 use sc_types::Role;
 use std::sync::Arc;
 
@@ -58,7 +57,7 @@ async fn a_csv_with_its_own_keys_imports_and_the_next_insert_does_not_collide()
         &catalog,
         &table,
         "id,title,pages\n1,Orlando,288\n2,The Waves,228\n",
-        Authority::system("test"),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     assert_eq!(outcome.inserted, 2, "{:?}", outcome.errors);
@@ -66,7 +65,7 @@ async fn a_csv_with_its_own_keys_imports_and_the_next_insert_does_not_collide()
 
     // The rows are there…
     let rows = catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .query(&Select::from(Source::table("book")))
         .await?
         .try_collect()
@@ -77,7 +76,7 @@ async fn a_csv_with_its_own_keys_imports_and_the_next_insert_does_not_collide()
     // table, so there is no sequence to have fallen behind — which is exactly
     // why the Postgres statement that winds one must not be sent here.
     let inserted = catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .write(&Statement::from(
             Insert::row("book", vec!["title".into()], vec![Expr::lit("Flush")])
                 .returning(vec![Projection::expr(Expr::col("id"))]),
@@ -101,21 +100,21 @@ async fn a_second_import_of_the_same_keys_updates_them() -> sc_error::Result<()>
         &catalog,
         &table,
         "id,title,pages\n1,Orlando,288\n",
-        Authority::system("test"),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let outcome = sc_api::csv::import_table(
         &catalog,
         &table,
         "id,title,pages\n1,Orlando,300\n",
-        Authority::system("test"),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     assert_eq!(outcome.updated, 1, "{:?}", outcome.errors);
     assert_eq!(outcome.inserted, 0);
 
     let rows = catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .query(&Select::from(Source::table("book")))
         .await?
         .try_collect()
@@ -133,7 +132,7 @@ async fn a_caller_context_read_runs_where_there_are_no_policies() -> sc_error::R
     let catalog = catalog_with_books().await?;
     let table = catalog.require("book")?;
     catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .write(&Statement::from(Insert::row(
             "book",
             vec!["title".into()],
@@ -169,7 +168,7 @@ async fn a_caller_context_read_runs_where_there_are_no_policies() -> sc_error::R
     // The connection that transaction used goes back to the pool usable: a
     // `query_only` left on it would make the next writer fail.
     catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .write(&Statement::from(Insert::row(
             "book",
             vec!["title".into()],

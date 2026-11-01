@@ -9,7 +9,7 @@
 //!   turn the person watching pays for. So the schema *is* the table: the
 //!   filterable fields are enumerated, each with its type, and the ordering key
 //!   is an enum of exactly the fields that can be ordered by.
-//! - **The read goes through `sc_api::read_rows_as`**, which is the same §7.3
+//! - **The read goes through `sc_access::read_rows_as`**, which is the same §7.3
 //!   rule the REST API applies. The caller is the run's, so an agent chatting
 //!   with a user below the table's read floor sees exactly the rows that user's
 //!   ownership formula grants and no others. This is not a check this crate
@@ -42,7 +42,7 @@ use sc_query::{Expr, OrderBy};
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Map, Value as Json, json};
 
-use sc_api::rows::RowQuery;
+use sc_access::rows::RowQuery;
 
 use crate::table::{
     ARG_WHERE, CFG_FIELDS, CFG_MAX_ROWS, CFG_TABLE, WHERE_HELP, arguments, check_table_config,
@@ -166,12 +166,12 @@ impl AgentTrait for QueryTable {
         if let Some(search) = search {
             // Best match first, unless the model asked for another order.
             if order.is_empty() {
-                order.push(sc_api::search::relevance(&search));
+                order.push(sc_access::search::relevance(&search));
             }
             query = query.searching(search);
         }
         let query = query.order_by(order).limit(limit.saturating_add(1));
-        let found = sc_api::read_rows_as(
+        let found = sc_access::read_rows_as(
             ctx.catalog,
             &table,
             &query,
@@ -341,7 +341,7 @@ fn show(
     more: bool,
     ctx: &mut TraitContext<'_>,
 ) -> Result<Json> {
-    let pk = sc_api::rows::single_pk(table)?;
+    let pk = sc_access::rows::single_pk(table)?;
     let keys: Vec<Json> = rows
         .iter()
         .map(|r| r.get(&pk).cloned().unwrap_or(Json::Null))

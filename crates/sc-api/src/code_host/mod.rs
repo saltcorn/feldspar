@@ -14,7 +14,7 @@
 //! One [`Plan`] per terminal — `db.books.where(…).limit(10).rows()` is one plan
 //! and one round trip. The guest builds it; **nothing in it is trusted**. The
 //! table is resolved through the catalog, every column against that table, every
-//! Ⱶ-path through [`ownership::join_guard`](crate::ownership), every formula
+//! Ⱶ-path through [`ownership::join_guard`](sc_access::ownership), every formula
 //! through the one translator, and anything else is refused naming it: a plan
 //! carries names and values, and the statement is built here.
 //!
@@ -48,7 +48,7 @@
 //! insert is the archetype of what a trigger exists to write.
 //!
 //! `asUser()` sets one field of the plan and **delegates to the event's caller**
-//! instead. Every operation then goes through [`crate::ownership`]'s `*_as`
+//! instead. Every operation then goes through [`sc_access::ownership`]'s `*_as`
 //! functions at the event's own role and user — §7.3's rule, the same functions
 //! the agent tools go through, with no second implementation of "meets the floor
 //! OR the formula grants it" here to be subtly wrong. So a delegated read is
@@ -132,9 +132,9 @@ use sc_error::{Error, Repr, Result};
 use sc_expr::{CodeHost, DEFAULT_MAX_HOST_CALLS, JsEvaluator};
 use serde_json::Value as Json;
 
-use crate::convert::value_to_json;
-use crate::ownership;
-use crate::rows;
+use sc_access::convert::value_to_json;
+use sc_access::ownership;
+use sc_access::rows;
 
 pub use files::{FileStoreHost, MAX_COPY_BYTES, MAX_FILE_BYTES, set_file_limits};
 pub use models::CODE_MAX_DRAWS;
@@ -396,7 +396,7 @@ impl<'a> TableHost<'a> {
             }
         }
         let select = rows::read_select(self.catalog, &read.table, &query)?;
-        let driver = self.catalog.driver_for(&read.table)?;
+        let driver = self.catalog.driver_info(&read.table.database)?;
         let (sql, binds) = driver
             .dialect()
             .render(&sc_query::Statement::Select(Box::new(select)))?;
@@ -526,7 +526,7 @@ impl<'a> TableHost<'a> {
                     self.catalog,
                     &read.table,
                     &read.query,
-                    sc_catalog::Authority::Caller(context),
+                    sc_access::admin_access(context)?,
                     &self.executor,
                 )
                 .await?
@@ -586,7 +586,7 @@ impl<'a> TableHost<'a> {
                     &agg.table,
                     agg.projections,
                     &agg.query,
-                    sc_catalog::Authority::Caller(context),
+                    sc_access::admin_access(context)?,
                 )
                 .await?
             }
@@ -679,7 +679,7 @@ impl<'a> TableHost<'a> {
 
     /// An `insert`: the written row, or an array of them for an array in.
     ///
-    /// Through [`rows::create_row_ctx`], which is the whole point — a code body's
+    /// Through [`rows::create_row`], which is the whole point — a code body's
     /// write is coerced against its columns, validated, File-field-checked and
     /// **observed by triggers** exactly as a write through the API is. It carries
     /// this run's caller, so the event it raises says who caused it and how deep
@@ -699,7 +699,7 @@ impl<'a> TableHost<'a> {
                         self.catalog,
                         &insertion.table,
                         row,
-                        sc_catalog::Authority::Caller(context),
+                        sc_access::admin_access(context)?,
                         &self.executor,
                     )
                     .await?
@@ -754,7 +754,7 @@ impl<'a> TableHost<'a> {
                     self.catalog,
                     table,
                     &write.matched.query,
-                    sc_catalog::Authority::Caller(context),
+                    sc_access::admin_access(context)?,
                     &self.executor,
                 )
                 .await?
@@ -791,7 +791,7 @@ impl<'a> TableHost<'a> {
                         table,
                         &id,
                         assignments,
-                        sc_catalog::Authority::Caller(context),
+                        sc_access::admin_access(context)?,
                         &self.executor,
                     )
                     .await?;
@@ -801,7 +801,7 @@ impl<'a> TableHost<'a> {
                         self.catalog,
                         table,
                         &id,
-                        sc_catalog::Authority::Caller(context),
+                        sc_access::admin_access(context)?,
                         &self.executor,
                     )
                     .await?;

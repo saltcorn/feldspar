@@ -23,7 +23,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
-use sc_catalog::{Catalog, DataField, Table, VECTOR_SCAN_LIMIT, vector_index};
+use sc_catalog::{Catalog, DataField, Table, Unchecked, VECTOR_SCAN_LIMIT, vector_index};
 use sc_error::{Error, Result};
 use sc_query::{
     Assignment, Expr, OrderBy, Projection, Select, Source, Statement, Update, Value, VectorDistance,
@@ -190,7 +190,7 @@ pub(crate) async fn prepare<'q>(
 
 /// Refuse a nearest read that no index answers over a table too big to scan.
 async fn require_answerable(cat: &Catalog, table: &Table, field: &str) -> Result<()> {
-    let sqlite = cat.driver_named(&table.database)?.dialect().is_sqlite();
+    let sqlite = cat.driver_info(&table.database)?.is_sqlite();
     if !sqlite && vector_index(table, field).is_some() {
         return Ok(());
     }
@@ -210,7 +210,7 @@ async fn require_answerable(cat: &Catalog, table: &Table, field: &str) -> Result
         "n",
     )]);
     let rows = cat
-        .provider(table)?
+        .provider(table, crate::SCAN_COUNT)?
         .query(&count)
         .await?
         .try_collect()
@@ -500,6 +500,7 @@ pub async fn embed_rows(
     table: &Table,
     field_name: &str,
     max_rows: Option<u64>,
+    access: Unchecked<'_>,
 ) -> Result<EmbedReport> {
     let (field, _) = vector_field(table, field_name)?;
     let Some(source) = embed_config(field).from else {
@@ -510,7 +511,7 @@ pub async fn embed_rows(
         )));
     };
     let pk = crate::rows::single_pk(table)?;
-    let provider = cat.provider(table)?;
+    let provider = cat.provider(table, access)?;
     let mut report = EmbedReport {
         embedded: 0,
         skipped: 0,

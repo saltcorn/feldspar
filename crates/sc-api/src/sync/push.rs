@@ -43,10 +43,10 @@ use uuid::Uuid;
 
 use super::device::{check_device, devices_table};
 use super::pull::key_text;
-use crate::ownership;
-use crate::rows::{self, Executor};
 use crate::schema::{StructField, TypeSchema};
-use crate::write_as;
+use sc_access::ownership;
+use sc_access::rows::{self, Executor};
+use sc_access::write_as;
 
 /// The savepoint each change is written inside. Structural, never user data.
 const CHANGE_SAVEPOINT: &str = "sc_sync_change";

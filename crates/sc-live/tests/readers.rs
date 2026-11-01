@@ -26,7 +26,7 @@ use sc_types::Role;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sc_api::rows;
+use sc_access::rows;
 use sc_auth::User;
 use sc_catalog::{
     Catalog, DataField, DataFieldKind, FieldId, LIVE_EVENTS, TableEvents, TableId, TableMeta,
@@ -207,21 +207,39 @@ impl Fixture {
 
     async fn insert(&self, table: &str, row: Json) {
         let table = self.catalog.require(table).unwrap();
-        rows::create_row(&self.catalog, &table, &row).await.unwrap();
+        rows::create_row(
+            &self.catalog,
+            &table,
+            &row,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await
+        .unwrap();
     }
 
     async fn update(&self, table: &str, key: i64, changes: Json) {
         let table = self.catalog.require(table).unwrap();
-        rows::update_row(&self.catalog, &table, &key.to_string(), &changes)
-            .await
-            .unwrap();
+        rows::update_row(
+            &self.catalog,
+            &table,
+            &key.to_string(),
+            &changes,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await
+        .unwrap();
     }
 
     async fn delete(&self, table: &str, key: i64) {
         let table = self.catalog.require(table).unwrap();
-        rows::delete_row(&self.catalog, &table, &key.to_string())
-            .await
-            .unwrap();
+        rows::delete_row(
+            &self.catalog,
+            &table,
+            &key.to_string(),
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await
+        .unwrap();
     }
 
     fn counts(&self) -> ChangeCounts {
@@ -529,10 +547,18 @@ async fn a_users_stream_is_typed_and_sent_without_the_password_hash() -> Result<
             "password_hash": "not-for-pages",
             "role": Role::PUBLIC,
         }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let id = created["id"].as_str().expect("a uuid key").to_owned();
-    rows::update_row(&catalog, &users, &id, &json!({ "email": "c@example.com" })).await?;
+    rows::update_row(
+        &catalog,
+        &users,
+        &id,
+        &json!({ "email": "c@example.com" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     for op in ["insert", "update"] {
         let delivery = tokio::time::timeout(Duration::from_secs(10), queue.recv())
             .await

@@ -21,12 +21,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use sc_catalog::Authority;
 use sc_types::Role;
 use std::sync::Arc;
 
+use sc_access::rows;
 use sc_action::{ActionContext, Event, EventKind, Trigger, validate_trigger};
-use sc_api::rows;
 use sc_catalog::{
     Catalog, Principal, TableMeta, bootstrap_table_meta, enable_rls, save_table_meta,
 };
@@ -104,11 +103,12 @@ async fn run(
 /// Every row of a table as JSON, ordered by primary key, for assertions.
 async fn all_rows(catalog: &Catalog, table: &str) -> Result<Vec<Json>> {
     let table = catalog.require(table)?;
-    let mut rows: Vec<Json> = rows::list_rows(catalog, &table)
-        .await?
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let mut rows: Vec<Json> =
+        rows::list_rows(catalog, &table, sc_catalog::Unchecked::system("test"))
+            .await?
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
     rows.sort_by_key(|r| r["id"].as_i64().unwrap_or_default());
     Ok(rows)
 }
@@ -477,7 +477,12 @@ async fn an_actions_writes_carry_admin_authority_on_an_rls_table() -> Result<()>
 
     // The policies decide: a caller who owns nothing here sees nothing.
     let outsider = Principal::new(Role::PUBLIC, Some(json!({ "email": "nobody@example.com" })));
-    let visible = rows::list_rows_ctx(&catalog, &secrets, Authority::Caller(&outsider)).await?;
+    let visible = rows::list_rows(
+        &catalog,
+        &secrets,
+        sc_catalog::Unchecked::vouched(&outsider, "test"),
+    )
+    .await?;
     assert_eq!(visible.as_array().map(Vec::len), Some(0), "{visible}");
 
     // The trigger inserts a row owned by a third party — refused for any caller
@@ -513,7 +518,12 @@ async fn an_actions_writes_carry_admin_authority_on_an_rls_table() -> Result<()>
     // with no caller context at all sees nothing here, policies applying to the
     // table's owner too. (That is why the action sets one.)
     let admin = Principal::anonymous(Role::ADMIN);
-    let remaining = rows::list_rows_ctx(&catalog, &secrets, Authority::Caller(&admin)).await?;
+    let remaining = rows::list_rows(
+        &catalog,
+        &secrets,
+        sc_catalog::Unchecked::vouched(&admin, "test"),
+    )
+    .await?;
     let ids: Vec<Json> = remaining
         .as_array()
         .cloned()

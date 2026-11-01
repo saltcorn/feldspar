@@ -85,7 +85,7 @@ async fn foreign_columns(db: &TestDb, table: &str) -> sc_error::Result<Vec<Strin
 async fn titles(catalog: &Catalog, table: &str) -> sc_error::Result<Vec<String>> {
     let t = catalog.require(table)?;
     let rows = catalog
-        .provider(&t)?
+        .provider(&t, sc_catalog::Unchecked::system("test"))?
         .query(
             &Select::from(Source::table(table)).columns(vec![Projection::expr(Expr::col("title"))]),
         )
@@ -153,7 +153,7 @@ async fn a_connected_database_shares_the_catalog() -> sc_error::Result<()> {
 
     // A write through the catalog reaches the foreign database, not the primary.
     catalog
-        .provider(&invoice)?
+        .provider(&invoice, sc_catalog::Unchecked::system("test"))?
         .write(&Statement::from(Insert::row(
             "invoice",
             vec!["id".to_owned(), "title".to_owned()],

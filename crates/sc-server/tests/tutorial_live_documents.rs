@@ -508,17 +508,19 @@ async fn part_five_a_collaborative_notes_app() -> Result<()> {
         id_of(READER).await,
     );
     let notes = tutorial.catalog.require("notes")?;
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         &tutorial.catalog,
         &notes,
         &json!({ "id": 1, "title": "Plans", "owner": member }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     // The admin's row editor cannot write the document either.
-    let refused = sc_api::rows::create_row(
+    let refused = sc_access::rows::create_row(
         &tutorial.catalog,
         &notes,
         &json!({ "id": 2, "title": "x", "body": [1] }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await
     .unwrap_err()
@@ -526,10 +528,11 @@ async fn part_five_a_collaborative_notes_app() -> Result<()> {
     assert!(refused.contains("collaborative document"), "{refused}");
     let shares = tutorial.catalog.require("shares")?;
     for (id, user, can_edit) in [(1, &colleague, true), (2, &reader, false)] {
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             &tutorial.catalog,
             &shares,
             &json!({ "id": id, "note": 1, "user": user, "can_edit": can_edit }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
@@ -675,16 +678,23 @@ async fn part_five_a_collaborative_notes_app() -> Result<()> {
     assert_eq!(diff["updated"][0]["state"], "AQLEyAEBAA==", "{diff}");
 
     // The colleague's edit right goes, then the share.
-    sc_api::rows::update_row(
+    sc_access::rows::update_row(
         &tutorial.catalog,
         &shares,
         "1",
         &json!({ "can_edit": false }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let again = frame_for(&mut cole, "n", "doc_sync").await;
     assert_eq!(again["read_only"], true, "{again}");
-    sc_api::rows::delete_row(&tutorial.catalog, &shares, "1").await?;
+    sc_access::rows::delete_row(
+        &tutorial.catalog,
+        &shares,
+        "1",
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert_eq!(frame_for(&mut cole, "n", "revoked").await["sub"], "n");
 
     // --- Step 5: saved ----------------------------------------------------------
@@ -865,11 +875,12 @@ async fn two_browsers_type_into_one_note(tutorial: &Tutorial) {
     };
     // The colleague's share was deleted in step 4; give it back, editing.
     let shares = tutorial.catalog.require("shares").unwrap();
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         &tutorial.catalog,
         &shares,
         &json!({ "id": 3, "note": 1, "user": tutorial_user(tutorial, COLLEAGUE).await,
                  "can_edit": true }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await
     .unwrap();

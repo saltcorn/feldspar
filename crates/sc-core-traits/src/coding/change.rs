@@ -6,7 +6,7 @@ use std::ops::Range;
 
 use bytes::Bytes;
 use sc_error::{Error, Result};
-use sc_files::FileStore;
+use sc_files::CheckedStore;
 
 use super::state::CodingState;
 
@@ -18,7 +18,7 @@ const MAX_REGION_LINES: usize = 40;
 
 /// What is at `path` now: its bytes, or `None` when nothing is there. A
 /// directory is an error, since no file tool can change one.
-pub async fn current(store: &dyn FileStore, path: &str, rel: &str) -> Result<Option<Bytes>> {
+pub async fn current(store: &CheckedStore, path: &str, rel: &str) -> Result<Option<Bytes>> {
     match store.stat(path).await? {
         None => Ok(None),
         Some(stat) if stat.is_dir => Err(Error::invalid(format!(
@@ -31,7 +31,7 @@ pub async fn current(store: &dyn FileStore, path: &str, rel: &str) -> Result<Opt
 /// Write `content` to `path`, recording `before` in the ledger on the run's
 /// first touch, and the new content as what the model has seen.
 pub async fn write_tracked(
-    store: &dyn FileStore,
+    store: &CheckedStore,
     state: &mut CodingState,
     path: &str,
     before: Option<&[u8]>,
@@ -47,7 +47,7 @@ pub async fn write_tracked(
 
 /// Delete `path`, recording `before` in the ledger on the run's first touch.
 pub async fn delete_tracked(
-    store: &dyn FileStore,
+    store: &CheckedStore,
     state: &mut CodingState,
     path: &str,
     before: &[u8],

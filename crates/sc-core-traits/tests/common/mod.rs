@@ -398,7 +398,12 @@ impl Env {
     /// a test checks what a write actually did.
     pub async fn rows(&self, table: &str) -> Result<Vec<Json>> {
         let table = self.catalog.require(table)?;
-        let rows = sc_api::rows::list_rows(&self.catalog, &table).await?;
+        let rows = sc_access::rows::list_rows(
+            &self.catalog,
+            &table,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
         Ok(rows.as_array().cloned().unwrap_or_default())
     }
 }

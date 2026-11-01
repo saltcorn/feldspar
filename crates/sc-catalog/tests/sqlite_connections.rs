@@ -72,7 +72,7 @@ async fn seed_sqlite(path: &std::path::Path) -> sc_error::Result<()> {
 async fn titles(catalog: &Catalog, table: &str) -> sc_error::Result<Vec<String>> {
     let t = catalog.require(table)?;
     let rows = catalog
-        .provider(&t)?
+        .provider(&t, sc_catalog::Unchecked::system("test"))?
         .query(
             &Select::from(Source::table(table)).columns(vec![Projection::expr(Expr::col("title"))]),
         )
@@ -134,7 +134,10 @@ async fn a_sqlite_file_in_a_file_store_is_a_connected_database() -> sc_error::Re
     assert_eq!(titles(&catalog, "invoice").await?, vec!["from the file"]);
 
     // --- a write goes to the file -------------------------------------------
-    let driver = catalog.driver_named(&DbId("reporting".into()))?;
+    let driver = catalog.driver_named(
+        &DbId("reporting".into()),
+        sc_catalog::Unchecked::system("test"),
+    )?;
     driver
         .query(&Statement::from(Insert::row(
             "invoice",

@@ -57,7 +57,7 @@ pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) ->
     let content = string_arg(&args, ARG_CONTENT)?;
 
     let (store, path) = open_to_write(scope, ctx, &rel).await?;
-    let before = current(store.as_ref(), &path, &rel).await?;
+    let before = current(&store, &path, &rel).await?;
     let mut state = CodingState::load(ctx.state());
     if let Some(before) = &before
         && let Err(stale) = state.check_current(&path, before)
@@ -71,7 +71,7 @@ pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) ->
 
     let lines = content.lines().count();
     write_tracked(
-        store.as_ref(),
+        &store,
         &mut state,
         &path,
         before.as_deref(),

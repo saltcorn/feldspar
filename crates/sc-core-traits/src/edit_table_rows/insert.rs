@@ -1,9 +1,9 @@
 //! `edit_table_rows`' insert grant — add one row to the configured table
 //! (§11.3).
 //!
-//! The write goes through [`sc_api::insert_row_as`], which is §7.3's write rule
+//! The write goes through [`sc_access::insert_row_as`], which is §7.3's write rule
 //! (`meets min_role_write` **or** the ownership formula grants the proposed row)
-//! followed by `sc_api::rows::create_row_ctx` — so the values are coerced and
+//! followed by `sc_access::rows::create_row` — so the values are coerced and
 //! validated against the field types, a `File` field is checked against its
 //! store, and the table's own insert trigger fires with the row the model wrote.
 //! An agent is a caller of the row layer, not a second one.
@@ -52,7 +52,7 @@ pub async fn call(
 ) -> Result<Json> {
     let writable = writable_fields(table, config)?;
     let body = row_body(table, &writable, args)?;
-    let row = sc_api::insert_row_as(
+    let row = sc_access::insert_row_as(
         ctx.catalog,
         table,
         &body,
@@ -66,7 +66,7 @@ pub async fn call(
         // persisted after every step — so its tools' writes commit as they
         // are made, even when the run was started by a workflow step
         // (§10.3, decision 6).
-        &sc_api::rows::Executor::Pooled,
+        &sc_access::rows::Executor::Pooled,
     )
     .await?;
     // The whole stored row, not the fields that were sent: the model needs

@@ -8,8 +8,8 @@
 //!
 //! A trait that touches rows must go through **`sc-api`**, not around it: a read
 //! is the same read an API caller makes, under the same §7.3 access rule
-//! (`sc_api::read_rows_as`), and a write is the same write, under the same rule's
-//! other half (`sc_api::insert_row_as` and its siblings), with the same coercion,
+//! (`sc_access::read_rows_as`), and a write is the same write, under the same rule's
+//! other half (`sc_access::insert_row_as` and its siblings), with the same coercion,
 //! the same rich-type and `File`-field validation and the same emitted events.
 //! That fixes these *above* layer 8, while `sc-agent` (layer 7) stays what a
 //! plugin needs to write a trait of its own: the

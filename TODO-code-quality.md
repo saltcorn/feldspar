@@ -111,22 +111,68 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## Q3 — `sc-access` and capability handles (§2, §4.4)
 
-- [ ] Q3.1 Split sc-api: move the row-access layer (`rows`, `ownership`, `write_as`, `filter`,
+- [x] Q3.1 Split sc-api: move the row-access layer (`rows`, `ownership`, `write_as`, `filter`,
       `convert`, `user_rows`, and what they need) into a new `sc-access` crate. sc-api keeps REST,
       GraphQL, TypeScript codegen, CSV, MCP schema and the admin endpoint table. Confirm the module
       dependencies inside sc-api first.
-- [ ] Q3.2 Move sc-core-actions, sc-core-traits, sc-live and sc-viewpattern onto `sc-access` where
+      (What they need was `calc_read`, `search` and `vector`, which moved too; nothing in the
+      nine modules reached back into the rest of sc-api except a GraphQL test fixture. sc-api
+      keeps `code_host`, `csv`, `sync`, `undo` / `history`, `models` and `schema_edit` as well.
+      sc-api does not re-export the moved modules: callers name `sc_access`.)
+- [x] Q3.2 Move sc-core-actions, sc-core-traits, sc-live and sc-viewpattern onto `sc-access` where
       they need only the row layer.
-- [ ] Q3.3 `Scoped<'a> { catalog, who: Authority<'a> }` exposing only the authorised row
+      (sc-live and sc-workflow's dev edge no longer depend on sc-api. sc-core-actions
+      (`code_host`, `undo`), sc-core-traits (`mcp`, `schema_edit`, `code_host`) and
+      sc-viewpattern (`code_host`, `throttle`) still need sc-api for those, and take the row layer
+      from sc-access; so do sc-app, sc-check, sc-module and sc-server.)
+- [x] Q3.3 `Scoped<'a> { catalog, who: Authority<'a> }` exposing only the authorised row
       operations with the principal bound.
-- [ ] Q3.4 `ActionContext` carries a `Scoped` instead of `catalog: &Catalog` + `event.role` /
+      (`sc_access::Scoped`: `read` / `read_values` / `insert` / `update` / `delete`, through the
+      ownership rule for a caller and the unchecked row layer for the system or an administrator;
+      plus the executor and the formula engine. Test: `crates/sc-access/tests/scoped.rs`.)
+- [~] Q3.4 `ActionContext` carries a `Scoped` instead of `catalog: &Catalog` + `event.role` /
       `event.user`. Same for agent tool contexts, module bridges and code-body hosts (`db`, `fs`,
       `Table`).
-- [ ] Q3.5 Make unchecked catalog row access and `driver_for` / `driver_named` / `database`
+      Done: `ActionContext::scoped()` (the trigger's authority: admin in the event's user's name,
+      the chain, the step's transaction, the engine) and `ActionContext::caller()` (the event's
+      caller as a `Principal`). The row actions (`insert_row`, `update_rows`, `delete_rows`, their
+      `where` read, `embed_rows`) go through `scoped()`; the code-body hosts, `undo` and
+      `run_agent` take the caller from `caller()`; no action reads `event.role` / `event.user` to
+      decide authority. `ActionContext.catalog` stays public (schema, services); its rows need an
+      `Unchecked` (Q3.5). Remaining: agent tool contexts (`TraitContext` is still `catalog` + a
+      `RunCaller`; the tools call the guarded `*_as` functions with its role and user), and the
+      code-body hosts (`TableHost`, `FileStoreHost`, `TriggerRunHost`, which the module bridges
+      also use) still take a catalog and a role and user rather than a `Scoped`: their authority
+      changes per plan (`asUser()`, `forUser`, public), and a `Scoped` re-reads its user from
+      the principal's JSON, where `TableHost` keeps the `User` loaded from the row, so moving them
+      needs that difference settled first.
+- [~] Q3.5 Make unchecked catalog row access and `driver_for` / `driver_named` / `database`
       `pub(crate)` to sc-catalog / sc-access, or require an `Unchecked` token that only
       `Authority::System` produces. Fix every caller the compiler then names.
-- [ ] Q3.6 `FileStore` operations go through a scoped handle that checks access, so
+      Done: `sc_catalog::Unchecked`. `Catalog::provider`, `driver_for` and `driver_named` and
+      every unchecked operation of `sc_access::rows` take one; `Catalog::database` is
+      crate-private (`driver_info` gives the dialect and capabilities, `is_connected` the state).
+      The row layer's no-caller shortcuts (`create_row(catalog, table, body)` …) are gone: the
+      `_ctx` forms took their names and take the token. Made by `Unchecked::system(reason)`,
+      `Unchecked::admin(principal)` (refuses a non-admin; an admin meets every floor) or
+      `Unchecked::vouched(principal, by)` where a named check already decided (the ownership
+      functions, the REST write rule, an RLS table's policies, the REST file routes). The last is a
+      deviation from "only `Authority::System`": the REST provider decides its own rule and still
+      has to hand the row layer the caller for the RLS GUCs and the event. All three are in
+      docs/SECURITY_REVIEW_2026-10.md's inventory. Remaining: `Catalog::primary()` (≈170 uses, the
+      internal `_fd_*` stores), `SharedTx::run` and `sc_catalog::run_in_context` are still
+      reachable from a `&Catalog` without a token.
+- [~] Q3.6 `FileStore` operations go through a scoped handle that checks access, so
       `check_access` / `check_write` cannot be skipped.
+      Done: `sc_files::CheckedStore` (a store, its floor and a `FileCaller`; every read checks
+      `check_access`, every write `check_write`, `list` filters). The admin file manager's
+      endpoints and the agents' file tools (`open_at` / `open_to_write`, the coding traits' edit,
+      write, patch and view-image) use it. Remaining: the REST provider's file routes (an upload
+      to a new path deliberately skips `check_write`, the drop-box rule, which `CheckedStore`
+      cannot express yet), the code-body `file` host, the admin download route
+      (`downloadFile`, which streams), an application's `/files/serve` route (`router.rs`), the
+      upload slots (`uploads.rs`), the IDE and the LSP, and the raw store: `Catalog::file_store`
+      still hands out an `Arc<dyn FileStore>` without a token.
 
 ## Q4 — Trust-boundary newtypes (§4.6)
 

@@ -24,8 +24,8 @@
 use sc_catalog::Authority;
 use std::collections::BTreeMap;
 
+use sc_access::rows::RowQuery;
 use sc_agent::{AgentTrait, SessionContext, ToolsContext, TraitCheck, TraitContext, Turn};
-use sc_api::rows::RowQuery;
 use sc_error::{Error, Result};
 use sc_expr::CodeCall;
 use sc_llm::ToolSpec;
@@ -300,7 +300,7 @@ async fn preloaded_rows(config: &Attrs, cx: &SessionContext<'_>) -> Result<Strin
         .map(|key| vec![OrderBy::asc(Expr::col(key.clone()))])
         .unwrap_or_default();
     let query = RowQuery::new().where_(filter).order_by(order).limit(limit);
-    let found = sc_api::read_rows_as(
+    let found = sc_access::read_rows_as(
         cx.catalog,
         &table,
         &query,
@@ -348,7 +348,7 @@ async fn filter_value(source: &str, cx: &SessionContext<'_>) -> Result<Json> {
             cx.agent
         ))
     })?;
-    let caller = sc_api::principal_at(cx.caller.role, cx.caller.user.as_ref());
+    let caller = sc_access::principal_at(cx.caller.role, cx.caller.user.as_ref());
     // `row` is in scope in every run, and null where no row started it, so a
     // filter written for a triggered run still reads in a chat.
     let bindings = BTreeMap::from([
@@ -484,7 +484,7 @@ impl AgentTrait for PreloadCode {
             "trigger_row".to_owned(),
             cx.row.cloned().unwrap_or(Json::Null),
         );
-        let caller = sc_api::principal_at(cx.caller.role, cx.caller.user.as_ref())
+        let caller = sc_access::principal_at(cx.caller.role, cx.caller.user.as_ref())
             .chained(cx.caller.tool_chain());
         let result = dispatcher
             .run_code(

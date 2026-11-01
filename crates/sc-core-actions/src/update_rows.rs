@@ -1,6 +1,5 @@
 //! `update_rows` — assign formula values to every row a predicate selects.
 
-use sc_catalog::Authority;
 use sc_error::Result;
 use sc_expr::{Formula, Operation};
 use sc_types::{BasicType, FormField};
@@ -12,7 +11,7 @@ use crate::rows_scope::{
     CFG_ASSIGNMENTS, CFG_TABLE, CFG_WHERE, Scope, row_id, target_table, where_formula,
     writable_field,
 };
-use sc_api::rows;
+use sc_access::rows;
 
 /// Update the rows of a table that a `where` formula selects, each assignment a
 /// formula in the target row's own scope.
@@ -89,7 +88,6 @@ impl Action for UpdateRows {
             .matching_rows(&table, &predicate, &bound, Operation::Update)
             .await?;
 
-        let authority = scope.authority();
         let mut ids = Vec::with_capacity(matched.len());
         for values in &matched {
             let mut body = Map::with_capacity(assignments.len());
@@ -100,15 +98,10 @@ impl Action for UpdateRows {
                 body.insert(field.clone(), value);
             }
             let (id, id_json) = row_id(&table, &pk, values)?;
-            rows::update_row_in(
-                ctx.catalog,
-                &table,
-                &id,
-                &Json::Object(body),
-                Authority::Caller(&authority),
-                scope.executor(),
-            )
-            .await?;
+            scope
+                .scoped()
+                .update(&table, &id, &Json::Object(body))
+                .await?;
             ids.push(id_json);
         }
         Ok(json!({ "updated": ids.len(), "ids": ids }))

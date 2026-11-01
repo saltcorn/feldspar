@@ -518,7 +518,7 @@ pub struct TraitCheck<'a> {
 /// cannot exist.
 ///
 /// The two fields are what a trait hands to the row layer:
-/// `sc_api::principal_at(caller.role, caller.user.as_ref())` is the whole
+/// `sc_access::principal_at(caller.role, caller.user.as_ref())` is the whole
 /// conversion, and it is spelled at the call site rather than here because
 /// `sc-api` is above this crate.
 #[derive(Debug, Clone, PartialEq)]

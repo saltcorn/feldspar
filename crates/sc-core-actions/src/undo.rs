@@ -68,7 +68,8 @@ impl Action for Undo {
     async fn run(&self, ctx: &mut ActionContext<'_>) -> Result<Json> {
         let event = ctx.event;
         let table = configured_table(ctx.config);
-        let user = User::from_json(event.role, event.user.as_ref())?;
+        let caller = ctx.caller();
+        let user = User::from_json(caller.role, caller.user.as_ref())?;
         let session = event.changeset.as_ref().and_then(|c| c.session.clone());
         let (Some(user), Some(session)) = (user, session) else {
             return Err(Error::invalid(

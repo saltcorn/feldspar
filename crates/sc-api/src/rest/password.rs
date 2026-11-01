@@ -44,8 +44,8 @@ use serde_json::{Map, Value as Json, json};
 
 use crate::auth::{user_summary_json, user_summary_schema};
 use crate::provider::{ApiRequest, ApiResponse};
-use crate::rows::{column_value, require_object};
 use crate::schema::{StructField, TypeSchema};
+use sc_access::rows::{column_value, require_object};
 
 /// The setting that projects `POST {mount}/invite`. Off unless an admin turns
 /// it on: making accounts for other people, and sending them mail, is a
@@ -417,7 +417,7 @@ fn invite_template(obj: &Map<String, Json>) -> Result<Template> {
 /// the users table's own types. System columns are refused further down, by
 /// the same check every other way of making an account has.
 ///
-/// A column flagged [`ADMIN_ONLY_WRITE`](crate::user_rows::ADMIN_ONLY_WRITE)
+/// A column flagged [`ADMIN_ONLY_WRITE`](sc_access::user_rows::ADMIN_ONLY_WRITE)
 /// — the `org_id` a tenancy formula reads — is set by an admin's invitation
 /// only. The account is written directly, not through the row layer that
 /// holds every other write to that rule, so it is held to it here: otherwise a
@@ -441,7 +441,7 @@ fn user_fields(
                 "`fields`: `{column}` is set by the invitation itself, not as a field"
             )));
         }
-        if !inviter_role.is_admin() && crate::user_rows::is_admin_only_write(&users, column) {
+        if !inviter_role.is_admin() && sc_access::user_rows::is_admin_only_write(&users, column) {
             return Err(Error::auth(format!(
                 "`fields`: `{column}` of an account is set by an admin only"
             )));

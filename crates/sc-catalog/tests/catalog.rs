@@ -114,7 +114,7 @@ async fn catalog_init_create_and_reflect() -> sc_error::Result<()> {
     assert!(names.windows(2).all(|w| w[0] <= w[1]), "sorted: {names:?}");
 
     // --- the table's provider can round-trip a row ----------------------------
-    let provider = catalog.provider(&book)?;
+    let provider = catalog.provider(&book, sc_catalog::Unchecked::system("test"))?;
     assert_eq!(provider.fields().len(), 4);
 
     provider

@@ -3724,7 +3724,7 @@ async fn error_out(
     user: Option<&User>,
 ) -> Response {
     if let (Some(triggers), Some(catalog)) = (state.apps.triggers(), state.apps.catalog()) {
-        let caller = sc_api::principal_of(user);
+        let caller = sc_access::principal_of(user);
         let event =
             sc_action::Event::error(err.kind(), err.to_string(), method, path).caused_by(&caller);
         triggers.fire(catalog, &event).await;
@@ -3735,7 +3735,7 @@ async fn error_out(
 /// Raise the **`login` event** for a session that has just started.
 ///
 /// The user object is built exactly as every other caller's is
-/// ([`sc_api::principal_of`]), so `user.email` means the same thing in a login
+/// ([`sc_access::principal_of`]), so `user.email` means the same thing in a login
 /// trigger's action as it does in an insert trigger's.
 ///
 /// `guest_session` is the public id of the guest session the sign-in ended
@@ -3748,7 +3748,7 @@ async fn fire_login(state: &AppState, user: &User, guest_session: Option<&str>) 
     let (Some(triggers), Some(catalog)) = (state.apps.triggers(), state.apps.catalog()) else {
         return;
     };
-    let caller = sc_api::principal_of(Some(user));
+    let caller = sc_access::principal_of(Some(user));
     let mut event = sc_action::Event::login(caller.role, caller.user.unwrap_or(Value::Null));
     if let Some(guest_session) = guest_session {
         event = event.payload(serde_json::json!({ "guest_session": guest_session }));

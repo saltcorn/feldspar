@@ -495,7 +495,13 @@ async fn clean_up(catalog: &Catalog, inserted: &[InsertedRow]) -> Vec<String> {
             let table = catalog
                 .get(&row.table)?
                 .ok_or_else(|| Error::msg(format!("table `{}` is gone", row.table)))?;
-            sc_api::rows::delete_row(catalog, &table, &row.key).await
+            sc_access::rows::delete_row(
+                catalog,
+                &table,
+                &row.key,
+                sc_access::Unchecked::system("checklist: delete the rows a step inserted"),
+            )
+            .await
         }
         .await;
         match deleted {

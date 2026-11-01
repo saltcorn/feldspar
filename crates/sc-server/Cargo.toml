@@ -38,6 +38,7 @@ sc-app.workspace = true
 # Deleting an application deletes its views and pages (Saltcorn UI §1).
 sc-viewpattern.workspace = true
 sc-api.workspace = true
+sc-access.workspace = true
 # The trigger system, brought up at boot (`install_triggers`): the dispatcher
 # lives in `sc-action` and the built-in actions in `sc-core-actions`; this crate
 # is where they meet the catalog, because it is the one that serves requests.

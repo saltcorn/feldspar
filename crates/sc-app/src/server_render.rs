@@ -340,7 +340,7 @@ impl ServerRendered {
         self.cache.listen(cat);
         let epoch = self.cache.epoch();
         let trace = sc_expr::trace_sink();
-        let caller = sc_api::principal_of(req.user.as_ref());
+        let caller = sc_access::principal_of(req.user.as_ref());
         let answer = match run_entry(
             dispatcher,
             cat,

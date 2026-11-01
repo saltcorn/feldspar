@@ -11,8 +11,9 @@
 use sc_types::Role;
 use std::sync::Arc;
 
+use sc_access::{rows, vector};
+use sc_api::query_string;
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation};
-use sc_api::{query_string, rows, vector};
 use sc_catalog::{
     Catalog, ConstraintKind, DataField, TableConstraint, bootstrap_field_meta, bootstrap_table_meta,
 };
@@ -80,7 +81,7 @@ async fn titles(catalog: &Catalog, pairs: &[(&str, &str)]) -> Result<Vec<String>
         .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
         .collect();
     let query = query_string::row_query(&table, &pairs, 50)?;
-    let found = sc_api::read_rows_as(catalog, &table, &query, Role::ADMIN, None, None).await?;
+    let found = sc_access::read_rows_as(catalog, &table, &query, Role::ADMIN, None, None).await?;
     Ok(title_list(&found))
 }
 
@@ -107,12 +108,18 @@ async fn the_common_contract(catalog: &Catalog) -> Result<()> {
         ("up", json!([0, 0, 1])),
         ("nowhere", Json::Null),
     ] {
-        rows::create_row(catalog, &table, &json!({ "title": title, "embedding": v })).await?;
+        rows::create_row(
+            catalog,
+            &table,
+            &json!({ "title": title, "embedding": v }),
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
     // Read back as the array that was written.
     let east = titles(catalog, &[("title", "eq.east")]).await?;
     assert_eq!(east, ["east"]);
-    let all = rows::list_rows(catalog, &table).await?;
+    let all = rows::list_rows(catalog, &table, sc_catalog::Unchecked::system("test")).await?;
     let row = all
         .as_array()
         .unwrap()
@@ -126,6 +133,7 @@ async fn the_common_contract(catalog: &Catalog) -> Result<()> {
         catalog,
         &table,
         &json!({ "title": "bad", "embedding": [1, 2] }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await
     .unwrap_err()
@@ -405,24 +413,56 @@ async fn an_embedded_field_is_computed_back_filled_and_searched_by_text() -> Res
     let table = catalog.require("docs")?;
     // Rows from before the field: back-filled.
     for title in ["fruit salad", "car wash", ""] {
-        rows::create_row(&catalog, &table, &json!({ "title": title })).await?;
+        rows::create_row(
+            &catalog,
+            &table,
+            &json!({ "title": title }),
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
     add_vector(&catalog, embedded()).await?;
     let table = catalog.require("docs")?;
-    let report = vector::embed_rows(&catalog, &table, "embedding", None).await?;
+    let report = vector::embed_rows(
+        &catalog,
+        &table,
+        "embedding",
+        None,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert_eq!(report.embedded, 2);
     // An empty title gives no text, and the vector stays empty.
     assert_eq!(report.skipped, 1);
-    let again = vector::embed_rows(&catalog, &table, "embedding", None).await?;
+    let again = vector::embed_rows(
+        &catalog,
+        &table,
+        "embedding",
+        None,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert_eq!(again.embedded, 0, "only the empty ones are embedded");
 
     // Computed on insert…
-    let red_car = rows::create_row(&catalog, &table, &json!({ "title": "red car" })).await?;
+    let red_car = rows::create_row(
+        &catalog,
+        &table,
+        &json!({ "title": "red car" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert_eq!(red_car["embedding"], json!([0.0, 1.0, 0.0]));
     // …and again on an update that changes what the formula reads.
     let id = red_car["id"].to_string();
-    let updated =
-        rows::update_row(&catalog, &table, &id, &json!({ "title": "fruit cake" })).await?;
+    let updated = rows::update_row(
+        &catalog,
+        &table,
+        &id,
+        &json!({ "title": "fruit cake" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert_eq!(updated["embedding"], json!([1.0, 0.0, 0.0]));
 
     // A nearest read given text embeds it with the field's model.
@@ -441,6 +481,7 @@ async fn an_embedded_field_is_computed_back_filled_and_searched_by_text() -> Res
         &catalog,
         &table,
         &json!({ "title": "fruit", "embedding": [0, 0, 1] }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     assert_eq!(given["embedding"], json!([0.0, 0.0, 1.0]));
@@ -457,7 +498,13 @@ async fn rest_and_graphql_take_a_nearest() -> Result<()> {
     add_vector(&catalog, embedded()).await?;
     let table = catalog.require("docs")?;
     for title in ["fruit salad", "car wash", "weather"] {
-        rows::create_row(&catalog, &table, &json!({ "title": title })).await?;
+        rows::create_row(
+            &catalog,
+            &table,
+            &json!({ "title": title }),
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
     let user = sc_auth::User::new(uuid::Uuid::new_v4(), Role::ADMIN);
 

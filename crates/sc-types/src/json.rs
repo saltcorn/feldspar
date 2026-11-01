@@ -16,7 +16,7 @@
 //! a Ⱶ-path prefetch can correlate on it (a `uuid` key compared as text is a SQL
 //! error, not a mismatch). That is a fact about types and values, not about an
 //! API, so it belongs at layer 3 where both callers can reach it.
-//! `sc_api::convert` re-exports both names, so the API side is unchanged.
+//! `sc_access::convert` re-exports both names, so the API side is unchanged.
 //!
 //! Not to be confused with [`sc_expr::value_to_json`], which renders the *same*
 //! values for **JavaScript**: a decimal becomes a number there and a string here,

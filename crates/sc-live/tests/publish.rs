@@ -245,19 +245,26 @@ async fn updating_a_row_topic_is_the_tables_update_rule() -> Result<()> {
     let (owner, editor, reader, stranger) = (user(1), user(2), user(3), user(4));
     let id = |u: &User| u.id().hyphenated().to_string();
     let shares = catalog.require("shares")?;
-    sc_api::rows::create_row(&catalog, &boards, &json!({ "id": 1, "owner": id(&owner) })).await?;
+    sc_access::rows::create_row(
+        &catalog,
+        &boards,
+        &json!({ "id": 1, "owner": id(&owner) }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     for (n, member, can_edit) in [(1, &editor, true), (2, &reader, false)] {
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             &catalog,
             &shares,
             &json!({ "id": n, "board": 1, "member": id(member), "can_edit": can_edit }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
     let evaluator: Arc<dyn JsEvaluator> = Arc::new(DenoEvaluator::new());
     let boards = catalog.require("boards")?;
     let may = async |u: &User, key: &str| {
-        sc_api::row_updatable_as(&catalog, &boards, key, u.role(), Some(u), Some(&evaluator))
+        sc_access::row_updatable_as(&catalog, &boards, key, u.role(), Some(u), Some(&evaluator))
             .await
             .unwrap()
     };
@@ -275,7 +282,7 @@ async fn updating_a_row_topic_is_the_tables_update_rule() -> Result<()> {
     }
     // The reader may read what they may not update: the two rules differ.
     assert!(
-        sc_api::row_readable_as(
+        sc_access::row_readable_as(
             &catalog,
             &boards,
             "1",

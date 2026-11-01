@@ -51,7 +51,7 @@ async fn admin_only_login_gate() -> sc_error::Result<()> {
 
     // Add a non-admin (role 40) directly, with a properly hashed password.
     let users = catalog.require(USERS_TABLE)?;
-    let provider = catalog.provider(&users)?;
+    let provider = catalog.provider(&users, sc_catalog::Unchecked::system("test"))?;
     let member_hash = hash_password("member-pw")?;
     provider
         .write(&Statement::from(Insert::row(

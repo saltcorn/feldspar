@@ -13,7 +13,7 @@
 //! [`RequestContext`] per request.
 //!
 //! Nothing here decides access. The context carries the caller; the *rule* is
-//! [`ownership`](crate::ownership)'s, and this provider reaches it through the
+//! [`ownership`](sc_access::ownership)'s, and this provider reaches it through the
 //! same entry points every other reader does.
 
 use sc_types::Role;

@@ -60,7 +60,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use sc_auth::{User, authenticate};
 use sc_catalog::{
-    Authority, Catalog, DataFieldKind, FileOnConflict, Principal, Table, load_file_store_by_name,
+    Authority, Catalog, DataFieldKind, FileOnConflict, Principal, Table, Unchecked,
+    load_file_store_by_name,
 };
 use sc_error::{Error, Repr, Result};
 use sc_expr::{JsEvaluator, Operation};
@@ -83,12 +84,21 @@ use crate::auth::{credentials, credentials_schema, user_summary_json, user_summa
 use crate::endpoint::{
     AuthRequirement, Endpoint, EndpointSet, HandlerRef, Method, PathSpec, QueryParam,
 };
-use crate::ownership;
 use crate::provider::{ApiProvider, ApiRequest, ApiResponse, SessionAction, StreamOpening};
 use crate::resource::{ResourceField, ResourceFile, ResourceModel};
-use crate::rows;
 use crate::schema::{StructField, TypeSchema, ValueType};
-use crate::write_as;
+use sc_access::ownership;
+use sc_access::rows;
+use sc_access::write_as;
+
+/// The check that stands behind this provider's unchecked row operations on an
+/// RLS table: the table's own row-level security policies, which every
+/// statement runs under (`run_rls`).
+const RLS_RULE: &str = "the table's RLS policies (REST provider, run_rls)";
+
+/// The check that stands behind a file download or upload's unchecked read and
+/// write of the row: the REST read or write rule the route applied first.
+const REST_RULE: &str = "the REST read / write rule (REST provider, file routes)";
 
 /// The provider's registered name.
 pub const REST_PROVIDER: &str = "rest";
@@ -1372,7 +1382,7 @@ impl RestProvider {
     /// string said about it.
     ///
     /// One function for every table, protected or not: the query string parses
-    /// into the row layer's [`RowQuery`](crate::rows::RowQuery) and the read goes
+    /// into the row layer's [`RowQuery`](sc_access::rows::RowQuery) and the read goes
     /// through [`ownership::read_row_values_as`], which is where "meets the floor
     /// OR the formula grants the row OR the policies do" lives — the same entry
     /// point the GraphQL root field and an agent's `query_table` use. A filter,
@@ -1469,7 +1479,8 @@ impl RestProvider {
             // says to, so the policies decide exactly as they do everywhere else.
             RestOp::List => self.list(cat, table, req, user).await?,
             RestOp::Create => {
-                let row = rows::create_row_ctx(cat, table, body, Authority::Caller(&ctx)).await?;
+                let row =
+                    rows::create_row(cat, table, body, Unchecked::vouched(&ctx, RLS_RULE)).await?;
                 ApiResponse::with_status(201, self.written_row(cat, table, row, user).await)
             }
             RestOp::Update => {
@@ -1479,13 +1490,20 @@ impl RestProvider {
                     id()?,
                     body,
                     None,
-                    Authority::Caller(&ctx),
+                    Unchecked::vouched(&ctx, RLS_RULE),
                 )
                 .await?;
                 ApiResponse::ok(self.written_row(cat, table, row, user).await)
             }
             RestOp::Delete => {
-                rows::delete_row_guarded(cat, table, id()?, None, Authority::Caller(&ctx)).await?;
+                rows::delete_row_guarded(
+                    cat,
+                    table,
+                    id()?,
+                    None,
+                    Unchecked::vouched(&ctx, RLS_RULE),
+                )
+                .await?;
                 deleted()
             }
             RestOp::Download { field } => {
@@ -1828,7 +1846,15 @@ async fn download_ctx(
     caller: &FileCaller,
     context: &Principal,
 ) -> Result<ApiResponse> {
-    download_inner(cat, table, field, id, caller, Authority::Caller(context)).await
+    download_inner(
+        cat,
+        table,
+        field,
+        id,
+        caller,
+        Unchecked::vouched(context, REST_RULE),
+    )
+    .await
 }
 
 async fn download_inner(
@@ -1837,10 +1863,10 @@ async fn download_inner(
     field: &str,
     id: &str,
     caller: &FileCaller,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<ApiResponse> {
     let (store_name, ..) = file_field(table, field)?;
-    let path = match rows::read_field_ctx(cat, table, field, id, context).await? {
+    let path = match rows::read_field(cat, table, field, id, context).await? {
         Value::Text(path) if !path.is_empty() => path,
         // The row exists but references nothing: for the caller that is "no
         // file here", the same not-found an empty shelf gets.
@@ -1902,7 +1928,7 @@ async fn upload_ctx(
         filename,
         data,
         caller,
-        Authority::Caller(context),
+        Unchecked::vouched(context, REST_RULE),
     )
     .await
 }
@@ -1916,7 +1942,7 @@ async fn upload_inner(
     filename: &str,
     data: Option<bytes::Bytes>,
     caller: &FileCaller,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<ApiResponse> {
     let (store_name, folder, mime_allow, on_conflict) = file_field(table, field)?;
     let Some(data) = data else {
@@ -1951,7 +1977,7 @@ async fn upload_inner(
 
     // The row must exist (and be writable by the caller) before the bytes land:
     // failing afterwards would leave an orphaned file no row references.
-    rows::read_field_ctx(cat, table, field, id, context).await?;
+    rows::read_field(cat, table, field, id, context).await?;
     store.write(&path, data).await?;
     // The uploader owns it (§2.1), so they can read it back however private
     // the folder is.
@@ -2289,7 +2315,7 @@ fn resource_model(table: &Table, exposed: &std::collections::HashSet<&str>) -> R
     let mut model = ResourceModel::new(&table.name);
     for field in &table.fields {
         // The password hash is no API's (`user_rows`), so no row type has it.
-        if crate::user_rows::is_hidden_column(table, &field.base.name) {
+        if sc_access::user_rows::is_hidden_column(table, &field.base.name) {
             continue;
         }
         let ty = field

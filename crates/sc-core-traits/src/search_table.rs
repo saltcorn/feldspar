@@ -5,7 +5,7 @@
 //! search phrases in the syntax of a web search engine (`"an exact phrase"`,
 //! words in any order, `-excluded`, `or`). A row matching any phrase is
 //! returned once, best match first, phrase by phrase. The search is the row
-//! layer's (`sc_api::search`), inside the caller's own read: the table's
+//! layer's (`sc_access::search`), inside the caller's own read: the table's
 //! full-text index where it answers, a bounded scan where it does not, and a
 //! refusal that says what to do about a big table with no index.
 //!
@@ -14,8 +14,8 @@
 //! mode, hidden fields, and a document format. In `every_message` mode the
 //! trait offers no tool and instead looks up every user message itself.
 
+use sc_access::rows::RowQuery;
 use sc_agent::{AgentTrait, RunCaller, ToolsContext, TraitCheck, TraitContext, Turn};
-use sc_api::rows::RowQuery;
 use sc_catalog::{Catalog, Table, full_text_columns};
 use sc_error::{Error, Result};
 use sc_expr::JsEvaluator;
@@ -306,7 +306,7 @@ pub(crate) fn searched_columns(table: &Table, visible: &[String]) -> Result<Opti
 /// The search for `phrase` over the text fields of `visible`.
 pub(crate) fn text_search(table: &Table, visible: &[String], phrase: &str) -> Result<TextSearch> {
     let columns = searched_columns(table, visible)?;
-    sc_api::search::text_search(table, phrase, columns.as_deref())
+    sc_access::search::text_search(table, phrase, columns.as_deref())
 }
 
 /// What a search found: the rows, narrowed to what the model is shown, and
@@ -330,17 +330,17 @@ async fn search(
     let hidden = retrieval::hidden_fields(config)?;
     let shown = retrieval::shown(&visible, &hidden);
     let ceiling = max_rows(config, DEFAULT_SEARCH_ROWS as u64)?;
-    let pk = sc_api::rows::single_pk(table)?;
+    let pk = sc_access::rows::single_pk(table)?;
     let mut seen = std::collections::BTreeSet::new();
     let mut rows = Vec::new();
     let mut more = false;
     for phrase in phrases {
         let search = text_search(table, &visible, phrase)?;
         let query = RowQuery::new()
-            .order_by(vec![sc_api::search::relevance(&search)])
+            .order_by(vec![sc_access::search::relevance(&search)])
             .searching(search)
             .limit(ceiling.saturating_add(1));
-        let found = sc_api::read_rows_as(
+        let found = sc_access::read_rows_as(
             catalog,
             table,
             &query,

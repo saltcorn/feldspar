@@ -7,7 +7,7 @@
 //! the deduction of a schema from a file's header and contents.
 //!
 //! Everything else is **nothing else**: an import goes row by row through
-//! [`rows::create_row_ctx`]/[`rows::update_row_ctx`], the same functions the row
+//! [`rows::create_row`]/[`rows::update_row`], the same functions the row
 //! endpoints and an application's REST provider write through, so a CSV write is
 //! held to every rule an ordinary write is: type coercion, rich-type attributes,
 //! `File` field paths, ownership, RLS, and the insert triggers that fire
@@ -51,15 +51,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use sc_catalog::{
-    Authority, Catalog, Changeset, ChangesetSource, DataFieldKind, SharedTx, Table, changeset,
+    Catalog, Changeset, ChangesetSource, DataFieldKind, SharedTx, Table, Unchecked, changeset,
 };
 use sc_error::{Error, Result};
 use sc_query::Expr;
 use sc_types::BasicType;
 use serde_json::{Map, Value as Json};
 
-use crate::rows;
 use crate::schema_edit;
+use sc_access::rows;
 
 /// The header cell that means "this column is the table's primary key" when a
 /// table is created from a file.
@@ -93,10 +93,10 @@ pub struct ImportOutcome {
 pub async fn export_table(
     catalog: &Catalog,
     table: &Table,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<String> {
     let columns: Vec<&str> = stored_columns(table);
-    let mut rows = rows::list_rows_ctx(catalog, table, context).await?;
+    let mut rows = rows::list_rows(catalog, table, context).await?;
     // A secret is exported as its sentinel, which an import of the same file
     // reads as "leave it as it is" (TODO-imap M2).
     sc_catalog::secrets::redact_json(table, &mut rows);
@@ -156,7 +156,7 @@ pub async fn import_table(
     catalog: &Catalog,
     table: &Table,
     document: &str,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<ImportOutcome> {
     // One changeset for the whole file (§14.12), in the session and the
     // application of the request that brought it.
@@ -169,7 +169,11 @@ pub async fn import_table(
     let principal = context
         .principal()
         .map(|c| c.clone().in_changeset(Some(changeset.clone())));
-    let context = principal.as_ref().map_or(context, Authority::Caller);
+    let context = match &principal {
+        Some(principal) => Unchecked::admin(principal)
+            .ok_or_else(|| Error::auth("only an administrator imports a CSV file"))?,
+        None => context,
+    };
     changeset::scope(
         changeset,
         import_in_changeset(catalog, table, document, context),
@@ -182,7 +186,7 @@ async fn import_in_changeset(
     catalog: &Catalog,
     table: &Table,
     document: &str,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<ImportOutcome> {
     // `flexible`: a row with a cell too few is a row with a blank at the end,
     // and a trailing comma is a cell too many. Both are things spreadsheets
@@ -209,7 +213,7 @@ async fn import_in_changeset(
 
     // On the database that hosts the table, not on the primary: a table created
     // on a connection takes its rows in the same database its columns are in.
-    let driver = catalog.driver_for(table)?;
+    let driver = catalog.driver_for(table, context)?;
     // Shared rather than held: the import makes every statement itself, but the
     // *events* its writes raise reach triggers that write too, and those writes
     // belong in this transaction as much as the import's own (§10.3, decision 6).
@@ -323,7 +327,7 @@ async fn write_row(
     table: &Table,
     pk: Option<&str>,
     mut body: Map<String, Json>,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
     summaries: &mut SummaryLookups,
     keys_seen: &mut HashSet<String>,
     executor: &rows::Executor,
@@ -383,7 +387,7 @@ pub async fn create_table_from_csv(
     name: &str,
     database: &str,
     document: &str,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
 ) -> Result<(Table, ImportOutcome)> {
     let columns = plan_columns(document)?;
     let fields: Vec<schema_edit::FieldSpec> = columns
@@ -608,7 +612,7 @@ async fn write_by_key(
     table: &Table,
     key: &str,
     body: Map<String, Json>,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
     executor: &rows::Executor,
 ) -> Result<Written> {
     if row_exists(catalog, table, key, context, executor).await? {
@@ -631,7 +635,7 @@ async fn row_exists(
     catalog: &Catalog,
     table: &Table,
     key: &str,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
     executor: &rows::Executor,
 ) -> Result<bool> {
     let pk = rows::single_pk(table)?;
@@ -659,7 +663,11 @@ pub(crate) async fn advance_identity_sequence(
     // from the table itself (SQLite's rowid) is already past the rows that were
     // just written, and this statement is Postgres's own dialect — sending it
     // there would fail an import that had already succeeded.
-    if !catalog.driver_for(table)?.capabilities().identity_sequences {
+    if !catalog
+        .driver_info(&table.database)?
+        .capabilities()
+        .identity_sequences
+    {
         return Ok(());
     }
     let table_lit = table.name.replace('\'', "''").replace('"', "\"\"");
@@ -705,7 +713,7 @@ impl SummaryLookups {
         catalog: &Catalog,
         table: &Table,
         body: &mut Map<String, Json>,
-        context: Authority<'_>,
+        context: Unchecked<'_>,
         executor: &rows::Executor,
     ) -> Result<()> {
         for field in &table.fields {
@@ -777,7 +785,7 @@ async fn summary_key(
     summary: &str,
     target_field: &str,
     text: &str,
-    context: Authority<'_>,
+    context: Unchecked<'_>,
     executor: &rows::Executor,
 ) -> Result<Option<Json>> {
     let Ok(value) = rows::column_value(target, summary, &Json::String(text.to_owned())) else {

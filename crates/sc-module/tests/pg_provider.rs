@@ -179,7 +179,9 @@ async fn a_remote_postgres_table_is_read_and_written_through_a_module() {
     // And it is writable, because this configuration is not read-only.
     assert_eq!(table.provided_writes(), ProvidedWrites::ALL);
 
-    let provider = catalog.provider(&table).unwrap();
+    let provider = catalog
+        .provider(&table, sc_catalog::Unchecked::system("test"))
+        .unwrap();
 
     // --- INSERT -------------------------------------------------------------
     let insert =
@@ -318,7 +320,9 @@ async fn a_read_only_configuration_refuses_all_three_and_still_reads() {
 
     let table = catalog.require("people").unwrap();
     assert_eq!(table.provided_writes(), ProvidedWrites::NONE);
-    let provider = catalog.provider(&table).unwrap();
+    let provider = catalog
+        .provider(&table, sc_catalog::Unchecked::system("test"))
+        .unwrap();
 
     // Reading is unaffected.
     let rows = provider

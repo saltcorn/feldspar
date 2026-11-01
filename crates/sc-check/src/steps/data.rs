@@ -1,7 +1,7 @@
 //! The `data.*` step types (docs/CHECKLISTS.md §2, TODO C1.8).
 //!
 //! Every one of them goes through the row layer **as `run_as`** —
-//! `sc_api::read_rows_as` and its siblings, the functions an agent's tools use
+//! `sc_access::read_rows_as` and its siblings, the functions an agent's tools use
 //! — so a checklist tests permissions as well as data: the ownership formula,
 //! the role floors and a table's RLS policies all apply exactly as they do to
 //! the application's own REST API.
@@ -11,7 +11,7 @@
 //! so a check that passes leaves no trace and one that fails has not just
 //! deleted the row it was asking about.
 
-use sc_api::rows::{self, Executor, RowQuery};
+use sc_access::rows::{self, Executor, RowQuery};
 use sc_catalog::Authority;
 use sc_catalog::Table;
 use sc_catalog::outbox::{Sent, SentKind};
@@ -103,7 +103,7 @@ pub(crate) async fn read(
     limit: u64,
 ) -> Result<Vec<Json>> {
     let query = RowQuery::new().where_(filter).limit(limit);
-    let found = sc_api::read_rows_as(
+    let found = sc_access::read_rows_as(
         cx.catalog,
         table,
         &query,
@@ -180,7 +180,7 @@ impl StepType for Insert {
         let outcome: Result<StepOutcome> = async {
             let table = table(cx, params)?;
             let row = object(params, "row")?;
-            let written = match sc_api::insert_row_as(
+            let written = match sc_access::insert_row_as(
                 cx.catalog,
                 &table,
                 &row,
@@ -247,7 +247,7 @@ impl StepType for Update {
             let table = table(cx, params)?;
             let id = text(params, "id")?;
             let changes = object(params, "row")?;
-            match sc_api::update_row_as(
+            match sc_access::update_row_as(
                 cx.catalog,
                 &table,
                 &id,
@@ -306,7 +306,7 @@ impl StepType for Delete {
         let outcome: Result<StepOutcome> = async {
             let table = table(cx, params)?;
             let id = text(params, "id")?;
-            match sc_api::delete_row_as(
+            match sc_access::delete_row_as(
                 cx.catalog,
                 &table,
                 &id,
@@ -373,7 +373,7 @@ impl StepType for ExpectRows {
         let outcome: Result<StepOutcome> = async {
             let table = table(cx, params)?;
             let filter =
-                sc_api::filter::api_where(&table, params.get("where").filter(|w| !w.is_null()))?;
+                sc_access::filter::api_where(&table, params.get("where").filter(|w| !w.is_null()))?;
             let found = match read(cx, &table, filter, MAX_ROWS).await {
                 Ok(found) => found,
                 Err(e) if is_denial(&e) => {
@@ -484,7 +484,7 @@ impl StepType for ExpectDenied {
                             let pk = rows::single_pk(&table)?;
                             Some(rows::pk_filter(&table, &pk, &text(params, "id")?)?)
                         }
-                        None => sc_api::filter::api_where(
+                        None => sc_access::filter::api_where(
                             &table,
                             params.get("where").filter(|w| !w.is_null()),
                         )?,
@@ -496,7 +496,7 @@ impl StepType for ExpectDenied {
                     }
                 }
                 "insert" => {
-                    sc_api::row_insertable_as(
+                    sc_access::row_insertable_as(
                         cx.catalog,
                         &table,
                         &object(params, "row")?,
@@ -507,7 +507,7 @@ impl StepType for ExpectDenied {
                     .await?
                 }
                 "update" => {
-                    sc_api::row_updatable_as(
+                    sc_access::row_updatable_as(
                         cx.catalog,
                         &table,
                         &text(params, "id")?,
@@ -518,7 +518,7 @@ impl StepType for ExpectDenied {
                     .await?
                 }
                 "delete" => {
-                    sc_api::row_deletable_as(
+                    sc_access::row_deletable_as(
                         cx.catalog,
                         &table,
                         &text(params, "id")?,
@@ -615,7 +615,7 @@ impl StepType for RunTrigger {
                 )))
             } else {
                 let payload = params.get("payload").cloned().unwrap_or(Json::Null);
-                let caller = sc_api::principal_of(cx.run_as);
+                let caller = sc_access::principal_of(cx.run_as);
                 dispatcher
                     .run_trigger(cx.catalog, &name, payload, Authority::Caller(&caller))
                     .await

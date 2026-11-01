@@ -4,13 +4,13 @@
 //! changes, the cleanup job, and `seq` as sync's watermark.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use sc_catalog::Authority;
 use sc_types::Role;
 use std::sync::Arc;
 
+use sc_access::rows;
 use sc_api::history::HistoryReader;
+use sc_api::schema_edit;
 use sc_api::undo::{Reverser, UndoOutcome};
-use sc_api::{rows, schema_edit};
 use sc_auth::User;
 use sc_catalog::retention::clean_change_log;
 use sc_catalog::{
@@ -153,27 +153,27 @@ async fn writes_are_merged_into_one_entry_per_row_per_changeset() -> Result<()> 
     // to another table: one entry per row.
     let first = request();
     changeset::scope(first.clone(), async {
-        rows::update_row_ctx(
+        rows::update_row(
             &catalog,
             &todo,
             "1",
             &json!({ "title": "oat milk" }),
-            Authority::Caller(&caller()),
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
         )
         .await?;
-        rows::update_row_ctx(
+        rows::update_row(
             &catalog,
             &todo,
             "1",
             &json!({ "done": true }),
-            Authority::Caller(&caller()),
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
         )
         .await?;
-        rows::create_row_ctx(
+        rows::create_row(
             &catalog,
             &audit,
             &json!({ "what": "done" }),
-            Authority::Caller(&caller()),
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
         )
         .await
     })
@@ -220,20 +220,20 @@ async fn writes_are_merged_into_one_entry_per_row_per_changeset() -> Result<()> 
     // JSON column as JSON and the boolean as a boolean.
     let second = request();
     changeset::scope(second.clone(), async {
-        let row = rows::create_row_ctx(
+        let row = rows::create_row(
             &catalog,
             &todo,
             &json!({ "title": "bread", "meta": { "aisle": [3, 4] } }),
-            Authority::Caller(&caller()),
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
         )
         .await?;
         let id = row["id"].to_string();
-        rows::update_row_ctx(
+        rows::update_row(
             &catalog,
             &todo,
             &id,
             &json!({ "title": "rye" }),
-            Authority::Caller(&caller()),
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
         )
         .await
     })
@@ -260,12 +260,12 @@ async fn writes_are_merged_into_one_entry_per_row_per_changeset() -> Result<()> 
     assert_eq!(entries(&catalog).await?.len(), before);
 
     // An update that changes nothing records nothing.
-    rows::update_row_ctx(
+    rows::update_row(
         &catalog,
         &todo,
         "1",
         &json!({ "title": "oat milk" }),
-        Authority::Caller(&caller()),
+        sc_catalog::Unchecked::vouched(&caller(), "test"),
     )
     .await?;
     assert_eq!(entries(&catalog).await?.len(), before);
@@ -341,19 +341,19 @@ async fn history_is_read_restored_and_undone() -> Result<()> {
 
     let edit_one = request();
     changeset::scope(edit_one.clone(), async {
-        rows::update_row_ctx(
+        rows::update_row(
             &catalog,
             &todo,
             "1",
             &json!({ "title": "oat milk" }),
-            Authority::Caller(&caller()),
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
         )
         .await?;
-        rows::create_row_ctx(
+        rows::create_row(
             &catalog,
             &audit,
             &json!({ "what": "renamed" }),
-            Authority::Caller(&caller()),
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
         )
         .await
     })
@@ -384,7 +384,13 @@ async fn history_is_read_restored_and_undone() -> Result<()> {
     assert!(rows_of(&catalog, "SELECT * FROM audit").await?.is_empty());
 
     // Delete, list as deleted, restore.
-    rows::delete_row_ctx(&catalog, &todo, "1", Authority::Caller(&caller())).await?;
+    rows::delete_row(
+        &catalog,
+        &todo,
+        "1",
+        sc_catalog::Unchecked::vouched(&caller(), "test"),
+    )
+    .await?;
     let deleted = reader.deleted_rows("todo", None, 0).await?;
     assert_eq!(deleted[0]["key"], json!("1"));
     assert_eq!(deleted[0]["row"]["title"], json!("milk"));
@@ -412,12 +418,12 @@ async fn the_triggers_follow_the_tables_columns() -> Result<()> {
         },
     )
     .await?;
-    rows::update_row_ctx(
+    rows::update_row(
         &catalog,
         &todo(),
         "1",
         &json!({ "note": "2%" }),
-        Authority::Caller(&caller()),
+        sc_catalog::Unchecked::vouched(&caller(), "test"),
     )
     .await?;
     assert_eq!(entries(&catalog).await?[0].4, json!({ "note": "2%" }));
@@ -437,12 +443,12 @@ async fn the_triggers_follow_the_tables_columns() -> Result<()> {
     )
     .await?;
     assert_eq!(entries(&catalog).await?[0].4, json!({ "remark": "2%" }));
-    rows::update_row_ctx(
+    rows::update_row(
         &catalog,
         &todo(),
         "1",
         &json!({ "remark": "whole" }),
-        Authority::Caller(&caller()),
+        sc_catalog::Unchecked::vouched(&caller(), "test"),
     )
     .await?;
     assert_eq!(
@@ -460,12 +466,12 @@ async fn the_triggers_follow_the_tables_columns() -> Result<()> {
         },
     )
     .await?;
-    rows::update_row_ctx(
+    rows::update_row(
         &catalog,
         &todo(),
         "1",
         &json!({ "title": "cream" }),
-        Authority::Caller(&caller()),
+        sc_catalog::Unchecked::vouched(&caller(), "test"),
     )
     .await?;
     assert_eq!(entries(&catalog).await?[2].4, json!({ "title": "cream" }));
@@ -559,12 +565,12 @@ async fn a_renamed_table_keeps_its_history() -> Result<()> {
         ]
     );
 
-    rows::update_row_ctx(
+    rows::update_row(
         &catalog,
         &tasks,
         "1",
         &json!({ "title": "bread" }),
-        Authority::Caller(&caller()),
+        sc_catalog::Unchecked::vouched(&caller(), "test"),
     )
     .await?;
     let tables: Vec<String> = entries(&catalog).await?.into_iter().map(|e| e.0).collect();

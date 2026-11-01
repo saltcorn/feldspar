@@ -36,8 +36,8 @@ use sc_query::{Expr, InSet, Value};
 
 use super::context::RequestContext;
 use super::resolve::RowValue;
-use crate::ownership;
-use crate::rows::{self, RowQuery};
+use sc_access::ownership;
+use sc_access::rows::{self, RowQuery};
 
 /// One child-list read, minus the parents it is for: the relation it follows
 /// and the query the field's arguments lowered to.
@@ -52,7 +52,7 @@ pub struct ChildRequest {
     /// The child's key column — the one referencing the parent.
     key_field: String,
     /// The caller's `where`/`order_by`, their per-parent bound as a
-    /// [`Partition`](crate::rows::Partition), and the Ⱶ-join projections their
+    /// [`Partition`](sc_access::rows::Partition), and the Ⱶ-join projections their
     /// selection set implies. The `key IN (…)` is the loader's to add.
     query: RowQuery,
     /// What "the same request" means, as text.
@@ -238,7 +238,7 @@ impl Loader<ChildKey> for ChildLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rows::Partition;
+    use sc_access::rows::Partition;
 
     fn request(table: &str, key: &str, query: RowQuery) -> Arc<ChildRequest> {
         Arc::new(ChildRequest::new(table, key, query))

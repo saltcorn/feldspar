@@ -9,7 +9,7 @@
 //! against the catalog, and anything else is refused naming it.
 //!
 //! Two spellings of a filter (§3), one predicate: the object DSL every other
-//! surface already speaks — lowered by [`crate::filter`], the same walk an agent's
+//! surface already speaks — lowered by [`sc_access::filter`], the same walk an agent's
 //! `where` argument goes through — or a formula string, parsed by
 //! [`Formula::parse`] and translated by the one symbolic translator. A projection
 //! is the same choice: a field name, a Ⱶ-path, or an `{ alias, formula }` object.
@@ -38,11 +38,11 @@ use sc_query::{
 use serde::Deserialize;
 use serde_json::Value as Json;
 
-use crate::convert::value_to_json;
-use crate::filter::{self, FilterKey, JoinedColumn};
-use crate::ownership::{self, AggregateGuard, JoinAccess};
-use crate::rows::{self, RowQuery};
-use crate::user_rows;
+use sc_access::convert::value_to_json;
+use sc_access::filter::{self, FilterKey, JoinedColumn};
+use sc_access::ownership::{self, AggregateGuard, JoinAccess};
+use sc_access::rows::{self, RowQuery};
+use sc_access::user_rows;
 
 use super::HostLimits;
 
@@ -208,7 +208,7 @@ pub enum Op {
 /// opt-*out* there (`asAdmin()`) rather than opt-in.
 ///
 /// The three that are not `Admin` are one thing in the end: [`Actor::Caller`],
-/// a role and a user, checked through `sc_api::ownership`'s `*_as` functions.
+/// a role and a user, checked through `sc_access::ownership`'s `*_as` functions.
 /// There is no second implementation of "meets the floor OR the formula grants
 /// it" here and there must never be one; what these forms differ in is only
 /// *which* role and user those functions are handed.
@@ -229,7 +229,7 @@ pub enum Authority {
     /// row a caller may not insert is the archetype of what a trigger exists to
     /// write.
     Admin,
-    /// The event's caller, through `sc_api::ownership`'s `*_as` functions.
+    /// The event's caller, through `sc_access::ownership`'s `*_as` functions.
     User,
     /// The **public** role and nobody — v1's `forPublic: true`, and the honest
     /// reading of "what would an anonymous visitor see".
@@ -1183,7 +1183,7 @@ struct Lowering<'a> {
     calc: CalcFields,
     /// Which calculated fields the database never sees (milestone 31 §4), so
     /// a filter or an ordering naming one is refused saying why.
-    calc_plan: crate::calc_read::CalcPlan,
+    calc_plan: sc_access::calc_read::CalcPlan,
     user_env: UserEnv,
     role: Role,
     in_caller_context: Cell<bool>,
@@ -1201,7 +1201,7 @@ impl<'a> Lowering<'a> {
                 .collect(),
             shape: catalog.schema_shape()?,
             calc: table.calc_formulas(),
-            calc_plan: crate::calc_read::CalcPlan::of(catalog, table)?,
+            calc_plan: sc_access::calc_read::CalcPlan::of(catalog, table)?,
             table: table.clone(),
             // A formula in a plan reads the row and nothing else — see
             // `guard`, which refuses `user` by name rather than inlining a null.

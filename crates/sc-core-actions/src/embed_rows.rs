@@ -74,7 +74,7 @@ impl Action for EmbedRows {
     async fn validate_config(&self, check: &ConfigCheck<'_>) -> Result<()> {
         let table = target_table(check.catalog, check.config)?;
         let name = field(check.config)?;
-        let (vector, _) = sc_api::vector::vector_field(&table, &name)?;
+        let (vector, _) = sc_access::vector::vector_field(&table, &name)?;
         if vector
             .base
             .attributes
@@ -87,7 +87,7 @@ impl Action for EmbedRows {
                 table.name
             )));
         }
-        sc_api::rows::single_pk(&table)?;
+        sc_access::rows::single_pk(&table)?;
         max_rows(check.config)?;
         Ok(())
     }
@@ -97,7 +97,13 @@ impl Action for EmbedRows {
         let table = target_table(ctx.catalog, ctx.config).map_err(named)?;
         let name = field(ctx.config).map_err(named)?;
         let max = max_rows(ctx.config).map_err(named)?;
-        let report = sc_api::vector::embed_rows(ctx.catalog, &table, &name, max)
+        // A back-fill writes no row history and raises no event (see
+        // `embed_rows`), under the trigger's authority.
+        let access = ctx
+            .scoped()
+            .unchecked()
+            .ok_or_else(|| named(Error::auth("embed_rows runs with the trigger's authority")))?;
+        let report = sc_access::vector::embed_rows(ctx.catalog, &table, &name, max, access)
             .await
             .map_err(named)?;
         Ok(json!({ "embedded": report.embedded, "skipped": report.skipped }))

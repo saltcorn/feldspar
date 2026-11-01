@@ -222,7 +222,7 @@ async fn the_same_table_read_by_two_callers_gives_two_answers() -> Result<()> {
 
     // Each reader sees their own rows and nobody else's, from one configuration
     // and one tool. This is not a check the trait performs — it is one it cannot
-    // skip, because the read goes through `sc_api::read_rows_as`.
+    // skip, because the read goes through `sc_access::read_rows_as`.
     let ada = RunCaller::user(reader("ada@example.com"));
     let bob = RunCaller::user(reader("bob@example.com"));
     let sorted = json!({"order_by": "id"});

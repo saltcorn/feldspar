@@ -33,6 +33,7 @@ sc-action.workspace = true
 # siblings), the filter object, and the grant vocabulary the MCP token and the
 # copilot share.
 sc-api.workspace = true
+sc-access.workspace = true
 # The application a checklist checks, and its build for `app.builds`.
 sc-app.workspace = true
 # Saltcorn UI's views, which the `saltcorn_ui.*` step types name (C3.3).

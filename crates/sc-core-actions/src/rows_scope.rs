@@ -39,14 +39,13 @@
 //! site, and the same line in each of the three — an action does not get to have
 //! an opinion about whether it is part of a larger unit of work.
 
-use sc_catalog::Authority;
-use sc_types::Role;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use sc_access::Scoped;
 use sc_action::{ActionContext, EventBindings, config_str, required_formula};
 use sc_auth::USERS_TABLE;
-use sc_catalog::{Catalog, Principal, Table, prefetch_bindings};
+use sc_catalog::{Catalog, Table, prefetch_bindings};
 use sc_error::{Error, Result};
 use sc_expr::{
     Ambient, Env, Formula, JsEvaluator, Operation, SchemaShape, TranslateError, UserEnv, translate,
@@ -56,7 +55,7 @@ use sc_query::{Expr, Value};
 use sc_types::Attrs;
 use serde_json::Value as Json;
 
-use sc_api::rows;
+use sc_access::rows;
 
 /// The `table` setting every row-writing action takes.
 pub(crate) const CFG_TABLE: &str = "table";
@@ -107,16 +106,11 @@ pub(crate) fn writable_field(table: &Table, field: &str) -> Result<()> {
 pub(crate) struct Scope<'a> {
     trigger: &'a str,
     catalog: &'a Catalog,
-    /// The transaction this action's reads and writes belong in, when it has one
-    /// — a workflow step's (§10.3, decision 6). The whole of what a row action
-    /// has to know about it: it is handed to the row layer as an
-    /// [`Executor`](rows::Executor) and everything else follows.
-    executor: rows::Executor,
-    /// The caller, for the authority a write runs under.
-    user_json: Option<&'a Json>,
-    /// The triggers that led here, including this one — what a write this action
-    /// makes carries, so the event it raises knows how deep it is.
-    chain: Vec<String>,
+    /// The row layer with the action's authority bound
+    /// ([`ActionContext::scoped`]): admin, in the event's user's name, carrying
+    /// the triggers that led here, on the workflow step's transaction when
+    /// there is one (§10.3, decision 6).
+    scoped: Scoped<'a>,
     evaluator: &'a Arc<dyn JsEvaluator>,
     shape: SchemaShape,
     /// `row`/`old` and the caller, typed against their own columns.
@@ -130,13 +124,10 @@ impl<'a> Scope<'a> {
     /// action whose configuration *is* formulas has nothing correct to do without
     /// one, and doing nothing quietly is the failure mode this refuses.
     pub(crate) fn of(ctx: &'a ActionContext<'_>) -> Result<Scope<'a>> {
-        let event = ctx.event;
         Ok(Scope {
             trigger: ctx.trigger,
             catalog: ctx.catalog,
-            executor: rows::Executor::of(ctx.transaction()),
-            user_json: event.user.as_ref(),
-            chain: ctx.chain.clone(),
+            scoped: ctx.scoped(),
             evaluator: ctx.evaluator()?,
             // The scope, and the values in it, both come off the context: a step
             // of a workflow reads `context` and a trigger's own action body does
@@ -233,25 +224,18 @@ impl<'a> Scope<'a> {
         Ok(out)
     }
 
-    /// The caller an action's write runs as: **admin, in the event's user's
-    /// name**, carrying the chain of triggers that led here.
+    /// The row layer with the action's authority bound: what an action's
+    /// writes go through. **Admin, in the event's user's name**, carrying the
+    /// chain of triggers that led here.
     ///
-    /// One context for every write, not only for the RLS ones it started as. The
-    /// role and the user are what the policies read on an RLS table (see the
+    /// One authority for every write, not only for the RLS ones it started as.
+    /// The role and the user are what the policies read on an RLS table (see the
     /// module docs) — and off one they are what the *event* this write raises
     /// reports as its caller, which is the same question answered for the same
     /// write. The chain is what bounds the cascade: an event raised by this write
     /// carries it, so `Event::firing` can see how deep it already is.
-    /// Where this action's statements run: the step's transaction when there is
-    /// one, and the pooled path when there is not.
-    pub(crate) fn executor(&self) -> &rows::Executor {
-        &self.executor
-    }
-
-    pub(crate) fn authority(&self) -> Principal {
-        Principal::new(Role::ADMIN, self.user_json.cloned())
-            .chained(self.chain.clone())
-            .in_current_origin()
+    pub(crate) fn scoped(&self) -> &Scoped<'a> {
+        &self.scoped
     }
 
     /// Whether the predicate selects one fetched row — the reified half of
@@ -277,14 +261,16 @@ impl<'a> Scope<'a> {
         table: &Table,
         filter: Option<Expr>,
     ) -> Result<Vec<BTreeMap<String, Value>>> {
-        let mut rows = rows::select_values_in(
-            self.catalog,
-            table,
-            filter,
-            Authority::Caller(&self.authority()),
-            &self.executor,
-        )
-        .await?;
+        // The action's authority is the administrator's, so the read is the
+        // row layer's own (with the non-stored calculated fields a formula
+        // may read), not the ownership rule's.
+        let access = self
+            .scoped
+            .unchecked()
+            .ok_or_else(|| Error::auth("an action reads rows with the trigger's authority"))?;
+        let mut rows =
+            rows::select_values_in(self.catalog, table, filter, access, self.scoped.executor())
+                .await?;
         // An action is server-side code: its formulas read a secret's plaintext
         // (TODO-imap M2), and a value written back is sealed again on the way.
         for row in &mut rows {

@@ -24,13 +24,12 @@
 //! *and* on the proposed row, so a user cannot move a row out of their own
 //! ownership; an insert is checked against the proposed row with `_insert`.
 
-use sc_catalog::Authority;
 use sc_types::Role;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sc_auth::{COL_ID, COL_ROLE, User};
-use sc_catalog::{Catalog, Principal, Table, prefetch_bindings};
+use sc_catalog::{Catalog, Principal, Table, Unchecked, prefetch_bindings};
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_expr::{
@@ -43,8 +42,22 @@ use serde_json::{Map, Value as Json};
 use crate::convert::value_to_json;
 use crate::rows;
 
+/// The check that stands behind every unchecked row operation this module
+/// makes for a caller: the floor it just compared, the formula it just
+/// evaluated, or the RLS policies it routes the statement through.
+pub const OWNERSHIP_RULE: &str = "the ownership rule (sc-access ownership.rs)";
+
+/// `caller`'s access, as this module has just decided it.
+fn decided(caller: &Principal) -> Unchecked<'_> {
+    Unchecked::vouched(caller, OWNERSHIP_RULE)
+}
+
+/// The system read the ownership checks make of an existing row, to decide on
+/// it: a read that returns nothing to the caller.
+const CHECK_READ: Unchecked<'static> = Unchecked::system("ownership check: read the existing row");
+
 /// Whether the caller meets a `min_role` floor (lower role = more privileged).
-pub(crate) fn meets(user: Option<&User>, min_role: Role) -> bool {
+pub fn meets(user: Option<&User>, min_role: Role) -> bool {
     sc_auth::role_of(user).meets(min_role)
 }
 
@@ -208,6 +221,23 @@ pub async fn read_row_values_as_in(
     evaluator: Option<&Arc<dyn JsEvaluator>>,
     executor: &rows::Executor,
 ) -> Result<Vec<BTreeMap<String, Value>>> {
+    let ctx = principal_at(role, user);
+    read_row_values_by(cat, table, query, &ctx, user, evaluator, executor).await
+}
+
+/// [`read_row_values_as_in`] for a caller who is already a [`Principal`]
+/// ([`Scoped`](crate::Scoped)): the role is the principal's, and `user` is the
+/// principal's user read back as a [`User`] for the ownership formula.
+pub(crate) async fn read_row_values_by(
+    cat: &Catalog,
+    table: &Table,
+    query: &rows::RowQuery,
+    ctx: &Principal,
+    user: Option<&User>,
+    evaluator: Option<&Arc<dyn JsEvaluator>>,
+    executor: &rows::Executor,
+) -> Result<Vec<BTreeMap<String, Value>>> {
+    let role = ctx.role;
     if let Some(search) = &query.search {
         crate::search::require_answerable(cat, table, search).await?;
     }
@@ -220,15 +250,12 @@ pub async fn read_row_values_as_in(
     // an RLS child (§13.4). The context is built either way and the row layer
     // decides whether the statement is wrapped, so the two rules stay in the one
     // place that knows them.
-    let ctx = principal_at(role, user);
     let reaches_rls = table.rls_enabled || query.in_caller_context;
     if table.rls_enabled {
-        return rows::list_row_values_in(cat, table, query, Authority::Caller(&ctx), executor)
-            .await;
+        return rows::list_row_values_in(cat, table, query, decided(ctx), executor).await;
     }
     if role.meets(table.access.min_role_read) {
-        return rows::list_row_values_in(cat, table, query, Authority::Caller(&ctx), executor)
-            .await;
+        return rows::list_row_values_in(cat, table, query, decided(ctx), executor).await;
     }
     let Some(formula) = &table.ownership else {
         return Err(Error::auth(format!("you may not read `{}`", table.name)));
@@ -252,7 +279,7 @@ pub async fn read_row_values_as_in(
                 cat,
                 table,
                 &query.clone().and_filter(pred),
-                Authority::Caller(&ctx),
+                decided(ctx),
                 executor,
             )
             .await
@@ -274,7 +301,7 @@ pub async fn read_row_values_as_in(
                     filter: query.filter.clone(),
                     order: &query.order,
                     extra: &query.extra,
-                    context: Authority::Caller(&ctx),
+                    context: decided(ctx),
                     reaches_rls,
                     executor: executor.clone(),
                 },
@@ -441,7 +468,7 @@ async fn row_writable_as(
     let Ok(filter) = rows::pk_filter(table, &pk, key) else {
         return Ok(false);
     };
-    let context = Authority::system("ownership check: read the existing row");
+    let context = CHECK_READ;
     let existing = match &table.ownership {
         // With the formula's Ⱶ-join values, which `row_allowed` would
         // otherwise fetch link by link.
@@ -466,7 +493,7 @@ async fn row_writable_as(
                 limit: Some(1),
                 ..rows::RowQuery::new()
             };
-            rows::list_row_values(cat, table, &query, context).await?
+            rows::list_row_values(cat, table, &query, CHECK_READ).await?
         }
     };
     let Some(existing) = existing.into_iter().next() else {
@@ -791,7 +818,7 @@ pub async fn aggregate_grouped_as(
     match aggregate_guard(cat, table, &table.name, role, user)? {
         AggregateGuard::InContext => {
             let ctx = principal_at(role, user);
-            rows::aggregate_grouped(cat, table, projections, query, Authority::Caller(&ctx)).await
+            rows::aggregate_grouped(cat, table, projections, query, decided(&ctx)).await
         }
         AggregateGuard::Predicate(pred) => {
             let query = match pred {
@@ -799,7 +826,7 @@ pub async fn aggregate_grouped_as(
                 None => query.clone(),
             };
             let ctx = principal_at(role, user);
-            rows::aggregate_grouped(cat, table, projections, &query, Authority::Caller(&ctx)).await
+            rows::aggregate_grouped(cat, table, projections, &query, decided(&ctx)).await
         }
     }
 }
@@ -811,7 +838,7 @@ pub async fn aggregate_grouped_as(
 /// §7.3's rule for a write is *meets `min_role_write` OR the formula grants the
 /// proposed row*, checked with `_insert` folded true (§6's WITH CHECK, at
 /// runtime), and a second implementation of that is a second place for it to be
-/// subtly wrong. The write itself goes through [`rows::create_row_ctx`], so it is
+/// subtly wrong. The write itself goes through [`rows::create_row`], so it is
 /// coerced, validated, `File`-field-checked and **observed by triggers** exactly
 /// like an API caller's.
 ///
@@ -845,13 +872,28 @@ pub async fn insert_row_as(
     executor: &rows::Executor,
 ) -> Result<Json> {
     let caller = principal_at(role, user).chained(chain.to_vec());
+    insert_row_by(cat, table, body, &caller, user, evaluator, executor).await
+}
+
+/// [`insert_row_as`] for a caller who is already a [`Principal`] (see
+/// [`read_row_values_by`]); the chain is the principal's.
+pub(crate) async fn insert_row_by(
+    cat: &Catalog,
+    table: &Table,
+    body: &Json,
+    caller: &Principal,
+    user: Option<&User>,
+    evaluator: Option<&Arc<dyn JsEvaluator>>,
+    executor: &rows::Executor,
+) -> Result<Json> {
+    let role = caller.role;
     // The defaults first, so the check below sees the row that would be
     // written — an `owner` defaulted to `user.id` is what grants it.
     let body = &rows::fill_defaults(cat, table, body, caller.user.as_ref()).await?;
     // The database enforces this table's ownership: the policies decide, and a
     // `WITH CHECK` they refuse surfaces from `run_in_context`.
     if table.rls_enabled {
-        return rows::create_row_in(cat, table, body, Authority::Caller(&caller), executor).await;
+        return rows::create_row_in(cat, table, body, decided(caller), executor).await;
     }
     if let Some(formula) = write_formula(table, role, "write")? {
         let proposed = proposed_insert_row(table, body)?;
@@ -872,7 +914,7 @@ pub async fn insert_row_as(
             )));
         }
     }
-    rows::create_row_in(cat, table, body, Authority::Caller(&caller), executor).await
+    rows::create_row_in(cat, table, body, decided(caller), executor).await
 }
 
 /// Update the row of `table` addressed by `id`, as a caller who is not an API
@@ -899,13 +941,28 @@ pub async fn update_row_as(
     executor: &rows::Executor,
 ) -> Result<Json> {
     let caller = principal_at(role, user).chained(chain.to_vec());
+    update_row_by(cat, table, id, body, &caller, user, evaluator, executor).await
+}
+
+/// [`update_row_as`] for a caller who is already a [`Principal`] (see
+/// [`read_row_values_by`]); the chain is the principal's.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn update_row_by(
+    cat: &Catalog,
+    table: &Table,
+    id: &str,
+    body: &Json,
+    caller: &Principal,
+    user: Option<&User>,
+    evaluator: Option<&Arc<dyn JsEvaluator>>,
+    executor: &rows::Executor,
+) -> Result<Json> {
+    let role = caller.role;
     if table.rls_enabled {
-        return rows::update_row_in(cat, table, id, body, Authority::Caller(&caller), executor)
-            .await;
+        return rows::update_row_in(cat, table, id, body, decided(caller), executor).await;
     }
     let Some(formula) = write_formula(table, role, "write")? else {
-        return rows::update_row_in(cat, table, id, body, Authority::Caller(&caller), executor)
-            .await;
+        return rows::update_row_in(cat, table, id, body, decided(caller), executor).await;
     };
     let existing = owned_row(cat, table, formula, Operation::Update, user, evaluator, id).await?;
     let changes = rows::coerce_row_values(table, body)?;
@@ -929,16 +986,7 @@ pub async fn update_row_as(
     // The translated predicate rides in the UPDATE's WHERE where it can, closing
     // the gap between the check and the write.
     let guard = write_guard(cat, table, formula, Operation::Update, user)?;
-    rows::update_row_guarded_in(
-        cat,
-        table,
-        id,
-        body,
-        guard,
-        Authority::Caller(&caller),
-        executor,
-    )
-    .await
+    rows::update_row_guarded_in(cat, table, id, body, guard, decided(caller), executor).await
 }
 
 /// Delete the row of `table` addressed by `id`, as a caller who is not an API
@@ -958,15 +1006,30 @@ pub async fn delete_row_as(
     executor: &rows::Executor,
 ) -> Result<Json> {
     let caller = principal_at(role, user).chained(chain.to_vec());
+    delete_row_by(cat, table, id, &caller, user, evaluator, executor).await
+}
+
+/// [`delete_row_as`] for a caller who is already a [`Principal`] (see
+/// [`read_row_values_by`]); the chain is the principal's.
+pub(crate) async fn delete_row_by(
+    cat: &Catalog,
+    table: &Table,
+    id: &str,
+    caller: &Principal,
+    user: Option<&User>,
+    evaluator: Option<&Arc<dyn JsEvaluator>>,
+    executor: &rows::Executor,
+) -> Result<Json> {
+    let role = caller.role;
     if table.rls_enabled {
-        return rows::delete_row_in(cat, table, id, Authority::Caller(&caller), executor).await;
+        return rows::delete_row_in(cat, table, id, decided(caller), executor).await;
     }
     let Some(formula) = write_formula(table, role, "delete from")? else {
-        return rows::delete_row_in(cat, table, id, Authority::Caller(&caller), executor).await;
+        return rows::delete_row_in(cat, table, id, decided(caller), executor).await;
     };
     owned_row(cat, table, formula, Operation::Delete, user, evaluator, id).await?;
     let guard = write_guard(cat, table, formula, Operation::Delete, user)?;
-    rows::delete_row_guarded_in(cat, table, id, guard, Authority::Caller(&caller), executor).await
+    rows::delete_row_guarded_in(cat, table, id, guard, decided(caller), executor).await
 }
 
 /// Which formula a sub-floor writer is judged by: `None` when the caller meets
@@ -1013,7 +1076,7 @@ async fn owned_row(
 /// every sub-floor write (and file access) goes through. Join values missing
 /// from `values` (a proposed row that has not been stored) are resolved
 /// link-by-link first.
-pub(crate) async fn row_allowed(
+pub async fn row_allowed(
     cat: &Catalog,
     table: &Table,
     formula: &Formula,
@@ -1038,7 +1101,7 @@ pub(crate) async fn row_allowed(
 /// translatable — ANDed into the UPDATE/DELETE WHERE so the row cannot change
 /// hands between the check and the write. `None` for an untranslatable
 /// formula, whose single-row reified check already ran.
-pub(crate) fn write_guard(
+pub fn write_guard(
     cat: &Catalog,
     table: &Table,
     formula: &Formula,
@@ -1064,7 +1127,7 @@ pub(crate) fn write_guard(
 
 /// Fetch the full row addressed by `id` — its columns plus every Ⱶ-join value
 /// the formula reads, projected in the same query. `None` when no such row.
-pub(crate) async fn fetch_row_values(
+pub async fn fetch_row_values(
     cat: &Catalog,
     table: &Table,
     formula: &Formula,
@@ -1080,7 +1143,7 @@ pub(crate) async fn fetch_row_values(
         &shape,
         FetchShape {
             filter: Some(filter),
-            ..FetchShape::new(Authority::system(
+            ..FetchShape::new(Unchecked::system(
                 "ownership check: read the row a formula decides",
             ))
         },
@@ -1099,7 +1162,7 @@ pub(crate) async fn fetch_row_values(
 /// ([`generated`](sc_catalog::DataField::generated): an identity key, a
 /// `DEFAULT`) is left unbound — `null` would not be what is stored, and a
 /// formula that reads one on insert keeps failing closed.
-pub(crate) fn proposed_insert_row(table: &Table, body: &Json) -> Result<BTreeMap<String, Value>> {
+pub fn proposed_insert_row(table: &Table, body: &Json) -> Result<BTreeMap<String, Value>> {
     let mut values = rows::coerce_row_values(table, body)?;
     for field in &table.fields {
         if field.is_calc() || field.is_collab_doc() || field.generated.is_some() {
@@ -1114,7 +1177,7 @@ pub(crate) fn proposed_insert_row(table: &Table, body: &Json) -> Result<BTreeMap
 /// values written over it — what §6's WITH CHECK sees, computed at runtime.
 /// Stale join values are dropped so [`row_allowed`] re-resolves them against
 /// the (possibly changed) foreign keys.
-pub(crate) fn merged_row(
+pub fn merged_row(
     table: &Table,
     existing: &BTreeMap<String, Value>,
     changes: &BTreeMap<String, Value>,
@@ -1133,7 +1196,7 @@ pub(crate) fn merged_row(
 /// Strip a fetched values map back to the table's own columns and render it as
 /// the wire row — the projected join values are enforcement inputs, not
 /// response payload.
-pub(crate) fn table_row_json(table: &Table, values: &BTreeMap<String, Value>) -> Json {
+pub fn table_row_json(table: &Table, values: &BTreeMap<String, Value>) -> Json {
     let mut map = Map::new();
     for field in &table.fields {
         if let Some(value) = values.get(&field.base.name) {
@@ -1184,7 +1247,7 @@ struct FetchShape<'a> {
     /// Extra projections of the caller's own, in the same statement.
     extra: &'a [Projection],
     /// Whose read it is.
-    context: Authority<'a>,
+    context: Unchecked<'a>,
     /// Whether the statement reaches an RLS-protected table (the table itself,
     /// or one of `extra`'s projections), so it needs the caller's GUCs.
     reaches_rls: bool,
@@ -1194,7 +1257,7 @@ struct FetchShape<'a> {
 
 impl<'a> FetchShape<'a> {
     /// Every row, on the pool, read on `context`.
-    fn new(context: Authority<'a>) -> FetchShape<'a> {
+    fn new(context: Unchecked<'a>) -> FetchShape<'a> {
         FetchShape {
             filter: None,
             order: &[],

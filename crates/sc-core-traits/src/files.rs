@@ -36,7 +36,7 @@ use std::sync::Arc;
 use sc_agent::{RunCaller, TraitCheck, TraitContext};
 use sc_catalog::{Catalog, load_file_store_by_name};
 use sc_error::{Error, Result};
-use sc_files::{FileCaller, FileStore, check_access, check_write};
+use sc_files::{CheckedStore, FileCaller, FileStore};
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Map, Value as Json};
 
@@ -219,8 +219,9 @@ impl FileScope {
     }
 }
 
-/// Everything one file tool needs, resolved: the store, the caller's right to
-/// the path, and the path itself.
+/// Everything one file tool needs, resolved: the store with the run's caller
+/// bound to it ([`CheckedStore`], whose every operation checks the
+/// path-cumulative rule), the caller's right to the path, and the path itself.
 ///
 /// One function, so no tool can reach a store having skipped the access check —
 /// the shape [`crate::write`] uses for the same reason on the row side.
@@ -228,10 +229,11 @@ pub async fn open_at(
     scope: &FileScope,
     ctx: &TraitContext<'_>,
     rel: &str,
-) -> Result<(Arc<dyn FileStore>, String)> {
+) -> Result<(CheckedStore, String)> {
     let (store, floor) = scope.connect(ctx.catalog).await?;
     let path = scope.resolve(rel)?;
-    check_access(store.as_ref(), floor, &path, &file_caller(ctx.caller)).await?;
+    let store = CheckedStore::new(store, floor, file_caller(ctx.caller));
+    store.check_read(&path).await?;
     Ok((store, path))
 }
 
@@ -241,7 +243,7 @@ pub async fn open_to_write(
     scope: &FileScope,
     ctx: &TraitContext<'_>,
     rel: &str,
-) -> Result<(Arc<dyn FileStore>, String)> {
+) -> Result<(CheckedStore, String)> {
     let (store, floor) = scope.connect(ctx.catalog).await?;
     let path = scope.resolve(rel)?;
     // Whatever the backend: a repository's `.git` holds commands the server's
@@ -270,7 +272,8 @@ pub async fn open_to_write(
             )));
         }
     }
-    check_write(store.as_ref(), floor, &path, &file_caller(ctx.caller)).await?;
+    let store = CheckedStore::new(store, floor, file_caller(ctx.caller));
+    store.check_write(&path).await?;
     Ok((store, path))
 }
 
