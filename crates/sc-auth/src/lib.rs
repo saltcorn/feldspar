@@ -101,10 +101,10 @@ pub use password_tokens::{
     COL_EXPIRES_AT as COL_PASSWORD_TOKEN_EXPIRES_AT, COL_PURPOSE as COL_PASSWORD_TOKEN_PURPOSE,
     COL_TOKEN_HASH as COL_PASSWORD_TOKEN_HASH, COL_USER as COL_PASSWORD_TOKEN_USER,
     INVITE_TTL_DAYS, InviteOutcome, PASSWORD_TOKEN_BYTES, PASSWORD_TOKENS_TABLE,
-    PasswordTokenPurpose, RESET_TTL_MINUTES, bootstrap_password_tokens, create_invited_user,
-    delete_password_tokens_for_user, invite_user, issue_password_token,
-    password_token_issued_within, redeem_password_token, sweep_expired_password_tokens, user_email,
-    user_has_password,
+    PasswordTokenPurpose, RESET_TTL_MINUTES, VERIFY_TTL_HOURS, bootstrap_password_tokens,
+    create_invited_user, delete_password_tokens_for_user, invite_user, issue_password_token,
+    password_token_issued_within, redeem_email_verification, redeem_password_token,
+    sweep_expired_password_tokens, user_email, user_has_password,
 };
 pub use roles::{
     COL_ATTRIBUTES as COL_ROLE_ATTRIBUTES, COL_DESCRIPTION as COL_ROLE_DESCRIPTION,

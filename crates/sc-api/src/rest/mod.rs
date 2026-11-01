@@ -75,6 +75,7 @@ pub mod custom;
 pub mod password;
 mod query;
 pub mod returns;
+pub mod verify;
 
 use custom::CustomQuery;
 
@@ -141,6 +142,22 @@ pub fn rest_config_spec() -> Vec<FormField> {
         FormField::new(password::CFG_INVITE_MIN_ROLE, BasicType::Int)
             .label("Least powerful role that may invite")
             .default_value(i64::from(password::DEFAULT_INVITE_MIN_ROLE)),
+        FormField::new(verify::CFG_VERIFY_EMAIL, BasicType::Bool)
+            .label("Require email verification (a signed-up account gets full access once it follows an emailed link)")
+            .default_value(false),
+        FormField::new(verify::CFG_UNVERIFIED_ROLE, BasicType::Int)
+            .label("Role an account is served as until its address is verified")
+            .default_value(i64::from(verify::DEFAULT_UNVERIFIED_ROLE))
+            .show_if(verify::CFG_VERIFY_EMAIL, vec![Json::Bool(true)]),
+        FormField::new(verify::CFG_VERIFY_EMAIL_SUBJECT, BasicType::Text)
+            .label("Verification email subject")
+            .sublabel("Leave blank for \"Confirm your email address\". {{email}} is the address.")
+            .show_if(verify::CFG_VERIFY_EMAIL, vec![Json::Bool(true)]),
+        FormField::new(verify::CFG_VERIFY_EMAIL_BODY, BasicType::Text)
+            .label("Verification email text")
+            .sublabel("Leave blank for the default message. Must contain {{link}}; {{email}} is the address.")
+            .multiline()
+            .show_if(verify::CFG_VERIFY_EMAIL, vec![Json::Bool(true)]),
     ]
 }
 
@@ -182,7 +199,8 @@ pub fn check_rest_config(config: &Attrs) -> Result<()> {
              anybody can make through sign-up cannot be an administrator"
         )));
     }
-    password::check_invite_config(config)
+    password::check_invite_config(config)?;
+    verify::check_verify_config(config)
 }
 
 /// Any role but the administrator's.
@@ -261,6 +279,11 @@ const GUEST_SESSION: &str = "startGuestSession";
 const GUEST_SESSION_SEGMENT: &str = "guest-session";
 const FORGOT_PASSWORD: &str = "forgotPassword";
 const SET_PASSWORD: &str = "setPassword";
+/// `POST {mount}/verify-email`, projected where the application requires
+/// email verification ([`verify`]).
+const VERIFY_EMAIL: &str = "verifyEmail";
+/// `POST {mount}/resend-verification`, likewise.
+const RESEND_VERIFICATION: &str = "resendVerification";
 
 /// How many guest sessions one address may start a minute: a basket's worth,
 /// and not a crawler's.
@@ -280,7 +303,8 @@ const SIGNUP_RATE: sc_ratelimit::Rate = sc_ratelimit::Rate {
 /// application does not let in at all reaches these and nothing else (TODO
 /// F9) — named rather than read off [`AuthRequirement::Public`], which a table
 /// with an ownership formula has too.
-pub const SIGN_IN_ENDPOINTS: [&str; 4] = [LOGIN, SIGNUP, FORGOT_PASSWORD, SET_PASSWORD];
+pub const SIGN_IN_ENDPOINTS: [&str; 5] =
+    [LOGIN, SIGNUP, FORGOT_PASSWORD, SET_PASSWORD, VERIFY_EMAIL];
 
 /// Offline sync's endpoints (§14.11): `POST {mount}/sync/register`, `…/pull`
 /// and `…/push`, projected when one of the app's tables is synced.
@@ -297,7 +321,7 @@ const SYNC_PUSH: &str = "syncPush";
 /// A table's name is the other half of that rule, and it is not a constant — it
 /// is whatever the application declares. `signup` is reserved whether or not
 /// the application offers it, so turning sign-up on cannot shadow a query.
-pub(crate) const RESERVED_SEGMENTS: [&str; 10] = [
+pub(crate) const RESERVED_SEGMENTS: [&str; 12] = [
     ACTIONS_SEGMENT,
     SYNC_SEGMENT,
     LOGIN,
@@ -308,12 +332,14 @@ pub(crate) const RESERVED_SEGMENTS: [&str; 10] = [
     GUEST_SESSION_SEGMENT,
     "forgot-password",
     "set-password",
+    "verify-email",
+    "resend-verification",
 ];
 
 /// Every endpoint name the provider's own auth may project — the five every
 /// app has plus `signup` and `invite` — which a custom query may therefore not
 /// be named.
-pub(crate) const RESERVED_AUTH_NAMES: [&str; 11] = [
+pub(crate) const RESERVED_AUTH_NAMES: [&str; 13] = [
     GUEST_SESSION,
     SYNC_REGISTER,
     SYNC_PULL,
@@ -325,6 +351,8 @@ pub(crate) const RESERVED_AUTH_NAMES: [&str; 11] = [
     INVITE,
     FORGOT_PASSWORD,
     SET_PASSWORD,
+    VERIFY_EMAIL,
+    RESEND_VERIFICATION,
 ];
 
 /// The app's own auth operations, as a client generator meets them.
@@ -354,6 +382,10 @@ pub struct RestProvider {
     /// The least powerful role that may invite somebody, when the application
     /// offers invitations at all ([`with_invite`](RestProvider::with_invite)).
     invite_min_role: Option<u8>,
+    /// What the application's email verification settings say, when it
+    /// requires verification at all
+    /// ([`with_email_verification`](RestProvider::with_email_verification)).
+    verification: Option<verify::EmailVerification>,
     /// The mail transport the password links travel by
     /// ([`with_mailer`](RestProvider::with_mailer)). Absent where only the
     /// endpoint shapes are needed; there, an invitation is a configuration
@@ -680,6 +712,7 @@ impl RestProvider {
             signup_role: None,
             guest_session_days: None,
             invite_min_role: None,
+            verification: None,
             mailer: None,
             custom_routes: HashMap::new(),
             dispatcher: None,
@@ -780,6 +813,43 @@ impl RestProvider {
                 .output(password::invite_output_schema())
                 .auth(AuthRequirement::MinRole(min_role));
             self.register_auth_endpoint(invite);
+        }
+        self
+    }
+
+    /// Require **email verification** of sign-ups ([`verify`]): `signup` emails
+    /// a link, and `POST {mount}/verify-email` and `POST
+    /// {mount}/resend-verification` are projected. `None` is the default and
+    /// projects nothing.
+    pub fn with_email_verification(
+        mut self,
+        verification: Option<verify::EmailVerification>,
+    ) -> RestProvider {
+        self.verification = verification;
+        if self.verification.is_none() {
+            return self;
+        }
+        if self.endpoints.find(VERIFY_EMAIL).is_none() {
+            let verify_email = Endpoint::new(
+                VERIFY_EMAIL,
+                Method::Post,
+                path_at(&self.mount).lit("verify-email"),
+            )
+            .input(verify::verify_email_schema())
+            .output(verify::verify_output_schema())
+            // Public for `set-password`'s reason: the token is the credential.
+            .auth(AuthRequirement::Public);
+            self.register_auth_endpoint(verify_email);
+        }
+        if self.endpoints.find(RESEND_VERIFICATION).is_none() {
+            let resend = Endpoint::new(
+                RESEND_VERIFICATION,
+                Method::Post,
+                path_at(&self.mount).lit("resend-verification"),
+            )
+            .output(verify::resend_output_schema())
+            .auth(AuthRequirement::LoggedIn);
+            self.register_auth_endpoint(resend);
         }
         self
     }
@@ -1193,9 +1263,32 @@ impl RestProvider {
                 "there is already an account with this email address",
             ));
         }
+        // Where the application requires verification, a link that cannot be
+        // sent is found before there is an account to strand.
+        if self.verification.is_some() {
+            verify::check_can_send(req, self.mailer.as_ref())?;
+        }
         // Recorded as unproven: the caller chose the address (security review #41).
         let user = sc_auth::sign_up_user(cat, &email, &password, role).await?;
-        let summary = user_summary_json(&user);
+        let mut summary = user_summary_json(&user);
+        if let Some(verification) = &self.verification {
+            if let Err(e) =
+                verify::send_verification(req, cat, &user, self.mailer.as_ref(), verification).await
+            {
+                // The account is only worth having if its owner can verify it:
+                // it goes again, and the caller can simply sign up again.
+                sc_auth::delete_password_tokens_for_user(cat, user.id).await?;
+                sc_auth::delete_user(cat, user.id).await?;
+                return Err(Error::msg(format!(
+                    "the verification email could not be sent, so no account was \
+                     made: {}",
+                    sc_error::format_chain(&e)
+                )));
+            }
+            // Answered as the application will serve the account until the
+            // link is followed, which is what `whoami` will say too.
+            summary["role"] = json!(i64::from(verification.serve_as(&user)));
+        }
         let mut out =
             ApiResponse::start_session_remembering(user, summary, crate::auth::remember(body));
         out.status = 201;
@@ -2167,6 +2260,23 @@ impl RestProvider {
             HandlerRef::Named(_) if endpoint.name == SET_PASSWORD => {
                 password::set_password(&req, cat).await
             }
+            HandlerRef::Named(_)
+                if endpoint.name == VERIFY_EMAIL && self.verification.is_some() =>
+            {
+                verify::verify_email(&req, cat).await
+            }
+            HandlerRef::Named(_) if endpoint.name == RESEND_VERIFICATION => {
+                match &self.verification {
+                    Some(settings) => {
+                        verify::resend_verification(&req, cat, user, self.mailer.as_ref(), settings)
+                            .await
+                    }
+                    None => Ok(ApiResponse::error(
+                        404,
+                        "this application does not verify email addresses",
+                    )),
+                }
+            }
             HandlerRef::Named(_) if endpoint.name == LOGOUT => {
                 Ok(ApiResponse::end_session(json!({ "ok": true })))
             }
@@ -2895,6 +3005,44 @@ mod tests {
         // A custom query cannot take the name once sign-up is on.
         let clash = custom::CustomQuery::new("signup", Method::Get, "/x", "SELECT 1 AS n");
         assert!(on.with_queries(vec![clash]).is_err());
+    }
+
+    /// Email verification (TODO A2) projects its two endpoints only where the
+    /// settings turn it on: `verify-email` public and a sign-in endpoint,
+    /// `resend-verification` for a signed-in caller.
+    #[test]
+    fn email_verification_is_projected_only_where_the_settings_turn_it_on() {
+        let tables = [table("posts", AccessRules::default())];
+        let mut config = Attrs::new();
+        let off = RestProvider::project("/api", &tables)
+            .with_email_verification(verify::rest_email_verification(&config));
+        assert!(off.endpoints().find(VERIFY_EMAIL).is_none());
+        assert!(off.endpoints().find(RESEND_VERIFICATION).is_none());
+
+        config.insert(verify::CFG_VERIFY_EMAIL.to_owned(), Json::Bool(true));
+        let on = RestProvider::project("/api", &tables)
+            .with_email_verification(verify::rest_email_verification(&config));
+        let verify = on.endpoints().find(VERIFY_EMAIL).expect("projected");
+        assert_eq!(verify.path.pattern(), "/api/verify-email");
+        assert_eq!(verify.auth, AuthRequirement::Public);
+        assert!(SIGN_IN_ENDPOINTS.contains(&VERIFY_EMAIL));
+        let resend = on.endpoints().find(RESEND_VERIFICATION).expect("projected");
+        assert_eq!(resend.path.pattern(), "/api/resend-verification");
+        assert_eq!(resend.auth, AuthRequirement::LoggedIn);
+        assert_eq!(on.endpoints().len(), off.endpoints().len() + 2);
+        let ts = crate::generate_client(on.endpoints());
+        assert!(ts.contains("verifyEmail(body: VerifyEmailRequest)"), "{ts}");
+        assert!(ts.contains("resendVerification("), "{ts}");
+        assert!(ts.contains("email_verified: boolean"), "{ts}");
+
+        // A custom query cannot take either name, on or off.
+        for name in [VERIFY_EMAIL, RESEND_VERIFICATION] {
+            let q = custom::CustomQuery::new(name, Method::Get, "/x", "SELECT 1 AS n");
+            assert!(
+                custom::validate_custom_queries(&[q], &[]).is_err(),
+                "{name}"
+            );
+        }
     }
 
     /// Anybody can make an account through sign-up, so it may never make an

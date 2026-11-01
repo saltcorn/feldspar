@@ -2,6 +2,54 @@
 
 Changes in reverse chronological order.
 
+## Email verification for sign-ups (TODO A2.1)
+
+User request: an application where somebody signs up with an email address and gets full
+access only after following a link emailed to that address. `users.email_verified` already
+existed (security review #41), but nothing sent a verification link and nothing acted on the
+flag.
+
+- **Settings** on an application's REST API (Applications → the API's settings, off by
+  default): `verify_email`, `unverified_role` (default 100, the public role; the admin role is
+  refused on save), and optional `verify_email_subject` / `verify_email_body` (the body must
+  contain `{{link}}`; `{{email}}` is the address).
+- **Sign-up** with `verify_email` on emails `{origin}/verify-email#token=…` and signs the
+  account in as before. It is refused before an account exists if no mail transport is
+  installed. If the message cannot be sent, the new account is deleted and the caller gets an
+  error, so they can simply try again.
+- **Held back, not demoted.** An account whose address is unproven is *served as*
+  `unverified_role` by that application (`sc_app::cap_role`, next to `max_role`). Its stored
+  role is never changed. So anything that proves the address gives full access with nothing
+  further to do: the new link, a password reset or invitation link, or an identity-provider
+  sign-in. An application that does not require verification serves the account as its role.
+- **New endpoints**, projected only when `verify_email` is on:
+  - `POST /api/verify-email {token, remember?}` (public, a sign-in endpoint): proves the
+    address and signs in. The link works on a device that never signed in, and works once.
+  - `POST /api/resend-verification` (signed in): a fresh link, at most one a minute per
+    account. It does nothing for a proven address.
+
+  The generated client gets `verifyEmail` and `resendVerification`.
+- **`sc_auth`**: a `verify` token purpose (48 hours) in `_fd_password_tokens`, and
+  `redeem_email_verification`. `redeem_password_token` now spends only `invite` and `reset`
+  tokens, so a verification link cannot be used to choose a password.
+- **The user summary** (`login`, `whoami`, `signup`, `set-password`, the admin's
+  `authStatus`, …) gains `email_verified: boolean`. The four committed admin clients were
+  regenerated.
+
+**Upgrading:** nothing changes until an application turns `verify_email` on. When it does,
+accounts that signed up through that application's REST API or a Saltcorn UI form since
+security review #41 have `email_verified = false` and are held back too, until they verify
+(`resend-verification`) or reset their password. `verify-email` and `resend-verification` are now
+reserved as custom query sub-paths, and `verifyEmail` and `resendVerification` as query names.
+This is checked when an application is saved, not when it is mounted, so an existing
+application keeps running either way. Not done yet: the React scaffold's `/verify-email` page
+(A2.2) and Saltcorn UI sign-ups (A2.3).
+
+Test: `crates/sc-server/tests/app_email_verification.rs`, which covers sign-up held back, the
+link on another device, single use, the throttle, a reset link proving the address, an
+application without verification, and a failed send leaving no account. There are also unit
+tests in `sc-api` (`rest/verify.rs`) and `sc-auth`.
+
 ## Sign-ins survive closing the browser (TODO A1.1)
 
 Report (P0): users signed in again every time they closed the browser, although Session

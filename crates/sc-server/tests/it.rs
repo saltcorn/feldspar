@@ -57,6 +57,8 @@ mod app_builder_agent;
 mod app_calling_app;
 #[path = "app_code_files.rs"]
 mod app_code_files;
+#[path = "app_email_verification.rs"]
+mod app_email_verification;
 #[path = "app_file_access.rs"]
 mod app_file_access;
 #[path = "app_guest_live.rs"]

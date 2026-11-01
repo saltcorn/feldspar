@@ -7589,6 +7589,37 @@ have accounts; it sends at most one link a minute per account, sends it off the 
 uses the system's sender and wording. The scaffold's `src/SetPassword.tsx` is the page at that
 path.
 
+**Email verification** (TODO A2) is the third use of these links. `users.email_verified` is
+`false` for an account made by self-service sign-up (security review #41), and set to `true` by
+anything that proves the holder reads that address: a set-password link, an identity provider
+sign-in that claims the account, or the verification link. `NULL` (every other account) counts
+as proven. An application whose REST API has `verify_email` on (off by default) works as
+follows:
+
+- `signup` also emails a link `{origin}/verify-email#token=…` (a `verify` token in
+  `_fd_password_tokens`, lasting 48 hours). The subject and text can be changed with
+  `verify_email_subject` / `verify_email_body`, and the text must contain `{{link}}`. A sign-up
+  is refused before an account exists when there is no mail transport, and if the message
+  cannot be sent the account is deleted again.
+- An account whose address is unproven is **served as `unverified_role`** (default 100, the
+  public role; a save refuses the admin role). `sc_app::cap_role` does this in the same place as
+  `max_role` (F9), so every application surface sees the lower role. The account's own role is
+  never changed. So proving the address by any route gives full access from the next request,
+  and an application that does not require verification serves the same account as its role.
+  The user summary (`login`, `whoami`, …) has `email_verified`, so a page can say "check your
+  email".
+- `POST /api/verify-email {token}` is public and is one of the sign-in endpoints that F9 lets a
+  refused caller reach. It spends the token, proves the address and starts a session. Password
+  links refuse a `verify` token, and `verify-email` refuses a password token. Following the link
+  does not end the account's other sessions. Those pick up the change when their cache entry
+  expires, within the 60-second freshness TTL.
+- `POST /api/resend-verification` (signed in) sends a fresh link to the caller's own address,
+  at most one a minute. It answers `{ok: true}`, and does nothing for a proven address.
+
+Turning `verify_email` on also holds back accounts that signed up before it was on, until they
+verify. Their owners can ask for a link with `resend-verification`. Turning it off serves every
+account as its role again. Saltcorn UI applications do not send the link yet (TODO A2.3).
+
 **`users` behind an application's API.** The users table can be declared by an application like
 any other table (for example, a therapist listing their patients' accounts), so the row layer
 treats it specially for every surface (REST, GraphQL, agent tools, trigger actions).

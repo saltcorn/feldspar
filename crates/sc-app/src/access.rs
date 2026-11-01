@@ -64,9 +64,20 @@ impl Application {
         self.min_role < ROLE_PUBLIC || !self.access_if.trim().is_empty()
     }
 
-    /// Whether the application caps anybody's role.
+    /// Whether the application caps anybody's role: everybody's, with
+    /// `max_role`, or an unverified account's (TODO A2).
     pub fn caps_role(&self) -> bool {
-        self.max_role > ROLE_ADMIN
+        self.max_role > ROLE_ADMIN || self.unverified_role().is_some()
+    }
+
+    /// The role this application serves an account whose address is unproven
+    /// as, when its REST API requires email verification (TODO A2).
+    pub fn unverified_role(&self) -> Option<u8> {
+        self.apis
+            .iter()
+            .filter(|api| api.provider == sc_api::REST_PROVIDER)
+            .filter_map(|api| sc_api::rest_unverified_role(&api.config))
+            .max()
     }
 }
 
@@ -107,9 +118,20 @@ pub async fn admit(
 }
 
 /// `user` as `app` serves them: their role, or the application's `max_role`
-/// when that is less privileged.
+/// when that is less privileged — and, where the application requires email
+/// verification and this account's address is unproven, its unverified role
+/// when that is less privileged still (TODO A2).
+///
+/// The account's own role is not changed, so proving the address by any
+/// route (the verification link, a reset or invitation link, an identity
+/// provider) serves it as its role from the next request.
 pub fn cap_role(app: &Application, mut user: User) -> User {
     user.role = user.role.max(app.max_role);
+    if user.email_unproven()
+        && let Some(unverified) = app.unverified_role()
+    {
+        user.role = user.role.max(unverified);
+    }
     user
 }
 

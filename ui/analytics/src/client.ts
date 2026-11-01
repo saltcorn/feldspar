@@ -5,12 +5,12 @@ import { clientError, requestHeaders, trackCsrf, type ClientOptions } from "./he
 
 export type { ClientOptions } from "./helper";
 
-export type AuthStatusResponse = { any_user_exists: boolean; first_user_token_required: boolean; current_user?: { id: string; email: string; role: number } | null; locales: { default: string; enabled: Array<string>; current: string }; onboarding_pending: boolean };
+export type AuthStatusResponse = { any_user_exists: boolean; first_user_token_required: boolean; current_user?: { id: string; email: string; role: number; email_verified: boolean } | null; locales: { default: string; enabled: Array<string>; current: string }; onboarding_pending: boolean };
 export type FinishOnboardingResponse = { done: boolean };
 export type CreateFirstUserRequest = { email: string; password: string; token?: string | null };
-export type CreateFirstUserResponse = { id: string; email: string; role: number };
+export type CreateFirstUserResponse = { id: string; email: string; role: number; email_verified: boolean };
 export type LoginRequest = { email: string; password: string; remember?: boolean | null };
-export type LoginResponse = { id: string; email: string; role: number };
+export type LoginResponse = { id: string; email: string; role: number; email_verified: boolean };
 export type ListTablesResponse = Array<{ name: string; label: string; description: string; min_role_read: number; min_role_write: number; ownership_formula: string; rls_enabled: boolean; sync_enabled: boolean; history_enabled: boolean; history_min_role?: number | null; history_keep_days?: number | null; configured: boolean; ownership_error?: string | null; rls_available: boolean; sync_available: boolean; history_available: boolean; database: string; metadata: boolean; module?: string | null; module_fields: Array<string>; provider?: { module: string; provider: string; configuration: unknown; config_spec: Array<{ name: string; label: string; type: string; required: boolean; default?: unknown | null; options: Array<unknown>; option_labels?: Array<string> | null; multiline: boolean; secret: boolean; create_only: boolean; code_language?: string | null; section?: string | null; sublabel?: string | null; help_topic?: string | null; pattern?: string | null; pattern_error?: string | null; env_fallback?: { name: string; value?: string | null } | null; show_if: Array<{ name: string; values: Array<unknown> }> }>; writes: { insert: boolean; update: boolean; delete: boolean }; issues: Array<string> } | null }>;
 export type ListEntitiesQuery = { deep?: boolean };
 export type ListEntitiesResponse = Array<{ kind: string; id: string; name: string; description: string; details: Array<string>; access: string; updated_at?: string | null; runnable: boolean; subdomain?: string | null; channel?: string | null; definition?: string | null }>;
@@ -291,7 +291,7 @@ export type DeleteUserResponse = { deleted: boolean };
 export type SetUserDisabledRequest = { disabled: boolean };
 export type SetUserDisabledResponse = { id: string; email: string; role: number; disabled: boolean; language?: string | null; check_user: boolean; extra: unknown };
 export type ForceLogoutUserResponse = { ok: boolean };
-export type BecomeUserResponse = { id: string; email: string; role: number };
+export type BecomeUserResponse = { id: string; email: string; role: number; email_verified: boolean };
 export type SetRandomPasswordResponse = { email: string; password: string };
 export type ListUserRoleGrantsResponse = { base_role: number; effective_role: number; grants: Array<{ id: string; role: number; source: string; source_ref: string; starts_at: string; expires_at?: string | null; revoked_at?: string | null; note?: string | null; in_force: boolean }> };
 export type GrantUserRoleRequest = { role: number; expires_in_days?: number | null; note?: string | null };

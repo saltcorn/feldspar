@@ -92,6 +92,9 @@ pub fn user_summary_schema() -> TypeSchema {
         StructField::new("id", TypeSchema::uuid()),
         StructField::new("email", TypeSchema::text()),
         StructField::new("role", TypeSchema::int()),
+        // `false` for a self-service sign-up whose address nobody has proven
+        // yet (TODO A2) — what an application shows "check your email" on.
+        StructField::new("email_verified", TypeSchema::bool()),
     ])
 }
 
@@ -105,6 +108,7 @@ pub fn user_summary_json(user: &User) -> Json {
         "id": user.id.to_string(),
         "email": user.get(COL_EMAIL).and_then(Value::as_text).unwrap_or_default(),
         "role": i64::from(user.role),
+        "email_verified": !user.email_unproven(),
     })
 }
 
@@ -364,8 +368,9 @@ mod tests {
         let json = user_summary_json(&user);
         assert_eq!(json["email"], json!("a@b.c"));
         assert_eq!(json["role"], json!(1));
-        // Only the three declared fields, whatever else the row carries.
-        assert_eq!(json.as_object().unwrap().len(), 3);
+        // Only the four declared fields, whatever else the row carries.
+        assert_eq!(json.as_object().unwrap().len(), 4);
+        assert_eq!(json["email_verified"], json!(true), "not a sign-up");
         assert!(json.get("password_hash").is_none());
     }
 }

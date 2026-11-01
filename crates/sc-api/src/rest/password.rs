@@ -173,15 +173,15 @@ pub(crate) fn ok_schema() -> TypeSchema {
 }
 
 /// A message's content before the link is known: subject, bodies, sender.
-struct Template {
-    from: Option<sc_email::Mailbox>,
-    subject: String,
-    text: Option<String>,
-    html: Option<String>,
+pub(crate) struct Template {
+    pub(crate) from: Option<sc_email::Mailbox>,
+    pub(crate) subject: String,
+    pub(crate) text: Option<String>,
+    pub(crate) html: Option<String>,
 }
 
 impl Template {
-    fn render(&self, sender: sc_email::Mailbox, to: &str, link: &str) -> Result<Email> {
+    pub(crate) fn render(&self, sender: sc_email::Mailbox, to: &str, link: &str) -> Result<Email> {
         let fill = |s: &str| {
             s.replace(LINK_PLACEHOLDER, link)
                 .replace(EMAIL_PLACEHOLDER, to)
@@ -368,7 +368,7 @@ fn link(origin: &str, token: &str) -> String {
 }
 
 /// The origin a link opens: this application's, or the one served on `app`.
-fn link_origin(req: &ApiRequest, app: Option<&str>) -> Result<String> {
+pub(crate) fn link_origin(req: &ApiRequest, app: Option<&str>) -> Result<String> {
     let links = req.links.as_ref().ok_or_else(|| {
         Error::config(
             "this request did not arrive at an application, so there is no \
