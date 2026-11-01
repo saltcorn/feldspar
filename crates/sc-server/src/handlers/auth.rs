@@ -81,7 +81,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // Log the new admin straight in — they came from the bootstrap
                 // screen and expect to land in the app.
                 let body = user_summary_json(&user);
-                Ok(HandlerResponse::start_session(user, body))
+                Ok(HandlerResponse::start_verified_session(user, body))
             }
         }
     });
@@ -118,7 +118,10 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 match user {
                     Some(user) => {
                         let body = user_summary_json(&user);
-                        Ok(HandlerResponse::start_session(user, body))
+                        let remember = sc_api::auth::remember(&ctx.body);
+                        Ok(HandlerResponse::start_session_remembering(
+                            user, body, remember,
+                        ))
                     }
                     None => {
                         sc_api::throttle::login_failed(&email);

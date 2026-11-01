@@ -2,6 +2,188 @@
 
 Changes in reverse chronological order.
 
+## Merge of main (session cookies, email verification, two-factor authentication) into the code-quality branch
+
+The three entries below were made on `main` against the code before the code-quality milestones
+(Q2 to Q6). They are carried over to the new structure without changing what they do on the wire
+or in the database:
+
+- `sc-server/src/handlers.rs` and `sc-api/src/admin.rs` are split per domain on this branch:
+  `setRoleSecondFactor` and `resetUserSecondFactor` are in `handlers/users.rs` and
+  `admin/users.rs`, the login and first-user changes in `handlers/auth.rs`, and the
+  persistent-cookie setting in `handlers/settings.rs`. `role_json` moved to
+  `sc_backup::codec`, so `require_second_factor` is added there (backups carry it, as on
+  `main`). The CLI's `--reset-second-factor` and the boot-time session policy are in
+  `sc-cli/src/commands/`.
+- Roles are `sc_types::Role`, not `u8`: the unverified role (`EmailVerification::unverified_role`,
+  `rest_unverified_role`, `Application::unverified_role`) is a `Role`, `cap_role` caps with
+  `User::capped_at`, and a role from 2 to 100 is accepted as before. `User`'s fields are read with
+  `id()` / `role()`. Internal-table statements use `sc-auth`'s `INTERNAL_TABLES` token, and links
+  are built on a `PublicBaseUrl`.
+- `apply_session` keeps this branch's host-scoped sessions (`login_scoped`, and logging a failed
+  logout) for all three ways of starting one (`Start`, `StartUntilBrowserCloses`,
+  `StartVerified`).
+- **Behaviour change (security review #15):** the `/_feldspar/second-factor/*` routes read the
+  session as every other admin-host route does. A session issued on an application's host counts
+  for nothing off an application's host, so it cannot read, turn off or replace a second factor
+  on the admin host.
+- §9.2's ER diagram draws `_fd_second_factor` and `_fd_recovery_codes`, and lists the new
+  password-token purposes (`repo_hygiene` checks this). The four admin clients are regenerated,
+  and the new code is rustfmt-clean.
+
+Test: `second_factor_sign_in::an_applications_session_is_nobody_on_the_admin_host`. The tests
+from `main` are ported to `Role`, `RoleDef` and the `Unchecked` API.
+
+## Two-factor authentication
+
+User request: an option for two-factor authentication. Codes from an authenticator app (TOTP)
+with single-use recovery codes, for the admin UI and for applications. Design §7.2 has the
+details.
+
+- **Core** (`sc_auth::second_factor`): RFC 6238 codes (checked against the RFC's test
+  vectors), a 160-bit secret sealed with the instance key, 10 recovery codes stored hashed, and
+  replay protection (a code works once). New tables `_fd_second_factor` and
+  `_fd_recovery_codes`, created by the users bootstrap (additive, so no migration), and deleted
+  with an account. New dependencies: `sha1`, `data-encoding`, and `qrcode` (SVG only).
+- **Sign-in.** `apply_session`, where every session starts, gives an account with a second
+  factor on (or whose role requires one) a **challenge instead of a session**. A client's code
+  gets `second_factor: {token, setup}` in the login answer, next to the user summary, with no
+  session cookie. A page's sign-in (a Saltcorn UI login form, an identity provider) is sent to
+  a server-rendered page at `/_feldspar/second-factor/sign-in`. Every password path is covered
+  this way: the admin and REST logins, set-password, verify-email and sign-up. The new
+  `SessionAction::StartVerified` starts a session that is not challenged: answering a
+  challenge, `becomeUser`, the first user, and identity-provider sign-ins (unless the new
+  setting below asks for a code there too).
+- **Routes** under `/_feldspar/second-factor` on every host: status, `setup`, `enable`,
+  `verify`, `disable`, `recovery-codes`, and the `sign-in` page. Wrong codes are throttled per
+  account (5 per 15 minutes).
+- **Settings.** Users → Roles has a *Requires two-factor* switch per role (new admin endpoint
+  `setRoleSecondFactor`; the role JSON gains `require_second_factor`). Settings →
+  Authentication gains *Ask for a two-factor code after an identity provider* (off) and *Name
+  in authenticator apps*. Users gains a 2FA badge (`listUsers` rows gain `second_factor`) and
+  a *Reset two-factor* action (`resetUserSecondFactor`, which also ends the account's
+  sessions). The CLI gains `feldspar modify-user EMAIL --reset-second-factor` for a locked-out
+  sole admin.
+- **Admin UI.** The sign-in asks for the code, or sets one up when a role requires it and
+  shows the recovery codes. A shield button beside "Log out" opens *Two-factor
+  authentication* (`#/account/security`): turn it on, make new recovery codes, turn it off.
+- **Generated client.** Every client with `login` gains `secondFactorStatus`,
+  `secondFactorSetup`, `secondFactorEnable`, `secondFactorVerify`, `secondFactorDisable` and
+  `secondFactorRecoveryCodes`. The user summary type gains the optional `second_factor`. The
+  four checked-in admin clients are regenerated.
+- **React scaffold.** `src/auth.tsx` handles a challenge (`challenge`, `answerSecondFactor`,
+  `continueSignIn`, `cancelSecondFactor`). New `src/SecondFactor.tsx` is the code step (with
+  setup and recovery codes), shown by `Login.tsx`. New `src/Security.tsx` at `/security` is
+  linked from the header. The generated README tells a coding agent to check for
+  `second_factor`.
+- **Applications made before this.** A build regenerates only `src/feldspar/`, never
+  `Login.tsx` or `auth.tsx`, so an existing React application's sign-in pages know nothing of a
+  challenge. The generated client covers them. Its password sign-ins (`login`, `signup`,
+  `setPassword`, `verifyEmail`) pass their answer through `signInAnswered` (in `helper.ts`).
+  When that answer is a challenge in a browser, it sends the browser to the server's
+  `/_feldspar/second-factor/sign-in` page, which asks for the code (or sets one up) and comes
+  back to the same page signed in. The promise does not settle, so the old page never treats
+  the challenge as a user. An application whose own pages answer the challenge calls
+  `handleSecondFactorInApp()`, which the client re-exports. The new scaffold's `auth.tsx` and
+  the admin UI's `api.ts` do. A native app (no `window`) always gets the challenge back. So an
+  existing application needs **a rebuild and no code changes** before its accounts turn 2FA
+  on.
+- **Compatibility.** Nothing changes for an account until it turns 2FA on or its role
+  requires it, and the API only gains optional fields.
+- Tests: `sc-auth/tests/second_factor.rs` (setup, replay, recovery codes, role requirement,
+  challenge spent once, deletion), `sc-server/tests/second_factor_sign_in.rs` (admin sign-in
+  with a code, a role taking a member through setup on an application, admin reset, becoming
+  a user, the form page), plus unit tests for the codes, the settings, the CLI flag and the
+  admin UI helper, and `signInAnswered.test.ts` (the redirect, the opt-out, a native app).
+  The tutorial build checks that the scaffold's new pages type-check.
+
+## Email verification for sign-ups (TODO A2.1)
+
+User request: an application where somebody signs up with an email address and gets full
+access only after following a link emailed to that address. `users.email_verified` already
+existed (security review #41), but nothing sent a verification link and nothing acted on the
+flag.
+
+- **Settings** on an application's REST API (Applications → the API's settings, off by
+  default): `verify_email`, `unverified_role` (default 100, the public role; the admin role is
+  refused on save), and optional `verify_email_subject` / `verify_email_body` (the body must
+  contain `{{link}}`; `{{email}}` is the address).
+- **Sign-up** with `verify_email` on emails `{origin}/verify-email#token=…` and signs the
+  account in as before. It is refused before an account exists if no mail transport is
+  installed. If the message cannot be sent, the new account is deleted and the caller gets an
+  error, so they can simply try again.
+- **Held back, not demoted.** An account whose address is unproven is *served as*
+  `unverified_role` by that application (`sc_app::cap_role`, next to `max_role`). Its stored
+  role is never changed. So anything that proves the address gives full access with nothing
+  further to do: the new link, a password reset or invitation link, or an identity-provider
+  sign-in. An application that does not require verification serves the account as its role.
+- **New endpoints**, projected only when `verify_email` is on:
+  - `POST /api/verify-email {token, remember?}` (public, a sign-in endpoint): proves the
+    address and signs in. The link works on a device that never signed in, and works once.
+  - `POST /api/resend-verification` (signed in): a fresh link, at most one a minute per
+    account. It does nothing for a proven address.
+
+  The generated client gets `verifyEmail` and `resendVerification`.
+- **`sc_auth`**: a `verify` token purpose (48 hours) in `_fd_password_tokens`, and
+  `redeem_email_verification`. `redeem_password_token` now spends only `invite` and `reset`
+  tokens, so a verification link cannot be used to choose a password.
+- **The user summary** (`login`, `whoami`, `signup`, `set-password`, the admin's
+  `authStatus`, …) gains `email_verified: boolean`. The four committed admin clients were
+  regenerated.
+
+**Upgrading:** nothing changes until an application turns `verify_email` on. When it does,
+accounts that signed up through that application's REST API or a Saltcorn UI form since
+security review #41 have `email_verified = false` and are held back too, until they verify
+(`resend-verification`) or reset their password. `verify-email` and `resend-verification` are now
+reserved as custom query sub-paths, and `verifyEmail` and `resendVerification` as query names.
+This is checked when an application is saved, not when it is mounted, so an existing
+application keeps running either way. Not done yet: the React scaffold's `/verify-email` page
+(A2.2) and Saltcorn UI sign-ups (A2.3).
+
+Test: `crates/sc-server/tests/app_email_verification.rs`, which covers sign-up held back, the
+link on another device, single use, the throttle, a reset link proving the address, an
+application without verification, and a failed send leaving no account. There are also unit
+tests in `sc-api` (`rest/verify.rs`) and `sc-auth`.
+
+## Sign-ins survive closing the browser (TODO A1.1)
+
+Report (P0): users signed in again every time they closed the browser, although Session
+lifetime was 8760 hours and their sessions were still valid on the server. The `sc_session`
+cookie a browser got had no `Max-Age` or `Expires`, so the browser treated it as a session
+cookie and deleted it on exit. Until now only a native app's cookie had a `Max-Age`. That was
+deliberate, so that closing the browser on a shared computer signed people out, but it made the
+lifetime setting useless for browsers.
+
+**Behaviour change on upgrade:** by default, a browser sign-in now lasts the whole session
+lifetime (24 hours unless changed) even if the browser is closed. On a kiosk or shared
+computer, untick the new setting.
+
+- **Keep people signed in when the browser closes** (`persistent_session_cookie`, Settings →
+  Authentication, on by default). When it is on, a sign-in's session cookie gets `Max-Age` and
+  `Expires` set to the lifetime the session was just given. This applies to every sign-in path:
+  password (admin UI and application API), sign-up, set-password and reset links, the Saltcorn
+  UI sign-in form, identity providers, and the admin handoff. Like the lifetime, the setting is
+  read from `_fd_config` at every sign-in (`AppMounts::current_session_policy`), so a change
+  saved by another node applies everywhere. It is also read at boot, applied on save, and
+  reset by Clear all. Nothing is migrated: an unset key means on.
+- **Remember me.** A login, sign-up or set-password body can say `"remember": false`, and that
+  sign-in's cookie then ends when the browser closes (`SessionAction::StartUntilBrowserCloses`).
+  This applies to native apps too, since they asked for it. Leaving it out, or sending `true`,
+  gets the instance setting, and `true` cannot override the setting being off. The generated
+  clients' `LoginRequest` gained `remember?: boolean | null`. The Saltcorn UI sign-in form has
+  a *Remember me* box, ticked to begin with. A hidden `remember_shown` field is sent with it, so
+  an unticked box (which a form does not send) is told apart from a client that has no box.
+  The label and the setting are translated into the five core locales.
+- Unchanged: a native app's cookie always has a `Max-Age`. Cookies already in browsers keep
+  what they were given until the person's next sign-in. Expiry is still fixed at sign-in and
+  does not slide (design §7).
+- Tests: `shared_session_cookie::{a_browser_sign_in_outlives_the_browser_by_default,
+  a_sign_in_that_is_not_remembered_ends_with_the_browser,
+  turned_off_a_browser_sign_in_ends_with_the_browser}`,
+  `saltcorn_ui_render::the_sign_in_forms_remember_me_decides_whether_closing_the_browser_signs_out`,
+  and `Max-Age` checks added to `oauth_sign_in`, `admin_subdomain` (handoff), `app_invite`
+  (set-password) and `router::login_starts_a_session_that_unlocks_admin_routes` (which used to
+  assert the opposite). Unit tests in `sc-config` and `sc-api::auth`.
 ## Code quality Q6: argument readers, transaction endings, typed errors in analytics, a test server, condition waits, a length lint, a comment pass
 
 The seventh milestone of `TODO-code-quality.md` (§3.2, §3.4, §3.6–3.8 of the review): Q6.1 to

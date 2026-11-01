@@ -603,7 +603,8 @@ async fn every_response_names_the_csrf_token_for_a_client_that_cannot_read_cooki
 
 /// A native app — the generated client with no `document` says so — gets a
 /// session cookie that lasts as long as the session, so closing the app does not
-/// sign its user out. A browser's login is unchanged (see the test above).
+/// sign its user out. (A browser's does too, unless that is turned off: see
+/// `shared_session_cookie`.)
 #[tokio::test]
 async fn a_native_apps_login_outlives_the_app_being_closed() {
     let (router, _) = test_router();
@@ -790,14 +791,15 @@ async fn login_starts_a_session_that_unlocks_admin_routes() {
     let (status, cookies, _) = call(&router, login).await;
     assert_eq!(status, StatusCode::OK);
     let session = cookie_value(&cookies, SESSION_COOKIE).expect("session cookie");
-    // A browser's session cookie has no lifetime of its own: it ends with the
-    // browser, which is what a shared machine relies on.
+    // A browser's session cookie lasts as long as the session, so closing the
+    // browser does not sign anybody out (TODO A1.1): the default of Settings →
+    // Authentication → Keep people signed in when the browser closes.
     let set_session = cookies
         .iter()
         .find(|c| c.starts_with(&format!("{SESSION_COOKIE}=")))
         .unwrap();
     assert!(
-        !set_session.to_ascii_lowercase().contains("max-age"),
+        set_session.contains(&format!("Max-Age={}", sc_auth::DEFAULT_TTL_HOURS * 3600)),
         "{set_session}"
     );
 

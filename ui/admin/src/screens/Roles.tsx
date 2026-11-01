@@ -8,6 +8,10 @@
 // on Users rather than from the sidebar: nothing but a user has a use for a
 // role, so it belongs to that section rather than beside it.
 //
+// A role can require two-factor authentication (design §7.2): everybody
+// holding it is then taken through setting one up at their next sign-in. The
+// public role has nobody signing in, so it has no switch.
+//
 // Admin (1) and Public (100) are marked built in and cannot be deleted. Without
 // the first nobody can administer anything; without the second an anonymous
 // caller has no role to be. The server refuses either way; the button is hidden
@@ -68,6 +72,19 @@ export function Roles() {
     }
   };
 
+  const requireSecondFactor = async (role: number, required: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.setRoleSecondFactor(role, { required });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not change the role.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const remove = async (role: number) => {
     setBusy(true);
     setError(null);
@@ -100,6 +117,7 @@ export function Roles() {
                     <th><T text="Number" /></th>
                     <th><T text="Name" /></th>
                     <th><T text="Description" /></th>
+                    <th><T text="Requires two-factor" /></th>
                     <th className="text-end"><T text="Actions" /></th>
                   </tr>
                 </thead>
@@ -109,6 +127,18 @@ export function Roles() {
                       <td>{r.role}</td>
                       <td>{r.name}</td>
                       <td className="text-muted">{r.description}</td>
+                      <td>
+                        {r.role < 100 && (
+                          <Form.Check
+                            type="switch"
+                            id={`role-${r.role}-second-factor`}
+                            aria-label={t("Require two-factor authentication for {name}", { name: r.name })}
+                            checked={r.require_second_factor}
+                            disabled={busy}
+                            onChange={(e) => void requireSecondFactor(r.role, e.target.checked)}
+                          />
+                        )}
+                      </td>
                       <td className="text-end">
                         {r.builtin ? (
                           <span className="text-muted small"><T text="built in" /></span>

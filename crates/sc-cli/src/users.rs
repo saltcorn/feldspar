@@ -45,6 +45,10 @@ pub struct ModifyUserArgs {
     pub password: Option<PasswordArg>,
     /// `--disabled` (`Some(true)`) or `--enabled` (`Some(false)`) (TODO F1.8).
     pub disabled: Option<bool>,
+    /// `--reset-second-factor`: turn off the account's two-factor
+    /// authentication — how a sole admin who lost their phone and their
+    /// recovery codes gets back in.
+    pub reset_second_factor: bool,
 }
 
 /// The flags both commands share, and the one positional argument.
@@ -54,6 +58,7 @@ struct Parsed {
     role: Option<String>,
     password: Option<PasswordArg>,
     disabled: Option<bool>,
+    reset_second_factor: bool,
 }
 
 fn parse(command: &str, args: &[String]) -> Result<Parsed> {
@@ -84,6 +89,8 @@ fn parse(command: &str, args: &[String]) -> Result<Parsed> {
                 ));
             }
             parsed.disabled = Some(disabled);
+        } else if arg == "--reset-second-factor" && command == "modify-user" {
+            parsed.reset_second_factor = true;
         } else if arg.starts_with("--") {
             return Err(Error::config(format!("unknown {command} argument `{arg}`")));
         } else if parsed.email.is_none() {
@@ -124,10 +131,14 @@ pub fn parse_modify_user(args: &[String]) -> Result<ModifyUserArgs> {
     let email = parsed.email.ok_or_else(|| {
         Error::config("modify-user needs the email address of the user to change")
     })?;
-    if parsed.role.is_none() && parsed.password.is_none() && parsed.disabled.is_none() {
+    if parsed.role.is_none()
+        && parsed.password.is_none()
+        && parsed.disabled.is_none()
+        && !parsed.reset_second_factor
+    {
         return Err(Error::config(
             "modify-user needs something to change: --role ROLE, --password [VALUE], \
-             --disabled or --enabled",
+             --disabled, --enabled or --reset-second-factor",
         ));
     }
     Ok(ModifyUserArgs {
@@ -135,6 +146,7 @@ pub fn parse_modify_user(args: &[String]) -> Result<ModifyUserArgs> {
         role: parsed.role,
         password: parsed.password,
         disabled: parsed.disabled,
+        reset_second_factor: parsed.reset_second_factor,
     })
 }
 
@@ -376,6 +388,26 @@ mod tests {
         assert!(err.contains("not both"), "{err}");
         // add-user has no such flag.
         assert!(parse_add_user(&args(&["a@example.com", "--role", "1", "--disabled"])).is_err());
+    }
+
+    #[test]
+    fn modify_user_can_reset_the_second_factor_alone() {
+        let parsed = parse_modify_user(&args(&["a@example.com", "--reset-second-factor"])).unwrap();
+        assert!(parsed.reset_second_factor);
+        assert!(
+            !parse_modify_user(&args(&["a@example.com", "--enabled"]))
+                .unwrap()
+                .reset_second_factor
+        );
+        assert!(
+            parse_add_user(&args(&[
+                "a@example.com",
+                "--role",
+                "1",
+                "--reset-second-factor"
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

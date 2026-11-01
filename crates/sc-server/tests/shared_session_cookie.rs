@@ -15,6 +15,10 @@
 //! And, beside it in Settings → Authentication, that the session lifetime a
 //! sign-in gets is the **stored** one, even when this process did not do the
 //! saving (another node, `feldspar config set`, a restore).
+//!
+//! And that a browser's session cookie **outlives the browser** (TODO A1.1): a
+//! `Max-Age` of the session's lifetime unless *Keep people signed in when the
+//! browser closes* is off or the sign-in said `remember: false`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::Arc;
@@ -150,15 +154,62 @@ impl Browser {
     }
 
     async fn login(&mut self) {
+        self.login_with(json!({})).await;
+    }
+
+    /// Sign in with `extra` fields beside the email and password.
+    async fn login_with(&mut self, extra: Value) {
         self.api("GET", "/api/auth/status", None).await;
-        let (status, body) = self
-            .api(
-                "POST",
-                "/api/login",
-                Some(json!({ "email": EMAIL, "password": PASSWORD })),
-            )
-            .await;
+        let mut body = json!({ "email": EMAIL, "password": PASSWORD });
+        for (k, v) in extra.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        let (status, body) = self.api("POST", "/api/login", Some(body)).await;
         assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    /// The one session cookie the last response set (not a removal).
+    fn session_set(&self) -> String {
+        let set: Vec<String> = self
+            .session_cookies()
+            .into_iter()
+            .filter(|line| !line.starts_with(&format!("{SESSION_COOKIE}=;")))
+            .collect();
+        assert_eq!(
+            set.len(),
+            1,
+            "one session cookie set: {:?}",
+            self.set_cookie
+        );
+        set[0].clone()
+    }
+
+    /// The `Max-Age` of the session cookie the last response set, `None` for
+    /// one that ends when the browser closes.
+    fn session_max_age(&self) -> Option<i64> {
+        let line = self.session_set();
+        let max_age = line.split(';').find_map(|attr| {
+            let (name, value) = attr.trim().split_once('=')?;
+            name.eq_ignore_ascii_case("max-age")
+                .then(|| value.parse().unwrap())
+        });
+        let expires = line
+            .split(';')
+            .any(|attr| attr.trim().to_ascii_lowercase().starts_with("expires="));
+        assert_eq!(
+            max_age.is_some(),
+            expires,
+            "Max-Age and Expires go together: {line}"
+        );
+        max_age
+    }
+
+    fn native(mut self) -> Browser {
+        self.headers.push((
+            sc_api::auth::CLIENT_KIND_HEADER.to_owned(),
+            sc_api::auth::NATIVE_CLIENT.to_owned(),
+        ));
+        self
     }
 
     async fn share(&mut self, shared: bool) -> (StatusCode, Value) {
@@ -334,5 +385,86 @@ async fn a_sign_in_gets_the_stored_session_lifetime_even_when_saved_elsewhere()
     );
     assert!(phone.signed_in().await);
     assert_eq!(apps.session_ttl(), chrono::Duration::hours(8760));
+    Ok(())
+}
+
+/// The reported bug (TODO A1.1): a browser's sign-in ended when the browser
+/// closed, whatever the session lifetime. By default its cookie now lasts as
+/// long as the session — host-only or on the shared domain alike.
+#[tokio::test]
+async fn a_browser_sign_in_outlives_the_browser_by_default() -> sc_error::Result<()> {
+    let (router, _apps, mut admin, _db) = setup().await?;
+    // The first user's own sign-in, and a later one.
+    assert_eq!(admin.session_max_age(), Some(24 * 3600));
+    let mut browser = Browser::new(router.clone(), BASE_DOMAIN);
+    browser.login().await;
+    assert_eq!(browser.session_max_age(), Some(24 * 3600));
+    assert_eq!(browser.session_domain(), None);
+    assert!(browser.signed_in().await);
+
+    // Shared between applications: the base domain's cookie, persistent too.
+    let (status, body) = admin.share(true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut shared = Browser::new(router, BASE_DOMAIN);
+    shared.login_with(json!({ "remember": true })).await;
+    assert_eq!(shared.session_domain().as_deref(), Some(BASE_DOMAIN));
+    assert_eq!(shared.session_max_age(), Some(24 * 3600));
+
+    // Logout still clears it.
+    shared.api("POST", "/api/logout", None).await;
+    assert!(!shared.signed_in().await);
+    Ok(())
+}
+
+/// "Remember me" unticked: that sign-in's cookie ends with the browser — in a
+/// native app too, which asked for it — though the session lasts as long.
+#[tokio::test]
+async fn a_sign_in_that_is_not_remembered_ends_with_the_browser() -> sc_error::Result<()> {
+    let (router, apps, _admin, _db) = setup().await?;
+    let mut browser = Browser::new(router.clone(), BASE_DOMAIN);
+    browser.login_with(json!({ "remember": false })).await;
+    assert_eq!(browser.session_max_age(), None);
+    assert!(browser.signed_in().await);
+
+    let mut phone = Browser::new(router, BASE_DOMAIN).native();
+    phone.login_with(json!({ "remember": false })).await;
+    assert_eq!(phone.session_max_age(), None);
+    assert!(phone.signed_in().await);
+    assert!(apps.persistent_session_cookie());
+    Ok(())
+}
+
+/// Turned off — where people share a computer — a browser's cookie ends with the
+/// browser and `remember: true` cannot override it; a native app's still lasts.
+/// Read from `_fd_config` at the sign-in, so a change saved by another node
+/// applies here too, and a save through Settings is accepted and live.
+#[tokio::test]
+async fn turned_off_a_browser_sign_in_ends_with_the_browser() -> sc_error::Result<()> {
+    let (router, apps, mut admin, _db) = setup().await?;
+    let catalog = apps.catalog().unwrap().clone();
+    sc_config::set_config(&catalog, sc_config::PERSISTENT_SESSION_COOKIE, json!(false)).await?;
+
+    let mut kiosk = Browser::new(router.clone(), BASE_DOMAIN);
+    kiosk.login_with(json!({ "remember": true })).await;
+    assert_eq!(kiosk.session_max_age(), None);
+    assert!(!apps.persistent_session_cookie());
+
+    let mut phone = Browser::new(router.clone(), BASE_DOMAIN).native();
+    phone.login().await;
+    assert_eq!(phone.session_max_age(), Some(24 * 3600));
+
+    // Back on, through the settings screen.
+    let (status, body) = admin
+        .api(
+            "POST",
+            "/api/settings",
+            Some(json!({ "values": { "persistent_session_cookie": true } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(apps.persistent_session_cookie());
+    let mut browser = Browser::new(router, BASE_DOMAIN);
+    browser.login().await;
+    assert_eq!(browser.session_max_age(), Some(24 * 3600));
     Ok(())
 }

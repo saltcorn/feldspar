@@ -5,6 +5,10 @@
 // UI offers (Settings → Authentication). Each is a plain link: the sign-in is a
 // round of redirects through the provider, and it comes back to this page with
 // a session — or with `?oauth_error=…`, which is shown here.
+//
+// A password that is right for an account with two-factor authentication on
+// answers with `second_factor` instead of a session: the code is then asked for
+// (`SecondFactorSignIn`), and the sign-in finishes with it.
 
 import { useEffect, useState, type FormEvent } from "react";
 import Alert from "react-bootstrap/Alert";
@@ -22,6 +26,7 @@ import {
   type SignInProvider,
 } from "../oauthProviders";
 import { T, useT } from "../i18n";
+import { SecondFactorSignIn } from "./SecondFactor";
 
 export function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
   const [email, setEmail] = useState("");
@@ -32,6 +37,7 @@ export function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
   );
   const [busy, setBusy] = useState(false);
   const [providers, setProviders] = useState<SignInProvider[]>([]);
+  const [challenge, setChallenge] = useState<{ token: string; setup: boolean } | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -52,7 +58,13 @@ export function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      await api.login({ email, password });
+      const answer = await api.login({ email, password });
+      if (answer.second_factor) {
+        setPassword("");
+        setChallenge(answer.second_factor);
+        setBusy(false);
+        return;
+      }
       onLoggedIn();
     } catch (err) {
       setError(
@@ -63,6 +75,16 @@ export function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
       setBusy(false);
     }
   };
+
+  if (challenge) {
+    return (
+      <SecondFactorSignIn
+        challenge={challenge}
+        onSignedIn={onLoggedIn}
+        onCancel={() => setChallenge(null)}
+      />
+    );
+  }
 
   return (
     <CenteredPage>

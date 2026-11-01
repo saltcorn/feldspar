@@ -17,9 +17,9 @@ import { describe, expect, it } from "vitest";
 import { roleOptions } from "./roles";
 
 const roles = [
-  { role: 100, name: "Public", description: "", builtin: true },
-  { role: 1, name: "Admin", description: "", builtin: true },
-  { role: 40, name: "Staff", description: "", builtin: false },
+  { role: 100, name: "Public", description: "", builtin: true, require_second_factor: false },
+  { role: 1, name: "Admin", description: "", builtin: true, require_second_factor: false },
+  { role: 40, name: "Staff", description: "", builtin: false, require_second_factor: false },
 ];
 
 describe("roleOptions", () => {

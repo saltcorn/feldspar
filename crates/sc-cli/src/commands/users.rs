@@ -78,6 +78,16 @@ pub(crate) async fn modify_user_command(args: &[String]) -> Result<()> {
             if disabled { "disabled" } else { "enabled" }
         );
     }
+    if parsed.reset_second_factor {
+        sc_auth::disable_second_factor(&catalog, user.id()).await?;
+        sc_auth::SessionStore::database(catalog.clone())
+            .end_user_sessions(user.id())
+            .await?;
+        eprintln!(
+            "feldspar: two-factor authentication is off for {}; its sessions have ended",
+            parsed.email.trim()
+        );
+    }
     if role.is_none() && password.is_none() {
         return Ok(());
     }

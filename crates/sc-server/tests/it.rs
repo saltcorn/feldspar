@@ -60,6 +60,8 @@ mod app_builder_agent;
 mod app_calling_app;
 #[path = "app_code_files.rs"]
 mod app_code_files;
+#[path = "app_email_verification.rs"]
+mod app_email_verification;
 #[path = "app_file_access.rs"]
 mod app_file_access;
 #[path = "app_guest_live.rs"]
@@ -208,6 +210,8 @@ mod rls_enforcement;
 mod role_grants;
 #[path = "router.rs"]
 mod router;
+#[path = "second_factor_sign_in.rs"]
+mod second_factor_sign_in;
 /// The process-wide registries `ModuleServices` installs into on boot and on
 /// every module change — the view runtime, the view pattern registry, a
 /// plugin's headers and public files, the frameworks — held against the tests

@@ -670,6 +670,9 @@ async fn an_application_and_the_admin_ui_sign_in_with_an_identity_provider() -> 
     sign_in(&router, &mut shared, &seen, "new@example.com", "/").await;
     let line = shared.session_cookie_line().unwrap();
     assert!(line.contains(&format!("Domain={BASE_DOMAIN}")), "{line}");
+    // A browser's provider sign-in outlives the browser as a password's does
+    // (TODO A1.1): the cookie lasts as long as the session.
+    assert!(line.contains("Max-Age=7200"), "{line}");
 
     // --- deleted: no longer offered ----------------------------------------
     let mut admin = Browser::new(router.clone(), BASE_DOMAIN);

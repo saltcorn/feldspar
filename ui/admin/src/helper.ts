@@ -69,6 +69,34 @@ export function trackCsrf(fetchImpl: typeof fetch): typeof fetch {
   }) as typeof fetch;
 }
 
+// --- two-factor authentication ----------------------------------------------
+
+let secondFactorInApp = false;
+
+/** Say that this application's own pages answer a two-factor challenge (they
+ * read `second_factor` off what `login` answers and call
+ * `secondFactorVerify`). Without this, a sign-in that answers with a challenge
+ * in a browser goes to the server's own page for the code, and comes back. */
+export function handleSecondFactorInApp(): void {
+  secondFactorInApp = true;
+}
+
+/** What a sign-in answered. A two-factor challenge started no session; unless
+ * the application answers it itself (`handleSecondFactorInApp`), a browser is
+ * sent to the server's page for the code, which comes back to this page signed
+ * in, and the promise never settles, since the page is going away. */
+export function signInAnswered<T>(baseUrl: string, answer: T): Promise<T> {
+  const challenge = (answer as { second_factor?: unknown } | null)?.second_factor;
+  if (!challenge || secondFactorInApp || typeof window === "undefined") {
+    return Promise.resolve(answer);
+  }
+  const here = window.location.pathname + window.location.search + window.location.hash;
+  window.location.assign(
+    `${baseUrl}/_feldspar/second-factor/sign-in?return_to=${encodeURIComponent(here)}`,
+  );
+  return new Promise<T>(() => {});
+}
+
 /** The headers a request carries: its content type, its CSRF token, and — where
  * there is no `document`, i.e. a native app — that it is not a browser, so the
  * server lets its login outlive the app being closed. */

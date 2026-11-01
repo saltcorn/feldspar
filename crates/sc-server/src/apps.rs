@@ -181,6 +181,27 @@ impl Default for SessionTtlHours {
     }
 }
 
+/// Whether a browser's session cookie outlives the browser (Settings →
+/// Authentication): on unless turned off, so a registry made by `Default`
+/// starts with the declared default too.
+struct PersistentSessionCookie(AtomicBool);
+
+impl Default for PersistentSessionCookie {
+    fn default() -> Self {
+        PersistentSessionCookie(AtomicBool::new(true))
+    }
+}
+
+/// What a sign-in started now is given (Settings → Authentication).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SessionPolicy {
+    /// How long the session lasts.
+    pub ttl: chrono::Duration,
+    /// Whether a browser's cookie for it lasts as long (a `Max-Age`), rather
+    /// than until the browser closes.
+    pub persistent: bool,
+}
+
 /// The applications this server serves, resolved by subdomain — **live shared
 /// state**, not a value frozen at router-build time (design §13.2 "the mount
 /// registry is live; a full restart should never be required").
@@ -301,6 +322,9 @@ pub struct AppMounts {
     /// How long a session started from the next response on lasts, in hours
     /// (Settings → Authentication → Session lifetime).
     session_ttl_hours: SessionTtlHours,
+    /// Whether a browser's session cookie, from the next sign-in on, outlives
+    /// the browser (Settings → Authentication).
+    persistent_session_cookie: PersistentSessionCookie,
     /// The identity-provider sign-ins under way (`crate::oauth`).
     oauth: crate::oauth::OAuthFlows,
 }
@@ -360,6 +384,7 @@ impl AppMounts {
             admin: crate::admin_host::AdminHost::default(),
             shared_session_cookie: AtomicBool::new(false),
             session_ttl_hours: SessionTtlHours::default(),
+            persistent_session_cookie: PersistentSessionCookie::default(),
             oauth: crate::oauth::OAuthFlows::default(),
         }
     }
@@ -401,23 +426,45 @@ impl AppMounts {
         chrono::Duration::hours(self.session_ttl_hours.0.load(Ordering::Relaxed))
     }
 
-    /// How long a session started now lasts, read from `_fd_config` rather than
+    /// Whether a browser's session cookie set now outlives the browser, as this
+    /// process last heard.
+    pub fn persistent_session_cookie(&self) -> bool {
+        self.persistent_session_cookie.0.load(Ordering::Relaxed)
+    }
+
+    /// Give browser sign-ins from the next one on a cookie that outlives the
+    /// browser (`true`) or one that ends with it. Cookies already handed out
+    /// keep what they were given.
+    pub fn set_persistent_session_cookie(&self, persistent: bool) {
+        self.persistent_session_cookie
+            .0
+            .store(persistent, Ordering::Relaxed);
+    }
+
+    /// What a session started now is given — its lifetime, and whether a
+    /// browser's cookie lasts as long — read from `_fd_config` rather than
     /// believed from this process's copy: the save that changed it may have
     /// been another node's, `feldspar config set` or a restore, none of which
-    /// reach this process's [`session_ttl`](AppMounts::session_ttl). A sign-in
-    /// is rare enough to afford the read. The copy is refreshed with what was
-    /// read, and is the answer when there is no catalog or the read fails.
-    pub async fn current_session_ttl(&self) -> chrono::Duration {
+    /// reach this process. A sign-in is rare enough to afford the read. The
+    /// copy is refreshed with what was read, and is the answer when there is no
+    /// catalog or the read fails.
+    pub async fn current_session_policy(&self) -> SessionPolicy {
         if let Some(catalog) = &self.catalog {
-            match sc_config::session_ttl_hours(catalog).await {
-                Ok(hours) => self.set_session_ttl_hours(hours),
+            match sc_config::session_policy(catalog).await {
+                Ok((hours, persistent)) => {
+                    self.set_session_ttl_hours(hours);
+                    self.set_persistent_session_cookie(persistent);
+                }
                 Err(e) => sc_log::log_warn!(
-                    "the stored session lifetime is ignored, keeping {}h: {e}",
+                    "the stored session settings are ignored, keeping {}h: {e}",
                     self.session_ttl().num_hours()
                 ),
             }
         }
-        self.session_ttl()
+        SessionPolicy {
+            ttl: self.session_ttl(),
+            persistent: self.persistent_session_cookie(),
+        }
     }
 
     /// Give sessions started from the next response on `hours`. A session

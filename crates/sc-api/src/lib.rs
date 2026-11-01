@@ -99,6 +99,12 @@ pub use rest::password::{
     SET_PASSWORD_PAGE, rest_invite_min_role,
 };
 pub use rest::returns::{check_returns, parse_returns};
+pub use rest::verify::{
+    CFG_UNVERIFIED_ROLE as REST_CFG_UNVERIFIED_ROLE, CFG_VERIFY_EMAIL as REST_CFG_VERIFY_EMAIL,
+    CFG_VERIFY_EMAIL_BODY as REST_CFG_VERIFY_EMAIL_BODY,
+    CFG_VERIFY_EMAIL_SUBJECT as REST_CFG_VERIFY_EMAIL_SUBJECT, EmailVerification,
+    VERIFY_EMAIL_PAGE, rest_email_verification, rest_unverified_role,
+};
 pub use rest::{
     AUTH_ENDPOINTS, CFG_ALLOW_SIGNUP as REST_CFG_ALLOW_SIGNUP,
     CFG_NEW_USER_ROLE as REST_CFG_NEW_USER_ROLE, DEFAULT_ROW_CAP as REST_DEFAULT_ROW_CAP,

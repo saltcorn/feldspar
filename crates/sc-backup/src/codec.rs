@@ -1816,6 +1816,7 @@ pub fn role_json(role: &RoleDef) -> Json {
         "name": role.name,
         "description": role.description,
         "builtin": role.is_builtin(),
+        "require_second_factor": sc_auth::requires_second_factor(&role.attributes),
     })
 }
 

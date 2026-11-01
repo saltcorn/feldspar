@@ -143,6 +143,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // How long a session lasts: refused here when it is not a
                 // number of hours, and live for the next sign-in after the save.
                 let session_ttl_hours = sc_config::session_ttl_hours_from(&merged)?;
+                let persistent_session_cookie = sc_config::persistent_session_cookie_from(&merged);
 
                 sc_config::set_config_many(&catalog, &values).await?;
                 // The admin UI moves now, and the new name's certificate is
@@ -153,6 +154,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 }
                 apps.set_shared_session_cookie(shared_session_cookie);
                 apps.set_session_ttl_hours(session_ttl_hours);
+                apps.set_persistent_session_cookie(persistent_session_cookie);
                 // The two switches this process runs under move **now**, not at
                 // the next restart: an admin ticks "Log SQL" precisely because
                 // something is happening in the server they are looking at, and

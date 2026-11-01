@@ -156,6 +156,34 @@ export function trackCsrf(fetchImpl: typeof fetch): typeof fetch {{
   }}) as typeof fetch;
 }}
 
+// --- two-factor authentication ----------------------------------------------
+
+let secondFactorInApp = false;
+
+/** Say that this application's own pages answer a two-factor challenge (they
+ * read `second_factor` off what `login` answers and call
+ * `secondFactorVerify`). Without this, a sign-in that answers with a challenge
+ * in a browser goes to the server's own page for the code, and comes back. */
+export function handleSecondFactorInApp(): void {{
+  secondFactorInApp = true;
+}}
+
+/** What a sign-in answered. A two-factor challenge started no session; unless
+ * the application answers it itself (`handleSecondFactorInApp`), a browser is
+ * sent to the server's page for the code, which comes back to this page signed
+ * in, and the promise never settles, since the page is going away. */
+export function signInAnswered<T>(baseUrl: string, answer: T): Promise<T> {{
+  const challenge = (answer as {{ second_factor?: unknown }} | null)?.second_factor;
+  if (!challenge || secondFactorInApp || typeof window === "undefined") {{
+    return Promise.resolve(answer);
+  }}
+  const here = window.location.pathname + window.location.search + window.location.hash;
+  window.location.assign(
+    `${{baseUrl}}/_feldspar/second-factor/sign-in?return_to=${{encodeURIComponent(here)}}`,
+  );
+  return new Promise<T>(() => {{}});
+}}
+
 /** The headers a request carries: its content type, its CSRF token, and — where
  * there is no `document`, i.e. a native app — that it is not a browser, so the
  * server lets its login outlive the app being closed. */
@@ -1013,6 +1041,9 @@ pub fn generate_app_client(
     if !uploads.is_empty() {
         values.push("upload");
     }
+    if loose.iter().any(|ep| is_sign_in(ep)) {
+        values.push("signInAnswered");
+    }
     if !agents.is_empty() {
         values.push("agentApi");
     }
@@ -1145,6 +1176,9 @@ pub fn generate_app_client(
         );
     } else {
         out.push_str("export type { ClientOptions } from \"./helper\";\n");
+    }
+    if loose.iter().any(|ep| ep.name == crate::rest::LOGIN) {
+        out.push_str("export { handleSecondFactorInApp } from \"./helper\";\n");
     }
     if !uploads.is_empty() {
         out.push_str("export type { UploadOptions, UploadResult } from \"./helper\";\n");
@@ -1283,10 +1317,12 @@ pub fn generate_app_client(
     let oauth = loose.iter().any(|e| e.name == crate::rest::LOGIN);
     if oauth {
         out.push_str(OAUTH_TYPES);
+        out.push_str(SECOND_FACTOR_TYPES);
     }
     out.push_str("export interface ApiClient {\n");
     if oauth {
         out.push_str(OAUTH_SIGNATURES);
+        out.push_str(SECOND_FACTOR_SIGNATURES);
     }
     for ep in &loose {
         let _ = writeln!(out, "  {};", method_signature(ep));
@@ -1430,6 +1466,7 @@ pub fn generate_app_client(
     out.push_str("  return {\n");
     if oauth {
         out.push_str(OAUTH_METHODS);
+        out.push_str(SECOND_FACTOR_METHODS);
     }
     for ep in &loose {
         if ep.stream_output {
@@ -1512,6 +1549,98 @@ const OAUTH_METHODS: &str = r#"    async oauthProviders() {
     },
     oauthSignInUrl(provider: OAuthProvider, returnTo = "/") {
       return `${baseUrl}${provider.url}?return_to=${encodeURIComponent(returnTo)}`;
+    },
+"#;
+
+/// Two-factor authentication (design §7.2), over the server's own
+/// `/_feldspar/second-factor` routes, which answer on every host.
+const SECOND_FACTOR_TYPES: &str = r#"/** The signed-in account's two-factor authentication. `required`: its role
+ * requires it, so it cannot be turned off. */
+export type SecondFactorStatus = { enabled: boolean; required: boolean; recovery_codes_left: number };
+/** A new authenticator secret: show `qr_svg` (an SVG document) to scan, or
+ * `secret` to type in, then send the code the app shows to
+ * `secondFactorEnable`. */
+export type SecondFactorSetup = { secret: string; otpauth_url: string; qr_svg: string; account: string };
+/** Two-factor authentication turned on: the recovery codes, shown once. With a
+ * sign-in's challenge, `user` is who is now signed in. */
+export type SecondFactorEnabled = {
+  recovery_codes: string[];
+  user?: { id: string; email: string; role: number; email_verified: boolean };
+};
+
+"#;
+
+const SECOND_FACTOR_SIGNATURES: &str = r#"  /** The signed-in account's two-factor authentication. */
+  secondFactorStatus(): Promise<SecondFactorStatus>;
+  /** Start setting up two-factor authentication: for the signed-in account,
+   * or — with the `second_factor.token` a sign-in answered with `setup: true` —
+   * for the account signing in, whose role requires it. */
+  secondFactorSetup(token?: string): Promise<SecondFactorSetup>;
+  /** Turn it on with the first code from the app. With a sign-in's `token`
+   * this also finishes the sign-in. */
+  secondFactorEnable(code: string, token?: string): Promise<SecondFactorEnabled>;
+  /** Finish a sign-in that answered with `second_factor` (no session yet): its
+   * `token` and a code from the app, or a recovery code. A wrong code fails
+   * with 401, and can be tried again. */
+  secondFactorVerify(token: string, code: string): Promise<{ id: string; email: string; role: number; email_verified: boolean }>;
+  /** Turn two-factor authentication off; it takes a current code. */
+  secondFactorDisable(code: string): Promise<{ ok: boolean }>;
+  /** Replace the recovery codes; it takes a current code. */
+  secondFactorRecoveryCodes(code: string): Promise<{ recovery_codes: string[] }>;
+"#;
+
+const SECOND_FACTOR_METHODS: &str = r#"    async secondFactorStatus() {
+      const res = await doFetch(`${baseUrl}/_feldspar/second-factor`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("secondFactorStatus", res);
+      return (await res.json()) as SecondFactorStatus;
+    },
+    async secondFactorSetup(token?: string) {
+      const res = await doFetch(`${baseUrl}/_feldspar/second-factor/setup`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(token ? { token } : {}),
+      });
+      if (!res.ok) throw await clientError("secondFactorSetup", res);
+      return (await res.json()) as SecondFactorSetup;
+    },
+    async secondFactorEnable(code: string, token?: string) {
+      const res = await doFetch(`${baseUrl}/_feldspar/second-factor/enable`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(token ? { code, token } : { code }),
+      });
+      if (!res.ok) throw await clientError("secondFactorEnable", res);
+      return (await res.json()) as SecondFactorEnabled;
+    },
+    async secondFactorVerify(token: string, code: string) {
+      const res = await doFetch(`${baseUrl}/_feldspar/second-factor/verify`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify({ token, code }),
+      });
+      if (!res.ok) throw await clientError("secondFactorVerify", res);
+      return (await res.json()) as { id: string; email: string; role: number; email_verified: boolean };
+    },
+    async secondFactorDisable(code: string) {
+      const res = await doFetch(`${baseUrl}/_feldspar/second-factor/disable`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify({ code }),
+      });
+      if (!res.ok) throw await clientError("secondFactorDisable", res);
+      return (await res.json()) as { ok: boolean };
+    },
+    async secondFactorRecoveryCodes(code: string) {
+      const res = await doFetch(`${baseUrl}/_feldspar/second-factor/recovery-codes`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify({ code }),
+      });
+      if (!res.ok) throw await clientError("secondFactorRecoveryCodes", res);
+      return (await res.json()) as { recovery_codes: string[] };
     },
 "#;
 
@@ -1651,11 +1780,21 @@ fn emit_method_impl(out: &mut String, ep: &Endpoint) {
         Returns::Blob
     } else if ep.output.is_empty() {
         Returns::Nothing
+    } else if is_sign_in(ep) {
+        Returns::SignIn(format!("{pascal}Response"))
     } else {
         Returns::Json(format!("{pascal}Response"))
     };
     emit_request(out, ep, &Request::new(&result));
     out.push_str("    },\n");
+}
+
+/// Whether `ep` signs somebody in with a password or an emailed link, so its
+/// answer may be a two-factor challenge rather than a session (design §7.2).
+fn is_sign_in(ep: &Endpoint) -> bool {
+    !ep.output.is_empty()
+        && !ep.binary_output
+        && crate::rest::PASSWORD_SIGN_INS.contains(&ep.name.as_str())
 }
 
 /// Emit the factory's implementation of a stream query's method (TODO F7):
@@ -1735,6 +1874,10 @@ fn emit_url_helper_impl(out: &mut String, ep: &Endpoint) {
 enum Returns {
     /// Read it as JSON and assert it is this type.
     Json(String),
+    /// A sign-in's answer, as [`Returns::Json`], which may be a two-factor
+    /// challenge instead of a session: `signInAnswered` sends a browser to the
+    /// server's page for the code, unless the application answers it itself.
+    SignIn(String),
     /// Read it as bytes.
     Blob,
     /// Read nothing.
@@ -1827,6 +1970,12 @@ fn emit_request(out: &mut String, ep: &Endpoint, req: &Request<'_>) {
         }
         Returns::Json(ty) => {
             let _ = writeln!(out, "{pad}return (await res.json()) as {ty};");
+        }
+        Returns::SignIn(ty) => {
+            let _ = writeln!(
+                out,
+                "{pad}return signInAnswered(baseUrl, (await res.json()) as {ty});"
+            );
         }
     }
 }

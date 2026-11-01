@@ -365,12 +365,14 @@ pub(crate) fn build_cookie(
 /// Whether a request comes from a **native app**: the generated client sends
 /// [`CLIENT_KIND_HEADER`]: [`NATIVE_CLIENT`] wherever there is no `document`.
 ///
-/// Its only effect is on the session cookie a login sets: a native app's gets a
-/// `Max-Age` of the session's lifetime, because a React Native cookie store may
-/// drop a cookie without one when the *app* closes, signing its user out every
-/// time. A browser's stays a session cookie, which a shared or kiosk machine
-/// relies on. A page on another site cannot make a victim's browser send this
-/// header, and all it changes is how long the sender's own cookie lasts.
+/// Its only effect is on the session cookie a login sets: a native app's always
+/// gets a `Max-Age` of the session's lifetime, because a React Native cookie
+/// store may drop a cookie without one when the *app* closes, signing its user
+/// out every time. A browser's gets one too unless Settings → Authentication
+/// turned that off (a shared or kiosk machine) or the sign-in left "Remember
+/// me" unticked (TODO A1.1). A page on another site cannot make a victim's
+/// browser send this header, and all it changes is how long the sender's own
+/// cookie lasts.
 pub(crate) fn is_native_client(headers: &axum::http::HeaderMap) -> bool {
     headers
         .get(CLIENT_KIND_HEADER)

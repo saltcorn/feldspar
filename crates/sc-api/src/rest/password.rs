@@ -166,6 +166,7 @@ pub(crate) fn set_password_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("token", TypeSchema::text()),
         StructField::new("password", TypeSchema::text()),
+        crate::auth::remember_field(),
     ])
 }
 
@@ -174,15 +175,15 @@ pub(crate) fn ok_schema() -> TypeSchema {
 }
 
 /// A message's content before the link is known: subject, bodies, sender.
-struct Template {
-    from: Option<Mailbox>,
-    subject: String,
-    text: Option<String>,
-    html: Option<String>,
+pub(crate) struct Template {
+    pub(crate) from: Option<Mailbox>,
+    pub(crate) subject: String,
+    pub(crate) text: Option<String>,
+    pub(crate) html: Option<String>,
 }
 
 impl Template {
-    fn render(&self, sender: Mailbox, to: &str, link: &str) -> Result<Email> {
+    pub(crate) fn render(&self, sender: Mailbox, to: &str, link: &str) -> Result<Email> {
         let fill = |s: &str| {
             s.replace(LINK_PLACEHOLDER, link)
                 .replace(EMAIL_PLACEHOLDER, to)
@@ -349,7 +350,11 @@ pub(crate) async fn set_password(req: &ApiRequest, cat: &Catalog) -> Result<ApiR
     match redeem_password_token(cat, token, password).await? {
         Some(user) => {
             let summary = user_summary_json(&user);
-            Ok(ApiResponse::start_session(user, summary))
+            Ok(ApiResponse::start_session_remembering(
+                user,
+                summary,
+                crate::auth::remember(&req.body),
+            ))
         }
         None => Ok(ApiResponse::error(
             400,
@@ -366,7 +371,7 @@ fn link(origin: &PublicBaseUrl, token: &str) -> String {
 }
 
 /// The origin a link opens: this application's, or the one served on `app`.
-fn link_origin(req: &ApiRequest, app: Option<&str>) -> Result<PublicBaseUrl> {
+pub(crate) fn link_origin(req: &ApiRequest, app: Option<&str>) -> Result<PublicBaseUrl> {
     let no_address = || {
         Error::config(
             "this request did not arrive at an application, so there is no \

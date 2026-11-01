@@ -163,7 +163,7 @@ pub(crate) struct AppState {
     /// dispatcher live, which the MCP route needs (§13.6).
     pub(crate) apps: Arc<AppMounts>,
     /// The domain apps are served under; `None` disables app routing.
-    base_domain: Option<Arc<String>>,
+    pub(crate) base_domain: Option<Arc<String>>,
     /// Further domains the same apps answer under (`--extra-base-domain`).
     extra_base_domains: Arc<Vec<String>>,
     /// How many more language servers the IDE may start (design §12.1).
@@ -429,6 +429,37 @@ pub fn build_router_with_apps(
         .route(
             crate::oauth::COMPLETE_ROUTE,
             axum::routing::get(crate::oauth::complete),
+        )
+        // Two-factor authentication (design §7.2): the challenge a sign-in is
+        // given in place of a session, and an account's own setup, on every
+        // host as the OAuth routes are (`crate::second_factor`).
+        .route(
+            crate::second_factor::STATUS_ROUTE,
+            axum::routing::get(crate::second_factor::status),
+        )
+        .route(
+            crate::second_factor::SETUP_ROUTE,
+            axum::routing::post(crate::second_factor::setup),
+        )
+        .route(
+            crate::second_factor::ENABLE_ROUTE,
+            axum::routing::post(crate::second_factor::enable),
+        )
+        .route(
+            crate::second_factor::VERIFY_ROUTE,
+            axum::routing::post(crate::second_factor::verify),
+        )
+        .route(
+            crate::second_factor::DISABLE_ROUTE,
+            axum::routing::post(crate::second_factor::disable),
+        )
+        .route(
+            crate::second_factor::RECOVERY_CODES_ROUTE,
+            axum::routing::post(crate::second_factor::recovery_codes),
+        )
+        .route(
+            crate::second_factor::PAGE_ROUTE,
+            axum::routing::get(crate::second_factor::page),
         )
         // Module webhooks (TODO-payments P1.1): a provider's events, on every
         // host as the OAuth routes are. A route of their own because the
@@ -1490,11 +1521,16 @@ async fn admin_handoff(
     else {
         return Redirect::to("/").into_response();
     };
-    let ttl = state.apps.current_session_ttl().await;
-    match state.sessions.login_for(user, ttl).await {
+    let policy = state.apps.current_session_policy().await;
+    match state.sessions.login_for(user, policy.ttl).await {
         Ok(token) => {
             let domain = session_cookie_domain(&state, Some(&host));
-            let cookie = session_cookie(&state, token, domain.as_deref());
+            let mut cookie = session_cookie(&state, token, domain.as_deref());
+            // The same session the admin had on the old host: it lasts there as
+            // a sign-in would (TODO A1.1).
+            if policy.persistent {
+                persist(&mut cookie, policy.ttl);
+            }
             (jar.add(cookie), Redirect::to("/#/settings")).into_response()
         }
         Err(e) => {
@@ -1900,7 +1936,17 @@ async fn dispatch_app(
             let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::OK);
             // The same session code an API provider's response goes through, so
             // an application's rendered login sets the same cookie the same way.
-            let client = SessionClient::of(headers).for_app(app);
+            let mut client = SessionClient::of(headers).for_app(app);
+            // A rendered sign-in form answers with a redirect to where it goes
+            // next: a second factor is asked for on a page, which goes there.
+            if resp.session.starts().is_some() {
+                let next = resp
+                    .headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("location"))
+                    .map_or("/", |(_, value)| value.as_str());
+                client = client.returning_to(next);
+            }
             let cookies = match apply_session(state, jar, session_token, client, resp.session).await
             {
                 Ok(cookies) => cookies,
@@ -2984,10 +3030,14 @@ async fn apply_response(
 /// [`apply_response`] an application framework's response goes through too, so
 /// there is one session story (TODO "Saltcorn UI" §8).
 ///
-/// `client` says who the cookie is for: a native app's session gets a cookie
-/// that lasts as long as the session, where a browser's lasts until the browser
-/// closes, as it always has; and the request's host is what a shared session
-/// cookie is scoped from ([`session_cookie_domain`]).
+/// A signed-in session's cookie lasts as long as the session (a `Max-Age` of its
+/// lifetime) unless Settings → Authentication turned that off or the sign-in
+/// left "Remember me" unticked ([`SessionAction::StartUntilBrowserCloses`]);
+/// then it ends when the browser closes (TODO A1.1). A native app's lasts as
+/// long as the session whatever the setting says, because an app's cookie
+/// store may drop a session cookie whenever the app closes. `client` says who
+/// the cookie is for, and the request's host is what a shared session cookie is
+/// scoped from ([`session_cookie_domain`]).
 ///
 /// `Err` is the response to send instead, when a session could not be started.
 pub(crate) async fn apply_session(
@@ -3008,6 +3058,12 @@ pub(crate) async fn apply_session(
     // request that carried no session cookie has none in either scope, so its
     // response says nothing about the other.
     let carried = jar.get(SESSION_COOKIE).is_some();
+    // "Remember me" unticked is a sign-in like any other but for its cookie.
+    let remember = match &session {
+        SessionAction::StartUntilBrowserCloses(_) => false,
+        SessionAction::StartVerified { remember, .. } => *remember,
+        _ => true,
+    };
     let stale = || {
         if !carried {
             return None;
@@ -3028,17 +3084,34 @@ pub(crate) async fn apply_session(
     // An account the application does not let in (TODO F9) is refused here,
     // before a session exists — whichever way it signed in: a password, a
     // rendered form, an identity provider.
-    if let (SessionAction::Start(user), Some(app)) = (&session, &client.app)
+    if let (Some(user), Some(app)) = (session.starts(), &client.app)
         && let Some(refusal) = refuse_sign_in(state, &app.app, user).await
     {
         return Err(Box::new(refusal));
     }
+    // A sign-in by an account with two-factor authentication on, or whose role
+    // requires it, gets a challenge here instead of a session (design §7.2):
+    // every way of signing in starts its session in this one place, so none of
+    // them can forget to ask. `StartVerified` is a sign-in that has answered
+    // it, or one that never asks.
+    if let SessionAction::Start(user) | SessionAction::StartUntilBrowserCloses(user) = &session
+        && let Some(challenge) =
+            crate::second_factor::challenge_for(state, &client, user, remember).await
+    {
+        return Err(Box::new(challenge));
+    }
     // Read from the store for a sign-in rather than believed from this process,
     // so a lifetime saved on another node applies here too.
-    let ttl = match &session {
-        SessionAction::Start(_) => state.apps.current_session_ttl().await,
-        _ => state.apps.session_ttl(),
+    let policy = match &session {
+        SessionAction::Start(_)
+        | SessionAction::StartUntilBrowserCloses(_)
+        | SessionAction::StartVerified { .. } => state.apps.current_session_policy().await,
+        _ => crate::apps::SessionPolicy {
+            ttl: state.apps.session_ttl(),
+            persistent: state.apps.persistent_session_cookie(),
+        },
     };
+    let ttl = policy.ttl;
     Ok(match session {
         SessionAction::Keep => SessionCookies {
             jar,
@@ -3046,58 +3119,62 @@ pub(crate) async fn apply_session(
         },
         // Bound to the host that issued it (security review #15): an
         // application's session is never admin authority on the admin host.
-        SessionAction::Start(user) => match state
-            .sessions
-            .login_scoped(user.clone(), ttl, client.scope())
-            .await
-        {
-            Ok(token) => {
-                // The session the request arrived with is replaced, not joined:
-                // the cookie is about to name the new one, so leaving the old one
-                // live would leave a credential nobody can present and nobody can
-                // withdraw. That is what makes `becomeUser` a swap — the admin
-                // session that authorised it does not survive behind the session
-                // it turned into.
-                //
-                // A failed logout is logged rather than failing the sign-in: the
-                // new session already exists and the cookie stops naming the old
-                // one, so the old token is one no browser presents any more, and
-                // it expires with its lifetime. Refusing here would instead leave
-                // the caller holding the old session *and* a new one nobody
-                // withdrew.
-                if let Some(previous) = &session_token
-                    && let Err(e) = state.sessions.logout(previous).await
-                {
-                    log_failure(
-                        "could not end the session a sign-in replaced; it stays valid \
-                         until it expires",
-                        &e,
-                    );
+        SessionAction::Start(user)
+        | SessionAction::StartUntilBrowserCloses(user)
+        | SessionAction::StartVerified { user, .. } => {
+            match state
+                .sessions
+                .login_scoped(user.clone(), ttl, client.scope())
+                .await
+            {
+                Ok(token) => {
+                    // The session the request arrived with is replaced, not joined:
+                    // the cookie is about to name the new one, so leaving the old one
+                    // live would leave a credential nobody can present and nobody can
+                    // withdraw. That is what makes `becomeUser` a swap — the admin
+                    // session that authorised it does not survive behind the session
+                    // it turned into.
+                    //
+                    // A failed logout is logged rather than failing the sign-in: the
+                    // new session already exists and the cookie stops naming the old
+                    // one, so the old token is one no browser presents any more, and
+                    // it expires with its lifetime. Refusing here would instead leave
+                    // the caller holding the old session *and* a new one nobody
+                    // withdrew.
+                    if let Some(previous) = &session_token
+                        && let Err(e) = state.sessions.logout(previous).await
+                    {
+                        log_failure(
+                            "could not end the session a sign-in replaced; it stays valid \
+                             until it expires",
+                            &e,
+                        );
+                    }
+                    // A guest who signs in or signs up in the same browser stops
+                    // being a guest (TODO-payments P1.6): the guest session ends, its
+                    // cookie goes, and the `login` event says which one it was, so
+                    // the application's trigger can move the guest's rows to the
+                    // account. Holding the cookie is what proves it is the same
+                    // buyer; an email address would not.
+                    let (jar, guest) = end_guest_session_at_sign_in(state, jar, &client).await;
+                    // After the session exists, not before: an event that says
+                    // someone logged in must not fire for a login that then failed.
+                    fire_login(state, &user, guest.as_deref()).await;
+                    let mut cookie = session_cookie(state, token, domain.as_deref());
+                    if remember && (policy.persistent || client.native) {
+                        persist(&mut cookie, ttl);
+                    }
+                    cookies(jar.add(cookie))
                 }
-                // A guest who signs in or signs up in the same browser stops
-                // being a guest (TODO-payments P1.6): the guest session ends, its
-                // cookie goes, and the `login` event says which one it was, so
-                // the application's trigger can move the guest's rows to the
-                // account. Holding the cookie is what proves it is the same
-                // buyer; an email address would not.
-                let (jar, guest) = end_guest_session_at_sign_in(state, jar, &client).await;
-                // After the session exists, not before: an event that says
-                // someone logged in must not fire for a login that then failed.
-                fire_login(state, &user, guest.as_deref()).await;
-                let mut cookie = session_cookie(state, token, domain.as_deref());
-                if client.native {
-                    cookie.set_max_age(time::Duration::seconds(ttl.num_seconds()));
+                Err(e) => {
+                    log_failure("could not start session", &e);
+                    return Err(Box::new(json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "could not start session",
+                    )));
                 }
-                cookies(jar.add(cookie))
             }
-            Err(e) => {
-                log_failure("could not start session", &e);
-                return Err(Box::new(json_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "could not start session",
-                )));
-            }
-        },
+        }
         SessionAction::End => {
             if let Some(token) = &session_token
                 && let Err(e) = state.sessions.logout(token).await
@@ -3204,6 +3281,12 @@ pub(crate) struct SessionClient {
     /// The application the session would be started on, whose access settings
     /// a sign-in must pass (TODO F9); `None` on the admin host.
     app: Option<Arc<MountedApp>>,
+    /// Where a browser is sent on once it is signed in, for a sign-in made by
+    /// a page rather than by a client's code — a rendered form, an identity
+    /// provider. A second factor is then asked for on a page of its own
+    /// ([`crate::second_factor`]), which comes back here; `None`, it is asked
+    /// for in the JSON the client reads.
+    pub(crate) page_return: Option<String>,
 }
 
 impl SessionClient {
@@ -3216,7 +3299,14 @@ impl SessionClient {
                 .and_then(|h| h.to_str().ok())
                 .map(str::to_owned),
             app: None,
+            page_return: None,
         }
+    }
+
+    /// The same client, signed in by a page that goes on to `path` once it is.
+    pub(crate) fn returning_to(mut self, path: impl Into<String>) -> SessionClient {
+        self.page_return = Some(path.into());
+        self
     }
 
     /// The same client, signing in to `app`.
@@ -3270,6 +3360,16 @@ fn session_cookie(state: &AppState, token: String, domain: Option<&str>) -> Cook
         cookie.set_domain(domain.to_owned());
     }
     cookie
+}
+
+/// Make a session cookie outlive the browser: a `Max-Age` of the session's
+/// lifetime `ttl`, so the browser keeps it exactly as long as the server
+/// honours the session. `Expires` goes with it for a client that reads only
+/// that.
+fn persist(cookie: &mut Cookie<'static>, ttl: chrono::Duration) {
+    let secs = ttl.num_seconds();
+    cookie.set_max_age(time::Duration::seconds(secs));
+    cookie.set_expires(time::OffsetDateTime::now_utc() + time::Duration::seconds(secs));
 }
 
 /// The cookie that expires the session cookie scoped to `domain`.

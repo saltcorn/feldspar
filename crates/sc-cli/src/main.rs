@@ -168,7 +168,7 @@ fn print_usage() {
     eprintln!("  feldspar add-user EMAIL --role ROLE [--password [VALUE]] [database flags]");
     eprintln!(
         "  feldspar modify-user EMAIL [--role ROLE] [--password [VALUE]] [--disabled|--enabled] \
-         [database flags]"
+         [--reset-second-factor] [database flags]"
     );
     eprintln!("  feldspar delete-user EMAIL [database flags]");
     eprintln!("  feldspar role list [--json] [database flags]");
@@ -292,6 +292,9 @@ fn print_usage() {
        terminal). A password starting with -- is written --password=VALUE.
        modify-user --disabled stops an account signing in (and ends its
        sessions) without deleting it; --enabled gives it back.
+       modify-user --reset-second-factor turns off the account's two-factor
+       authentication (for a lost phone and lost recovery codes) and ends its
+       sessions.
 
   delete-user: deletes an account. The last enabled admin cannot be deleted
        or disabled, here or anywhere else.

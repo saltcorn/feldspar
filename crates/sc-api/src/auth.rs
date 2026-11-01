@@ -56,17 +56,35 @@ pub const CSRF_HEADER: &str = "x-csrf-token";
 /// Header a client sends, with the value [`NATIVE_CLIENT`], when it is **not a
 /// browser** — the generated client running in a React Native app, where there
 /// is no `document`. A native app's login gets a session cookie that outlives
-/// the app being closed; a browser's keeps ending with the browser.
+/// the app being closed, whatever Settings → Authentication says about a
+/// browser's.
 pub const CLIENT_KIND_HEADER: &str = "x-feldspar-client";
 /// The [`CLIENT_KIND_HEADER`] value a native app sends.
 pub const NATIVE_CLIENT: &str = "native";
 
-/// Email + password, the body of a login (and of first-user creation).
+/// Email + password, the body of a login (and of sign-up), with the optional
+/// "Remember me" ([`remember`]).
 pub fn credentials_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("email", TypeSchema::text()),
         StructField::new("password", TypeSchema::text()),
+        remember_field(),
     ])
+}
+
+/// The optional `remember` of a body that signs in: `false` gives a session
+/// cookie that ends when the browser closes, absent or `true` the one
+/// Settings → Authentication gives (TODO A1.1).
+pub fn remember_field() -> StructField {
+    StructField::new("remember", TypeSchema::optional(TypeSchema::bool()))
+}
+
+/// Whether a sign-in's body asks to be remembered across a browser restart:
+/// yes unless it says `"remember": false`. Only the instance's setting can make
+/// a cookie outlive the browser, so asking for `true` where it is off changes
+/// nothing, and anything but `false` is the default.
+pub fn remember(body: &Json) -> bool {
+    !matches!(body.get("remember"), Some(Json::Bool(false)))
 }
 
 /// The public view of a user — **never** the password hash.
@@ -75,6 +93,26 @@ pub fn user_summary_schema() -> TypeSchema {
         StructField::new("id", TypeSchema::uuid()),
         StructField::new("email", TypeSchema::text()),
         StructField::new("role", TypeSchema::int()),
+        // `false` for a self-service sign-up whose address nobody has proven
+        // yet (TODO A2) — what an application shows "check your email" on.
+        StructField::new("email_verified", TypeSchema::bool()),
+        // Only on a sign-in's answer, and then **no session was started**: the
+        // account has two-factor authentication on (or its role requires it),
+        // and the sign-in is finished with a code (design §7.2) — `token` is
+        // the challenge, `setup` says one must be set up first.
+        StructField::new(
+            "second_factor",
+            TypeSchema::optional(second_factor_challenge_schema()),
+        ),
+    ])
+}
+
+/// The challenge a sign-in is given in place of a session when it must give a
+/// second factor: the summary's `second_factor`.
+pub fn second_factor_challenge_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("token", TypeSchema::text()),
+        StructField::new("setup", TypeSchema::bool()),
     ])
 }
 
@@ -88,6 +126,7 @@ pub fn user_summary_json(user: &User) -> Json {
         "id": user.id().to_string(),
         "email": user.get(COL_EMAIL).and_then(Value::as_text).unwrap_or_default(),
         "role": i64::from(user.role()),
+        "email_verified": !user.email_unproven(),
     })
 }
 
@@ -113,6 +152,9 @@ pub fn user_row_schema() -> TypeSchema {
         // Whether a checklist may run as this account.
         // Set with `setCheckUser`, never through the form's fields.
         StructField::new("check_user", TypeSchema::bool()),
+        // Whether the account is asked for a code from an authenticator app at
+        // sign-in. Said by the users list; absent elsewhere.
+        StructField::new("second_factor", TypeSchema::optional(TypeSchema::bool())),
         // Keyed by column name, since only the admin's own schema knows what is
         // in here — `listFields` on the users table is what names them.
         StructField::new("extra", TypeSchema::json()),
@@ -304,6 +346,14 @@ mod tests {
     use sc_types::Role;
 
     #[test]
+    fn a_sign_in_is_remembered_unless_it_says_false() {
+        assert!(remember(&json!({"email": "a@b.c", "password": "pw"})));
+        assert!(remember(&json!({"remember": true})));
+        assert!(remember(&json!({"remember": null})));
+        assert!(!remember(&json!({"remember": false})));
+    }
+
+    #[test]
     fn credentials_require_both_fields_non_blank() {
         let (email, password) = credentials(&json!({"email": "a@b.c", "password": "pw"})).unwrap();
         assert_eq!(email, "a@b.c");
@@ -330,8 +380,9 @@ mod tests {
         let json = user_summary_json(&user);
         assert_eq!(json["email"], json!("a@b.c"));
         assert_eq!(json["role"], json!(1));
-        // Only the three declared fields, whatever else the row carries.
-        assert_eq!(json.as_object().unwrap().len(), 3);
+        // Only the four declared fields, whatever else the row carries.
+        assert_eq!(json.as_object().unwrap().len(), 4);
+        assert_eq!(json["email_verified"], json!(true), "not a sign-up");
         assert!(json.get("password_hash").is_none());
     }
 }

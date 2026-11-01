@@ -99,6 +99,7 @@ describe("defaultUserRole", () => {
     name,
     description: "",
     builtin: false,
+    require_second_factor: false,
   });
 
   it("is the role closest to 80", () => {
@@ -132,8 +133,8 @@ describe("defaultUserRole", () => {
 describe("the form", () => {
   it("starts a new user blank, on the default role", () => {
     const form = newUserForm([
-      { role: 1, name: "Admin", description: "", builtin: true },
-      { role: 75, name: "Member", description: "", builtin: false },
+      { role: 1, name: "Admin", description: "", builtin: true, require_second_factor: false },
+      { role: 75, name: "Member", description: "", builtin: false, require_second_factor: false },
     ]);
     expect(form).toEqual({ email: "", password: "", role: 75, language: "", extra: {} });
   });

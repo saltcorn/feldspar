@@ -48,6 +48,8 @@ struct Answer {
     status: StatusCode,
     location: Option<String>,
     body: Vec<u8>,
+    /// The response's `Set-Cookie` lines, whole.
+    set_cookie: Vec<String>,
 }
 
 impl Answer {
@@ -101,6 +103,12 @@ impl Browser {
             None => builder.body(Body::empty()).unwrap(),
         };
         let response = self.router.clone().oneshot(request).await.unwrap();
+        let set_cookie: Vec<String> = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|raw| raw.to_str().unwrap().to_owned())
+            .collect();
         for raw in response.headers().get_all(header::SET_COOKIE) {
             let pair = raw.to_str().unwrap().split(';').next().unwrap_or("");
             if let Some((name, value)) = pair.split_once('=') {
@@ -124,6 +132,7 @@ impl Browser {
             status,
             location,
             body,
+            set_cookie,
         }
     }
 
@@ -267,6 +276,16 @@ async fn the_admin_ui_moves_without_a_restart_and_the_admin_follows_signed_in()
     assert!(landed.status.is_redirection(), "{}", landed.status);
     assert_eq!(landed.location.as_deref(), Some("/#/settings"));
     assert!(new.cookies.contains_key(SESSION_COOKIE));
+    // As lasting as a sign-in on the new host would be (TODO A1.1).
+    let session = landed
+        .set_cookie
+        .iter()
+        .find(|line| line.starts_with(&format!("{SESSION_COOKIE}=")))
+        .unwrap();
+    assert!(
+        session.contains(&format!("Max-Age={}", 24 * 3600)),
+        "{session}"
+    );
     let (_, status_body) = new.api("GET", "/api/auth/status", None).await;
     assert_eq!(
         status_body["current_user"]["email"],

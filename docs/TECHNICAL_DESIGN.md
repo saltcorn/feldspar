@@ -1228,9 +1228,26 @@ pub struct User {
   Live: every sign-in reads it from `_fd_config` (`AppMounts::current_session_ttl`) where
   the router starts a session (`SessionStore::login_for`). So the next sign-in after a save
   gets it on every node, including after a save made by another node, `feldspar config set` or
-  a restore. That covers a password's, an identity provider's and an admin handoff's, and a
-  native client's cookie `Max-Age` matches it. A session already started keeps the expiry it
-  was given.
+  a restore. That covers a password's, an identity provider's and an admin handoff's. A session
+  already started keeps the expiry it was given.
+- **The session cookie outlives the browser** (`persistent_session_cookie`, Settings →
+  Authentication, *Keep people signed in when the browser closes*, **on** by default). A
+  sign-in's `sc_session` gets `Max-Age` (and `Expires`) equal to the lifetime the session was
+  just given, so the browser keeps it exactly as long as the server honours it. Read from
+  `_fd_config` with the lifetime at every sign-in (`AppMounts::current_session_policy`), and
+  applied in `apply_session` and the admin handoff, so every path — a password, a rendered
+  form, an identity provider, a set-password link, sign-up — gets it. A native client's cookie
+  always has the `Max-Age`, because an app's cookie store may drop a session cookie whenever the
+  app closes. Two ways to get a cookie that ends with the browser: the admin unticks the setting
+  (a kiosk or shared machine, where closing the browser is how people sign out), or one sign-in
+  says `remember: false` — the login, sign-up and set-password bodies take it, and the Saltcorn
+  UI sign-in form has a *Remember me* box, ticked to begin with, sent beside a hidden
+  `remember_shown` so an unticked box is told apart from a client that offers none
+  (`SessionAction::StartUntilBrowserCloses`). `remember: true` cannot override the setting
+  being off. Until this was added (TODO A1.1) only a native client's cookie had a `Max-Age`, so
+  every browser user signed in again after each restart however long the lifetime was.
+  **Expiry still does not slide**: renewing it on use would write per request, which the
+  session store is built to avoid (above); a lifetime of up to a year makes it unnecessary.
 - **External identity providers (OAuth 2.0 clients)**, Settings → Authentication. A list of
   records under the internal key `oauth_providers`, each declared field by field
   (`sc_config::oauth_provider_spec`) so the tab's form is generic, its `client_secret`
@@ -1261,6 +1278,72 @@ pub struct User {
   An application's generated client has `oauthProviders()` and
   `oauthSignInUrl(provider, returnTo)` whenever it has `login`, and the scaffold's
   `Login.tsx` renders a button per provider.
+- **Two-factor authentication** (`sc_auth::second_factor`, `sc-server/src/second_factor.rs`).
+  Codes from an authenticator app (TOTP, RFC 6238: HMAC-SHA-1, 6 digits, 30 seconds, one step
+  of drift either way), and 10 single-use recovery codes. It belongs to the **account**, not
+  to an application, so the routes are the server's own, under `/_feldspar/second-factor`,
+  answering on every host as the OAuth routes do:
+
+  - `GET` (signed in): `{enabled, required, recovery_codes_left}`.
+  - `POST setup {token?}`: a new secret, as `{secret, otpauth_url, qr_svg, account}`. The QR
+    code is an SVG drawn on the server. Refused while one is on.
+  - `POST enable {code, token?}`: turn it on with the app's first code. Answers
+    `{recovery_codes}`, shown once.
+  - `POST verify {token, code}`: answer a sign-in's challenge (see below).
+  - `POST disable {code}` and `POST recovery-codes {code}` (signed in): turn it off, or
+    replace the recovery codes. Both need a current code. A role that requires it cannot turn
+    it off.
+  - `GET sign-in?return_to=`: a server-rendered page that does the same with forms, for a
+    sign-in that a page made (below).
+
+  **Storage.** `_fd_second_factor` (`user_id` PK, the secret **sealed** with the instance key
+  as a Secret field is, `enabled_at` (`NULL` while a setup waits for its first code),
+  `last_step`) and `_fd_recovery_codes` (SHA-256 of the account and the code). Both are made by
+  the users bootstrap, are not foreign keys, and are deleted with the account. A code is
+  accepted only for a time-step after `last_step`, in one conditional `UPDATE`, so a code
+  cannot be used twice. A recovery code is spent by `DELETE … RETURNING`.
+
+  **The challenge.** `apply_session` is where every session starts. For a
+  `SessionAction::Start` by an account that has a second factor on, or whose role has
+  `require_second_factor: true` in `_fd_roles.attributes` (the first role-specific setting),
+  it starts **no session**. Instead it issues a challenge: a `second_factor` token in
+  `_fd_password_tokens` (10 minutes, single use, remembering "Remember me"), so whichever node
+  gets the answer can read it. The token goes in an `HttpOnly`, `SameSite=Lax` cookie `sc_2fa`
+  scoped to the routes, and also:
+  - for a client's code, in the JSON answer: the user summary plus
+    `second_factor: {token, setup}`. `setup: true` means a role requires one that the account
+    has not set up, and the token then allows `setup` and `enable` for that account only.
+  - for a sign-in made by a page (`SessionClient::returning_to`), as a redirect to the
+    `sign-in` page instead. This covers a Saltcorn UI application's login form, where the page
+    returns to the form's redirect, and an identity provider's `complete`, where it returns to
+    `return_to`.
+
+  The answer starts the session through `apply_session` with `SessionAction::StartVerified`,
+  which is never challenged. That variant is also what `becomeUser` and the first user's
+  creation use. An identity-provider sign-in uses it too, unless Settings → Authentication
+  *Ask for a two-factor code after an identity provider* is on. Every password path is covered
+  this way without knowing about the second factor: the admin and REST logins, set-password,
+  verify-email, sign-up, and a rendered login form. Wrong codes count against the account (5 in
+  15 minutes, then `429`) as well as the login budget per IP. If the database cannot say
+  whether an account has a second factor, no session is started.
+
+  **Applications made before it.** A build regenerates only an application's `src/feldspar/`
+  runtime, never its own `Login.tsx`, so the generated client covers pages that know nothing of
+  a challenge. A password sign-in method (`rest::PASSWORD_SIGN_INS`: `login`, `signup`,
+  `setPassword`, `verifyEmail`) returns through the helper's `signInAnswered`. When the answer
+  carries `second_factor` in a browser, it goes to the `sign-in` page with `return_to` set to
+  the current page, and its promise never settles. Pages that answer the challenge themselves
+  call `handleSecondFactorInApp()` once: the scaffold's `auth.tsx` and the admin UI's `api.ts`
+  do. Outside a browser the challenge is always returned.
+
+  **Where it is set.** Each account: the admin UI's shield button beside "Log out"
+  (`#/account/security`), and in a React application the scaffold's `src/Security.tsx`
+  (`/security`) through the generated client's `secondFactor*` methods. Each role: a switch on
+  Users → Roles (`setRoleSecondFactor`). Instance-wide: Settings → Authentication, which has the
+  identity-provider switch above and *Name in authenticator apps* (blank means the base
+  domain). An admin can reset an account (`resetUserSecondFactor`, Users → ⋯, which also ends
+  its sessions), and so can the CLI (`feldspar modify-user EMAIL --reset-second-factor`), for a
+  sole admin who is locked out.
 - Further providers (SAML, SSO) via an `AuthMethod` extension.
 
 ### 7.3 Authorization
@@ -1941,9 +2024,21 @@ erDiagram
   PASSWORDTOKENS["_fd_password_tokens"] {
     text token_hash PK "SHA-256 of the emailed token"
     uuid user_id "deliberately NOT a foreign key"
-    text purpose "invite | reset"
+    text purpose "invite | reset | verify | second_factor | second_factor_session"
     timestamp created_at
     timestamp expires_at "7 days for an invitation, 1 hour for a reset"
+  }
+  SECONDFACTOR["_fd_second_factor"] {
+    uuid user_id PK "deliberately NOT a foreign key"
+    text secret "TOTP secret, sealed with the instance key"
+    timestamp enabled_at "null while setup waits for its first code"
+    int last_step "the last time step used: a code works once"
+    timestamp created_at
+  }
+  RECOVERYCODES["_fd_recovery_codes"] {
+    text code_hash PK "a recovery code, hashed"
+    uuid user_id "deliberately NOT a foreign key"
+    timestamp created_at
   }
   TABLES["_fd_tables"] {
     uuid id PK
@@ -2407,6 +2502,8 @@ erDiagram
   USERS ||--o{ SESSIONS : "user_id -- by value"
   USERS ||--o{ APITOKENS : "user_id -- by value"
   USERS ||--o{ PASSWORDTOKENS : "user_id -- by value"
+  USERS ||--o| SECONDFACTOR : "user_id -- by value"
+  USERS ||--o{ RECOVERYCODES : "user_id -- by value"
   USERS |o--o{ RUNS : "user_id -- by value, nullable"
   TABLES ||--o{ FIELDS : "table_name -- same subject, joined by name"
   TABLES ||--o| TABLEEDITS : "name -- by name, bookkeeping"
@@ -7586,6 +7683,37 @@ it works exactly once, and spending it ends the user's other tokens and sessions
 have accounts; it sends at most one link a minute per account, sends it off the request, and
 uses the system's sender and wording. The scaffold's `src/SetPassword.tsx` is the page at that
 path.
+
+**Email verification** (TODO A2) is the third use of these links. `users.email_verified` is
+`false` for an account made by self-service sign-up (security review #41), and set to `true` by
+anything that proves the holder reads that address: a set-password link, an identity provider
+sign-in that claims the account, or the verification link. `NULL` (every other account) counts
+as proven. An application whose REST API has `verify_email` on (off by default) works as
+follows:
+
+- `signup` also emails a link `{origin}/verify-email#token=…` (a `verify` token in
+  `_fd_password_tokens`, lasting 48 hours). The subject and text can be changed with
+  `verify_email_subject` / `verify_email_body`, and the text must contain `{{link}}`. A sign-up
+  is refused before an account exists when there is no mail transport, and if the message
+  cannot be sent the account is deleted again.
+- An account whose address is unproven is **served as `unverified_role`** (default 100, the
+  public role; a save refuses the admin role). `sc_app::cap_role` does this in the same place as
+  `max_role` (F9), so every application surface sees the lower role. The account's own role is
+  never changed. So proving the address by any route gives full access from the next request,
+  and an application that does not require verification serves the same account as its role.
+  The user summary (`login`, `whoami`, …) has `email_verified`, so a page can say "check your
+  email".
+- `POST /api/verify-email {token}` is public and is one of the sign-in endpoints that F9 lets a
+  refused caller reach. It spends the token, proves the address and starts a session. Password
+  links refuse a `verify` token, and `verify-email` refuses a password token. Following the link
+  does not end the account's other sessions. Those pick up the change when their cache entry
+  expires, within the 60-second freshness TTL.
+- `POST /api/resend-verification` (signed in) sends a fresh link to the caller's own address,
+  at most one a minute. It answers `{ok: true}`, and does nothing for a proven address.
+
+Turning `verify_email` on also holds back accounts that signed up before it was on, until they
+verify. Their owners can ask for a link with `resend-verification`. Turning it off serves every
+account as its role again. Saltcorn UI applications do not send the link yet (TODO A2.3).
 
 **`users` behind an application's API.** The users table can be declared by an application like
 any other table (for example, a therapist listing their patients' accounts), so the row layer

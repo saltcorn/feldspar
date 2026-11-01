@@ -35,7 +35,9 @@ use sc_auth::{RoleDef, SessionStore, User, create_user, load_user_by_email, save
 use sc_catalog::{AccessRules, Catalog, TableMeta, save_table_meta};
 use sc_config::parse_mailbox;
 use sc_email::{Email, Mailer, RecordingMailer};
-use sc_server::{AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps};
+use sc_server::{
+    AppMounts, MountedApp, SESSION_COOKIE, ServerConfig, admin_handlers, build_router_with_apps,
+};
 use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -51,6 +53,8 @@ struct Client {
     router: Router,
     host: String,
     cookies: HashMap<String, String>,
+    /// The last response's `Set-Cookie` lines, whole.
+    set_cookie: Vec<String>,
 }
 
 impl Client {
@@ -59,6 +63,7 @@ impl Client {
             router: router.clone(),
             host: host.to_owned(),
             cookies: HashMap::new(),
+            set_cookie: Vec::new(),
         };
         // Load the SPA first: that is what hands a browser its CSRF cookie.
         client.send("GET", "/", None).await;
@@ -93,6 +98,12 @@ impl Client {
         };
         let response = self.router.clone().oneshot(request).await.unwrap();
         let status = response.status();
+        self.set_cookie = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|raw| raw.to_str().unwrap_or("").to_owned())
+            .collect();
         for raw in response.headers().get_all(header::SET_COOKIE) {
             let pair = raw.to_str().unwrap_or("").split(';').next().unwrap_or("");
             if let Some((name, value)) = pair.split_once('=') {
@@ -298,6 +309,13 @@ async fn a_therapist_invites_a_patient_into_the_patients_app() -> sc_error::Resu
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["email"], json!("pat@example.com"));
+    // A link's sign-in outlives the browser as a password's does (TODO A1.1).
+    let session = patient
+        .set_cookie
+        .iter()
+        .find(|line| line.starts_with(&format!("{SESSION_COOKIE}=")))
+        .expect("a session cookie");
+    assert!(session.contains("Max-Age="), "{session}");
     let (status, me) = patient.send("GET", "/api/whoami", None).await;
     assert_eq!(status, StatusCode::OK, "signed in by the same response");
     assert_eq!(me["email"], json!("pat@example.com"));

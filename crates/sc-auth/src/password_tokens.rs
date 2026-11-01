@@ -86,6 +86,13 @@ pub const INVITE_TTL_DAYS: i64 = 7;
 /// How long a password-reset link works.
 pub const RESET_TTL_MINUTES: i64 = 60;
 
+/// How long an email verification link works.
+pub const VERIFY_TTL_HOURS: i64 = 48;
+
+/// How long a sign-in waits for its second factor: the password was right, and
+/// the code is the next thing typed.
+pub const SECOND_FACTOR_TTL_MINUTES: i64 = 10;
+
 /// Why a token was issued, which decides how long it lasts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasswordTokenPurpose {
@@ -93,6 +100,19 @@ pub enum PasswordTokenPurpose {
     Invite,
     /// A forgotten password.
     Reset,
+    /// Proof that a self-service sign-up holds the address it gave
+    /// ([`redeem_email_verification`]). It sets no password, and
+    /// [`redeem_password_token`] refuses it: a link sent to confirm an address
+    /// is not a way to choose a password.
+    Verify,
+    /// A sign-in whose password was right, waiting for its second factor
+    /// ([`crate::second_factor`]). It sets no password and proves no address:
+    /// it is spent for a session once the code is right.
+    SecondFactor,
+    /// [`SecondFactor`](PasswordTokenPurpose::SecondFactor), for a sign-in
+    /// that left "Remember me" unticked: the session it becomes ends with the
+    /// browser.
+    SecondFactorUntilBrowserCloses,
 }
 
 impl PasswordTokenPurpose {
@@ -101,7 +121,23 @@ impl PasswordTokenPurpose {
         match self {
             PasswordTokenPurpose::Invite => "invite",
             PasswordTokenPurpose::Reset => "reset",
+            PasswordTokenPurpose::Verify => "verify",
+            PasswordTokenPurpose::SecondFactor => "second_factor",
+            PasswordTokenPurpose::SecondFactorUntilBrowserCloses => "second_factor_session",
         }
+    }
+
+    /// The purpose a row's [`COL_PURPOSE`] names, if it is one this release knows.
+    pub fn parse(purpose: &str) -> Option<PasswordTokenPurpose> {
+        [
+            PasswordTokenPurpose::Invite,
+            PasswordTokenPurpose::Reset,
+            PasswordTokenPurpose::Verify,
+            PasswordTokenPurpose::SecondFactor,
+            PasswordTokenPurpose::SecondFactorUntilBrowserCloses,
+        ]
+        .into_iter()
+        .find(|p| p.as_str() == purpose)
     }
 
     /// How long a token issued for this purpose works.
@@ -109,6 +145,11 @@ impl PasswordTokenPurpose {
         match self {
             PasswordTokenPurpose::Invite => Duration::days(INVITE_TTL_DAYS),
             PasswordTokenPurpose::Reset => Duration::minutes(RESET_TTL_MINUTES),
+            PasswordTokenPurpose::Verify => Duration::hours(VERIFY_TTL_HOURS),
+            PasswordTokenPurpose::SecondFactor
+            | PasswordTokenPurpose::SecondFactorUntilBrowserCloses => {
+                Duration::minutes(SECOND_FACTOR_TTL_MINUTES)
+            }
         }
     }
 }
@@ -239,33 +280,10 @@ async fn spend_in(
     token: &str,
     password: &str,
 ) -> Result<Option<Uuid>> {
-    let delete = Delete {
-        returning: vec![Projection::expr(Expr::col(COL_USER))],
-        ..Delete::from(PASSWORD_TOKENS_TABLE).filter(
-            Expr::col(COL_TOKEN_HASH)
-                .eq(Expr::lit(token_hash(token)))
-                .and(Expr::binary(
-                    BinOp::Gt,
-                    Expr::col(COL_EXPIRES_AT),
-                    Expr::Lit(Value::Timestamp(Utc::now())),
-                )),
-        )
-    };
-    let spent = tx
-        .run(
-            sc_catalog::Unchecked::system("password token: spend"),
-            &Statement::from(delete),
-        )
-        .await?;
-    let Some(user_id) = spent.first().map(|row| match row.get(COL_USER) {
-        Some(Value::Uuid(id)) => Ok(*id),
-        other => Err(Error::invalid(format!(
-            "{PASSWORD_TOKENS_TABLE}.{COL_USER} should be a uuid, got {other:?}"
-        ))),
-    }) else {
+    let purposes = [PasswordTokenPurpose::Invite, PasswordTokenPurpose::Reset];
+    let Some(user_id) = spend_token(tx, token, &purposes).await? else {
         return Ok(None);
     };
-    let user_id = user_id?;
     match load_user(catalog, user_id).await? {
         Some(user) if !user.is_disabled() => {}
         _ => return Ok(None),
@@ -298,6 +316,177 @@ async fn spend_in(
         &Statement::from(others),
     )
     .await?;
+    Ok(Some(user_id))
+}
+
+/// The user a live `token` issued for one of `purposes` names, and which of
+/// them it was issued for — **without spending it**. What a second-factor
+/// challenge is read with while its holder is still typing the code: a wrong
+/// code must leave the token to try again.
+pub async fn password_token_holder(
+    catalog: &Catalog,
+    token: &str,
+    purposes: &[PasswordTokenPurpose],
+) -> Result<Option<(Uuid, PasswordTokenPurpose)>> {
+    let token = token.trim();
+    if token.is_empty() || purposes.is_empty() {
+        return Ok(None);
+    }
+    let select = Select::from(Source::table(PASSWORD_TOKENS_TABLE))
+        .columns(vec![
+            Projection::expr(Expr::col(COL_USER)),
+            Projection::expr(Expr::col(COL_PURPOSE)),
+        ])
+        .filter(
+            Expr::col(COL_TOKEN_HASH)
+                .eq(Expr::lit(token_hash(token)))
+                .and(Expr::binary(
+                    BinOp::Gt,
+                    Expr::col(COL_EXPIRES_AT),
+                    Expr::Lit(Value::Timestamp(Utc::now())),
+                )),
+        )
+        .limit(1);
+    let found = rows(catalog, Statement::from(select)).await?;
+    let Some(row) = found.first() else {
+        return Ok(None);
+    };
+    let purpose = match row.get(COL_PURPOSE) {
+        Some(Value::Text(p)) => PasswordTokenPurpose::parse(p),
+        _ => None,
+    };
+    match (row.get(COL_USER), purpose) {
+        (Some(Value::Uuid(id)), Some(purpose)) if purposes.contains(&purpose) => {
+            Ok(Some((*id, purpose)))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Spend `token` if it is live and was issued for one of `purposes`, returning
+/// the user it names. Exactly one of two racing callers gets `Some`.
+pub async fn spend_password_token(
+    catalog: &Catalog,
+    token: &str,
+    purposes: &[PasswordTokenPurpose],
+) -> Result<Option<Uuid>> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Ok(None);
+    }
+    let tx = SharedTx::begin_primary(catalog)?;
+    match spend_token(&tx, token, purposes).await {
+        Ok(spent) => {
+            tx.commit().await?;
+            Ok(spent)
+        }
+        Err(e) => {
+            let _ = tx.rollback().await;
+            Err(e)
+        }
+    }
+}
+
+/// Delete the live token `token`, if it was issued for one of `purposes`, and
+/// return the user it was issued for. `DELETE … RETURNING`, so two requests
+/// racing with one link cannot both spend it.
+async fn spend_token(
+    tx: &SharedTx,
+    token: &str,
+    purposes: &[PasswordTokenPurpose],
+) -> Result<Option<Uuid>> {
+    let purpose = purposes
+        .iter()
+        .map(|p| Expr::col(COL_PURPOSE).eq(Expr::lit(p.as_str())))
+        .reduce(Expr::or)
+        .ok_or_else(|| Error::invalid("a token is spent for at least one purpose"))?;
+    let delete = Delete {
+        returning: vec![Projection::expr(Expr::col(COL_USER))],
+        ..Delete::from(PASSWORD_TOKENS_TABLE).filter(
+            Expr::col(COL_TOKEN_HASH)
+                .eq(Expr::lit(token_hash(token)))
+                .and(Expr::binary(
+                    BinOp::Gt,
+                    Expr::col(COL_EXPIRES_AT),
+                    Expr::Lit(Value::Timestamp(Utc::now())),
+                ))
+                .and(purpose),
+        )
+    };
+    let spent = tx
+        .run(
+            sc_catalog::Unchecked::system("password token: spend"),
+            &Statement::from(delete),
+        )
+        .await?;
+    match spent.first().map(|row| row.get(COL_USER)) {
+        None => Ok(None),
+        Some(Some(Value::Uuid(id))) => Ok(Some(*id)),
+        Some(other) => Err(Error::invalid(format!(
+            "{PASSWORD_TOKENS_TABLE}.{COL_USER} should be a uuid, got {other:?}"
+        ))),
+    }
+}
+
+/// Spend an **email verification** token, returning the user whose address it
+/// proves — or `None` for every way a token can fail to be good (unknown,
+/// expired, already used, issued for a password link, the account gone or
+/// disabled), as [`redeem_password_token`] answers.
+///
+/// The address is then proven ([`COL_EMAIL_VERIFIED`] `true`), and the
+/// account's other verification links are spent with it. The password and the
+/// sessions are left as they are: confirming an address is not what somebody
+/// does when they think somebody else is in their account.
+pub async fn redeem_email_verification(catalog: &Catalog, token: &str) -> Result<Option<User>> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Ok(None);
+    }
+    let tx = SharedTx::begin_primary(catalog)?;
+    match verify_in(catalog, &tx, token).await {
+        Ok(outcome) => {
+            tx.commit().await?;
+            match outcome {
+                Some(user_id) => load_user(catalog, user_id).await,
+                None => Ok(None),
+            }
+        }
+        Err(e) => {
+            let _ = tx.rollback().await;
+            Err(e)
+        }
+    }
+}
+
+/// The writes of [`redeem_email_verification`], in one transaction.
+async fn verify_in(catalog: &Catalog, tx: &SharedTx, token: &str) -> Result<Option<Uuid>> {
+    let Some(user_id) = spend_token(tx, token, &[PasswordTokenPurpose::Verify]).await? else {
+        return Ok(None);
+    };
+    match load_user(catalog, user_id).await? {
+        Some(user) if !user.is_disabled() => {}
+        _ => return Ok(None),
+    }
+    let update = Update {
+        table: USERS_TABLE.to_owned(),
+        assignments: vec![Assignment::new(COL_EMAIL_VERIFIED, Expr::lit(true))],
+        filter: Some(Expr::col(COL_ID).eq(Expr::lit(user_id))),
+        returning: vec![Projection::expr(Expr::col(COL_ID))],
+    };
+    if tx
+        .run(crate::INTERNAL_TABLES, &Statement::from(update))
+        .await?
+        .is_empty()
+    {
+        return Ok(None);
+    }
+    let others = Delete::from(PASSWORD_TOKENS_TABLE).filter(
+        Expr::col(COL_USER)
+            .eq(Expr::lit(user_id))
+            .and(Expr::col(COL_PURPOSE).eq(Expr::lit(PasswordTokenPurpose::Verify.as_str()))),
+    );
+    tx.run(crate::INTERNAL_TABLES, &Statement::from(others))
+        .await?;
     Ok(Some(user_id))
 }
 
@@ -480,5 +669,17 @@ mod tests {
         assert_eq!(PasswordTokenPurpose::Invite.ttl(), Duration::days(7));
         assert_eq!(PasswordTokenPurpose::Reset.ttl(), Duration::hours(1));
         assert_eq!(PasswordTokenPurpose::Reset.as_str(), "reset");
+        assert_eq!(PasswordTokenPurpose::Verify.ttl(), Duration::hours(48));
+        assert_eq!(PasswordTokenPurpose::Verify.as_str(), "verify");
+        assert_eq!(
+            PasswordTokenPurpose::SecondFactor.ttl(),
+            Duration::minutes(10)
+        );
+        for purpose in [
+            PasswordTokenPurpose::Invite,
+            PasswordTokenPurpose::SecondFactorUntilBrowserCloses,
+        ] {
+            assert_eq!(PasswordTokenPurpose::parse(purpose.as_str()), Some(purpose));
+        }
     }
 }

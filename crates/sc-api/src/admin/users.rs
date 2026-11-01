@@ -46,6 +46,27 @@ pub(super) fn register(set: &mut EndpointSet) {
             ),
     );
 
+    // Whether a role requires two-factor authentication (design §7.2): an
+    // account holding it that has not set one up is taken through setting one
+    // up at its next sign-in. Its own endpoint rather than a role update, since
+    // nothing else about a role is edited after it is made.
+    set.register(
+        Endpoint::new(
+            "setRoleSecondFactor",
+            Method::Post,
+            api()
+                .lit("roles")
+                .param("role", ValueType::Int)
+                .lit("second-factor"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "required",
+            TypeSchema::bool(),
+        )]))
+        .output(role_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
     // Addressed by the role *number*, not the row id: the number is what
     // `users.role` and every `min_role` holds, so it is the handle an admin
     // already has in front of them.
@@ -197,6 +218,26 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("become"),
         )
         .output(user_summary_schema())
+        .auth(AuthRequirement::admin()),
+    );
+
+    // Turn off an account's two-factor authentication, for somebody who lost
+    // the phone and the recovery codes. Its sessions end with it: whoever is
+    // signed in now may be the reason it is being reset.
+    set.register(
+        Endpoint::new(
+            "resetUserSecondFactor",
+            Method::Post,
+            api()
+                .lit("users")
+                .param("id", ValueType::Uuid)
+                .lit("second-factor")
+                .lit("reset"),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "reset",
+            TypeSchema::bool(),
+        )]))
         .auth(AuthRequirement::admin()),
     );
 
@@ -455,6 +496,9 @@ fn role_schema() -> TypeSchema {
         StructField::new("name", TypeSchema::text()),
         StructField::new("description", TypeSchema::text()),
         StructField::new("builtin", TypeSchema::bool()),
+        // Whether everybody holding the role must use two-factor
+        // authentication (`_fd_roles.attributes.require_second_factor`).
+        StructField::new("require_second_factor", TypeSchema::bool()),
     ])
 }
 

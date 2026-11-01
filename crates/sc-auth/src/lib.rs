@@ -19,6 +19,10 @@
 //! account created with no password ([`invite_user`]) or one whose owner cannot
 //! remember it gets a link, and [`redeem_password_token`] spends it.
 //!
+//! **Two-factor authentication** ([`second_factor`](crate::verify_second_factor)):
+//! an authenticator app's codes and recovery codes, asked for after a password
+//! when an account turned it on or its role requires it.
+//!
 //! Roles live in [`_fd_roles`](ROLES_TABLE) and `users.role` is a foreign key
 //! onto it (§7.1, §9): a role is a row carrying a name and role-specific
 //! settings, not a bare integer with a convention attached.
@@ -61,6 +65,7 @@ mod manage;
 mod password;
 mod password_tokens;
 mod roles;
+mod second_factor;
 mod session;
 mod tokens;
 mod user;
@@ -109,15 +114,26 @@ pub use password_tokens::{
     COL_EXPIRES_AT as COL_PASSWORD_TOKEN_EXPIRES_AT, COL_PURPOSE as COL_PASSWORD_TOKEN_PURPOSE,
     COL_TOKEN_HASH as COL_PASSWORD_TOKEN_HASH, COL_USER as COL_PASSWORD_TOKEN_USER,
     INVITE_TTL_DAYS, InviteOutcome, PASSWORD_TOKEN_BYTES, PASSWORD_TOKENS_TABLE,
-    PasswordTokenPurpose, RESET_TTL_MINUTES, bootstrap_password_tokens, create_invited_user,
-    delete_password_tokens_for_user, invite_user, issue_password_token,
-    password_token_issued_within, redeem_password_token, sweep_expired_password_tokens, user_email,
-    user_has_password,
+    PasswordTokenPurpose, RESET_TTL_MINUTES, SECOND_FACTOR_TTL_MINUTES, VERIFY_TTL_HOURS,
+    bootstrap_password_tokens, create_invited_user, delete_password_tokens_for_user, invite_user,
+    issue_password_token, password_token_holder, password_token_issued_within,
+    redeem_email_verification, redeem_password_token, spend_password_token,
+    sweep_expired_password_tokens, user_email, user_has_password,
 };
 pub use roles::{
     COL_ATTRIBUTES as COL_ROLE_ATTRIBUTES, COL_DESCRIPTION as COL_ROLE_DESCRIPTION,
     COL_NAME as COL_ROLE_NAME, ROLES_TABLE, RoleDef, bootstrap_roles, delete_role, list_roles,
     load_role, load_role_by_name, save_role,
+};
+pub use second_factor::{
+    ATTR_REQUIRE_SECOND_FACTOR, CODE_DIGITS, RECOVERY_CODE_COUNT, RECOVERY_CODES_TABLE,
+    SECOND_FACTOR_TABLE, STEP_SECONDS, SecondFactorNeeded, SecondFactorStatus,
+    begin_second_factor_setup, bootstrap_second_factor, decode_secret, disable_second_factor,
+    finish_second_factor_setup, hotp, issue_second_factor_challenge, matching_step, new_secret,
+    otpauth_url, qr_svg, regenerate_recovery_codes, requires_second_factor,
+    role_requires_second_factor, second_factor_challenge, second_factor_enabled,
+    second_factor_needed, second_factor_status, second_factor_users, spend_second_factor_challenge,
+    time_step, totp_at, verify_second_factor,
 };
 pub use session::{
     APP_TOKEN_PREFIX, CACHE_CAPACITY, CACHE_TTL_SECONDS, COL_EXPIRES_AT as COL_SESSION_EXPIRES_AT,
