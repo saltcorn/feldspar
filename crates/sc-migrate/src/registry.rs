@@ -9,7 +9,7 @@ use crate::{Body, BoxFuture, Migration, MigrationCtx, Result};
 /// Append new ones at the end; never edit or remove one that has been released,
 /// because a database that applied it has recorded its id. See the crate
 /// documentation for how to write one.
-pub static MIGRATIONS: &[Migration] = &[APP_API_TABLES];
+pub static MIGRATIONS: &[Migration] = &[APP_API_TABLES, ADMIN_SESSIONS_RESCOPED];
 
 /// Applications gain `api_tables`: the connected tables whose generic row API
 /// (REST list/read/create/update/delete, GraphQL type, generated hooks) they
@@ -33,6 +33,34 @@ fn app_api_tables(ctx: &mut MigrationCtx) -> BoxFuture<'_, Result<()>> {
         }
         ctx.batch(
             r#"UPDATE "_fd_applications" SET "api_tables" = "tables" WHERE "api_tables" IS NULL"#,
+        )
+        .await
+    })
+}
+
+/// Sessions now carry the host they were issued on, and the admin host refuses
+/// an application's session admin authority (security review #15). A session
+/// from before that carries no scope and so reads as an admin-host one, which
+/// would let an administrator's session started on an application's host keep
+/// admin authority on the admin host until it expired. Ending every
+/// administrator's session closes that window; administrators sign in once more.
+/// Nobody else's session can carry admin authority, so theirs are left alone.
+pub const ADMIN_SESSIONS_RESCOPED: Migration = Migration {
+    id: "2026-11-01-admin-sessions-rescoped",
+    description: "end administrators' sessions, which carry no host scope yet",
+    body: Body::Rust(admin_sessions_rescoped),
+};
+
+fn admin_sessions_rescoped(ctx: &mut MigrationCtx) -> BoxFuture<'_, Result<()>> {
+    Box::pin(async move {
+        if !ctx.table_exists("_fd_sessions").await? || !ctx.table_exists("users").await? {
+            return Ok(());
+        }
+        // Role 1 is the administrator; only an administrator's session reaches
+        // admin routes.
+        ctx.batch(
+            r#"DELETE FROM "_fd_sessions"
+               WHERE "user_id" IN (SELECT "id" FROM "users" WHERE "role" = 1)"#,
         )
         .await
     })

@@ -2,6 +2,26 @@
 
 Changes in reverse chronological order.
 
+## Migration: end administrators' sessions at upgrade (security review #15)
+
+This branch scopes a session to the host that issued it: a token issued on an application's host
+starts with `app-`, and the admin host refuses it admin authority. Tokens from before the upgrade
+carry no prefix and read as admin-host tokens, so an administrator who had signed in on an
+application before the upgrade would still have held a session the admin host accepts, until it
+expired (up to `session_ttl_hours`, at most a year).
+
+- New migration `2026-11-01-admin-sessions-rescoped` (`crates/sc-migrate/src/registry.rs`)
+  deletes the `_fd_sessions` rows of users with role 1 (administrator). Only an administrator's
+  session can carry admin authority, so every other user stays signed in.
+- **Upgrade note:** administrators sign in once more after the upgrade. Tokens made with
+  `feldspar auth token` for an administrator are sessions too and stop working; make a new one.
+  API tokens (`_fd_api_tokens`) are not sessions and are not touched.
+- A database without a session or users table records the migration and does nothing; a new
+  database records it without running it, as every migration.
+
+Tests: `admin_sessions_end_others_are_kept` and `no_session_table_is_nothing_to_do`
+(`crates/sc-migrate/tests/migrate.rs`, on SQLite and Postgres).
+
 ## Merge of main (session cookies, email verification, two-factor authentication) into the code-quality branch
 
 The three entries below were made on `main` against the code before the code-quality milestones
