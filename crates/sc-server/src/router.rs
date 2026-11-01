@@ -1585,11 +1585,16 @@ async fn admin_handoff(
     else {
         return Redirect::to("/").into_response();
     };
-    let ttl = state.apps.current_session_ttl().await;
-    match state.sessions.login_for(user, ttl).await {
+    let policy = state.apps.current_session_policy().await;
+    match state.sessions.login_for(user, policy.ttl).await {
         Ok(token) => {
             let domain = session_cookie_domain(&state, Some(&host));
-            let cookie = session_cookie(&state, token, domain.as_deref());
+            let mut cookie = session_cookie(&state, token, domain.as_deref());
+            // The same session the admin had on the old host: it lasts there as
+            // a sign-in would (TODO A1.1).
+            if policy.persistent {
+                persist(&mut cookie, policy.ttl);
+            }
             (jar.add(cookie), Redirect::to("/#/settings")).into_response()
         }
         Err(e) => {
@@ -3069,10 +3074,14 @@ async fn apply_response(
 /// [`apply_response`] an application framework's response goes through too, so
 /// there is one session story (TODO "Saltcorn UI" §8).
 ///
-/// `client` says who the cookie is for: a native app's session gets a cookie
-/// that lasts as long as the session, where a browser's lasts until the browser
-/// closes, as it always has; and the request's host is what a shared session
-/// cookie is scoped from ([`session_cookie_domain`]).
+/// A signed-in session's cookie lasts as long as the session (a `Max-Age` of its
+/// lifetime) unless Settings → Authentication turned that off or the sign-in
+/// left "Remember me" unticked ([`SessionAction::StartUntilBrowserCloses`]);
+/// then it ends when the browser closes (TODO A1.1). A native app's lasts as
+/// long as the session whatever the setting says, because an app's cookie
+/// store may drop a session cookie whenever the app closes. `client` says who
+/// the cookie is for, and the request's host is what a shared session cookie is
+/// scoped from ([`session_cookie_domain`]).
 ///
 /// `Err` is the response to send instead, when a session could not be started.
 pub(crate) async fn apply_session(
@@ -3093,6 +3102,8 @@ pub(crate) async fn apply_session(
     // request that carried no session cookie has none in either scope, so its
     // response says nothing about the other.
     let carried = jar.get(SESSION_COOKIE).is_some();
+    // "Remember me" unticked is a sign-in like any other but for its cookie.
+    let remember = !matches!(session, SessionAction::StartUntilBrowserCloses(_));
     let stale = || {
         if !carried {
             return None;
@@ -3113,57 +3124,66 @@ pub(crate) async fn apply_session(
     // An account the application does not let in (TODO F9) is refused here,
     // before a session exists — whichever way it signed in: a password, a
     // rendered form, an identity provider.
-    if let (SessionAction::Start(user), Some(app)) = (&session, &client.app)
+    if let (SessionAction::Start(user) | SessionAction::StartUntilBrowserCloses(user), Some(app)) =
+        (&session, &client.app)
         && let Some(refusal) = refuse_sign_in(state, &app.app, user).await
     {
         return Err(Box::new(refusal));
     }
     // Read from the store for a sign-in rather than believed from this process,
     // so a lifetime saved on another node applies here too.
-    let ttl = match &session {
-        SessionAction::Start(_) => state.apps.current_session_ttl().await,
-        _ => state.apps.session_ttl(),
+    let policy = match &session {
+        SessionAction::Start(_) | SessionAction::StartUntilBrowserCloses(_) => {
+            state.apps.current_session_policy().await
+        }
+        _ => crate::apps::SessionPolicy {
+            ttl: state.apps.session_ttl(),
+            persistent: state.apps.persistent_session_cookie(),
+        },
     };
+    let ttl = policy.ttl;
     Ok(match session {
         SessionAction::Keep => SessionCookies {
             jar,
             stale: AppendHeaders(None),
         },
-        SessionAction::Start(user) => match state.sessions.login_for(user.clone(), ttl).await {
-            Ok(token) => {
-                // The session the request arrived with is replaced, not joined:
-                // the cookie is about to name the new one, so leaving the old one
-                // live would leave a credential nobody can present and nobody can
-                // withdraw. That is what makes `becomeUser` a swap — the admin
-                // session that authorised it does not survive behind the session
-                // it turned into.
-                if let Some(previous) = &session_token {
-                    let _ = state.sessions.logout(previous).await;
+        SessionAction::Start(user) | SessionAction::StartUntilBrowserCloses(user) => {
+            match state.sessions.login_for(user.clone(), ttl).await {
+                Ok(token) => {
+                    // The session the request arrived with is replaced, not joined:
+                    // the cookie is about to name the new one, so leaving the old one
+                    // live would leave a credential nobody can present and nobody can
+                    // withdraw. That is what makes `becomeUser` a swap — the admin
+                    // session that authorised it does not survive behind the session
+                    // it turned into.
+                    if let Some(previous) = &session_token {
+                        let _ = state.sessions.logout(previous).await;
+                    }
+                    // A guest who signs in or signs up in the same browser stops
+                    // being a guest (TODO-payments P1.6): the guest session ends, its
+                    // cookie goes, and the `login` event says which one it was, so
+                    // the application's trigger can move the guest's rows to the
+                    // account. Holding the cookie is what proves it is the same
+                    // buyer; an email address would not.
+                    let (jar, guest) = end_guest_session_at_sign_in(state, jar, &client).await;
+                    // After the session exists, not before: an event that says
+                    // someone logged in must not fire for a login that then failed.
+                    fire_login(state, &user, guest.as_deref()).await;
+                    let mut cookie = session_cookie(state, token, domain.as_deref());
+                    if remember && (policy.persistent || client.native) {
+                        persist(&mut cookie, ttl);
+                    }
+                    cookies(jar.add(cookie))
                 }
-                // A guest who signs in or signs up in the same browser stops
-                // being a guest (TODO-payments P1.6): the guest session ends, its
-                // cookie goes, and the `login` event says which one it was, so
-                // the application's trigger can move the guest's rows to the
-                // account. Holding the cookie is what proves it is the same
-                // buyer; an email address would not.
-                let (jar, guest) = end_guest_session_at_sign_in(state, jar, &client).await;
-                // After the session exists, not before: an event that says
-                // someone logged in must not fire for a login that then failed.
-                fire_login(state, &user, guest.as_deref()).await;
-                let mut cookie = session_cookie(state, token, domain.as_deref());
-                if client.native {
-                    cookie.set_max_age(time::Duration::seconds(ttl.num_seconds()));
+                Err(e) => {
+                    log_failure("could not start session", &e);
+                    return Err(Box::new(json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "could not start session",
+                    )));
                 }
-                cookies(jar.add(cookie))
             }
-            Err(e) => {
-                log_failure("could not start session", &e);
-                return Err(Box::new(json_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "could not start session",
-                )));
-            }
-        },
+        }
         SessionAction::End => {
             if let Some(token) = &session_token {
                 let _ = state.sessions.logout(token).await;
@@ -3322,6 +3342,16 @@ fn session_cookie(state: &AppState, token: String, domain: Option<&str>) -> Cook
         cookie.set_domain(domain.to_owned());
     }
     cookie
+}
+
+/// Make a session cookie outlive the browser: a `Max-Age` of the session's
+/// lifetime `ttl`, so the browser keeps it exactly as long as the server
+/// honours the session. `Expires` goes with it for a client that reads only
+/// that.
+fn persist(cookie: &mut Cookie<'static>, ttl: chrono::Duration) {
+    let secs = ttl.num_seconds();
+    cookie.set_max_age(time::Duration::seconds(secs));
+    cookie.set_expires(time::OffsetDateTime::now_utc() + time::Duration::seconds(secs));
 }
 
 /// The cookie that expires the session cookie scoped to `domain`.

@@ -1,9 +1,9 @@
 //! The Authentication settings: how a sign-in is shared, how long it lasts,
 //! and the external identity providers (OAuth 2.0) people may sign in with.
 //!
-//! Two of these are ordinary keys on the settings form — whether the session
-//! cookie is scoped to the base domain, and how long a session lasts — and both
-//! apply to every sign-in, a password's or a provider's, because every session
+//! Three of these are ordinary keys on the settings form — whether the session
+//! cookie is scoped to the base domain, how long a session lasts, and whether
+//! its cookie outlives the browser — and all three apply to every sign-in, a password's or a provider's, because every session
 //! starts in the one place the router starts them.
 //!
 //! The providers are **not** fields of the form: they are a list of records,
@@ -26,6 +26,10 @@ use crate::defs::{ConfigDef, ConfigSection};
 pub const SHARED_SESSION_COOKIE: &str = "shared_session_cookie";
 /// How long a session lasts from sign-in, in hours.
 pub const SESSION_TTL_HOURS: &str = "session_ttl_hours";
+/// Whether a browser's session cookie outlives the browser: a `Max-Age` of the
+/// session's lifetime, so closing the browser does not sign anybody out. On
+/// unless stored as `false` (TODO A1.1).
+pub const PERSISTENT_SESSION_COOKIE: &str = "persistent_session_cookie";
 /// The external identity providers: a list of provider records (see
 /// [`oauth_provider_spec`]). Internal: the Authentication tab edits it a
 /// provider at a time, not as a form field.
@@ -86,6 +90,18 @@ pub fn authentication_section() -> ConfigSection {
                 "How long a sign-in lasts, with a password or with an identity provider, before \
                  signing in again is needed. Applies to sessions started after saving.",
             ),
+            // Live as well: read at every sign-in. A cookie already in a
+            // browser keeps what it was given, so nobody is signed out by it.
+            ConfigDef::help(
+                FormField::new(PERSISTENT_SESSION_COOKIE, BasicType::Bool)
+                    .label("Keep people signed in when the browser closes")
+                    .default_value(true),
+                "Give the session cookie an expiry of the session lifetime, so a sign-in \
+                 survives closing and reopening the browser. A sign-in form's \"Remember me\", \
+                 left unticked, still ends that sign-in with the browser. Turn this off where \
+                 people share a computer, such as a kiosk, so closing the browser signs them \
+                 out. Applies to sign-ins after saving.",
+            ),
         ],
     }
 }
@@ -104,6 +120,29 @@ pub async fn shared_session_cookie(catalog: &Catalog) -> Result<bool> {
     Ok(shared_session_cookie_from(
         &crate::store::all_config(catalog).await?,
     ))
+}
+
+/// Read whether a browser's session cookie outlives the browser out of a
+/// settings bag: on unless stored as `false`, the declared default.
+pub fn persistent_session_cookie_from(config: &Attrs) -> bool {
+    !matches!(
+        config.get(PERSISTENT_SESSION_COOKIE),
+        Some(Json::Bool(false))
+    )
+}
+
+/// What a sign-in started now is given, read from a settings bag: the
+/// session's lifetime in hours and whether its cookie outlives the browser.
+pub fn session_policy_from(config: &Attrs) -> Result<(i64, bool)> {
+    Ok((
+        session_ttl_hours_from(config)?,
+        persistent_session_cookie_from(config),
+    ))
+}
+
+/// [`session_policy_from`] `_fd_config`, read once.
+pub async fn session_policy(catalog: &Catalog) -> Result<(i64, bool)> {
+    session_policy_from(&crate::store::all_config(catalog).await?)
 }
 
 /// Read the session lifetime, in hours, out of a settings bag.
@@ -570,7 +609,33 @@ mod tests {
         let section = authentication_section();
         assert_eq!(section.name, "authentication");
         let keys: Vec<&str> = section.fields.iter().map(|def| def.key()).collect();
-        assert_eq!(keys, [SHARED_SESSION_COOKIE, SESSION_TTL_HOURS]);
+        assert_eq!(
+            keys,
+            [
+                SHARED_SESSION_COOKIE,
+                SESSION_TTL_HOURS,
+                PERSISTENT_SESSION_COOKIE
+            ]
+        );
+    }
+
+    /// On when nothing is stored, and off only for a stored `false`.
+    #[test]
+    fn the_session_cookie_is_persistent_unless_turned_off() {
+        assert!(persistent_session_cookie_from(&Attrs::new()));
+        assert!(persistent_session_cookie_from(&attrs(
+            json!({ PERSISTENT_SESSION_COOKIE: true })
+        )));
+        assert!(!persistent_session_cookie_from(&attrs(
+            json!({ PERSISTENT_SESSION_COOKIE: false })
+        )));
+        assert_eq!(
+            session_policy_from(&attrs(
+                json!({ SESSION_TTL_HOURS: 48, PERSISTENT_SESSION_COOKIE: false })
+            ))
+            .unwrap(),
+            (48, false)
+        );
     }
 
     /// Off unless it is stored as `true`: a value that is not a boolean must

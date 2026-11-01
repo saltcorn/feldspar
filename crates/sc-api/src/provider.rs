@@ -215,6 +215,12 @@ pub enum SessionAction {
     /// *swap*: the admin session that authorised it does not stay live behind
     /// the one it turned into.
     Start(User),
+    /// [`Start`](SessionAction::Start) a session whose browser cookie ends
+    /// when the browser closes, whatever Settings → Authentication says: a
+    /// sign-in that left "Remember me" unticked (`remember: false`), on a
+    /// computer that is not the person's own. The session itself lasts as
+    /// long as any other.
+    StartUntilBrowserCloses(User),
     /// End the current session (logout): drop the token.
     End,
     /// End **every** session belonging to this user, whoever is asking.
@@ -237,6 +243,18 @@ pub enum SessionAction {
         /// so a basket survives the browser being closed.
         max_age_secs: i64,
     },
+}
+
+impl SessionAction {
+    /// Start a session for `user`, remembered across a browser restart as
+    /// Settings allow (`remember`), or ending with the browser (`!remember`).
+    pub fn start(user: User, remember: bool) -> SessionAction {
+        if remember {
+            SessionAction::Start(user)
+        } else {
+            SessionAction::StartUntilBrowserCloses(user)
+        }
+    }
 }
 
 /// A raw-bytes response body — a file download — with the content type the
@@ -355,6 +373,15 @@ impl ApiResponse {
             file: None,
             session: SessionAction::Start(user),
             headers: Vec::new(),
+        }
+    }
+
+    /// [`start_session`](ApiResponse::start_session), honouring a sign-in's
+    /// "Remember me" ([`crate::auth::remember`] of its body).
+    pub fn start_session_remembering(user: User, body: Json, remember: bool) -> ApiResponse {
+        ApiResponse {
+            session: SessionAction::start(user, remember),
+            ..ApiResponse::ok(body)
         }
     }
 

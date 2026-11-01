@@ -1213,9 +1213,26 @@ pub struct User {
   Live: every sign-in reads it from `_fd_config` (`AppMounts::current_session_ttl`) where
   the router starts a session (`SessionStore::login_for`). So the next sign-in after a save
   gets it on every node, including after a save made by another node, `feldspar config set` or
-  a restore. That covers a password's, an identity provider's and an admin handoff's, and a
-  native client's cookie `Max-Age` matches it. A session already started keeps the expiry it
-  was given.
+  a restore. That covers a password's, an identity provider's and an admin handoff's. A session
+  already started keeps the expiry it was given.
+- **The session cookie outlives the browser** (`persistent_session_cookie`, Settings →
+  Authentication, *Keep people signed in when the browser closes*, **on** by default). A
+  sign-in's `sc_session` gets `Max-Age` (and `Expires`) equal to the lifetime the session was
+  just given, so the browser keeps it exactly as long as the server honours it. Read from
+  `_fd_config` with the lifetime at every sign-in (`AppMounts::current_session_policy`), and
+  applied in `apply_session` and the admin handoff, so every path — a password, a rendered
+  form, an identity provider, a set-password link, sign-up — gets it. A native client's cookie
+  always has the `Max-Age`, because an app's cookie store may drop a session cookie whenever the
+  app closes. Two ways to get a cookie that ends with the browser: the admin unticks the setting
+  (a kiosk or shared machine, where closing the browser is how people sign out), or one sign-in
+  says `remember: false` — the login, sign-up and set-password bodies take it, and the Saltcorn
+  UI sign-in form has a *Remember me* box, ticked to begin with, sent beside a hidden
+  `remember_shown` so an unticked box is told apart from a client that offers none
+  (`SessionAction::StartUntilBrowserCloses`). `remember: true` cannot override the setting
+  being off. Until this was added (TODO A1.1) only a native client's cookie had a `Max-Age`, so
+  every browser user signed in again after each restart however long the lifetime was.
+  **Expiry still does not slide**: renewing it on use would write per request, which the
+  session store is built to avoid (above); a lifetime of up to a year makes it unnecessary.
 - **External identity providers (OAuth 2.0 clients)**, Settings → Authentication. A list of
   records under the internal key `oauth_providers`, each declared field by field
   (`sc_config::oauth_provider_spec`) so the tab's form is generic, its `client_secret`

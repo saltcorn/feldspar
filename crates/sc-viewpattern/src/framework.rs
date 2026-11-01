@@ -862,7 +862,7 @@ impl SaltcornUiFramework {
             return Ok(out);
         }
         match sc_auth::authenticate(cat, &email, &password).await? {
-            Some(user) => Ok(signed_in(user, dest)),
+            Some(user) => Ok(signed_in(user, dest, remember_ticked(req))),
             None => {
                 sc_api::throttle::login_failed(&email);
                 Ok(self.auth_form(
@@ -901,7 +901,7 @@ impl SaltcornUiFramework {
         }
         // Recorded as unproven: the visitor chose the address (security review #41).
         match sc_auth::sign_up_user(cat, &email, &password, self.new_user_role()).await {
-            Ok(user) => Ok(signed_in(user, dest)),
+            Ok(user) => Ok(signed_in(user, dest, true)),
             // "role 80 does not exist" is the admin's to fix, and the one
             // sentence that says how.
             Err(e) if e.kind() == ErrorKind::Application => again(&reason_of(&e)),
@@ -974,7 +974,16 @@ impl SaltcornUiFramework {
             })
             .unwrap_or_default();
         let repeat = match kind {
-            AuthForm::Login => String::new(),
+            // Ticked to begin with: the instance's setting decides whether a
+            // sign-in outlives the browser, and unticking it is the person at
+            // a shared computer saying this one should not.
+            AuthForm::Login => format!(
+                "<input type=\"hidden\" name=\"{REMEMBER_SHOWN}\" value=\"1\">\
+                 <div class=\"mb-3 form-check\"><input class=\"form-check-input\" \
+                 type=\"checkbox\" id=\"remember\" name=\"remember\" value=\"on\" checked>\
+                 <label class=\"form-check-label\" for=\"remember\">{}</label></div>",
+                escape(&t!(req.locale, "Remember me"))
+            ),
             AuthForm::Signup => format!(
                 "<div class=\"mb-3\"><label class=\"form-label\" for=\"passwordRepeat\">{}\
                  </label><input class=\"form-control\" type=\"password\" id=\"passwordRepeat\" \
@@ -1652,11 +1661,28 @@ enum AuthForm {
 }
 
 /// Signed in as `user`, and on to `dest` if it is a path on this application,
-/// else to `/`.
-fn signed_in(user: User, dest: &str) -> AppResponse {
+/// else to `/`. Not `remember`ed, the session's cookie ends with the browser.
+fn signed_in(user: User, dest: &str, remember: bool) -> AppResponse {
     let mut out = AppResponse::redirect(safe_redirect(Some(dest).filter(|d| !d.is_empty())));
-    out.session = SessionAction::Start(user);
+    out.session = SessionAction::start(user, remember);
     out
+}
+
+/// The hidden field the sign-in form sends beside its "Remember me" box, so an
+/// unticked box — which a form does not send at all — is told apart from a
+/// client that never showed one.
+const REMEMBER_SHOWN: &str = "remember_shown";
+
+/// Whether a `POST /auth/login` asks to stay signed in after the browser
+/// closes (TODO A1.1): the form's box, ticked; a JSON body's `remember`, unless
+/// it is `false`; and yes for a caller that offered no choice.
+fn remember_ticked(req: &AppRequest) -> bool {
+    let body = body_json(&req.body);
+    match body.get("remember") {
+        Some(Json::Bool(remember)) => *remember,
+        Some(Json::String(value)) => !matches!(value.as_str(), "" | "0" | "off" | "false"),
+        _ => body.get(REMEMBER_SHOWN).is_none(),
+    }
 }
 
 /// A field of the request: the form's (or the JSON body's) on a POST, the

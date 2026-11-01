@@ -1244,6 +1244,72 @@ async fn an_application_that_refuses_the_caller_serves_only_its_sign_in() -> sc_
     Ok(())
 }
 
+/// TODO A1.1: the sign-in form has a "Remember me" box, ticked to begin with.
+/// Ticked, the session cookie lasts as long as the session, so closing the
+/// browser does not sign anybody out; unticked — which a form sends as no field
+/// at all, beside the hidden `remember_shown` — it ends with the browser.
+#[tokio::test]
+async fn the_sign_in_forms_remember_me_decides_whether_closing_the_browser_signs_out()
+-> sc_error::Result<()> {
+    let Some(bundle) = bundle_dir() else {
+        eprintln!(
+            "skipping: the Saltcorn UI bundle is not built (npm ci && npm run build in ui/saltcorn-ui)"
+        );
+        return Ok(());
+    };
+    let server = setup("remember", bundle).await?;
+    let max_age = |answer: &Answer| -> Option<String> {
+        let line = answer
+            .headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|raw| raw.to_str().unwrap().to_owned())
+            .find(|line| {
+                line.starts_with(&format!("{SESSION_COOKIE}="))
+                    && !line.starts_with(&format!("{SESSION_COOKIE}=;"))
+            })
+            .expect("a session cookie");
+        line.split(';').find_map(|attr| {
+            let (name, value) = attr.trim().split_once('=')?;
+            name.eq_ignore_ascii_case("max-age")
+                .then(|| value.to_owned())
+        })
+    };
+    for (remember, lasts) in [(true, true), (false, false)] {
+        let mut browser = visitor(&server.client);
+        let form_page = browser.app_get("/auth/login", &[]).await;
+        assert_eq!(form_page.status, StatusCode::OK, "{}", form_page.body);
+        assert!(
+            form_page
+                .body
+                .contains("name=\"remember\" value=\"on\" checked"),
+            "{}",
+            form_page.body
+        );
+        let csrf = browser.cookies.get(CSRF_COOKIE).cloned().expect("a token");
+        let mut fields = vec![
+            ("_csrf", csrf.as_str()),
+            ("email", ADMIN),
+            ("password", PASSWORD),
+            ("remember_shown", "1"),
+        ];
+        if remember {
+            fields.push(("remember", "on"));
+        }
+        let signed = browser
+            .app_post("/auth/login", FORM, form(&fields), &[])
+            .await;
+        assert_eq!(signed.status, StatusCode::FOUND, "{}", signed.body);
+        assert_eq!(
+            max_age(&signed).is_some(),
+            lasts,
+            "remember {remember}: {:?}",
+            signed.headers
+        );
+    }
+    Ok(())
+}
+
 /// Security review 2026-10 #7: the Saltcorn UI's own sign-in form is throttled
 /// as the admin and REST logins are — after ten failures for one address the
 /// next attempt is refused `429` before any password is checked, with the form

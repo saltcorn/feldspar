@@ -1097,7 +1097,11 @@ impl RestProvider {
         match authenticate(cat, &email, &password).await? {
             Some(user) => {
                 let summary = user_summary_json(&user);
-                Ok(ApiResponse::start_session(user, summary))
+                Ok(ApiResponse::start_session_remembering(
+                    user,
+                    summary,
+                    crate::auth::remember(&req.body),
+                ))
             }
             None => {
                 crate::throttle::login_failed(&email);
@@ -1192,7 +1196,8 @@ impl RestProvider {
         // Recorded as unproven: the caller chose the address (security review #41).
         let user = sc_auth::sign_up_user(cat, &email, &password, role).await?;
         let summary = user_summary_json(&user);
-        let mut out = ApiResponse::start_session(user, summary);
+        let mut out =
+            ApiResponse::start_session_remembering(user, summary, crate::auth::remember(body));
         out.status = 201;
         Ok(out)
     }

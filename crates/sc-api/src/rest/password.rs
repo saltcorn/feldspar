@@ -164,6 +164,7 @@ pub(crate) fn set_password_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("token", TypeSchema::text()),
         StructField::new("password", TypeSchema::text()),
+        crate::auth::remember_field(),
     ])
 }
 
@@ -347,7 +348,11 @@ pub(crate) async fn set_password(req: &ApiRequest, cat: &Catalog) -> Result<ApiR
     match redeem_password_token(cat, token, password).await? {
         Some(user) => {
             let summary = user_summary_json(&user);
-            Ok(ApiResponse::start_session(user, summary))
+            Ok(ApiResponse::start_session_remembering(
+                user,
+                summary,
+                crate::auth::remember(&req.body),
+            ))
         }
         None => Ok(ApiResponse::error(
             400,

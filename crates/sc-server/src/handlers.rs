@@ -267,7 +267,10 @@ pub fn admin_handlers_with(
                 match user {
                     Some(user) => {
                         let body = user_summary_json(&user);
-                        Ok(HandlerResponse::start_session(user, body))
+                        let remember = sc_api::auth::remember(&ctx.body);
+                        Ok(HandlerResponse::start_session_remembering(
+                            user, body, remember,
+                        ))
                     }
                     None => {
                         sc_api::throttle::login_failed(&email);
@@ -4714,6 +4717,7 @@ pub fn admin_handlers_with(
                 // How long a session lasts: refused here when it is not a
                 // number of hours, and live for the next sign-in after the save.
                 let session_ttl_hours = sc_config::session_ttl_hours_from(&merged)?;
+                let persistent_session_cookie = sc_config::persistent_session_cookie_from(&merged);
 
                 sc_config::set_config_many(&catalog, &values).await?;
                 // The admin UI moves now, and the new name's certificate is
@@ -4724,6 +4728,7 @@ pub fn admin_handlers_with(
                 }
                 apps.set_shared_session_cookie(shared_session_cookie);
                 apps.set_session_ttl_hours(session_ttl_hours);
+                apps.set_persistent_session_cookie(persistent_session_cookie);
                 // The two switches this process runs under move **now**, not at
                 // the next restart: an admin ticks "Log SQL" precisely because
                 // something is happening in the server they are looking at, and

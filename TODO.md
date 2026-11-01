@@ -817,6 +817,19 @@ The design is TECHNICAL_DESIGN §5.3. The registry starts empty: nothing from
   of a free-text model name, and test the key before the copilot is made.
 - [ ] **O1.5** Translations of the onboarding's messages in `ui/admin/src/locales/*.json`.
 
+## A1 — Sign-ins that survive closing the browser
+
+User report (P0): users sign in again every time the browser closes, although
+`session_ttl_hours` is 8760. A browser's `sc_session` had no `Max-Age`; only a native app's did.
+Decision: persistent by default, with an instance setting to turn it off and a per-sign-in
+"remember me". Sliding renewal is declined (expiry stays fixed at login, design §7).
+
+- [x] **A1.1** `persistent_session_cookie` (Settings → Authentication, default on, live): a
+  browser sign-in's cookie gets `Max-Age` = the session's lifetime in `apply_session` and the
+  admin handoff. `remember: false` on password login and set-password, and a "Remember me"
+  checkbox on the Saltcorn UI login form, give a session-only cookie for that sign-in. Tests in
+  `sc-server/tests`.
+
 ---
 
 ## Open questions

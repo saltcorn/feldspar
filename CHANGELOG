@@ -2,6 +2,46 @@
 
 Changes in reverse chronological order.
 
+## Sign-ins survive closing the browser (TODO A1.1)
+
+Report (P0): users signed in again every time they closed the browser, although Session
+lifetime was 8760 hours and their sessions were still valid on the server. The `sc_session`
+cookie a browser got had no `Max-Age` or `Expires`, so the browser treated it as a session
+cookie and deleted it on exit. Until now only a native app's cookie had a `Max-Age`. That was
+deliberate, so that closing the browser on a shared computer signed people out, but it made the
+lifetime setting useless for browsers.
+
+**Behaviour change on upgrade:** by default, a browser sign-in now lasts the whole session
+lifetime (24 hours unless changed) even if the browser is closed. On a kiosk or shared
+computer, untick the new setting.
+
+- **Keep people signed in when the browser closes** (`persistent_session_cookie`, Settings →
+  Authentication, on by default). When it is on, a sign-in's session cookie gets `Max-Age` and
+  `Expires` set to the lifetime the session was just given. This applies to every sign-in path:
+  password (admin UI and application API), sign-up, set-password and reset links, the Saltcorn
+  UI sign-in form, identity providers, and the admin handoff. Like the lifetime, the setting is
+  read from `_fd_config` at every sign-in (`AppMounts::current_session_policy`), so a change
+  saved by another node applies everywhere. It is also read at boot, applied on save, and
+  reset by Clear all. Nothing is migrated: an unset key means on.
+- **Remember me.** A login, sign-up or set-password body can say `"remember": false`, and that
+  sign-in's cookie then ends when the browser closes (`SessionAction::StartUntilBrowserCloses`).
+  This applies to native apps too, since they asked for it. Leaving it out, or sending `true`,
+  gets the instance setting, and `true` cannot override the setting being off. The generated
+  clients' `LoginRequest` gained `remember?: boolean | null`. The Saltcorn UI sign-in form has
+  a *Remember me* box, ticked to begin with. A hidden `remember_shown` field is sent with it, so
+  an unticked box (which a form does not send) is told apart from a client that has no box.
+  The label and the setting are translated into the five core locales.
+- Unchanged: a native app's cookie always has a `Max-Age`. Cookies already in browsers keep
+  what they were given until the person's next sign-in. Expiry is still fixed at sign-in and
+  does not slide (design §7).
+- Tests: `shared_session_cookie::{a_browser_sign_in_outlives_the_browser_by_default,
+  a_sign_in_that_is_not_remembered_ends_with_the_browser,
+  turned_off_a_browser_sign_in_ends_with_the_browser}`,
+  `saltcorn_ui_render::the_sign_in_forms_remember_me_decides_whether_closing_the_browser_signs_out`,
+  and `Max-Age` checks added to `oauth_sign_in`, `admin_subdomain` (handoff), `app_invite`
+  (set-password) and `router::login_starts_a_session_that_unlocks_admin_routes` (which used to
+  assert the opposite). Unit tests in `sc-config` and `sc-api::auth`.
+
 ## Test fix: the expired-grant session test no longer races its own grant
 
 `role_grants::an_expired_grant_ends_access_with_no_write_even_through_a_cached_session` gave its

@@ -55,17 +55,35 @@ pub const CSRF_HEADER: &str = "x-csrf-token";
 /// Header a client sends, with the value [`NATIVE_CLIENT`], when it is **not a
 /// browser** — the generated client running in a React Native app, where there
 /// is no `document`. A native app's login gets a session cookie that outlives
-/// the app being closed; a browser's keeps ending with the browser.
+/// the app being closed, whatever Settings → Authentication says about a
+/// browser's.
 pub const CLIENT_KIND_HEADER: &str = "x-feldspar-client";
 /// The [`CLIENT_KIND_HEADER`] value a native app sends.
 pub const NATIVE_CLIENT: &str = "native";
 
-/// Email + password, the body of a login (and of first-user creation).
+/// Email + password, the body of a login (and of sign-up), with the optional
+/// "Remember me" ([`remember`]).
 pub fn credentials_schema() -> TypeSchema {
     TypeSchema::struct_of([
         StructField::new("email", TypeSchema::text()),
         StructField::new("password", TypeSchema::text()),
+        remember_field(),
     ])
+}
+
+/// The optional `remember` of a body that signs in: `false` gives a session
+/// cookie that ends when the browser closes, absent or `true` the one
+/// Settings → Authentication gives (TODO A1.1).
+pub fn remember_field() -> StructField {
+    StructField::new("remember", TypeSchema::optional(TypeSchema::bool()))
+}
+
+/// Whether a sign-in's body asks to be remembered across a browser restart:
+/// yes unless it says `"remember": false`. Only the instance's setting can make
+/// a cookie outlive the browser, so asking for `true` where it is off changes
+/// nothing, and anything but `false` is the default.
+pub fn remember(body: &Json) -> bool {
+    !matches!(body.get("remember"), Some(Json::Bool(false)))
 }
 
 /// The public view of a user — **never** the password hash.
@@ -309,6 +327,14 @@ pub fn credentials(body: &Json) -> Result<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sign_in_is_remembered_unless_it_says_false() {
+        assert!(remember(&json!({"email": "a@b.c", "password": "pw"})));
+        assert!(remember(&json!({"remember": true})));
+        assert!(remember(&json!({"remember": null})));
+        assert!(!remember(&json!({"remember": false})));
+    }
 
     #[test]
     fn credentials_require_both_fields_non_blank() {

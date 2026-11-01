@@ -271,6 +271,15 @@ impl HandlerResponse {
         }
     }
 
+    /// [`start_session`](HandlerResponse::start_session), honouring the
+    /// sign-in's "Remember me" (`sc_api::auth::remember` of its body).
+    pub fn start_session_remembering(user: User, body: Value, remember: bool) -> HandlerResponse {
+        HandlerResponse {
+            session: SessionAction::start(user, remember),
+            ..HandlerResponse::ok(body)
+        }
+    }
+
     /// A `200 OK` response that also ends the current session (logout).
     pub fn end_session(body: Value) -> HandlerResponse {
         HandlerResponse {
