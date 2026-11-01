@@ -1,4 +1,4 @@
-//! A **new table from a geographic file** (analytics TODO A5.2): GeoJSON, a
+//! A **new table from a geographic file**: GeoJSON, a
 //! zipped Shapefile or a GeoPackage.
 //!
 //! Boundary files are where most GIS work starts, so they import the way a CSV
@@ -24,14 +24,14 @@ mod shapefile;
 
 use std::collections::{BTreeMap, HashSet};
 
-use sc_catalog::{CallerContext, Catalog, SharedTx, Table};
+use sc_catalog::{Catalog, SharedTx, Table, Unchecked};
 use sc_error::{Error, Result};
 use sc_query::{Statement, Value};
 use sc_types::{BasicType, GeometryKind};
 use serde_json::{Map, Value as Json};
 
-use crate::rows;
 use crate::schema_edit;
+use sc_access::rows;
 
 /// The kinds of file this imports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -370,8 +370,9 @@ async fn to_wgs84(
     table: &Table,
     file: &GeoFile,
     geometry: &GeometryColumn,
+    context: Unchecked<'_>,
 ) -> Result<Vec<Option<Json>>> {
-    let driver = catalog.driver_for(table)?;
+    let driver = catalog.driver_for(table, context)?;
     let mut out: Vec<Option<Json>> = vec![None; file.features.len()];
     let with_geometry: Vec<(usize, &SourceGeometry)> = file
         .features
@@ -457,7 +458,7 @@ async fn convert(
         rows.join(", ")
     );
     let result = driver
-        .query(&Statement::raw(sql, binds))
+        .query(&Statement::raw(sc_query::TrustedSql::composed(sql), binds))
         .await?
         .try_collect()
         .await?;
@@ -483,11 +484,9 @@ async fn convert(
 
 /// A database error as the sentence inside it, without the statement.
 fn plain_database_error(e: &Error) -> String {
-    let text = e.causes();
+    let text = e.message_and_causes();
     let text = text.split("\n  sql:").next().unwrap_or(&text);
-    text.trim_start_matches("database error: ")
-        .trim_start_matches("query failed: ")
-        .to_owned()
+    text.trim_start_matches("query failed: ").to_owned()
 }
 
 // --- the import ----------------------------------------------------------------
@@ -516,7 +515,7 @@ pub async fn create_table_from_geo_file(
     file_name: &str,
     bytes: &[u8],
     layer: Option<&str>,
-    context: Option<&CallerContext>,
+    context: Unchecked<'_>,
 ) -> Result<(Table, GeoImportOutcome)> {
     let file = read_geo_file(file_name, bytes, layer)?;
     let plan = plan(&file)?;
@@ -592,10 +591,10 @@ async fn fill(
     table: &Table,
     file: &GeoFile,
     plan: &GeoPlan,
-    context: Option<&CallerContext>,
+    context: Unchecked<'_>,
 ) -> Result<usize> {
-    let geometries = to_wgs84(catalog, table, file, &plan.geometry).await?;
-    let driver = catalog.driver_for(table)?;
+    let geometries = to_wgs84(catalog, table, file, &plan.geometry, context).await?;
+    let driver = catalog.driver_for(table, context)?;
     let tx = SharedTx::begin_on(&driver, table.database.clone());
     let executor = rows::Executor::Transaction(tx.clone());
     let types: BTreeMap<&str, &AttributeColumn> = plan
@@ -616,7 +615,7 @@ async fn fill(
         if let Err(e) =
             rows::create_row_in(catalog, table, &Json::Object(body), context, &executor).await
         {
-            let _ = tx.rollback().await;
+            tx.abandon().await;
             return Err(Error::invalid(format!("feature {}: {}", i + 1, e.causes())));
         }
     }

@@ -22,6 +22,7 @@
 //! job: it evicts the calling node's cache as well as the rows, and only the
 //! server holds the store. Doing half of it here would look like the whole of it.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 
 use sc_catalog::Catalog;
@@ -38,7 +39,7 @@ use crate::roles::load_role;
 use crate::user::User;
 use crate::users::{
     COL_DISABLED, COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_LANGUAGE, COL_PASSWORD_HASH, COL_ROLE,
-    ROLE_ADMIN, USERS_TABLE, is_system_user_column, role_in_range,
+    USERS_TABLE, is_system_user_column,
 };
 
 /// The changes an admin is making to a user. Every field is optional: what is
@@ -49,12 +50,12 @@ pub struct UserUpdate {
     /// A new identifier, or `None` to keep the current one.
     pub email: Option<String>,
     /// A new role, or `None` to keep the current one. Must already exist.
-    pub role: Option<u8>,
+    pub role: Option<Role>,
     /// A new plaintext password, or `None` to leave the stored hash alone.
     /// **Blank is not a password** — an empty string here is an error, because
     /// "no password" and "do not change the password" are different intentions
     /// and only one of them can be a blank box on a form.
-    pub password: Option<String>,
+    pub password: Option<sc_error::Secret<String>>,
     /// The language this account reads the product in. **Two levels of
     /// optional, and both mean something**: `None` leaves it as it was, and
     /// `Some(None)` clears it back to "whatever the request negotiates". A form
@@ -95,7 +96,7 @@ pub async fn update_user(catalog: &Catalog, id: Uuid, update: UserUpdate) -> Res
         }
         assignments.push(Assignment::new(
             COL_PASSWORD_HASH,
-            Expr::lit(hash_password(password)?),
+            Expr::lit(hash_password(password.expose())?),
         ));
     }
     if let Some(language) = &update.language {
@@ -175,7 +176,7 @@ pub async fn claim_unproven_account(catalog: &Catalog, user: User) -> Result<Use
     if !user.email_unproven() {
         return Ok(user);
     }
-    let id = user.id;
+    let id = user.id();
     let claimed = write(
         catalog,
         id,
@@ -222,14 +223,14 @@ pub async fn refuse_last_admin(catalog: &Catalog, id: Uuid, verb: &str) -> Resul
     let Some(user) = load_base_user(catalog, id).await? else {
         return Ok(());
     };
-    if user.role != ROLE_ADMIN || user.is_disabled() {
+    if !user.role().is_admin() || user.is_disabled() {
         return Ok(());
     }
     let select = Select::from(Source::table(USERS_TABLE))
         .columns(vec![Projection::all()])
         .filter(
             Expr::col(COL_ROLE)
-                .eq(Expr::lit(i64::from(ROLE_ADMIN)))
+                .eq(Expr::lit(i64::from(Role::ADMIN)))
                 .and(Expr::binary(BinOp::Ne, Expr::col(COL_ID), Expr::lit(id))),
         );
     let mut others = 0;
@@ -254,15 +255,12 @@ pub async fn refuse_last_admin(catalog: &Catalog, id: Uuid, verb: &str) -> Resul
     Ok(())
 }
 
-/// Refuse a role that is out of range or that no `_fd_roles` row defines.
+/// Refuse a role that no `_fd_roles` row defines.
 ///
 /// The foreign key on `users.role` already makes the second state impossible;
 /// this is what makes the refusal legible, and it is shared by create and update
 /// so the two say the same sentence.
-pub(crate) async fn require_role_exists(catalog: &Catalog, role: u8) -> Result<()> {
-    if !role_in_range(role) {
-        return Err(Error::invalid(format!("role {role} is not in 1..=100")));
-    }
+pub(crate) async fn require_role_exists(catalog: &Catalog, role: Role) -> Result<()> {
     if load_role(catalog, role).await?.is_none() {
         return Err(Error::invalid(format!(
             "role {role} does not exist; create it before assigning users to it"
@@ -301,7 +299,7 @@ async fn write(catalog: &Catalog, id: Uuid, assignments: Vec<Assignment>) -> Res
 
 async fn rows(catalog: &Catalog, statement: Statement) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()

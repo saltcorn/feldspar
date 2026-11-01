@@ -94,7 +94,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## H4 — The Undo action
 
-- [x] H4.1 `undo` core action in `sc-core-actions`, with an optional `table` config (must have
+- [x] H4.1 `undo` core action in `sc-action-builtins`, with an optional `table` config (must have
       history on, checked when the trigger is saved). With no table, it undoes the session's
       most recent changeset that still has entries not undone, skipping undo changesets and the
       running request's own changeset. With a table, it undoes only that table's entries of the

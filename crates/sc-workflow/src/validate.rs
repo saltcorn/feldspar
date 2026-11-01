@@ -325,7 +325,7 @@ async fn check_step(
             StepKind::UserForm {
                 fields,
                 assign_to,
-                min_role,
+                min_role: _,
                 timeout,
             } => {
                 if assign_to.trim().is_empty() {
@@ -351,13 +351,6 @@ async fn check_step(
                     if let Err(e) = field.to_form_field() {
                         problem(e.to_string());
                     }
-                }
-                if let Some(role) = min_role
-                    && !(1..=100).contains(role)
-                {
-                    problem(format!(
-                        "`min_role` must be a role between 1 and 100, got {role}"
-                    ));
                 }
                 if let Some(timeout) = timeout {
                     check_source(shape, timeout, "the timeout", &mut problem);
@@ -808,7 +801,7 @@ mod tests {
             StepKind::UserForm {
                 fields: vec![],
                 assign_to: String::new(),
-                min_role: Some(200),
+                min_role: None,
                 timeout: None,
             },
         );
@@ -823,7 +816,7 @@ mod tests {
         };
         assert!(fields.is_empty());
         assert!(assign_to.is_empty());
-        assert!(!(1..=100).contains(&min_role.unwrap()));
+        assert!(min_role.is_none());
     }
 
     #[test]

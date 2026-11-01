@@ -18,6 +18,15 @@ tokio.workspace = true
 tokio-postgres.workspace = true
 deadpool-postgres.workspace = true
 uuid.workspace = true
+# `TestServer` (the `catalog` feature): a database with a catalog over it, torn
+# down with the database. Optional, so a crate below the catalog that only
+# needs a database does not build one.
+sc-catalog = { workspace = true, optional = true }
+sc-db = { workspace = true, optional = true }
+sc-db-postgres = { workspace = true, optional = true }
+
+[features]
+catalog = ["dep:sc-catalog", "dep:sc-db", "dep:sc-db-postgres"]
 
 [lints]
 workspace = true

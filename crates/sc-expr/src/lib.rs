@@ -47,6 +47,7 @@ mod code_reply;
 mod eval;
 mod formula;
 mod geo;
+pub mod html;
 #[cfg(feature = "eval")]
 mod normalise;
 mod rewrite;
@@ -81,7 +82,7 @@ pub use code_reply::{
 };
 #[cfg(feature = "eval")]
 pub use eval::DenoEvaluator;
-pub use eval::{FormulaCall, JsEvaluator, value_from_json, value_to_json};
+pub use eval::{FormulaCall, JsEvaluator};
 pub use formula::Formula;
 pub use geo::{GEO, GEO_FUNCTIONS, GeoFunction, GeoResult, geo_function};
 pub use rewrite::{Replacement, object_literal_entries, rename_relation_table, rewrite_free_refs};

@@ -5,7 +5,7 @@
 //! an admin writes a `run_js_code` body that reads, joins, aggregates and writes,
 //! presses Run, and **the rows are there**. Every layer under that is tested on
 //! its own — `sc-expr` proves a chain becomes a plan, `sc-api` proves a plan
-//! becomes a statement and a statement answers, `sc-core-actions` proves the
+//! becomes a statement and a statement answers, `sc-action-builtins` proves the
 //! action binds `db` and delegates to the event's caller — and none of them
 //! proves the button. So this file drives the assembled router: create the
 //! trigger over HTTP, run it over HTTP, and read the written rows back over HTTP,
@@ -19,14 +19,12 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-    default_js_evaluator, install_triggers,
+    AppMounts, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
+    install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -157,22 +155,7 @@ struct Server {
 }
 
 async fn setup() -> sc_error::Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(&format!(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$; {SCHEMA}"
-        ))
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().sql(SCHEMA).build().await?;
     sc_auth::bootstrap(&catalog).await?;
     let agents = sc_server::install_agents(&catalog).await?;
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;

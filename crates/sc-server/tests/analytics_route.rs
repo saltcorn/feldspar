@@ -2,13 +2,14 @@
 //! to an admin, under its own Content-Security-Policy, and to nobody else.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::{AuthRequirement, Endpoint, EndpointSet, Method, PathSpec};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, SessionStore, User};
+use sc_auth::{SessionStore, User};
 use sc_server::{
     ANALYTICS_CONTENT_SECURITY_POLICY, HandlerRegistry, SESSION_COOKIE, ServerConfig,
     analytics_content_security_policy, build_router,
@@ -59,9 +60,9 @@ fn router(dir: Option<std::path::PathBuf>) -> (Router, Arc<SessionStore>) {
     (router, sessions)
 }
 
-async fn session_for(sessions: &SessionStore, role: u8) -> String {
+async fn session_for(sessions: &SessionStore, role: Role) -> String {
     sessions
-        .login(User::new(Uuid::new_v4(), role).unwrap())
+        .login(User::new(Uuid::new_v4(), role))
         .await
         .unwrap()
 }
@@ -81,7 +82,7 @@ fn get(path: &str, session: Option<&str>, html: bool) -> Request<Body> {
 async fn an_admin_gets_the_bundle_under_its_own_policy() {
     let dir = bundle("admin");
     let (router, sessions) = router(Some(dir.clone()));
-    let token = session_for(&sessions, ROLE_ADMIN).await;
+    let token = session_for(&sessions, Role::ADMIN).await;
     for path in ["/analytics", "/analytics/"] {
         let response = router
             .clone()
@@ -142,7 +143,7 @@ async fn a_non_admin_is_refused_and_a_visitor_is_sent_to_sign_in() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     // A signed-in user who is not an admin is refused, even navigating.
-    let public = session_for(&sessions, ROLE_PUBLIC).await;
+    let public = session_for(&sessions, Role::PUBLIC).await;
     for html in [true, false] {
         let response = router
             .clone()
@@ -161,7 +162,7 @@ async fn a_non_admin_is_refused_and_a_visitor_is_sent_to_sign_in() {
 #[tokio::test]
 async fn without_a_bundle_the_prefix_says_how_to_build_one() {
     let (router, sessions) = router(None);
-    let token = session_for(&sessions, ROLE_ADMIN).await;
+    let token = session_for(&sessions, Role::ADMIN).await;
     let response = router
         .oneshot(get("/analytics/", Some(&token), true))
         .await

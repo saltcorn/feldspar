@@ -18,12 +18,11 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
-use sc_server::{AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router};
-use sc_test_harness::TestDb;
+use sc_server::{AppMounts, ServerConfig, admin_handlers, build_router};
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -110,26 +109,7 @@ fn temp_dir(tag: &str) -> PathBuf {
 /// admin logged in. No file store is connected — these tests create them through
 /// the API, which is the point.
 async fn setup() -> sc_error::Result<(Client, Arc<Catalog>, TestDb)> {
-    let db = TestDb::new().await?;
-    // Neutralise any `users` table inherited from the template database before
-    // bootstrap introspects: a stray one in another schema would be found and
-    // `sc_auth::bootstrap` would skip creating the real one. A no-op against a
-    // clean template, which is what the configured test template should be.
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
@@ -192,7 +172,11 @@ async fn a_store_is_created_listed_and_connected_through_the_api() -> sc_error::
 
     // It is connected in the live registry, so the file manager can reach it
     // with no restart.
-    assert!(catalog.file_store("docs")?.is_some());
+    assert!(
+        catalog
+            .file_store("docs", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
 
     // And it is listed with its definition intact.
     let (_, body) = client.send("GET", "/api/file-stores", None).await;
@@ -320,8 +304,8 @@ async fn editing_repoints_live_and_renaming_disconnects_the_old_name() -> sc_err
     let id = created["id"].as_str().unwrap().to_owned();
 
     let before = catalog
-        .require_file_store("docs")?
-        .read("marker.txt")
+        .require_file_store("docs", sc_catalog::Unchecked::system("test"))?
+        .read(&sc_files::StorePath::from_static("marker.txt"))
         .await?;
     assert_eq!(&before[..], b"old");
 
@@ -344,8 +328,8 @@ async fn editing_repoints_live_and_renaming_disconnects_the_old_name() -> sc_err
 
     // The new name serves the new directory, immediately.
     let after = catalog
-        .require_file_store("handbook")?
-        .read("marker.txt")
+        .require_file_store("handbook", sc_catalog::Unchecked::system("test"))?
+        .read(&sc_files::StorePath::from_static("marker.txt"))
         .await?;
     assert_eq!(&after[..], b"new");
 
@@ -353,7 +337,9 @@ async fn editing_repoints_live_and_renaming_disconnects_the_old_name() -> sc_err
     // disconnect the old handle would still be serving the old directory under
     // a name that no longer has a definition.
     assert!(
-        catalog.file_store("docs")?.is_none(),
+        catalog
+            .file_store("docs", sc_catalog::Unchecked::system("test"))?
+            .is_none(),
         "a rename must disconnect the old name"
     );
 
@@ -388,7 +374,11 @@ async fn deleting_removes_the_definition_and_stops_it_serving() -> sc_error::Res
         )
         .await;
     let id = created["id"].as_str().unwrap().to_owned();
-    assert!(catalog.file_store("scratch")?.is_some());
+    assert!(
+        catalog
+            .file_store("scratch", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
 
     let (status, body) = client
         .send("DELETE", &format!("/api/file-stores/{id}"), None)
@@ -397,7 +387,9 @@ async fn deleting_removes_the_definition_and_stops_it_serving() -> sc_error::Res
     assert_eq!(body["deleted"], json!(true));
 
     assert!(
-        catalog.file_store("scratch")?.is_none(),
+        catalog
+            .file_store("scratch", sc_catalog::Unchecked::system("test"))?
+            .is_none(),
         "a delete must disconnect the handle, not just drop the row"
     );
     let (_, body) = client.send("GET", "/api/file-stores", None).await;
@@ -463,7 +455,11 @@ async fn a_store_used_by_an_application_cannot_be_deleted() -> sc_error::Result<
     );
 
     // Refused, not half-done: still defined and still serving.
-    assert!(catalog.file_store("apps")?.is_some());
+    assert!(
+        catalog
+            .file_store("apps", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
     let (_, body) = client.send("GET", "/api/file-stores", None).await;
     assert_eq!(body.as_array().unwrap().len(), 1);
 

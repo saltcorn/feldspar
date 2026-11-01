@@ -17,5 +17,4 @@ use serde_json::Value as Json;
 /// It lives in `sc-types` rather than `sc-catalog`, where it started, because it
 /// is not a catalog concept: `sc-types` is layer 3 and cannot depend on layer 4,
 /// but `FormField` must describe an `Attrs` entry and §6.1 puts them together.
-/// `sc-catalog` re-exports it, so `sc_catalog::Attrs` still resolves.
 pub type Attrs = serde_json::Map<String, Json>;

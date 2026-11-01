@@ -10,6 +10,9 @@ rust-version.workspace = true
 
 [dependencies]
 sc-error.workspace = true
+# What an SMTP override's host must resolve to (`PublicAddr`), and the one rule
+# that decides it (TODO-code-quality Q4.3).
+sc-net.workspace = true
 # `EmailSettings` and `Mailbox`: what an admin configured, and the address
 # grammar this crate parses recipients with. The settings are declared at layer
 # 5 beside every other configuration key, which is what fixes this crate above
@@ -43,6 +46,8 @@ mrml = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 
 [dev-dependencies]
+# `PublicAddr::test_listener`, for pinning a transport to `TestSmtp`.
+sc-net = { workspace = true, features = ["test-listener"] }
 # `TestSmtp`: a listener that speaks enough of the protocol to accept a message.
 # A trait-only test proves nothing about whether `lettre` was wired up
 # correctly, and the harness is where it lives because `sc-server` needs it too.

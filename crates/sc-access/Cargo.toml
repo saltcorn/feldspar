@@ -1,0 +1,46 @@
+[package]
+name = "sc-access"
+description = "The row-access layer: table row CRUD, the ownership rule and scoped handles (layer 6)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# One integration-test binary per crate, as in the other crates.
+autotests = false
+
+[dependencies]
+sc-error.workspace = true
+sc-catalog.workspace = true
+# Ownership formulas are translated here; the V8 engine behind the reified
+# evaluator is injected (`Arc<dyn JsEvaluator>`), so no feature is enabled.
+sc-expr.workspace = true
+# The users table's rules (hidden columns, who may grant which role) and the
+# `User` a guarded read or write is made as.
+sc-auth.workspace = true
+sc-db.workspace = true
+sc-query.workspace = true
+sc-types.workspace = true
+# A `File` field's write is validated against its store/folder/MIME rules.
+sc-files.workspace = true
+# A vector field's embeddings, computed on insert and update.
+sc-llm.workspace = true
+# File cleanup after a delete runs in a spawned task.
+tokio = { workspace = true, features = ["rt"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+sc-db-sqlite.workspace = true
+sc-db.workspace = true
+sc-test-harness.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+uuid.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

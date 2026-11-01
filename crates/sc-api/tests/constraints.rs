@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use sc_api::rows;
+use sc_access::rows;
 use sc_api::schema_edit::{ApplyOptions, Operation};
 use sc_catalog::{Catalog, ConstraintKind, TableConstraint};
 use sc_db::DatabaseDriver;
@@ -105,11 +105,22 @@ async fn a_jointly_unique_constraint_speaks_the_admins_words() -> Result<()> {
     );
 
     let row = json!({ "name": "Ada", "department": 1, "salary": 100 });
-    rows::create_row(&catalog, &employees, &row).await?;
+    rows::create_row(
+        &catalog,
+        &employees,
+        &row,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     // The same pair again: refused, and refused in the admin's words.
-    let err = rows::create_row(&catalog, &employees, &row)
-        .await
-        .expect_err("the second row breaks the constraint");
+    let err = rows::create_row(
+        &catalog,
+        &employees,
+        &row,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await
+    .expect_err("the second row breaks the constraint");
     assert!(
         err.to_string()
             .contains("there is already someone by that name in that department"),
@@ -120,9 +131,10 @@ async fn a_jointly_unique_constraint_speaks_the_admins_words() -> Result<()> {
         &catalog,
         &employees,
         &json!({ "name": "Grace", "department": 1 }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
-    let grace = rows::list_rows(&catalog, &employees)
+    let grace = rows::list_rows(&catalog, &employees, sc_catalog::Unchecked::system("test"))
         .await?
         .as_array()
         .and_then(|rows| {
@@ -132,9 +144,15 @@ async fn a_jointly_unique_constraint_speaks_the_admins_words() -> Result<()> {
         })
         .expect("Grace");
     let id = grace.get("id").expect("id").to_string();
-    let err = rows::update_row(&catalog, &employees, &id, &json!({ "name": "Ada" }))
-        .await
-        .expect_err("renaming Grace to Ada breaks the same constraint");
+    let err = rows::update_row(
+        &catalog,
+        &employees,
+        &id,
+        &json!({ "name": "Ada" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await
+    .expect_err("renaming Grace to Ada breaks the same constraint");
     assert!(
         err.to_string()
             .contains("there is already someone by that name in that department"),
@@ -146,6 +164,7 @@ async fn a_jointly_unique_constraint_speaks_the_admins_words() -> Result<()> {
         &catalog,
         &employees,
         &json!({ "name": "Ada", "department": 2 }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
 
@@ -160,7 +179,13 @@ async fn a_jointly_unique_constraint_speaks_the_admins_words() -> Result<()> {
     .await?;
     let employees = catalog.require("employees")?;
     assert!(employees.constraints.iter().all(|c| c.name != name));
-    rows::create_row(&catalog, &employees, &row).await?;
+    rows::create_row(
+        &catalog,
+        &employees,
+        &row,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     Ok(())
 }
 
@@ -201,15 +226,21 @@ async fn a_row_constraint_is_enforced_by_the_database_aggregation_and_all() -> R
         &catalog,
         &employees,
         &json!({ "name": "Ada", "salary": 100, "department": 1 }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     for bad in [
         json!({ "name": "Bad", "salary": 0, "department": 1 }),
         json!({ "name": "Bad", "salary": 100, "department": 2 }),
     ] {
-        let err = rows::create_row(&catalog, &employees, &bad)
-            .await
-            .expect_err("the row breaks the constraint");
+        let err = rows::create_row(
+            &catalog,
+            &employees,
+            &bad,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await
+        .expect_err("the row breaks the constraint");
         assert!(
             err.to_string()
                 .contains("salaries are positive, and Ops does not hire"),
@@ -240,6 +271,7 @@ async fn a_row_constraint_is_enforced_by_the_database_aggregation_and_all() -> R
         &catalog,
         &catalog.require("employees")?,
         &json!({ "name": "Now fine", "salary": 0, "department": 2 }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     Ok(())
@@ -272,6 +304,7 @@ async fn a_row_constraint_can_be_deferred_to_the_end_of_a_transaction() -> Resul
         &catalog,
         &catalog.require("employees")?,
         &json!({ "name": "Ada", "department": 2 }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await
     .expect_err("department 2 is Ops");

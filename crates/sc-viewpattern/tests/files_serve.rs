@@ -6,6 +6,7 @@
 //! [`ServeFile`](sc_files::ServeFile) for the router's file builder, or a 404 —
 //! through [`serve_store_file`], the function the framework's route calls.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -35,22 +36,27 @@ async fn an_owned_file_is_served_to_its_owner_and_not_found_to_anyone_else() -> 
     let store = Arc::new(LocalFileStore::new("media", &dir)?);
     catalog.connect_file_store(store.clone())?;
 
-    store.mkdir("private").await?;
+    store
+        .mkdir(&sc_files::StorePath::from_static("private"))
+        .await?;
     store
         .set_meta(
-            "private",
+            &sc_files::StorePath::from_static("private"),
             &FileMeta {
-                min_role: Some(1),
+                min_role: Some(Role::ADMIN),
                 ..Default::default()
             },
         )
         .await?;
     store
-        .write("private/ada.png", Bytes::from_static(b"png"))
+        .write(
+            &sc_files::StorePath::from_static("private/ada.png"),
+            Bytes::from_static(b"png"),
+        )
         .await?;
-    let ada = User::new(uuid::Uuid::new_v4(), 80)?;
-    let bob = User::new(uuid::Uuid::new_v4(), 80)?;
-    sc_files::record_owner(store.as_ref(), "private/ada.png", &ada.id.to_string()).await;
+    let ada = User::new(uuid::Uuid::new_v4(), Role::of(80));
+    let bob = User::new(uuid::Uuid::new_v4(), Role::of(80));
+    sc_files::record_owner(store.as_ref(), "private/ada.png", &ada.id().to_string()).await;
 
     let app = Application::new("Books", "books", FrameworkRef::new("saltcorn-ui"))
         .with_file_store(FileStoreId("media".to_owned()));
@@ -58,8 +64,8 @@ async fn an_owned_file_is_served_to_its_owner_and_not_found_to_anyone_else() -> 
 
     let served = serve_store_file(&app, &catalog, Some(&ada), &path).await?;
     let file = served.file.expect("the owner is served the file");
-    assert_eq!(file.path, "private/ada.png");
-    assert_eq!(file.store.name(), "media");
+    assert_eq!(file.path(), "private/ada.png");
+    assert_eq!(file.store_name(), "media");
 
     for (who, user) in [("another user", Some(&bob)), ("anonymous", None)] {
         let answer = serve_store_file(&app, &catalog, user, &path).await?;
@@ -106,7 +112,7 @@ async fn a_public_stores_git_dir_dotfiles_and_escaping_links_are_not_served() ->
 
     let app = Application::new("Site", "site", FrameworkRef::new("saltcorn-ui"))
         .with_file_store(FileStoreId("site".to_owned()));
-    let ada = User::new(uuid::Uuid::new_v4(), 80)?;
+    let ada = User::new(uuid::Uuid::new_v4(), Role::of(80));
 
     let served = serve_store_file(&app, &catalog, None, &["site", "a.txt"]).await?;
     assert!(served.file.is_some(), "a public file is served");
@@ -121,10 +127,7 @@ async fn a_public_stores_git_dir_dotfiles_and_escaping_links_are_not_served() ->
             let answer = serve_store_file(&app, &catalog, user, path).await?;
             if let Some(file) = &answer.file {
                 // The builder opens the file; an escaping link must fail there.
-                assert!(
-                    file.store.read(&file.path).await.is_err(),
-                    "{path:?} was served"
-                );
+                assert!(file.open_read(None).await.is_err(), "{path:?} was served");
             } else {
                 assert_eq!(answer.status, 404, "{path:?}");
             }

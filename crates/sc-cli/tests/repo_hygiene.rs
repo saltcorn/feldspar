@@ -1911,7 +1911,7 @@ fn readme_quick_start_config_file_parses() {
         .expect("the heredoc should be terminated")
         .0;
 
-    let config = sc_cli::ConfigFile::parse(sample, Path::new("README.md#2.5"))
+    let config = sc_config_file::ConfigFile::parse(sample, Path::new("README.md#2.5"))
         .expect("the quick start's feldspar.toml should parse");
     assert_eq!(config.default_environment.as_deref(), Some("production"));
 
@@ -2006,10 +2006,10 @@ fn the_binary_and_everything_it_owns_are_named_feldspar() {
     // 2. The deployment file and the directory it is searched for in, and 3. the
     //    environment variables that name it — the reader's own constants, not a
     //    doc's spelling of them.
-    assert_eq!(sc_cli::config_file::FILE_NAME, "feldspar.toml");
-    assert_eq!(sc_cli::config_file::APP_DIR, "feldspar");
-    assert_eq!(sc_cli::config_file::CONFIG_PATH_VAR, "FELDSPAR_CONFIG");
-    assert_eq!(sc_cli::config_file::ENVIRONMENT_VAR, "FELDSPAR_ENV");
+    assert_eq!(sc_config_file::FILE_NAME, "feldspar.toml");
+    assert_eq!(sc_config_file::APP_DIR, "feldspar");
+    assert_eq!(sc_config_file::CONFIG_PATH_VAR, "FELDSPAR_CONFIG");
+    assert_eq!(sc_config_file::ENVIRONMENT_VAR, "FELDSPAR_ENV");
 
     // 4. The generated runtime the scaffolder writes into an application's
     //    project, which its README, its AGENTS.md and every emitted import agree on.

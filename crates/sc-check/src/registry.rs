@@ -20,6 +20,7 @@
 //! manifest names, and a mistake in a type's declaration is a loud error in the
 //! first run rather than a quiet extra privilege.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -27,11 +28,11 @@ use std::time::{Duration, Instant};
 
 use sc_action::TriggerDispatcher;
 use sc_agent::AppRequester;
-use sc_app::Application;
-use sc_auth::User;
-use sc_browser::{
+use sc_agent::browser::{
     BrowserAction, BrowserDriver, BrowserReport, BrowserRequest, BrowserTarget, PreviewTarget,
 };
+use sc_app::Application;
+use sc_auth::User;
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_expr::JsEvaluator;
@@ -314,8 +315,8 @@ pub struct StepContext<'a> {
 
 impl<'a> StepContext<'a> {
     /// The role `run_as` acts at: theirs, or public.
-    pub fn role(&self) -> u8 {
-        self.run_as.map_or(sc_auth::ROLE_PUBLIC, |u| u.role)
+    pub fn role(&self) -> Role {
+        self.run_as.map_or(Role::PUBLIC, |u| u.role())
     }
 
     /// The formula evaluator, where the type needs data and the host has one.

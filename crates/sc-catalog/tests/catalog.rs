@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use sc_catalog::{Catalog, DataField, DataFieldKind, DbId, TableId, TableSource};
+use sc_catalog::{Catalog, DataField, DataFieldKind, DbId, TableSource};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_query::{Expr, Insert, Projection, Select, Source, Statement, Value};
@@ -53,7 +53,7 @@ async fn catalog_init_create_and_reflect() -> sc_error::Result<()> {
     let catalog = Catalog::init(driver.clone() as Arc<dyn DatabaseDriver>).await?;
 
     let author = catalog.require("author")?;
-    assert_eq!(author.id, TableId("author".into()));
+    assert_eq!(author.name, "author");
     assert_eq!(author.database, DbId::primary());
     assert_eq!(author.source, TableSource::Database);
     assert_eq!(author.primary_key, vec!["id".to_string()]);
@@ -114,7 +114,7 @@ async fn catalog_init_create_and_reflect() -> sc_error::Result<()> {
     assert!(names.windows(2).all(|w| w[0] <= w[1]), "sorted: {names:?}");
 
     // --- the table's provider can round-trip a row ----------------------------
-    let provider = catalog.provider(&book)?;
+    let provider = catalog.provider(&book, sc_catalog::Unchecked::system("test"))?;
     assert_eq!(provider.fields().len(), 4);
 
     provider

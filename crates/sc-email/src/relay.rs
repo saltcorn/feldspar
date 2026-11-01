@@ -12,7 +12,7 @@
 //! - **ports 465 and 587 only**, the two submission ports — implicit TLS on 465,
 //!   STARTTLS on 587 — and never an unencrypted connection;
 //! - **public addresses only**: every address the host resolves to must be on
-//!   the public internet ([`is_public`]); a name with one public and one private
+//!   the public internet ([`sc_net::is_public`]); a name with one public and one private
 //!   address is refused, because which of the two a connection would reach is
 //!   not this code's choice to leave to chance;
 //! - **the connection goes to the address that was checked.** lettre resolves a
@@ -25,13 +25,13 @@
 //!   certificate is the admin's choice for the installation's own server, never
 //!   a trigger's.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 use lettre::transport::smtp::extension::ClientId;
 use lettre::{AsyncSmtpTransport, Tokio1Executor, transport::smtp::authentication::Credentials};
 use sc_config::{EmailSettings, SmtpSecurity};
 use sc_error::{Error, Result};
+use sc_net::{PublicAddr, Refused};
 
 use crate::SmtpMailer;
 
@@ -88,29 +88,23 @@ pub fn check_relay(settings: &EmailSettings) -> Result<()> {
 }
 
 /// Resolve `host` to the one address the connection will go to, refusing it
-/// unless **every** address it resolves to is public.
+/// unless **every** address it resolves to is public
+/// ([`sc_net::resolve_every_public`]).
 ///
 /// An address literal is checked as it is, with no lookup.
-pub async fn resolve_public(host: &str, port: u16) -> Result<IpAddr> {
-    let bare = host.trim_start_matches('[').trim_end_matches(']');
-    let found: Vec<IpAddr> = match bare.parse::<IpAddr>() {
-        Ok(ip) => vec![ip],
-        Err(_) => tokio::net::lookup_host((bare, port))
-            .await
-            .map_err(|e| Error::invalid(format!("SMTP server `{host}` did not resolve: {e}")))?
-            .map(|addr| addr.ip())
-            .collect(),
-    };
-    if let Some(private) = found.iter().find(|ip| !is_public(**ip)) {
-        return Err(Error::invalid(format!(
-            "SMTP server `{host}` resolves to {private}, a private or reserved address; a \
-             trigger may only send through a server on the public internet"
-        )));
-    }
-    found
-        .first()
-        .copied()
-        .ok_or_else(|| Error::invalid(format!("SMTP server `{host}` did not resolve")))
+pub async fn resolve_public(host: &str, port: u16) -> Result<PublicAddr> {
+    sc_net::resolve_every_public(host, port)
+        .await
+        .map_err(|refused| match refused {
+            Refused::NotResolved(e) => {
+                Error::invalid(format!("SMTP server `{host}` did not resolve: {e}"))
+            }
+            Refused::NoAddress => Error::invalid(format!("SMTP server `{host}` did not resolve")),
+            Refused::Private(private) => Error::invalid(format!(
+                "SMTP server `{host}` resolves to {private}, a private or reserved address; a \
+                 trigger may only send through a server on the public internet"
+            )),
+        })
 }
 
 /// Check `settings` against the relay rules, resolve the host, and build a
@@ -122,7 +116,8 @@ pub async fn relay_mailer(settings: &EmailSettings) -> Result<SmtpMailer> {
 }
 
 impl SmtpMailer {
-    /// A transport for `settings` that connects to `ip` and nowhere else.
+    /// A transport for `settings` that connects to `ip` — a [`PublicAddr`],
+    /// which only `sc-net`'s resolver makes — and nowhere else.
     ///
     /// `settings.host` is still the server's name for every purpose except the
     /// connection: TLS sends it as SNI and checks the certificate against it.
@@ -132,7 +127,7 @@ impl SmtpMailer {
     ///
     /// Public so the pinning itself can be tested against a local listener;
     /// [`relay_mailer`] is the way in that applies the rules.
-    pub fn pinned(settings: &EmailSettings, ip: IpAddr) -> Result<SmtpMailer> {
+    pub fn pinned(settings: &EmailSettings, ip: PublicAddr) -> Result<SmtpMailer> {
         let tls = crate::tls_for(settings)?;
         let domain = settings
             .from
@@ -140,15 +135,16 @@ impl SmtpMailer {
             .rsplit_once('@')
             .map_or("localhost", |(_, domain)| domain)
             .to_owned();
-        let mut builder = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(ip.to_string())
-            .port(settings.port)
-            .tls(tls)
-            .hello_name(ClientId::Domain(domain))
-            .timeout(Some(RELAY_TIMEOUT));
+        let mut builder =
+            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(ip.ip().to_string())
+                .port(settings.port)
+                .tls(tls)
+                .hello_name(ClientId::Domain(domain))
+                .timeout(Some(RELAY_TIMEOUT));
         if settings.authenticates() {
             builder = builder.credentials(Credentials::new(
                 settings.username.clone(),
-                settings.password.clone(),
+                settings.password.expose().clone(),
             ));
         }
         Ok(SmtpMailer {
@@ -157,65 +153,6 @@ impl SmtpMailer {
             host: settings.host.clone(),
         })
     }
-}
-
-/// Whether `ip` is an address on the public internet.
-///
-/// Written out rather than taken from `IpAddr::is_global`, which is still
-/// unstable; the list is IANA's special-purpose registries, reduced to the
-/// blocks that are somewhere other than the internet. Shared with the agent
-/// fetch guard (`sc-core-traits`), so "public" means one thing.
-pub fn is_public(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => is_public_v4(ip),
-        IpAddr::V6(ip) => is_public_v6(ip),
-    }
-}
-
-fn is_public_v4(ip: Ipv4Addr) -> bool {
-    let [a, b, c, _] = ip.octets();
-    !(ip.is_unspecified()
-        || ip.is_loopback()
-        || ip.is_private()
-        || ip.is_link_local()
-        || ip.is_broadcast()
-        || ip.is_documentation()
-        || ip.is_multicast()
-        // 0.0.0.0/8, "this network".
-        || a == 0
-        // 100.64.0.0/10, carrier-grade NAT: private in all but name.
-        || (a == 100 && (64..128).contains(&b))
-        // 192.0.0.0/24, protocol assignments.
-        || (a == 192 && b == 0 && c == 0)
-        // 198.18.0.0/15, benchmarking.
-        || (a == 198 && (b == 18 || b == 19))
-        // 240.0.0.0/4, reserved.
-        || a >= 240)
-}
-
-fn is_public_v6(ip: Ipv6Addr) -> bool {
-    // An IPv4 address carried in IPv6 is judged as the IPv4 address it is —
-    // otherwise `::ffff:127.0.0.1` is a way around every rule above.
-    if let Some(v4) = ip.to_ipv4_mapped() {
-        return is_public_v4(v4);
-    }
-    let segments = ip.segments();
-    // 64:ff9b::/96, NAT64: the last 32 bits are the IPv4 destination.
-    if segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
-        let [.., hi, lo] = segments;
-        return is_public_v4(Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo)));
-    }
-    !(ip.is_unspecified()
-        || ip.is_loopback()
-        || ip.is_multicast()
-        // fc00::/7, unique local.
-        || (segments[0] & 0xfe00) == 0xfc00
-        // fe80::/10, link-local.
-        || (segments[0] & 0xffc0) == 0xfe80
-        // 2001:db8::/32, documentation.
-        || (segments[0] == 0x2001 && segments[1] == 0x0db8)
-        // ::/96, the deprecated IPv4-compatible form.
-        || segments[..6] == [0, 0, 0, 0, 0, 0])
 }
 
 #[cfg(test)]
@@ -229,7 +166,7 @@ mod tests {
             port,
             security,
             username: "orders@example.com".to_owned(),
-            password: "Grüße-€-pässwort".to_owned(),
+            password: "Grüße-€-pässwort".into(),
             from: parse_mailbox("orders@example.com").unwrap(),
             certificate_name: None,
             accept_any_certificate: false,
@@ -294,37 +231,8 @@ mod tests {
         }
         // A public literal is answered as itself, with no lookup.
         assert_eq!(
-            resolve_public("1.1.1.1", 587).await.unwrap(),
-            "1.1.1.1".parse::<IpAddr>().unwrap()
+            resolve_public("1.1.1.1", 587).await.unwrap().ip(),
+            "1.1.1.1".parse::<std::net::IpAddr>().unwrap()
         );
-    }
-
-    #[test]
-    fn private_loopback_and_metadata_addresses_are_not_public() {
-        for ip in [
-            "127.0.0.1",
-            "10.1.2.3",
-            "172.16.0.1",
-            "192.168.1.1",
-            "169.254.169.254",
-            "100.64.0.1",
-            "0.0.0.0",
-            "240.0.0.1",
-            "::1",
-            "fd00::1",
-            "fe80::1",
-            "::ffff:127.0.0.1",
-            "64:ff9b::a00:1",
-        ] {
-            assert!(!is_public(ip.parse().unwrap()), "{ip} should not be public");
-        }
-        for ip in [
-            "93.184.215.14",
-            "1.1.1.1",
-            "2606:4700::1111",
-            "64:ff9b::101:101",
-        ] {
-            assert!(is_public(ip.parse().unwrap()), "{ip} should be public");
-        }
     }
 }

@@ -1,15 +1,15 @@
 //! Lowering a list field's arguments onto the row layer's own
-//! [`RowQuery`](crate::rows::RowQuery).
+//! [`RowQuery`](sc_access::rows::RowQuery).
 //!
 //! `where`, `order_by`, `limit` and `offset` are the four things a caller may
 //! say about *which* rows they want, and each becomes exactly what the row layer
 //! already understands: a `sc_query::Expr`, a `Vec<OrderBy>`, and two bounds.
 //! Nothing here reaches SQL as text — a column name comes from the catalog, an
-//! operator comes from [`crate::filter`], and every literal the caller wrote
+//! operator comes from [`sc_access::filter`], and every literal the caller wrote
 //! becomes an [`Expr::Lit`] that the query layer parameterises on render.
 //!
 //! What one **comparison** means is not decided here: `eq`/`lt`/`in`/`is_null`/…
-//! lower through [`crate::filter`], which the REST query string lowers through
+//! lower through [`sc_access::filter`], which the REST query string lowers through
 //! too, so the two syntaxes ask the database the same question. This module owns
 //! the part that is GraphQL's own — the shape of a `BoolExp`, its `_and`/`_or`/
 //! `_not` connectives, `order_by`'s input objects, and how a `limit` is bounded.
@@ -21,8 +21,8 @@ use sc_error::{Error, Result};
 use sc_query::{BinOp, Expr, OrderBy, UnOp, Value};
 use serde_json::Value as Json;
 
-use crate::filter;
-use crate::rows::{self, Partition, RowQuery};
+use sc_access::filter;
+use sc_access::rows::{self, Partition, RowQuery};
 
 /// The list-field argument names, shared with the schema builder so the two
 /// cannot drift.
@@ -106,7 +106,9 @@ fn filtered_and_ordered(table: &Table, ctx: &ResolverContext<'_>) -> Result<RowQ
     }
     let search = match ctx.args.get(ARG_SEARCH).map(|a| a.as_value().clone()) {
         None | Some(GqlValue::Null) => None,
-        Some(GqlValue::String(phrase)) => Some(crate::search::text_search(table, &phrase, None)?),
+        Some(GqlValue::String(phrase)) => {
+            Some(sc_access::search::text_search(table, &phrase, None)?)
+        }
         Some(_) => {
             return Err(Error::invalid(format!(
                 "`{ARG_SEARCH}` on `{}` must be a string",
@@ -119,15 +121,15 @@ fn filtered_and_ordered(table: &Table, ctx: &ResolverContext<'_>) -> Result<RowQ
     }
     if let Some(search) = search {
         if query.order.is_empty() {
-            query = query.order_by(vec![crate::search::relevance(&search)]);
+            query = query.order_by(vec![sc_access::search::relevance(&search)]);
         }
         query = query.searching(search);
     }
     match ctx.args.get(ARG_NEAREST).map(|a| a.as_value().clone()) {
         None | Some(GqlValue::Null) => {}
         Some(value) => {
-            let nearest = crate::vector::Nearest::from_json(&to_json(&value)?)?;
-            crate::vector::vector_field(table, &nearest.field)?;
+            let nearest = sc_access::vector::Nearest::from_json(&to_json(&value)?)?;
+            sc_access::vector::vector_field(table, &nearest.field)?;
             query = query.nearest(nearest);
         }
     }

@@ -2,11 +2,11 @@
 //!
 //! This crate is at layer 6 so a module can supply a model provider (see the
 //! crate docs), and the row layer is at layer 8 — so reading is a **seam** that
-//! somebody above the row layer fills in. `sc_server::models::CatalogDatasetSource`
-//! is that somebody, over `sc_api::rows`, which is what makes a dataset see the
-//! non-stored calculated fields, the ownership rule, row-level security and a
-//! provided table. Going around the row layer would mean a dataset that saw none
-//! of those.
+//! somebody above the row layer fills in. [`CompiledSource`], which `sc-server`
+//! installs, is the one a server has, over `sc_access::rows`, which is what
+//! makes a dataset see the non-stored calculated fields, the ownership rule,
+//! row-level security and a provided table. Going around the row layer would
+//! mean a dataset that saw none of those.
 //!
 //! The seam takes a **cap** rather than reading it from a configuration this
 //! crate cannot see. A dataset is a `SELECT` an admin wrote and the server has
@@ -152,9 +152,9 @@ pub trait DatasetSource: Send + Sync {
 
 /// The [`DatasetSource`] that reads a named dataset the way everything else
 /// does: compiled by `sc-dataset` into one query and run on the primary
-/// database (analytics TODO A1.8).
+/// database.
 ///
-/// As the admin, for now (A1.7): a model is the admin's, and A9 is where a
+/// As the admin, for now: a model is the admin's, and A9 is where a
 /// restricted reader's permissions enter. A table's non-stored calculated
 /// fields are columns of a dataset over it where they become SQL, which is
 /// what the dataset compiler does with them.
@@ -180,9 +180,13 @@ impl DatasetSource for CompiledSource {
             skip_filters: !how.filtered,
         };
         let compiled = compile(&schema, &snapshot.library(), snapshot.def(), options);
-        let stage = compiled
-            .last()
-            .map_err(|e| Error::invalid(format!("the dataset `{}` does not read: {e}", ds.name)))?;
+        let stage = compiled.last().map_err(|e| {
+            Error::invalid(format!(
+                "the dataset `{}` does not read: {}",
+                ds.name,
+                e.message()
+            ))
+        })?;
         let restriction = match how.restrict {
             Some(filter) => {
                 let key = schema

@@ -14,6 +14,8 @@
 //! Needs `npm`, which installs the module, and skips without it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,12 +27,12 @@ use sc_action::{EventKind, Trigger, save_trigger};
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation as SchemaOp, TableSettings};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, TriggerRef};
 use sc_auth::{SessionStore, create_user};
-use sc_catalog::{Catalog, DataFieldKind, FieldId, TableId};
+use sc_catalog::{Catalog, DataFieldKind, FieldId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ModuleServices, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_agents, install_triggers,
+    AppMounts, ModuleServices, MountedApp, ServerConfig, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_agents, install_triggers,
 };
 use sc_test_harness::TestDb;
 use serde_json::{Value, json};
@@ -198,7 +200,7 @@ fn field(name: &str, type_name: &str) -> FieldSpec {
 fn key(name: &str, target: &str) -> FieldSpec {
     FieldSpec {
         kind: DataFieldKind::Key {
-            target_table: TableId(target.to_owned()),
+            target_table: target.to_owned(),
             target_field: FieldId(String::new()),
             summary_field: None,
         },
@@ -217,7 +219,7 @@ fn primary(name: &str, type_name: &str) -> FieldSpec {
 async fn create_table(
     catalog: &Catalog,
     name: &str,
-    read: u8,
+    read: Role,
     ownership: Option<&str>,
     fields: Vec<FieldSpec>,
 ) -> sc_error::Result<()> {
@@ -228,7 +230,7 @@ async fn create_table(
             database: String::new(),
             settings: TableSettings {
                 min_role_read: Some(read),
-                min_role_write: Some(1),
+                min_role_write: Some(Role::ADMIN),
                 ownership_formula: ownership.map(str::to_owned),
                 ..TableSettings::default()
             },
@@ -247,7 +249,7 @@ async fn create_shop_tables(catalog: &Catalog) -> sc_error::Result<()> {
     create_table(
         catalog,
         "products",
-        100,
+        Role::PUBLIC,
         None,
         vec![
             primary("id", "int"),
@@ -259,7 +261,7 @@ async fn create_shop_tables(catalog: &Catalog) -> sc_error::Result<()> {
     create_table(
         catalog,
         "orders",
-        1,
+        Role::ADMIN,
         Some("user ? owner === user.id : session_id === session.id"),
         vec![
             primary("id", "int"),
@@ -273,7 +275,7 @@ async fn create_shop_tables(catalog: &Catalog) -> sc_error::Result<()> {
     create_table(
         catalog,
         "order_lines",
-        1,
+        Role::ADMIN,
         None,
         vec![
             primary("id", "int"),
@@ -286,7 +288,7 @@ async fn create_shop_tables(catalog: &Catalog) -> sc_error::Result<()> {
     create_table(
         catalog,
         "invoices",
-        1,
+        Role::ADMIN,
         None,
         vec![
             primary("number", "text"),
@@ -298,7 +300,7 @@ async fn create_shop_tables(catalog: &Catalog) -> sc_error::Result<()> {
     create_table(
         catalog,
         "bookings",
-        1,
+        Role::ADMIN,
         None,
         vec![
             primary("id", "uuid"),
@@ -310,7 +312,7 @@ async fn create_shop_tables(catalog: &Catalog) -> sc_error::Result<()> {
     create_table(
         catalog,
         "payment_log",
-        1,
+        Role::ADMIN,
         None,
         vec![primary("id", "int"), field("note", "text")],
     )
@@ -319,7 +321,7 @@ async fn create_shop_tables(catalog: &Catalog) -> sc_error::Result<()> {
     create_table(
         catalog,
         "plans",
-        100,
+        Role::PUBLIC,
         None,
         vec![
             primary("id", "int"),
@@ -334,7 +336,7 @@ async fn create_shop_tables(catalog: &Catalog) -> sc_error::Result<()> {
 
 /// A `pay_checkout` trigger an application exposes.
 fn checkout(name: &str, settings: Value) -> Trigger {
-    let mut trigger = Trigger::new(name, EventKind::None, "pay_checkout").min_role(100);
+    let mut trigger = Trigger::new(name, EventKind::None, "pay_checkout").min_role(Role::PUBLIC);
     let defaults = json!({
         "account": "shop", "mode": "payment", "key_from": "payload", "read_check": true,
         "lines": "one", "tax": "none", "shipping": false,
@@ -363,6 +365,7 @@ fn mark_paid(table: &str, key: &str) -> Trigger {
         .config("assignments", json!({ "status": "\"paid\"" }))
 }
 
+#[allow(clippy::too_many_lines)]
 async fn setup(tag: &str) -> sc_error::Result<(Server, Value)> {
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
@@ -470,15 +473,21 @@ async fn setup(tag: &str) -> sc_error::Result<(Server, Value)> {
         json!({ "name": "held", "adapter": "fake", "mode": "test", "webhook_secret": SECRET,
                 "settings": { "webhooks": "hold", "grants_in_test_mode": true } }),
     ] {
-        sc_api::rows::create_row(&catalog, &accounts, &row).await?;
+        sc_access::rows::create_row(
+            &catalog,
+            &accounts,
+            &row,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
 
     // The shop: its tables, its checkouts, and its triggers on what the payments do.
     create_shop_tables(&catalog).await?;
-    sc_auth::save_role(&catalog, &sc_auth::Role::new(80, "User")).await?;
-    create_user(&catalog, "ada@example.com", "ada-password", 80).await?;
+    sc_auth::save_role(&catalog, &sc_auth::RoleDef::new(Role::of(80), "User")).await?;
+    create_user(&catalog, "ada@example.com", "ada-password", Role::of(80)).await?;
     let triggers = [
-        Trigger::new("try_account", EventKind::None, "pay_account_test").min_role(100),
+        Trigger::new("try_account", EventKind::None, "pay_account_test").min_role(Role::PUBLIC),
         checkout(
             "checkout_order",
             json!({
@@ -505,16 +514,16 @@ async fn setup(tag: &str) -> sc_error::Result<(Server, Value)> {
             }),
         ),
         Trigger::new("refund_order", EventKind::None, "pay_refund")
-            .min_role(100)
+            .min_role(Role::PUBLIC)
             .config("source", "row")
             .config("table", "orders")
             .config("key_from", "payload")
             .config("key_field", "order")
             .config("read_check", true)
             .config("reason", "requested_by_customer"),
-        Trigger::new("sync_payments", EventKind::None, "pay_sync").min_role(100),
+        Trigger::new("sync_payments", EventKind::None, "pay_sync").min_role(Role::PUBLIC),
         Trigger::new("provider_code", EventKind::None, "pay_provider_code")
-            .min_role(100)
+            .min_role(Role::PUBLIC)
             .config("account", "shop")
             .config(
                 "code",
@@ -522,7 +531,7 @@ async fn setup(tag: &str) -> sc_error::Result<(Server, Value)> {
                  return { status: c.status, account };",
             ),
         Trigger::new("call_api", EventKind::None, "run_js_code")
-            .min_role(100)
+            .min_role(Role::PUBLIC)
             .config(
                 "code",
                 "return await modfn.pay_api(\"shop\", \"GET\", \"/checkouts/\" + payload.id);",
@@ -544,14 +553,14 @@ async fn setup(tag: &str) -> sc_error::Result<(Server, Value)> {
             }),
         ),
         Trigger::new("portal", EventKind::None, "pay_portal")
-            .min_role(100)
+            .min_role(Role::PUBLIC)
             .config("account", "shop")
             .config("return_path", "/account"),
         Trigger::new("change_plan", EventKind::None, "pay_change_subscription")
-            .min_role(100)
+            .min_role(Role::PUBLIC)
             .config("account", "shop"),
         Trigger::new("cancel_plan", EventKind::None, "pay_cancel_subscription")
-            .min_role(100)
+            .min_role(Role::PUBLIC)
             .config("account", "shop")
             .config("at_period_end", true),
     ];
@@ -561,9 +570,9 @@ async fn setup(tag: &str) -> sc_error::Result<(Server, Value)> {
     dispatcher.reload(&catalog).await?;
     let mut app = Application::new("Shop", "shop", FrameworkRef::new("code"))
         .with_api(ApiConfig::new("rest", "/api"))
-        .with_table(TableId("orders".to_owned()))
+        .with_table("orders".to_owned())
         // A subscriber reads their own subscription from the mirror (P4.4).
-        .with_table(TableId("pay_objects".to_owned()))
+        .with_table("pay_objects".to_owned())
         .attribute(sc_app::GUEST_SESSIONS_ATTRIBUTE, true);
     for name in [
         "try_account",
@@ -719,6 +728,7 @@ async fn the_module_installs_its_tables_and_refuses_an_account_it_cannot_use()
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_fake_provider_takes_a_payment_and_delivers_signed_webhooks() -> sc_error::Result<()> {
     if !have_npm() {
         eprintln!("skipping: npm is not on the PATH");
@@ -1025,6 +1035,7 @@ pub(crate) fn error_of(answer: &Answer) -> String {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_guest_pays_for_their_own_order_and_the_apps_trigger_marks_it_paid()
 -> sc_error::Result<()> {
     if !have_npm() {
@@ -1039,24 +1050,32 @@ async fn a_guest_pays_for_their_own_order_and_the_apps_trigger_marks_it_paid()
         json!({ "id": 1, "name": "Tea", "price": 450 }),
         json!({ "id": 2, "name": "Cup", "price": 250 }),
     ] {
-        sc_api::rows::create_row(&server.catalog, &products, &product).await?;
+        sc_access::rows::create_row(
+            &server.catalog,
+            &products,
+            &product,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
 
     // Ann, a guest, has an open order of her own: two teas and a cup, with no prices on it.
     let mut ann = Browser::new(&server);
     let ann_session = ann.guest().await;
-    let order = sc_api::rows::create_row(
+    let order = sc_access::rows::create_row(
         &server.catalog,
         &orders,
         &json!({ "session_id": ann_session, "status": "open", "email": "ann@example.com" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let order_id = order["id"].as_i64().unwrap();
     for (product, quantity) in [(1, 2), (2, 1)] {
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             &server.catalog,
             &lines,
             &json!({ "order": order_id, "product": product, "quantity": quantity }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
@@ -1197,16 +1216,18 @@ async fn rows_keyed_by_text_and_by_uuid_are_paid_for_and_found_again() -> sc_err
     }
     let (server, _) = setup("keys").await?;
     let booking = "6f1c2d3e-4b5a-4c6d-8e7f-0123456789ab";
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         &server.catalog,
         &server.catalog.require("invoices")?,
         &json!({ "number": "INV-7", "amount": 12000, "status": "sent" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         &server.catalog,
         &server.catalog.require("bookings")?,
         &json!({ "id": booking, "deposit": 5000, "status": "held" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
 
@@ -1586,6 +1607,7 @@ async fn press(server: &Server, path: &str, form: &str) -> Answer {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_error::Result<()> {
     if !have_npm() {
         eprintln!("skipping: npm is not on the PATH");
@@ -1615,7 +1637,7 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
     );
 
     for (role, name) in [(40, "Staff"), (60, "Pro"), (70, "Basic")] {
-        sc_auth::save_role(catalog, &sc_auth::Role::new(role, name)).await?;
+        sc_auth::save_role(catalog, &sc_auth::RoleDef::new(Role::of(role), name)).await?;
     }
     let plans = catalog.require("plans")?;
     for plan in [
@@ -1623,7 +1645,13 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
         json!({ "id": 2, "name": "Pro", "stripe_price": "price_pro", "role": 60 }),
         json!({ "id": 3, "name": "Staff", "stripe_price": "price_staff", "role": 40 }),
     ] {
-        sc_api::rows::create_row(catalog, &plans, &plan).await?;
+        sc_access::rows::create_row(
+            catalog,
+            &plans,
+            &plan,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
     let ada_id = server
         .rows("SELECT id FROM users WHERE email = 'ada@example.com'")
@@ -1632,16 +1660,16 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
         .unwrap()
         .parse::<uuid::Uuid>()
         .unwrap();
-    let bob_id = create_user(catalog, "bob@example.com", "bob-password", 80)
+    let bob_id = create_user(catalog, "bob@example.com", "bob-password", Role::of(80))
         .await?
-        .id;
+        .id();
     let role_of = |user| async move {
-        sc_auth::effective_role(catalog, user, 80)
+        sc_auth::effective_role(catalog, user, Role::of(80))
             .await
             .unwrap()
             .role
     };
-    assert_eq!(role_of(ada_id).await, 80);
+    assert_eq!(role_of(ada_id).await, Role::of(80));
 
     // A guest cannot subscribe: a subscription's role is granted to an account.
     let guest = send(
@@ -1700,7 +1728,7 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
     assert_eq!(grants[0]["role"], json!(70));
     assert_eq!(grants[0]["source"], json!("@feldspar/payments"));
     assert_eq!(grants[0]["with_grace"], json!(true), "{grants:?}");
-    assert_eq!(role_of(ada_id).await, 70);
+    assert_eq!(role_of(ada_id).await, Role::of(70));
 
     // P4.4: Ada reads her own subscription — its renewal date included — and her customer row;
     // Bob reads none of it.
@@ -1757,7 +1785,7 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
     .await;
     assert_eq!(changed.status, StatusCode::SEE_OTHER, "{}", changed.text);
     assert_eq!(server.rows(grant_sql).await[0]["role"], json!(60));
-    assert_eq!(role_of(ada_id).await, 60);
+    assert_eq!(role_of(ada_id).await, Role::of(60));
     let no_portal = bob.post("/api/actions/portal", json!({})).await;
     assert!(
         error_of(&no_portal).contains("not a customer of \"shop\" yet"),
@@ -1774,7 +1802,11 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
         json!(false),
         "the period moved on; the grant did not"
     );
-    assert_eq!(role_of(ada_id).await, 60, "still within the old period");
+    assert_eq!(
+        role_of(ada_id).await,
+        Role::of(60),
+        "still within the old period"
+    );
     // Retried and paid: extended to the new period's end, with grace.
     press(&server, &format!("{portal}/{sub_ref}/retry"), "").await;
     assert_eq!(server.rows(grant_sql).await[0]["with_grace"], json!(true));
@@ -1784,7 +1816,7 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
         .post("/api/actions/change_plan", json!({ "plan": 1 }))
         .await;
     assert_eq!(back.status, StatusCode::OK, "{}", back.text);
-    assert_eq!(role_of(ada_id).await, 70);
+    assert_eq!(role_of(ada_id).await, Role::of(70));
 
     // A price that is no plan's grants nothing new, and says so on the mirror row.
     press(
@@ -1831,7 +1863,7 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
             .contains("may only grant roles 50 to 99"),
         "{refused:?}"
     );
-    assert_eq!(role_of(bob_id).await, 80);
+    assert_eq!(role_of(bob_id).await, Role::of(80));
 
     // Ada cancels at the period's end: kept exactly to it; when it comes, revoked.
     let canceled = ada.post("/api/actions/cancel_plan", json!({})).await;
@@ -1842,7 +1874,7 @@ async fn a_subscription_grants_its_plans_role_and_the_portal_moves_it() -> sc_er
     press(&server, &format!("{portal}/{sub_ref}/renew"), "").await;
     let ended = server.rows(grant_sql).await;
     assert_eq!(ended[0]["revoked"], json!(true), "{ended:?}");
-    assert_eq!(role_of(ada_id).await, 80);
+    assert_eq!(role_of(ada_id).await, Role::of(80));
     let last: Vec<Value> = server
         .rows(
             "SELECT kind FROM pay_events WHERE kind LIKE 'subscription.%' ORDER BY id DESC LIMIT 2",

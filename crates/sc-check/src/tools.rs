@@ -1,4 +1,4 @@
-//! The checklist tools an agent is offered (TODO C1.15): `describe_step_types`,
+//! The checklist tools an agent is offered: `describe_step_types`,
 //! `describe_checklists`, `save_checklist`, `append_steps`,
 //! `propose_step_change` and `run_checklists`.
 //!
@@ -12,6 +12,9 @@
 use sc_app::load_application_by_subdomain;
 use sc_error::{Error, Result};
 use sc_llm::ToolSpec;
+use sc_types::ArgsExt;
+use sc_types::Role;
+use serde::Deserialize;
 use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
 
@@ -56,7 +59,7 @@ pub struct ToolCall<'a> {
     /// The agent's run, under its grant.
     pub editor: Editor,
     /// The role the call is authorized at. Every tool here wants an admin.
-    pub role: u8,
+    pub role: Role,
 }
 
 const STEP_SCHEMA_NOTE: &str = "A step is {type, params, label, as}: `type` from \
@@ -207,13 +210,6 @@ fn args_of(args: &Json, allowed: &[&str]) -> Result<Map<String, Json>> {
     sc_api::mcp::arguments(args, allowed)
 }
 
-fn required(obj: &Map<String, Json>, key: &str) -> Result<String> {
-    sc_api::mcp::optional_string(obj, key)?
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| Error::invalid(format!("`{key}` is required")))
-}
-
 async fn application_id(cx: &ToolCall<'_>, subdomain: Option<String>) -> Result<Option<Uuid>> {
     let Some(subdomain) = subdomain.filter(|s| !s.trim().is_empty()) else {
         return Ok(None);
@@ -235,7 +231,7 @@ async fn user_id(cx: &ToolCall<'_>, email: Option<&str>) -> Result<Option<Uuid>>
     let user = sc_auth::load_user_by_email(cx.env.catalog, email)
         .await?
         .ok_or_else(|| Error::not_found(format!("no user with email `{email}`")))?;
-    Ok(Some(user.id))
+    Ok(Some(user.id()))
 }
 
 fn drafts(value: Option<&Json>) -> Result<Vec<StepDraft>> {
@@ -257,11 +253,10 @@ fn drafts(value: Option<&Json>) -> Result<Vec<StepDraft>> {
 
 async fn describe_step_types(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
     let obj = args_of(args, &["application"])?;
-    let application =
-        match application_id(cx, sc_api::mcp::optional_string(&obj, "application")?).await? {
-            None => None,
-            Some(id) => sc_app::load_application(cx.env.catalog, sc_app::AppId(id)).await?,
-        };
+    let application = match application_id(cx, obj.optional_string("application")?).await? {
+        None => None,
+        Some(id) => sc_app::load_application(cx.env.catalog, sc_app::AppId(id)).await?,
+    };
     let types: Vec<Json> = if application.is_some() {
         cx.env
             .registry
@@ -286,7 +281,7 @@ async fn describe_step_types(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
 async fn describe_checklists(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
     let obj = args_of(args, &["application", "checklist"])?;
     let catalog = cx.env.catalog;
-    if let Some(name) = sc_api::mcp::optional_string(&obj, "checklist")? {
+    if let Some(name) = obj.optional_string("checklist")? {
         let checklist = store::find_checklist(catalog, &name).await?;
         let steps = store::current_steps(catalog, checklist.id).await?;
         let proposals = store::proposals_of(catalog, checklist.id).await?;
@@ -297,8 +292,7 @@ async fn describe_checklists(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
         out["last_run"] = last.as_ref().map_or(Json::Null, ChecklistRun::to_json);
         return Ok(out);
     }
-    let scope = match application_id(cx, sc_api::mcp::optional_string(&obj, "application")?).await?
-    {
+    let scope = match application_id(cx, obj.optional_string("application")?).await? {
         Some(app) => ChecklistScope::Application(app),
         None => ChecklistScope::All,
     };
@@ -321,11 +315,10 @@ async fn save_checklist(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
         args,
         &["name", "description", "application", "run_as", "steps"],
     )?;
-    let mut input = ChecklistInput::new(required(&obj, "name")?);
-    input.description = sc_api::mcp::optional_string(&obj, "description")?.unwrap_or_default();
-    input.application =
-        application_id(cx, sc_api::mcp::optional_string(&obj, "application")?).await?;
-    input.run_as = user_id(cx, sc_api::mcp::optional_string(&obj, "run_as")?.as_deref()).await?;
+    let mut input = ChecklistInput::new(obj.required_string("name")?);
+    input.description = obj.optional_string("description")?.unwrap_or_default();
+    input.application = application_id(cx, obj.optional_string("application")?).await?;
+    input.run_as = user_id(cx, obj.optional_string("run_as")?.as_deref()).await?;
     let steps = drafts(obj.get("steps"))?;
     let checklist =
         edit::create_checklist(cx.env.catalog, cx.env.registry, &cx.editor, input, steps).await?;
@@ -337,7 +330,8 @@ async fn save_checklist(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
 
 async fn append_steps(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
     let obj = args_of(args, &["checklist", "steps"])?;
-    let checklist = store::find_checklist(cx.env.catalog, &required(&obj, "checklist")?).await?;
+    let checklist =
+        store::find_checklist(cx.env.catalog, &obj.required_string("checklist")?).await?;
     let steps = drafts(obj.get("steps"))?;
     if steps.is_empty() {
         return Err(Error::invalid("`steps` is empty: give at least one step"));
@@ -356,6 +350,29 @@ async fn append_steps(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
     }))
 }
 
+/// The `change` argument of `propose_step_change`, trimmed. What it applies to
+/// (`step`, `new_step`, `order`, `run_as`) is read from the other arguments.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StepChange {
+    Remove,
+    Edit,
+    InsertBefore,
+    Reorder,
+    RunAs,
+    #[serde(other)]
+    Unknown,
+}
+
+impl StepChange {
+    fn named(kind: &str) -> StepChange {
+        use serde::de::IntoDeserializer;
+        let kind: serde::de::value::StrDeserializer<'_, serde::de::value::Error> =
+            kind.into_deserializer();
+        StepChange::deserialize(kind).unwrap_or(StepChange::Unknown)
+    }
+}
+
 async fn propose_step_change(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
     let obj = args_of(
         args,
@@ -370,10 +387,10 @@ async fn propose_step_change(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
         ],
     )?;
     let catalog = cx.env.catalog;
-    let checklist = store::find_checklist(catalog, &required(&obj, "checklist")?).await?;
-    let reason = sc_api::mcp::optional_string(&obj, "reason")?.unwrap_or_default();
+    let checklist = store::find_checklist(catalog, &obj.required_string("checklist")?).await?;
+    let reason = obj.optional_string("reason")?.unwrap_or_default();
     let step = || -> Result<Uuid> {
-        let id = required(&obj, "step")?;
+        let id = obj.required_string("step")?;
         id.parse()
             .map_err(|_| Error::invalid(format!("`step` should be a step id, got `{id}`")))
     };
@@ -381,30 +398,30 @@ async fn propose_step_change(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
         StepDraft::from_json(obj.get("new_step").unwrap_or(&Json::Null))
             .map_err(|e| Error::invalid(format!("`new_step`: {e}")))
     };
-    let kind = required(&obj, "change")?;
-    let change = match kind.as_str() {
-        "remove" => {
+    let kind = obj.required_string("change")?;
+    let change = match StepChange::named(&kind) {
+        StepChange::Remove => {
             let id = step()?;
             edit::remove_step(catalog, cx.env.registry, &cx.editor, id).await?;
             return Ok(json!({ "applied": true, "removed": id.to_string() }));
         }
-        "edit" => ProposalChange::Edit {
+        StepChange::Edit => ProposalChange::Edit {
             step: step()?,
             draft: new_step()?,
         },
-        "insert_before" => ProposalChange::InsertBefore {
+        StepChange::InsertBefore => ProposalChange::InsertBefore {
             before: step()?,
             draft: new_step()?,
         },
-        "reorder" => ProposalChange::Reorder {
+        StepChange::Reorder => ProposalChange::Reorder {
             order: crate::model::parse_ids(obj.get("order").unwrap_or(&Json::Null), "order")?,
         },
-        "run_as" => ProposalChange::RunAs {
+        StepChange::RunAs => ProposalChange::RunAs {
             user: user_id(cx, obj.get("run_as").and_then(Json::as_str)).await?,
         },
-        other => {
+        StepChange::Unknown => {
             return Err(Error::invalid(format!(
-                "`change` should be edit, insert_before, remove, reorder or run_as, not `{other}`"
+                "`change` should be edit, insert_before, remove, reorder or run_as, not `{kind}`"
             )));
         }
     };
@@ -434,15 +451,13 @@ async fn propose_step_change(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
 async fn run(args: &Json, cx: &ToolCall<'_>) -> Result<Json> {
     let obj = args_of(args, &["application", "checklist"])?;
     let trigger = cx.editor.author().to_text();
-    let runs = match sc_api::mcp::optional_string(&obj, "checklist")? {
+    let runs = match obj.optional_string("checklist")? {
         Some(name) => {
             let checklist = store::find_checklist(cx.env.catalog, &name).await?;
             vec![run_checklist(&cx.env, &checklist, &trigger).await?]
         }
         None => {
-            let scope = match application_id(cx, sc_api::mcp::optional_string(&obj, "application")?)
-                .await?
-            {
+            let scope = match application_id(cx, obj.optional_string("application")?).await? {
                 Some(app) => ChecklistScope::Application(app),
                 None => ChecklistScope::All,
             };
@@ -467,4 +482,29 @@ pub fn summary(run: &ChecklistRun) -> Json {
         })).collect::<Vec<_>>(),
         "cleanup_errors": run.cleanup_errors,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The five changes by their names; anything else is refused by the
+    /// caller with the list.
+    #[test]
+    fn a_step_change_is_read_by_its_name() {
+        assert!(matches!(StepChange::named("remove"), StepChange::Remove));
+        assert!(matches!(StepChange::named("edit"), StepChange::Edit));
+        assert!(matches!(
+            StepChange::named("insert_before"),
+            StepChange::InsertBefore
+        ));
+        assert!(matches!(StepChange::named("reorder"), StepChange::Reorder));
+        assert!(matches!(StepChange::named("run_as"), StepChange::RunAs));
+        for other in ["Edit", "insertBefore", "delete", ""] {
+            assert!(
+                matches!(StepChange::named(other), StepChange::Unknown),
+                "{other}"
+            );
+        }
+    }
 }

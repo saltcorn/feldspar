@@ -18,6 +18,8 @@
 //! and `yjs` are available (it says so and stops short when they are not).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::{Socket, next_frame, send};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,10 +30,10 @@ use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
-use sc_auth::{ROLE_ADMIN, Role, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
@@ -40,7 +42,6 @@ use sc_live::{CollabDoc, DocShape, LiveLimits, RootKind};
 use sc_stream::StreamConfig;
 use sc_test_harness::Teardown;
 use serde_json::{Value, json};
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tower::ServiceExt;
 
@@ -52,10 +53,7 @@ const COLLEAGUE: &str = "colleague@example.com";
 const READER: &str = "reader@example.com";
 const OUTSIDER: &str = "outsider@example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 40;
-
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+const ROLE_MEMBER: Role = Role::of(40);
 
 /// A cookie-jar client addressing one host.
 struct Client {
@@ -80,9 +78,9 @@ impl Client {
             builder = builder.header(header::COOKIE, jar);
         }
         if method != "GET"
-            && let Some(csrf) = self.cookies.get(sc_server::CSRF_COOKIE)
+            && let Some(csrf) = self.cookies.get(sc_api::auth::CSRF_COOKIE)
         {
-            builder = builder.header(sc_server::CSRF_HEADER, csrf);
+            builder = builder.header(sc_api::auth::CSRF_HEADER, csrf);
         }
         let request = match body {
             Some(ref b) => builder
@@ -195,8 +193,8 @@ async fn assumed() -> Result<Tutorial> {
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;
     catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", dir.0.join("apps"))?))?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
-    create_user(&catalog, ADMIN, PASSWORD, ROLE_ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
+    create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
     for email in [MEMBER, COLLEAGUE, READER, OUTSIDER] {
         create_user(&catalog, email, PASSWORD, ROLE_MEMBER).await?;
     }
@@ -271,7 +269,7 @@ fn todo_app() -> Application {
     )
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"))
-    .with_table(TableId("notes".to_owned()))
+    .with_table("notes".to_owned())
     .with_stream(StreamRef::new("note_body"))
 }
 
@@ -298,28 +296,6 @@ fn doc_block(heading: &str, lang: &str) -> String {
 }
 
 // --- frames -------------------------------------------------------------------
-
-async fn send(socket: &mut Socket, frame: Value) {
-    socket
-        .send(Message::text(frame.to_string()))
-        .await
-        .expect("the socket takes a frame");
-}
-
-async fn next_frame(socket: &mut Socket) -> Value {
-    loop {
-        let message = tokio::time::timeout(Duration::from_secs(20), socket.next())
-            .await
-            .expect("a frame arrives within the timeout")
-            .expect("the socket is still open")
-            .expect("the frame is readable");
-        match message {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
-            Message::Ping(_) | Message::Pong(_) => continue,
-            other => panic!("expected a text frame, got {other:?}"),
-        }
-    }
-}
 
 /// Subscribe and wait for `ready` or `error`; with presence, the member list
 /// follows `ready` and is read by [`frame_for`].
@@ -418,6 +394,7 @@ fn admin_node_modules() -> PathBuf {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn part_five_a_collaborative_notes_app() -> Result<()> {
     let tutorial = assumed().await?;
     let mut admin = tutorial.on(BASE_DOMAIN);
@@ -427,7 +404,7 @@ async fn part_five_a_collaborative_notes_app() -> Result<()> {
             .await
             .unwrap()
             .unwrap()
-            .id
+            .id()
             .hyphenated()
             .to_string()
     };
@@ -492,7 +469,7 @@ async fn part_five_a_collaborative_notes_app() -> Result<()> {
             "/api/tables/notes",
             Some(json!({
                 "label": "", "description": "",
-                "min_role_read": ROLE_ADMIN, "min_role_write": ROLE_ADMIN,
+                "min_role_read": Role::ADMIN, "min_role_write": Role::ADMIN,
                 "ownership_formula": rule.trim(), "rls_enabled": false, "sync_enabled": false,
             })),
         )
@@ -507,17 +484,19 @@ async fn part_five_a_collaborative_notes_app() -> Result<()> {
         id_of(READER).await,
     );
     let notes = tutorial.catalog.require("notes")?;
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         &tutorial.catalog,
         &notes,
         &json!({ "id": 1, "title": "Plans", "owner": member }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     // The admin's row editor cannot write the document either.
-    let refused = sc_api::rows::create_row(
+    let refused = sc_access::rows::create_row(
         &tutorial.catalog,
         &notes,
         &json!({ "id": 2, "title": "x", "body": [1] }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await
     .unwrap_err()
@@ -525,10 +504,11 @@ async fn part_five_a_collaborative_notes_app() -> Result<()> {
     assert!(refused.contains("collaborative document"), "{refused}");
     let shares = tutorial.catalog.require("shares")?;
     for (id, user, can_edit) in [(1, &colleague, true), (2, &reader, false)] {
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             &tutorial.catalog,
             &shares,
             &json!({ "id": id, "note": 1, "user": user, "can_edit": can_edit }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
@@ -674,16 +654,23 @@ async fn part_five_a_collaborative_notes_app() -> Result<()> {
     assert_eq!(diff["updated"][0]["state"], "AQLEyAEBAA==", "{diff}");
 
     // The colleague's edit right goes, then the share.
-    sc_api::rows::update_row(
+    sc_access::rows::update_row(
         &tutorial.catalog,
         &shares,
         "1",
         &json!({ "can_edit": false }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let again = frame_for(&mut cole, "n", "doc_sync").await;
     assert_eq!(again["read_only"], true, "{again}");
-    sc_api::rows::delete_row(&tutorial.catalog, &shares, "1").await?;
+    sc_access::rows::delete_row(
+        &tutorial.catalog,
+        &shares,
+        "1",
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert_eq!(frame_for(&mut cole, "n", "revoked").await["sub"], "n");
 
     // --- Step 5: saved ----------------------------------------------------------
@@ -864,11 +851,12 @@ async fn two_browsers_type_into_one_note(tutorial: &Tutorial) {
     };
     // The colleague's share was deleted in step 4; give it back, editing.
     let shares = tutorial.catalog.require("shares").unwrap();
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         &tutorial.catalog,
         &shares,
         &json!({ "id": 3, "note": 1, "user": tutorial_user(tutorial, COLLEAGUE).await,
                  "can_edit": true }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await
     .unwrap();
@@ -1005,7 +993,7 @@ async fn tutorial_user(tutorial: &Tutorial, email: &str) -> String {
         .await
         .unwrap()
         .unwrap()
-        .id
+        .id()
         .hyphenated()
         .to_string()
 }

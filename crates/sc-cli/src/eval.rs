@@ -49,9 +49,9 @@ use sc_agent::{
     Agent, AgentRegistry, Conclusion, EnabledTrait, ModelRef, ModelRole, ProviderConnector,
     RunCaller, RunId, Runner, StoredProviders,
 };
+use sc_agent_builtins::{CodingState, EditStats};
 use sc_app::{Application, FrameworkRef, framework_builder_agent};
 use sc_catalog::Catalog;
-use sc_core_traits::{CodingState, EditStats};
 use sc_error::{Context, Error, Result};
 use sc_files::FileStoreDef;
 use serde::{Deserialize, Serialize};
@@ -900,7 +900,7 @@ pub async fn measure(catalog: &Catalog, run: RunId) -> Result<Metrics> {
     let Some(root) = sc_agent::load_run(catalog, run).await? else {
         return Ok(Metrics::default());
     };
-    let tree = sc_core_traits::run_tree(catalog, &root).await?;
+    let tree = sc_agent_builtins::run_tree(catalog, &root).await?;
     let mut metrics = Metrics {
         cost: Some(0.0),
         ..Metrics::default()

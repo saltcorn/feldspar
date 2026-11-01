@@ -1,6 +1,6 @@
 [package]
 name = "sc-docs"
-description = "The documentation agents read: tutorials, references and the admin UI's help topics, compiled in, split into sections and searchable (layer 0)"
+description = "The documentation agents read: tutorials, references and the admin UI's help topics, compiled in, split into sections and searchable; the help topics rendered for a screen (layer 0)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,8 +10,11 @@ rust-version.workspace = true
 
 [dependencies]
 sc-error.workspace = true
-sc-help.workspace = true
 serde_json.workspace = true
+# The help topics (`help`): MiniJinja templates rendered to markdown, then to
+# HTML with raw HTML refused.
+minijinja.workspace = true
+pulldown-cmark.workspace = true
 
 [lints]
 workspace = true

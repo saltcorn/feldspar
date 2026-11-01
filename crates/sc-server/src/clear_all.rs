@@ -280,7 +280,7 @@ async fn drop_user_tables(catalog: &Catalog) -> Result<usize> {
 /// The table a `Key` field points at.
 fn key_target(field: &DataField) -> Option<&str> {
     match &field.kind {
-        DataFieldKind::Key { target_table, .. } => Some(target_table.0.as_str()),
+        DataFieldKind::Key { target_table, .. } => Some(target_table.as_str()),
         _ => None,
     }
 }
@@ -410,7 +410,7 @@ async fn delete_rows(catalog: &Catalog, table: &str) -> Result<()> {
         }
     }
     catalog
-        .primary()
+        .primary(crate::ADMIN_TASKS)
         .query(&Statement::from(delete))
         .await?
         .try_collect()

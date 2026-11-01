@@ -56,12 +56,18 @@ async fn stored_stores_are_connected_and_become_resolvable() -> Result<()> {
 
     // Nothing is connected until the stores are brought up: saving a definition
     // and connecting it are separate operations (§1.1).
-    assert!(cat.file_store("docs")?.is_none());
+    assert!(
+        cat.file_store("docs", sc_catalog::Unchecked::system("test"))?
+            .is_none()
+    );
 
     let report = connect_all_file_stores(&cat).await?;
     assert_eq!(report.connected, ["docs"]);
     assert!(report.all_connected());
-    assert!(cat.file_store("docs")?.is_some());
+    assert!(
+        cat.file_store("docs", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
     assert_eq!(cat.file_store_names()?, ["docs"]);
 
     std::fs::remove_dir_all(&dir).ok();
@@ -91,12 +97,21 @@ async fn one_store_that_fails_does_not_stop_the_others() -> Result<()> {
     assert_eq!(report.failed[0].0, "gone");
 
     // The two good stores are usable …
-    assert!(cat.file_store("apps")?.is_some());
-    assert!(cat.file_store("uploads")?.is_some());
+    assert!(
+        cat.file_store("apps", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
+    assert!(
+        cat.file_store("uploads", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
     // … and the bad one is absent but *explained*, which is what lets the admin
     // UI show a defined-but-unusable store with the reason rather than dropping
     // it silently or pretending it works.
-    assert!(cat.file_store("gone")?.is_none());
+    assert!(
+        cat.file_store("gone", sc_catalog::Unchecked::system("test"))?
+            .is_none()
+    );
     let reason = cat
         .file_store_error("gone")?
         .expect("a store that failed to connect must record why");
@@ -123,7 +138,10 @@ async fn editing_a_store_repoints_it_without_a_restart() -> Result<()> {
     save_file_store(&cat, &def).await?;
     connect_all_file_stores(&cat).await?;
 
-    let before = cat.require_file_store("docs")?.read("marker.txt").await?;
+    let before = cat
+        .require_file_store("docs", sc_catalog::Unchecked::system("test"))?
+        .read(&sc_files::StorePath::from_static("marker.txt"))
+        .await?;
     assert_eq!(&before[..], b"old");
 
     // Edit the path and reconnect — no process restart, which is the whole point
@@ -132,7 +150,10 @@ async fn editing_a_store_repoints_it_without_a_restart() -> Result<()> {
     save_file_store(&cat, &def).await?;
     connect_file_store_def(&cat, &def)?;
 
-    let after = cat.require_file_store("docs")?.read("marker.txt").await?;
+    let after = cat
+        .require_file_store("docs", sc_catalog::Unchecked::system("test"))?
+        .read(&sc_files::StorePath::from_static("marker.txt"))
+        .await?;
     assert_eq!(&after[..], b"new", "the edit must take effect immediately");
     // Still exactly one store: re-connecting a name replaces it rather than
     // accumulating a second handle.
@@ -152,19 +173,26 @@ async fn disconnecting_stops_a_store_resolving() -> Result<()> {
     let def = FileStoreDef::local("scratch", &path);
     save_file_store(&cat, &def).await?;
     connect_all_file_stores(&cat).await?;
-    assert!(cat.file_store("scratch")?.is_some());
+    assert!(
+        cat.file_store("scratch", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
 
     // Deleting the definition and disconnecting the handle are separate steps —
     // without the second, the file manager would happily go on browsing a store
     // the admin had just deleted.
     assert!(delete_file_store(&cat, def.id, &[]).await?);
     assert!(
-        cat.file_store("scratch")?.is_some(),
+        cat.file_store("scratch", sc_catalog::Unchecked::system("test"))?
+            .is_some(),
         "deleting the row alone must not disturb the live registry"
     );
 
     assert!(cat.disconnect_file_store("scratch")?);
-    assert!(cat.file_store("scratch")?.is_none());
+    assert!(
+        cat.file_store("scratch", sc_catalog::Unchecked::system("test"))?
+            .is_none()
+    );
     assert!(cat.file_store_names()?.is_empty());
     // Disconnecting something that was never connected is not an error.
     assert!(!cat.disconnect_file_store("scratch")?);
@@ -196,7 +224,10 @@ async fn a_repaired_store_loses_its_recorded_error() -> Result<()> {
     save_file_store(&cat, &def).await?;
     connect_file_store_def(&cat, &def)?;
 
-    assert!(cat.file_store("docs")?.is_some());
+    assert!(
+        cat.file_store("docs", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
     assert_eq!(
         cat.file_store_error("docs")?,
         None,

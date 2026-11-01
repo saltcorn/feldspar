@@ -17,6 +17,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::{CustomParam, CustomQuery, Method, ValueType};
@@ -24,7 +25,7 @@ use sc_app::{
     ApiConfig, Application, FrameworkRef, app_client, app_endpoints, bootstrap, load_application,
     save_application,
 };
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -60,7 +61,7 @@ fn library(queries: &[CustomQuery]) -> Application {
             .with("output", "web/dist")
             .with("command", "sh build.sh"),
     )
-    .with_table(TableId("books".to_owned()))
+    .with_table("books".to_owned())
     .with_api(ApiConfig::new(sc_api::REST_PROVIDER, "/api").with_config(config))
 }
 
@@ -73,7 +74,7 @@ fn stocked() -> CustomQuery {
     )
     .params([CustomParam::new("least", ValueType::Int)])
     .description("Titles held in at least this many copies")
-    .min_role(40)
+    .min_role(Role::of(40))
 }
 
 #[tokio::test]
@@ -96,7 +97,7 @@ async fn a_saved_query_is_described_by_the_database_and_typed_in_the_client() ->
     let stored = sc_api::custom_queries(&loaded.apis[0].config)?;
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].name, "wellStocked");
-    assert_eq!(stored[0].min_role, 40);
+    assert_eq!(stored[0].min_role, Role::of(40));
     assert_eq!(stored[0].params[0].name, "least");
     let columns: Vec<(&str, ValueType)> = stored[0]
         .columns
@@ -113,7 +114,7 @@ async fn a_saved_query_is_described_by_the_database_and_typed_in_the_client() ->
     let ep = endpoints.find("wellStocked").expect("projected");
     assert_eq!(ep.method, Method::Get);
     assert_eq!(ep.path.pattern(), "/api/reports/well-stocked");
-    assert_eq!(ep.auth, sc_api::AuthRequirement::MinRole(40));
+    assert_eq!(ep.auth, sc_api::AuthRequirement::MinRole(Role::of(40)));
 
     // …and the generated client has a typed method for it, which is the whole
     // point: nobody writes a `fetch` beside a generated client.

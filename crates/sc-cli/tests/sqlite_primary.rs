@@ -58,8 +58,8 @@ async fn a_sqlite_file_is_a_whole_installation() -> sc_error::Result<()> {
     // The backend says what it cannot do, and the layers above read this rather
     // than assuming Postgres: no policies, so authorization is enforced above
     // the database.
-    assert!(!catalog.primary().capabilities().row_level_security);
-    assert!(catalog.primary().capabilities().returning);
+    assert!(!catalog.primary_info().capabilities().row_level_security);
+    assert!(catalog.primary_info().capabilities().returning);
 
     // --- a table an admin would make ----------------------------------------
     catalog
@@ -87,7 +87,7 @@ async fn a_sqlite_file_is_a_whole_installation() -> sc_error::Result<()> {
 
     // …written and read through the ordinary paths, with the key filling itself
     // in — the thing that makes a form able to insert at all.
-    let provider = catalog.provider(&table)?;
+    let provider = catalog.provider(&table, sc_catalog::Unchecked::system("test"))?;
     let inserted = provider
         .write(&Statement::from(
             Insert::row(
@@ -122,7 +122,10 @@ async fn a_sqlite_file_is_a_whole_installation() -> sc_error::Result<()> {
     drop(catalog);
     let catalog = connect_catalog(&cfg).await?;
     let read = catalog
-        .provider(&catalog.require("book")?)?
+        .provider(
+            &catalog.require("book")?,
+            sc_catalog::Unchecked::system("test"),
+        )?
         .query(&Select::from(Source::table("book")))
         .await?
         .try_collect()

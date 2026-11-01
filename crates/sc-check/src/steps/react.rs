@@ -18,7 +18,7 @@
 
 use std::time::Duration;
 
-use sc_browser::{BrowserAction, Locator};
+use sc_agent::browser::{BrowserAction, Locator};
 use sc_types::{BasicType, FormField};
 use serde_json::{Value as Json, json};
 

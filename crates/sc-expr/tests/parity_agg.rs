@@ -164,6 +164,7 @@ async fn check(
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn symbolic_and_reified_agree_on_aggregations() {
     let db = TestDb::new().await.expect("test db");
     let client = db.client().await.expect("client");

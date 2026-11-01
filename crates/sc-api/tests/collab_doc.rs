@@ -5,11 +5,13 @@
 //! writer that may, the document persister (`rows::write_document_in`), writes
 //! it and its text mirror as a system update.
 
+use sc_types::Role;
 use std::sync::Arc;
 
-use sc_api::{ApiProvider, RestProvider, rows};
+use sc_access::rows;
+use sc_api::{ApiProvider, RestProvider};
 use sc_catalog::{
-    CallerContext, Catalog, DataField, FieldMeta, TableMeta, bootstrap_field_meta,
+    Catalog, DataField, FieldMeta, Principal, TableMeta, bootstrap_field_meta,
     bootstrap_table_meta, save_field_meta, save_table_meta,
 };
 use sc_db::{ColumnGenerator, DatabaseDriver};
@@ -61,31 +63,48 @@ async fn a_document_field_is_never_read_and_never_written_through_an_api() -> Re
     assert!(body.is_collab_doc(), "the overlay made it a document");
 
     // Written: every API path refuses it, whoever asks.
-    let admin = CallerContext::new(1, None);
+    let admin = Principal::new(Role::ADMIN, None);
     refused_as_a_document(
-        rows::create_row_ctx(
+        rows::create_row(
             &catalog,
             &table,
             &json!({"title": "x", "body": [1, 2]}),
-            Some(&admin),
+            sc_catalog::Unchecked::vouched(&admin, "test"),
         )
         .await
         .unwrap_err(),
     );
     refused_as_a_document(
-        rows::create_row(&catalog, &table, &json!({"body": null}))
-            .await
-            .unwrap_err(),
+        rows::create_row(
+            &catalog,
+            &table,
+            &json!({"body": null}),
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await
+        .unwrap_err(),
     );
-    let row = rows::create_row(&catalog, &table, &json!({"title": "Plans"})).await?;
+    let row = rows::create_row(
+        &catalog,
+        &table,
+        &json!({"title": "Plans"}),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     // The insert's own answer has no `body` key at all.
     assert!(row.get("body").is_none(), "{row}");
     assert_eq!(row["title"], "Plans");
     let id = row["id"].to_string();
     refused_as_a_document(
-        rows::update_row_ctx(&catalog, &table, &id, &json!({"body": [0]}), Some(&admin))
-            .await
-            .unwrap_err(),
+        rows::update_row(
+            &catalog,
+            &table,
+            &id,
+            &json!({"body": [0]}),
+            sc_catalog::Unchecked::vouched(&admin, "test"),
+        )
+        .await
+        .unwrap_err(),
     );
 
     // The persister writes it, and the mirror beside it.
@@ -96,13 +115,21 @@ async fn a_document_field_is_never_read_and_never_written_through_an_api() -> Re
         "body",
         &[1, 2, 3],
         Some(("body_text", "hello")),
+        sc_catalog::Unchecked::system("test"),
         &rows::Executor::Pooled,
     )
     .await?;
     assert!(written.get("body").is_none(), "{written}");
     assert_eq!(written["body_text"], "hello");
     assert_eq!(
-        rows::read_field(&catalog, &table, "body", &id).await?,
+        rows::read_field(
+            &catalog,
+            &table,
+            "body",
+            &id,
+            sc_catalog::Unchecked::system("test")
+        )
+        .await?,
         Value::Bytes(vec![1, 2, 3])
     );
     // …and only a document column.
@@ -114,6 +141,7 @@ async fn a_document_field_is_never_read_and_never_written_through_an_api() -> Re
             "title",
             &[1],
             None,
+            sc_catalog::Unchecked::system("test"),
             &rows::Executor::Pooled
         )
         .await
@@ -121,7 +149,7 @@ async fn a_document_field_is_never_read_and_never_written_through_an_api() -> Re
     );
 
     // Read: absent from every row, not null.
-    let listed = rows::list_rows(&catalog, &table).await?;
+    let listed = rows::list_rows(&catalog, &table, sc_catalog::Unchecked::system("test")).await?;
     let first = &listed.as_array().unwrap()[0];
     assert!(first.get("body").is_none(), "{first}");
     assert_eq!(first["body_text"], "hello");
@@ -129,7 +157,7 @@ async fn a_document_field_is_never_read_and_never_written_through_an_api() -> Re
     // Filtered or ordered on: refused, saying what it is.
     let fields: Vec<String> = table.fields.iter().map(|f| f.base.name.clone()).collect();
     refused_as_a_document(
-        sc_api::filter::queryable_field(&table, &fields, "body", "where").unwrap_err(),
+        sc_access::filter::queryable_field(&table, &fields, "body", "where").unwrap_err(),
     );
     Ok(())
 }

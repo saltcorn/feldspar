@@ -164,7 +164,7 @@ impl DatabaseQueue {
         select.limit = Some(limit as u64);
         let rows: Vec<Row> = self
             .catalog
-            .primary()
+            .primary(crate::INTERNAL_TABLES)
             .query(&Statement::from(select))
             .await?
             .try_collect()
@@ -187,7 +187,7 @@ impl DatabaseQueue {
         select.limit = Some(1);
         let rows: Vec<Row> = self
             .catalog
-            .primary()
+            .primary(crate::INTERNAL_TABLES)
             .query(&Statement::from(select))
             .await?
             .try_collect()
@@ -242,7 +242,7 @@ impl WorkQueue for DatabaseQueue {
             )
             .filter(Expr::col(COL_ID).eq(Expr::lit(run.id.0)).and(unleased(now)));
             self.catalog
-                .primary()
+                .primary(crate::INTERNAL_TABLES)
                 .query(&Statement::from(update))
                 .await?
                 .try_collect()
@@ -281,7 +281,7 @@ impl WorkQueue for DatabaseQueue {
                 .and(Expr::col(COL_CLAIMED_BY).eq(Expr::lit(self.node.clone()))),
         );
         self.catalog
-            .primary()
+            .primary(crate::INTERNAL_TABLES)
             .query(&Statement::from(update))
             .await?
             .try_collect()

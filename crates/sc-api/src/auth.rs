@@ -10,12 +10,13 @@
 //! [`SessionAction`]: crate::SessionAction
 
 use sc_auth::{COL_EMAIL, User};
-use sc_error::{Error, Result};
+use sc_error::Result;
 use sc_query::Value;
+use sc_types::ArgsExt;
 use serde_json::{Value as Json, json};
 
-use crate::rows::require_object;
 use crate::schema::{StructField, TypeSchema};
+use sc_access::rows::require_object;
 
 /// Name of the CSRF double-submit cookie the server hands every browser client
 /// (non-`HttpOnly`, so the client can read it).
@@ -122,9 +123,9 @@ pub fn second_factor_challenge_schema() -> TypeSchema {
 /// an API response.
 pub fn user_summary_json(user: &User) -> Json {
     json!({
-        "id": user.id.to_string(),
+        "id": user.id().to_string(),
         "email": user.get(COL_EMAIL).and_then(Value::as_text).unwrap_or_default(),
-        "role": i64::from(user.role),
+        "role": i64::from(user.role()),
         "email_verified": !user.email_unproven(),
     })
 }
@@ -148,7 +149,7 @@ pub fn user_row_schema() -> TypeSchema {
         // its own select on the form, so it is a named field rather than one of
         // `extra`'s (§16.1). Optional: most accounts have never stated one.
         StructField::new("language", TypeSchema::optional(TypeSchema::text())),
-        // Whether a checklist may run as this account (TODO-checklists C1.5).
+        // Whether a checklist may run as this account.
         // Set with `setCheckUser`, never through the form's fields.
         StructField::new("check_user", TypeSchema::bool()),
         // Whether the account is asked for a code from an authenticator app at
@@ -313,15 +314,15 @@ pub fn user_credits_json(
 /// columns the system owns out of the ones the admin added.
 pub fn user_row_json(user: &User) -> Json {
     let extra: serde_json::Map<String, Json> = user
-        .extra
+        .extra()
         .iter()
         .filter(|(column, _)| !sc_auth::is_system_user_column(column))
-        .map(|(column, value)| (column.clone(), crate::convert::value_to_json(value)))
+        .map(|(column, value)| (column.clone(), sc_types::value_to_json(value)))
         .collect();
     json!({
-        "id": user.id.to_string(),
+        "id": user.id().to_string(),
         "email": user.get(COL_EMAIL).and_then(Value::as_text).unwrap_or_default(),
-        "role": i64::from(user.role),
+        "role": i64::from(user.role()),
         "disabled": user.is_disabled(),
         "language": user.language(),
         "check_user": user.is_check_user(),
@@ -335,22 +336,14 @@ pub fn user_row_json(user: &User) -> Json {
 /// not a login attempt to be checked against the hash.
 pub fn credentials(body: &Json) -> Result<(String, String)> {
     let obj = require_object(body)?;
-    let field = |key: &str| -> Result<String> {
-        let value = obj
-            .get(key)
-            .and_then(Json::as_str)
-            .ok_or_else(|| Error::invalid(format!("missing or non-string field `{key}`")))?;
-        if value.trim().is_empty() {
-            return Err(Error::invalid(format!("field `{key}` must not be empty")));
-        }
-        Ok(value.to_owned())
-    };
+    let field = |key: &str| obj.non_empty_str_field(key).map(str::to_owned);
     Ok((field("email")?, field("password")?))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sc_types::Role;
 
     #[test]
     fn a_sign_in_is_remembered_unless_it_says_false() {
@@ -376,11 +369,10 @@ mod tests {
 
     #[test]
     fn user_summary_never_leaks_extra_columns() {
-        let mut user = User::new(uuid::Uuid::new_v4(), 1).unwrap();
-        user.extra
-            .insert(COL_EMAIL.to_owned(), Value::Text("a@b.c".to_owned()));
+        let mut user = User::new(uuid::Uuid::new_v4(), Role::ADMIN);
+        user = user.with_field(COL_EMAIL.to_owned(), Value::Text("a@b.c".to_owned()));
         // An admin-added column, and something that must never travel.
-        user.extra.insert(
+        user = user.with_field(
             "password_hash".to_owned(),
             Value::Text("$argon2id$".to_owned()),
         );

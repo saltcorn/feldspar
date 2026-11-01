@@ -76,7 +76,7 @@ the work is [TODO-history.md](../TODO-history.md). In short:
 1. **One change log for sync and history.** History extends `_fd_changes` with the changeset
    and old/new values, so there is one database trigger per table, one trigger function and
    one cleanup job.
-2. **Changesets, not transactions.** A changeset (one user action) travels on `CallerContext`
+2. **Changesets, not transactions.** A changeset (one user action) travels on `Principal`
    and `sc.changeset` through trigger cascades, which run in their own transactions after
    commit. There is at most one entry per row per changeset: the earliest old value and the
    latest new value of each column. A merge moves `txid` forward, and an entry is only removed

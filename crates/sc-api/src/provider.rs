@@ -17,7 +17,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use sc_auth::User;
-use sc_catalog::Catalog;
+use sc_catalog::{Catalog, PublicBaseUrl};
 use sc_error::Result;
 use serde_json::Value as Json;
 use std::sync::Arc;
@@ -81,13 +81,15 @@ pub struct ApiRequest {
 /// which applications it serves and under what host. A trait, so `sc-api`
 /// needs neither the router's types nor `sc-app`'s.
 pub trait AppDirectory: Send + Sync {
-    /// The origin (`scheme://host[:port]`) the request arrived at.
-    fn own_origin(&self) -> String;
+    /// The origin (`scheme://host[:port]`) the request arrived at — `None`
+    /// when its host is not one the router matched against the hosts it
+    /// serves (TODO-code-quality Q4.2).
+    fn own_origin(&self) -> Option<PublicBaseUrl>;
 
     /// The origin the application served on `subdomain` has, reached the way
     /// this request reached its own — or `None` when no application is served
     /// there.
-    fn app_origin(&self, subdomain: &str) -> Option<String>;
+    fn app_origin(&self, subdomain: &str) -> Option<PublicBaseUrl>;
 }
 
 /// An [`AppDirectory`] as a request carries it.
@@ -100,7 +102,7 @@ pub struct AppLinks(pub Arc<dyn AppDirectory>);
 impl std::fmt::Debug for AppLinks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("AppLinks")
-            .field(&self.0.own_origin())
+            .field(&self.0.own_origin().map(String::from))
             .finish()
     }
 }

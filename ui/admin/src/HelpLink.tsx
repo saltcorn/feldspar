@@ -1,7 +1,7 @@
 // The question-mark beside a setting that opens its **help topic** in a popup —
 // v1's help icons, next to a field's sublabel (or, without one, its label).
 //
-// A topic is rendered by the server (`getHelp`, `sc-help`): a markdown template
+// A topic is rendered by the server (`getHelp`, `sc_docs::help`): a markdown template
 // filled in with what the screen is about — the table a formula is on, the
 // event a code body runs in — so the popup lists *this* table's fields rather
 // than describing fields in general. The HTML arrives with raw HTML in the

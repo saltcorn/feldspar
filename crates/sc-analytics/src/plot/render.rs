@@ -39,7 +39,6 @@ use std::sync::Arc;
 use sc_catalog::Catalog;
 use sc_dataset::{
     Caller, ColType, Grain, Options, Reader, Schema, StageColumn, StageShape, compile, scramble,
-    value_json,
 };
 use sc_db::{ColumnDef, DatabaseDriver, Row, SchemaChange};
 use sc_error::{Error, Result};
@@ -47,6 +46,7 @@ use sc_query::{
     BinOp, CaseArm, Expr, Insert, Nulls, OrderBy, OrderDir, Projection, Select, Source, Statement,
     UnOp, Value,
 };
+use sc_types::value_to_analysis_json;
 use serde::Serialize;
 use serde_json::{Value as Json, json};
 
@@ -200,13 +200,13 @@ impl From<Error> for Halt {
 pub(crate) type Step<T> = std::result::Result<T, Halt>;
 
 /// Draw `spec`: every layer's data and the domains, or the sentence saying
-/// why it cannot be drawn. Reads as `caller` (A9.1): the rows of each table
+/// why it cannot be drawn. Reads as `caller`: the rows of each table
 /// they may read.
 pub async fn render_plot(catalog: &Catalog, caller: &Caller, spec: &PlotSpec) -> Result<Rendered> {
     render_plot_in(catalog, caller, spec, &Scope::none()).await
 }
 
-/// [`render_plot`] over the rows a dashboard's conditions keep (A6.4).
+/// [`render_plot`] over the rows a dashboard's conditions keep.
 pub async fn render_plot_in(
     catalog: &Catalog,
     caller: &Caller,
@@ -215,7 +215,7 @@ pub async fn render_plot_in(
 ) -> Result<Rendered> {
     let rows = match plot_rows_in(catalog, caller, &spec.data, scope).await? {
         Ok(rows) => rows,
-        Err(sentence) => return Ok(Rendered::refuse(sentence)),
+        Err(sentence) => return Ok(Rendered::refuse(sentence.message())),
     };
     let problems = validate(spec, &rows.shape);
     if let Some(first) = problems.first() {
@@ -238,7 +238,7 @@ pub async fn render_plot_in(
 /// it runs on.
 ///
 /// A dataset's rows are its last stage's query on the primary database, read
-/// as the caller (A9.1). A fit's output data (analytics TODO A3.1) is read
+/// as the caller. A fit's output data is read
 /// from the instance and put in a private in-memory SQLite database for the
 /// length of one render, so every stat this module compiles to SQL runs on it
 /// unchanged — "computed in memory" without a second implementation of each
@@ -280,24 +280,24 @@ pub(crate) async fn plot_rows(
     catalog: &Catalog,
     caller: &Caller,
     data: &DataRef,
-) -> Result<std::result::Result<PlotRows, String>> {
+) -> Result<Result<PlotRows>> {
     plot_rows_in(catalog, caller, data, &Scope::none()).await
 }
 
 /// [`plot_rows`], a dataset's with the conditions on it appended as a Filter
-/// (A6.4). A fit's output data is not a dataset, and no condition reaches it.
+/// A fit's output data is not a dataset, and no condition reaches it.
 pub(crate) async fn plot_rows_in(
     catalog: &Catalog,
     caller: &Caller,
     data: &DataRef,
     scope: &Scope,
-) -> Result<std::result::Result<PlotRows, String>> {
+) -> Result<Result<PlotRows>> {
     match data {
         DataRef::Dataset { dataset } => {
             let Some(def) = sc_dataset::load_dataset(catalog, *dataset).await? else {
-                return Ok(Err(
-                    "the dataset this plot reads is gone; pick another".to_owned()
-                ));
+                return Ok(Err(Error::invalid(
+                    "the dataset this plot reads is gone; pick another",
+                )));
             };
             let def = scope.extend(&def);
             let schema = Schema::of_catalog(catalog)?;
@@ -306,8 +306,10 @@ pub(crate) async fn plot_rows_in(
             let stage = match compiled.last() {
                 Ok(stage) => stage,
                 Err(e) => {
-                    return Ok(Err(filter_failure(&schema, &library, &def).unwrap_or_else(
-                        || format!("the dataset `{}` does not read: {e}", def.name),
+                    return Ok(Err(Error::invalid(
+                        filter_failure(&schema, &library, &def).unwrap_or_else(|| {
+                            format!("the dataset `{}` does not read: {}", def.name, e.message())
+                        }),
                     )));
                 }
             };
@@ -317,24 +319,28 @@ pub(crate) async fn plot_rows_in(
                     shape: stage.shape(),
                     db: RowsDb::Primary(Reader::new(catalog, caller)?),
                 }),
-                Err(e) => Err(format!("the dataset `{}` does not read: {e}", def.name)),
+                Err(e) => Err(Error::invalid(format!(
+                    "the dataset `{}` does not read: {}",
+                    def.name,
+                    e.message()
+                ))),
             })
         }
         // A fit's outputs are its model's, and models are the admin's: rows a
         // fit read on the server's authority are not narrowed to a caller's.
-        DataRef::FitOutput { .. } if !caller.is_admin() => Ok(Err(
-            "a model fit's output data is shown only in the unrestricted Analytics UI".to_owned(),
-        )),
+        DataRef::FitOutput { .. } if !caller.is_admin() => Ok(Err(Error::invalid(
+            "a model fit's output data is shown only in the unrestricted Analytics UI",
+        ))),
         DataRef::FitOutput { instance, name } => {
             let id = sc_model::InstanceId(*instance);
             let Some(data) = sc_model::load_output_data(catalog, id, name).await? else {
-                return Ok(Err(
+                return Ok(Err(Error::invalid(
                     if sc_model::load_model_instance(catalog, id).await?.is_none() {
                         "the fit this plot reads is gone".to_owned()
                     } else {
                         format!("the fit this plot reads has no output data `{name}`")
                     },
-                ));
+                )));
             };
             Ok(Ok(fit_output_rows(&data).await?))
         }
@@ -496,7 +502,7 @@ pub async fn render_table(
     render_table_in(catalog, caller, spec, &Scope::none()).await
 }
 
-/// [`render_table`] over the rows a dashboard's conditions keep (A6.4).
+/// [`render_table`] over the rows a dashboard's conditions keep.
 pub async fn render_table_in(
     catalog: &Catalog,
     caller: &Caller,
@@ -509,7 +515,7 @@ pub async fn render_table_in(
     };
     let rows = match plot_rows_in(catalog, caller, &spec.data, scope).await? {
         Ok(rows) => rows,
-        Err(sentence) => return Ok(refuse(sentence)),
+        Err(sentence) => return Ok(refuse(sentence.message().to_owned())),
     };
     let problems = validate_table(spec, &rows.shape);
     if let Some(first) = problems.first() {
@@ -880,7 +886,7 @@ impl<'a> Renderer<'a> {
         let select = grouped(points, columns, keys.len(), MAX_GROUP_ROWS + 1);
         let out = plan.out.unwrap_or(Channel::Y);
         self.grouped_layer(keys, select, total, &[out.as_str()], |values| {
-            vec![value_json(&values[0])]
+            vec![value_to_analysis_json(&values[0])]
         })
         .await
     }
@@ -954,9 +960,9 @@ impl<'a> Renderer<'a> {
             vec![match (function, input_ty) {
                 (AggregateFn::Min | AggregateFn::Max, ColType::Bool) => match v {
                     Value::Int(n) => json!(*n != 0),
-                    other => value_json(other),
+                    other => value_to_analysis_json(other),
                 },
-                _ => value_json(v),
+                _ => value_to_analysis_json(v),
             }]
         })
         .await
@@ -1117,7 +1123,7 @@ impl<'a> Renderer<'a> {
                 let values = row.into_values();
                 let (k, rest) = values.split_at(keys.len());
                 let mut out = key_values(keys, k);
-                out.push(value_json(&rest[0]));
+                out.push(value_to_analysis_json(&rest[0]));
                 outliers.rows.push(out);
             }
         }
@@ -1511,7 +1517,7 @@ impl<'a> Renderer<'a> {
             let values = row.into_values();
             let (k, rest) = values.split_at(keys.len());
             let mut line = key_values(&keys, k);
-            line.extend(rest.iter().map(value_json));
+            line.extend(rest.iter().map(value_to_analysis_json));
             out.push(line);
         }
         let mut names = key_columns(&keys);
@@ -1675,10 +1681,10 @@ impl<'a> Renderer<'a> {
                     {
                         match value {
                             Value::Int(b) => json!(*b != 0),
-                            other => value_json(other),
+                            other => value_to_analysis_json(other),
                         }
                     }
-                    _ => value_json(value),
+                    _ => value_to_analysis_json(value),
                 });
             }
             out.push((k.to_vec(), line));
@@ -2256,7 +2262,7 @@ pub(crate) fn key_values(keys: &[Key], values: &[Value]) -> Vec<Json> {
             },
             None => out.push(match (k.ty, value) {
                 (ColType::Bool, Value::Int(n)) => json!(*n != 0),
-                _ => value_json(value),
+                _ => value_to_analysis_json(value),
             }),
         }
     }
@@ -2282,7 +2288,7 @@ pub(crate) fn same_keys(a: &[Value], b: &[Value]) -> bool {
 
 fn compare_keys(a: &[Value], b: &[Value]) -> std::cmp::Ordering {
     for (x, y) in a.iter().zip(b) {
-        let o = compare_json(&value_json(x), &value_json(y));
+        let o = compare_json(&value_to_analysis_json(x), &value_to_analysis_json(y));
         if o != std::cmp::Ordering::Equal {
             return o;
         }

@@ -115,7 +115,11 @@ async fn boot_connects_stored_stores_and_refuses_a_flag_that_shadows_one() -> sc
     // Boot order: stored stores first …
     let report = connect_stored_file_stores(&catalog).await?;
     assert_eq!(report.connected, ["docs"]);
-    assert!(catalog.file_store("docs")?.is_some());
+    assert!(
+        catalog
+            .file_store("docs", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
 
     // … then the flags. A flag naming a store that is already configured is a
     // startup error, not a silent override: `connect_file_store` replaces on a
@@ -127,7 +131,11 @@ async fn boot_connects_stored_stores_and_refuses_a_flag_that_shadows_one() -> sc
     // A flag with its own name still works, and is not persisted — it exists
     // only for this process.
     connect_file_stores(&catalog, &[format!("scratch={path}")])?;
-    assert!(catalog.file_store("scratch")?.is_some());
+    assert!(
+        catalog
+            .file_store("scratch", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
     assert_eq!(
         sc_catalog::list_file_stores(&catalog).await?.len(),
         1,

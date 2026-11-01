@@ -7,7 +7,7 @@
 //! holds the production pieces — the `run_python_code` action from the registry,
 //! the five hosts it builds from an `ActionContext`, `CodeFetchHost` and its
 //! `reqwest` client — and a one-shot listener that reports the bytes it read.
-//! It is `sc-core-actions/tests/code_fetch.rs` question for question, in the
+//! It is `sc-action-builtins/tests/code_fetch.rs` question for question, in the
 //! other language, because the `FetchHost` under both is the same one.
 //!
 //! Asserted here: a body's GET and POST arrive as written; the response's
@@ -25,8 +25,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sc_action::{ActionContext, Event, EventKind};
+use sc_action_builtins::builtin_actions;
 use sc_catalog::{Catalog, bootstrap_file_stores};
-use sc_core_actions::builtin_actions;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
@@ -58,9 +58,10 @@ async fn setup(db: &TestDb) -> Result<Catalog> {
 
 /// The event every test fires: a directly-run trigger with a payload.
 fn fired(payload: Json) -> Event {
-    Event::new(EventKind::None)
-        .payload(payload)
-        .caller(1, Some(json!({ "email": "admin@example.com" })))
+    Event::new(EventKind::None).payload(payload).caller(
+        sc_types::Role::ADMIN,
+        Some(json!({ "email": "admin@example.com" })),
+    )
 }
 
 /// The adapters a dispatcher hands every action it runs — here, one.

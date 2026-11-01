@@ -13,7 +13,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use sc_app::{ApiConfig, Application, FrameworkRef, save_application, scaffold_app};
-use sc_catalog::{DataField, FileStoreId, TableId};
+use sc_catalog::{DataField, FileStoreId};
 use sc_cli::{DbConfig, connect_catalog};
 use sc_files::LocalFileStore;
 use sc_test_harness::TestDb;
@@ -132,7 +132,7 @@ async fn it_builds_a_scaffolded_app_and_prints_the_tool_output() -> sc_error::Re
             .with("store", "apps")
             .with("project", "todo"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     save_application(&catalog, &app).await?;
@@ -203,7 +203,7 @@ async fn an_app_exposing_a_trigger_builds_with_its_run_method() -> sc_error::Res
             .with("store", "apps")
             .with("project", "door"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"))
     .with_trigger(sc_app::TriggerRef("open_door".to_owned()));

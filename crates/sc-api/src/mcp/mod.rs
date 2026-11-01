@@ -12,7 +12,7 @@
 //! [`crate::schema_edit`]'s module comment was written to prevent,
 //! moved up one level: two bodies that check grants slightly differently and
 //! drift within a release. So the bodies live at the lowest layer that can hold
-//! them, and the copilot — `sc-core-traits`'s `admin_copilot` — and the MCP
+//! them, and the copilot — `sc-agent-builtins`'s `admin_copilot` — and the MCP
 //! server are both thin things over a [`ToolSet`].
 //!
 //! ## What a caller supplies, and what it does not
@@ -56,6 +56,7 @@
 //! The full ten-tool set is therefore assembled by `sc_app::mcp::tool_set`, the
 //! lowest layer that can name every tool in it.
 
+use sc_types::Role;
 mod code_api;
 mod docs;
 mod endpoint_tool;
@@ -78,7 +79,6 @@ use crate::schema_edit::{self, Grants};
 pub use code_api::{JS_CODE_API, TOOL_DESCRIBE_CODE_API};
 pub use endpoint_tool::{BODY_KEY, ProjectedCall, Projection, check_caller};
 pub use json_schema::{json_schema, object_schema, scalar_schema};
-pub use sc_docs::tools::{TOOL_READ_DOCS, TOOL_SEARCH_DOCS};
 pub use schema::{TOOL_DESCRIBE, TOOL_EDIT};
 pub use triggers::{
     TOOL_DELETE_TRIGGER, TOOL_DESCRIBE_ACTION, TOOL_DESCRIBE_TRIGGERS, TOOL_SAVE_TRIGGER,
@@ -94,7 +94,7 @@ pub const GRANT_DROP: &str = schema_edit::GRANT_DROP;
 /// May write the access rules of §7.3, a trigger's `min_role` and a query's.
 pub const GRANT_ACCESS_CHANGES: &str = schema_edit::GRANT_ACCESS_CHANGES;
 
-/// The key the **checklists grant** is stored under (TODO-checklists C1.13):
+/// The key the **checklists grant** is stored under:
 /// `none`, `append` (the default) or `full`. Not one of the boolean
 /// [`FLAG_KEYS`] — it has three values — but stored beside them, on an
 /// `admin_copilot` agent's configuration and on a token's grants alike, so the
@@ -437,7 +437,7 @@ pub struct ToolContext<'a> {
     pub user: Option<&'a User>,
     /// The role this call is authorized at: the user's own, or 1 for a system
     /// run. Every tool here refuses anything but 1.
-    pub role: u8,
+    pub role: Role,
     /// The trigger dispatcher, where this process has one.
     ///
     /// Carried rather than reached for, exactly as `TraitContext` carries it: a
@@ -626,8 +626,8 @@ impl ToolSet {
 /// The check is on the **call's** caller, not on any agent's `min_role`: an
 /// agent may be reachable at role 80 for everything else it does and still must
 /// not hand that caller the schema.
-pub fn require_admin(role: u8, tool: &str) -> Result<()> {
-    if role == 1 {
+pub fn require_admin(role: Role, tool: &str) -> Result<()> {
+    if role.is_admin() {
         return Ok(());
     }
     Err(Error::invalid(format!(
@@ -687,36 +687,13 @@ pub fn arguments(args: &Json, allowed: &[&str]) -> Result<Map<String, Json>> {
     Ok(obj)
 }
 
-/// An optional string argument, or the refusal that says what it should be.
-pub fn optional_string(obj: &Map<String, Json>, key: &str) -> Result<Option<String>> {
-    match obj.get(key) {
-        None | Some(Json::Null) => Ok(None),
-        Some(Json::String(s)) => Ok(Some(s.clone())),
-        Some(other) => Err(Error::invalid(format!(
-            "`{key}` should be a string, got {other}"
-        ))),
-    }
-}
-
-/// An optional boolean argument, or the refusal that says what it should be.
-pub fn optional_bool(obj: &Map<String, Json>, key: &str) -> Result<Option<bool>> {
-    match obj.get(key) {
-        None | Some(Json::Null) => Ok(None),
-        Some(Json::Bool(b)) => Ok(Some(*b)),
-        Some(other) => Err(Error::invalid(format!(
-            "`{key}` should be true or false, got {other}"
-        ))),
-    }
-}
-
 /// An optional role argument, checked against the 1–100 scale.
-pub fn optional_role(obj: &Map<String, Json>, key: &str) -> Result<Option<u8>> {
+pub fn optional_role(obj: &Map<String, Json>, key: &str) -> Result<Option<Role>> {
     match obj.get(key) {
         None | Some(Json::Null) => Ok(None),
         Some(Json::Number(n)) => n
             .as_i64()
-            .and_then(|n| u8::try_from(n).ok())
-            .filter(|r| (1..=100).contains(r))
+            .and_then(|n| Role::try_from(n).ok())
             .map(Some)
             .ok_or_else(|| {
                 Error::invalid(format!(
@@ -749,8 +726,10 @@ mod tests {
 
     #[test]
     fn only_an_admin_reaches_these_tools() {
-        assert!(require_admin(1, TOOL_EDIT).is_ok());
-        let err = require_admin(40, TOOL_EDIT).unwrap_err().to_string();
+        assert!(require_admin(Role::ADMIN, TOOL_EDIT).is_ok());
+        let err = require_admin(Role::of(40), TOOL_EDIT)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("only available to an administrator"), "{err}");
         assert!(err.contains("role-40"), "{err}");
     }
@@ -763,7 +742,10 @@ mod tests {
         assert_eq!(set.all_names().len(), 9);
         assert!(set.offers(TOOL_DESCRIBE) && set.offers(TOOL_EDIT));
         assert!(set.offers(TOOL_DESCRIBE_CODE_API));
-        assert!(set.offers(TOOL_SEARCH_DOCS) && set.offers(TOOL_READ_DOCS));
+        assert!(
+            set.offers(sc_docs::tools::TOOL_SEARCH_DOCS)
+                && set.offers(sc_docs::tools::TOOL_READ_DOCS)
+        );
         assert!(!set.offers(TOOL_SAVE_TRIGGER));
 
         let set = ToolSet::core(Grants::all(), Areas::all());

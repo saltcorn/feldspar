@@ -24,6 +24,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -147,15 +148,14 @@ fn graphql(cat: &Catalog) -> Result<GraphqlProvider> {
 }
 
 fn admin() -> Result<User> {
-    User::new(uuid::Uuid::new_v4(), sc_auth::ROLE_ADMIN)
+    Ok(User::new(uuid::Uuid::new_v4(), Role::ADMIN))
 }
 
 /// A caller at the public role, identified by the email an ownership formula
 /// (and a generated policy) reads.
 fn caller(email: &str) -> Result<User> {
-    let mut user = User::new(uuid::Uuid::new_v4(), 100)?;
-    user.extra
-        .insert("email".to_owned(), Value::Text(email.to_owned()));
+    let mut user = User::new(uuid::Uuid::new_v4(), Role::PUBLIC);
+    user = user.with_field("email".to_owned(), Value::Text(email.to_owned()));
     Ok(user)
 }
 

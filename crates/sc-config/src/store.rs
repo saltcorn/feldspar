@@ -195,7 +195,11 @@ pub async fn set_config_many(catalog: &Catalog, values: &Attrs) -> Result<()> {
             // inside one transaction it is the same write, and it needs no read.
             let delete =
                 Delete::from(CONFIG_TABLE).filter(Expr::col(COL_KEY).eq(Expr::lit(key.as_str())));
-            tx.run(None, &Statement::from(delete)).await?;
+            tx.run(
+                sc_catalog::Unchecked::system("write configuration"),
+                &Statement::from(delete),
+            )
+            .await?;
             if !value.is_null() {
                 let insert = Insert::row(
                     CONFIG_TABLE,
@@ -205,19 +209,17 @@ pub async fn set_config_many(catalog: &Catalog, values: &Attrs) -> Result<()> {
                         Expr::Lit(Value::Json(value.clone())),
                     ],
                 );
-                tx.run(None, &Statement::from(insert)).await?;
+                tx.run(
+                    sc_catalog::Unchecked::system("write configuration"),
+                    &Statement::from(insert),
+                )
+                .await?;
             }
         }
         Ok::<(), Error>(())
     }
     .await;
-    match written {
-        Ok(()) => tx.commit().await,
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(e)
-        }
-    }
+    tx.finish(written).await
 }
 
 /// Pin `values` over `_fd_config` for as long as this process runs — the TLS
@@ -390,7 +392,7 @@ fn bad_column(column: &str, expected: &str, got: Option<&Value>) -> Error {
 /// Run a statement that returns no rows of interest.
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()
@@ -401,7 +403,7 @@ async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
 /// Run a select and collect its rows.
 async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

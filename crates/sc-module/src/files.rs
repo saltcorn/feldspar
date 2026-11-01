@@ -171,8 +171,15 @@ impl<'a> ModuleFiles<'a> {
         if !owned && content_type.is_none() && filename.is_none() {
             return Ok(());
         }
-        let store = self.catalog.require_file_store(store)?;
-        let mut meta = store.get_meta(path).await?;
+        // The module's file surface is the administrator's, confined to its
+        // areas (`admit`), which clears every file rule (TODO-code-quality Q3.6).
+        let store = self.catalog.checked_file_store(
+            store,
+            None,
+            sc_files::FileCaller::new(sc_types::Role::ADMIN, None),
+        )?;
+        let file = store.writable(path).await?;
+        let mut meta = file.get_meta().await?;
         // The module's own mark, which is no user's id: `check_write` lets only
         // a file's owner (or the admin) attach it to a row, so a user cannot
         // point a row they write at a file the module stored for somebody else
@@ -188,7 +195,7 @@ impl<'a> ModuleFiles<'a> {
             meta.attributes
                 .insert(FILENAME_ATTRIBUTE.to_owned(), filename);
         }
-        store.set_meta(path, &meta).await
+        file.set_meta(&meta).await
     }
 }
 

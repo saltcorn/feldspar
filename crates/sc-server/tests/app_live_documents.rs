@@ -28,6 +28,8 @@
 //!   `GET /api/notes` has it in `body_text`, and has no `body`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::{Socket, next_frame, send};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,10 +39,9 @@ use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use futures::{SinkExt, StreamExt};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
-use sc_auth::{ROLE_ADMIN, Role, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, FieldMeta, TableId, save_field_meta};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
+use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, FieldMeta, save_field_meta};
 use sc_db::{ColumnGenerator, DatabaseDriver};
 use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
@@ -49,7 +50,6 @@ use sc_stream::{Document, Stream, StreamConfig, StreamProvider, StreamRegistry, 
 use sc_test_harness::Teardown;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value, json};
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -62,15 +62,12 @@ const BOB: &str = "bob@example.com";
 const CAROL: &str = "carol@example.com";
 const DAVE: &str = "dave@example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 40;
+const ROLE_MEMBER: Role = Role::of(40);
 
 /// The owner, or anybody it is shared with — and for anything but a read, only
 /// a share that may edit.
 const NOTES_RULE: &str =
     "owner === user.id || sharesↃnote.some(s => s.member === user.id && (_read || s.can_edit))";
-
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// A cookie-carrying client addressing one host through `oneshot`.
 struct Client {
@@ -95,9 +92,9 @@ impl Client {
             builder = builder.header(header::COOKIE, jar);
         }
         if method != "GET"
-            && let Some(csrf) = self.cookies.get(sc_server::CSRF_COOKIE)
+            && let Some(csrf) = self.cookies.get(sc_api::auth::CSRF_COOKIE)
         {
-            builder = builder.header(sc_server::CSRF_HEADER, csrf);
+            builder = builder.header(sc_api::auth::CSRF_HEADER, csrf);
         }
         let request = match body {
             Some(ref b) => builder
@@ -230,7 +227,7 @@ fn note_body() -> Stream {
 fn app() -> Application {
     Application::new("Notes", "notes", FrameworkRef::new("code"))
         .with_api(ApiConfig::new("rest", "/api"))
-        .with_table(TableId("notes".to_owned()))
+        .with_table("notes".to_owned())
         .with_stream(StreamRef::new("note_body"))
 }
 
@@ -245,6 +242,7 @@ fn limits() -> LiveLimits {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn setup() -> Result<Server> {
     let dir = Scratch(
         std::env::temp_dir().join(format!("sc-live-docs-{}", Uuid::new_v4())),
@@ -284,7 +282,7 @@ async fn setup() -> Result<Server> {
                 id(),
                 DataField {
                     kind: DataFieldKind::Key {
-                        target_table: TableId("notes".to_owned()),
+                        target_table: "notes".to_owned(),
                         target_field: FieldId("id".to_owned()),
                         summary_field: None,
                     },
@@ -302,12 +300,12 @@ async fn setup() -> Result<Server> {
         &FieldMeta::new("notes", "body").rich_type(sc_types::COLLAB_DOC),
     )
     .await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
-    create_user(&catalog, ADMIN, PASSWORD, ROLE_ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
+    create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
     let mut users = HashMap::new();
     for email in [ALICE, BOB, CAROL, DAVE] {
         let user = create_user(&catalog, email, PASSWORD, ROLE_MEMBER).await?;
-        users.insert(email, user.id);
+        users.insert(email, user.id());
     }
 
     let evaluator = sc_server::default_js_evaluator();
@@ -372,19 +370,21 @@ async fn setup() -> Result<Server> {
     let (alice, bob, carol) = (server.id(ALICE), server.id(BOB), server.id(CAROL));
     let notes = catalog.require("notes")?;
     for (id, title) in [(1, "Plans"), (2, "Big")] {
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             &catalog,
             &notes,
             &json!({ "id": id, "title": title, "owner": alice }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
     let shares = catalog.require("shares")?;
     for (id, member, can_edit) in [(1, &bob, false), (2, &carol, true)] {
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             &catalog,
             &shares,
             &json!({ "id": id, "note": 1, "member": member, "can_edit": can_edit }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
@@ -397,7 +397,7 @@ async fn setup() -> Result<Server> {
             "/api/tables/notes",
             Some(json!({
                 "label": "", "description": "",
-                "min_role_read": ROLE_ADMIN, "min_role_write": ROLE_ADMIN,
+                "min_role_read": Role::ADMIN, "min_role_write": Role::ADMIN,
                 "ownership_formula": NOTES_RULE, "rls_enabled": false, "sync_enabled": false,
             })),
         )
@@ -418,28 +418,6 @@ async fn setup() -> Result<Server> {
 }
 
 // --- frames -------------------------------------------------------------------
-
-async fn send(socket: &mut Socket, frame: Value) {
-    socket
-        .send(Message::text(frame.to_string()))
-        .await
-        .expect("the socket takes a frame");
-}
-
-async fn next_frame(socket: &mut Socket) -> Value {
-    loop {
-        let message = tokio::time::timeout(Duration::from_secs(20), socket.next())
-            .await
-            .expect("a frame arrives within the timeout")
-            .expect("the socket is still open")
-            .expect("the frame is readable");
-        match message {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
-            Message::Ping(_) | Message::Pong(_) => continue,
-            other => panic!("expected a text frame, got {other:?}"),
-        }
-    }
-}
 
 /// Subscribe and wait for `ready` or `error`; with presence, the member list
 /// follows `ready` and is read by [`frame_for`].
@@ -654,7 +632,14 @@ async fn losing_edit_access_is_read_only_and_losing_read_access_is_revoked() -> 
 
     // The share stops allowing edits: Carol is sent the document again,
     // read-only, and her next edit is refused.
-    sc_api::rows::update_row(&server.catalog, &shares, "2", &json!({ "can_edit": false })).await?;
+    sc_access::rows::update_row(
+        &server.catalog,
+        &shares,
+        "2",
+        &json!({ "can_edit": false }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let again = frame_for(&mut carol, "d", "doc_sync").await;
     assert_eq!(again["read_only"], true, "{again}");
     let edit = browser(&again).append_paragraph("late").unwrap();
@@ -665,12 +650,25 @@ async fn losing_edit_access_is_read_only_and_losing_read_access_is_revoked() -> 
     );
 
     // And back.
-    sc_api::rows::update_row(&server.catalog, &shares, "2", &json!({ "can_edit": true })).await?;
+    sc_access::rows::update_row(
+        &server.catalog,
+        &shares,
+        "2",
+        &json!({ "can_edit": true }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let again = frame_for(&mut carol, "d", "doc_sync").await;
     assert_eq!(again["read_only"], false, "{again}");
 
     // The share goes: the subscription is revoked.
-    sc_api::rows::delete_row(&server.catalog, &shares, "2").await?;
+    sc_access::rows::delete_row(
+        &server.catalog,
+        &shares,
+        "2",
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let revoked = frame_for(&mut carol, "d", "revoked").await;
     assert_eq!(revoked["sub"], "d");
     Ok(())
@@ -688,14 +686,15 @@ async fn a_large_document_opens_and_a_long_paste_is_accepted() -> Result<()> {
     let state = big.state();
     assert!(state.len() > 1024 * 1024, "{}", state.len());
     let notes = server.catalog.require("notes")?;
-    sc_api::rows::write_document_in(
+    sc_access::rows::write_document_in(
         &server.catalog,
         &notes,
         "2",
         "body",
         &state,
         None,
-        &sc_api::rows::Executor::Pooled,
+        sc_catalog::Unchecked::system("test"),
+        &sc_access::rows::Executor::Pooled,
     )
     .await?;
     let (mut alice, sync) = open(&server, ALICE, 2).await;

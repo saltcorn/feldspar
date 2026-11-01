@@ -57,15 +57,17 @@
 //! form. A context with no server (a CLI command) saves the record and rewrites
 //! the client itself, and says the change is served from the next start.
 
+use sc_types::ArgsExt;
+use sc_types::Role;
 use std::sync::Arc;
 
-use sc_api::mcp::{AdminTool, Area, ToolContext, arguments, optional_string, require_grant};
+use sc_api::mcp::{AdminTool, Area, ToolContext, arguments, require_grant};
 use sc_api::schema_edit::{GRANT_ACCESS_CHANGES, GRANT_EDIT, Grants};
-use sc_catalog::{AdminCall, Catalog, FileStoreId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
 
-use super::{TOOL_DESCRIBE_APPS, TOOL_EDIT_STREAMS, load_app, required_str};
+use super::{TOOL_DESCRIBE_APPS, TOOL_EDIT_STREAMS, load_app};
 use crate::{
     AgentExposure, Application, CspPolicy, StaticDir, StreamRef, TriggerChange, UploadSlot,
     app_default_locale, app_locales, set_app_locales,
@@ -247,6 +249,7 @@ fn update_description(grants: &Grants) -> String {
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn update_parameters() -> Json {
     let names = json!({ "type": "array", "items": { "type": "string" } });
     json!({
@@ -466,6 +469,7 @@ fn update_parameters() -> Json {
     })
 }
 
+#[allow(clippy::too_many_lines)]
 async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Json> {
     let args = arguments(
         args,
@@ -621,7 +625,7 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
             .api_tables
             .iter()
             .filter(|t| !before.contains(t))
-            .map(|t| t.0.clone())
+            .cloned()
             .collect();
         if !opened.is_empty() {
             require_grant(
@@ -831,12 +835,12 @@ fn locales_json(app: &Application) -> Result<Json> {
 /// Set the keys of the `access` section that were given; the rest are kept.
 /// The ranges and the formula are checked by the save.
 fn change_access(app: &mut Application, section: &Map<String, Json>) -> Result<()> {
-    let role = |key: &str| -> Result<Option<u8>> {
+    let role = |key: &str| -> Result<Option<Role>> {
         match section.get(key) {
             None | Some(Json::Null) => Ok(None),
             Some(value) => value
                 .as_u64()
-                .and_then(|r| u8::try_from(r).ok())
+                .and_then(|r| Role::try_from(r).ok())
                 .map(Some)
                 .ok_or_else(|| {
                     Error::invalid(format!(
@@ -892,7 +896,7 @@ fn change_tables(
 }
 
 fn tables_json(app: &Application) -> Json {
-    json!(app.tables.iter().map(|t| t.0.clone()).collect::<Vec<_>>())
+    json!(app.tables.to_vec())
 }
 
 fn change_api_tables(app: &mut Application, section: &Map<String, Json>) -> Result<()> {
@@ -909,12 +913,7 @@ fn change_api_tables(app: &mut Application, section: &Map<String, Json>) -> Resu
 }
 
 pub(super) fn api_tables_json(app: &Application) -> Json {
-    json!(
-        app.api_tables
-            .iter()
-            .map(|t| t.0.clone())
-            .collect::<Vec<_>>()
-    )
+    json!(app.api_tables.to_vec())
 }
 
 // --- streams ------------------------------------------------------------------
@@ -989,7 +988,7 @@ fn change_static_dirs(
 
     let mut connected = Vec::new();
     for dir in additions(section)? {
-        if catalog.file_store(&dir.store.0)?.is_none() {
+        if !catalog.has_file_store(&dir.store.0)? {
             return Err(Error::invalid(format!(
                 "there is no file store `{}`; the file stores are {}. Nothing was changed.",
                 dir.store.0,
@@ -1028,12 +1027,13 @@ fn additions(section: &Map<String, Json>) -> Result<Vec<StaticDir>> {
                 )));
             }
             let obj = arguments(item, &[ARG_MOUNT, ARG_STORE, ARG_PATH])?;
-            let path = optional_string(&obj, ARG_PATH)?
+            let path = obj
+                .optional_string(ARG_PATH)?
                 .map(|p| p.trim().trim_matches('/').to_owned())
                 .unwrap_or_default();
             Ok(StaticDir::new(
-                required_str(&obj, ARG_MOUNT)?,
-                FileStoreId(required_str(&obj, ARG_STORE)?),
+                obj.required_string(ARG_MOUNT)?,
+                FileStoreId(obj.required_string(ARG_STORE)?),
                 path,
             ))
         })
@@ -1100,7 +1100,7 @@ fn change_uploads(
     };
     let mut connected = Vec::new();
     for slot in added {
-        if catalog.file_store(&slot.store)?.is_none() {
+        if !catalog.has_file_store(&slot.store)? {
             return Err(Error::invalid(format!(
                 "there is no file store `{}`; the file stores are {}. Nothing was changed.",
                 slot.store,
@@ -1278,15 +1278,12 @@ async fn save(ctx: &ToolContext<'_>, app: &Application, out: &mut Json) -> Resul
         out["notes"] = json!(notes);
         return Ok(saved);
     };
-    let user = ctx.user.map(|u| u.id);
-    let listed = host
-        .call_admin(AdminCall::new("listApplications", Json::Null).user(user))
-        .await?;
+    let user = ctx.user.map(|u| u.id());
+    let listed = host.list_applications(user).await?;
     let id = app.id.to_string();
     let mut body = listed
-        .as_array()
-        .and_then(|apps| apps.iter().find(|a| a["id"] == json!(id)))
-        .cloned()
+        .into_iter()
+        .find(|a| a["id"] == json!(id))
         .ok_or_else(|| {
             Error::msg(format!(
                 "application `{}` is stored but the server did not list it",
@@ -1320,13 +1317,7 @@ async fn save(ctx: &ToolContext<'_>, app: &Application, out: &mut Json) -> Resul
     body["access_if"] = json!(app.access_if);
     // Where the locales live (§9's column-vs-attributes rule).
     body["attributes"] = Json::Object(app.attributes.clone());
-    let updated = host
-        .call_admin(
-            AdminCall::new("updateApplication", body)
-                .param("id", id)
-                .user(user),
-        )
-        .await?;
+    let updated = host.update_application(user, app.id.0, body).await?;
     for key in ["mounted", "mount_error"] {
         if let Some(value) = updated.get(key) {
             out[key] = value.clone();
@@ -1513,10 +1504,10 @@ mod tests {
                 config: Default::default(),
             },
         )
-        .min_role(40)
+        .min_role(Role::of(40))
         .access_if("user.department === \"Finance\"");
         change_access(&mut app, &section(json!({ "max_role": 20 }))).unwrap();
-        assert_eq!((app.min_role, app.max_role), (40, 20));
+        assert_eq!((app.min_role, app.max_role), (Role::of(40), Role::of(20)));
         assert_eq!(app.access_if, "user.department === \"Finance\"");
         change_access(&mut app, &section(json!({ "access_if": "" }))).unwrap();
         assert!(app.access_if.is_empty());

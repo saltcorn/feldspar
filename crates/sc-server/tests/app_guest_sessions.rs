@@ -18,6 +18,8 @@
 //!   event names it so a trigger moves the guest's rows to the account (P1.6).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -28,12 +30,12 @@ use sc_action::{EventKind, Trigger, save_trigger};
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation, TableSettings};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
 use sc_auth::{SessionStore, create_user};
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, GUEST_COOKIE, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_triggers,
+    AppMounts, GUEST_COOKIE, MountedApp, ServerConfig, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_triggers,
 };
 use sc_test_harness::TestDb;
 use serde_json::{Value, json};
@@ -169,8 +171,8 @@ async fn create_basket(catalog: &Catalog, name: &str, rls: bool) -> sc_error::Re
             settings: TableSettings {
                 // Admin-only floors: only the ownership formula lets a guest
                 // or a buyer in at all.
-                min_role_read: Some(1),
-                min_role_write: Some(1),
+                min_role_read: Some(Role::ADMIN),
+                min_role_write: Some(Role::ADMIN),
                 ownership_formula: Some(
                     "user ? owner_email === user.email : session_id === session.id".into(),
                 ),
@@ -222,8 +224,8 @@ async fn setup() -> sc_error::Result<Server> {
     let dispatcher = install_triggers(&catalog, evaluator.clone(), &agents, &models).await?;
     create_basket(&catalog, "baskets", false).await?;
     create_basket(&catalog, "rls_baskets", true).await?;
-    sc_auth::save_role(&catalog, &sc_auth::Role::new(80, "User")).await?;
-    create_user(&catalog, "ada@example.com", "ada-password", 80).await?;
+    sc_auth::save_role(&catalog, &sc_auth::RoleDef::new(Role::of(80), "User")).await?;
+    create_user(&catalog, "ada@example.com", "ada-password", Role::of(80)).await?;
     // P1.6: the application's own trigger, moving a guest's basket to the
     // account that signed in from the same browser.
     let adopt = Trigger::new("adopt_basket", EventKind::Login, "update_rows")
@@ -249,8 +251,8 @@ async fn setup() -> sc_error::Result<Server> {
             .with_triggers(dispatcher),
     );
     let app = Application::new("Shop", "shop", FrameworkRef::new("code"))
-        .with_table(TableId("baskets".to_owned()))
-        .with_table(TableId("rls_baskets".to_owned()))
+        .with_table("baskets".to_owned())
+        .with_table("rls_baskets".to_owned())
         .with_api(ApiConfig::new("rest", "/api"))
         .attribute(sc_app::GUEST_SESSIONS_ATTRIBUTE, true)
         .attribute(sc_app::GUEST_SESSION_DAYS_ATTRIBUTE, 30);

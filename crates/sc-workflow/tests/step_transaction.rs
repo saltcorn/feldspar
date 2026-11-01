@@ -17,26 +17,28 @@
 //! commit, and a rollback means it never happens (TODO.md "Live updates" L3.1).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use chrono::Utc;
+use sc_access::rows;
 use sc_action::{
     Action, ActionContext, ActionRegistry, Event, EventKind, Trigger, TriggerBody,
     TriggerDispatcher, TriggerId,
 };
 use sc_agent::{RunState, bootstrap_runs, require_run};
-use sc_api::rows;
-use sc_catalog::{CallerContext, Catalog, DataField, TableEvents};
+use sc_catalog::{Catalog, DataField, Principal, TableEvents};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
 use sc_expr::{DenoEvaluator, JsEvaluator};
 use sc_test_harness::TestDb;
+use sc_types::clock::ManualClock;
 use sc_types::{Attrs, BasicType, FormField, TypeRef};
 use sc_workflow::{
-    ErrorPolicy, ManualClock, Next, Step, StepKind, Workflow, bootstrap_run_traces,
-    bootstrap_workflow_versions, save_workflow, start_run,
+    ErrorPolicy, Next, Step, StepKind, Workflow, bootstrap_run_traces, bootstrap_workflow_versions,
+    save_workflow, start_run,
 };
 use serde_json::{Value as Json, json};
 
@@ -77,21 +79,27 @@ impl Action for WriteOrder {
         let id = ctx.setting("id").and_then(Json::as_i64).unwrap_or(1);
         let orders = ctx.catalog.require("orders")?;
         let executor = rows::Executor::of(ctx.transaction());
-        let caller = CallerContext::new(sc_auth::ROLE_ADMIN, None).chained(ctx.chain.clone());
+        let caller = Principal::new(Role::ADMIN, None).chained(ctx.chain.clone());
         rows::create_row_in(
             ctx.catalog,
             &orders,
             &json!({ "id": id, "total": 100 }),
-            Some(&caller),
+            sc_catalog::Unchecked::vouched(&caller, "test"),
             &executor,
         )
         .await?;
         // Read back **on the same executor**: inside a step this sees what the
         // step has written and has not committed, which is what makes a step a
         // unit of work rather than a sequence of independent statements.
-        let seen = rows::select_values_in(ctx.catalog, &orders, None, Some(&caller), &executor)
-            .await?
-            .len();
+        let seen = rows::select_values_in(
+            ctx.catalog,
+            &orders,
+            None,
+            sc_catalog::Unchecked::vouched(&caller, "test"),
+            &executor,
+        )
+        .await?
+        .len();
         if ctx.setting("fail").and_then(Json::as_bool).unwrap_or(false) {
             return Err(Error::invalid("the step failed after writing"));
         }
@@ -128,12 +136,12 @@ impl Action for WriteAudit {
             .and_then(Json::as_i64)
             .ok_or_else(|| Error::invalid("the event carries no order"))?;
         let audit = ctx.catalog.require("audit")?;
-        let caller = CallerContext::new(sc_auth::ROLE_ADMIN, None).chained(ctx.chain.clone());
+        let caller = Principal::new(Role::ADMIN, None).chained(ctx.chain.clone());
         rows::create_row_in(
             ctx.catalog,
             &audit,
             &json!({ "id": id, "note": "seen" }),
-            Some(&caller),
+            sc_catalog::Unchecked::vouched(&caller, "test"),
             &rows::Executor::of(ctx.transaction()),
         )
         .await?;
@@ -248,7 +256,7 @@ fn start_event() -> Event {
 /// connection, which is the whole point — it sees only what committed.
 async fn ids(catalog: &Catalog, table: &str) -> Result<Vec<i64>> {
     let table = catalog.require(table)?;
-    let rows = rows::list_rows(catalog, &table).await?;
+    let rows = rows::list_rows(catalog, &table, sc_catalog::Unchecked::system("test")).await?;
     Ok(rows
         .as_array()
         .map(|rows| {
@@ -417,8 +425,8 @@ async fn live(
     // An admin, with no filter: sent every committed change.
     connection.set_user(Some(sc_auth::User::new(
         uuid::Uuid::from_u128(0xad),
-        sc_auth::ROLE_ADMIN,
-    )?));
+        Role::ADMIN,
+    )));
     let access = sc_live::ChangeAccess {
         catalog: Arc::clone(&f.catalog),
         evaluator: None,

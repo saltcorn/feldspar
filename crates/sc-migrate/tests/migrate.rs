@@ -83,7 +83,10 @@ async fn make_pre_framework(driver: &dyn DatabaseDriver) {
 
 async fn scalar(driver: &dyn DatabaseDriver, sql: &str) -> Value {
     let rows = driver
-        .query(&Statement::raw(sql, Vec::new()))
+        .query(&Statement::raw(
+            sc_query::TrustedSql::composed(sql),
+            Vec::new(),
+        ))
         .await
         .unwrap()
         .try_collect()
@@ -321,6 +324,57 @@ async fn no_applications_table_is_nothing_to_do(driver: Arc<dyn DatabaseDriver>)
     );
 }
 
+/// `2026-11-01-admin-sessions-rescoped`: an administrator's sessions end, every
+/// other user's are kept.
+async fn admin_sessions_end_others_are_kept(driver: Arc<dyn DatabaseDriver>) {
+    let mut tx = driver.begin().await.unwrap();
+    tx.batch(
+        r#"CREATE TABLE "users" ("id" text PRIMARY KEY, "role" int8 NOT NULL);
+           CREATE TABLE "_fd_sessions" ("token_hash" text PRIMARY KEY, "user_id" text NOT NULL);
+           INSERT INTO "users" ("id", "role") VALUES ('admin', 1), ('staff', 40), ('reader', 80);
+           INSERT INTO "_fd_sessions" ("token_hash", "user_id") VALUES
+             ('a1', 'admin'), ('a2', 'admin'), ('s1', 'staff'), ('r1', 'reader')"#,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    run_one(
+        driver.as_ref(),
+        MIGRATIONS,
+        "2026-11-01-admin-sessions-rescoped",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(count(driver.as_ref(), "_fd_sessions").await, 2);
+    assert_eq!(
+        scalar(
+            driver.as_ref(),
+            r#"SELECT count(*) FROM "_fd_sessions" WHERE "user_id" = 'admin'"#
+        )
+        .await,
+        Value::Int(0)
+    );
+    assert_eq!(count(driver.as_ref(), "users").await, 3);
+}
+
+/// The same migration on a database without a session table does nothing, and
+/// is still recorded.
+async fn no_session_table_is_nothing_to_do(driver: Arc<dyn DatabaseDriver>) {
+    run_one(
+        driver.as_ref(),
+        MIGRATIONS,
+        "2026-11-01-admin-sessions-rescoped",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        recorded(driver.as_ref()).await,
+        vec!["2026-11-01-admin-sessions-rescoped"]
+    );
+}
+
 // --- backends -----------------------------------------------------------------
 
 /// A SQLite file of its own (a file rather than memory, so that the pool's
@@ -390,6 +444,8 @@ on_both!(
     run_one_runs_just_that,
     existing_apps_keep_their_row_apis,
     no_applications_table_is_nothing_to_do,
+    admin_sessions_end_others_are_kept,
+    no_session_table_is_nothing_to_do,
 );
 
 #[test]

@@ -90,7 +90,7 @@ pub async fn serve(
 
     let TlsSettings::Off = &config.tls else {
         let result = serve_with_tls(config, app, service).await;
-        sc_core_traits::kill_all_processes();
+        sc_agent_builtins::kill_all_processes();
         if let Some(browser) = &browser {
             browser.shutdown();
         }
@@ -122,7 +122,7 @@ pub async fn serve(
     }
     // The coding agents' managed processes stop with the server (TODO 6a.4),
     // and so does their browser.
-    sc_core_traits::kill_all_processes();
+    sc_agent_builtins::kill_all_processes();
     if let Some(browser) = &browser {
         browser.shutdown();
     }

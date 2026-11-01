@@ -46,7 +46,7 @@ use sc_query::{
     Assignment, BinOp, Delete, Expr, Insert, Projection, Select, Source, Statement, UnOp, Update,
     Value,
 };
-use sc_types::{BasicType, TypeRef};
+use sc_types::{BasicType, Role, TypeRef};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -292,9 +292,7 @@ pub async fn second_factor_enabled(catalog: &Catalog, user_id: Uuid) -> Result<b
 
 /// Every account that is asked for a code at sign-in — what the users screen
 /// marks.
-pub async fn second_factor_users(
-    catalog: &Catalog,
-) -> Result<std::collections::HashSet<Uuid>> {
+pub async fn second_factor_users(catalog: &Catalog) -> Result<std::collections::HashSet<Uuid>> {
     let select = Select::from(Source::table(SECOND_FACTOR_TABLE))
         .columns(vec![Projection::expr(Expr::col(COL_USER))])
         .filter(Expr::unary(UnOp::IsNotNull, Expr::col(COL_ENABLED_AT)));
@@ -323,7 +321,7 @@ pub async fn second_factor_status(catalog: &Catalog, user_id: Uuid) -> Result<Se
 }
 
 /// Whether the role `role` requires a second factor of everybody holding it.
-pub async fn role_requires_second_factor(catalog: &Catalog, role: u8) -> Result<bool> {
+pub async fn role_requires_second_factor(catalog: &Catalog, role: Role) -> Result<bool> {
     Ok(crate::roles::load_role(catalog, role)
         .await?
         .is_some_and(|r| requires_second_factor(&r.attributes)))
@@ -355,10 +353,10 @@ pub async fn second_factor_needed(
     catalog: &Catalog,
     user: &crate::User,
 ) -> Result<SecondFactorNeeded> {
-    if second_factor_enabled(catalog, user.id).await? {
+    if second_factor_enabled(catalog, user.id()).await? {
         return Ok(SecondFactorNeeded::Code);
     }
-    if role_requires_second_factor(catalog, user.role).await? {
+    if role_requires_second_factor(catalog, user.role()).await? {
         return Ok(SecondFactorNeeded::Setup);
     }
     Ok(SecondFactorNeeded::No)
@@ -380,7 +378,8 @@ pub async fn begin_second_factor_setup(catalog: &Catalog, user_id: Uuid) -> Resu
     let sealed = catalog.secret_key()?.seal(&secret)?;
     // A setup that was started and abandoned is replaced, never resumed: its
     // secret may be on a phone that is not this one.
-    let pending = Delete::from(SECOND_FACTOR_TABLE).filter(Expr::col(COL_USER).eq(Expr::lit(user_id)));
+    let pending =
+        Delete::from(SECOND_FACTOR_TABLE).filter(Expr::col(COL_USER).eq(Expr::lit(user_id)));
     rows(catalog, Statement::from(pending)).await?;
     let insert = Insert::row(
         SECOND_FACTOR_TABLE,
@@ -457,15 +456,13 @@ pub async fn verify_second_factor(catalog: &Catalog, user_id: Uuid, code: &str) 
         let update = Update {
             table: SECOND_FACTOR_TABLE.to_owned(),
             assignments: vec![Assignment::new(COL_LAST_STEP, Expr::lit(step_value(step)))],
-            filter: Some(
-                Expr::col(COL_USER).eq(Expr::lit(user_id)).and(
-                    Expr::unary(UnOp::IsNull, Expr::col(COL_LAST_STEP)).or(Expr::binary(
-                        BinOp::Lt,
-                        Expr::col(COL_LAST_STEP),
-                        Expr::lit(step_value(step)),
-                    )),
-                ),
-            ),
+            filter: Some(Expr::col(COL_USER).eq(Expr::lit(user_id)).and(
+                Expr::unary(UnOp::IsNull, Expr::col(COL_LAST_STEP)).or(Expr::binary(
+                    BinOp::Lt,
+                    Expr::col(COL_LAST_STEP),
+                    Expr::lit(step_value(step)),
+                )),
+            )),
             returning: vec![Projection::expr(Expr::col(COL_USER))],
         };
         return Ok(!rows(catalog, Statement::from(update)).await?.is_empty());
@@ -496,8 +493,7 @@ pub async fn regenerate_recovery_codes(catalog: &Catalog, user_id: Uuid) -> Resu
 }
 
 async fn new_recovery_codes(catalog: &Catalog, user_id: Uuid) -> Result<Vec<String>> {
-    let old =
-        Delete::from(RECOVERY_CODES_TABLE).filter(Expr::col(COL_USER).eq(Expr::lit(user_id)));
+    let old = Delete::from(RECOVERY_CODES_TABLE).filter(Expr::col(COL_USER).eq(Expr::lit(user_id)));
     rows(catalog, Statement::from(old)).await?;
     let now = Utc::now();
     let mut codes = Vec::with_capacity(RECOVERY_CODE_COUNT);
@@ -617,7 +613,7 @@ fn challenge_purpose(remember: bool) -> PasswordTokenPurpose {
 
 async fn rows(catalog: &Catalog, statement: Statement) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()
@@ -671,7 +667,10 @@ mod tests {
             .enumerate()
             .flat_map(|(i, c)| (i % 4 == 0 && i > 0).then_some(' ').into_iter().chain([c]))
             .collect();
-        assert_eq!(decode_secret(&spaced).unwrap(), decode_secret(&secret).unwrap());
+        assert_eq!(
+            decode_secret(&spaced).unwrap(),
+            decode_secret(&secret).unwrap()
+        );
     }
 
     #[test]
@@ -693,7 +692,10 @@ mod tests {
         assert_eq!(&code[5..6], "-");
         let user = Uuid::new_v4();
         let typed = format!(" {} ", code.to_uppercase().replace('-', ""));
-        assert_eq!(recovery_code_hash(user, &code), recovery_code_hash(user, &typed));
+        assert_eq!(
+            recovery_code_hash(user, &code),
+            recovery_code_hash(user, &typed)
+        );
         assert_ne!(
             recovery_code_hash(user, &code),
             recovery_code_hash(Uuid::new_v4(), &code),

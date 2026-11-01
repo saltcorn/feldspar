@@ -16,7 +16,7 @@ TECHNICAL_DESIGN §11), ownership ([docs/tutorial-ownership.md](./docs/tutorial-
 triggers and actions ([docs/tutorial-triggers.md](./docs/tutorial-triggers.md)), live updates
 ([TODO-live-updates.md](./TODO-live-updates.md), `useLiveRows`), file fields
 ([docs/tutorial-file-fields.md](./docs/tutorial-file-fields.md)), `send_email`
-(`crates/sc-core-actions/src/send_email.rs`) and backup (`crates/sc-server/src/backup/`).
+(`crates/sc-action-builtins/src/send_email.rs`) and backup (`crates/sc-server/src/backup/`).
 
 The design comes first, then the milestones. Each milestone is prefixed **M** and its tasks are
 numbered M1.1, M1.2, …. Milestones M2–M6 (core) and M7 (parsing) do not depend on each other and

@@ -244,6 +244,7 @@ fn resolve(dir: &str, spec: &str) -> String {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_bundled_react_native_module_declares_a_web_framework() {
     skip_without!(have_npm(), "npm is not on the PATH");
     let frameworks = frameworks("bundled-rn-decl").await;
@@ -456,6 +457,7 @@ async fn the_bundled_react_native_module_declares_a_web_framework() {
 /// tab, and it reaches the APK build as `ANDROID_HOME` and `JAVA_HOME` — so the
 /// server does not depend on the shell that started it.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_modules_toolchain_settings_are_the_apk_builds_environment() {
     skip_without!(have_npm(), "npm is not on the PATH");
     let (configured, manifest) = frameworks_configured(
@@ -706,6 +708,7 @@ async fn the_modules_toolchain_settings_are_the_apk_builds_environment() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_scaffold_is_an_expo_project_whose_every_import_resolves() {
     skip_without!(have_npm(), "npm is not on the PATH");
     let files = scaffold(
@@ -1278,6 +1281,7 @@ console.log(JSON.stringify({
 /// it, and reuses the profile an earlier build made until it goes stale. Run
 /// under Node against a fake API, so it needs neither Apple nor a Mac.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn an_ios_build_can_generate_its_app_store_profile() {
     skip_without!(have_npm(), "npm is not on the PATH");
     let files = frameworks("bundled-rn-ios-generate")
@@ -1753,7 +1757,7 @@ async fn the_bundled_react_native_module_scaffolds_an_application_that_builds() 
             .with("store", "apps")
             .with("project", "todo"),
     )
-    .with_table(sc_catalog::TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(sc_catalog::FileStoreId("apps".to_owned()))
     .with_api(sc_app::ApiConfig::new("rest", "/api"));
     let app = sc_app::save_application(&cat, &app)

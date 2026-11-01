@@ -40,6 +40,10 @@
 //! fifteen minutes and it is refused with a `429` until the window passes,
 //! which makes guessing a six-digit code that lasts 30 seconds hopeless.
 
+// `clippy::result_large_err` does not apply: every `Err` here is the response to
+// send, returned unchanged by the route handler (as in `builder.rs`).
+#![allow(clippy::result_large_err)]
+
 use axum::Extension;
 use axum::Json;
 use axum::body::Bytes;
@@ -112,7 +116,7 @@ pub(crate) async fn challenge_for(
     if needed == SecondFactorNeeded::No {
         return None;
     }
-    let token = match sc_auth::issue_second_factor_challenge(catalog, user.id, remember).await {
+    let token = match sc_auth::issue_second_factor_challenge(catalog, user.id(), remember).await {
         Ok(token) => token,
         Err(e) => {
             log_failure("could not issue a second-factor challenge", &e);
@@ -151,9 +155,7 @@ fn challenge_cookie(state: &AppState, token: String) -> Cookie<'static> {
         .same_site(SameSite::Lax)
         .http_only(true)
         .secure(state.secure_cookies)
-        .max_age(time::Duration::minutes(
-            sc_auth::SECOND_FACTOR_TTL_MINUTES,
-        ))
+        .max_age(time::Duration::minutes(sc_auth::SECOND_FACTOR_TTL_MINUTES))
         .build()
 }
 
@@ -220,22 +222,42 @@ impl Fields {
 }
 
 /// The account a request's session cookie signs in, if any.
-async fn signed_in(state: &AppState, jar: &CookieJar) -> Result<Option<User>, Response> {
+///
+/// Off an application's host, a session issued on an application's host is
+/// no session (security review #15), as it is for every other admin-host
+/// route: it must not change the second factor an admin signs in with.
+async fn signed_in(
+    state: &AppState,
+    headers: &HeaderMap,
+    jar: &CookieJar,
+) -> Result<Option<User>, Response> {
     let Some(token) = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) else {
         return Ok(None);
     };
-    state.sessions.user_for(&token).await.map_err(|e| {
-        log_failure("could not read the session", &e);
-        json_error(StatusCode::INTERNAL_SERVER_ERROR, "could not read the session")
-    })
+    if sc_auth::SessionScope::of_token(&token) == sc_auth::SessionScope::App
+        && !matches!(resolve_app(state, headers, jar), Resolved::App(_))
+    {
+        return Ok(None);
+    }
+    match state.sessions.user_for(&token).await {
+        Ok(user) => Ok(user.map(sc_auth::AuthenticatedUser::into_user)),
+        Err(e) => {
+            log_failure("could not read the session", &e);
+            Err(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not read the session",
+            ))
+        }
+    }
 }
 
 fn catalog_of(state: &AppState) -> Result<&Catalog, Response> {
-    state
-        .apps
-        .catalog()
-        .map(|c| &**c)
-        .ok_or_else(|| json_error(StatusCode::SERVICE_UNAVAILABLE, "this server has no database"))
+    state.apps.catalog().map(|c| &**c).ok_or_else(|| {
+        json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this server has no database",
+        )
+    })
 }
 
 fn failed(context: &str, e: &sc_error::Error) -> Response {
@@ -258,18 +280,17 @@ fn ip_of(state: &AppState, peer: Peer, headers: &HeaderMap) -> Option<std::net::
 
 /// Throttle a code for `user_id`, or the `429` to answer instead.
 fn throttle(ip: Option<std::net::IpAddr>, user_id: Uuid) -> Result<(), Response> {
-    sc_api::throttle::second_factor_attempt(ip, &user_id.to_string())
-        .map_err(|limited| {
-            let secs = limited.retry_after_secs();
-            let mut out = (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(json!({ "error": "too many wrong codes; try again later", "retry_after": secs })),
-            )
-                .into_response();
-            out.headers_mut()
-                .insert(header::RETRY_AFTER, HeaderValue::from(secs));
-            out
-        })
+    sc_api::throttle::second_factor_attempt(ip, &user_id.to_string()).map_err(|limited| {
+        let secs = limited.retry_after_secs();
+        let mut out = (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "too many wrong codes; try again later", "retry_after": secs })),
+        )
+            .into_response();
+        out.headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from(secs));
+        out
+    })
 }
 
 /// Whether `code` is right for `user_id`, counting it against the account when
@@ -302,7 +323,11 @@ fn expired() -> Response {
 /// Who a request acts for: a challenge's account (and its "Remember me"), or
 /// the signed-in account.
 enum Actor {
-    Challenge { user: Uuid, remember: bool, token: String },
+    Challenge {
+        user: Uuid,
+        remember: bool,
+        token: String,
+    },
     SignedIn(User),
 }
 
@@ -310,7 +335,7 @@ impl Actor {
     fn user_id(&self) -> Uuid {
         match self {
             Actor::Challenge { user, .. } => *user,
-            Actor::SignedIn(user) => user.id,
+            Actor::SignedIn(user) => user.id(),
         }
     }
 }
@@ -318,6 +343,7 @@ impl Actor {
 async fn actor(
     state: &AppState,
     catalog: &Catalog,
+    headers: &HeaderMap,
     fields: &Fields,
     jar: &CookieJar,
 ) -> Result<Actor, Response> {
@@ -335,7 +361,7 @@ async fn actor(
             Err(e) => return Err(failed("could not read the sign-in", &e)),
         }
     }
-    match signed_in(state, jar).await? {
+    match signed_in(state, headers, jar).await? {
         Some(user) => Ok(Actor::SignedIn(user)),
         None if fields.challenge(jar).is_some() => Err(expired()),
         None => Err(not_signed_in()),
@@ -387,21 +413,25 @@ async fn finish_sign_in(
 // --- the routes --------------------------------------------------------------
 
 /// `GET` [`STATUS_ROUTE`].
-pub(crate) async fn status(State(state): State<AppState>, jar: CookieJar) -> Response {
+pub(crate) async fn status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    jar: CookieJar,
+) -> Response {
     let catalog = match catalog_of(&state) {
         Ok(c) => c,
         Err(r) => return r,
     };
-    let user = match signed_in(&state, &jar).await {
+    let user = match signed_in(&state, &headers, &jar).await {
         Ok(Some(user)) => user,
         Ok(None) => return not_signed_in(),
         Err(r) => return r,
     };
-    let status = match sc_auth::second_factor_status(catalog, user.id).await {
+    let status = match sc_auth::second_factor_status(catalog, user.id()).await {
         Ok(s) => s,
         Err(e) => return failed("could not read the second factor", &e),
     };
-    let required = match sc_auth::role_requires_second_factor(catalog, user.role).await {
+    let required = match sc_auth::role_requires_second_factor(catalog, user.role()).await {
         Ok(r) => r,
         Err(e) => return failed("could not read the role", &e),
     };
@@ -444,7 +474,7 @@ async fn setup_for(
     let account = match sc_auth::load_user(catalog, user_id).await {
         Ok(Some(user)) => sc_auth::user_email(&user)
             .map(str::to_owned)
-            .unwrap_or_else(|| user.id.to_string()),
+            .unwrap_or_else(|| user.id().to_string()),
         Ok(None) => return Err(expired()),
         Err(e) => return Err(failed("could not set up two-factor authentication", &e)),
     };
@@ -465,7 +495,7 @@ pub(crate) async fn setup(
         Err(r) => return r,
     };
     let fields = Fields::read(&headers, &body);
-    let actor = match actor(&state, catalog, &fields, &jar).await {
+    let actor = match actor(&state, catalog, &headers, &fields, &jar).await {
         Ok(a) => a,
         Err(r) => return r,
     };
@@ -492,7 +522,7 @@ pub(crate) async fn enable(
         Err(r) => return r,
     };
     let fields = Fields::read(&headers, &body);
-    let actor = match actor(&state, catalog, &fields, &jar).await {
+    let actor = match actor(&state, catalog, &headers, &fields, &jar).await {
         Ok(a) => a,
         Err(r) => return r,
     };
@@ -599,12 +629,15 @@ async fn signed_in_with_code(
     state: &AppState,
     catalog: &Catalog,
     ip: Option<std::net::IpAddr>,
+    headers: &HeaderMap,
     jar: &CookieJar,
     fields: &Fields,
 ) -> Result<User, Response> {
-    let user = signed_in(state, jar).await?.ok_or_else(not_signed_in)?;
-    throttle(ip, user.id)?;
-    if !check_code(catalog, user.id, fields.text("code").unwrap_or_default()).await? {
+    let user = signed_in(state, headers, jar)
+        .await?
+        .ok_or_else(not_signed_in)?;
+    throttle(ip, user.id())?;
+    if !check_code(catalog, user.id(), fields.text("code").unwrap_or_default()).await? {
         return Err(wrong_code());
     }
     Ok(user)
@@ -624,8 +657,8 @@ pub(crate) async fn disable(
     };
     let fields = Fields::read(&headers, &body);
     // Asked before the code is, so a code is not spent on a refusal.
-    match signed_in(&state, &jar).await {
-        Ok(Some(user)) => match sc_auth::role_requires_second_factor(catalog, user.role).await {
+    match signed_in(&state, &headers, &jar).await {
+        Ok(Some(user)) => match sc_auth::role_requires_second_factor(catalog, user.role()).await {
             Ok(true) => {
                 return json_error(
                     StatusCode::BAD_REQUEST,
@@ -638,11 +671,20 @@ pub(crate) async fn disable(
         Ok(None) => return not_signed_in(),
         Err(r) => return r,
     }
-    let user = match signed_in_with_code(&state, catalog, ip_of(&state, peer, &headers), &jar, &fields).await {
+    let user = match signed_in_with_code(
+        &state,
+        catalog,
+        ip_of(&state, peer, &headers),
+        &headers,
+        &jar,
+        &fields,
+    )
+    .await
+    {
         Ok(user) => user,
         Err(r) => return r,
     };
-    match sc_auth::disable_second_factor(catalog, user.id).await {
+    match sc_auth::disable_second_factor(catalog, user.id()).await {
         Ok(_) => Json(json!({ "ok": true })).into_response(),
         Err(e) => failed("could not turn off two-factor authentication", &e),
     }
@@ -661,11 +703,20 @@ pub(crate) async fn recovery_codes(
         Err(r) => return r,
     };
     let fields = Fields::read(&headers, &body);
-    let user = match signed_in_with_code(&state, catalog, ip_of(&state, peer, &headers), &jar, &fields).await {
+    let user = match signed_in_with_code(
+        &state,
+        catalog,
+        ip_of(&state, peer, &headers),
+        &headers,
+        &jar,
+        &fields,
+    )
+    .await
+    {
         Ok(user) => user,
         Err(r) => return r,
     };
-    match sc_auth::regenerate_recovery_codes(catalog, user.id).await {
+    match sc_auth::regenerate_recovery_codes(catalog, user.id()).await {
         Ok(codes) => {
             let mut out = Json(json!({ "recovery_codes": codes })).into_response();
             no_store(&mut out);
@@ -704,7 +755,9 @@ pub(crate) async fn page(
     };
     let return_to = crate::oauth::safe_return_to(get("return_to"));
     let wrong = get("error").is_some();
-    let csrf = csrf.map(|Extension(CsrfToken(token))| token).unwrap_or_default();
+    let csrf = csrf
+        .map(|Extension(CsrfToken(token))| token)
+        .unwrap_or_default();
     let catalog = match catalog_of(&state) {
         Ok(c) => c,
         Err(r) => return r,

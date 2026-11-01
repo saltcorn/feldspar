@@ -14,6 +14,8 @@
 //! the person, a triggered run carries the trigger's authority, and a `Runner`
 //! that never said which cannot be built.
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -602,6 +604,7 @@ impl<'a> Runner<'a> {
     ///
     /// Resuming is the same call: the state came off the row, so a run reloaded
     /// after a restart carries on from the step it was on.
+    #[allow(clippy::too_many_lines)]
     pub async fn drive(&self, run: &mut Run) -> Result<Conclusion> {
         let mut state = run.agent_loop()?;
         let mode = run.mode()?;
@@ -845,7 +848,7 @@ impl<'a> Runner<'a> {
         let Some(meter) = self.meter else {
             return Ok(None);
         };
-        if self.caller.role <= sc_auth::ROLE_ADMIN {
+        if self.caller.role.is_admin() {
             return Ok(None);
         }
         match &self.caller.user {
@@ -865,7 +868,7 @@ impl<'a> Runner<'a> {
         let Some((user, meter)) = self.payer()? else {
             return Ok(true);
         };
-        let balance = sc_auth::credit_balance(self.catalog, user.id)
+        let balance = sc_auth::credit_balance(self.catalog, user.id())
             .await?
             .balance;
         let enough =
@@ -874,7 +877,7 @@ impl<'a> Runner<'a> {
             sc_log::log_info!(
                 "agent `{}`: user {} has {balance} LLM credits{}, so the run stops",
                 self.agent.name,
-                user.id,
+                user.id(),
                 if starting && meter.min_balance > rust_decimal::Decimal::ZERO {
                     format!(" and this agent needs {} to start", meter.min_balance)
                 } else {
@@ -937,7 +940,7 @@ impl<'a> Runner<'a> {
         let debited = sc_auth::debit_credits(
             self.catalog,
             sc_auth::CreditDebit {
-                user_id: user.id,
+                user_id: user.id(),
                 amount,
                 key,
                 run: Some(run.0),
@@ -950,13 +953,13 @@ impl<'a> Runner<'a> {
                     .map(sc_auth::credits),
                 note: None,
             },
-            Some(&caller_context(&self.caller)),
+            Authority::Caller(&principal_of(&self.caller)),
         )
         .await?;
         sc_log::log_verbose!(
             "agent `{}` run {run}: charged {amount} LLM credits to user {}, leaving {}",
             self.agent.name,
-            user.id,
+            user.id(),
             debited.balance
         );
         Ok(())
@@ -1606,6 +1609,7 @@ impl<'a> Runner<'a> {
 
     /// Start or resume a child run for `request`, from a run in `parent_mode`
     /// (§11.3, TODO §5).
+    #[allow(clippy::too_many_lines)]
     async fn delegate_from(
         &self,
         parent_mode: RunMode,
@@ -1704,7 +1708,7 @@ impl<'a> Runner<'a> {
             return Err(Error::auth(format!(
                 "agent `{parent}`: you may not use `{target}`; \
                  it needs role {} or better",
-                sub.min_role.unwrap_or(1)
+                sub.min_role.unwrap_or(Role::ADMIN)
             )));
         }
 
@@ -1902,18 +1906,18 @@ pub fn stable_prefix(
 
 /// The caller the events a credit debit raises report: the run's user, at the
 /// run's role.
-fn caller_context(caller: &RunCaller) -> sc_catalog::CallerContext {
+fn principal_of(caller: &RunCaller) -> sc_catalog::Principal {
     let user = caller.user.as_ref().map(|u| {
         let mut fields: serde_json::Map<String, Json> = u
-            .extra
+            .extra()
             .iter()
-            .map(|(k, v)| (k.clone(), sc_expr::value_to_json(v)))
+            .map(|(k, v)| (k.clone(), sc_types::value_to_script_json(v)))
             .collect();
-        fields.insert("id".to_owned(), Json::String(u.id.to_string()));
-        fields.insert("role".to_owned(), Json::from(u.role));
+        fields.insert("id".to_owned(), Json::String(u.id().to_string()));
+        fields.insert("role".to_owned(), Json::from(u.role()));
         Json::Object(fields)
     });
-    sc_catalog::CallerContext::new(caller.role, user).in_current_origin()
+    sc_catalog::Principal::new(caller.role, user).in_current_origin()
 }
 
 fn conclusion_label(conclusion: &Conclusion) -> String {

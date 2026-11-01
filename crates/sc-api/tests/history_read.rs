@@ -3,14 +3,16 @@
 //! dropped column, secrets, and changesets.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
+use sc_access::rows;
 use sc_api::history::HistoryReader;
-use sc_api::{rows, schema_edit};
+use sc_api::schema_edit;
 use sc_auth::User;
 use sc_catalog::{
-    CallerContext, Catalog, Changeset, ChangesetSource, DataFieldKind, SecretKey,
-    bootstrap_change_log, bootstrap_field_meta, bootstrap_table_meta, changeset,
+    Catalog, Changeset, ChangesetSource, DataFieldKind, Principal, SecretKey, bootstrap_change_log,
+    bootstrap_field_meta, bootstrap_table_meta, changeset,
 };
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -82,38 +84,64 @@ async fn setup(db: &TestDb) -> Result<Arc<Catalog>> {
     Ok(catalog)
 }
 
-fn user(id: &str, role: u8) -> User {
-    User::new(id.parse().unwrap(), role).unwrap()
+fn user(id: &str, role: Role) -> User {
+    User::new(id.parse().unwrap(), role)
 }
 
 /// One action: one request changeset. The caller is built inside it, which
-/// is where `CallerContext::new` picks the changeset up.
+/// is where `Principal::new` picks the changeset up.
 async fn act<T>(f: impl std::future::Future<Output = Result<T>>) -> Result<T> {
     changeset::scope(Arc::new(Changeset::new(ChangesetSource::Request)), f).await
 }
 
 /// `who` (an id) writing as the admin screens do: at the admin's role.
-fn caller(who: &str) -> CallerContext {
-    CallerContext::new(1, Some(json!({ "id": who, "role": 1 })))
+fn caller(who: &str) -> Principal {
+    Principal::new(Role::ADMIN, Some(json!({ "id": who, "role": 1 })))
 }
 
 async fn create(catalog: &Catalog, who: &str, body: Json) -> Result<String> {
     let notes = catalog.require("notes")?;
-    let row = act(async { rows::create_row_ctx(catalog, &notes, &body, Some(&caller(who))).await })
-        .await?;
+    let row = act(async {
+        rows::create_row(
+            catalog,
+            &notes,
+            &body,
+            sc_catalog::Unchecked::vouched(&caller(who), "test"),
+        )
+        .await
+    })
+    .await?;
     Ok(row["id"].to_string())
 }
 
 async fn update(catalog: &Catalog, who: &str, id: &str, body: Json) -> Result<()> {
     let notes = catalog.require("notes")?;
-    act(async { rows::update_row_ctx(catalog, &notes, id, &body, Some(&caller(who))).await })
-        .await?;
+    act(async {
+        rows::update_row(
+            catalog,
+            &notes,
+            id,
+            &body,
+            sc_catalog::Unchecked::vouched(&caller(who), "test"),
+        )
+        .await
+    })
+    .await?;
     Ok(())
 }
 
 async fn delete(catalog: &Catalog, who: &str, id: &str) -> Result<()> {
     let notes = catalog.require("notes")?;
-    act(async { rows::delete_row_ctx(catalog, &notes, id, Some(&caller(who))).await }).await?;
+    act(async {
+        rows::delete_row(
+            catalog,
+            &notes,
+            id,
+            sc_catalog::Unchecked::vouched(&caller(who), "test"),
+        )
+        .await
+    })
+    .await?;
     Ok(())
 }
 
@@ -148,7 +176,11 @@ async fn history_is_the_admins_until_opened_and_then_follows_the_read_rule() -> 
     delete(&catalog, ADMIN, &bobs).await?;
     delete(&catalog, ADMIN, &gone_ann).await?;
 
-    let (ann, bob, admin) = (user(ANN, 80), user(BOB, 80), user(ADMIN, 1));
+    let (ann, bob, admin) = (
+        user(ANN, Role::of(80)),
+        user(BOB, Role::of(80)),
+        user(ADMIN, Role::ADMIN),
+    );
     let as_ann = HistoryReader::new(&catalog, Some(&ann), None);
     let as_bob = HistoryReader::new(&catalog, Some(&bob), None);
     let as_admin = HistoryReader::new(&catalog, Some(&admin), None);
@@ -177,7 +209,7 @@ async fn history_is_the_admins_until_opened_and_then_follows_the_read_rule() -> 
     alter(
         &catalog,
         schema_edit::TableSettings {
-            history_min_role: Some(80),
+            history_min_role: Some(Role::of(80)),
             ..Default::default()
         },
     )
@@ -215,7 +247,7 @@ async fn history_is_the_admins_until_opened_and_then_follows_the_read_rule() -> 
     assert!(is_auth(
         &anonymous.row_history("notes", &anns).await.unwrap_err()
     ));
-    let carl = user("00000000-0000-4000-8000-0000000000c0", 90);
+    let carl = user("00000000-0000-4000-8000-0000000000c0", Role::of(90));
     let as_carl = HistoryReader::new(&catalog, Some(&carl), None);
     assert!(is_auth(
         &as_carl.row_history("notes", &anns).await.unwrap_err()
@@ -244,7 +276,7 @@ async fn a_table_without_history_is_refused_by_name() -> Result<()> {
         },
     )
     .await?;
-    let admin = user(ADMIN, 1);
+    let admin = user(ADMIN, Role::ADMIN);
     let err = HistoryReader::new(&catalog, Some(&admin), None)
         .row_history("notes", "1")
         .await
@@ -281,7 +313,7 @@ async fn as_of_rebuilds_a_row_across_several_changesets() -> Result<()> {
     .await?;
     update(&catalog, ANN, &id, json!({ "body": "two" })).await?;
     update(&catalog, BOB, &id, json!({ "body": "three", "extra": "y" })).await?;
-    let admin = user(ADMIN, 1);
+    let admin = user(ADMIN, Role::ADMIN);
     let reader = HistoryReader::new(&catalog, Some(&admin), None);
 
     let history = reader.row_history("notes", &id).await?;
@@ -383,7 +415,7 @@ async fn a_column_dropped_since_shows_as_removed() -> Result<()> {
         &schema_edit::ApplyOptions::default(),
     )
     .await?;
-    let admin = user(ADMIN, 1);
+    let admin = user(ADMIN, Role::ADMIN);
     let reader = HistoryReader::new(&catalog, Some(&admin), None);
 
     let history = reader.row_history("notes", &kept).await?;
@@ -412,7 +444,7 @@ async fn secrets_are_the_sentinel_in_history() -> Result<()> {
     let catalog = setup(&db).await?;
     let id = create(&catalog, ANN, json!({ "owner": ANN, "pin": "1234" })).await?;
     update(&catalog, ANN, &id, json!({ "pin": "5678" })).await?;
-    let admin = user(ADMIN, 1);
+    let admin = user(ADMIN, Role::ADMIN);
     let reader = HistoryReader::new(&catalog, Some(&admin), None);
     let history = reader.row_history("notes", &id).await?;
     let first = reader.row_as_of("notes", &id, &seq_of(&history, 1)).await?;
@@ -446,7 +478,7 @@ async fn changesets_are_listed_filtered_and_read() -> Result<()> {
     let id = create(&catalog, ANN, json!({ "owner": ANN, "body": "a" })).await?;
     update(&catalog, BOB, &id, json!({ "body": "b" })).await?;
     sql(&db, "UPDATE notes SET body = 'by hand'").await?;
-    let admin = user(ADMIN, 1);
+    let admin = user(ADMIN, Role::ADMIN);
     let reader = HistoryReader::new(&catalog, Some(&admin), None);
     let list = |query: &[(&str, &str)]| {
         let query: Vec<(String, String)> = query

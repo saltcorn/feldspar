@@ -11,13 +11,13 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use sc_cli::config_file::ConfigFile;
 use sc_cli::setup::{
     Choices, Database, DbKind, Family, Host, Merged, Mode, NODE_MAJOR, OPENRC_CONF, Prompter,
     RemotePostgres, SYSTEMD_TLS_DROPIN, ServiceManager, SetupArgs, Step, browser_check_argv,
     describe, environment_section, execute, merge_config, next_steps, npm_new_enough,
     parse_os_release, plan, python_check_argv, resolve, systemd_unit, tls_setting, ubuntu_like,
 };
+use sc_config_file::ConfigFile;
 
 fn args(list: &[&str]) -> SetupArgs {
     SetupArgs::parse(&list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>())
@@ -358,7 +358,10 @@ fn server_with_a_remote_postgres_installs_no_database() {
     assert_eq!(env.port, Some(6432));
     assert_eq!(env.user.as_deref(), Some("app"));
     // Quoted and escaped, so a password with a `"` in it survives.
-    assert_eq!(env.password.as_deref(), Some("s3cr\"t"));
+    assert_eq!(
+        env.password.as_ref().map(sc_error::Secret::expose_str),
+        Some("s3cr\"t")
+    );
     assert_eq!(env.database.as_deref(), Some("prod"));
 
     let url = server_choices(&["--database-url", "postgres://app:pw@db/prod"], &host);

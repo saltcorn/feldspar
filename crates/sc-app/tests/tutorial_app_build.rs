@@ -21,7 +21,7 @@ use sc_app::{
     ApiConfig, AppRequest, Application, CodeFramework, FrameworkRef, app_source_from_config,
     build_application, build_application_if_changed, scaffold_app,
 };
-use sc_catalog::{Catalog, DataField, FileStoreId, TableId};
+use sc_catalog::{Catalog, DataField, FileStoreId};
 use sc_db::{ColumnGenerator, DatabaseDriver};
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -108,7 +108,7 @@ fn todo_app() -> Application {
             .with("store", "apps")
             .with("project", "todo"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"))
 }
@@ -132,7 +132,12 @@ async fn the_tutorial_app_scaffolds_installs_type_checks_builds_and_serves() -> 
     assert!(scaffold.files.iter().any(|f| f.ends_with("package.json")));
     // The sign-in pages are in what is type-checked below, the two-factor
     // step and security page among them.
-    assert!(scaffold.files.iter().any(|f| f.ends_with("src/SecondFactor.tsx")));
+    assert!(
+        scaffold
+            .files
+            .iter()
+            .any(|f| f.ends_with("src/SecondFactor.tsx"))
+    );
 
     // Step 4: Build. Installs dependencies, regenerates the runtime, type-checks
     // and bundles. A failure here carries the tool's own diagnostics, which is
@@ -254,7 +259,7 @@ async fn an_app_with_no_api_provider_is_told_so_not_shown_typescript_errors() ->
             .with("store", "apps")
             .with("project", "todo"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()));
 
     let err = scaffold_app(&cat, &app, None)
@@ -343,9 +348,9 @@ async fn projects_for_unusual_table_sets_also_build() -> sc_error::Result<()> {
             .with("store", "apps")
             .with("project", "mixed"),
     )
-    .with_table(TableId("tasks".to_owned()))
-    .with_table(TableId("events".to_owned()))
-    .with_table(TableId("people".to_owned()))
+    .with_table("tasks".to_owned())
+    .with_table("events".to_owned())
+    .with_table("people".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     scaffold_app(&cat, &mixed, None).await?;

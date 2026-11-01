@@ -3,7 +3,7 @@
 //! A changeset is **not a transaction**. A trigger's action commits after the
 //! write that fired it, in a transaction of its own (§10.2), and its writes are
 //! as much the user's action as the write itself. So the changeset travels with
-//! the caller instead: [`CallerContext`](crate::CallerContext) carries one, and
+//! the caller instead: [`Principal`](crate::Principal) carries one, and
 //! [`set_caller_context`](crate::set_caller_context) hands it to the change-log
 //! trigger as the transaction-local [`CHANGESET_GUC`], beside the role and the
 //! user. An event carries it on to the triggers it fires, so their writes join
@@ -12,7 +12,7 @@
 //! Where nothing hands one over, the **ambient** changeset is used: whatever
 //! [`scope`] set for the task. A request runs inside one, minted by the server
 //! for that request, and so does a CSV import, an MCP tool call, a workflow
-//! step and a trigger's action. [`CallerContext::new`](crate::CallerContext::new)
+//! step and a trigger's action. [`Principal::new`](crate::Principal::new)
 //! picks it up, which is what lets the many places that build a caller keep
 //! doing so without each being told about changesets.
 //!
@@ -82,7 +82,7 @@ impl ChangesetSource {
 /// One user-level action, as the writes it causes carry it.
 ///
 /// The user is not stored here: it is the writer's
-/// ([`CallerContext::user`](crate::CallerContext::user)), which for a trigger
+/// ([`Principal::user`](crate::Principal::user)), which for a trigger
 /// running with admin authority is still the user who caused it — the answer
 /// to "who changed this?".
 #[derive(Debug, Clone, PartialEq)]
@@ -221,7 +221,7 @@ tokio::task_local! {
 }
 
 /// Run `future` with `changeset` as the ambient changeset: every
-/// [`CallerContext`](crate::CallerContext) built inside it belongs to it.
+/// [`Principal`](crate::Principal) built inside it belongs to it.
 pub async fn scope<F: Future>(changeset: Arc<Changeset>, future: F) -> F::Output {
     CURRENT.scope(changeset, future).await
 }

@@ -12,20 +12,19 @@
 //! - **The table is logged**, which is the one thing `_fd_sessions` is not, and
 //!   the difference between a lost session and a support call.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 use sc_auth::{
-    API_TOKENS_TABLE, COL_TOKEN_ID, NewApiToken, ROLE_ADMIN, ROLE_PUBLIC, TOKEN_PREFIX, User,
-    UserUpdate, authenticate_api_token, bootstrap, create_user, delete_user, list_api_tokens,
-    mint_api_token, revoke_api_token, set_user_disabled, update_user,
+    API_TOKENS_TABLE, COL_TOKEN_ID, NewApiToken, TOKEN_PREFIX, User, UserUpdate,
+    authenticate_api_token, bootstrap, create_user, delete_user, list_api_tokens, mint_api_token,
+    revoke_api_token, set_user_disabled, update_user,
 };
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_query::{Expr, Select, Source, Statement, Value};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use sc_types::Attrs;
 use serde_json::json;
 
@@ -36,30 +35,14 @@ struct Fixture {
 }
 
 async fn fixture() -> Result<Fixture> {
-    let db = TestDb::new().await?;
-    // As `db_sessions`: the v1 test template carries `users` tables in several
-    // schemas, and bootstrap must find none of them.
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     bootstrap(&catalog).await?;
     Ok(Fixture { catalog, db })
 }
 
 /// An admin to mint for.
 async fn admin(catalog: &Catalog, email: &str) -> Result<User> {
-    create_user(catalog, email, "pw", ROLE_ADMIN).await
+    create_user(catalog, email, "pw", Role::ADMIN).await
 }
 
 /// The six flags as a token stores them.
@@ -79,7 +62,7 @@ fn grants() -> Attrs {
 
 fn new_token(user: &User, label: &str) -> NewApiToken {
     NewApiToken {
-        user_id: user.id,
+        user_id: user.id(),
         label: label.to_owned(),
         grants: grants(),
         expires_at: None,
@@ -90,7 +73,7 @@ fn new_token(user: &User, label: &str) -> NewApiToken {
 /// stored rather than what the API says is.
 async fn raw_rows(catalog: &Catalog) -> Result<Vec<sc_db::Row>> {
     catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(Select::from(Source::table(
             API_TOKENS_TABLE,
         ))))
@@ -109,8 +92,8 @@ async fn a_minted_token_authenticates_and_its_plaintext_is_not_in_the_table() ->
     assert!(minted.secret.starts_with(TOKEN_PREFIX));
 
     let caller = authenticate_api_token(&f.catalog, &minted.secret).await?;
-    assert_eq!(caller.user.id, user.id);
-    assert_eq!(caller.user.role, ROLE_ADMIN);
+    assert_eq!(caller.user.id(), user.id());
+    assert_eq!(caller.user.role(), Role::ADMIN);
     assert_eq!(caller.token.id, minted.token.id);
     // The grants arrive back as they were minted: this crate stores them and
     // does not interpret them (§13.6 — the vocabulary is `sc-api::mcp`'s).
@@ -233,9 +216,9 @@ async fn a_token_is_no_stronger_than_the_account_it_names() -> Result<()> {
     authenticate_api_token(&f.catalog, &theirs.secret).await?;
     update_user(
         &f.catalog,
-        demoted.id,
+        demoted.id(),
         UserUpdate {
-            role: Some(ROLE_PUBLIC),
+            role: Some(Role::PUBLIC),
             ..UserUpdate::default()
         },
     )
@@ -248,7 +231,7 @@ async fn a_token_is_no_stronger_than_the_account_it_names() -> Result<()> {
     // Disabled.
     let disabled = admin(&f.catalog, "disabled@example.com").await?;
     let theirs = mint_api_token(&f.catalog, new_token(&disabled, "disabled")).await?;
-    set_user_disabled(&f.catalog, disabled.id, true).await?;
+    set_user_disabled(&f.catalog, disabled.id(), true).await?;
     let err = authenticate_api_token(&f.catalog, &theirs.secret)
         .await
         .expect_err("a disabled account's token is not a credential");
@@ -258,7 +241,7 @@ async fn a_token_is_no_stronger_than_the_account_it_names() -> Result<()> {
     // why `user_id` is not a foreign key.
     let deleted = admin(&f.catalog, "deleted@example.com").await?;
     let theirs = mint_api_token(&f.catalog, new_token(&deleted, "deleted")).await?;
-    assert!(delete_user(&f.catalog, deleted.id).await?);
+    assert!(delete_user(&f.catalog, deleted.id()).await?);
     let err = authenticate_api_token(&f.catalog, &theirs.secret)
         .await
         .expect_err("there is nobody left to run as");
@@ -401,7 +384,7 @@ async fn expire(f: &Fixture, id: uuid::Uuid, at: chrono::DateTime<Utc>) -> Resul
     )
     .filter(Expr::col(COL_TOKEN_ID).eq(Expr::lit(id)));
     f.catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(update))
         .await?
         .try_collect()

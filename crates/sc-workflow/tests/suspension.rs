@@ -11,6 +11,7 @@
 //! run is testable at all: it is a **row**, not a parked future, so the test
 //! writes the row, moves the clock, and asks the queue.
 
+use sc_types::Role;
 use std::sync::{Arc, Mutex};
 
 use chrono::{Duration, Utc};
@@ -25,12 +26,13 @@ use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
 use sc_expr::{DenoEvaluator, JsEvaluator};
 use sc_test_harness::TestDb;
+use sc_types::clock::{Clock, ManualClock};
 use sc_types::{Attrs, BasicType, FormField, TypeRef};
 use sc_workflow::{
-    Assignment, Clock, DatabaseQueue, Driver, ErrorPolicy, FieldDecl, ManualClock, Next, Step,
-    StepKind, Workflow, bootstrap_run_traces, bootstrap_workflow_versions, cancel_run,
-    check_may_resume, list_run_traces, list_workflow_runs, resume_run, retry_run, run_pending_form,
-    run_state, save_workflow, start_run,
+    Assignment, DatabaseQueue, Driver, ErrorPolicy, FieldDecl, Next, Step, StepKind, Workflow,
+    bootstrap_run_traces, bootstrap_workflow_versions, cancel_run, check_may_resume,
+    list_run_traces, list_workflow_runs, resume_run, retry_run, run_pending_form, run_state,
+    save_workflow, start_run,
 };
 use serde_json::{Value as Json, json};
 
@@ -159,7 +161,7 @@ fn flaky_step(name: &str) -> Step {
 /// The approval workflow the milestone's definition of done is written around,
 /// minus the parts that need an LLM and a mail server: ask a person, then record
 /// what they said.
-fn approval(id: TriggerId, min_role: Option<u8>, timeout: Option<&str>) -> Workflow {
+fn approval(id: TriggerId, min_role: Option<Role>, timeout: Option<&str>) -> Workflow {
     Workflow::of(
         id,
         1,
@@ -549,7 +551,13 @@ async fn a_forms_role_floor_travels_with_the_run() -> Result<()> {
     let dispatcher = dispatcher(flaky)?;
 
     let trigger = trigger("staffed");
-    save_workflow(&catalog, &approval(trigger.id, Some(40), None), "v1", None).await?;
+    save_workflow(
+        &catalog,
+        &approval(trigger.id, Some(Role::of(40)), None),
+        "v1",
+        None,
+    )
+    .await?;
     let clock = ManualClock::new(Utc::now());
     let run = start_run(
         &catalog,
@@ -565,10 +573,15 @@ async fn a_forms_role_floor_travels_with_the_run() -> Result<()> {
     // asks — which is what lets the workflow be edited underneath a form
     // somebody has open without the rules changing under them.
     let form = run_pending_form(&require_run(&catalog, run.id).await?)?.expect("a form");
-    assert_eq!(form.min_role, Some(40));
-    assert!(check_may_resume(&form, 1).is_ok(), "an admin always may");
-    assert!(check_may_resume(&form, 40).is_ok());
-    let err = check_may_resume(&form, 80).unwrap_err().to_string();
+    assert_eq!(form.min_role, Some(Role::of(40)));
+    assert!(
+        check_may_resume(&form, Role::ADMIN).is_ok(),
+        "an admin always may"
+    );
+    assert!(check_may_resume(&form, Role::of(40)).is_ok());
+    let err = check_may_resume(&form, Role::of(80))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("role 40"), "{err}");
     Ok(())
 }

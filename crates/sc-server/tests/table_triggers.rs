@@ -29,15 +29,13 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_action::{Event, EventKind, Trigger, TriggerDispatcher, save_trigger};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router,
-    default_js_evaluator, install_triggers,
+    AppMounts, ServerConfig, admin_handlers, build_router, default_js_evaluator, install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -139,24 +137,7 @@ impl Server {
 }
 
 async fn setup() -> sc_error::Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(&format!(
-            // The multi-tenant v1 test template carries `users` tables in several
-            // schemas; drop them all so bootstrap creates the clean MVP table.
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$; {SCHEMA}"
-        ))
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().sql(SCHEMA).build().await?;
     sc_auth::bootstrap(&catalog).await?;
 
     // The boot path itself: the built-in actions, the stored triggers, and the
@@ -213,7 +194,7 @@ async fn an_insert_writes_the_audit_row_its_trigger_configures() -> sc_error::Re
                 "what": "\"insert\"",
                 "title": "row.title",
                 "pages": "row.pages",
-                // The caller only reaches here because a `CallerContext` travels
+                // The caller only reaches here because a `Principal` travels
                 // with every write, not only with the RLS ones.
                 "who": "user.email",
             }),
@@ -586,6 +567,7 @@ async fn a_failing_action_costs_the_trigger_and_nothing_else() -> sc_error::Resu
 /// application's table subset. A name that is taken, and a built-in table, are
 /// refused.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn renaming_a_table_moves_what_names_it() -> sc_error::Result<()> {
     let mut server = setup().await?;
     sc_catalog::bootstrap_table_meta(&server.catalog).await?;
@@ -622,7 +604,7 @@ async fn renaming_a_table_moves_what_names_it() -> sc_error::Result<()> {
                 .with("output", "web/dist")
                 .with("command", "sh build.sh"),
         )
-        .with_table(sc_catalog::TableId("books".to_owned())),
+        .with_table("books".to_owned()),
     )
     .await?;
     let (status, body) = server
@@ -739,7 +721,7 @@ async fn renaming_a_table_moves_what_names_it() -> sc_error::Result<()> {
         .into_iter()
         .find(|a| a.subdomain == "shelf")
         .unwrap();
-    let tables: Vec<&str> = app.tables.iter().map(|t| t.0.as_str()).collect();
+    let tables: Vec<&str> = app.tables.iter().map(|t| t.as_str()).collect();
     assert_eq!(tables, vec!["titles"]);
 
     // Refused: a name that is taken, a built-in table, and a rename in a batch

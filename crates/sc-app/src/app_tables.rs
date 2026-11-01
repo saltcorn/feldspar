@@ -13,7 +13,7 @@
 //! connected before its row API can be served, and disconnecting it stops
 //! serving it.
 
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 
 use crate::application::Application;
@@ -39,7 +39,7 @@ pub fn change_app_tables(
 ) -> Result<bool> {
     let mut tables: Vec<String> = match &change.set {
         Some(set) => set.clone(),
-        None => app.tables.iter().map(|t| t.0.clone()).collect(),
+        None => app.tables.to_vec(),
     };
     for add in &change.add {
         if !tables.contains(add) {
@@ -50,7 +50,7 @@ pub fn change_app_tables(
     for table in &tables {
         // A table already connected stays connectable, so a list can always
         // be shrunk past one that was dropped since.
-        if app.tables.iter().any(|t| &t.0 == table) {
+        if app.tables.iter().any(|t| t == table) {
             continue;
         }
         if catalog.get(table)?.is_none() {
@@ -60,9 +60,9 @@ pub fn change_app_tables(
             )));
         }
     }
-    let tables: Vec<TableId> = tables.into_iter().map(TableId).collect();
+    let tables: Vec<String> = tables.into_iter().collect();
     // A row API over a table the app no longer includes is not one it serves.
-    let api_tables: Vec<TableId> = app
+    let api_tables: Vec<String> = app
         .api_tables
         .iter()
         .filter(|t| tables.contains(t))
@@ -80,7 +80,7 @@ pub fn change_app_tables(
 pub fn change_app_api_tables(app: &mut Application, change: &TableChange) -> Result<bool> {
     let mut tables: Vec<String> = match &change.set {
         Some(set) => set.clone(),
-        None => app.api_tables.iter().map(|t| t.0.clone()).collect(),
+        None => app.api_tables.to_vec(),
     };
     for add in &change.add {
         if !tables.contains(add) {
@@ -88,7 +88,7 @@ pub fn change_app_api_tables(app: &mut Application, change: &TableChange) -> Res
         }
     }
     tables.retain(|t| !change.remove.contains(t));
-    let tables: Vec<TableId> = tables.into_iter().map(TableId).collect();
+    let tables: Vec<String> = tables.into_iter().collect();
     for table in &tables {
         not_connected(app, table)?;
     }
@@ -105,13 +105,13 @@ pub fn validate_api_tables(app: &Application) -> Result<()> {
     Ok(())
 }
 
-fn not_connected(app: &Application, table: &TableId) -> Result<()> {
-    if app.tables.contains(table) {
+fn not_connected(app: &Application, table: &str) -> Result<()> {
+    if app.can_access_table(table) {
         return Ok(());
     }
     Err(Error::invalid(format!(
         "application `{}` cannot serve the row API of `{}`: it is not connected to that \
          table. Connect it first (its `tables`), or leave it out of `api_tables`.",
-        app.name, table.0
+        app.name, table
     )))
 }

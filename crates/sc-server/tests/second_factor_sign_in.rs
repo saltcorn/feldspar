@@ -19,23 +19,24 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use chrono::Utc;
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{Role, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, SecretKey, TableId};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
+use sc_catalog::{Catalog, SecretKey};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, SECOND_FACTOR_COOKIE,
-    SECOND_FACTOR_PAGE_ROUTE, SECOND_FACTOR_VERIFY_ROUTE, ServerConfig, admin_handlers,
-    build_router_with_apps,
+    AppMounts, MountedApp, SECOND_FACTOR_COOKIE, SECOND_FACTOR_PAGE_ROUTE,
+    SECOND_FACTOR_VERIFY_ROUTE, ServerConfig, admin_handlers, build_router_with_apps,
 };
 use sc_test_harness::TestDb;
+use sc_types::Role;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const BASE_DOMAIN: &str = "example.com";
 const CLUB: &str = "club.example.com";
-const ROLE_MEMBER: u8 = 80;
+const ROLE_MEMBER: Role = Role::of(80);
 const SESSION: &str = "sc_session";
 
 /// A cookie-carrying client addressing one host, echoing CSRF on mutations.
@@ -177,14 +178,20 @@ async fn setup() -> sc_error::Result<Fixture> {
     sc_auth::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_config::bootstrap_config(&catalog).await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
-    create_user(&catalog, "admin@example.com", "admin-pw", 1).await?;
-    create_user(&catalog, "member@example.com", "member-pw", ROLE_MEMBER).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
+    create_user(
+        &catalog,
+        "member@example.com",
+        "member-pw",
+        ROLE_MEMBER,
+    )
+    .await?;
 
     let apps = Arc::new(AppMounts::new(catalog.clone()));
     let club = Application::new("Club", "club", FrameworkRef::new("code"))
         .with_api(ApiConfig::new("rest", "/api"))
-        .with_table(TableId(sc_auth::USERS_TABLE.to_owned()));
+        .with_table(sc_auth::USERS_TABLE.to_owned());
     apps.mount(MountedApp::new_with(
         club,
         Arc::new(CodeFramework::new(
@@ -221,7 +228,12 @@ async fn turn_on(client: &mut Client) -> (String, Vec<String>) {
         .await;
     assert_eq!(status, StatusCode::OK, "{setup}");
     let secret = setup["secret"].as_str().unwrap().to_owned();
-    assert!(setup["otpauth_url"].as_str().unwrap().starts_with("otpauth://totp/"));
+    assert!(
+        setup["otpauth_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("otpauth://totp/")
+    );
     assert!(setup["qr_svg"].as_str().unwrap().contains("<svg"));
     let (status, enabled) = client
         .send(
@@ -246,7 +258,10 @@ async fn an_admin_signs_in_with_a_code_once_turned_on() -> sc_error::Result<()> 
     let mut desk = Client::new(&fx.router, BASE_DOMAIN).await;
     let (status, me) = desk.login("admin@example.com", "admin-pw").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(me["second_factor"].is_null(), "nothing is asked before it is on: {me}");
+    assert!(
+        me["second_factor"].is_null(),
+        "nothing is asked before it is on: {me}"
+    );
     let (secret, codes) = turn_on(&mut desk).await;
     let (_, status) = desk.send("GET", "/_feldspar/second-factor", None).await;
     assert_eq!(status["enabled"], json!(true));
@@ -266,13 +281,21 @@ async fn an_admin_signs_in_with_a_code_once_turned_on() -> sc_error::Result<()> 
     // A wrong code leaves the challenge to try again; the right one signs in.
     let verify = |code: String| json!({ "token": token, "code": code });
     let (status, _) = laptop
-        .send("POST", "/_feldspar/second-factor/verify", Some(verify("000000".into())))
+        .send(
+            "POST",
+            "/_feldspar/second-factor/verify",
+            Some(verify("000000".into())),
+        )
         .await;
     if code(&secret, 1) != "000000" {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
     let (status, me) = laptop
-        .send("POST", "/_feldspar/second-factor/verify", Some(verify(code(&secret, 1))))
+        .send(
+            "POST",
+            "/_feldspar/second-factor/verify",
+            Some(verify(code(&secret, 1))),
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{me}");
     assert_eq!(me["email"], json!("admin@example.com"));
@@ -281,14 +304,21 @@ async fn an_admin_signs_in_with_a_code_once_turned_on() -> sc_error::Result<()> 
     assert_eq!(status, StatusCode::OK);
     // The challenge is spent.
     let (status, _) = laptop
-        .send("POST", "/_feldspar/second-factor/verify", Some(verify(code(&secret, 1))))
+        .send(
+            "POST",
+            "/_feldspar/second-factor/verify",
+            Some(verify(code(&secret, 1))),
+        )
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // The same code on another sign-in is a replay; a recovery code is good once.
     let mut phone = Client::new(&fx.router, BASE_DOMAIN).await;
     let (_, answer) = phone.login("admin@example.com", "admin-pw").await;
-    let token = answer["second_factor"]["token"].as_str().unwrap().to_owned();
+    let token = answer["second_factor"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let (status, _) = phone
         .send(
             "POST",
@@ -351,9 +381,17 @@ async fn a_role_that_requires_one_sets_it_up_at_sign_in() -> sc_error::Result<()
     assert_eq!(status, StatusCode::OK, "{role}");
     assert_eq!(role["require_second_factor"], json!(true));
     let (status, _) = admin
-        .send("POST", "/api/roles/100/second-factor", Some(json!({ "required": true })))
+        .send(
+            "POST",
+            "/api/roles/100/second-factor",
+            Some(json!({ "required": true })),
+        )
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "nobody signs in as the public role");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "nobody signs in as the public role"
+    );
 
     // The member's application sign-in is taken through setting one up.
     let mut member = Client::new(&fx.router, CLUB).await;
@@ -361,7 +399,10 @@ async fn a_role_that_requires_one_sets_it_up_at_sign_in() -> sc_error::Result<()
     assert_eq!(status, StatusCode::OK, "{answer}");
     assert_eq!(answer["second_factor"]["setup"], json!(true));
     assert!(!member.signed_in());
-    let token = answer["second_factor"]["token"].as_str().unwrap().to_owned();
+    let token = answer["second_factor"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let (status, setup) = member
         .send(
             "POST",
@@ -372,7 +413,10 @@ async fn a_role_that_requires_one_sets_it_up_at_sign_in() -> sc_error::Result<()
     assert_eq!(status, StatusCode::OK, "{setup}");
     assert_eq!(setup["account"], json!("member@example.com"));
     assert!(
-        setup["otpauth_url"].as_str().unwrap().contains("issuer=example.com"),
+        setup["otpauth_url"]
+            .as_str()
+            .unwrap()
+            .contains("issuer=example.com"),
         "listed under the base domain: {setup}"
     );
     let secret = setup["secret"].as_str().unwrap().to_owned();
@@ -418,7 +462,11 @@ async fn a_role_that_requires_one_sets_it_up_at_sign_in() -> sc_error::Result<()
     assert_eq!(row["second_factor"], json!(true));
     let id = row["id"].as_str().unwrap();
     let (status, reset) = admin
-        .send("POST", &format!("/api/users/{id}/second-factor/reset"), Some(json!({})))
+        .send(
+            "POST",
+            &format!("/api/users/{id}/second-factor/reset"),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{reset}");
     assert_eq!(reset["reset"], json!(true));
@@ -431,10 +479,18 @@ async fn a_role_that_requires_one_sets_it_up_at_sign_in() -> sc_error::Result<()
     // authentication sends the browser to the server's page on its own host,
     // which sets one up from the challenge in the cookie.
     let page = later
-        .request("GET", &format!("{SECOND_FACTOR_PAGE_ROUTE}?return_to=/"), None)
+        .request(
+            "GET",
+            &format!("{SECOND_FACTOR_PAGE_ROUTE}?return_to=/"),
+            None,
+        )
         .await;
     assert_eq!(page.status, StatusCode::OK);
-    assert!(page.text.contains("Set up two-factor authentication"), "{}", page.text);
+    assert!(
+        page.text.contains("Set up two-factor authentication"),
+        "{}",
+        page.text
+    );
     assert!(page.text.contains("<svg"), "the QR code");
     assert!(page.text.contains("/_feldspar/second-factor/enable"));
 
@@ -462,19 +518,28 @@ async fn a_browser_answers_the_challenge_on_the_servers_page() -> sc_error::Resu
         "the challenge rides in its own cookie too"
     );
     let page = browser
-        .request("GET", &format!("{SECOND_FACTOR_PAGE_ROUTE}?return_to=/after"), None)
+        .request(
+            "GET",
+            &format!("{SECOND_FACTOR_PAGE_ROUTE}?return_to=/after"),
+            None,
+        )
         .await;
     assert_eq!(page.status, StatusCode::OK);
-    assert!(page.text.contains("Two-factor authentication"), "{}", page.text);
+    assert!(
+        page.text.contains("Two-factor authentication"),
+        "{}",
+        page.text
+    );
     assert!(page.text.contains(SECOND_FACTOR_VERIFY_ROUTE));
     assert!(page.text.contains("name=\"_csrf\""));
 
     let csrf = browser.cookies.get(CSRF_COOKIE).unwrap().clone();
-    let form = |code: &str| {
-        format!("_csrf={csrf}&return_to=%2Fafter&code={code}")
-            .into_bytes()
+    let form = |code: &str| format!("_csrf={csrf}&return_to=%2Fafter&code={code}").into_bytes();
+    let wrong = if code(&secret, 1) == "111111" {
+        "222222"
+    } else {
+        "111111"
     };
-    let wrong = if code(&secret, 1) == "111111" { "222222" } else { "111111" };
     let answer = browser
         .request(
             "POST",
@@ -503,5 +568,34 @@ async fn a_browser_answers_the_challenge_on_the_servers_page() -> sc_error::Resu
     // With no challenge, the page says the sign-in expired.
     let page = browser.request("GET", SECOND_FACTOR_PAGE_ROUTE, None).await;
     assert!(page.text.contains("expired"), "{}", page.text);
+    Ok(())
+}
+
+/// A session issued on an application's host is not a session on the admin
+/// host (security review #15), for the second factor's routes as for every
+/// other: it cannot read, turn off or replace an admin's second factor there.
+#[tokio::test]
+async fn an_applications_session_is_nobody_on_the_admin_host() -> sc_error::Result<()> {
+    let fx = setup().await?;
+    let mut app = Client::new(&fx.router, CLUB).await;
+    let (status, me) = app.login("admin@example.com", "admin-pw").await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    let token = app.cookies.get(SESSION).cloned().expect("a session cookie");
+    assert!(
+        token.starts_with(sc_auth::APP_TOKEN_PREFIX),
+        "issued for the application"
+    );
+    let (status, body) = app.send("GET", "/_feldspar/second-factor", None).await;
+    assert_eq!(status, StatusCode::OK, "its own host: {body}");
+
+    // The same cookie, carried to the admin host (a shared cookie domain).
+    let mut desk = Client::new(&fx.router, BASE_DOMAIN).await;
+    desk.cookies.insert(SESSION.to_owned(), token);
+    let (status, _) = desk.send("GET", "/_feldspar/second-factor", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = desk
+        .send("POST", "/_feldspar/second-factor/setup", Some(json!({})))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     Ok(())
 }

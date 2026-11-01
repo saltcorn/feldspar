@@ -11,6 +11,7 @@
 //! anywhere in this file is `settle()`, which is not waiting for a *decision* —
 //! it is waiting for a spawned task to have run at all.
 
+use sc_types::Role;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -264,7 +265,7 @@ async fn a_rename_and_a_new_description_keep_the_broker_session() {
     let renamed = boiler
         .clone()
         .description("the boiler's temperature")
-        .min_role(40);
+        .min_role(Role::of(40));
     let renamed = Stream {
         name: "boiler_temp".to_owned(),
         ..renamed
@@ -280,7 +281,7 @@ async fn a_rename_and_a_new_description_keep_the_broker_session() {
     let running = supervisor.get(boiler.id).expect("still the same stream");
     assert!(running.status().is_running());
     assert_eq!(running.name(), "boiler_temp");
-    assert_eq!(running.min_role(), Some(40));
+    assert_eq!(running.min_role(), Some(Role::of(40)));
 
     // The new name is what the envelopes carry from here on — the reference a
     // trigger's channel holds is broken deliberately, as a trigger's rename is.

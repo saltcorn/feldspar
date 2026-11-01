@@ -77,7 +77,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
    terminal and that decision must not arrive by the back door; `run_project_script` (an existing
    `package.json` script, by name) is the bounded version that ships.
 7. **Tests split as before.** Rust for `sc-llm` (against a stub HTTP server, never a real vendor),
-   `sc-agent` (the loop against a scripted fake provider) and `sc-core-traits` (real Postgres,
+   `sc-agent` (the loop against a scripted fake provider) and `sc-agent-builtins` (real Postgres,
    real file stores). `vitest` for `ui/admin`'s chat model against a stubbed socket. **No test may
    require an API key or spend a token**; the fake provider is a first-class part of the crate, not
    a test fixture bolted on.
@@ -162,7 +162,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 - [x] The run's caller travels with it and every tool executes as that user (decision 5). The
       constructor takes the caller; there is no default and no ambient admin.
 - [x] A **`FakeProvider`** in the crate (behind a `testing` feature, not `#[cfg(test)]`, so
-      `sc-core-traits` and `sc-server` can use it): scripted turns — "emit this text", "call this
+      `sc-agent-builtins` and `sc-server` can use it): scripted turns — "emit this text", "call this
       tool with these arguments", "then say this" — which is what makes the loop, every trait and
       the chat socket testable without a vendor.
 - [x] Tests: Rust — a single-turn run; a run that calls one tool and continues; two tool calls in
@@ -174,9 +174,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
       library against the fake provider and against a real one, and its run row can be reloaded
       into the same message history.
 
-## Phase 3 — `sc-core-traits`: connecting tables and actions
+## Phase 3 — `sc-agent-builtins`: connecting tables and actions
 
-- [x] New crate `sc-core-traits` at layer 9, beside `sc-core-actions` and for the same reason: a
+- [x] New crate `sc-agent-builtins` at layer 9, beside `sc-action-builtins` and for the same reason: a
       trait that writes a row goes **through `sc-api::rows`**, so the write is coerced, validated,
       `File`-field-checked and observed by triggers exactly like an API caller's.
 - [x] `query_table` — configured with one table, an optional field allow-list and a maximum row
@@ -289,12 +289,12 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## Phase 6 — The agent as a trigger body, and documentation
 
-- [x] `run_agent`: a registered `Action` in `sc-core-traits` taking an agent name and a **prompt
+- [x] `run_agent`: a registered `Action` in `sc-agent-builtins` taking an agent name and a **prompt
       formula** evaluated in the event's scope (§10.1), so a row insert starts an agent with a
       prompt derived from the row. It runs with the trigger's authority (decision 5) and returns
       the final assistant message plus the run id. It does **not** stream — an action returns a
       value, and a caller who wants deltas is a chat client. *(Registered separately from
-      `sc-core-actions`' set, through `register_agent_actions`, because it needs the assembled
+      `sc-action-builtins`' set, through `register_agent_actions`, because it needs the assembled
       trait registry and the deployment's provider connector — which moved down to `sc-agent` as
       `ProviderConnector` so this crate can reach it. `install_agents` therefore runs before
       `install_triggers`.)*
@@ -343,7 +343,7 @@ able to fail halfway with no way back. One list is one turn, one transaction and
       primary key, `createField`'s `resolve_field_type` → DDL → `_sc_fields` overlay sequence,
       `parse_field_kind`, `validate_calc_field`, `needs_overlay` — and, with the access controls now
       in scope, `updateTable`'s `validate_ownership_settings` and its `sync_table_rls` call.
-      `sc-core-traits` is layer 9 and
+      `sc-agent-builtins` is layer 9 and
       cannot name `sc-server`, so a trait that re-implemented them would be a second answer to "what
       does creating a field mean", and the two would drift within a release. Move them to a new
       module in `sc-api` (layer 8) beside `rows` — `schema_edit`, because `schema.rs` there already
@@ -516,7 +516,7 @@ because nothing else knows what building an app of that kind consists of.
       to ask. `None` is a real answer: a framework with no source tree has no builder to declare
       and nothing fails over it.
 - [x] The spec is **data** (`BuilderAgentSpec`: a name, a description, a system prompt and
-      `BuilderTrait`s of trait-name + `Attrs`), because the traits are `sc-core-traits`' and that is
+      `BuilderTrait`s of trait-name + `Attrs`), because the traits are `sc-agent-builtins`' and that is
       two layers above `sc-app`. A framework names them exactly as an application names its API
       providers. Assembling one into an `Agent` and storing it is the server's, which is the layer
       that knows agents exist.
@@ -545,7 +545,7 @@ because nothing else knows what building an app of that kind consists of.
       different screen, while edits to the real builder do not buy it survival. Its runs are kept,
       as `deleteAgent`'s are, and the delete response names what went.
 - [x] Tests: `sc-app` — the spec each framework declares (scope, grants, build target, prompt) and
-      the `None` cases. **`sc-core-traits` holds the two halves to each other**, since it is the one
+      the `None` cases. **`sc-agent-builtins` holds the two halves to each other**, since it is the one
       layer that sees both: every declared trait name resolves in the built-in registry and every
       declared setting validates against that trait's own `config_spec`, which turns a renamed
       setting into a build failure instead of an `agent_error` on every application created

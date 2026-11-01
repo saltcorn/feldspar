@@ -482,7 +482,10 @@ async fn store_with(label: &str, files: &[(&str, &str)]) -> Arc<dyn FileStore> {
     let store = LocalFileStore::new("models", &dir).unwrap();
     for (path, text) in files {
         store
-            .write(path, bytes::Bytes::from(text.to_string()))
+            .write(
+                &sc_files::StorePath::parse(path).unwrap(),
+                bytes::Bytes::from(text.to_string()),
+            )
             .await
             .unwrap();
     }

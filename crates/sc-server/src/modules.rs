@@ -27,9 +27,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use sc_action::TriggerDispatcher;
+use sc_action_builtins::CodeSurfaces;
 use sc_app::{FrameworkSet, install_frameworks};
 use sc_catalog::{Catalog, TableProviderHosts};
-use sc_core_actions::CodeSurfaces;
 use sc_error::{Context, Error, Result};
 use sc_expr::ModuleFnHosts;
 use sc_module::{
@@ -626,7 +626,7 @@ impl ModuleServices {
         &self,
         segment: &str,
         request: sc_module::RouteRequest,
-        caller: &sc_module::RouteCaller,
+        caller: &sc_catalog::Principal,
     ) -> Result<Option<sc_module::WebhookResponse>> {
         let set = self.modules();
         let Some(loaded) = sc_module::route_module(&set, segment)? else {

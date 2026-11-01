@@ -12,7 +12,7 @@ rust-version.workspace = true
 # Content hashes, for the tag cache.
 sha2.workspace = true
 # Tree-sitter and its grammars compile C. They are a crate of their own so that
-# nothing else depending on `sc-core-traits` rebuilds them, and they sit behind
+# nothing else depending on `sc-agent-builtins` rebuilds them, and they sit behind
 # `grammars` so a build can leave them out: every file is then a filename entry.
 tree-sitter = { workspace = true, optional = true }
 tree-sitter-tags = { workspace = true, optional = true }

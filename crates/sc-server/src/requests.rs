@@ -38,7 +38,8 @@ use crate::apps::AppMounts;
 use crate::config::ServerConfig;
 use crate::handler::HandlerRegistry;
 use crate::router::build_router_with_apps;
-use crate::security::{CSRF_COOKIE, CSRF_HEADER, PREVIEW_COOKIE, SESSION_COOKIE, new_csrf_token};
+use crate::security::{PREVIEW_COOKIE, SESSION_COOKIE, new_csrf_token};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 
 /// The most of a response body kept.
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -181,7 +182,11 @@ impl AppRequester for AppRequests {
             )));
         }
         let session = match request.user {
-            Some(user) => Some(self.sessions.login(user.clone()).await?),
+            Some(user) => Some(
+                self.sessions
+                    .login_in(user.clone(), sc_auth::SessionScope::App)
+                    .await?,
+            ),
             None => None,
         };
         let pass = request.preview.map(|preview| {

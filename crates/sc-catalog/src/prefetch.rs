@@ -23,11 +23,9 @@ use std::collections::BTreeMap;
 
 use sc_db::Row;
 use sc_error::{Error, Result};
-use sc_expr::{
-    AggUse, Analysis, INVERSE, ModelCall, ModuleArg, ModuleCall, SchemaShape, value_from_json,
-    value_to_json,
-};
+use sc_expr::{AggUse, Analysis, INVERSE, ModelCall, ModuleArg, ModuleCall, SchemaShape};
 use sc_query::{Expr, Projection, Select, Source, Value};
+use sc_types::{value_from_json, value_to_script_json};
 use serde_json::{Map, Value as Json};
 
 use crate::catalog::Catalog;
@@ -125,7 +123,7 @@ async fn resolve_module_call(
     for arg in &call.args {
         args.push(match arg {
             ModuleArg::Literal(text) => serde_json::from_str(text).unwrap_or(Json::Null),
-            ModuleArg::Binding(name) => values.get(name).map_or(Json::Null, value_to_json),
+            ModuleArg::Binding(name) => values.get(name).map_or(Json::Null, value_to_script_json),
         });
     }
     let plan = serde_json::json!({
@@ -171,7 +169,10 @@ async fn resolve_model_call(
         )));
     };
     let key = match table.primary_key.as_slice() {
-        [pk] => values.get(pk).filter(|v| !v.is_null()).map(value_to_json),
+        [pk] => values
+            .get(pk)
+            .filter(|v| !v.is_null())
+            .map(value_to_script_json),
         _ => None,
     };
     let answered = match key {
@@ -192,7 +193,7 @@ async fn resolve_model_call(
             let row: Map<String, Json> = values
                 .iter()
                 .filter(|(name, _)| !name.contains('('))
-                .map(|(name, value)| (name.clone(), value_to_json(value)))
+                .map(|(name, value)| (name.clone(), value_to_script_json(value)))
                 .collect();
             let rows = [Json::Object(row)];
             host.predict(
@@ -243,7 +244,7 @@ async fn resolve_agg_relation(
         .columns(vec![Projection::all()])
         .filter(Expr::col(agg.key_field.clone()).eq(Expr::lit(parent_value)));
     let fetched: Vec<Row> = cat
-        .provider(&child)?
+        .provider_of(&child)?
         .query(&select)
         .await?
         .try_collect()
@@ -255,7 +256,7 @@ async fn resolve_agg_relation(
                 .columns()
                 .iter()
                 .zip(row.values().iter())
-                .map(|(name, value)| (name.clone(), value_to_json(value)))
+                .map(|(name, value)| (name.clone(), value_to_script_json(value)))
                 .collect();
             Json::Object(obj)
         })
@@ -296,14 +297,14 @@ async fn resolve_join_value(
                 current.name
             )));
         };
-        let target = cat.require(&target_table.0)?;
+        let target = cat.require(target_table)?;
         let next = &segments[i];
         let select = Select::from(Source::table(target.name.clone()))
             .columns(vec![Projection::expr(Expr::col(next.clone()))])
             .filter(Expr::col(target_field.0.clone()).eq(Expr::lit(value)))
             .limit(1);
         let fetched: Vec<Row> = cat
-            .provider(&target)?
+            .provider_of(&target)?
             .query(&select)
             .await?
             .try_collect()

@@ -203,7 +203,7 @@ impl Rename<'_> {
         }
         // Read back through the store, so what is mounted is what is stored.
         for app in sc_app::list_applications(catalog).await? {
-            if app.tables.iter().any(|t| t.0 == self.to) {
+            if app.tables.iter().any(|t| t == self.to) {
                 changed.push(app);
             }
         }
@@ -490,7 +490,7 @@ impl Rename<'_> {
 /// Every row of `table`, whole.
 async fn all_rows(catalog: &Catalog, table: &str) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::ADMIN_TASKS)
         .query(&Statement::from(Select::from(Source::table(table))))
         .await?
         .try_collect()
@@ -499,7 +499,7 @@ async fn all_rows(catalog: &Catalog, table: &str) -> Result<Vec<Row>> {
 
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::ADMIN_TASKS)
         .query(&statement)
         .await?
         .try_collect()

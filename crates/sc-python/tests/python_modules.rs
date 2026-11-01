@@ -32,18 +32,15 @@ use std::sync::Arc;
 use sc_action::{
     ActionRegistry, EventKind, Trigger, TriggerDispatcher, bootstrap_triggers, save_trigger,
 };
+use sc_action_builtins::{CodeSurfaces, builtin_actions};
 use sc_catalog::{
-    CallerContext, Catalog, DataField, ProvidedTableDef, ProvidedWrites, TableMeta,
-    TableProviderHost, TableProviderHosts, bootstrap_table_meta, prefetch_bindings,
-    save_table_meta,
+    Catalog, DataField, Principal, ProvidedTableDef, ProvidedWrites, TableMeta, TableProviderHost,
+    TableProviderHosts, bootstrap_table_meta, prefetch_bindings, save_table_meta,
 };
-use sc_core_actions::{CodeSurfaces, builtin_actions};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
-use sc_expr::{
-    CodeAdapter, Formula, ModuleFnHost, ModuleFnHosts, SchemaShape, TableShape, value_to_json,
-};
+use sc_expr::{CodeAdapter, Formula, ModuleFnHost, ModuleFnHosts, SchemaShape, TableShape};
 use sc_module::{
     LoadedModule, Module, ModuleLanguage, ModuleSource, bootstrap_modules, redacted_configuration,
     save_module,
@@ -56,6 +53,7 @@ use sc_query::{
     Assignment, BinOp, Delete, Expr, Insert, Projection, Select, Source, Statement, Update, Value,
 };
 use sc_test_harness::TestDb;
+use sc_types::value_to_script_json;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value as Json, json};
 
@@ -431,9 +429,17 @@ async fn a_python_modules_action_fires_from_a_trigger_and_writes_through_db() ->
     save_trigger(&catalog, &registry, &trigger).await?;
     dispatcher.reload(&catalog).await?;
 
-    let caller = CallerContext::new(1, Some(json!({ "email": "ada@example.com" })));
+    let caller = Principal::new(
+        sc_types::Role::ADMIN,
+        Some(json!({ "email": "ada@example.com" })),
+    );
     let result = dispatcher
-        .run_trigger(&catalog, "note it", json!({ "who": "ada" }), Some(&caller))
+        .run_trigger(
+            &catalog,
+            "note it",
+            json!({ "who": "ada" }),
+            sc_catalog::Authority::Caller(&caller),
+        )
         .await?;
 
     // What the plugin returned: its own configured setting, the **module's**
@@ -526,7 +532,7 @@ async fn a_python_modules_function_is_called_from_a_body_and_from_a_formula() ->
         BTreeMap::from([("notes".to_owned(), Value::Text("hello".to_owned()))]);
     prefetch_bindings(&catalog, &table, &analysis, &shape, &mut values).await?;
     assert_eq!(
-        values.get("fixture_shout(notes)").map(value_to_json),
+        values.get("fixture_shout(notes)").map(value_to_script_json),
         Some(Json::String("HELLO!".to_owned()))
     );
 
@@ -549,7 +555,12 @@ return {
     save_trigger(&catalog, &registry, &trigger).await?;
     dispatcher.reload(&catalog).await?;
     let result = dispatcher
-        .run_trigger(&catalog, "shout", json!({ "what": "quiet" }), None)
+        .run_trigger(
+            &catalog,
+            "shout",
+            json!({ "what": "quiet" }),
+            sc_catalog::Authority::system("test"),
+        )
         .await?;
     assert_eq!(result["short"], json!("QUIET!"));
     assert_eq!(result["named"], json!(5));
@@ -618,7 +629,7 @@ async fn a_table_backed_by_a_python_provider_is_read_filtered_and_written() -> R
     // And it is writable, because the class defines all three write methods.
     assert_eq!(table.provided_writes(), ProvidedWrites::ALL);
 
-    let provider = catalog.provider(&table)?;
+    let provider = catalog.provider(&table, sc_catalog::Unchecked::system("test"))?;
 
     // --- read, filtered ----------------------------------------------------
     let mut select = Select::from(Source::table("fixtures"));

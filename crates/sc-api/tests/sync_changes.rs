@@ -5,7 +5,8 @@
 
 use std::sync::Arc;
 
-use sc_api::{rows, schema_edit};
+use sc_access::rows;
+use sc_api::schema_edit;
 use sc_catalog::{Catalog, bootstrap_change_log, bootstrap_field_meta, bootstrap_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -107,7 +108,13 @@ async fn a_synced_table_records_every_change() -> Result<()> {
     assert!(todo.sync_enabled());
 
     // Through the row layer, and with plain SQL: both are recorded.
-    let created = rows::create_row(&catalog, &todo, &json!({ "title": "milk" })).await?;
+    let created = rows::create_row(
+        &catalog,
+        &todo,
+        &json!({ "title": "milk" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let id = created["id"].as_str().unwrap().to_owned();
     sql(
         &db,
@@ -410,7 +417,13 @@ async fn sqlite_records_a_synced_tables_changes() -> Result<()> {
     let before = sc_catalog::sync_watermark(&catalog, &tx).await?;
     tx.commit().await?;
     let todo = catalog.require("todo")?;
-    rows::create_row(&catalog, &todo, &json!({ "id": "a", "title": "milk" })).await?;
+    rows::create_row(
+        &catalog,
+        &todo,
+        &json!({ "id": "a", "title": "milk" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let tx = sc_catalog::SharedTx::begin_snapshot(&catalog).await?;
     let after = sc_catalog::sync_watermark(&catalog, &tx).await?;
     let keys = sc_catalog::changed_keys(&catalog, &tx, "todo", &before, &after).await?;

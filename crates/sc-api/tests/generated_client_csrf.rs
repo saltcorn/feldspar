@@ -17,7 +17,7 @@
 use std::process::Command;
 
 use sc_api::{ApiProvider, RestProvider};
-use sc_catalog::{AccessRules, DataField, DbId, Table, TableId, TableSource};
+use sc_catalog::{AccessRules, DataField, DbId, Table, TableSource};
 use sc_types::{BasicType, TypeRef};
 
 /// Stub a browser, call a mutating and a safe endpoint, and print what `fetch`
@@ -54,7 +54,6 @@ fn the_generated_client_echoes_the_csrf_cookie_on_mutations() -> std::io::Result
     }
 
     let posts = Table {
-        id: TableId("posts".to_owned()),
         name: "posts".to_owned(),
         database: DbId::primary(),
         source: TableSource::Database,

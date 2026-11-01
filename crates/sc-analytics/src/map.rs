@@ -111,7 +111,7 @@ impl MapSpec {
                 } else {
                     format!("the reference layer \"{}\"", r.name)
                 };
-                return Err(Error::invalid(format!("{name}: {problem}")));
+                return Err(Error::invalid(format!("{name}: {}", problem.message())));
             }
             if !seen.insert(r.id.as_str()) {
                 return Err(Error::invalid(format!(
@@ -123,7 +123,10 @@ impl MapSpec {
         if let Some(view) = &self.view
             && let Err(problem) = view.check()
         {
-            return Err(Error::invalid(format!("the map's view: {problem}")));
+            return Err(Error::invalid(format!(
+                "the map's view: {}",
+                problem.message()
+            )));
         }
         Ok(())
     }
@@ -175,7 +178,7 @@ pub struct MapLayer {
     /// A condition over the dataset's rows, for a layer showing some of them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
-    /// How the encoded columns are drawn (A5.9).
+    /// How the encoded columns are drawn.
     #[serde(default, skip_serializing_if = "Style::is_auto")]
     pub style: Style,
     /// The columns a feature's popup shows, in order; every column when
@@ -242,12 +245,12 @@ impl MapLayer {
     }
 }
 
-/// How a layer's features are drawn (A5.9): the plot encodings, and the
+/// How a layer's features are drawn: the plot encodings, and the
 /// map's own ways of classifying them.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Style {
-    /// As the explorer draws a map (A5.6): a number on Color along a ramp, a
+    /// As the explorer draws a map: a number on Color along a ramp, a
     /// category by its values.
     #[default]
     Auto,
@@ -356,7 +359,7 @@ fn is_hex_colour(s: &str) -> bool {
     s.len() == 7 && s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// A tile or map service drawn for context (A5.11): not a dataset, so it
+/// A tile or map service drawn for context: not a dataset, so it
 /// cannot be analysed, styled or selected from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReferenceLayer {
@@ -415,28 +418,28 @@ impl ReferenceService {
 
     /// The origin its images come from — what Analytics → Settings → Base maps must name for
     /// the browser to load them.
-    pub fn origin(&self) -> std::result::Result<String, String> {
-        sc_config::origin_of(self.url())
+    pub fn origin(&self) -> Result<String> {
+        sc_config::origin_of(self.url()).map_err(Error::invalid)
     }
 }
 
 impl ReferenceLayer {
-    fn check(&self) -> std::result::Result<(), String> {
+    fn check(&self) -> Result<()> {
         if self.id.trim().is_empty() {
-            return Err("it has no id".to_owned());
+            return Err(Error::invalid("it has no id"));
         }
         if !(0.0..=1.0).contains(&self.opacity) {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "its opacity is {}, and an opacity is from 0 to 1",
                 self.opacity
-            ));
+            )));
         }
         let url = self.service.url().trim();
         if url
             .chars()
             .any(|c| c.is_whitespace() || c == '"' || c == '\'' || c == '<')
         {
-            return Err(format!("`{url}` is not a URL"));
+            return Err(Error::invalid(format!("`{url}` is not a URL")));
         }
         self.service.origin()?;
         match &self.service {
@@ -446,14 +449,16 @@ impl ReferenceLayer {
                     && !has("{quadkey}")
                     && !has("{bbox-epsg-3857}")
                 {
-                    return Err(format!(
+                    return Err(Error::invalid(format!(
                         "`{url}` is not a tile template: it names no `{{z}}`, `{{x}}` and \
                          `{{y}}` for the tile's zoom, column and row"
-                    ));
+                    )));
                 }
             }
             ReferenceService::Wms { layers, .. } if layers.trim().is_empty() => {
-                return Err("a map service needs the names of the layers to draw".to_owned());
+                return Err(Error::invalid(
+                    "a map service needs the names of the layers to draw",
+                ));
             }
             _ => {}
         }
@@ -471,13 +476,18 @@ pub struct MapViewport {
 }
 
 impl MapViewport {
-    fn check(&self) -> std::result::Result<(), String> {
+    fn check(&self) -> Result<()> {
         let [lon, lat] = self.center;
         if !(-180.0..=180.0).contains(&lon) || !(-90.0..=90.0).contains(&lat) {
-            return Err(format!("[{lon}, {lat}] is not a longitude and a latitude"));
+            return Err(Error::invalid(format!(
+                "[{lon}, {lat}] is not a longitude and a latitude"
+            )));
         }
         if !(0.0..=24.0).contains(&self.zoom) {
-            return Err(format!("zoom {} is not from 0 to 24", self.zoom));
+            return Err(Error::invalid(format!(
+                "zoom {} is not from 0 to 24",
+                self.zoom
+            )));
         }
         Ok(())
     }
@@ -727,7 +737,7 @@ impl SuggestedMap {
     }
 }
 
-/// The map the explorer draws for `dataset` (A5.7): its rows over a base map,
+/// The map the explorer draws for `dataset`: its rows over a base map,
 /// the geometry from `geometry` when it is one of the dataset's sources, else
 /// from the first ([`geometry_sources`]), and Color, Size, Shape and Label
 /// from the drop zones (their bins dropped: a map does not bin yet). X, Y and
@@ -753,7 +763,7 @@ pub async fn suggest_map(
         Err(e) => {
             return Ok(SuggestedMap::refuse(
                 Vec::new(),
-                format!("the dataset `{}` does not read: {e}", def.name),
+                format!("the dataset `{}` does not read: {}", def.name, e.message()),
             ));
         }
     };
@@ -820,12 +830,12 @@ pub struct RenderedMap {
 }
 
 /// Each layer's features and the domains of its encoded columns, read as
-/// `caller` (A9.1).
+/// `caller`.
 pub async fn render_map(catalog: &Catalog, caller: &Caller, spec: &MapSpec) -> Result<RenderedMap> {
     render_map_in(catalog, caller, spec, &Scope::none()).await
 }
 
-/// [`render_map`] on a dashboard (A6.4): each layer shows the rows its own
+/// [`render_map`] on a dashboard: each layer shows the rows its own
 /// filter and the conditions on its dataset keep. Both are the layer's
 /// filter, so its tiles, fetched by URL, are filtered too.
 pub async fn render_map_in(
@@ -909,7 +919,7 @@ pub async fn render_map_in(
                 match layer_sketch(catalog, caller, &request, &f.field).await? {
                     Ok(values) => Some(breaks(&values, *classes, *method)),
                     Err(error) => {
-                        layers.push(refuse(error));
+                        layers.push(refuse(error.message().to_owned()));
                         continue;
                     }
                 }
@@ -923,7 +933,7 @@ pub async fn render_map_in(
         let by_column = match layer_domains(catalog, caller, &request, &columns).await? {
             Ok(d) => d,
             Err(error) => {
-                layers.push(refuse(error));
+                layers.push(refuse(error.message().to_owned()));
                 continue;
             }
         };
@@ -1119,7 +1129,11 @@ mod tests {
         spec.check(true).expect("checks");
         assert!(!spec.layers[0].visible);
         assert_eq!(
-            spec.reference[1].service.origin().as_deref(),
+            spec.reference[1]
+                .service
+                .origin()
+                .as_deref()
+                .map_err(|e| e.message()),
             Ok("https://maps.example.com")
         );
         // What the screen keeps beside the spec is not the spec's.

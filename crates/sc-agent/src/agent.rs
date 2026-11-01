@@ -15,6 +15,7 @@
 //! `configuration`.
 
 use sc_types::Attrs;
+use sc_types::Role;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use uuid::Uuid;
@@ -294,7 +295,7 @@ pub struct Agent {
     /// The role floor for chatting with this agent. `None` is **admin-only**,
     /// the same safe reading a trigger's takes: an agent nobody has thought about
     /// the access of is not public.
-    pub min_role: Option<u8>,
+    pub min_role: Option<Role>,
     /// Sparse per-agent values (§9): [`ATTR_TEMPERATURE`], [`ATTR_MAX_TOKENS`],
     /// [`ATTR_MAX_STEPS`], the roles ([`ATTR_STRONG`], [`ATTR_CHEAP`]), the
     /// budgets ([`ATTR_MAX_COST`], [`ATTR_MAX_WALL_SECONDS`],
@@ -350,7 +351,7 @@ impl Agent {
     }
 
     /// Set the role floor for chatting with this agent.
-    pub fn min_role(mut self, role: u8) -> Agent {
+    pub fn min_role(mut self, role: Role) -> Agent {
         self.min_role = Some(role);
         self
     }
@@ -581,7 +582,7 @@ mod tests {
             .system_prompt("You answer questions about books.")
             .with_trait(EnabledTrait::new("query_table").config("table", "books"))
             .with_trait(EnabledTrait::new("query_table").config("table", "orders"))
-            .min_role(1);
+            .min_role(Role::ADMIN);
         assert_eq!(a.name, "librarian");
         assert_eq!(a.model.as_deref(), Some("claude-opus-5"));
         // The same trait, twice, with different configurations (§11.2).
@@ -589,7 +590,7 @@ mod tests {
         assert_eq!(a.traits[0].trait_, a.traits[1].trait_);
         assert_eq!(a.traits[0].config["table"], json!("books"));
         assert_eq!(a.traits[1].config["table"], json!("orders"));
-        assert_eq!(a.min_role, Some(1));
+        assert_eq!(a.min_role, Some(Role::ADMIN));
     }
 
     #[test]

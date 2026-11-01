@@ -8,6 +8,7 @@
 //! Against a real database because dispatch reads the live trigger set, and the
 //! live trigger set is a stored one.
 
+use sc_catalog::Authority;
 use std::sync::{Arc, Mutex};
 
 use sc_action::{
@@ -102,7 +103,12 @@ async fn a_workflow_trigger_starts_a_run_through_the_engine_seam() -> Result<()>
     // What a directly-run workflow answers is **addressable**, not a result: a
     // run that may still be going tomorrow has no value to return today.
     let answer = dispatcher
-        .run_trigger(&cat, "approve_order", json!({ "order": 7 }), None)
+        .run_trigger(
+            &cat,
+            "approve_order",
+            json!({ "order": 7 }),
+            Authority::system("test"),
+        )
         .await?;
     assert_eq!(answer, json!({ "run": run, "state": "waiting" }));
 
@@ -134,7 +140,7 @@ async fn without_an_engine_a_workflow_trigger_refuses_by_name() -> Result<()> {
     // reporting that a run happened, which is the silent failure principle 5
     // forbids.
     let err = dispatcher
-        .run_trigger(&cat, "approve_order", Json::Null, None)
+        .run_trigger(&cat, "approve_order", Json::Null, Authority::system("test"))
         .await
         .unwrap_err();
     assert!(err.to_string().contains("approve_order"), "{err}");

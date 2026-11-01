@@ -24,6 +24,7 @@ use sc_auth::{COL_EMAIL, USERS_TABLE, User};
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_query::{Expr, OrderBy, Projection, Select, Source, Statement};
+use sc_types::Role;
 use serde_json::{Value as Json, json};
 use uuid::Uuid;
 
@@ -74,7 +75,7 @@ impl Starter {
 pub async fn starters(catalog: &Catalog, application: &Application) -> Result<Vec<Starter>> {
     let check_users = check_users(catalog).await?;
     let roles = sc_auth::list_roles(catalog).await?;
-    let role_name = |role: u8| {
+    let role_name = |role: Role| {
         roles
             .iter()
             .find(|r| r.role == role)
@@ -117,8 +118,8 @@ pub async fn create_starter(
 /// What the framework offers, before the checklists that exist are left out.
 fn offer(
     app: &Application,
-    check_users: &[(Uuid, String, u8)],
-    role_name: impl Fn(u8) -> String,
+    check_users: &[(Uuid, String, Role)],
+    role_name: impl Fn(Role) -> String,
 ) -> Vec<Starter> {
     let name = &app.name;
     let open_root = || {
@@ -202,19 +203,19 @@ fn offer(
 
 /// Every check user, as `(id, email, role)`, most privileged first — one
 /// per role, the first of each, since a starter is per role.
-async fn check_users(catalog: &Catalog) -> Result<Vec<(Uuid, String, u8)>> {
+async fn check_users(catalog: &Catalog) -> Result<Vec<(Uuid, String, Role)>> {
     let mut select = Select::from(Source::table(USERS_TABLE)).columns(vec![Projection::all()]);
     select.order = vec![OrderBy::asc(Expr::col(COL_EMAIL))];
     let rows = catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()
         .await?;
-    let mut out: Vec<(Uuid, String, u8)> = Vec::new();
+    let mut out: Vec<(Uuid, String, Role)> = Vec::new();
     for row in &rows {
         let user = User::from_row(row)?;
-        if !user.is_check_user() || user.is_disabled() || out.iter().any(|u| u.2 == user.role) {
+        if !user.is_check_user() || user.is_disabled() || out.iter().any(|u| u.2 == user.role()) {
             continue;
         }
         let email = user
@@ -222,9 +223,9 @@ async fn check_users(catalog: &Catalog) -> Result<Vec<(Uuid, String, u8)>> {
             .and_then(sc_query::Value::as_text)
             .unwrap_or_default()
             .to_owned();
-        out.push((user.id, email, user.role));
+        out.push((user.id(), email, user.role()));
     }
-    out.sort_by_key(|u| u.2);
+    out.sort_by_key(|u| u.2.get());
     Ok(out)
 }
 
@@ -261,8 +262,8 @@ mod tests {
 
         let ui = Application::new("Books", "books", sc_app::FrameworkRef::new("saltcorn-ui"));
         let staff = Uuid::new_v4();
-        let offered = offer(&ui, &[(staff, "staff@x".to_owned(), 40)], |r| {
-            if r == 40 {
+        let offered = offer(&ui, &[(staff, "staff@x".to_owned(), Role::of(40))], |r| {
+            if r == Role::of(40) {
                 "Staff".to_owned()
             } else {
                 r.to_string()
@@ -299,9 +300,11 @@ mod tests {
                     .with("command", "sh build.sh"),
             ),
         ] {
-            for starter in offer(&app, &[(Uuid::new_v4(), "c@x".to_owned(), 80)], |r| {
-                r.to_string()
-            }) {
+            for starter in offer(
+                &app,
+                &[(Uuid::new_v4(), "c@x".to_owned(), Role::of(80))],
+                |r| r.to_string(),
+            ) {
                 let checklist = Checklist {
                     id: Uuid::new_v4(),
                     name: starter.input.name.clone(),

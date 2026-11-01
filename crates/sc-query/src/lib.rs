@@ -28,7 +28,7 @@ pub use named::{NamedSql, rewrite_named_params};
 pub use search::{Fts5Index, TextSearch, WebQuery, text_search_document};
 pub use statement::{
     Assignment, Delete, Insert, Join, JoinKind, Nulls, OrderBy, OrderDir, Projection, Select,
-    Source, Statement, Update,
+    Source, Statement, TrustedSql, Update,
 };
 pub use value::Value;
 pub use vector::{VectorDistance, vector_blob, vector_cast_dimensions, vector_json};
@@ -174,14 +174,24 @@ mod tests {
         let named = rewrite_named_params(&Pg, "SELECT * FROM books WHERE author = :author")
             .expect("rewrites");
         assert_eq!(named.params, vec!["author"]);
-        let stmt = Statement::raw(named.sql, vec![Value::Text("Woolf".into())]);
+        let stmt = Statement::raw(
+            TrustedSql::admin_authored(named.sql),
+            vec![Value::Text("Woolf".into())],
+        );
         let (sql, binds) = Pg.render(&stmt).expect("renders");
         assert_eq!(sql, "SELECT * FROM books WHERE author = $1");
         assert_eq!(binds, vec![Value::Text("Woolf".into())]);
 
-        // …and it is still plain, serializable data like every other statement.
+        // …and it is still plain, serializable data like every other
+        // statement — written out as its text — but nothing read back becomes
+        // raw SQL: the text was the program's or an administrator's, and data
+        // is neither (TODO-code-quality Q4.6).
         let json = serde_json::to_string(&stmt).expect("serialize");
-        assert_eq!(stmt, serde_json::from_str::<Statement>(&json).expect("de"));
+        assert!(
+            json.contains("SELECT * FROM books WHERE author = $1"),
+            "{json}"
+        );
+        assert!(serde_json::from_str::<Statement>(&json).is_err());
     }
 
     #[test]

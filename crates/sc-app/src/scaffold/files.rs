@@ -29,7 +29,7 @@ use sc_api::{
     CLIENT_HELPER_FILE, EndpointSet, GRAPHQL_CLIENT_FILE, GRAPHQL_SCHEMA_FILE, StreamExport,
     client_property, client_runtime, generate_app_client, generate_graphql_client, op_name,
 };
-use sc_auth::{ROLE_ADMIN, Role};
+use sc_auth::RoleDef;
 use sc_catalog::{PublicOrigin, Table};
 use sc_types::BasicType;
 
@@ -189,7 +189,7 @@ pub struct ProjectContext<'a> {
     /// find out what this server calls its roles. Not a contract — an admin may
     /// add or rename one tomorrow — which is why the generated README says when
     /// the list was taken.
-    pub roles: &'a [Role],
+    pub roles: &'a [RoleDef],
 }
 
 impl ProjectContext<'_> {
@@ -277,7 +277,7 @@ impl ProjectContext<'_> {
     fn admin_role_name(&self) -> &str {
         self.roles
             .iter()
-            .find(|r| r.role == ROLE_ADMIN)
+            .find(|r| r.role.is_admin())
             .map_or("Admin", |r| r.name.as_str())
     }
 
@@ -478,7 +478,10 @@ pub fn project_files(ctx: &ProjectContext<'_>) -> Vec<GeneratedFile> {
         files.push(GeneratedFile::new("src/auth.tsx", AUTH_TSX));
         files.push(GeneratedFile::new("src/Login.tsx", LOGIN_TSX));
         files.push(GeneratedFile::new("src/SetPassword.tsx", SET_PASSWORD_TSX));
-        files.push(GeneratedFile::new("src/SecondFactor.tsx", SECOND_FACTOR_TSX));
+        files.push(GeneratedFile::new(
+            "src/SecondFactor.tsx",
+            SECOND_FACTOR_TSX,
+        ));
         files.push(GeneratedFile::new("src/Security.tsx", SECURITY_TSX));
     }
     for table in &exposed {
@@ -1035,6 +1038,7 @@ fn accounts_section(endpoints: &EndpointSet) -> String {
 /// Written **once**, at scaffold time (decision 9). It is the developer's file
 /// from the moment it exists — agents append what they learn to it — so the
 /// scaffold's job is to give them a correct starting point, not to own it.
+#[allow(clippy::too_many_lines)]
 fn agents_md(ctx: &ProjectContext<'_>) -> String {
     let tables = if ctx.tables.is_empty() {
         "This application declares no tables yet; add them in the Saltcorn admin \
@@ -5324,12 +5328,12 @@ pub(super) fn ts_empty(field: &sc_catalog::DataField) -> &'static str {
 mod tests {
     use super::*;
     use sc_api::{ApiProvider, RestProvider};
-    use sc_catalog::{AccessRules, DataField, DbId, TableId, TableSource};
+    use sc_catalog::{AccessRules, DataField, DbId, TableSource};
+    use sc_types::Role;
     use sc_types::TypeRef;
 
     fn tasks() -> Table {
         Table {
-            id: TableId("tasks".to_owned()),
             name: "tasks".to_owned(),
             database: DbId::primary(),
             source: TableSource::Database,
@@ -5365,7 +5369,6 @@ mod tests {
     #[test]
     fn the_password_hash_is_on_no_generated_page_or_form() {
         let mut users = tasks();
-        users.id = TableId(sc_auth::USERS_TABLE.to_owned());
         users.name = sc_auth::USERS_TABLE.to_owned();
         users.label = sc_auth::USERS_TABLE.to_owned();
         users.fields = vec![
@@ -5437,13 +5440,13 @@ mod tests {
     /// The roles of an installation that has added one of its own: the two
     /// built-ins every database has, plus the `Editor` that makes a generated
     /// list worth generating.
-    fn roles() -> &'static [Role] {
-        static ROLES: std::sync::OnceLock<Vec<Role>> = std::sync::OnceLock::new();
+    fn roles() -> &'static [RoleDef] {
+        static ROLES: std::sync::OnceLock<Vec<RoleDef>> = std::sync::OnceLock::new();
         ROLES.get_or_init(|| {
             vec![
-                Role::new(ROLE_ADMIN, "Admin").description("Full access to everything."),
-                Role::new(40, "Editor").description("May write posts."),
-                Role::new(100, "Public")
+                RoleDef::new(Role::ADMIN, "Admin").description("Full access to everything."),
+                RoleDef::new(Role::of(40), "Editor").description("May write posts."),
+                RoleDef::new(Role::PUBLIC, "Public")
                     .description("Anyone at all, including callers who are not logged in."),
             ]
         })
@@ -6572,7 +6575,6 @@ export function Board({ id }: { id: number }) {
         let tables = [tasks(), {
             let mut t = tasks();
             t.name = "notes".to_owned();
-            t.id = TableId("notes".to_owned());
             t
         }];
         let eps = endpoints(&tables);
@@ -6617,7 +6619,7 @@ export function Board({ id }: { id: number }) {
         assert!(!off.contains("api.signup({"), "{off}");
 
         let on_eps = RestProvider::project("/api", &tables)
-            .with_signup(Some(80))
+            .with_signup(Some(Role::of(80)))
             .endpoints()
             .clone();
         let on = readme(&on_eps);
@@ -6747,7 +6749,6 @@ export function Board({ id }: { id: number }) {
     /// creates the row is what issues it.
     fn people() -> Table {
         let mut table = tasks();
-        table.id = TableId("people".to_owned());
         table.name = "people".to_owned();
         table.label = "people".to_owned();
         table.fields[0] = DataField::plain("id", TypeRef::Basic(BasicType::Uuid))

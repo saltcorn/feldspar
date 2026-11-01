@@ -110,6 +110,7 @@ pub(crate) async fn stream_observe_upgrade(
     supervisor: Option<&Arc<StreamSupervisor>>,
     hub: Arc<sc_live::LiveHub>,
     id: StreamId,
+    session: crate::admin_session::AdminWatch,
 ) -> axum::response::Response {
     let Some(supervisor) = supervisor else {
         let reason = "this server has no stream support installed, so there is nothing to observe";
@@ -124,7 +125,8 @@ pub(crate) async fn stream_observe_upgrade(
         );
         return ws.on_upgrade(move |socket| refuse(socket, reason));
     };
-    ws.on_upgrade(move |socket| observe(socket, running, hub))
+    // Open only while the admin session lasts (#42's class).
+    ws.on_upgrade(move |socket| session.guard(observe(socket, running, hub)))
 }
 
 /// Close a socket, saying why.

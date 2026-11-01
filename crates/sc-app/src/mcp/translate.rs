@@ -39,13 +39,12 @@
 //! catalogue covers is listed with its `inherited` translation and is not
 //! missing.
 
+use sc_types::ArgsExt;
 use std::sync::Arc;
 
-use sc_api::mcp::{
-    AdminTool, Area, ToolContext, arguments, optional_bool, optional_string, require_grant,
-};
+use sc_api::mcp::{AdminTool, Area, ToolContext, arguments, require_grant};
 use sc_api::schema_edit::{GRANT_EDIT, Grants};
-use sc_catalog::{AdminCall, AdminHost, Catalog};
+use sc_catalog::{AdminHost, Catalog, TranslationsOf};
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
 
@@ -141,7 +140,7 @@ impl AdminTool for DescribeTranslations {
         )?;
         let target = target(ctx, &args).await?;
         let locale = locale_arg(&args)?;
-        let missing_only = optional_bool(&args, ARG_MISSING_ONLY)?.unwrap_or(false);
+        let missing_only = args.optional_bool(ARG_MISSING_ONLY)?.unwrap_or(false);
         if missing_only && locale.is_none() {
             return Err(Error::invalid(format!(
                 "`{ARG_MISSING_ONLY}` needs `{ARG_LOCALE}`: missing is per locale"
@@ -158,6 +157,16 @@ enum Target {
     Instance,
 }
 
+impl Target {
+    /// Whose translations, as the admin host names them.
+    fn of(&self) -> TranslationsOf {
+        match self {
+            Target::Application(app) => TranslationsOf::Application(app.id.0),
+            Target::Instance => TranslationsOf::Instance,
+        }
+    }
+}
+
 /// The `scope` parameter, as both tools declare it.
 fn scope_parameter() -> Json {
     json!({
@@ -172,7 +181,7 @@ fn scope_parameter() -> Json {
 
 /// The `scope` and `application` arguments, resolved.
 async fn target(ctx: &ToolContext<'_>, args: &Map<String, Json>) -> Result<Target> {
-    match optional_string(args, ARG_SCOPE)?.as_deref().map(str::trim) {
+    match args.optional_string(ARG_SCOPE)?.as_deref().map(str::trim) {
         None | Some("") | Some(SCOPE_APPLICATION) => {
             Ok(Target::Application(Box::new(load_app(ctx, args).await?)))
         }
@@ -413,19 +422,12 @@ impl AdminTool for SaveTranslations {
             merged.insert(key.clone(), value.clone());
         }
 
-        let call = match &target {
-            Target::Application(app) => {
-                AdminCall::new("saveTranslations", json!({ "messages": merged }))
-                    .param("id", app.id.to_string())
-            }
-            Target::Instance => {
-                AdminCall::new("saveInstanceTranslations", json!({ "messages": merged }))
-            }
-        };
         let mut out = host(ctx)?
-            .call_admin(
-                call.param("locale", locale.clone())
-                    .user(ctx.user.map(|u| u.id)),
+            .save_translations(
+                ctx.user.map(|u| u.id()),
+                target.of(),
+                locale.clone(),
+                merged,
             )
             .await?;
         out["written"] = json!(changes.values().filter(|v| !v.is_null()).count());
@@ -463,14 +465,8 @@ fn current_translations(screen: &Json, locale: &str) -> Map<String, Json> {
 }
 
 async fn get_translations(ctx: &ToolContext<'_>, target: &Target) -> Result<Json> {
-    let call = match target {
-        Target::Application(app) => {
-            AdminCall::new("getTranslations", Json::Null).param("id", app.id.to_string())
-        }
-        Target::Instance => AdminCall::new("getInstanceTranslations", Json::Null),
-    };
     host(ctx)?
-        .call_admin(call.user(ctx.user.map(|u| u.id)))
+        .translations(ctx.user.map(|u| u.id()), target.of())
         .await
 }
 
@@ -488,7 +484,10 @@ fn host(ctx: &ToolContext<'_>) -> Result<Arc<dyn AdminHost>> {
 
 /// The `locale` argument, checked to be a locale tag.
 fn locale_arg(args: &Map<String, Json>) -> Result<Option<String>> {
-    match optional_string(args, ARG_LOCALE)?.map(|s| s.trim().to_owned()) {
+    match args
+        .optional_string(ARG_LOCALE)?
+        .map(|s| s.trim().to_owned())
+    {
         None => Ok(None),
         Some(tag) if tag.is_empty() => Ok(None),
         Some(tag) => Ok(Some(sc_i18n::Locale::parse(&tag)?.as_str().to_owned())),

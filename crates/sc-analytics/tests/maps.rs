@@ -245,6 +245,6 @@ async fn domains_are_read_over_the_features_with_a_geometry() -> Result<()> {
         &[("lat".into(), Spread::Range)],
     )
     .await?;
-    assert!(refused.unwrap_err().contains("not a geometry"));
+    assert!(refused.unwrap_err().message().contains("not a geometry"));
     Ok(())
 }

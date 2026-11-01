@@ -39,6 +39,7 @@
 
 use sc_action::TriggerId;
 use sc_error::{Error, Result};
+use sc_types::Role;
 use sc_types::{Attrs, BasicType, FormField, OptionsSource, TypeRef};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
@@ -283,7 +284,7 @@ pub enum StepKind {
         /// The role floor for answering. `None` is admin-only, the same safe
         /// reading a trigger's own `min_role` has.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        min_role: Option<u8>,
+        min_role: Option<Role>,
         /// A formula yielding when to give up waiting, after which the run wakes
         /// and its error policy decides. `None` waits indefinitely.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -622,7 +623,7 @@ mod tests {
                             FieldDecl::new("note", "text"),
                         ],
                         assign_to: "approval".to_owned(),
-                        min_role: Some(40),
+                        min_role: Some(Role::of(40)),
                         timeout: Some("86400000".to_owned()),
                     },
                 )

@@ -45,6 +45,7 @@ pub(crate) mod deno {
         ModuleSource, ServiceSupervisor, save_module,
     };
     use sc_test_harness::TestDb;
+    use sc_types::Role;
     use sc_types::{Attrs, SECRET_SENTINEL};
     use serde_json::{Value as Json, json};
 
@@ -207,7 +208,7 @@ pub(crate) mod deno {
     }
 
     pub(crate) fn user_json(user: &sc_auth::User) -> Json {
-        json!({ "id": user.id.to_string(), "role": user.role })
+        json!({ "id": user.id().to_string(), "role": user.role() })
     }
 
     /// Run one of the module's actions as `user`, as a trigger with event None
@@ -221,7 +222,7 @@ pub(crate) mod deno {
     ) -> sc_error::Result<Json> {
         let event = Event::new(EventKind::None)
             .payload(payload)
-            .caller(user.role, Some(user_json(user)));
+            .caller(user.role(), Some(user_json(user)));
         let config = Attrs::new();
         let action = registry.require(action).unwrap();
         let mut ctx = ActionContext::new(cat, &event, &config, "mail action");
@@ -230,7 +231,7 @@ pub(crate) mod deno {
 
     pub(crate) fn as_user<'a>(cat: &'a Catalog, user: &sc_auth::User) -> TableHost<'a> {
         TableHost::new(cat)
-            .caused_by(user.role, Some(user_json(user)))
+            .caused_by(user.role(), Some(user_json(user)))
             .with_evaluator(Some(Arc::new(DenoEvaluator::new()) as Arc<dyn JsEvaluator>))
     }
 
@@ -286,7 +287,7 @@ pub(crate) mod deno {
             .configuration
             .insert("ca_certificates".into(), json!(ca));
         save_module(cat, &module).await.unwrap();
-        let mut registry = sc_core_actions::builtin_actions().unwrap();
+        let mut registry = sc_action_builtins::builtin_actions().unwrap();
         let set = ModuleSet::load(cat, &host, &installer, &surfaces(), &mut registry)
             .await
             .unwrap();
@@ -297,6 +298,7 @@ pub(crate) mod deno {
 
     #[tokio::test]
     #[ignore = "installs plugins/imap from npm and runs a local Dovecot (plugins/imap/test/servers)"]
+    #[allow(clippy::too_many_lines)]
     async fn the_mail_module_ingests_a_shared_mailbox_for_the_right_users() {
         skip_without!(have_npm(), "npm is not on the PATH");
         skip_without!(dovecot(&["clean"]), "the test Dovecot could not be started");
@@ -324,17 +326,17 @@ pub(crate) mod deno {
         // Users: staff (40) may read the shared mailbox, bob (80) may not, ann
         // (80) has a personal account of her own.
         for (role, name) in [(40, "Staff"), (80, "User")] {
-            sc_auth::save_role(&cat, &sc_auth::Role::new(role, name))
+            sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(role), name))
                 .await
                 .unwrap();
         }
-        let staff = sc_auth::create_user(&cat, "staff@example.com", "pw-staff-1", 40)
+        let staff = sc_auth::create_user(&cat, "staff@example.com", "pw-staff-1", Role::of(40))
             .await
             .unwrap();
-        let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", 80)
+        let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", Role::of(80))
             .await
             .unwrap();
-        let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", 80)
+        let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", Role::of(80))
             .await
             .unwrap();
 
@@ -360,7 +362,7 @@ pub(crate) mod deno {
             .unwrap();
         let mut anns = imap("other");
         anns.as_object_mut().unwrap().extend(
-            json!({ "label": "ann@", "email": "ann@example.com", "owner": ann.id.to_string(), "min_role": 1 })
+            json!({ "label": "ann@", "email": "ann@example.com", "owner": ann.id().to_string(), "min_role": 1 })
                 .as_object()
                 .unwrap()
                 .clone(),
@@ -522,9 +524,15 @@ await db.mail_log.insert({
         assert_eq!(orders[0]["customer"], json!("customer1@example.com"));
         assert_eq!(orders[0]["attachments"], json!(1));
         let pdf = orders[0]["pdf"].as_str().unwrap().to_owned();
-        let store = cat.require_file_store("mail_files").unwrap();
+        let store = cat
+            .require_file_store("mail_files", sc_catalog::Unchecked::system("test"))
+            .unwrap();
         assert_eq!(
-            store.read(&pdf).await.unwrap().as_ref(),
+            store
+                .read(&sc_files::StorePath::parse(&pdf).unwrap())
+                .await
+                .unwrap()
+                .as_ref(),
             b"%PDF-1.4 order 1"
         );
         let log = query(
@@ -708,7 +716,11 @@ await db.mail_log.insert({
         assert_eq!(fetched["stored"], json!(true), "{fetched}");
         let path = fetched["file"].as_str().unwrap();
         assert_eq!(
-            store.read(path).await.unwrap().as_ref(),
+            store
+                .read(&sc_files::StorePath::parse(path).unwrap())
+                .await
+                .unwrap()
+                .as_ref(),
             b"%PDF-1.4 order 1"
         );
 

@@ -49,24 +49,23 @@
 //! not this milestone; for now it is stderr, like every other server-side
 //! diagnostic.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use sc_catalog::{
-    CallerContext, Catalog, SharedTx, TableEvents, TableWrite, WriteOp, prefetch_bindings,
+    Authority, Catalog, SharedTx, TableEvents, TableWrite, WriteOp, prefetch_bindings,
 };
 use sc_email::Mailer;
 use sc_error::{Error, Result};
-use sc_expr::{
-    Ambient, CodeAdapter, ConsoleLine, ConsoleSink, Formula, JsEvaluator, Operation,
-    value_from_json,
-};
+use sc_expr::{Ambient, CodeAdapter, ConsoleLine, ConsoleSink, Formula, JsEvaluator, Operation};
 use sc_query::Value;
 use sc_types::Attrs;
+use sc_types::value_from_json;
 use serde_json::Value as Json;
 
 use crate::action::ActionContext;
-use crate::event::{Event, EventKind, ROLE_PUBLIC};
+use crate::event::{Event, EventKind};
 use crate::registry::ActionRegistry;
 use crate::scope::typed_value;
 use crate::trigger::Trigger;
@@ -514,7 +513,7 @@ impl TriggerDispatcher {
         catalog: &Catalog,
         name: &str,
         payload: Json,
-        caller: Option<&CallerContext>,
+        caller: Authority<'_>,
     ) -> Result<Json> {
         self.run_trigger_in(catalog, name, payload, caller, None)
             .await
@@ -531,7 +530,7 @@ impl TriggerDispatcher {
         catalog: &Catalog,
         name: &str,
         payload: Json,
-        caller: Option<&CallerContext>,
+        caller: Authority<'_>,
         tx: Option<&SharedTx>,
     ) -> Result<Json> {
         let triggers = self.triggers()?;
@@ -548,7 +547,7 @@ impl TriggerDispatcher {
         if let Some(channel) = &trigger.channel {
             event = event.on(channel.clone());
         }
-        if let Some(caller) = caller {
+        if let Some(caller) = caller.principal() {
             event = event.caused_by(caller);
         }
         let result = fire_trigger_in(self, catalog, trigger, &event, tx).await?;
@@ -573,7 +572,7 @@ impl TriggerDispatcher {
         name: &str,
         code: &str,
         request: Attrs,
-        caller: Option<&CallerContext>,
+        caller: Authority<'_>,
         application: Option<uuid::Uuid>,
         file_urls: Option<Arc<dyn crate::FileUrls>>,
     ) -> Result<Json> {
@@ -612,7 +611,7 @@ impl TriggerDispatcher {
         name: &str,
         code: &str,
         request: Attrs,
-        caller: Option<&CallerContext>,
+        caller: Authority<'_>,
         application: Option<uuid::Uuid>,
         file_urls: Option<Arc<dyn crate::FileUrls>>,
     ) -> Result<Json> {
@@ -642,7 +641,7 @@ impl TriggerDispatcher {
         name: &str,
         code: &str,
         request: Attrs,
-        caller: Option<&CallerContext>,
+        caller: Authority<'_>,
         application: Option<uuid::Uuid>,
         file_urls: Option<Arc<dyn crate::FileUrls>>,
         trace: Option<sc_expr::TraceSink>,
@@ -672,14 +671,14 @@ impl TriggerDispatcher {
         name: &str,
         code: &str,
         request: Attrs,
-        caller: Option<&CallerContext>,
+        caller: Authority<'_>,
         application: Option<uuid::Uuid>,
         file_urls: Option<Arc<dyn crate::FileUrls>>,
         trace: Option<sc_expr::TraceSink>,
         as_caller: bool,
     ) -> Result<Json> {
         let mut event = Event::new(EventKind::None);
-        if let Some(caller) = caller {
+        if let Some(caller) = caller.principal() {
             event = event.caused_by(caller);
         }
         let chain = event.firing(name)?;
@@ -727,7 +726,7 @@ impl TriggerDispatcher {
         name: &str,
         payload: Json,
         row: Option<Json>,
-        caller: Option<&CallerContext>,
+        caller: Authority<'_>,
     ) -> TestRun {
         let console = sc_expr::console_sink();
         let result = self
@@ -747,7 +746,7 @@ impl TriggerDispatcher {
         name: &str,
         payload: Json,
         row: Option<Json>,
-        caller: Option<&CallerContext>,
+        caller: Authority<'_>,
         console: &ConsoleSink,
     ) -> Result<Json> {
         let triggers = self.triggers()?;
@@ -777,7 +776,7 @@ impl TriggerDispatcher {
             }
             event = event.row(row);
         }
-        if let Some(caller) = caller {
+        if let Some(caller) = caller.principal() {
             event = event.caused_by(caller);
         }
         let result = fire_trigger_with(self, catalog, trigger, &event, None, Some(console)).await?;
@@ -847,7 +846,7 @@ impl TableEvents for TriggerDispatcher {
 
 /// The event a committed write raises.
 ///
-/// The caller travels with the write ([`CallerContext`](sc_catalog::CallerContext)),
+/// The caller travels with the write ([`Principal`](sc_catalog::Principal)),
 /// which is where the role, the user and the **chain** come from: a write made by
 /// a request carries an empty chain (depth 0), and one made by a trigger's action
 /// carries what `Event::firing` handed that action.
@@ -861,7 +860,7 @@ fn table_event(write: &TableWrite<'_>) -> Event {
     match write.caller {
         Some(caller) => event.caused_by(caller),
         None => event
-            .caller(ROLE_PUBLIC, None)
+            .caller(Role::PUBLIC, None)
             .in_changeset(sc_catalog::changeset::current()),
     }
 }
@@ -1143,7 +1142,7 @@ fn operation(kind: EventKind) -> Operation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sc_catalog::CallerContext;
+    use sc_catalog::Principal;
     use serde_json::json;
 
     /// A `TableWrite` needs a `Table`, and a `Table` needs no database to be
@@ -1171,8 +1170,8 @@ mod tests {
     #[test]
     fn a_write_becomes_the_event_its_caller_describes() {
         let books = table("books");
-        let caller =
-            CallerContext::new(1, Some(json!({ "email": "a@b.c" }))).chained(vec!["audit".into()]);
+        let caller = Principal::new(Role::ADMIN, Some(json!({ "email": "a@b.c" })))
+            .chained(vec!["audit".into()]);
         let event = table_event(&TableWrite {
             table: &books,
             op: WriteOp::Update,
@@ -1184,7 +1183,7 @@ mod tests {
         assert_eq!(event.kind, EventKind::Update);
         assert_eq!(event.channel.as_deref(), Some("books"));
         assert_eq!(event.old_row.as_ref().unwrap()["title"], json!("was"));
-        assert_eq!(event.role, 1);
+        assert_eq!(event.role, Role::ADMIN);
         assert_eq!(event.user.as_ref().unwrap()["email"], json!("a@b.c"));
         // The chain travels with the caller, which is what bounds a cascade: this
         // event is already one deep.
@@ -1201,7 +1200,7 @@ mod tests {
             tx: None,
         });
         assert_eq!(event.kind, EventKind::Insert);
-        assert_eq!(event.role, ROLE_PUBLIC);
+        assert_eq!(event.role, Role::PUBLIC);
         assert!(event.old_row.is_none());
         assert_eq!(event.depth(), 0);
     }

@@ -4,6 +4,7 @@
 //! including when they come from the registry rather than the runner.
 
 use crate::common;
+use sc_types::Role;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -117,7 +118,7 @@ impl AgentTrait for Look {
             .require_previews()?
             .mount_preview(ctx.run, "todo", Path::new("/nowhere"))
             .await?;
-        let user = User::new(uuid::Uuid::new_v4(), 1)?;
+        let user = User::new(uuid::Uuid::new_v4(), Role::ADMIN);
         let report = ctx
             .require_browser()?
             .act(BrowserRequest {

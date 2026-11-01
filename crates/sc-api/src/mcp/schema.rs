@@ -20,13 +20,14 @@ use crate::schema_edit::{
 };
 use sc_catalog::{
     ATTR_OWNERSHIP_FORMULA, Catalog, DataFieldKind, FieldId, FileOnConflict, FileOnDelete,
-    FileStoreId, Table, TableId,
+    FileStoreId, Table,
 };
 use sc_error::{Error, Result};
+use sc_types::ArgsExt;
 use sc_types::Attrs;
 use serde_json::{Map, Value as Json, json};
 
-use super::{AdminTool, ToolContext, optional_bool, optional_role, optional_string};
+use super::{AdminTool, ToolContext, optional_role};
 
 /// The reading tool's name. Fixed rather than derived, because this surface is
 /// configured against no table to derive one from — which is also what makes a
@@ -69,7 +70,10 @@ impl AdminTool for EditSchema {
     }
 
     fn description(&self, catalog: &Catalog, grants: &Grants) -> String {
-        edit_description(grants, catalog.primary().capabilities().row_level_security)
+        edit_description(
+            grants,
+            catalog.primary_info().capabilities().row_level_security,
+        )
     }
 
     fn parameters(&self) -> Json {
@@ -137,7 +141,7 @@ fn describe(catalog: &Catalog, args: &Json) -> Result<Json> {
             }
         )));
     }
-    let rls_available = catalog.primary().capabilities().row_level_security;
+    let rls_available = catalog.primary_info().capabilities().row_level_security;
     let described: Vec<Json> = tables
         .iter()
         .filter(|t| only.is_none_or(|name| t.name == name))
@@ -191,7 +195,7 @@ fn describe_table(table: &Table, all: &[Table], rls_available: bool) -> Json {
                 ..
             } => Some(json!({
                 "field": f.base.name,
-                "target_table": target_table.0,
+                "target_table": target_table,
                 "target_field": target_field.0,
             })),
             _ => None,
@@ -205,7 +209,7 @@ fn describe_table(table: &Table, all: &[Table], rls_available: bool) -> Json {
                     target_table,
                     target_field,
                     ..
-                } if target_table.0 == table.name => Some(json!({
+                } if *target_table == table.name => Some(json!({
                     "table": other.name,
                     "field": f.base.name,
                     "target_field": target_field.0,
@@ -258,7 +262,7 @@ fn describe_field(field: &sc_catalog::DataField) -> Json {
             target_field,
             summary_field,
         } => {
-            out.insert("references".to_owned(), json!(target_table.0));
+            out.insert("references".to_owned(), json!(target_table));
             out.insert("references_field".to_owned(), json!(target_field.0));
             if let Some(summary) = summary_field {
                 out.insert("summary_field".to_owned(), json!(summary.0));
@@ -372,6 +376,7 @@ fn edit_description(grants: &Grants, rls_available: bool) -> String {
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn edit_parameters() -> Json {
     let types = schema_edit::field_type_names();
     // A flat object with per-`op` optional fields, documented in the
@@ -863,7 +868,8 @@ fn parse_operation(item: &Json) -> Result<Operation> {
         "drop_table" => Ok(Operation::DropTable { table }),
         "rename_table" => Ok(Operation::RenameTable {
             table,
-            to: optional_string(obj, "rename_to")?
+            to: obj
+                .optional_string("rename_to")?
                 .filter(|s| !s.trim().is_empty())
                 .ok_or_else(|| Error::invalid("`rename_table` needs a `rename_to`"))?,
         }),
@@ -888,7 +894,7 @@ fn check_file_stores(catalog: &Catalog, operations: &[Operation]) -> Result<()> 
     });
     for kind in kinds {
         if let DataFieldKind::File { store, .. } = kind
-            && catalog.file_store(&store.0)?.is_none()
+            && !catalog.has_file_store(&store.0)?
         {
             let names = catalog.file_store_names()?;
             return Err(Error::invalid(format!(
@@ -920,14 +926,14 @@ fn require_field(obj: &Map<String, Json>, op: &str) -> Result<String> {
 
 fn parse_table_settings(obj: &Map<String, Json>) -> Result<TableSettings> {
     Ok(TableSettings {
-        label: optional_string(obj, "label")?,
-        description: optional_string(obj, "description")?,
+        label: obj.optional_string("label")?,
+        description: obj.optional_string("description")?,
         min_role_read: optional_role(obj, "min_role_read")?,
         min_role_write: optional_role(obj, "min_role_write")?,
-        ownership_formula: optional_string(obj, "ownership_formula")?,
-        rls_enabled: optional_bool(obj, "rls_enabled")?,
-        sync_enabled: optional_bool(obj, "sync_enabled")?,
-        history_enabled: optional_bool(obj, "history_enabled")?,
+        ownership_formula: obj.optional_string("ownership_formula")?,
+        rls_enabled: obj.optional_bool("rls_enabled")?,
+        sync_enabled: obj.optional_bool("sync_enabled")?,
+        history_enabled: obj.optional_bool("history_enabled")?,
         history_min_role: optional_role(obj, "history_min_role")?,
         history_keep_days: match obj.get("history_keep_days") {
             None | Some(Json::Null) => None,
@@ -945,15 +951,15 @@ fn parse_table_settings(obj: &Map<String, Json>) -> Result<TableSettings> {
 fn parse_field_settings(obj: &Map<String, Json>) -> Result<FieldSettings> {
     let kind = field_kind(obj)?;
     Ok(FieldSettings {
-        name: optional_string(obj, "rename_to")?,
-        label: optional_string(obj, "label")?,
-        description: optional_string(obj, "description")?,
-        type_name: optional_string(obj, "type")?,
+        name: obj.optional_string("rename_to")?,
+        label: obj.optional_string("label")?,
+        description: obj.optional_string("description")?,
+        type_name: obj.optional_string("type")?,
         kind,
         attributes: None,
-        primary_key: optional_bool(obj, "primary_key")?,
-        required: optional_bool(obj, "required")?,
-        default_expression: optional_string(obj, "default")?,
+        primary_key: obj.optional_bool("primary_key")?,
+        required: obj.optional_bool("required")?,
+        default_expression: obj.optional_string("default")?,
     })
 }
 
@@ -970,15 +976,15 @@ fn parse_field_spec(item: &Json) -> Result<FieldSpec> {
         .to_owned();
     Ok(FieldSpec {
         name,
-        type_name: optional_string(obj, "type")?.unwrap_or_default(),
-        label: optional_string(obj, "label")?.unwrap_or_default(),
-        description: optional_string(obj, "description")?.unwrap_or_default(),
-        required: optional_bool(obj, "required")?.unwrap_or(false),
-        unique: optional_bool(obj, "unique")?.unwrap_or(false),
-        primary_key: optional_bool(obj, "primary_key")?.unwrap_or(false),
+        type_name: obj.optional_string("type")?.unwrap_or_default(),
+        label: obj.optional_string("label")?.unwrap_or_default(),
+        description: obj.optional_string("description")?.unwrap_or_default(),
+        required: obj.optional_bool("required")?.unwrap_or(false),
+        unique: obj.optional_bool("unique")?.unwrap_or(false),
+        primary_key: obj.optional_bool("primary_key")?.unwrap_or(false),
         kind: field_kind(obj)?.unwrap_or(DataFieldKind::Plain),
         attributes: Attrs::new(),
-        default_expression: optional_string(obj, "default")?,
+        default_expression: obj.optional_string("default")?,
     })
 }
 
@@ -988,7 +994,7 @@ fn file_choice<T: Default>(
     key: &str,
     parse: fn(&str) -> Option<T>,
 ) -> Result<T> {
-    match optional_string(obj, key)? {
+    match obj.optional_string(key)? {
         None => Ok(T::default()),
         Some(text) => parse(&text).ok_or_else(|| {
             Error::invalid(format!(
@@ -1064,9 +1070,15 @@ fn complete_file_alter(catalog: &Catalog, item: &Json) -> Result<Json> {
 /// one of them is a contradiction worth naming rather than resolving by
 /// precedence.
 fn field_kind(obj: &Map<String, Json>) -> Result<Option<DataFieldKind>> {
-    let references = optional_string(obj, "references")?.filter(|s| !s.trim().is_empty());
-    let expression = optional_string(obj, "expression")?.filter(|s| !s.trim().is_empty());
-    let file_store = optional_string(obj, ARG_FILE_STORE)?.filter(|s| !s.trim().is_empty());
+    let references = obj
+        .optional_string("references")?
+        .filter(|s| !s.trim().is_empty());
+    let expression = obj
+        .optional_string("expression")?
+        .filter(|s| !s.trim().is_empty());
+    let file_store = obj
+        .optional_string(ARG_FILE_STORE)?
+        .filter(|s| !s.trim().is_empty());
     if obj.get("type").and_then(Json::as_str).map(str::trim) == Some("file") {
         return Err(Error::invalid(format!(
             "`file` is not a type; a file field is one with `{ARG_FILE_STORE}` naming \
@@ -1098,7 +1110,8 @@ fn field_kind(obj: &Map<String, Json>) -> Result<Option<DataFieldKind>> {
         };
         return Ok(Some(DataFieldKind::File {
             store: FileStoreId(store.trim().to_owned()),
-            folder: optional_string(obj, ARG_FILE_FOLDER)?
+            folder: obj
+                .optional_string(ARG_FILE_FOLDER)?
                 .map(|f| f.trim().trim_matches('/').to_owned())
                 .filter(|f| !f.is_empty()),
             mime_allow,
@@ -1124,11 +1137,12 @@ fn field_kind(obj: &Map<String, Json>) -> Result<Option<DataFieldKind>> {
             "a field is either a reference or a calculated expression, not both",
         )),
         (Some(target), None) => Ok(Some(DataFieldKind::Key {
-            target_table: TableId(target.trim().to_owned()),
+            target_table: target.trim().to_owned(),
             // Empty: the schema editor resolves it to the target's primary key,
             // so the model never has to know (or guess) the column's name.
             target_field: FieldId(String::new()),
-            summary_field: optional_string(obj, "summary_field")?
+            summary_field: obj
+                .optional_string("summary_field")?
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty())
                 .map(FieldId),
@@ -1143,6 +1157,7 @@ fn field_kind(obj: &Map<String, Json>) -> Result<Option<DataFieldKind>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sc_types::Role;
 
     #[test]
     fn a_file_field_is_named_by_its_store_and_file_is_not_a_type() {
@@ -1198,7 +1213,7 @@ mod tests {
                 target_field,
                 ..
             } => {
-                assert_eq!(target_table.0, "clients");
+                assert_eq!(target_table, "clients");
                 assert!(target_field.0.is_empty());
             }
             other => panic!("a key, got {other:?}"),
@@ -1229,7 +1244,7 @@ mod tests {
         .unwrap() else {
             panic!("an alter_table");
         };
-        assert_eq!(settings.min_role_read, Some(40));
+        assert_eq!(settings.min_role_read, Some(Role::of(40)));
         // The three settings the caller did not name are `None` — "leave it" —
         // which is the whole divergence from `updateTable`'s whole-object
         // contract (§13.1).

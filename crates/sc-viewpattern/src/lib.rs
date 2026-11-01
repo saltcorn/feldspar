@@ -44,6 +44,13 @@
 //!   and pages on its subdomain, constructed by [`SaltcornUiFactory`] from
 //!   `sc-app`'s factory registry ([`install_saltcorn_ui`]).
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
+    sc_catalog::Unchecked::system("sc-viewpattern: the view-pattern store");
+
 mod bundle;
 mod configure;
 mod framework;

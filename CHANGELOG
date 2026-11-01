@@ -2,6 +2,71 @@
 
 Changes in reverse chronological order.
 
+## CI: clippy and rustfmt clean under the current stable toolchain
+
+A newer toolchain made both CI checks fail on code that had not changed (on `main` as well):
+
+- `clippy::result_large_err` on the functions in `sc-server/src/second_factor.rs` (module-level
+  allow) and `build_agent.rs`'s `authenticated` / `held_job` that return `Result<_, Response>`.
+  Allowed with the reason `builder.rs` already gives: the `Err` is the response to send, returned
+  unchanged by the handler, not an error being propagated, so boxing it buys nothing.
+- `sc-python/src/env.rs`: one expression reformatted by rustfmt.
+
+No behaviour change. `cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo fmt --all --check` pass.
+
+## Migration: end administrators' sessions at upgrade (security review #15)
+
+This branch scopes a session to the host that issued it: a token issued on an application's host
+starts with `app-`, and the admin host refuses it admin authority. Tokens from before the upgrade
+carry no prefix and read as admin-host tokens, so an administrator who had signed in on an
+application before the upgrade would still have held a session the admin host accepts, until it
+expired (up to `session_ttl_hours`, at most a year).
+
+- New migration `2026-11-01-admin-sessions-rescoped` (`crates/sc-migrate/src/registry.rs`)
+  deletes the `_fd_sessions` rows of users with role 1 (administrator). Only an administrator's
+  session can carry admin authority, so every other user stays signed in.
+- **Upgrade note:** administrators sign in once more after the upgrade. Tokens made with
+  `feldspar auth token` for an administrator are sessions too and stop working; make a new one.
+  API tokens (`_fd_api_tokens`) are not sessions and are not touched.
+- A database without a session or users table records the migration and does nothing; a new
+  database records it without running it, as every migration.
+
+Tests: `admin_sessions_end_others_are_kept` and `no_session_table_is_nothing_to_do`
+(`crates/sc-migrate/tests/migrate.rs`, on SQLite and Postgres).
+
+## Merge of main (session cookies, email verification, two-factor authentication) into the code-quality branch
+
+The three entries below were made on `main` against the code before the code-quality milestones
+(Q2 to Q6). They are carried over to the new structure without changing what they do on the wire
+or in the database:
+
+- `sc-server/src/handlers.rs` and `sc-api/src/admin.rs` are split per domain on this branch:
+  `setRoleSecondFactor` and `resetUserSecondFactor` are in `handlers/users.rs` and
+  `admin/users.rs`, the login and first-user changes in `handlers/auth.rs`, and the
+  persistent-cookie setting in `handlers/settings.rs`. `role_json` moved to
+  `sc_backup::codec`, so `require_second_factor` is added there (backups carry it, as on
+  `main`). The CLI's `--reset-second-factor` and the boot-time session policy are in
+  `sc-cli/src/commands/`.
+- Roles are `sc_types::Role`, not `u8`: the unverified role (`EmailVerification::unverified_role`,
+  `rest_unverified_role`, `Application::unverified_role`) is a `Role`, `cap_role` caps with
+  `User::capped_at`, and a role from 2 to 100 is accepted as before. `User`'s fields are read with
+  `id()` / `role()`. Internal-table statements use `sc-auth`'s `INTERNAL_TABLES` token, and links
+  are built on a `PublicBaseUrl`.
+- `apply_session` keeps this branch's host-scoped sessions (`login_scoped`, and logging a failed
+  logout) for all three ways of starting one (`Start`, `StartUntilBrowserCloses`,
+  `StartVerified`).
+- **Behaviour change (security review #15):** the `/_feldspar/second-factor/*` routes read the
+  session as every other admin-host route does. A session issued on an application's host counts
+  for nothing off an application's host, so it cannot read, turn off or replace a second factor
+  on the admin host.
+- §9.2's ER diagram draws `_fd_second_factor` and `_fd_recovery_codes`, and lists the new
+  password-token purposes (`repo_hygiene` checks this). The four admin clients are regenerated,
+  and the new code is rustfmt-clean.
+
+Test: `second_factor_sign_in::an_applications_session_is_nobody_on_the_admin_host`. The tests
+from `main` are ported to `Role`, `RoleDef` and the `Unchecked` API.
+
 ## Two-factor authentication
 
 User request: an option for two-factor authentication. Codes from an authenticator app (TOTP)
@@ -152,6 +217,646 @@ computer, untick the new setting.
   and `Max-Age` checks added to `oauth_sign_in`, `admin_subdomain` (handoff), `app_invite`
   (set-password) and `router::login_starts_a_session_that_unlocks_admin_routes` (which used to
   assert the opposite). Unit tests in `sc-config` and `sc-api::auth`.
+## Code quality Q6: argument readers, transaction endings, typed errors in analytics, a test server, condition waits, a length lint, a comment pass
+
+The seventh milestone of `TODO-code-quality.md` (§3.2, §3.4, §3.6–3.8 of the review): Q6.1 to
+Q6.6. Nothing changes on the wire, in stored data or in the schema. The few refusal messages
+that read differently are listed under **Behaviour changes**.
+
+**Argument readers and tagged kinds (Q6.1, still open).** `sc_types::ArgsExt`, on a JSON object (`Map` or
+`Value`), reads one member at a time with the refusals callers already rely on, in two families:
+tool arguments (`optional_string`, `string_or_empty`, `string_arg`, `required_string`,
+`optional_bool`, `required_value`: "`` `k` is required ``", "`` `k` should be a string, got 5 ``")
+and admin-API body fields (`str_field`, `non_empty_str_field`: "missing or non-string field
+`k`", "field `k` must not be empty"). It replaces `sc_api::mcp::optional_string` /
+`optional_bool`, the three `required` / `required_str` copies (sc-check, sc-app's MCP tools and
+libraries), sc-agent-builtins' `string_arg` / `optional_string_arg` / `optional_bool_arg`,
+sc-backup's codec `str_field` / `non_empty_str_field` (and sc-api's copy of them in
+`credentials`), and sc-server's analytics `required` / `text`. Left as they are, because their
+refusals are worded for a different reader: sc-action's `ActionContext::require_str` (a stored
+trigger's setting, a configuration error naming the trigger), the REST password endpoint's
+`required_text` (its public messages), sc-check's step-parameter `text` (which also takes a
+number), and query-parameter readers. The kind dispatches are enums: a v1 agent skill is read as
+`#[serde(tag = "skill_type")] SkillType` (a kind with no counterpart, a missing kind or one that
+is not text is `#[serde(other)] Other`, reported as before), v1's toast kind as `NotifyType`
+(anything else is the plain notice, as before) and `propose_step_change`'s `change` as
+`StepChange` (trimmed first, as before; an unknown one is refused with the same sentence). Not done: parsing
+whole request bodies into structs at the edge; see the TODO note.
+
+**Ending a transaction (Q6.2).** `sc_db::finish(tx, outcome)` commits a success and rolls back a
+failure, `sc_db::abandon(tx)` rolls back where nothing waits on it (after a failure, or reads),
+and `sc_db::with_tx(driver, |tx| Box::pin(async move { … }))` runs work in a transaction and
+ends it by the outcome. `SharedTx::finish` / `SharedTx::abandon` are the same for a shared
+transaction. A failed rollback is logged at verbose level rather than dropped silently. The 26
+`let _ = tx.rollback().await` are gone, with the three local `finish` helpers they had grown
+(sc-model, sc-viewpattern, sc-api's undo). `with_tx` takes a boxed future rather than an async
+closure: an async closure's future is not `Send` for every borrow (rustc's "implementation of
+`Send` is not general enough"), which a handler needs. sc-db and sc-catalog now depend on sc-log
+for that line (TECHNICAL_DESIGN §2's table is updated).
+`Result<_, String>` in sc-dataset and sc-analytics is `sc_error::Result`: the compiler's stage and
+query builders, `Schema::table`, the dataset store's JSON columns, the map, panel, crossfilter,
+selection, layer, card, plot, test-choice and tool functions, including the
+`Result<Result<T>>` "the answer, or the sentence saying why not" ones. The errors are
+`Error::invalid` with the same sentence, and every place that shows one (an operation report,
+a panel's refusal, a layer's `error`, the explorer's answers) shows `Error::message()`, so no
+`invalid: ` prefix reaches a page. Left as they are: the `Schema::spatial` field (a reason sc-db's
+`SpatialSupport` gives), and the statistics routines' `hypothesis::Refusal`, a named `String`
+saying why one test of several could not be computed, which `stats/run.rs` now names instead of
+`String`.
+
+**A test server (Q6.3).** `sc_test_harness::TestServer::builder()` (the harness's new `catalog`
+feature): a fresh database with the template's `users` tables dropped, the SQL a test starts
+with (`.sql(…)`), a catalog read from it, and the catalog's teardown registered on the database,
+so a test cannot forget it. `.on(db)` starts from a database made with `with_postgis` /
+`with_pgvector`; `.build_on(&db)` is for a helper that is handed one. `TestDb::execute` and
+`TestDb::drop_template_users` are the pieces. The 97 copies of the `DROP TABLE … users CASCADE`
+block, each with its driver and `Catalog::init`, are one builder call (79 in sc-server, 13 in
+sc-auth, 4 in sc-api, 1 in sc-action-builtins); the sc-auth and sc-api tests that had no teardown
+now have one. The helpers sc-server's test files repeated are in `tests/support.rs`: `Socket`,
+`send`, `next_frame`, `code_framework` and `blog_app`. Copies that differ for a reason stay: the
+`next_frame` of `app_guest_live` and `tutorial_live` answers `None` on a close, which those tests
+expect; five `blog_app`s are other applications; sc-app's two `code_framework`s are in another
+test binary. The ~90 per-file `Client` structs are not merged (most add their own methods).
+
+**Waiting on a condition (Q6.4).** `sc_test_harness::wait_until(what, within, || …)` polls every
+10 ms. Six sleeps that waited for something to happen now wait for it: a module stream's polls
+(three in `stream_providers`, one in `bundled_rss`), a freed subscriber count (`app_live`) and a
+running stream's elements (`sc-live`'s hub). The others stay: most are already the pause inside
+a polling loop; the rest check that something does *not* happen (no mail, no write, no element),
+let time pass on purpose (session and grant TTLs, credit expiry, heartbeats, timestamps that must
+differ), hold a socket open, or pace the JS fake-socket tests. None of those measures the
+injected `sc_types::clock::Clock`, so `ManualClock` does not apply to them.
+
+**A length lint (Q6.5).** `clippy::too_many_lines` warns (workspace `[lints]`), at 150 lines
+(`clippy.toml`). The functions already over it carry `#[allow(clippy::too_many_lines)]`.
+
+**Comments (Q6.6).** In the files this milestone touched: history narration rewritten as what is
+true now, references to closed TODO items dropped, and the stale "MVP" statements fixed —
+`sc-catalog/src/field.rs` (`DbId` is the primary or a connected database; the kinds a
+`DataField` has; why `unique` is false), the catalog's module and struct docs, `sc-types`'
+`catchall`.
+
+- **Behaviour changes:**
+  - A tool argument of the wrong type to a coding/file tool reads "`` `k` should be a string,
+    got 5 ``" (was "should be text").
+  - The analytics endpoints' `name` / `url` / `tool` / `kind` members refuse a non-string with
+    "`` `k` should be a string, got … ``" (was "`` `k` is required ``").
+  - A dataset row whose `base` / `operations` column is not JSON says "dataset `x`: base should
+    be json, got text" (was "dataset `x`: invalid: base should be …").
+  - A failed rollback is logged at verbose level.
+
+Tests: `sc_types::args::tests`, `sc_db::tx::tests` (commit, rollback, a failed commit),
+`shared_tx::finish_commits_a_success_and_rolls_back_a_failure`, the enum tests in sc-backup's
+`v1::agents` / `v1::actions` and sc-check's `tools`, sc-dataset's
+`a_dataset_over_a_dataset_reads_its_operations_first_and_a_cycle_is_refused` (the report and the
+refusal carry no kind prefix), the harness's `server::tests` and `wait_tests`, and every test
+the builder and the helpers moved into.
+
+## Code quality Q5 (part 2): crate merges and renames, one `Ask`, split files, no alias re-exports, one Value↔JSON module, one clock
+
+The second half of the sixth milestone of `TODO-code-quality.md` (§1, §2, §3 of the review):
+Q5.6 to Q5.11. Nothing changes on the wire, in stored data or in the schema: no crate name,
+module path or type name is serialized anywhere (traits and actions are stored by their own
+names, there are no tracing targets or log filters, and no env or config key names a crate), and
+every JSON spelling a value had is the one it has now.
+
+sc-backup now turns on serde_json's `float_roundtrip` itself. The server binary already had it
+(deno_core enables it), but built on its own the crate parsed some floats one ulp off on restore,
+which `values::tests::every_kind_of_value_survives_the_round_trip` caught.
+
+**Two merges (Q5.6).** `sc-browser` is `sc_agent::browser` and `sc-help` is `sc_docs::help`,
+moved with `git mv`. `sc_agent::BrowserDriver` and the other names `sc_agent::view` re-exported
+are unchanged; sc-check names `sc_agent::browser::…`; `getHelp` calls `sc_docs::help::render`.
+
+**Two renames (Q5.8).** `sc-core-traits` is `sc-agent-builtins` and `sc-core-actions` is
+`sc-action-builtins`, with every reference in the manifests, the code, TECHNICAL_DESIGN §2, the
+security review, the TODO files and the admin UI's one comment. The CHANGELOG's past entries and
+the code-quality review (dated evidence) keep the old names. `coding/` stays inside
+`sc-agent-builtins`: it uses that crate's `files`, `table` and `build_application` modules and
+its configuration constants, so a crate of its own would have meant moving those too.
+
+**One `Ask` (Q5.7).** The six `*Asks` traits of sc-module (`ServiceAsks`, `RoleAsks`,
+`CreditAsks`, `OAuthAsks`, `SystemAsks`, `CheckAsks`), which all had the same
+`ask(plan) -> Result<Json>`, are one `sc_module::Ask`, keyed by `AskSurface`. `CallHosts` carries
+one `Asks` (a slot per surface) instead of six `Option<&dyn …>` fields, and the worker looks a
+surface up by the name the host script sends rather than matching six arms. The wire names and
+the sentence a call without the surface is refused with are unchanged.
+
+**Split files (Q5.9).** `sc-expr/src/code.rs` (13.6k lines) keeps the runtime; the host traits,
+`ModuleFnHosts` (with its tests), `CodeAdapter` and `SchemaSnapshot` are in `code/host.rs` and
+the tests in `code/tests.rs`. `sc-cli/src/main.rs` (3.5k lines) keeps `main`, the dispatch and
+the usage text; each subcommand is a module of `src/commands/`. Both moves are mechanical.
+
+**Alias re-exports removed (Q5.10).** Callers name the crate a thing is defined in:
+`sc_model::CompiledSource` (was `sc_server::CatalogDatasetSource`), `sc_app::app_source_location`
+and `store_dir` (sc-cli's renamed copies), `sc_config::{Mailbox, parse_mailbox, EmailSettings,
+SmtpSecurity}` (re-exported by sc-email), `sc_backup::{Selection, inspect, available, …}` and
+`sc_backup::s3::{Signing, authorization}` (sc-server's renamed block), `sc_api::auth`'s CSRF names,
+`sc_types::{Attrs, BaseField}`, `sc_catalog::Unchecked`, `sc_api::Method`, `sc_expr::CodeAdapter`,
+`sc_module::BUNDLED_IN_CHECKOUT`, `sc_config_file`, and others listed in the TODO note. sc-api and
+sc-action-builtins now depend on sc-config, and sc-cli on sc-backup and sc-expr, for what they
+used to reach through a re-export. Two cross-crate `pub use`s are left on purpose: sc-migrate's
+`Row` / `Result` / `Value`, the documented surface a migration is written with, and
+`tool_names::docs` in sc-agent-builtins' tool-name catalogue.
+
+**One Value↔JSON module (Q5.11).** `sc_types::json` holds every conversion. The four writers
+spelt a value differently on purpose, so they are the four cases of `sc_types::Spelling` in one
+`match`, with a table of the differences in the module docs: `Wire` (the API), `Script`
+(formulas and code bodies; was `sc_expr::value_to_json`), `Analysis` (a dataset's grid; was
+`sc_dataset::value_json`) and `Archive` (a backup; was in sc-backup's `values.rs`). Each produces
+exactly what it did before. `value_from_json` (JSON with no column behind it) moved from sc-expr;
+`json_to_value_as` reads an archive's base64 bytes. `sc_access::convert` is gone. sc-expr now
+depends on sc-types. **One clock:** `sc_types::clock::Clock` replaces sc-ratelimit's (a monotonic
+`Instant`) and sc-workflow's (a wall-clock `DateTime<Utc>`) with one trait that has both readings,
+`now()` and `instant()`; `ManualClock` moves both together and takes a `chrono::TimeDelta`.
+sc-ratelimit now depends on sc-types.
+
+- **Behaviour changes:** none intended. Two error messages are composed differently but read
+  the same: a backup's bad bytes still say "`` `c` ``: the bytes are not valid base64: …".
+
+Also: the pre-existing clippy findings in `sc-types/tests/role_guard.rs` and
+`sc-python/tests/bundled_sklearn.rs` are fixed. TECHNICAL_DESIGN §2's tree, graph and table
+are updated for all of the above.
+
+Tests: `sc_module::host::tests` (every surface named as the host script asks for it; a call
+carries only the asks it was given), `sc_types::json::tests` (the four spellings differ only where
+the table says; an archive reads base64 bytes; the typeless reading, moved from sc-expr),
+`sc_types::clock::tests` (a manual clock moves both readings; the system clock), and the moved
+tests of everything that moved.
+
+## Code quality Q5 (part 1): services, schema snapshots, typed admin host, handler split, sc-backup
+
+The first half of the sixth milestone of `TODO-code-quality.md` (§1, §2, §3.1 of the review):
+Q5.1 to Q5.5. Nothing changes on the wire, in stored data or in the schema. The behaviour changes
+are listed under each part.
+
+**`sc_catalog::Services` (Q5.1).** The ten late-bound host slots of `Catalog` (each its own
+`RwLock<Option<Arc<dyn …>>>`) are one typed `Services` value behind one lock: the table-event
+listeners, schema observer, rename hook, module functions, live, model and admin hosts, formula
+evaluator and table providers. The setters and getters kept their names. `teardown` replaces the
+whole value with an empty one, so a service added to `Services` is cleared with nothing to
+remember; the CLAUDE.md teardown note says so. A builder that required every host at
+construction was not possible: most services hold an `Arc<Catalog>` and are made after it. The two
+`Arc<dyn Any>` slots are gone. sc-llm's host LLM provider and sc-stream's provider registry are
+types sc-catalog cannot name, so they are **typed extensions**: `catalog.set_extension(Some(arc))`
+and `catalog.extension::<T>()`, keyed by `T` itself. No caller downcasts, and nothing of another
+type can be stored under a key. `catalog_teardown.rs` now installs the streams, whose registry is
+an extension, and checks that teardown empties it.
+
+**One schema snapshot (Q5.2).** `reload` used to swap the table cache, field-overlay issues,
+shadowed tables and provided-table issues under four locks and bump the generation separately.
+They are now one immutable `CatalogSchema`, swapped in whole as an `Arc`, with the generation
+inside it (the previous generation plus one, read under the same lock). `Catalog::schema()` hands
+the current one to a caller that needs two parts to agree. `get`, `tables`, `generation`,
+`field_overlay_issues`, `shadowed_tables` and `provided_table_issues` read from it.
+
+**Typed `AdminHost` (Q5.3).** The administrative tools (`sc_app::mcp`, `admin_copilot`'s
+publish) called the server's handlers by endpoint name with JSON in and out (`AdminCall`,
+`call_admin`). That is replaced by one method per operation with typed arguments:
+`backend_operation(BackendOperation)`, `create_file_store(NewFileStore)`, `create_application`,
+`list_applications`, `update_application(id, …)`, `build_application(id)`,
+`translations(TranslationsOf)`, `save_translations`, `save_stream` and `delete_stream(id)`.
+sc-server implements each by calling the handler's own function, so a missing operation is a
+compile error. Moving the handlers below sc-app was the other option; it was not taken because
+most of them need the mount registry, the agents, the view runtime or the stream supervisor. An
+application or a stream is still passed as the admin API's JSON document, since their types are
+above sc-catalog.
+
+**Handlers and endpoints per domain (Q5.4).** `sc-server/src/handlers.rs` (12.9k lines, one
+7.4k-line function) is now `handlers/`, with one module per domain: auth, tables, fields,
+table_rows, connections, file_stores, files, llm, modules, agents, code_libraries, triggers,
+models, streams, settings, backup, applications, views, translations and users. Each module has
+`register(reg, state)` and the helpers only it uses. `sc-api/src/admin.rs` (8.7k lines) is now
+`admin/`, with modules of the same names, each with `register(set)` and its schemas. The split
+was mechanical: handler bodies are unchanged. A domain reaches the catalog and the mount registry
+through `handlers::HandlerState`. `handler::typed` adapts an
+`async fn(HandlerState, HandlerCtx<W>, In) -> Result<Out>`: the body is deserialized into `In`,
+and `Out` is the response (a `HandlerResponse` as it is, anything `Serialize` as a 200). The
+twelve handlers `AdminHost` reaches use it; the others move to it as they are touched.
+- **Behaviour change:** `admin_endpoints()` lists its endpoints grouped by domain, so the order
+  changed, and with it the order in the generated admin client and in the administration MCP
+  server's `tools/list` for the tagged endpoints. Routing matches by path, not by order, and no
+  endpoint was added, removed or changed. The MCP census test lists the tags in the new order,
+  and the four checked-in clients (`ui/{admin,ide,builder,analytics}/src/client.ts`) were
+  regenerated: the same lines, reordered.
+- A typed handler whose body does not deserialize answers an `invalid` error naming what did not
+  fit. None of the twelve converted handlers declares a typed `In` yet (they take the body as
+  JSON), so nothing a client sends is refused that was accepted before.
+
+**`sc-backup` (Q5.5).** The entity JSON codecs moved out of the handlers into
+`sc_backup::codec`: every `*_json` / `*_from_body` a backup writes and reads, the helpers they are
+built from, and the MCP server and Analytics dataset/workspace codecs. The admin handlers import
+them, so the admin API and a backup still have one wire shape. Then `sc-server/src/backup/`
+moved into the new `crates/sc-backup` (files moved, not rewritten). A restore reaches the running
+server through `sc_backup::RestoreHost`, implemented for `AppMounts`: the agent, stream and model
+registries, the trigger dispatcher, module install and reload, a dataset's shape, and build and
+mount. Backup and restore reach the database and the raw stores with sc-backup's own
+`BACKUP_TASKS` token, which was part of sc-server's `ADMIN_TASKS`; the security review's
+inventory is updated. `file_response::chunks` became `sc_files::read_chunks`, shared by the file
+responses and the S3 upload. sc-server re-exports what it exported before. TECHNICAL_DESIGN §2's
+crate tree, graph and dependency table are updated.
+
+Tests: `services::*` (sc-catalog: the extension map, teardown frees a catalog its services hold,
+a schema handed out is not changed by a later reload), `handlers::typed_tests` (sc-server: the
+input read, the output written, a bad body refused, a response's status kept),
+`admin_applications_api::the_admin_host_runs_each_operation_through_its_handler`, and
+`catalog_teardown` extended.
+
+## Code quality Q4: trust-boundary newtypes
+
+The fifth milestone of `TODO-code-quality.md` (§4.6, §3.5 of the review). Each value that crosses
+a trust boundary is a type that only a named constructor makes; the constructors are listed in
+docs/SECURITY_REVIEW_2026-10.md ("Trust-boundary newtypes"). Nothing changes in stored data, in
+backups or in the schema; the behaviour changes are listed under each part.
+
+**`sc_files::StorePath` (Q4.1).** One validator for a store-relative path: `StorePath::parse`
+refuses `..`, `\`, `:`, NUL and a segment of dots and spaces (Windows trims it to `..`), drops
+empty and `.` segments (`"/a//b/"` is `a/b`, `""` is the root), and records whether the path is
+inside a `.git` in any case, with trailing dots or spaces, or as the 8.3 name `git~N`. Every
+`FileStore` method takes a `&StorePath` (`concat` a `&[StorePath]`), so no backend is handed a
+path nobody checked; `CheckedStore`, its `Readable` / `Writable` grants (which hold one),
+`ServeFile` and the access helpers take `impl AsStorePath` and parse a route's text once.
+`LocalFileStore` keeps `beneath_root` and `lands_outside_git` for what is on disk; writes into
+`.git` are still refused by the backend and reads below admin by `check_access`, from the flag.
+A `File` field's value (`validate_file_path`) and the coding trait's paths
+(`FileScope::resolve_path`) use the same validator. The fixed spellings in tests became
+`StorePath::from_static`.
+- **Behaviour change:** a path is refused before any store is asked, so a bad path is an
+  `invalid` error from the route rather than from the backend — same kind, same message.
+  Backup restore skips an archive entry the validator refuses (it was skipped at the write
+  before).
+
+**`TrustedHost` and `PublicBaseUrl` (Q4.2, sc-catalog).** A host this deployment serves:
+`TrustedHost::configured` (base domain, admin host, `PublicOrigin::base_url_for`) or
+`TrustedHost::served` (a `Host` the router matched to a served application or the admin host).
+Both refuse what is not a plain `host[:port]`; `sc_catalog::is_valid_host` is now also the
+router's `Host` check. Every server function that builds an absolute link builds it from a
+`PublicBaseUrl`: password-reset and invitation links (`AppDirectory::own_origin` /
+`app_origin` answer one), OAuth's callback `redirect_uri`, its error redirect and the hand-off to
+`/complete` (a pending flow keeps a `TrustedHost`), an application request's `base_url` and an
+event's `app.url` — what a code body's email or webhook builds its links from — and the
+builder's application address.
+- **Behaviour change:** an application request whose `Host` is not a valid host has an empty
+  `base_url` / `app.url` (it was `http://` followed by whatever was sent); the router already
+  refuses such requests, so none reaches an application.
+
+**`sc-net` (Q4.3).** A new layer-0 crate with the one SSRF rule: `is_public` (moved from
+sc-email), `PublicAddr` (only `PublicAddr::check` and the resolvers make one),
+`resolve_public` (the public addresses among a name's answers), `resolve_every_public` (every
+address public, or refused — an SMTP override's rule), `PublicResolver` and `PublicClient`, an
+HTTP client that resolves names through it and checks an address literal on the request and on
+every redirect it follows. The agent's `http` trait, the `fetch` action with a templated host and
+an MCP server without the private network send with a `PublicClient`; `SmtpMailer::pinned` takes
+a `PublicAddr`. The four copies (`sc-core-traits` `http/guard.rs`, `sc-core-actions` `fetch.rs`,
+`sc-mcp` `guard.rs`, `sc-email` `relay.rs`) are gone; allow-lists and private-network switches
+are unchanged and the refusals read as before. sc-mcp and sc-core-traits depend on sc-net
+instead of sc-email. A test pins a transport to its own listener with
+`PublicAddr::test_listener` (feature `test-listener`, dev-dependencies only). TECHNICAL_DESIGN
+§2's crate tree, graph and table are updated.
+
+**`sc_error::Secret<T>` (Q4.4).** `Debug` prints `Secret([redacted])`, there is no `Serialize`,
+`Deserialize` is the wrapped value's, and the value is read with `expose()` / `expose_str()`.
+In-repo rather than `secrecy`: it is all of it, and the lowest crates holding one
+(sc-config-file, sc-db-postgres) depend on nothing but sc-error. The review's 19 password /
+client secret / private key / API key fields hold one (OAuth and module-consent client secrets,
+the TLS private key, the passwords of email settings, database connections, Postgres connect
+parameters, MQTT, SFTP destinations, backup schedules and uploads and the zip writer, a new user
+and a user update, `feldspar.toml` and the CLI; `feldspar.toml`'s and an LLM endpoint's API key),
+plus the S3 secret key. Storage and backups built their JSON by hand and call `expose()` there,
+so stored settings and backups are byte-for-byte what they were; `secret::expose` /
+`expose_option` are the `serialize_with` functions for a struct that derives `Serialize`.
+- **Behaviour change:** `{:?}` of `PgConnectParams`, `DbConnectionDef`, `OAuthProvider`,
+  `SslSettings`, an SFTP destination, a backup schedule, `NewUser`, `UserUpdate`,
+  `feldspar.toml`'s sections and the CLI's database options no longer shows the secret.
+
+**`SafeHtml` and one escape (Q4.5, `sc_expr::html`).** `escape_html` is the one function,
+`escape` answers a `SafeHtml`, and `SafeHtml::trusted` takes a literal. It replaces five
+escapers — the four the review named and a plugin's asset tags. Three escaped `& < > " '` with
+the same entities; OAuth's hand-off page and the plugin tags left `'` alone, which was safe only
+because their values sat in double-quoted attributes. No context needed a different set, so all
+five share the five-character escape (correct for text and for either quote). JSON inside the
+builder's script keeps its own escape, a different context.
+- **Behaviour change:** the OAuth hand-off page and a plugin's `<script>` / `<link>` tags now
+  write `'` as `&#39;`, which a browser reads the same.
+
+**`sc_query::TrustedSql` (Q4.6).** `Statement::Raw`'s text. Made from a `&'static str`, by
+`TrustedSql::admin_authored` (a custom SQL query, a code body's `db.sql()`) or by
+`TrustedSql::composed` — the program's own SQL around identifiers it quoted, for the change log,
+sync, retention, history, undo, geo import, the analytics demo and migrations. The third
+constructor is a deviation from the item's "only admin-authored and `&'static str`": those
+statements interpolate quoted table names the AST does not express; each was checked to put
+values in binds.
+- **Behaviour change:** a `Raw` statement is never deserialised (`skip_deserializing`); it
+  still serialises as its text. Nothing in the server deserialised one.
+
+**`TableId` deleted (Q4.7).** Decided before starting, against adopting a `TableName` at the
+catalog API: `TableId` held no invariant (a public `String`) and duplicated `Table.name` (every
+table was built with `id == name`), while a `TableName` would have meant about 170 signatures
+across 20 crates and a conversion at every caller for a type that can check nothing a lookup's
+`not_found` does not. `Table.id` is gone (use `name`); `DataFieldKind::Key::target_table`, the
+catalog's table cache and `Application::tables` / `api_tables` are `String`s.
+
+Tests: `store_path::tests` (sc-files), `origin::tests` (sc-catalog), sc-net's unit tests,
+`guard::tests` (sc-mcp), `secret::tests` (sc-error),
+`db_connections::tests::the_target_string_never_carries_the_password` (sc-catalog),
+`html::tests` (sc-expr), `tests::a_raw_statement_renders_verbatim_with_its_binds` (sc-query).
+The traversal, Windows and `.git` tests in sc-files assert the validator; the existing tests
+moved to the new signatures.
+
+## Code quality Q3: `sc-access` and capability handles
+
+The fourth milestone of `TODO-code-quality.md` (§2, §4.4 of the review). Nothing changes on the
+wire, in stored data or in the schema. Two behaviour changes, both in a code body's delegated
+file operations, are listed under the file stores below.
+
+**`sc-access`, the row-access layer (Q3.1, Q3.2).** `rows`, `ownership`, `write_as`, `filter`,
+`convert` and `user_rows` moved out of sc-api into a new crate, with what they need (`calc_read`,
+`search`, `vector`); the files were moved, not rewritten. It sits at layer 6, below `sc-action`,
+and depends on the catalog, sc-auth, sc-files and sc-llm (a vector field's embeddings). sc-api
+keeps the wire formats, the admin endpoint table, the code host, CSV, sync, undo and history, and
+no longer re-exports the row layer: every caller names `sc_access`. `sc-live` and sc-workflow's
+test edge no longer depend on sc-api. The items sc-api's REST, GraphQL and code-host modules used
+across the new boundary became `pub`. TECHNICAL_DESIGN §2's crate graph and table are updated.
+
+**`sc_catalog::Unchecked` (Q3.5).** The row operations that do not apply a table's floors and
+ownership formula take a token instead of an `Authority`: every unchecked function of
+`sc_access::rows`, `Catalog::provider`, `Catalog::driver_for`, `Catalog::driver_named`, and
+`sc_access::vector::embed_rows`. `Catalog::database` is crate-private; `Catalog::driver_info`
+(dialect, capabilities, PostGIS / pgvector support) and `Catalog::is_connected` answer what callers
+used the driver for. A token is made three ways, each greppable and listed in
+docs/SECURITY_REVIEW_2026-10.md's inventory:
+- `Unchecked::system(reason)`: the server's own authority (`Authority::system`'s unchecked form).
+- `Unchecked::admin(principal)`, or `sc_access::admin_access` for an error: only an
+  administrator's principal, who meets every floor, so the check decides nothing.
+- `Unchecked::vouched(principal, by)`: a caller whose access a named check already decided — the
+  ownership functions, the REST write rule (`write_as`), an RLS table's policies (REST `run_rls`)
+  and the REST file routes.
+
+The row layer's no-caller shortcuts that hid a system authority (`create_row(catalog, table,
+body)`, `update_row`, `delete_row`, `list_rows`, `read_field`) are gone, and the `_ctx` forms took
+their names (`create_row_ctx` → `create_row`, … `delete_all_rows_ctx` → `delete_all_rows`).
+`write_document_in` takes the token too. Their callers now write the reason down: backup restore,
+checklist cleanup, OAuth token storage, the sync device rows, a live document's load.
+
+`Catalog::primary`, `SharedTx::run` and `sc_catalog::run_in_context` / `run_in_context_read_only`
+take the token as well, and `SharedTx::batch` (raw SQL) is crate-private (the unused
+`SharedTx::apply_schema` is gone). `Catalog::primary_info` and `primary_dialect` answer the dialect
+and capabilities, which is what most of the ~170 `primary()` callers wanted. A crate's internal
+stores (`_fd_*`) reach the driver with one crate-private `INTERNAL_TABLES` token per crate
+(17 crates), and sc-server's admin tasks (backup and restore, clear all, table rename, the user
+lists, system info) with one `ADMIN_TASKS`, rather than a token per statement. New vouched
+callers: a custom SQL query (`CUSTOM_QUERY_RULE`), a delegated `db.sql()` (`CODE_SQL_RULE`) and a
+sync push's own-device bookkeeping (`OWN_DEVICE`).
+- **Behaviour change:** a CSV import, CSV export, geo import, public dataset install and the
+  admin row endpoints are refused (`auth`) when handed a principal that is not an administrator's.
+  Every caller hands them one today.
+- `LikeRules::of` (sc-live) takes the dialect rather than the driver.
+
+**`sc_access::Scoped` (Q3.3).** A catalog with an `Authority` bound, and its executor and formula
+engine: `read` / `read_values` / `insert` / `update` / `delete`. A caller's operations are the
+ownership rule's (the guarded `*_as` functions, refactored into `_by` forms that take the caller's
+`Principal` and read the user back from it); the system's and an administrator's are the row
+layer's, with the token their authority makes. `Scoped::system(catalog, reason)` is greppable like
+`Authority::system`. `Scoped::unchecked()` hands an admin or system scope's token on for the
+operations it does not wrap.
+
+**`ActionContext::scoped` and `caller` (Q3.4).** sc-action now depends on sc-access. An
+action is handed the trigger's authority — the administrator in the event's user's name, with the
+chain, on the workflow step's transaction — as a `Scoped`, and the event's caller as a `Principal`
+(`ctx.caller()`). The row actions (`insert_row`, `update_rows`, `delete_rows` and their `where`
+read, `embed_rows`) write through `scoped()` instead of building the principal from
+`event.user`; the code-body hosts, `undo` and `run_agent` take the caller from `caller()` instead
+of `event.role` / `event.user`. Same authority as before.
+
+**Agent tools and code-body hosts on `Scoped` (Q3.4).** sc-agent depends on sc-access.
+`TraitContext::principal()` is the run's caller as a principal (the role, the user's fields, the
+tool chain), and `TraitContext::scoped(&principal)` the handle every tool's rows go through
+(`RunCaller::principal` / `scoped` for helpers that take the caller): `query_table`,
+`edit_table_rows`, the `write` matcher, `search_table`, `similar_rows`, `prompt_picker` and the
+preloads no longer call the `*_as` functions with a role and a user. `TableHost` and
+`TriggerRunHost` carry the event's caller as a `Principal` (`for_caller`), and `TableHost`'s reads,
+aggregates and writes run through a `Scoped` built from the plan's actor — admin in the event's
+user's name, or the delegated caller (`asUser()`, `forUser`, public) — on the run's executor and
+engine. `models::write_posterior` takes a `Scoped` in place of `models::Writer`. `Scoped` gained
+`with_user` (decide with the user as its row was loaded, so a formula over a typed field of the
+user sees what it always saw; a user that is not the principal's is refused) and
+`aggregate_grouped`. Same authority on every path.
+
+**`sc_files::CheckedStore` (Q3.6).** A file store with its floor and a `FileCaller` bound.
+`readable(path)` / `writable(path)` check `check_access` / `check_write` and answer a grant whose
+operations (read, stream, stat, metadata, write, append, concat, mkdir, delete, rename within the
+store, record the owner) reach that path only; `read`, `write`, `delete`, `rename`, … are those in
+one call. `deposit(path)` is the drop-box rule: a new file needs nothing beyond the route's own
+rule, and replacing one is a write. `serve(path)` answers a `ServeFile`, whose store and path are
+now private (`path()`, `store_name()`, `stat()`, `open_read()`). `list`, `find_files`,
+`find_by_extension` and `search` filter for the caller; `local_root` answers only an
+administrator's binding. `Catalog::file_store` / `require_file_store` take an `Unchecked`; a route
+opens `Catalog::checked_file_store` or `sc_catalog::open_checked_store` (which reads the floor),
+and `has_file_store` / `file_store_is_git_repo` answer the connection questions. Through it: the
+admin file manager (every endpoint, `downloadFile` and find / search included), the agents' file
+tools, the REST provider's `File` routes and a code response's file, the code-body `fs` host, an
+application's static directories and `/files/serve`, the upload slots (the server's temporary
+folder bound to the administrator, the finished file deposited by the uploader), the IDE's
+language server, `send_email`'s attachments and a module's file surface. The build pipeline,
+backup and restore, translations, Stan programs and the coding trait's internal tools keep the raw
+store, with a token each, listed in docs/SECURITY_REVIEW_2026-10.md's inventory.
+- **Behaviour change:** a code body's delegated (`asUser()`) copy or move into *another* store
+  that sets a rule (`write(file, { minRole })`) is judged against the destination store's floor.
+  It was the source store's, and a source floor tighter than both rules hid a loosening.
+- **Behaviour change:** a delegated move across two stores needs the source readable as well as
+  writable (its bytes are read). Within one store a move still needs only the write.
+
+Tests: `crates/sc-access/tests/scoped.rs` (a caller below the floor is refused and the system is
+not; an ownership formula narrows a caller's read; only the system and an administrator make an
+unchecked token; a scope decides with the loaded user, counts through the rule and refuses another
+user), `action_context::an_action_is_handed_the_triggers_authority_and_the_events_caller`
+(sc-action), `crates/sc-files/tests/checked_store.rs` (grants, the drop box, no rename across
+stores, `local_root`), `code_files::a_delegated_copy_into_another_store_may_not_loosen_its_rule`
+(sc-core-actions). The existing tests moved to the new signatures.
+
+## Code quality Q2: authenticated users and proof-carrying extractors
+
+The third milestone of `TODO-code-quality.md` (§4.3, §4.5 of the review). Nothing changes in
+stored data or the schema; a `User` serializes as it did. One wire-visible change: a session
+started on an application's host has a token starting `app-` (see below).
+
+**`sc_auth::User` is data, not a proof.** Its fields are private (`id()`, `role()`, `extra()`,
+`get()`) and it no longer implements `Deserialize`, so neither a struct literal nor a JSON blob
+can stand in for one read from the table. Nothing in the workspace deserialized one. The field
+writes became `with_field(name, value)` (cannot set `id`, `role` or the password hash) and
+`capped_at(role)` (only lowers: an application's `max_role`, `sc_app::cap_role`). Loading a user
+with their grants uses a crate-private `with_role`.
+
+**`sc_auth::AuthenticatedUser`** wraps a `User` somebody presented a credential for. Only
+`SessionStore::user_for` and API-token verification (`ApiCaller::user`) make one; it derefs to
+the `User` and `into_user()` drops the proof. `capped_at` keeps it, since lowering a role forges
+nothing.
+
+**`AdminSession`** (`sc-server/src/admin_session.rs`), the workspace's second
+`FromRequestParts`: its one constructor checks that the request is on the admin host, carries a
+live session, that the session was issued on the admin host, and that the user is an
+administrator. `/upload`, `/download`, `/backup/create`, `/backup/upload`, the LSP, agent chat,
+stream Observe and fit-progress sockets take one, and the IDE, Analytics UI and builder bundles
+resolve one. `admin_of`, `admin_host_only` and the hand-written `session_user` + `enforce_auth`
+sequences on those routes are gone. Observe and fit progress now also answer `404` on a hidden
+preview's host, as the other admin routes did. On a socket route, an unauthenticated request is
+now refused before its `Origin` is checked (`401`, where it was `403`), and `/backup/create`
+refuses a caller without an admin session before it reads the body (`401`, where an oversized
+body used to be a `413` first).
+
+**Handler gates.** `HandlerCtx<W>` carries who is calling as `who: W` (`ctx.user()` reads the
+user). A handler is registered behind a gate: `register` (open, handed the `Caller`),
+`register_signed_in` (an `AuthenticatedUser`), `register_admin` (an `Admin`) or
+`register_analytics` (an `AnalyticsCaller`: admin on the admin host, the application's visitor on
+an Analytics application's host). The registry narrows the dispatcher's `Caller` before the
+handler runs and refuses one the gate does not admit. `Admin` is an `AdminSession`, or
+`Admin::delegated` for the MCP server's endpoint tools and the catalog's `AdminHost`, which make
+their own admin check (listed in docs/SECURITY_REVIEW_2026-10.md's inventory). At startup the
+router refuses an endpoint set in which an `admin()` endpoint's handler is not behind the admin
+(or Analytics) gate, a `LoggedIn` endpoint's is behind the open gate, or an Analytics
+application's endpoint is not behind the Analytics gate. The 249 admin handlers, 38 Analytics
+handlers and `logout` were moved to their gates; `authStatus`, `login` and `createFirstUser` stay
+open.
+
+**Sessions are bound to the host that issued them** (security review #15's open item). A session
+started on an application's host — its sign-in, OAuth, a checklist's browser, `call_api` — gets a
+token prefixed `app-` (`SessionScope::App`); the admin host, the admin handoff and `feldspar auth
+token` mint the plain 64-hex-digit tokens they always did. The scope is part of the hashed token,
+so no column was added. On the admin host an application's session is no session: admin routes
+answer `401` and `authStatus` shows nobody, so an admin signed in to an application (or sharing
+sign-in) signs in again on the admin host. A token issued before this change reads as an
+admin-host token and lapses with its expiry.
+
+**Admin sockets hold their session.** The chat socket's `ChatSession` became `AdminWatch`, which
+the LSP, Observe and fit-progress sockets now use too: each registers as a session listener and
+re-reads its `AdminSession` every 30 s, and closes when the session ends, the account is disabled
+or deleted, or the user is no longer an admin (security review #42's class; only the chat did
+this before).
+
+Tests: `router::an_application_session_is_no_admin_session_on_the_admin_host`,
+`router::an_admin_endpoint_cannot_be_served_by_an_open_handler` (startup check, and an admin
+handler called without admin authority is refused), `app_serving::admin_file_and_backup_routes_are_nothing_on_an_application_host`
+(extended to the four sockets, and to an application session on the admin host),
+`session::tests::a_session_says_which_host_issued_it`,
+`user::tests::a_user_serializes_as_before_and_its_builders_cannot_raise_it`.
+
+## Code quality Q1: `Role`, `Principal` and `Authority`
+
+The second milestone of `TODO-code-quality.md` (§4.1, §4.2 of the review). Nothing changes on the
+wire, in stored data or in the schema: a role still serializes and is stored as its number.
+
+**`sc_types::Role`** replaces the bare `u8` role everywhere: `User`, `Principal`, `Event`,
+`AuthRequirement::MinRole`, table / file store / trigger / agent / stream / view / application /
+upload-slot / dataset / workflow-form `min_role`s, grants, invitations, module role ceilings, and
+the per-crate callers. Its field is private and only `1..=100` constructs one (`Role::new`,
+`TryFrom<u8 | i64 | u64>`, `Role::of` for literals, serde `try_from`). It has `Role::ADMIN`,
+`Role::PUBLIC`, `meets(floor)`, `outranks`, `is_admin`, `is_public`, `most_privileged`,
+`least_privileged`, and **no `Ord`**. With an ordering, the old `role <= min_role` idiom would
+have kept compiling with whichever meaning the ordering picked. Without one, every hand-written
+comparison failed to compile and was rewritten. `Display` prints the number and honours width
+flags. `Default` is `PUBLIC`, so `Principal::default()` is no longer role 0, which used to pass
+every `role <= floor` check.
+- Range checks that a `Role` makes redundant were deleted (table access, file store rows, history
+  `min_role`, triggers, agents, streams, workflow forms, applications, upload slots, custom
+  queries, dataset sharing, schema edits, the code host's `minRole`). Reading a stored role
+  outside `1..=100` is still a named error.
+- `user.role == 1` checks became `is_admin()` (sc-server onboarding, sc-api MCP `require_admin`,
+  sc-core-traits coding, sc-module permissions). The users-table insert/update rule
+  (`user_rows.rs`) compared a raw `i64` with `i64::from(caller.role)`. It now reads a `Role` and
+  uses `outranks` / `meets`, and an out-of-range role there is a 400 rather than a 403.
+- `User::new` is infallible now that a role cannot be out of range.
+- Deleted: the six `ROLE_ADMIN` / four `ROLE_PUBLIC` constants (sc-auth, sc-files, sc-action,
+  sc-workflow, sc-viewpattern, and the private copies in sc-catalog `history.rs` and
+  `retention.rs`), `sc_auth::role_in_range`, and the four `caller_role` / `role_of` helpers. The
+  one way an optional user becomes a role is `sc_auth::role_of`. sc-auth's role *row* struct was
+  renamed `RoleDef` to free the name.
+- **Guard:** `crates/sc-types/tests/role_guard.rs` scans every crate's source, with comments and
+  strings stripped. It fails on a role-named binding typed `u8`, a role compared with a number
+  literal, a role number unwrapped with `.get()` and ordered by hand, and any new `ROLE_ADMIN` /
+  `ROLE_PUBLIC` constant. Only `sc-types/src/role.rs` is exempt.
+
+**`Principal`** (sc-catalog) replaces `CallerContext`: role, user, trigger chain, calling
+application, guest session and changeset. `sc_api::caller_context(_at)` are now
+`principal_of` / `principal_at`. The user is still the JSON object the `sc.user` GUC carries;
+Q2.2's `AuthenticatedUser` will replace it.
+
+**`Authority<'a> { System(SystemReason), Caller(&'a Principal) }`** replaces the 65
+`Option<&CallerContext>` parameters (`SharedTx::run`, the row layer, CSV and geo import, public
+dataset install, the `TriggerDispatcher` methods, the credits ledger, the users-table guards).
+`None` used to mean "nobody, plus the ambient changeset". The server's own authority is now
+written `Authority::system("reason")`, the only way to make a `SystemReason`, and request paths
+pass `Authority::Caller`. Two request paths that passed `None` now pass their caller: REST file
+downloads, and grouped aggregates decided by an ownership predicate.
+- **Behaviour change:** `System` is the admin role with no user. On a row-level-security table it
+  sets `sc.role` to 1 in `SharedTx` and in the row layer, where `None` used to fail closed. So
+  "is this file still referenced?" (file cleanup and retention), persisting a live document, and
+  the ownership check's read of an existing row now see rows a policy would have hidden from
+  "nobody". A system write to a table that is only change-logged still goes through the provider,
+  so history groups it as before.
+- `Caller::admin()`-style ad-hoc authority was converted where it had no user (the retention
+  job). Every system call site, and the admin principals that remain, are listed in
+  docs/SECURITY_REVIEW_2026-10.md, "System-authority inventory".
+
+**Context across `spawn`.** `sc_catalog::TaskScope` captures the task-locals a caller's work runs
+inside (origin, ambient changeset, run outbox), and `spawn_scoped` re-enters them in the spawned
+task. Exposed-agent turns (`app_agents.rs`), public dataset installs and GraphQL's `DataLoader`
+now spawn with it. Before, a plain `tokio::spawn` dropped the application and guest session, so
+an ownership formula's `session.id` read nothing. Test:
+`caller::tests::a_triggered_chain_and_its_origin_survive_a_spawn` keeps the untrusted-input marker
+in the principal's chain across a spawn and shows a bare spawn losing the origin (security review
+#32).
+
+**Per-crate callers (partly).** `sc_module::RouteCaller` is gone; module routes take a
+`Principal`, built by `sc_api::principal_of`, which removed sc-server's copy of that conversion.
+`Principal::file_caller()` / `user_id()` give the file rule's view (sc-files sits below
+sc-catalog, so `FileCaller` stays a separate type). Still separate, for reasons recorded in
+TODO-code-quality.md Q1.8: `sc_dataset::Caller`, `sc_live::access::Caller`,
+`sc_agent::RunCaller`, and sc-server's `LiveCaller` / `GuestCaller` / `AppCaller`.
+
+## Code quality Q0: quick wins
+
+The first milestone of `TODO-code-quality.md`. Nothing changes on the wire, in stored data or in
+the schema.
+
+**Every admin endpoint is checked to have a handler.** The admin endpoint table
+(`sc_api::admin_endpoints()`, the Analytics UI's endpoints included) and the handler registry are
+joined by name only, so an endpoint whose handler was missing or misspelled answered `501` at
+request time. A test now builds the registry the router serves (`admin_handlers` plus
+`builderStatus`) and fails naming every `HandlerRef::Named` endpoint with no handler. Test:
+`handlers::coverage_tests::every_named_admin_endpoint_has_a_handler`.
+
+**A failed logout is logged.** When a sign-in (or `becomeUser`) replaces the session the request
+came with, or a logout ends it, a failure to end the old session in the store was ignored. It is
+now written to the server log ("… it stays valid until it expires"). The swap itself still
+succeeds: the new session exists and the cookie no longer names the old one, and failing the
+request would leave the caller with both sessions. A public dataset whose import fails no longer
+says "its tables were not kept" when dropping the half-imported tables failed too; the error
+now names both failures and says to drop the tables by hand.
+
+**`Error::message()` and `Error::message_and_causes()`** in sc-error: the error's own text without
+the kind prefix `Display` adds ("invalid: ", "not found: ", …), and the same followed by its
+causes. They replace four local helpers, two of which stripped the prefix off the rendered string
+(`public_datasets::plain`, removed from sc-api's public API; sc-analytics' `plain`; geo import's
+`plain_database_error`; the admin handlers' `plain_sentence`). Errors that were not `invalid`
+lose their kind prefix in those messages too. Test: `tests::message_is_the_text_without_the_kind_prefix`.
+
+**A per-feature commit asks git whether anything is staged** (`git diff --cached --quiet`) instead
+of reading "nothing to commit" off a failed commit's output, which depended on git's wording and
+locale. Test: `coding::commit::tests::staged_changes_are_asked_of_git_not_read_off_a_message`.
+
+**Savepoint names are `&'static str`.** `SharedTx::savepoint`, `release_savepoint` and
+`rollback_to_savepoint` format the name into SQL; they now take a `&'static str`, so request data
+cannot reach them, and refuse a name that is not a plain identifier. Test:
+`tx::tests::a_savepoint_name_is_a_plain_identifier`.
+
+## Code quality review and TODO-code-quality.md
+
+A general review of crate structure, indirection and how the type system could enforce security,
+written up in `docs/CODE_QUALITY_REVIEW_2026-10.md`. The work items are in a new
+`TODO-code-quality.md` (milestones Q0–Q6): quick wins, a `Role` newtype and one `Principal` /
+`Authority`, proof-carrying admin extractors, an `sc-access` crate with scoped capability handles,
+trust-boundary newtypes (`StorePath`, `TrustedHost`, `PublicAddr`, `Secret`, `SafeHtml`), then
+structural cleanup and test hygiene. No code changed.
 
 ## Test fix: the expired-grant session test no longer races its own grant
 

@@ -2,6 +2,7 @@
 //! binary** against a **real Postgres**: an account created or re-passworded
 //! from a terminal is one `authenticate` — the sign-in form's check — accepts.
 
+use sc_types::Role;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -63,7 +64,7 @@ async fn a_forgotten_admin_password_is_reset_from_the_cli() -> sc_error::Result<
     let user = sc_auth::load_user_by_email(&catalog, ADMIN)
         .await?
         .expect("created");
-    assert_eq!(user.role, sc_auth::ROLE_ADMIN);
+    assert_eq!(user.role(), Role::ADMIN);
     assert!(signs_in(&catalog, ADMIN, "first-password").await);
 
     // add-user with no password reads it (stdin is not a terminal here); the
@@ -134,7 +135,7 @@ async fn a_forgotten_admin_password_is_reset_from_the_cli() -> sc_error::Result<
     let staff = sc_auth::load_user_by_email(&catalog, "staff@example.com")
         .await?
         .expect("exists");
-    assert_eq!(staff.role, sc_auth::ROLE_ADMIN);
+    assert_eq!(staff.role(), Role::ADMIN);
     assert!(signs_in(&catalog, "staff@example.com", "promoted").await);
 
     // An empty piped password is refused, and nothing changes.
@@ -260,7 +261,7 @@ async fn roles_and_accounts_are_managed_from_the_cli() -> sc_error::Result<()> {
     assert!(!ok && stderr.contains("no user"), "{stderr}");
     let (ok, _, stderr) = run(&["role", "delete", "Editor"]);
     assert!(ok, "{stderr}");
-    assert!(sc_auth::load_role(&catalog, 40).await?.is_none());
+    assert!(sc_auth::load_role(&catalog, Role::of(40)).await?.is_none());
     // A built-in role stays.
     let (ok, _, stderr) = run(&["role", "delete", "admin"]);
     assert!(!ok && stderr.contains("built in"), "{stderr}");

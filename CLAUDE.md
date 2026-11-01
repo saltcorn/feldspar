@@ -29,6 +29,10 @@ files" at the common soft limit of 1024. Right after `Catalog::init`:
     db.on_teardown(catalog.teardown_hook());   // db: the test's TestDb
 
 A test with no `TestDb` (SQLite) holds a `sc_test_harness::Teardown` and calls `.add(...)` on it.
+A service goes on the catalog as a field of `sc_catalog::Services` (or, for a type sc-catalog cannot
+name, as a typed extension: `catalog.set_extension(Some(arc))`); `Catalog::teardown` replaces the whole
+`Services` value, so a new field is cleared with nothing to remember. A service that holds the
+catalog somewhere else (a `TableEvents` listener's own cycle, a global) needs its own teardown.
 `crates/sc-server/tests/catalog_teardown.rs` checks that a full server stack is freed; extend it if
 you add a service that holds the catalog in a new way. To reproduce a leak, run the tests after
 `ulimit -Sn 1024`.

@@ -23,7 +23,7 @@
 //! raises no table event. What remains, deliberately:
 //!
 //! - **A role floor, defaulting to admin.** [`CustomQuery::min_role`] is
-//!   required to be *stated*, and an unstated one is [`ROLE_ADMIN`]. The same
+//!   required to be *stated*, and an unstated one is [`Role::ADMIN`]. The same
 //!   rule a trigger's exposure is under (§10.2): an access nobody has thought
 //!   about must not be the one that turns out to be public.
 //! - **The caller context.** Every custom query runs inside the same
@@ -40,10 +40,10 @@
 //! coerced to the type the admin declared. There is no path by which anything a
 //! caller sent becomes part of the statement's text.
 
-use sc_auth::ROLE_ADMIN;
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_query::{Statement, Value, rewrite_named_params};
+use sc_types::Role;
 use sc_types::{Attrs, BasicType, json_to_value};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
@@ -252,7 +252,7 @@ pub struct CustomQuery {
     /// The role floor for calling it. **Admin unless stated** — see the module
     /// documentation.
     #[serde(default = "admin_role")]
-    pub min_role: u8,
+    pub min_role: Role,
     /// The result columns, as the database described them. Server-written; an
     /// empty list means "not described yet" and types the response as opaque
     /// JSON rather than lying about a shape.
@@ -305,8 +305,8 @@ pub struct EffectiveRateLimit {
     pub per_user: Option<sc_ratelimit::Rate>,
 }
 
-fn admin_role() -> u8 {
-    ROLE_ADMIN
+fn admin_role() -> Role {
+    Role::ADMIN
 }
 
 impl CustomQuery {
@@ -325,7 +325,7 @@ impl CustomQuery {
             language: QueryLanguage::Sql,
             code: code.into(),
             params: Vec::new(),
-            min_role: ROLE_ADMIN,
+            min_role: Role::ADMIN,
             columns: Vec::new(),
             body_type: BodyType::Json,
             response_type: ResponseType::Json,
@@ -341,7 +341,7 @@ impl CustomQuery {
     }
 
     /// Set the role floor.
-    pub fn min_role(mut self, min_role: u8) -> CustomQuery {
+    pub fn min_role(mut self, min_role: Role) -> CustomQuery {
         self.min_role = min_role;
         self
     }
@@ -401,7 +401,7 @@ impl CustomQuery {
                 per_ip: parse(&stated.per_ip),
                 per_user: parse(&stated.per_user),
             },
-            None if self.is_code() && self.min_role == sc_auth::ROLE_PUBLIC => EffectiveRateLimit {
+            None if self.is_code() && self.min_role.is_public() => EffectiveRateLimit {
                 per_ip: sc_ratelimit::Rate::parse(DEFAULT_PUBLIC_RATE).ok(),
                 per_user: None,
             },
@@ -520,6 +520,7 @@ pub fn validate_custom_queries(queries: &[CustomQuery], tables: &[String]) -> Re
 const TABLE_OPS: [&str; 6] = ["list", "create", "update", "delete", "download", "upload"];
 
 /// Everything one custom query has to satisfy on its own.
+#[allow(clippy::too_many_lines)]
 fn validate_custom_query(q: &CustomQuery, tables: &[String]) -> Result<()> {
     if !is_identifier(&q.name) {
         return Err(Error::invalid(format!(
@@ -545,12 +546,6 @@ fn validate_custom_query(q: &CustomQuery, tables: &[String]) -> Result<()> {
                 )));
             }
         }
-    }
-    if !(1..=100).contains(&q.min_role) {
-        return Err(Error::invalid(format!(
-            "custom query `{}` has a role floor of {}; roles run 1..=100",
-            q.name, q.min_role
-        )));
     }
 
     let path = normalize_path(&q.path);
@@ -785,7 +780,11 @@ pub async fn describe_custom_query(
     if query.is_code() {
         return Ok(Vec::new());
     }
-    let driver = catalog.primary();
+    // Prepared to learn its columns, not run: the query is the admin's own
+    // configuration (§13.4).
+    let driver = catalog.primary(sc_catalog::Unchecked::system(
+        "custom query: describe the columns of an admin-authored statement",
+    ));
     let (named, types) = prepare(catalog, query)?;
 
     let described = driver
@@ -917,7 +916,7 @@ pub fn undeclared_params_note(query: &CustomQuery) -> Option<String> {
 /// be two answers, and the one that is wrong is the one nobody is reading until
 /// a caller hits it.
 fn prepare(catalog: &Catalog, query: &CustomQuery) -> Result<(sc_query::NamedSql, Vec<String>)> {
-    let named = rewrite_named_params(catalog.primary().dialect(), &query.code)
+    let named = rewrite_named_params(catalog.primary_dialect(), &query.code)
         .map_err(|e| Error::invalid(format!("custom query `{}`: {e}", query.name)))?;
     let types = named
         .params
@@ -957,7 +956,11 @@ pub(crate) fn custom_statement(
         .iter()
         .map(|name| bind(query, req, name))
         .collect::<Result<Vec<Value>>>()?;
-    Ok(Statement::raw_typed(named.sql, binds, types))
+    Ok(Statement::raw_typed(
+        sc_query::TrustedSql::admin_authored(named.sql),
+        binds,
+        types,
+    ))
 }
 
 /// One argument, read off the request and coerced to its declared type.
@@ -1057,7 +1060,7 @@ fn json_scope(query: &CustomQuery, req: &ApiRequest) -> Result<Attrs> {
         for param in &query.params {
             let value = bind(query, req, &param.name)?;
             if !value.is_null() {
-                args.insert(param.name.clone(), crate::convert::value_to_json(&value));
+                args.insert(param.name.clone(), sc_types::value_to_json(&value));
             }
         }
         let mut scope = Attrs::new();
@@ -1091,7 +1094,7 @@ fn json_scope(query: &CustomQuery, req: &ApiRequest) -> Result<Attrs> {
             &mut body
         };
         if !value.is_null() {
-            target.insert(param.name.clone(), crate::convert::value_to_json(&value));
+            target.insert(param.name.clone(), sc_types::value_to_json(&value));
         }
     }
     let mut scope = Attrs::new();
@@ -1117,7 +1120,7 @@ pub(crate) fn rows_to_json(rows: &[sc_db::Row]) -> Json {
             .map(|row| {
                 let mut out = serde_json::Map::new();
                 for (name, value) in row.columns().iter().zip(row.values()) {
-                    out.insert(name.clone(), crate::convert::value_to_json(value));
+                    out.insert(name.clone(), sc_types::value_to_json(value));
                 }
                 Json::Object(out)
             })
@@ -1278,7 +1281,7 @@ mod tests {
             "code": "SELECT 1 AS n"
         });
         let q: CustomQuery = serde_json::from_value(stored).unwrap();
-        assert_eq!(q.min_role, ROLE_ADMIN);
+        assert_eq!(q.min_role, Role::ADMIN);
         assert!(q.read_only());
     }
 
@@ -1317,7 +1320,7 @@ mod tests {
         let ep = custom_endpoint("/api", &q);
         assert_eq!(ep.method, Method::Get);
         assert_eq!(ep.path.pattern(), "/api/reports/top-authors");
-        assert_eq!(ep.auth, AuthRequirement::MinRole(ROLE_ADMIN));
+        assert_eq!(ep.auth, AuthRequirement::MinRole(Role::ADMIN));
         assert_eq!(ep.handler, HandlerRef::Custom("topAuthors".into()));
         assert!(ep.input.is_empty());
         assert_eq!(ep.query.len(), 1);
@@ -1569,7 +1572,7 @@ mod tests {
     #[test]
     fn a_public_code_query_is_rate_limited_by_default_and_a_stated_limit_replaces_it() {
         use sc_ratelimit::Rate;
-        let public = js_query().min_role(sc_auth::ROLE_PUBLIC);
+        let public = js_query().min_role(Role::PUBLIC);
         assert_eq!(
             public.effective_rate_limit().per_ip,
             Some(Rate::per_minute(60))
@@ -1581,9 +1584,7 @@ mod tests {
             EffectiveRateLimit::default()
         );
         assert_eq!(
-            query()
-                .min_role(sc_auth::ROLE_PUBLIC)
-                .effective_rate_limit(),
+            query().min_role(Role::PUBLIC).effective_rate_limit(),
             EffectiveRateLimit::default()
         );
         // A stated limit is the whole limit; `{}` is none.

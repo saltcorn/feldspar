@@ -140,25 +140,28 @@ impl Condition {
 
     /// The conditions in `json` (a list), each checked, with different ids.
     pub fn read_list(json: &Json) -> Result<Vec<Condition>> {
-        Condition::list_of(json).map_err(Error::invalid)
+        Condition::list_of(json)
     }
 
     /// [`Condition::read_list`], or the sentence saying why not.
-    pub fn list_of(json: &Json) -> std::result::Result<Vec<Condition>, String> {
+    pub fn list_of(json: &Json) -> Result<Vec<Condition>> {
         let list: Vec<Condition> = serde_json::from_value(json.clone())
-            .map_err(|e| format!("these are not filters: {e}"))?;
+            .map_err(|e| Error::invalid(format!("these are not filters: {e}")))?;
         if list.len() > MAX_CONDITIONS {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "a panel is drawn with at most {MAX_CONDITIONS} filters"
-            ));
+            )));
         }
         let mut ids = BTreeSet::new();
         for (i, c) in list.iter().enumerate() {
             if let Some(why) = c.problem() {
-                return Err(format!("filter {}: {why}", i + 1));
+                return Err(Error::invalid(format!("filter {}: {why}", i + 1)));
             }
             if !ids.insert(c.id.as_str()) {
-                return Err(format!("two filters have the id `{}`", c.id));
+                return Err(Error::invalid(format!(
+                    "two filters have the id `{}`",
+                    c.id
+                )));
             }
         }
         Ok(list)
@@ -250,7 +253,7 @@ pub(crate) fn filter_failure(
         })
 }
 
-/// What `conditions` do to each of `datasets` (A6.4): the formula each takes,
+/// What `conditions` do to each of `datasets`: the formula each takes,
 /// and for each pair the column filtered or why not.
 pub async fn scope(
     catalog: &Catalog,
@@ -298,7 +301,7 @@ pub async fn scope(
                     terms.push(t);
                     (Some(column), None)
                 }
-                Err(why) => (None, Some(why)),
+                Err(why) => (None, Some(why.message().to_owned())),
             };
             out.applied.push(Applied {
                 id: c.id.clone(),
@@ -349,25 +352,30 @@ fn target_column(
     c: &Condition,
     from: Option<&Named<'_>>,
     to: &Named<'_>,
-) -> std::result::Result<(String, ColType), String> {
+) -> Result<(String, ColType)> {
     let Some(from) = from else {
-        return Err("the dataset this filter was made on has been deleted".to_owned());
+        return Err(Error::invalid(
+            "the dataset this filter was made on has been deleted",
+        ));
     };
     let column = match &c.column {
         Some(name) => {
             if from.shape.column(name).is_none() {
-                return Err(format!("`{name}` is no longer a column of `{}`", from.name));
+                return Err(Error::invalid(format!(
+                    "`{name}` is no longer a column of `{}`",
+                    from.name
+                )));
             }
             name.clone()
         }
         None => match &from.shape.grain {
             Grain::Table { key, .. } if from.shape.column(key).is_some() => key.clone(),
             _ => {
-                return Err(format!(
+                return Err(Error::invalid(format!(
                     "the rows of `{}` are not a table's rows, so the ones picked cannot be told \
                      apart",
                     from.name
-                ));
+                )));
             }
         },
     };
@@ -376,11 +384,11 @@ fn target_column(
         return Ok((column.clone(), ty_of(&column)));
     }
     let Some(table) = identifies(from.shape, &column) else {
-        return Err(format!(
+        return Err(Error::invalid(format!(
             "`{column}` is a column of `{}`, and neither refers to the rows of a table that \
              `{}` refers to",
             from.name, to.name
-        ));
+        )));
     };
     if let Grain::Table { table: own, key } = &to.shape.grain
         && *own == table
@@ -396,14 +404,14 @@ fn target_column(
         .map(|c| c.name.as_str())
         .collect();
     match referring[..] {
-        [] => Err(format!(
+        [] => Err(Error::invalid(format!(
             "`{}` has no column that refers to `{table}`",
             to.name
-        )),
+        ))),
         [one] => Ok((one.to_owned(), ty_of(one))),
         _ => match referring.iter().find(|n| **n == column) {
             Some(same) => Ok(((*same).to_owned(), ty_of(same))),
-            None => Err(format!(
+            None => Err(Error::invalid(format!(
                 "`{}` refers to `{table}` by {}, and a filter on `{column}` does not say which",
                 to.name,
                 referring
@@ -411,13 +419,13 @@ fn target_column(
                     .map(|n| format!("`{n}`"))
                     .collect::<Vec<_>>()
                     .join(" and ")
-            )),
+            ))),
         },
     }
 }
 
 /// The formula keeping the rows `c` keeps, on `column` of type `ty`.
-fn term(c: &Condition, column: &str, ty: ColType) -> std::result::Result<String, String> {
+fn term(c: &Condition, column: &str, ty: ColType) -> Result<String> {
     if let Some(values) = &c.values {
         let mut terms = Vec::with_capacity(values.len());
         for v in values {
@@ -442,8 +450,13 @@ fn term(c: &Condition, column: &str, ty: ColType) -> std::result::Result<String,
 }
 
 /// `v` as a formula literal of a column of type `ty`, or why it cannot be.
-fn literal(v: &Json, ty: ColType, column: &str) -> std::result::Result<String, String> {
-    let wrong = || format!("{v} is not a value of `{column}`, {}", a_column(ty));
+fn literal(v: &Json, ty: ColType, column: &str) -> Result<String> {
+    let wrong = || {
+        Error::invalid(format!(
+            "{v} is not a value of `{column}`, {}",
+            a_column(ty)
+        ))
+    };
     let number = || {
         match v {
             Json::Number(n) => n.as_f64(),
@@ -496,10 +509,10 @@ fn literal(v: &Json, ty: ColType, column: &str) -> std::result::Result<String, S
             Json::String(s) => Ok(text_literal(s)),
             _ => Err(wrong()),
         },
-        ColType::Json | ColType::Bytes | ColType::Geometry => Err(format!(
+        ColType::Json | ColType::Bytes | ColType::Geometry => Err(Error::invalid(format!(
             "`{column}` is {}, which a filter does not compare",
             a_column(ty)
-        )),
+        ))),
     }
 }
 
@@ -547,6 +560,23 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// The refusals as the sentences they say.
+    fn literal(v: &Json, ty: ColType, column: &str) -> std::result::Result<String, String> {
+        super::literal(v, ty, column).map_err(|e| e.message().to_owned())
+    }
+
+    fn term(c: &Condition, column: &str, ty: ColType) -> std::result::Result<String, String> {
+        super::term(c, column, ty).map_err(|e| e.message().to_owned())
+    }
+
+    fn target_column(
+        c: &Condition,
+        from: Option<&Named<'_>>,
+        to: &Named<'_>,
+    ) -> std::result::Result<(String, ColType), String> {
+        super::target_column(c, from, to).map_err(|e| e.message().to_owned())
+    }
 
     fn col(name: &str, ty: ColType) -> StageColumn {
         StageColumn {

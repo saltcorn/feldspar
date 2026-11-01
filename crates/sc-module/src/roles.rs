@@ -26,23 +26,24 @@
 use chrono::{DateTime, Utc};
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
+use sc_types::Role;
 use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
 
-use crate::host::RoleAsks;
+use crate::host::Ask;
 use crate::permissions::ModulePermissions;
 
 /// One module's role grants, over one call.
 pub struct ModuleRoles<'a> {
     catalog: &'a Catalog,
     module: &'a str,
-    ceiling: Option<u8>,
+    ceiling: Option<Role>,
 }
 
 impl<'a> ModuleRoles<'a> {
     /// The grants `module` may make, under the role ceiling it was granted
     /// ([`ModulePermissions::roles`]).
-    pub fn new(catalog: &'a Catalog, module: &'a str, ceiling: Option<u8>) -> ModuleRoles<'a> {
+    pub fn new(catalog: &'a Catalog, module: &'a str, ceiling: Option<Role>) -> ModuleRoles<'a> {
         ModuleRoles {
             catalog,
             module,
@@ -58,8 +59,8 @@ impl<'a> ModuleRoles<'a> {
     }
 
     /// Refuse a role this module may not grant, saying what it may.
-    fn check_role(&self, role: u8) -> Result<()> {
-        if role == sc_auth::ROLE_ADMIN {
+    fn check_role(&self, role: Role) -> Result<()> {
+        if role.is_admin() {
             return Err(Error::invalid(format!(
                 "module `{}` asked to grant the admin role (1); no module may grant it",
                 self.module
@@ -98,7 +99,7 @@ impl<'a> ModuleRoles<'a> {
         let role = plan
             .get("role")
             .and_then(Json::as_u64)
-            .and_then(|r| u8::try_from(r).ok())
+            .and_then(|r| Role::try_from(r).ok())
             .ok_or_else(|| Error::invalid("roles.grant needs `role`, a role number"))?;
         self.check_role(role)?;
         let grant = sc_auth::grant_role(
@@ -119,7 +120,7 @@ impl<'a> ModuleRoles<'a> {
 }
 
 #[async_trait::async_trait]
-impl RoleAsks for ModuleRoles<'_> {
+impl Ask for ModuleRoles<'_> {
     async fn ask(&self, plan: Json) -> Result<Json> {
         let Json::Object(plan) = plan else {
             return Err(Error::invalid("a roles ask is an object with an `op`"));

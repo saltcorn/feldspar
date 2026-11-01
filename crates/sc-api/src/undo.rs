@@ -19,13 +19,14 @@
 //!
 //! Effects outside the database (an email a trigger sent) are not undone.
 
+use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use sc_auth::{ROLE_ADMIN, User};
+use sc_auth::User;
 use sc_catalog::history::{self, AsOf, HistoryEntry};
 use sc_catalog::{
-    CallerContext, Catalog, Changeset, ChangesetSource, DataFieldKind, SharedTx, Table, changeset,
+    Catalog, Changeset, ChangesetSource, DataFieldKind, Principal, SharedTx, Table, changeset,
 };
 use sc_error::{Error, Result};
 use sc_expr::JsEvaluator;
@@ -34,9 +35,9 @@ use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
 
 use crate::history::{HistoryReader, not_found, redacted};
-use crate::ownership::{caller_context_at, caller_role};
-use crate::rows::{self, Executor};
-use crate::write_as::{self, Caller, Denied};
+use sc_access::ownership::principal_at;
+use sc_access::rows::{self, Executor};
+use sc_access::write_as::{self, Caller, Denied};
 
 /// Who is restoring or undoing: their role and user, and the evaluator a
 /// write rule may need.
@@ -45,7 +46,7 @@ pub struct Reverser<'a> {
     /// The catalog.
     pub catalog: &'a Catalog,
     /// The caller's role (public when nobody is signed in).
-    pub role: u8,
+    pub role: Role,
     /// The caller, when signed in.
     pub user: Option<&'a User>,
     /// For a write rule that needs JavaScript.
@@ -185,14 +186,14 @@ impl<'a> Reverser<'a> {
     ) -> Reverser<'a> {
         Reverser {
             catalog,
-            role: caller_role(user),
+            role: sc_auth::role_of(user),
             user,
             evaluator,
         }
     }
 
     fn is_admin(&self) -> bool {
-        self.role <= ROLE_ADMIN
+        self.role.is_admin()
     }
 
     fn reader(&self) -> HistoryReader<'a> {
@@ -236,15 +237,15 @@ impl<'a> Reverser<'a> {
 
     /// The caller, as the writes carry it. Built inside the changeset's scope,
     /// which is where it picks the changeset up.
-    fn context(&self) -> CallerContext {
-        caller_context_at(self.role, self.user)
+    fn context(&self) -> Principal {
+        principal_at(self.role, self.user)
     }
 
     /// For the reads the checks make: whether a row is there, and what it
     /// holds. At the admin's role so a policy cannot make a row look gone; the
     /// write that follows is the caller's and is checked as theirs.
-    fn checking(&self) -> CallerContext {
-        caller_context_at(ROLE_ADMIN, self.user)
+    fn checking(&self) -> Principal {
+        principal_at(Role::ADMIN, self.user)
     }
 
     /// `POST {table}/deleted/{key}/restore`: insert the deleted row's image
@@ -275,7 +276,7 @@ impl<'a> Reverser<'a> {
                 Ok((row, dropped))
             }
             .await;
-            let (row, dropped) = finish(&tx, written).await?;
+            let (row, dropped) = tx.finish(written).await?;
             Ok(Restored {
                 changeset: id,
                 row: redacted_json(&table, row),
@@ -362,7 +363,7 @@ impl<'a> Reverser<'a> {
                 }
             }
             .await;
-            let Some(row) = finish(&tx, written).await? else {
+            let Some(row) = tx.finish(written).await? else {
                 return Ok(None);
             };
             dropped.sort();
@@ -393,7 +394,8 @@ impl<'a> Reverser<'a> {
         let Some((record, entries)) = history::changeset_entries(self.catalog, id).await? else {
             return Err(Error::not_found(format!("there is no changeset `{id}`")));
         };
-        if !self.is_admin() && (self.user.map(|u| u.id) != record.user_id || self.user.is_none()) {
+        if !self.is_admin() && (self.user.map(|u| u.id()) != record.user_id || self.user.is_none())
+        {
             return Err(Error::auth("you may undo only your own changes"));
         }
         if let Some(name) = only_table
@@ -470,10 +472,10 @@ impl<'a> Reverser<'a> {
             match outcome {
                 // Nothing was written; nothing to keep.
                 Ok(refused @ UndoOutcome::Refused(_)) => {
-                    let _ = tx.rollback().await;
+                    tx.abandon().await;
                     Ok(refused)
                 }
-                other => finish(&tx, other).await,
+                other => tx.finish(other).await,
             }
         })
         .await
@@ -602,7 +604,7 @@ impl<'a> Reverser<'a> {
             .map_err(refused)
     }
 
-    fn caller<'c>(&self, context: &'c CallerContext, executor: &'c Executor) -> Caller<'c>
+    fn caller<'c>(&self, context: &'c Principal, executor: &'c Executor) -> Caller<'c>
     where
         'a: 'c,
     {
@@ -622,7 +624,7 @@ impl<'a> Reverser<'a> {
         table: &Table,
         values: &Map<String, Json>,
     ) -> Result<()> {
-        let quote = |ident: &str| self.catalog.primary().dialect().quote_ident(ident);
+        let quote = |ident: &str| self.catalog.primary_dialect().quote_ident(ident);
         for field in &table.fields {
             let DataFieldKind::Key {
                 target_table,
@@ -637,15 +639,21 @@ impl<'a> Reverser<'a> {
                 continue;
             };
             let text = json_text(value);
-            let found = match self.catalog.get(&target_table.0)? {
+            let found = match self.catalog.get(target_table)? {
                 Some(target) => {
                     let sql = format!(
                         "SELECT 1 AS found FROM {target} t WHERE {column} = $1 LIMIT 1",
                         target = quote(&target.name),
                         column = sc_catalog::as_text_sql(&format!("t.{}", quote(&target_field.0))),
                     );
-                    let stmt = Statement::raw(sql, vec![Value::Text(text.clone())]);
-                    !tx.run(Some(&self.checking()), &stmt).await?.is_empty()
+                    let stmt = Statement::raw(
+                        sc_query::TrustedSql::composed(sql),
+                        vec![Value::Text(text.clone())],
+                    );
+                    let checking = self.checking();
+                    !tx.run(sc_access::admin_access(&checking)?, &stmt)
+                        .await?
+                        .is_empty()
                 }
                 None => false,
             };
@@ -653,25 +661,11 @@ impl<'a> Reverser<'a> {
                 return Err(Error::invalid(format!(
                     "`{}.{name}` refers to row {text} of `{}`, which no longer exists; \
                      restore that row first",
-                    table.name, target_table.0
+                    table.name, target_table
                 )));
             }
         }
         Ok(())
-    }
-}
-
-/// Commit `outcome`'s transaction when it succeeded, roll it back when not.
-async fn finish<T>(tx: &SharedTx, outcome: Result<T>) -> Result<T> {
-    match outcome {
-        Ok(value) => {
-            tx.commit().await?;
-            Ok(value)
-        }
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(e)
-        }
     }
 }
 
@@ -692,12 +686,12 @@ fn json_text(value: &Json) -> String {
 async fn current_row(
     catalog: &Catalog,
     tx: &SharedTx,
-    context: &CallerContext,
+    context: &Principal,
     table: &Table,
     key: &str,
 ) -> Result<Option<Map<String, Json>>> {
     let sql = {
-        let dialect = catalog.primary().dialect();
+        let dialect = catalog.primary_dialect();
         let quote = |ident: &str| dialect.quote_ident(ident);
         format!(
             "SELECT {row} AS row FROM {name} t WHERE {key} = $1",
@@ -708,8 +702,11 @@ async fn current_row(
     };
     let found = tx
         .run(
-            Some(context),
-            &Statement::raw(sql, vec![Value::Text(key.to_owned())]),
+            sc_access::admin_access(context)?,
+            &Statement::raw(
+                sc_query::TrustedSql::composed(sql),
+                vec![Value::Text(key.to_owned())],
+            ),
         )
         .await?;
     Ok(found.first().and_then(|row| match row.get("row") {
@@ -782,8 +779,8 @@ fn fk_depths<'t>(
                 t.fields
                     .iter()
                     .filter_map(|f| match &f.kind {
-                        DataFieldKind::Key { target_table, .. } if target_table.0 != name => {
-                            Some(target_table.0.clone())
+                        DataFieldKind::Key { target_table, .. } if target_table != name => {
+                            Some(target_table.clone())
                         }
                         _ => None,
                     })

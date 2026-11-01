@@ -71,7 +71,7 @@ pub async fn run_target_operation(
     let settings = merge_secrets(&spec, &app.framework.config, form_settings);
 
     let source = app_source_from_config(&app.framework)?;
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     let context = json!({
         "app": {
             "name": app.name,
@@ -102,7 +102,11 @@ pub async fn run_target_operation(
                  inside the file store"
             )));
         }
-        if store.stat(&clean).await?.is_some() {
+        if store
+            .stat(&sc_files::StorePath::parse(&clean)?)
+            .await?
+            .is_some()
+        {
             return Err(Error::invalid(format!(
                 "`{clean}` already exists in file store `{}` and was not replaced; if it is \
                  a key an app is already signed with, replacing it would stop that app from \
@@ -124,7 +128,9 @@ pub async fn run_target_operation(
     // operation again simply makes it.
     let saved = save_application(cat, &updated).await?;
     for ((_, bytes), path) in answer.files.iter().zip(&files) {
-        store.write(path, bytes.clone().into()).await?;
+        store
+            .write(&sc_files::StorePath::parse(path)?, bytes.clone().into())
+            .await?;
     }
     Ok(OperationOutcome {
         message: answer.message,

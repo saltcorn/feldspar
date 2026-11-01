@@ -11,24 +11,25 @@
 //!
 //! # And it reaches the same surfaces a code body does
 //!
-//! Built by [`CodeSurfaces`] — `sc_core_actions`', the very ones `run_js_code`
+//! Built by [`CodeSurfaces`] — `sc_action_builtins`', the very ones `run_js_code`
 //! and `PyModuleAction` build — so a v1 plugin's `books.insertRow(row)` carries
 //! the event's caller and this trigger's chain, and its `run_trigger` goes
 //! through *the* dispatcher. This is what the v1 `Table` inside the module runs
 //! over (TODO "the v1 `Table` API" §3): the ask channel is served by the future
 //! awaiting the call, because that is where the hosts are borrowed.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{Action, ActionContext, Event};
-use sc_core_actions::CodeSurfaces;
+use sc_action_builtins::CodeSurfaces;
 use sc_error::Result;
 use sc_types::{Attrs, FormField};
 use serde_json::{Map, Value as Json, json};
 
 use crate::consent::ConsentAsks;
 use crate::files::{FileArea, ModuleFiles};
-use crate::host::{CallHosts, ModuleHost};
+use crate::host::{AskSurface, CallHosts, ModuleHost};
 
 /// One action supplied by one module.
 pub struct ModuleAction {
@@ -53,7 +54,7 @@ pub struct ModuleAction {
     /// fields name, and what `files` in the argument object reaches.
     areas: Arc<Vec<FileArea>>,
     /// The most privileged role it may grant users (TODO-payments P3.3).
-    roles: Option<u8>,
+    roles: Option<Role>,
     /// What a direct run takes and answers, as the module declared them
     /// ([`Action::payload_type`], [`Action::returns_type`]).
     payload: Option<Json>,
@@ -119,7 +120,7 @@ impl ModuleAction {
     /// The same action, able to grant roles up to `ceiling` (TODO-payments
     /// P3.3) — the module's [`ModulePermissions::roles`](crate::ModulePermissions::roles).
     #[must_use]
-    pub fn with_role_ceiling(mut self, ceiling: Option<u8>) -> ModuleAction {
+    pub fn with_role_ceiling(mut self, ceiling: Option<Role>) -> ModuleAction {
         self.roles = ceiling;
         self
     }
@@ -191,9 +192,9 @@ impl Action for ModuleAction {
                 args,
                 CallHosts::new(hosts.surfaces(), hosts.schema())
                     .with_module_files(&files)
-                    .with_roles(&roles)
-                    .with_credits(&credits)
-                    .with_oauth(&oauth),
+                    .with_ask(AskSurface::Roles, &roles)
+                    .with_ask(AskSurface::Credits, &credits)
+                    .with_ask(AskSurface::OAuth, &oauth),
             )
             .await
     }

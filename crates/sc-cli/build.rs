@@ -9,7 +9,7 @@
 //! directories in the `SC_ADMIN_BUNDLE_DIR`, `SC_IDE_BUNDLE_DIR`,
 //! `SC_SALTCORN_UI_BUNDLE_DIR` and `SC_BUILDER_BUNDLE_DIR` compile-time envs, so
 //! the binary serves all four
-//! with no flags at all (see `main.rs`). A binary that does not serve
+//! with no flags at all (see `commands/serve.rs`). A binary that does not serve
 //! its own admin UI is the surprising outcome, not the expected one, which is why
 //! it is the default rather than something to remember.
 //!
@@ -44,7 +44,7 @@
 //! bundle, rather than failing on every request.
 //!
 //! The Analytics UI (`ui/analytics`, analytics TODO A1.14) is the fifth, on the
-//! same variable and with the IDE's fallback to the checkout (see `main.rs`).
+//! same variable and with the IDE's fallback to the checkout (see `commands/serve.rs`).
 //!
 //! The builder is the fourth bundle and rides on the same variable, for the same
 //! reason. A `--no-ui` build records no `SC_BUILDER_BUNDLE_DIR`; the builder's

@@ -3,6 +3,7 @@
 //! nothing, to that run's own session and to no one else; it is re-mounted
 //! under the same label, unmounted when the run ends, and swept when idle.
 
+use sc_types::Role;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -15,7 +16,7 @@ use sc_app::{
     ApiConfig, Application, FrameworkRef, app_source_from_config, bootstrap, save_application,
 };
 use sc_auth::{SessionStore, User};
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -69,7 +70,7 @@ fn blog_app() -> Application {
         .with("command", "sh build.sh")
         .with("client", "web/src/client.ts");
     Application::new("Blog", "blog", framework)
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_file_store(FileStoreId("apps".to_owned()))
         .with_api(ApiConfig::new("rest", "/api"))
 }
@@ -170,7 +171,7 @@ impl Env {
     }
 
     async fn login(&self) -> String {
-        let user = User::new(uuid::Uuid::new_v4(), 1).unwrap();
+        let user = User::new(uuid::Uuid::new_v4(), Role::ADMIN);
         self.sessions.login(user).await.unwrap()
     }
 }
@@ -292,7 +293,7 @@ async fn a_green_check_mounts_the_runs_preview_and_leaves_the_live_mount() -> sc
 
     let tmp = TempDir::new("check");
     let env = setup(&tmp, Duration::from_secs(3600)).await?;
-    let registry = sc_core_traits::builtin_traits()?;
+    let registry = sc_agent_builtins::builtin_traits()?;
     let coding = registry.require("coding")?.clone();
     let config: sc_types::Attrs = [
         ("store", json!("apps")),

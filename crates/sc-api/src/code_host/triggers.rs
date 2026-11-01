@@ -48,12 +48,13 @@
 //! inside the body that started it rather than holding the request that fired
 //! the outermost trigger.
 
+use sc_types::Role;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use sc_action::TriggerDispatcher;
-use sc_catalog::{CallerContext, Catalog, SharedTx};
+use sc_catalog::{Catalog, Principal, SharedTx};
 use sc_error::{Error, Result};
 use sc_expr::{DEFAULT_MAX_TRIGGER_RUNS, TriggerHost};
 use serde::Deserialize;
@@ -81,15 +82,13 @@ pub struct TriggerRunHost<'a> {
     /// `trigger("name")` does to the database is as much the step's work as what
     /// the body did itself, and lands where the step lands.
     tx: Option<SharedTx>,
-    /// The role the event was served at — what a delegated run is checked
-    /// against, and public for an event with no caller at all.
-    role: u8,
-    /// The event's caller, as the event carries it: what the trigger that runs
-    /// sees as `user`, whichever authority it runs under.
-    user: Option<Json>,
-    /// The triggers that led here, including the one running. The child event
-    /// carries it, which is what bounds the cascade.
-    chain: Vec<String>,
+    /// The event's caller, as a principal (TODO-code-quality Q3.4): the role
+    /// it was served at — what a delegated run is checked against, and public
+    /// for an event with no caller at all; the user, as the event carries it —
+    /// what the trigger that runs sees as `user`, whichever authority it runs
+    /// under; and the triggers that led here, including the one running, which
+    /// the child event carries and which bounds the cascade.
+    caller: Principal,
     /// How many other triggers this run may run.
     max_runs: u32,
     /// How many it has run.
@@ -106,9 +105,7 @@ impl<'a> TriggerRunHost<'a> {
         TriggerRunHost {
             dispatcher,
             catalog,
-            role: sc_auth::ROLE_PUBLIC,
-            user: None,
-            chain: Vec::new(),
+            caller: Principal::anonymous(Role::PUBLIC),
             tx: None,
             max_runs: DEFAULT_MAX_TRIGGER_RUNS,
             runs: AtomicU32::new(0),
@@ -129,16 +126,26 @@ impl<'a> TriggerRunHost<'a> {
     /// Attach the event's caller: the role it was served at and the user's own
     /// fields, exactly as `Event::caller` carries them.
     #[must_use]
-    pub fn caused_by(mut self, role: u8, user: Option<Json>) -> TriggerRunHost<'a> {
-        self.role = role;
-        self.user = user;
+    pub fn caused_by(mut self, role: Role, user: Option<Json>) -> TriggerRunHost<'a> {
+        self.caller.role = role;
+        self.caller.user = user;
+        self
+    }
+
+    /// Attach the event's caller as a principal — its role, its user and the
+    /// chain that led here: `caused_by` and `chained` in one.
+    #[must_use]
+    pub fn for_caller(mut self, caller: &Principal) -> TriggerRunHost<'a> {
+        self.caller.role = caller.role;
+        self.caller.user = caller.user.clone();
+        self.caller.chain = caller.chain.clone();
         self
     }
 
     /// Attach the trigger chain that led here — what bounds the cascade.
     #[must_use]
     pub fn chained(mut self, chain: Vec<String>) -> TriggerRunHost<'a> {
-        self.chain = chain;
+        self.caller.chain = chain;
         self
     }
 
@@ -186,13 +193,13 @@ impl<'a> TriggerRunHost<'a> {
             // admin's authority is the *trigger's*, and the run still carries
             // who caused it.
             Authority::Default | Authority::Admin | Authority::User => (
-                CallerContext::new(self.role, self.user.clone()).in_current_origin(),
+                Principal::new(self.caller.role, self.caller.user.clone()).in_current_origin(),
                 None,
             ),
-            Authority::Public => (CallerContext::new(sc_auth::ROLE_PUBLIC, None), None),
+            Authority::Public => (Principal::new(Role::PUBLIC, None), None),
             Authority::Named(id) => {
                 let user = super::load_named_user(self.catalog, id).await?;
-                let caller = crate::ownership::caller_context_at(user.role, Some(&user));
+                let caller = sc_access::ownership::principal_at(user.role(), Some(&user));
                 (caller, Some(user))
             }
         };
@@ -204,12 +211,12 @@ impl<'a> TriggerRunHost<'a> {
             // is no such trigger": the second is the answer the author needs.
             let triggers = self.dispatcher.triggers()?;
             let min_role = triggers.require(name)?.min_role;
-            let floor = min_role.unwrap_or(sc_auth::ROLE_ADMIN);
-            if caller.role > floor {
+            let floor = min_role.unwrap_or(Role::ADMIN);
+            if floor.outranks(caller.role) {
                 return Err(Error::auth(format!(
                     "{} may not run `{name}`; it needs role {floor} or better",
                     match (&named, &request.authority) {
-                        (Some(user), _) => format!("user `{}`", user.id),
+                        (Some(user), _) => format!("user `{}`", user.id()),
                         (None, Authority::Public) => "the public role".to_owned(),
                         _ => "this event's caller".to_owned(),
                     }
@@ -218,12 +225,12 @@ impl<'a> TriggerRunHost<'a> {
         }
         // The caller carries the chain that led here, so the trigger that runs
         // sees who caused it and the cascade bound counts this level.
-        let caller = caller.chained(self.chain.clone());
+        let caller = caller.chained(self.caller.chain.clone());
         let run = self.dispatcher.run_trigger_in(
             self.catalog,
             name,
             request.payload,
-            Some(&caller),
+            sc_catalog::Authority::Caller(&caller),
             self.tx.as_ref(),
         );
         let Some(limit) = request.timeout_ms.map(Duration::from_millis) else {

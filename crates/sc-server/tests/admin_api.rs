@@ -15,14 +15,11 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, ServerConfig, admin_handlers, build_router,
-};
-use sc_test_harness::TestDb;
+use sc_server::{AppMounts, SESSION_COOKIE, ServerConfig, admin_handlers, build_router};
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -111,26 +108,7 @@ async fn setup() -> sc_error::Result<(Client, TestDb)> {
 /// [`setup`], also handing back the catalog, with the configuration table
 /// bootstrapped so a test can store settings before the first request.
 async fn setup_with_catalog() -> sc_error::Result<(Client, TestDb, Arc<Catalog>)> {
-    let db = TestDb::new().await?;
-
-    // The multi-tenant v1 test template carries `users` tables in several
-    // schemas; drop them all so bootstrap creates the clean MVP table. No-op in
-    // clean CI.
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
 
@@ -276,6 +254,7 @@ async fn the_system_tab_names_the_version_and_the_database() -> sc_error::Result
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn full_admin_api_story() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;
 

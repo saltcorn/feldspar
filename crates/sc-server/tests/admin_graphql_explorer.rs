@@ -28,19 +28,15 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::admin_endpoints;
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_app::{
     ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, bootstrap, save_application,
 };
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, FileStoreId, TableId};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
+use sc_catalog::{Catalog, FileStoreId};
 use sc_files::LocalFileStore;
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps,
-};
-use sc_test_harness::TestDb;
+use sc_server::{AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps};
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -194,8 +190,8 @@ fn staff_app() -> Application {
             .with("output", "web/dist")
             .with("command", "sh build.sh"),
     )
-    .with_table(TableId("departments".to_owned()))
-    .with_table(TableId("employees".to_owned()))
+    .with_table("departments".to_owned())
+    .with_table("employees".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"))
     // Aggregates switched on: they are absent from the schema unless an
@@ -205,28 +201,8 @@ fn staff_app() -> Application {
 
 /// A server with that app mounted and an admin signed in.
 async fn setup(tag: &str) -> sc_error::Result<Harness> {
-    let db = TestDb::new().await?;
     let dir = TempDir::new(tag);
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$;",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-    db.client()
-        .await?
-        .batch_execute(FIXTURE)
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().sql(FIXTURE).build().await?;
     sc_auth::bootstrap(&catalog).await?;
     bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
@@ -443,7 +419,7 @@ async fn an_application_with_nothing_to_explore_says_which_it_is() -> sc_error::
             .with("output", "web/dist")
             .with("command", "sh build.sh"),
     )
-    .with_table(TableId("departments".to_owned()))
+    .with_table("departments".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     let rest_only_id = rest_only.id.to_string();
@@ -478,7 +454,7 @@ async fn an_application_with_nothing_to_explore_says_which_it_is() -> sc_error::
             .with("output", "web/dist")
             .with("command", "sh build.sh"),
     )
-    .with_table(TableId("departments".to_owned()))
+    .with_table("departments".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("graphql", "/graphql"));
     let unbuilt_id = unbuilt.id.to_string();

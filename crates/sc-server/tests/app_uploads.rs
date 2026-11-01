@@ -16,6 +16,8 @@
 //!   over either is a JSON `413`, not axum's plain text.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -30,14 +32,14 @@ use sc_api::{CustomQuery, Method, QueryLanguage, set_custom_queries};
 use sc_app::{
     ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StaticDir, UploadSlot,
 };
-use sc_auth::{Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_files::{FileMeta, FileStore, LocalFileStore};
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, FILE_PATH_HEADER, FILE_URL_HEADER, MountedApp,
-    ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator, install_triggers,
+    AppMounts, FILE_PATH_HEADER, FILE_URL_HEADER, MountedApp, ServerConfig, admin_handlers,
+    build_router_with_apps, default_js_evaluator, install_triggers,
 };
 use sc_test_harness::Teardown;
 use serde_json::{Value, json};
@@ -46,7 +48,7 @@ use tower::ServiceExt;
 const BASE_DOMAIN: &str = "example.com";
 const APP_HOST: &str = "drop.example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 80;
+const ROLE_MEMBER: Role = Role::of(80);
 const MB: usize = 1024 * 1024;
 
 /// A scratch directory removed when the guard drops.
@@ -322,7 +324,7 @@ async fn setup(tmp: &TempDir, config: ServerConfig) -> sc_error::Result<Server> 
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
     for who in ["alice", "bob"] {
         create_user(
             &catalog,
@@ -332,7 +334,7 @@ async fn setup(tmp: &TempDir, config: ServerConfig) -> sc_error::Result<Server> 
         )
         .await?;
     }
-    create_user(&catalog, "admin@example.com", PASSWORD, sc_auth::ROLE_ADMIN).await?;
+    create_user(&catalog, "admin@example.com", PASSWORD, Role::ADMIN).await?;
 
     let files_dir = tmp.path().join("files");
     std::fs::create_dir_all(&files_dir).map_err(sc_error::Error::from)?;
@@ -340,12 +342,14 @@ async fn setup(tmp: &TempDir, config: ServerConfig) -> sc_error::Result<Server> 
     catalog.connect_file_store(store.clone())?;
     // The folder the drops land in is the administrator's: a member reads only
     // what they own there (§2.1).
-    store.mkdir("drops").await?;
+    store
+        .mkdir(&sc_files::StorePath::from_static("drops"))
+        .await?;
     store
         .set_meta(
-            "drops",
+            &sc_files::StorePath::from_static("drops"),
             &FileMeta {
-                min_role: Some(sc_auth::ROLE_ADMIN),
+                min_role: Some(Role::ADMIN),
                 ..FileMeta::default()
             },
         )
@@ -470,16 +474,31 @@ async fn a_large_upload_resumes_after_a_dropped_connection_and_is_its_uploaders_
     assert_eq!(url, format!("/media/{}", path.trim_start_matches("drops/")));
 
     // The file is all there, in place, and the temporary one is gone.
-    assert_eq!(&server.store.read(&path).await?[..], &data[..]);
+    assert_eq!(
+        &server
+            .store
+            .read(&sc_files::StorePath::parse(&path).unwrap())
+            .await?[..],
+        &data[..]
+    );
     let temp = sc_server::UPLOAD_TEMP_DIR;
-    assert!(server.store.list(temp).await?.is_empty());
+    assert!(
+        server
+            .store
+            .list(&sc_files::StorePath::parse(temp).unwrap())
+            .await?
+            .is_empty()
+    );
 
     // Owned by its uploader, and named as it was on their disk.
-    let meta = server.store.get_meta(&path).await?;
+    let meta = server
+        .store
+        .get_meta(&sc_files::StorePath::parse(&path).unwrap())
+        .await?;
     let alice_id = sc_auth::load_user_by_email(&server.catalog, "alice@example.com")
         .await?
         .unwrap()
-        .id
+        .id()
         .to_string();
     assert_eq!(meta.owner.as_deref(), Some(alice_id.as_str()));
     assert_eq!(
@@ -580,7 +599,7 @@ async fn only_the_uploader_may_continue_look_at_or_abandon_an_upload() -> sc_err
     assert!(
         server
             .store
-            .list(sc_server::UPLOAD_TEMP_DIR)
+            .list(&sc_files::StorePath::parse(sc_server::UPLOAD_TEMP_DIR).unwrap())
             .await?
             .is_empty()
     );
@@ -612,7 +631,12 @@ async fn a_hook_refuses_or_decides_where_the_file_goes() -> sc_error::Result<()>
     );
     // No route serves that folder, so there is no URL to give.
     assert!(done.header(FILE_URL_HEADER).is_none());
-    let meta = server.store.get_meta("guarded/alice/holiday.mp4").await?;
+    let meta = server
+        .store
+        .get_meta(&sc_files::StorePath::from_static(
+            "guarded/alice/holiday.mp4",
+        ))
+        .await?;
     assert_eq!(
         meta.attributes.get("checked").map(String::as_str),
         Some("yes")
@@ -667,7 +691,7 @@ async fn a_slots_limit_is_enforced_up_front_and_mid_stream() -> sc_error::Result
     assert!(
         server
             .store
-            .list("small")
+            .list(&sc_files::StorePath::from_static("small"))
             .await
             .map_or(true, |e| e.is_empty())
     );
@@ -699,7 +723,11 @@ async fn an_upload_abandoned_for_a_day_is_swept() -> sc_error::Result<()> {
     let location = created.header("location").unwrap().to_owned();
     alice.patch(&location, 0, Body::from(vec![1u8; 40])).await;
     assert_eq!(
-        server.store.list(sc_server::UPLOAD_TEMP_DIR).await?.len(),
+        server
+            .store
+            .list(&sc_files::StorePath::parse(sc_server::UPLOAD_TEMP_DIR).unwrap())
+            .await?
+            .len(),
         1
     );
 
@@ -720,7 +748,7 @@ async fn an_upload_abandoned_for_a_day_is_swept() -> sc_error::Result<()> {
     assert!(
         server
             .store
-            .list(sc_server::UPLOAD_TEMP_DIR)
+            .list(&sc_files::StorePath::parse(sc_server::UPLOAD_TEMP_DIR).unwrap())
             .await?
             .is_empty()
     );
@@ -779,10 +807,20 @@ async fn the_body_limits_are_settings_and_refuse_with_json() -> sc_error::Result
     // the file manager's upload over `--max-upload-bytes`, are both JSON 413s.
     let mut admin = Client::new(server.router.clone(), "example.com");
     admin.prime().await;
+    let login_body = serde_json::to_vec(&json!({
+        "email": "admin@example.com", "password": PASSWORD
+    }))
+    .unwrap();
+    let logged_in = admin
+        .send("POST", "/api/login", &json_ct, Body::from(login_body))
+        .await;
+    assert_eq!(logged_in.status, StatusCode::OK, "{}", logged_in.json());
+    // Signed in first: an admin route refuses a caller without an admin
+    // session before it reads a byte of the body (`AdminSession`, Q2.3).
     let backup = admin
         .send(
             "POST",
-            sc_server::BACKUP_CREATE_ROUTE,
+            sc_backup::BACKUP_CREATE_ROUTE,
             &json_ct,
             Body::from(vec![b' '; 5000]),
         )
@@ -794,14 +832,6 @@ async fn the_body_limits_are_settings_and_refuse_with_json() -> sc_error::Result
         String::from_utf8_lossy(&backup.body)
     );
 
-    let login_body = serde_json::to_vec(&json!({
-        "email": "admin@example.com", "password": PASSWORD
-    }))
-    .unwrap();
-    let logged_in = admin
-        .send("POST", "/api/login", &json_ct, Body::from(login_body))
-        .await;
-    assert_eq!(logged_in.status, StatusCode::OK, "{}", logged_in.json());
     let upload = admin
         .send(
             "POST",

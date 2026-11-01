@@ -9,6 +9,7 @@
 //! §13.1 exists to prevent, introduced by the tool meant to avoid it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -17,7 +18,7 @@ use sc_app::{
     ApiConfig, Application, FrameworkRef, load_application_by_subdomain, react_client_path,
     save_application, scaffold_app,
 };
-use sc_catalog::{Catalog, DataField, FileStoreId, TableId};
+use sc_catalog::{Catalog, DataField, FileStoreId};
 use sc_cli::{DbConfig, connect_catalog};
 use sc_files::LocalFileStore;
 use sc_test_harness::TestDb;
@@ -96,7 +97,7 @@ async fn books_app(db: &TestDb, tmp: &TempDir) -> sc_error::Result<Arc<Catalog>>
             .with("store", "apps")
             .with("project", "books"),
     )
-    .with_table(TableId("books".to_owned()))
+    .with_table("books".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     save_application(&catalog, &app).await?;
@@ -163,7 +164,7 @@ async fn a_query_added_from_the_cli_reaches_the_endpoints_and_the_client() -> sc
     let stored = sc_api::custom_queries(&app.apis[0].config)?;
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].name, "topYears");
-    assert_eq!(stored[0].min_role, 40);
+    assert_eq!(stored[0].min_role, Role::of(40));
     assert_eq!(
         stored[0]
             .columns
@@ -180,7 +181,10 @@ async fn a_query_added_from_the_cli_reaches_the_endpoints_and_the_client() -> sc
         .find(|e| e.name == "topYears")
         .expect("the custom query's endpoint");
     assert_eq!(endpoint.path.pattern(), "/api/reports/top-years");
-    assert_eq!(endpoint.auth, sc_api::AuthRequirement::MinRole(40));
+    assert_eq!(
+        endpoint.auth,
+        sc_api::AuthRequirement::MinRole(Role::of(40))
+    );
 
     // …and the generated client was rewritten with no build and no restart,
     // which is the half of this that a save alone would not have done.

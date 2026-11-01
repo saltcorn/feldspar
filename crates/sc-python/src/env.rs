@@ -610,7 +610,10 @@ impl PythonEnvironment {
         // never resolves to the bundle: only a link is followed.
         let python = self.python();
         let linked_elsewhere = python.is_symlink()
-            && match (std::fs::canonicalize(&python), std::fs::canonicalize(bundled)) {
+            && match (
+                std::fs::canonicalize(&python),
+                std::fs::canonicalize(bundled),
+            ) {
                 (Ok(target), Ok(bundled)) => target != bundled,
                 _ => true,
             };

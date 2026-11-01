@@ -259,8 +259,8 @@ fn row_field_resolver(field: &DataField, names: &SchemaNames) -> resolve::Resolv
         // A key whose target this application exposes resolves *through* the
         // parent query's projected Ⱶ-join; one whose target it does not carries
         // the column's own value, exactly as its type says.
-        DataFieldKind::Key { target_table, .. } => match names.get(&target_table.0) {
-            Some(_) => resolve::key_field(name, &target_table.0),
+        DataFieldKind::Key { target_table, .. } => match names.get(target_table) {
+            Some(_) => resolve::key_field(name, target_table),
             None => resolve::column_field(name),
         },
         DataFieldKind::File { .. } => resolve::file_field(name),
@@ -477,7 +477,7 @@ fn add_root_fields(query: Object, table: &Table, t: &TableNames, aggregates: boo
     // `_by_pk` needs one column to address a row by — the same rule the row
     // layer enforces, and the same one the REST projection applies before it
     // emits `PUT`/`DELETE`.
-    let by_pk = crate::rows::single_pk(table)
+    let by_pk = sc_access::rows::single_pk(table)
         .ok()
         .filter(|pk| t.fields.contains(pk))
         .and_then(|pk| table.field(&pk).map(|f| (pk.clone(), column_scalar(f))));
@@ -543,7 +543,7 @@ fn mutation_types(tables: &[Table], names: &SchemaNames) -> (Option<Object>, Vec
             any = true;
         }
         // A row is addressed the way `_by_pk` addresses it, or not at all.
-        let pk = crate::rows::single_pk(table)
+        let pk = sc_access::rows::single_pk(table)
             .ok()
             .filter(|pk| t.fields.contains(pk))
             .and_then(|pk| table.field(&pk).map(|f| (pk.clone(), column_scalar(f))));

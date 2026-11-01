@@ -14,6 +14,7 @@
 //! something to run away with.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::{Arc, Mutex};
 
 use sc_action::{
@@ -378,8 +379,10 @@ async fn an_insert_from_a_code_body_fires_the_tables_own_trigger() -> Result<()>
 
     // The host carries the event's caller, as phase 5 will build it from the
     // event that ran the trigger.
-    let host = TableHost::new(&catalog)
-        .caused_by(40, Some(json!({ "id": 7, "email": "who@example.com" })));
+    let host = TableHost::new(&catalog).caused_by(
+        Role::of(40),
+        Some(json!({ "id": 7, "email": "who@example.com" })),
+    );
 
     ask(
         &host,

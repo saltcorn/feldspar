@@ -331,7 +331,7 @@ which is the common case and must not pay for the uncommon one.
 
 ### 12. Prediction: the action, and the calc field there is not
 
-`predict_row` is an ordinary action (`sc-core-actions`, layer 9 with the others that write
+`predict_row` is an ordinary action (`sc-action-builtins`, layer 9 with the others that write
 rows): configure a model — or a named instance — and where the answer goes, either a field on
 the row or a key in the workflow context. Its `config_spec_for` offers the models on *this*
 table when the trigger has one, and it validates that the target field's type can hold what the
@@ -505,7 +505,7 @@ bytes stores base64, because a system table with a `bytea` column would be the o
 - [x] 5.4 `predictRows`: an instance (or a model, meaning its active instance) plus either
       literal rows or a filter over the model's table; answers predictions in row order. Admin
       only, like everything else on this API.
-- [x] 5.5 `predict_row` in `sc-core-actions` (§12): `config_spec_for` offering this table's
+- [x] 5.5 `predict_row` in `sc-action-builtins` (§12): `config_spec_for` offering this table's
       models, the target checked against the outcome's type, writing to a field or to the
       workflow context.
 - [x] 5.6 `--model-max-rows` in `ServerConfig` and the CLI.

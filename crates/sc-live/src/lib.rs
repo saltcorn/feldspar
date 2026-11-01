@@ -29,7 +29,7 @@
 //! Layer 8, beside `sc-app`: above `sc-stream`, whose
 //! running streams it subscribes to and publishes into, `sc-auth`, whose roles
 //! it decides by and whose session ends it listens for, `sc-catalog`, whose
-//! write seam tells it a row topic's access may have changed, and `sc-api`,
+//! write seam tells it a row topic's access may have changed, and `sc-access`,
 //! whose row layer is where a `table_changes` element's projection, filter
 //! vocabulary and read rule come from (one rule, not a copy of it); below
 //! `sc-server`. It implements `sc-expr`'s `LiveHost`, which is how the
@@ -62,8 +62,8 @@ pub mod subscription;
 pub mod topic;
 
 pub use access::{
-    Caller, Denied, Grant, PublishFacts, Refusal, RowFact, StoredStream, StreamFacts, caller_role,
-    may_open, may_publish, may_subscribe,
+    Caller, Denied, Grant, PublishFacts, Refusal, RowFact, StoredStream, StreamFacts, may_open,
+    may_publish, may_subscribe,
 };
 pub use changes::{
     CallerCell, ChangeAccess, ChangeCounters, ChangeCounts, Delivered, Suppressed, deliver_to,

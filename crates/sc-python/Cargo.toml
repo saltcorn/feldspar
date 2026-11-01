@@ -47,12 +47,12 @@ sc-action.workspace = true
 sc-catalog.workspace = true
 sc-types.workspace = true
 # The five host surfaces a module's **action** reaches are the ones a code body
-# reaches, built by `sc_core_actions::CodeSurfaces` rather than a second time
+# reaches, built by `sc_action_builtins::CodeSurfaces` rather than a second time
 # here: §2 of the API hands a Python plugin the plans directly, and two
 # constructions of the same five is how they would come to disagree about who a
-# module's write is caused by. No cycle — `sc-core-actions` reaches this crate's
+# module's write is caused by. No cycle — `sc-action-builtins` reaches this crate's
 # adapter through `ctx.adapter(PYTHON)` and does not depend on it.
-sc-core-actions.workspace = true
+sc-action-builtins.workspace = true
 # The module-function plan a guest sends is read with `derive(Deserialize)`
 # here, exactly as the other language's host reads it — and the manifest a
 # plugin answers a load with is read into `sc_module::ModuleManifest`.

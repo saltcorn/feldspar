@@ -22,6 +22,7 @@
 
 #[cfg(feature = "deno-host")]
 mod deno {
+    use sc_types::Role;
     use std::collections::BTreeSet;
     use std::path::Path;
     use std::process::{Child, Command, Stdio};
@@ -122,7 +123,7 @@ mod deno {
             let (connection, queue) = hub
                 .connect(ConnectionInfo {
                     app: "mail".to_owned(),
-                    user: Some(user.id),
+                    user: Some(user.id()),
                     session: None,
                 })
                 .expect("connects");
@@ -163,6 +164,7 @@ mod deno {
 
     #[tokio::test]
     #[ignore = "installs plugins/imap from npm and runs a local Dovecot and SMTP sink (plugins/imap/test/servers)"]
+    #[allow(clippy::too_many_lines)]
     async fn two_users_mirror_accounts_never_show_each_others_mail() {
         skip_without!(have_npm(), "npm is not on the PATH");
         skip_without!(dovecot(&["clean"]), "the test Dovecot could not be started");
@@ -198,9 +200,12 @@ mod deno {
             .insert("path".into(), json!(uploads_dir.display().to_string()));
         sc_catalog::save_file_store(&cat, &uploads).await.unwrap();
         sc_catalog::connect_file_store_def(&cat, &uploads).unwrap();
-        cat.require_file_store("uploads")
+        cat.require_file_store("uploads", sc_catalog::Unchecked::system("test"))
             .unwrap()
-            .write("quotes/q-17.pdf", b"%PDF quote 17".to_vec().into())
+            .write(
+                &sc_files::StorePath::from_static("quotes/q-17.pdf"),
+                b"%PDF quote 17".to_vec().into(),
+            )
             .await
             .unwrap();
 
@@ -208,13 +213,13 @@ mod deno {
             load_module(&cat, "imap-mirror", &["127.0.0.1:11993", "127.0.0.1:10465"]).await;
         let registry = Arc::new(registry);
 
-        sc_auth::save_role(&cat, &sc_auth::Role::new(80, "User"))
+        sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(80), "User"))
             .await
             .unwrap();
-        let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", 80)
+        let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", Role::of(80))
             .await
             .unwrap();
-        let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", 80)
+        let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", Role::of(80))
             .await
             .unwrap();
 
@@ -247,7 +252,7 @@ mod deno {
             (&bob, "bob2"),
         ] {
             let values = json!({
-                "owner": user.id.to_string(), "label": login, "email": format!("{login}@example.com"),
+                "owner": user.id().to_string(), "label": login, "email": format!("{login}@example.com"),
                 "display_name": login, "mode": "mirror", "min_role": 1,
                 "imap_host": "127.0.0.1", "imap_port": 11993, "imap_security": "tls",
                 "imap_user": login, "imap_password": PASSWORD,

@@ -14,6 +14,8 @@
 //!   handler, because there are none left.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,16 +25,11 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::admin_endpoints;
 use sc_app::{ApiConfig, Application, CodeFramework, FrameworkRef, bootstrap, save_application};
-use sc_auth::{Role, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, FileStoreId, TableId};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_files::LocalFileStore;
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps,
-};
-use sc_test_harness::TestDb;
+use sc_server::{AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps};
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -132,23 +129,8 @@ impl Drop for TempDir {
 /// store — plus the schema observer installed on the catalog, exactly as the
 /// server installs it at boot.
 async fn setup(tag: &str) -> sc_error::Result<Harness> {
-    let db = TestDb::new().await?;
     let dir = TempDir::new(tag);
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
@@ -222,7 +204,7 @@ async fn mount_blog(h: &Harness) -> sc_error::Result<()> {
         .with("command", "sh build.sh")
         .with("client", "web/src/client.ts");
     let app = Application::new("Blog", "blog", framework_ref)
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_file_store(FileStoreId("apps".to_owned()))
         .with_api(ApiConfig::new("rest", "/api"));
     save_application(&h.catalog, &app).await?;
@@ -342,8 +324,8 @@ async fn a_mounted_app_reprojects_when_the_schema_moves_under_it() -> sc_error::
     assert_eq!(status, StatusCode::CREATED, "{body}");
     // A reader who can see the table, so the role-floor half below has a caller
     // whose answer *changes* rather than one refused at the door either way.
-    save_role(&h.catalog, &Role::new(80, "Reader")).await?;
-    create_user(&h.catalog, "reader@example.com", "reader-pw", 80).await?;
+    save_role(&h.catalog, &RoleDef::new(Role::of(80), "Reader")).await?;
+    create_user(&h.catalog, "reader@example.com", "reader-pw", Role::of(80)).await?;
     h.client
         .send(
             "PUT",

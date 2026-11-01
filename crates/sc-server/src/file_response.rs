@@ -26,10 +26,7 @@ use std::ops::Range;
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use sc_files::{BoxAsyncRead, CONTENT_TYPE_ATTRIBUTE, FILENAME_ATTRIBUTE, ServeFile};
-
-/// How much of the file one body frame carries.
-const CHUNK: usize = 64 * 1024;
+use sc_files::{CONTENT_TYPE_ATTRIBUTE, FILENAME_ATTRIBUTE, ServeFile};
 
 /// The default `Cache-Control`: always revalidated (the ETag makes that cheap)
 /// and never kept by a shared cache, since who may read a file depends on who
@@ -237,8 +234,7 @@ pub(crate) async fn serve(
     uri: &Uri,
     headers: &HeaderMap,
 ) -> Response {
-    let store = file.store.as_ref();
-    let stat = match store.stat(&file.path).await {
+    let stat = match file.stat().await {
         Ok(Some(stat)) if !stat.is_dir => stat,
         Ok(_) => return missing(),
         Err(e) => {
@@ -247,7 +243,7 @@ pub(crate) async fn serve(
         }
     };
     let size = stat.size;
-    let etag = cheap_etag(&file.path, size, stat.modified.as_deref());
+    let etag = cheap_etag(file.path(), size, stat.modified.as_deref());
     let last_modified = stat.modified.as_deref().and_then(http_date);
 
     let mut out = HeaderMap::new();
@@ -279,7 +275,7 @@ pub(crate) async fn serve(
     // The file's own metadata, read once when either the type or the name is
     // left to it.
     let meta = if file.content_type.is_none() || file.filename.is_none() {
-        store.get_meta(&file.path).await.ok()
+        file.get_meta().await.ok()
     } else {
         None
     };
@@ -293,17 +289,17 @@ pub(crate) async fn serve(
         .clone()
         .or_else(|| attribute(CONTENT_TYPE_ATTRIBUTE))
         .unwrap_or_else(|| {
-            sc_files::mime_for_path(&file.path)
+            sc_files::mime_for_path(file.path())
                 .unwrap_or_else(|| "application/octet-stream".to_owned())
         });
     put(header::CONTENT_TYPE, &content_type);
     let name = match &file.filename {
         Some(name) => name.clone(),
         None => attribute(FILENAME_ATTRIBUTE).unwrap_or_else(|| {
-            file.path
+            file.path()
                 .rsplit('/')
                 .next()
-                .unwrap_or(&file.path)
+                .unwrap_or(file.path())
                 .to_owned()
         }),
     };
@@ -351,30 +347,19 @@ pub(crate) async fn serve(
     if method == Method::HEAD {
         return (status, out).into_response();
     }
-    let reader = match store.open_read(&file.path, range).await {
+    let reader = match file.open_read(range).await {
         Ok(reader) => reader,
         Err(e) => {
             crate::router::log_failure("opening a file to serve", &e);
             return missing();
         }
     };
-    (status, out, Body::from_stream(chunks(reader))).into_response()
-}
-
-/// A reader as a stream of body frames of at most [`CHUNK`] bytes.
-pub(crate) fn chunks(
-    reader: BoxAsyncRead,
-) -> impl futures::Stream<Item = std::io::Result<bytes::Bytes>> + Send + 'static {
-    futures::stream::try_unfold(reader, |mut reader| async move {
-        use tokio::io::AsyncReadExt;
-        let mut buffer = vec![0u8; CHUNK];
-        let read = reader.read(&mut buffer).await?;
-        if read == 0 {
-            return Ok(None);
-        }
-        buffer.truncate(read);
-        Ok(Some((bytes::Bytes::from(buffer), reader)))
-    })
+    (
+        status,
+        out,
+        Body::from_stream(sc_files::read_chunks(reader)),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -540,50 +525,63 @@ mod tests {
         fn name(&self) -> &str {
             "generated"
         }
-        async fn read(&self, _path: &str) -> sc_error::Result<bytes::Bytes> {
+        async fn read(&self, _path: &sc_files::StorePath) -> sc_error::Result<bytes::Bytes> {
             self.whole_reads.fetch_add(1, Ordering::SeqCst);
             Ok(bytes::Bytes::from(vec![b'x'; self.size as usize]))
         }
-        async fn write(&self, _: &str, _: bytes::Bytes) -> sc_error::Result<()> {
+        async fn write(&self, _: &sc_files::StorePath, _: bytes::Bytes) -> sc_error::Result<()> {
             Ok(())
         }
-        async fn list(&self, _: &str) -> sc_error::Result<Vec<sc_files::Entry>> {
+        async fn list(&self, _: &sc_files::StorePath) -> sc_error::Result<Vec<sc_files::Entry>> {
             Ok(Vec::new())
         }
-        async fn mkdir(&self, _: &str) -> sc_error::Result<()> {
+        async fn mkdir(&self, _: &sc_files::StorePath) -> sc_error::Result<()> {
             Ok(())
         }
-        async fn delete(&self, _: &str) -> sc_error::Result<bool> {
+        async fn delete(&self, _: &sc_files::StorePath) -> sc_error::Result<bool> {
             Ok(false)
         }
-        async fn rename(&self, _: &str, _: &str) -> sc_error::Result<()> {
+        async fn rename(
+            &self,
+            _: &sc_files::StorePath,
+            _: &sc_files::StorePath,
+        ) -> sc_error::Result<()> {
             Ok(())
         }
         fn is_git_repo(&self) -> bool {
             false
         }
-        async fn stat(&self, path: &str) -> sc_error::Result<Option<sc_files::FileStat>> {
-            Ok((path != "missing.bin").then(|| sc_files::FileStat {
-                size: self.size,
-                is_dir: false,
-                modified: Some("2026-10-12T10:00:00Z".to_owned()),
-            }))
+        async fn stat(
+            &self,
+            path: &sc_files::StorePath,
+        ) -> sc_error::Result<Option<sc_files::FileStat>> {
+            Ok(
+                (path.as_str() != "missing.bin").then(|| sc_files::FileStat {
+                    size: self.size,
+                    is_dir: false,
+                    modified: Some("2026-10-12T10:00:00Z".to_owned()),
+                }),
+            )
         }
         async fn open_read(
             &self,
-            _path: &str,
+            _path: &sc_files::StorePath,
             range: Option<Range<u64>>,
-        ) -> sc_error::Result<BoxAsyncRead> {
+        ) -> sc_error::Result<sc_files::BoxAsyncRead> {
             let remaining = range.map_or(self.size, |r| r.end - r.start);
             Ok(Box::new(Lazy { remaining }))
         }
-        async fn get_meta(&self, _: &str) -> sc_error::Result<sc_files::FileMeta> {
+        async fn get_meta(&self, _: &sc_files::StorePath) -> sc_error::Result<sc_files::FileMeta> {
             Ok(sc_files::FileMeta {
                 attributes: self.attributes.clone(),
                 ..Default::default()
             })
         }
-        async fn set_meta(&self, _: &str, _: &sc_files::FileMeta) -> sc_error::Result<()> {
+        async fn set_meta(
+            &self,
+            _: &sc_files::StorePath,
+            _: &sc_files::FileMeta,
+        ) -> sc_error::Result<()> {
             Ok(())
         }
     }
@@ -608,7 +606,7 @@ mod tests {
         for (name, value) in headers {
             map.insert(name.clone(), HeaderValue::from_str(value).unwrap());
         }
-        let file = ServeFile::new(store.clone(), path);
+        let file = ServeFile::new(store.clone(), sc_files::StorePath::parse(path).unwrap());
         serve(&file, &Method::GET, &uri.parse().unwrap(), &map).await
     }
 
@@ -717,7 +715,7 @@ mod tests {
     }
 
     /// 50 MB served, and never held: the store's whole-file `read` is not
-    /// called, and no body frame is larger than [`CHUNK`].
+    /// called, and no body frame is larger than [`sc_files::READ_CHUNK`].
     #[tokio::test]
     async fn a_large_file_is_streamed_rather_than_read_whole() {
         use futures::StreamExt;
@@ -737,7 +735,10 @@ mod tests {
             largest = largest.max(data.len());
         }
         assert_eq!(total, size);
-        assert!(largest <= CHUNK, "a frame of {largest} bytes");
+        assert!(
+            largest <= sc_files::READ_CHUNK,
+            "a frame of {largest} bytes"
+        );
         assert_eq!(store.whole_reads.load(Ordering::SeqCst), 0, "read whole");
     }
 }

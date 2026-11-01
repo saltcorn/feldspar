@@ -26,7 +26,7 @@ use std::process::Command;
 
 use sc_api::{ApiProvider, RestProvider};
 use sc_catalog::{
-    AccessRules, DataField, DataFieldKind, DbId, FieldId, FileStoreId, Table, TableId, TableSource,
+    AccessRules, DataField, DataFieldKind, DbId, FieldId, FileStoreId, Table, TableSource,
 };
 use sc_db::ColumnGenerator;
 use sc_types::{BasicType, TypeRef};
@@ -924,7 +924,7 @@ fn generated_offline_client_type_checks() -> std::io::Result<()> {
 fn blog_tables() -> Vec<Table> {
     let mut author = DataField::plain("author", TypeRef::Basic(BasicType::Int)).required();
     author.kind = DataFieldKind::Key {
-        target_table: TableId("authors".to_owned()),
+        target_table: "authors".to_owned(),
         target_field: FieldId("id".to_owned()),
         summary_field: None,
     };
@@ -975,7 +975,6 @@ fn key_column(name: &str) -> DataField {
 
 fn table(name: &str, fields: Vec<DataField>) -> Table {
     Table {
-        id: TableId(name.to_owned()),
         name: name.to_owned(),
         database: DbId::primary(),
         source: TableSource::Database,

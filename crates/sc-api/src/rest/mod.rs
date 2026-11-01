@@ -53,19 +53,16 @@
 //! to **admin** when it has none — a trigger whose access nobody has thought
 //! about must not be the one that turns out to be public.
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use sc_auth::{User, authenticate};
-use sc_catalog::{
-    CallerContext, Catalog, DataFieldKind, FileOnConflict, Table, load_file_store_by_name,
-};
+use sc_catalog::{Authority, Catalog, DataFieldKind, FileOnConflict, Principal, Table, Unchecked};
 use sc_error::{Error, Repr, Result};
 use sc_expr::{JsEvaluator, Operation};
-use sc_files::{
-    FileCaller, ROLE_PUBLIC, ServeFile, check_access, check_write, record_owner, validate_file_path,
-};
+use sc_files::{FileCaller, validate_file_path};
 use sc_query::Value;
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value as Json, json};
@@ -83,12 +80,27 @@ use crate::auth::{credentials, credentials_schema, user_summary_json, user_summa
 use crate::endpoint::{
     AuthRequirement, Endpoint, EndpointSet, HandlerRef, Method, PathSpec, QueryParam,
 };
-use crate::ownership;
 use crate::provider::{ApiProvider, ApiRequest, ApiResponse, SessionAction, StreamOpening};
 use crate::resource::{ResourceField, ResourceFile, ResourceModel};
-use crate::rows;
 use crate::schema::{StructField, TypeSchema, ValueType};
-use crate::write_as;
+use sc_access::ownership;
+use sc_access::rows;
+use sc_access::write_as;
+
+/// The check that stands behind this provider's unchecked row operations on an
+/// RLS table: the table's own row-level security policies, which every
+/// statement runs under (`run_rls`).
+const RLS_RULE: &str = "the table's RLS policies (REST provider, run_rls)";
+
+/// The check that stands behind a file download or upload's unchecked read and
+/// write of the row: the REST read or write rule the route applied first.
+const REST_RULE: &str = "the REST read / write rule (REST provider, file routes)";
+
+/// The check that stands behind a custom SQL query's statement (§13.4): the
+/// statement is admin-authored configuration, the endpoint's floor admitted
+/// the caller, and it runs in the caller's context so an RLS table's policies
+/// decide what it reaches (TODO-code-quality Q3.5).
+const CUSTOM_QUERY_RULE: &str = "an admin-authored custom query behind its endpoint's floor";
 
 /// The provider's registered name.
 pub const REST_PROVIDER: &str = "rest";
@@ -117,7 +129,7 @@ pub const CFG_ALLOW_SIGNUP: &str = "allow_signup";
 pub const CFG_NEW_USER_ROLE: &str = "new_user_role";
 
 /// The role [`CFG_NEW_USER_ROLE`] defaults to — v1's `user` role.
-pub const DEFAULT_NEW_USER_ROLE: u8 = 80;
+pub const DEFAULT_NEW_USER_ROLE: Role = Role::of(80);
 
 /// What an admin enabling the REST provider may configure.
 ///
@@ -168,7 +180,7 @@ pub fn rest_config_spec() -> Vec<FormField> {
 /// configuration was checked on save ([`check_rest_config`]), so one that is
 /// out of range now was never accepted, and failing closed is the answer that
 /// cannot make an administrator.
-pub fn rest_signup_role(config: &Attrs) -> Option<u8> {
+pub fn rest_signup_role(config: &Attrs) -> Option<Role> {
     if !config
         .get(CFG_ALLOW_SIGNUP)
         .and_then(Json::as_bool)
@@ -180,7 +192,7 @@ pub fn rest_signup_role(config: &Attrs) -> Option<u8> {
         None => Some(DEFAULT_NEW_USER_ROLE),
         Some(role) => role
             .as_u64()
-            .and_then(|r| u8::try_from(r).ok())
+            .and_then(|r| Role::try_from(r).ok())
             .filter(|r| signup_role_allowed(*r)),
     }
 }
@@ -191,7 +203,7 @@ pub fn check_rest_config(config: &Attrs) -> Result<()> {
     if let Some(role) = config.get(CFG_NEW_USER_ROLE).filter(|r| !r.is_null())
         && !role
             .as_u64()
-            .and_then(|r| u8::try_from(r).ok())
+            .and_then(|r| Role::try_from(r).ok())
             .is_some_and(signup_role_allowed)
     {
         return Err(Error::invalid(format!(
@@ -204,8 +216,8 @@ pub fn check_rest_config(config: &Attrs) -> Result<()> {
 }
 
 /// Any role but the administrator's.
-fn signup_role_allowed(role: u8) -> bool {
-    (sc_auth::ROLE_ADMIN + 1..=sc_auth::ROLE_PUBLIC).contains(&role)
+fn signup_role_allowed(role: Role) -> bool {
+    !role.is_admin()
 }
 
 /// The row cap an application's stored provider configuration names, or
@@ -381,13 +393,13 @@ pub struct RestProvider {
     trigger_routes: HashMap<String, String>,
     /// The role a `signup` gives a new account, when the application offers
     /// sign-up at all ([`with_signup`](RestProvider::with_signup)).
-    signup_role: Option<u8>,
+    signup_role: Option<Role>,
     /// How many days a guest session lasts, when the application keeps them
     /// at all ([`with_guest_sessions`](RestProvider::with_guest_sessions)).
     guest_session_days: Option<i64>,
     /// The least powerful role that may invite somebody, when the application
     /// offers invitations at all ([`with_invite`](RestProvider::with_invite)).
-    invite_min_role: Option<u8>,
+    invite_min_role: Option<Role>,
     /// What the application's email verification settings say, when it
     /// requires verification at all
     /// ([`with_email_verification`](RestProvider::with_email_verification)).
@@ -448,6 +460,7 @@ impl RestProvider {
     /// against the live trigger set by the caller — the same arrangement the
     /// tables have, and for the same reason: this crate sits below `sc-app`, so
     /// it takes what an app resolved rather than the `Application`.
+    #[allow(clippy::too_many_lines)]
     pub fn project_with(
         mount: impl Into<String>,
         tables: &[Table],
@@ -524,7 +537,7 @@ impl RestProvider {
             // A floor at the public role stays a floor, though: it admits
             // everybody whatever the formula says, and saying so is what
             // exempts the endpoint from CSRF (`AuthRequirement::is_public_role`).
-            let relaxed = |floor: u8| match AuthRequirement::MinRole(floor) {
+            let relaxed = |floor: Role| match AuthRequirement::MinRole(floor) {
                 open if open.is_public_role() => open,
                 _ => AuthRequirement::Public,
             };
@@ -704,7 +717,7 @@ impl RestProvider {
                 .input(TypeSchema::json())
                 .output(TypeSchema::json())
                 .auth(AuthRequirement::MinRole(
-                    trigger.min_role.unwrap_or(sc_auth::ROLE_ADMIN),
+                    trigger.min_role.unwrap_or(Role::ADMIN),
                 ))
                 .handler(HandlerRef::named(name)),
             );
@@ -756,7 +769,7 @@ impl RestProvider {
     ///
     /// Called before [`with_queries`](RestProvider::with_queries), whose name
     /// check then sees `signup` among the endpoints already projected.
-    pub fn with_signup(mut self, role: Option<u8>) -> RestProvider {
+    pub fn with_signup(mut self, role: Option<Role>) -> RestProvider {
         let Some(role) = role else {
             self.signup_role = None;
             return self;
@@ -808,7 +821,7 @@ impl RestProvider {
     /// Offer invitations: project `POST {mount}/invite` for callers at `min_role`
     /// or more powerful (see [`password`]). `None` is the default and projects
     /// nothing.
-    pub fn with_invite(mut self, min_role: Option<u8>) -> RestProvider {
+    pub fn with_invite(mut self, min_role: Option<Role>) -> RestProvider {
         self.invite_min_role = min_role;
         let Some(min_role) = min_role else {
             return self;
@@ -959,11 +972,14 @@ impl RestProvider {
             return self.run_custom_code(query, action, req, cat, user).await;
         }
         let statement = custom::custom_statement(cat, query, req)?;
-        let caller = ownership::caller_context(user);
+        let caller = ownership::principal_of(user);
+        // The statement is the admin's own (§13.4), run as the caller so an RLS
+        // table's policies decide; the endpoint's floor was the check.
+        let access = Unchecked::vouched(&caller, CUSTOM_QUERY_RULE);
         let rows = if query.read_only() {
-            sc_catalog::run_in_context_read_only(cat, &caller, &statement).await
+            sc_catalog::run_in_context_read_only(cat, access, &statement).await
         } else {
-            sc_catalog::run_in_context(cat, &caller, &statement).await
+            sc_catalog::run_in_context(cat, access, &statement).await
         }?;
         Ok(ApiResponse::ok(custom::rows_to_json(&rows)))
     }
@@ -991,7 +1007,7 @@ impl RestProvider {
             outcome = outcome.and(limiter.hit(&format!("{scope}:ip:{ip}"), rate));
         }
         if let (Some(rate), Some(user)) = (limits.per_user, user) {
-            outcome = outcome.and(limiter.hit(&format!("{scope}:user:{}", user.id), rate));
+            outcome = outcome.and(limiter.hit(&format!("{scope}:user:{}", user.id()), rate));
         }
         outcome
     }
@@ -1020,7 +1036,7 @@ impl RestProvider {
             ))
         })?;
         let scope = custom::code_scope(query, req)?;
-        let caller = ownership::caller_context(user);
+        let caller = ownership::principal_of(user);
         let result = dispatcher
             .run_query_code(
                 cat,
@@ -1028,7 +1044,7 @@ impl RestProvider {
                 &query.name,
                 &query.code,
                 scope,
-                Some(&caller),
+                Authority::Caller(&caller),
                 self.application,
                 self.file_urls.clone(),
             )
@@ -1108,9 +1124,9 @@ impl RestProvider {
                  dispatcher is available in this context, so it cannot be run"
             ))
         })?;
-        let caller = ownership::caller_context(user);
+        let caller = ownership::principal_of(user);
         let result = dispatcher
-            .run_trigger(cat, trigger, req.body.clone(), Some(&caller))
+            .run_trigger(cat, trigger, req.body.clone(), Authority::Caller(&caller))
             .await;
         code_answer(result, cat, user).await
     }
@@ -1283,8 +1299,8 @@ impl RestProvider {
             {
                 // The account is only worth having if its owner can verify it:
                 // it goes again, and the caller can simply sign up again.
-                sc_auth::delete_password_tokens_for_user(cat, user.id).await?;
-                sc_auth::delete_user(cat, user.id).await?;
+                sc_auth::delete_password_tokens_for_user(cat, user.id()).await?;
+                sc_auth::delete_user(cat, user.id()).await?;
                 return Err(Error::msg(format!(
                     "the verification email could not be sent, so no account was \
                      made: {}",
@@ -1357,7 +1373,7 @@ impl RestProvider {
         // who caused it (§10.2). On this path it sets no GUCs — the table is not
         // RLS-enforced, and `rows` routes by the table, not by the context's
         // presence — it is identity, not authority.
-        let caller = ownership::caller_context(user);
+        let caller = ownership::principal_of(user);
 
         Ok(match &route.op {
             // The read's own rule is `read_row_values_as`'s — the floor, the
@@ -1414,7 +1430,8 @@ impl RestProvider {
                             .await?;
                     }
                 }
-                download(cat, &table, field, id()?, &role).await?
+                let ctx = ownership::principal_of(user);
+                download_ctx(cat, &table, field, id()?, &role, &ctx).await?
             }
             RestOp::Upload { field } => {
                 let filename = params
@@ -1474,7 +1491,7 @@ impl RestProvider {
     /// string said about it.
     ///
     /// One function for every table, protected or not: the query string parses
-    /// into the row layer's [`RowQuery`](crate::rows::RowQuery) and the read goes
+    /// into the row layer's [`RowQuery`](sc_access::rows::RowQuery) and the read goes
     /// through [`ownership::read_row_values_as`], which is where "meets the floor
     /// OR the formula grants the row OR the policies do" lives — the same entry
     /// point the GraphQL root field and an agent's `query_table` use. A filter,
@@ -1487,7 +1504,7 @@ impl RestProvider {
         req: &ApiRequest,
         user: Option<&User>,
     ) -> Result<ApiResponse> {
-        let role = ownership::caller_role(user);
+        let role = sc_auth::role_of(user);
         let plan = query::parse(cat, table, req, role, self.row_cap)?;
         let rows = ownership::read_row_values_as(
             cat,
@@ -1529,7 +1546,7 @@ impl RestProvider {
         row: Json,
         user: Option<&User>,
     ) -> Json {
-        let role = ownership::caller_role(user);
+        let role = sc_auth::role_of(user);
         let readable = ownership::RowImage::new(table, &row)
             .readable(cat, role, user, self.evaluator.as_ref())
             .await
@@ -1556,7 +1573,7 @@ impl RestProvider {
         cat: &Catalog,
         user: Option<&User>,
     ) -> Result<ApiResponse> {
-        let ctx = ownership::caller_context(user);
+        let ctx = ownership::principal_of(user);
         let body = &req.body;
         let role = file_caller(user);
         let id = || -> Result<&str> {
@@ -1571,16 +1588,31 @@ impl RestProvider {
             // says to, so the policies decide exactly as they do everywhere else.
             RestOp::List => self.list(cat, table, req, user).await?,
             RestOp::Create => {
-                let row = rows::create_row_ctx(cat, table, body, Some(&ctx)).await?;
+                let row =
+                    rows::create_row(cat, table, body, Unchecked::vouched(&ctx, RLS_RULE)).await?;
                 ApiResponse::with_status(201, self.written_row(cat, table, row, user).await)
             }
             RestOp::Update => {
-                let row =
-                    rows::update_row_guarded(cat, table, id()?, body, None, Some(&ctx)).await?;
+                let row = rows::update_row_guarded(
+                    cat,
+                    table,
+                    id()?,
+                    body,
+                    None,
+                    Unchecked::vouched(&ctx, RLS_RULE),
+                )
+                .await?;
                 ApiResponse::ok(self.written_row(cat, table, row, user).await)
             }
             RestOp::Delete => {
-                rows::delete_row_guarded(cat, table, id()?, None, Some(&ctx)).await?;
+                rows::delete_row_guarded(
+                    cat,
+                    table,
+                    id()?,
+                    None,
+                    Unchecked::vouched(&ctx, RLS_RULE),
+                )
+                .await?;
                 deleted()
             }
             RestOp::Download { field } => {
@@ -1738,7 +1770,7 @@ async fn code_answer(
             None => (500, json!({ "error": "internal error", "id": id })),
         },
     };
-    let admin = user.is_some_and(|u| u.role == sc_auth::ROLE_ADMIN);
+    let admin = user.is_some_and(|u| u.role().is_admin());
     let body = match admin {
         true => json!({ "error": full, "id": id }),
         false => public,
@@ -1802,35 +1834,29 @@ async fn code_response(
         if file.path.split('/').any(|s| s == ".." || s.is_empty()) {
             return not_found();
         }
-        let Ok(store) = cat.require_file_store(&file.store) else {
+        // The body's `asAdmin()` file is served as the administrator's, who
+        // clears every rule (and whose floor is not read); any other as the
+        // request's user, through the store's rules.
+        let caller = match file.authority == "admin" {
+            true => FileCaller::new(Role::ADMIN, None),
+            false => file_caller(user),
+        };
+        let Ok(store) = sc_catalog::open_checked_store(cat, &file.store, caller).await else {
             return not_found();
         };
-        if file.authority != "admin" {
-            let floor = match load_file_store_by_name(cat, &file.store).await {
-                Ok(def) => def.and_then(|d| d.min_role),
-                Err(_) => return not_found(),
-            };
-            if check_access(store.as_ref(), floor, &file.path, &file_caller(user))
-                .await
-                .is_err()
-            {
-                return not_found();
-            }
-        }
+        let Ok(serve) = store.serve(&file.path).await else {
+            return not_found();
+        };
         // `cache-control` is the builder's to set, so the body's choice is
         // handed to it rather than added beside its default.
         let cache_control = headers
             .iter()
             .position(|(name, _)| name == "cache-control")
             .map(|at| headers.remove(at).1);
-        let serve = ServeFile {
-            store,
-            path: file.path,
-            filename: file.filename,
-            download: file.download,
-            content_type: file.content_type,
-            cache_control,
-        };
+        let mut serve = serve.download(file.download);
+        serve.filename = file.filename;
+        serve.content_type = file.content_type;
+        serve.cache_control = cache_control;
         return ApiResponse {
             file: Some(Box::new(serve)),
             headers,
@@ -1858,8 +1884,8 @@ async fn code_response(
 /// user id the owner rule (§2.1) compares with.
 fn file_caller(user: Option<&User>) -> FileCaller {
     FileCaller::new(
-        user.map_or(ROLE_PUBLIC, |u| u.role),
-        user.map(|u| u.id.to_string()),
+        user.map_or(Role::PUBLIC, |u| u.role()),
+        user.map(|u| u.id().to_string()),
     )
 }
 
@@ -1912,27 +1938,26 @@ fn upload_path(folder: Option<&str>, filename: &str) -> String {
 /// checks must pass. The projection only routes file endpoints for `File`
 /// fields, but the catalog may have changed under a mounted app, so the current
 /// field is re-checked rather than trusted.
-async fn download(
-    cat: &Catalog,
-    table: &Table,
-    field: &str,
-    id: &str,
-    caller: &FileCaller,
-) -> Result<ApiResponse> {
-    download_inner(cat, table, field, id, caller, None).await
-}
-
-/// [`download`] resolving the row's file path through an RLS caller context
-/// (§6), so a file behind a row the policies withhold is a not-found.
+///
+/// The row's file path is read as `context`: on an RLS table (§6) a file behind
+/// a row the policies withhold is a not-found.
 async fn download_ctx(
     cat: &Catalog,
     table: &Table,
     field: &str,
     id: &str,
     caller: &FileCaller,
-    context: &CallerContext,
+    context: &Principal,
 ) -> Result<ApiResponse> {
-    download_inner(cat, table, field, id, caller, Some(context)).await
+    download_inner(
+        cat,
+        table,
+        field,
+        id,
+        caller,
+        Unchecked::vouched(context, REST_RULE),
+    )
+    .await
 }
 
 async fn download_inner(
@@ -1941,10 +1966,10 @@ async fn download_inner(
     field: &str,
     id: &str,
     caller: &FileCaller,
-    context: Option<&CallerContext>,
+    context: Unchecked<'_>,
 ) -> Result<ApiResponse> {
     let (store_name, ..) = file_field(table, field)?;
-    let path = match rows::read_field_ctx(cat, table, field, id, context).await? {
+    let path = match rows::read_field(cat, table, field, id, context).await? {
         Value::Text(path) if !path.is_empty() => path,
         // The row exists but references nothing: for the caller that is "no
         // file here", the same not-found an empty shelf gets.
@@ -1954,23 +1979,19 @@ async fn download_inner(
             )));
         }
     };
-    let store = cat.require_file_store(store_name)?;
-    let floor = store_floor(cat, store_name).await?;
+    let store = checked_store(cat, store_name, caller).await?;
     // A file the caller may not read is not found, exactly as a missing one is
     // (§13.2): "forbidden" would confirm it exists.
-    if check_access(store.as_ref(), floor, &path, caller)
-        .await
-        .is_err()
-    {
+    let Ok(serve) = store.serve(&path).await else {
         return Err(Error::not_found(format!(
             "row {id} has no file in `{field}`"
         )));
-    }
+    };
     // Served by the transport's file builder (TODO F2, §2.2): streamed, with
     // Range, and named for the original upload. The content type is the one
     // the path guesses, exactly as the field's MIME allow-list is enforced —
     // the two must agree on what a path is.
-    Ok(ApiResponse::serve_file(ServeFile::new(store, path)))
+    Ok(ApiResponse::serve_file(serve))
 }
 
 /// Store an upload's bytes behind a row's `File` field (§4).
@@ -1996,9 +2017,19 @@ async fn upload_ctx(
     filename: &str,
     data: Option<bytes::Bytes>,
     caller: &FileCaller,
-    context: &CallerContext,
+    context: &Principal,
 ) -> Result<ApiResponse> {
-    upload_inner(cat, table, field, id, filename, data, caller, Some(context)).await
+    upload_inner(
+        cat,
+        table,
+        field,
+        id,
+        filename,
+        data,
+        caller,
+        Unchecked::vouched(context, REST_RULE),
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2010,7 +2041,7 @@ async fn upload_inner(
     filename: &str,
     data: Option<bytes::Bytes>,
     caller: &FileCaller,
-    context: Option<&CallerContext>,
+    context: Unchecked<'_>,
 ) -> Result<ApiResponse> {
     let (store_name, folder, mime_allow, on_conflict) = file_field(table, field)?;
     let Some(data) = data else {
@@ -2023,8 +2054,7 @@ async fn upload_inner(
     let path = upload_path(folder, filename);
     validate_file_path(&path, folder, mime_allow).map_err(|e| rows::field_error(field, e))?;
 
-    let store = cat.require_file_store(store_name)?;
-    let floor = store_floor(cat, store_name).await?;
+    let store = checked_store(cat, store_name, caller).await?;
     // A field that keeps what is there gives the upload the first free
     // `name_n.ext` instead: nothing is replaced, so there is nothing to check
     // write access to below. Only the name changes, never the folder, so the
@@ -2032,26 +2062,22 @@ async fn upload_inner(
     // still holds for any rule about where the file lives.
     let path = match on_conflict {
         FileOnConflict::Overwrite => path,
-        FileOnConflict::Suffix => sc_files::free_path(store.as_ref(), &path).await?,
+        FileOnConflict::Suffix => store.free_path(&path).await?,
     };
     // The field's folder is where the admin said uploads land, and the table's
     // write rule already let this caller upload, so a **new** file needs nothing
     // more — that is what makes a min_role 1 folder a private drop box (§2.1).
     // Replacing a file that is there is a write to it: somebody else's upload,
     // or a file the caller could not otherwise change, is refused.
-    if store.stat(&path).await?.is_some() {
-        check_write(store.as_ref(), floor, &path, caller).await?;
-    }
+    let file = store.deposit(&path).await?;
 
     // The row must exist (and be writable by the caller) before the bytes land:
     // failing afterwards would leave an orphaned file no row references.
-    rows::read_field_ctx(cat, table, field, id, context).await?;
-    store.write(&path, data).await?;
+    rows::read_field(cat, table, field, id, context).await?;
+    file.write(data).await?;
     // The uploader owns it (§2.1), so they can read it back however private
     // the folder is.
-    if let Some(owner) = &caller.user_id {
-        record_owner(store.as_ref(), &path, owner).await;
-    }
+    file.claim().await;
     let updated = rows::attach_uploaded_file(cat, table, id, field, &path, context).await?;
     Ok(ApiResponse::with_status(201, updated))
 }
@@ -2087,13 +2113,16 @@ fn file_field<'t>(
     }
 }
 
-/// The store-wide access floor from the store's stored definition, `None` for a
-/// store with no definition row (an ephemeral `--file-store`) — the same answer
-/// the admin file endpoints resolve.
-async fn store_floor(cat: &Catalog, store: &str) -> Result<Option<u8>> {
-    Ok(load_file_store_by_name(cat, store)
-        .await?
-        .and_then(|def| def.min_role))
+/// The `File` field's store as `caller` reaches it: its floor from the store's
+/// stored definition (`None` for a store with no definition row, an ephemeral
+/// `--file-store` — the same answer the admin file endpoints resolve), and
+/// every operation checked (TODO-code-quality Q3.6).
+async fn checked_store(
+    cat: &Catalog,
+    store: &str,
+    caller: &FileCaller,
+) -> Result<sc_files::CheckedStore> {
+    sc_catalog::open_checked_store(cat, store, caller.clone()).await
 }
 
 /// Captured path parameters.
@@ -2195,7 +2224,7 @@ impl ApiProvider for RestProvider {
             Ok(scope) => scope,
             Err(e) => return Some(StreamOpening::Invalid(e.to_string())),
         };
-        let caller = ownership::caller_context(user);
+        let caller = ownership::principal_of(user);
         let result = dispatcher
             .run_query_code(
                 cat,
@@ -2203,7 +2232,7 @@ impl ApiProvider for RestProvider {
                 &query.name,
                 &query.code,
                 scope,
-                Some(&caller),
+                Authority::Caller(&caller),
                 self.application,
                 self.file_urls.clone(),
             )
@@ -2400,7 +2429,7 @@ fn resource_model(table: &Table, exposed: &std::collections::HashSet<&str>) -> R
     let mut model = ResourceModel::new(&table.name);
     for field in &table.fields {
         // The password hash is no API's (`user_rows`), so no row type has it.
-        if crate::user_rows::is_hidden_column(table, &field.base.name) {
+        if sc_access::user_rows::is_hidden_column(table, &field.base.name) {
             continue;
         }
         let ty = field
@@ -2417,9 +2446,9 @@ fn resource_model(table: &Table, exposed: &std::collections::HashSet<&str>) -> R
         rf.read_only = matches!(field.kind, DataFieldKind::Calc { .. });
         rf.write_only = field.is_secret();
         if let DataFieldKind::Key { target_table, .. } = &field.kind
-            && exposed.contains(target_table.0.as_str())
+            && exposed.contains(target_table.as_str())
         {
-            rf.references = Some(target_table.0.clone());
+            rf.references = Some(target_table.clone());
         }
         model.fields.push(rf);
     }
@@ -2454,13 +2483,12 @@ pub fn op_name(op: &str, table: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sc_catalog::{AccessRules, DataField, DbId, FileStoreId, TableId, TableSource};
+    use sc_catalog::{AccessRules, DataField, DbId, FileStoreId, TableSource};
     use sc_types::{BasicType, TypeRef};
 
     /// A table named `name` with an `id` primary key and a `title` text column.
     fn table(name: &str, access: AccessRules) -> Table {
         Table {
-            id: TableId(name.to_owned()),
             name: name.to_owned(),
             database: DbId::primary(),
             source: TableSource::Database,
@@ -2506,8 +2534,8 @@ mod tests {
     }
 
     /// A user with the given role. Roles run 1..=100, lower = more privileged.
-    fn user(role: u8) -> User {
-        User::new(uuid::Uuid::new_v4(), role).expect("role in range")
+    fn user(role: Role) -> User {
+        User::new(uuid::Uuid::new_v4(), role)
     }
 
     /// Every app's projection carries `login`, `logout`, `whoami`,
@@ -2525,9 +2553,9 @@ mod tests {
             AuthRequirement::Public
         );
 
-        let p = p.with_invite(Some(40));
+        let p = p.with_invite(Some(Role::of(40)));
         let invite = p.endpoints().find("invite").unwrap();
-        assert_eq!(invite.auth, AuthRequirement::MinRole(40));
+        assert_eq!(invite.auth, AuthRequirement::MinRole(Role::of(40)));
         // `POST /api/invite` is the invitation, not the `invite` table's create.
         let (found, _) = p
             .resolve(&ApiRequest::new(Method::Post, "/api/invite"))
@@ -2573,19 +2601,19 @@ mod tests {
     #[test]
     fn table_access_rules_become_the_endpoints_auth() {
         let strict = AccessRules {
-            min_role_read: 80,
-            min_role_write: 1,
+            min_role_read: Role::of(80),
+            min_role_write: Role::ADMIN,
         };
         let p = RestProvider::project("/api", &[table("posts", strict)]);
         // Reads take min_role_read; writes take min_role_write (§7).
         assert_eq!(
             p.endpoints().find("listPosts").unwrap().auth,
-            AuthRequirement::MinRole(80)
+            AuthRequirement::MinRole(Role::of(80))
         );
         for name in ["createPosts", "updatePosts", "deletePosts"] {
             assert_eq!(
                 p.endpoints().find(name).unwrap().auth,
-                AuthRequirement::MinRole(1),
+                AuthRequirement::MinRole(Role::ADMIN),
                 "{name}"
             );
         }
@@ -2605,8 +2633,8 @@ mod tests {
     #[test]
     fn a_file_field_projects_download_and_upload_endpoints() {
         let access = AccessRules {
-            min_role_read: 80,
-            min_role_write: 40,
+            min_role_read: Role::of(80),
+            min_role_write: Role::of(40),
         };
         let p = RestProvider::project("/api", &[table_with_file_field("posts", access)]);
         assert_eq!(p.endpoints().len(), AUTH_ENDPOINT_COUNT + 4 + 2);
@@ -2619,7 +2647,7 @@ mod tests {
         assert!(!download.binary_input);
         // Reads carry the table's read rule (the path-cumulative file rule is
         // enforced at request time, on top).
-        assert_eq!(download.auth, AuthRequirement::MinRole(80));
+        assert_eq!(download.auth, AuthRequirement::MinRole(Role::of(80)));
 
         // The upload's filename is a path parameter: one segment by
         // construction, so a traversing destination cannot be expressed.
@@ -2628,7 +2656,7 @@ mod tests {
         assert_eq!(upload.path.pattern(), "/api/posts/{id}/cover/{filename}");
         assert!(upload.binary_input, "an upload takes bytes, not JSON");
         // Uploads carry the table's write rule.
-        assert_eq!(upload.auth, AuthRequirement::MinRole(40));
+        assert_eq!(upload.auth, AuthRequirement::MinRole(Role::of(40)));
     }
 
     #[test]
@@ -2731,37 +2759,46 @@ mod tests {
     fn auth_is_enforced_before_anything_runs() {
         // Anonymous callers are rejected...
         assert_eq!(
-            enforce_auth(&AuthRequirement::MinRole(1), None)
+            enforce_auth(&AuthRequirement::MinRole(Role::ADMIN), None)
                 .unwrap()
                 .status,
             401
         );
         // ...under-privileged ones are forbidden...
         assert_eq!(
-            enforce_auth(&AuthRequirement::MinRole(1), Some(&user(100)))
-                .unwrap()
-                .status,
+            enforce_auth(
+                &AuthRequirement::MinRole(Role::ADMIN),
+                Some(&user(Role::PUBLIC))
+            )
+            .unwrap()
+            .status,
             403
         );
         // ...and a sufficiently privileged one passes. Roles run 1..=100 with
         // lower = more privilege, so admin (1) clears a min_role of 80.
-        assert!(enforce_auth(&AuthRequirement::MinRole(80), Some(&user(1))).is_none());
+        assert!(
+            enforce_auth(
+                &AuthRequirement::MinRole(Role::of(80)),
+                Some(&user(Role::ADMIN))
+            )
+            .is_none()
+        );
         assert!(enforce_auth(&AuthRequirement::Public, None).is_none());
         assert!(enforce_auth(&AuthRequirement::LoggedIn, None).is_some());
-        assert!(enforce_auth(&AuthRequirement::LoggedIn, Some(&user(100))).is_none());
+        assert!(enforce_auth(&AuthRequirement::LoggedIn, Some(&user(Role::PUBLIC))).is_none());
     }
 
     #[test]
     fn a_floor_at_the_public_role_admits_a_caller_nobody_is_logged_in_as() {
         // Role 100 is the role an anonymous caller holds, so a floor at it is
         // everybody — not "any logged-in user of role 100".
-        let public = AuthRequirement::MinRole(sc_auth::ROLE_PUBLIC);
+        let public = AuthRequirement::MinRole(Role::PUBLIC);
         assert!(enforce_auth(&public, None).is_none());
-        assert!(enforce_auth(&public, Some(&user(100))).is_none());
-        assert!(enforce_auth(&public, Some(&user(1))).is_none());
+        assert!(enforce_auth(&public, Some(&user(Role::PUBLIC))).is_none());
+        assert!(enforce_auth(&public, Some(&user(Role::ADMIN))).is_none());
         // One step stricter and the anonymous caller is out again.
         assert_eq!(
-            enforce_auth(&AuthRequirement::MinRole(99), None)
+            enforce_auth(&AuthRequirement::MinRole(Role::of(99)), None)
                 .unwrap()
                 .status,
             401
@@ -2773,12 +2810,12 @@ mod tests {
         use sc_action::{EventKind, Trigger};
 
         let open = AccessRules {
-            min_role_read: sc_auth::ROLE_PUBLIC,
-            min_role_write: sc_auth::ROLE_PUBLIC,
+            min_role_read: Role::PUBLIC,
+            min_role_write: Role::PUBLIC,
         };
         let read_only = AccessRules {
-            min_role_read: sc_auth::ROLE_PUBLIC,
-            min_role_write: 80,
+            min_role_read: Role::PUBLIC,
+            min_role_write: Role::of(80),
         };
         // An ownership table's endpoints are relaxed to `Public` for its
         // formula; a floor at the public role must survive that relaxation.
@@ -2788,14 +2825,15 @@ mod tests {
             "/api",
             &[table("guestbook", open), table("posts", read_only), owned],
             &[
-                Trigger::new("sign", EventKind::None, "fetch").min_role(sc_auth::ROLE_PUBLIC),
-                Trigger::new("purge", EventKind::None, "fetch").min_role(80),
+                Trigger::new("sign", EventKind::None, "fetch").min_role(Role::PUBLIC),
+                Trigger::new("purge", EventKind::None, "fetch").min_role(Role::of(80)),
             ],
         )
         .with_queries(vec![
             CustomQuery::new("count", Method::Post, "/stats/count", "SELECT 1")
-                .min_role(sc_auth::ROLE_PUBLIC),
-            CustomQuery::new("audit", Method::Post, "/stats/audit", "SELECT 1").min_role(40),
+                .min_role(Role::PUBLIC),
+            CustomQuery::new("audit", Method::Post, "/stats/audit", "SELECT 1")
+                .min_role(Role::of(40)),
         ])
         .unwrap();
 
@@ -2822,7 +2860,7 @@ mod tests {
     fn an_exposed_trigger_is_one_post_endpoint_carrying_its_own_role_floor() {
         use sc_action::{EventKind, Trigger};
 
-        let open = Trigger::new("send_digest", EventKind::None, "fetch").min_role(80);
+        let open = Trigger::new("send_digest", EventKind::None, "fetch").min_role(Role::of(80));
         // No `min_role`: nobody has decided who may call it.
         let unset = Trigger::new("purge_users", EventKind::None, "fetch");
         let p = RestProvider::project_with(
@@ -2836,12 +2874,12 @@ mod tests {
         assert_eq!(ep.method, Method::Post);
         // Under `actions/`, so a trigger can never be confused with a table.
         assert_eq!(ep.path.pattern(), "/api/actions/send_digest");
-        assert_eq!(ep.auth, AuthRequirement::MinRole(80));
+        assert_eq!(ep.auth, AuthRequirement::MinRole(Role::of(80)));
 
         // The undecided one is admin-only, not public.
         assert_eq!(
             p.endpoints().find("runPurgeUsers").unwrap().auth,
-            AuthRequirement::MinRole(sc_auth::ROLE_ADMIN)
+            AuthRequirement::MinRole(Role::ADMIN)
         );
 
         // It routes, and it is typed into the app's client like anything else.
@@ -2897,7 +2935,7 @@ mod tests {
             "SELECT author FROM posts WHERE id > :since",
         )
         .params([custom::CustomParam::new("since", ValueType::Int)])
-        .min_role(40);
+        .min_role(Role::of(40));
         let p = RestProvider::project("/api", &[table("posts", AccessRules::default())])
             .with_queries(vec![query.clone()])
             .expect("projects");
@@ -2906,7 +2944,7 @@ mod tests {
         assert_eq!(ep.path.pattern(), "/api/reports/top-authors");
         // The query's own floor, not the tables' — a custom query's authority is
         // its own (§13.4).
-        assert_eq!(ep.auth, AuthRequirement::MinRole(40));
+        assert_eq!(ep.auth, AuthRequirement::MinRole(Role::of(40)));
         assert_eq!(ep.query.len(), 1);
         let ts = crate::generate_client(p.endpoints());
         assert!(ts.contains("topAuthors("), "{ts}");
@@ -2989,7 +3027,7 @@ mod tests {
         config.insert(CFG_ALLOW_SIGNUP.to_owned(), Json::Bool(true));
         assert_eq!(rest_signup_role(&config), Some(DEFAULT_NEW_USER_ROLE));
         config.insert(CFG_NEW_USER_ROLE.to_owned(), Json::from(40));
-        assert_eq!(rest_signup_role(&config), Some(40));
+        assert_eq!(rest_signup_role(&config), Some(Role::of(40)));
 
         let on = RestProvider::project("/api", &tables).with_signup(rest_signup_role(&config));
         let signup = on.endpoints().find("signup").expect("projected");
@@ -3035,14 +3073,25 @@ mod tests {
                 "{name}: {ts}"
             );
         }
-        assert!(ts.contains("trackCsrf, signInAnswered, type ClientOptions"), "{ts}");
+        assert!(
+            ts.contains("trackCsrf, signInAnswered, type ClientOptions"),
+            "{ts}"
+        );
         // ...and an application that answers it itself says so.
         assert!(ts.contains("export { handleSecondFactorInApp } from \"./helper\";"));
         // Nothing else does.
-        assert!(!ts.contains("return signInAnswered(baseUrl, (await res.json()) as WhoamiResponse"));
-        assert!(ts.contains("return (await res.json()) as WhoamiResponse;"), "{ts}");
+        assert!(
+            !ts.contains("return signInAnswered(baseUrl, (await res.json()) as WhoamiResponse")
+        );
+        assert!(
+            ts.contains("return (await res.json()) as WhoamiResponse;"),
+            "{ts}"
+        );
         let helper = crate::client_helper();
-        assert!(helper.contains("export function signInAnswered<T>("), "{helper}");
+        assert!(
+            helper.contains("export function signInAnswered<T>("),
+            "{helper}"
+        );
         assert!(helper.contains("/_feldspar/second-factor/sign-in?return_to="));
     }
 

@@ -377,6 +377,7 @@ impl ServerConfig {
     /// and `--trusted-proxies <list>`.
     /// Unknown flags are an
     /// [`Error::Config`], so a typo fails loudly rather than being ignored.
+    #[allow(clippy::too_many_lines)]
     pub fn from_args<I, S>(args: I) -> Result<ServerConfig>
     where
         I: IntoIterator<Item = S>,

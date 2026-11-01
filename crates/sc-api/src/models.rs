@@ -13,12 +13,9 @@
 //! `m.predict(…)` all end here.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use sc_auth::User;
-use sc_catalog::{CallerContext, Catalog, ModelSummary, PredictRows, Table};
+use sc_catalog::{Catalog, ModelSummary, PredictRows, Table};
 use sc_error::{Error, Result};
-use sc_expr::JsEvaluator;
 use sc_model::{
     DatasetSource, Model, ModelInstance, ModelRegistry, PosteriorView, PosteriorWrite, Prediction,
     Subject, WriteMode, canonical_key, instance_coordinates, plan_write, summarise_variable,
@@ -131,10 +128,10 @@ pub async fn predict_for(
                 return Ok(Vec::new());
             }
             let target = catalog.require(table)?;
-            let pk = crate::rows::single_pk(&target)?;
+            let pk = sc_access::rows::single_pk(&target)?;
             let mut asked = Vec::with_capacity(keys.len());
             for key in keys {
-                asked.push(crate::rows::column_value(&target, &pk, key)?);
+                asked.push(sc_access::rows::column_value(&target, &pk, key)?);
             }
             let restrict = Expr::In {
                 e: Box::new(Expr::col(pk.clone())),
@@ -242,92 +239,20 @@ fn grain_refusal(model: &Model) -> Option<String> {
     }
 }
 
-use crate::rows;
-
 /// Statistics that may go into an integer field, rounded: the effective sample
 /// sizes, which are counts of draws.
 const COUNT_STATISTICS: [&str; 2] = ["ess_bulk", "ess_tail"];
 
-/// Whose authority a write-back writes under.
+/// Write `write` of `instance` (a fit of `model`) into rows, under `scope`'s
+/// authority and on its executor — **the** write-back, for the admin API and a
+/// code body's handle alike.
 ///
-/// The same two shapes a code body's `db` handle has: a context the row layer
-/// writes under as it is (the admin API's, and an undelegated body's — admin,
-/// in the event's user's name, with its trigger chain), and a **delegated**
-/// caller, whose every write goes through [`crate::ownership`]'s `*_as`
-/// functions so §7.3's rule decides it exactly as it decides
-/// `db.counties.asUser().update(…)`.
-pub enum Writer<'a> {
-    /// Written under this context, through the row layer.
-    Context(&'a CallerContext),
-    /// Written as this caller, through the ownership rule.
-    As {
-        /// The role every floor is checked against.
-        role: u8,
-        /// The user an ownership formula and an RLS policy read.
-        user: Option<&'a User>,
-        /// For an ownership formula only the evaluator can decide.
-        evaluator: Option<&'a Arc<dyn JsEvaluator>>,
-        /// The triggers that led here, which each write's event carries.
-        chain: &'a [String],
-    },
-}
-
-impl Writer<'_> {
-    async fn insert(
-        &self,
-        catalog: &Catalog,
-        table: &Table,
-        body: &Json,
-        executor: &rows::Executor,
-    ) -> Result<Json> {
-        match self {
-            Writer::Context(context) => {
-                rows::create_row_in(catalog, table, body, Some(context), executor).await
-            }
-            Writer::As {
-                role,
-                user,
-                evaluator,
-                chain,
-            } => {
-                crate::ownership::insert_row_as(
-                    catalog, table, body, *role, *user, *evaluator, chain, executor,
-                )
-                .await
-            }
-        }
-    }
-
-    async fn update(
-        &self,
-        catalog: &Catalog,
-        table: &Table,
-        key: &str,
-        body: &Json,
-        executor: &rows::Executor,
-    ) -> Result<Json> {
-        match self {
-            Writer::Context(context) => {
-                rows::update_row_in(catalog, table, key, body, Some(context), executor).await
-            }
-            Writer::As {
-                role,
-                user,
-                evaluator,
-                chain,
-            } => {
-                crate::ownership::update_row_as(
-                    catalog, table, key, body, *role, *user, *evaluator, chain, executor,
-                )
-                .await
-            }
-        }
-    }
-}
-
-/// Write `write` of `instance` (a fit of `model`) into rows, as `writer`,
-/// through `executor` — **the** write-back, for the admin API and a code
-/// body's handle alike.
+/// `scope` is the same two shapes a code body's `db` handle has: an
+/// administrator's (the admin API's, and an undelegated body's — admin, in the
+/// event's user's name, with its trigger chain), which writes through the row
+/// layer, and a **delegated** caller, whose every write goes through the
+/// ownership rule so §7.3 decides it exactly as it decides
+/// `db.counties.asUser().update(…)` (TODO-code-quality Q3.4).
 ///
 /// Update mode writes the rows of the table the variable's one axis is about
 /// (the rows dimension's dataset's table), matched by key; insert mode makes a
@@ -339,8 +264,7 @@ pub async fn write_posterior(
     model: &Model,
     instance: &ModelInstance,
     write: &PosteriorWrite,
-    writer: &Writer<'_>,
-    executor: &rows::Executor,
+    scope: &sc_access::Scoped<'_>,
 ) -> Result<Json> {
     if instance.model != model.id {
         return Err(Error::invalid(format!(
@@ -372,26 +296,20 @@ pub async fn write_posterior(
         let body = Json::Object(round_counts(&table, write, values));
         match (&plan.mode, &row.key) {
             (WriteMode::Update, Some(key)) => {
-                writer
-                    .update(catalog, &table, key, &body, executor)
-                    .await
-                    .map_err(|e| {
-                        Error::invalid(format!(
-                            "writing `{}` into row `{key}` of `{}`: {e}",
-                            write.variable, table.name
-                        ))
-                    })?;
+                scope.update(&table, key, &body).await.map_err(|e| {
+                    Error::invalid(format!(
+                        "writing `{}` into row `{key}` of `{}`: {e}",
+                        write.variable, table.name
+                    ))
+                })?;
             }
             _ => {
-                writer
-                    .insert(catalog, &table, &body, executor)
-                    .await
-                    .map_err(|e| {
-                        Error::invalid(format!(
-                            "inserting `{}` into `{}`: {e}",
-                            write.variable, table.name
-                        ))
-                    })?;
+                scope.insert(&table, &body).await.map_err(|e| {
+                    Error::invalid(format!(
+                        "inserting `{}` into `{}`: {e}",
+                        write.variable, table.name
+                    ))
+                })?;
             }
         }
         written += 1;
@@ -531,10 +449,9 @@ mod tests {
 
     /// `forecasts(day date, at timestamptz)`.
     fn forecasts() -> Table {
-        use sc_catalog::{AccessRules, DataField, DbId, TableId, TableSource};
+        use sc_catalog::{AccessRules, DataField, DbId, TableSource};
         use sc_types::TypeRef;
         Table {
-            id: TableId("forecasts".into()),
             name: "forecasts".into(),
             database: DbId::primary(),
             source: TableSource::Database,

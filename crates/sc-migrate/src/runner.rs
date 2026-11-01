@@ -273,7 +273,7 @@ async fn apply(
         vec![Value::Text(migration.id.to_owned())],
     );
     let recorded = !tx
-        .query(&Statement::raw(sql, binds))
+        .query(&Statement::raw(sc_query::TrustedSql::composed(sql), binds))
         .await?
         .try_collect()
         .await?
@@ -296,9 +296,7 @@ async fn apply(
         Err(e) => Err(e),
     };
     if let Err(e) = result {
-        // The error is what matters; a failed rollback still ends the
-        // transaction when the connection is dropped.
-        let _ = tx.rollback().await;
+        sc_db::abandon(tx).await;
         return Err(e).with_context(|| {
             format!(
                 "migration `{}` ({}) failed and was rolled back; the migrations before it are \
@@ -367,7 +365,7 @@ async fn insert_record(
         Value::Text(VERSION.to_owned()),
         Value::Int(duration_ms),
     ];
-    tx.query(&Statement::raw(sql, binds))
+    tx.query(&Statement::raw(sc_query::TrustedSql::composed(sql), binds))
         .await?
         .try_collect()
         .await?;

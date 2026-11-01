@@ -17,19 +17,18 @@
 //!   is visible on another within the freshness TTL, and immediately when the
 //!   cache is off.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use chrono::Duration;
 use sc_auth::{
-    CACHE_CAPACITY, COL_ID, ROLE_ADMIN, SESSIONS_TABLE, SessionStore, USERS_TABLE, bootstrap,
-    create_session, create_user,
+    CACHE_CAPACITY, COL_ID, SESSIONS_TABLE, SessionStore, USERS_TABLE, bootstrap, create_session,
+    create_user,
 };
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_query::{Delete, Expr, Select, Source, Statement};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 
 /// A database with the auth tables bootstrapped, and a handle on it.
 struct Fixture {
@@ -38,23 +37,7 @@ struct Fixture {
 }
 
 async fn fixture() -> Result<Fixture> {
-    let db = TestDb::new().await?;
-    // The multi-tenant v1 test template carries `users` tables in several
-    // schemas; drop them all so bootstrap creates the clean table. No-op in CI.
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     bootstrap(&catalog).await?;
     Ok(Fixture { catalog, db })
 }
@@ -73,7 +56,7 @@ fn uncached(catalog: &Arc<Catalog>) -> SessionStore {
 /// How many session rows there are.
 async fn session_rows(catalog: &Catalog) -> Result<usize> {
     Ok(catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(Select::from(Source::table(
             SESSIONS_TABLE,
         ))))
@@ -88,7 +71,7 @@ async fn session_rows(catalog: &Catalog) -> Result<usize> {
 #[tokio::test]
 async fn a_session_started_on_one_node_is_live_on_another() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", ROLE_ADMIN).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::ADMIN).await?;
 
     // Two stores over one database — two processes, as far as the data is
     // concerned. Uncached, so this is the table's behaviour and not a cache's.
@@ -100,8 +83,8 @@ async fn a_session_started_on_one_node_is_live_on_another() -> Result<()> {
         .user_for(&token)
         .await?
         .expect("node B honours node A's session");
-    assert_eq!(seen.id, user.id);
-    assert_eq!(seen.role, user.role);
+    assert_eq!(seen.id(), user.id());
+    assert_eq!(seen.role(), user.role());
 
     // And the logout crosses back the other way.
     assert!(node_b.logout(&token).await?);
@@ -116,7 +99,7 @@ async fn a_session_started_on_one_node_is_live_on_another() -> Result<()> {
 #[tokio::test]
 async fn a_cached_session_goes_stale_and_then_notices_the_logout() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", ROLE_ADMIN).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::ADMIN).await?;
 
     // Node A caches for a beat; node B does not cache at all.
     let node_a = SessionStore::database_with(
@@ -156,7 +139,7 @@ async fn a_cached_session_goes_stale_and_then_notices_the_logout() -> Result<()>
 #[tokio::test]
 async fn invalidate_drops_the_cached_copy_and_nothing_else() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", ROLE_ADMIN).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::ADMIN).await?;
     let store = SessionStore::database(f.catalog.clone());
 
     let token = store.login(user).await?;
@@ -209,7 +192,7 @@ async fn the_session_table_is_unlogged() -> Result<()> {
 #[tokio::test]
 async fn the_stored_row_is_not_the_cookie() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", ROLE_ADMIN).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::ADMIN).await?;
     let store = uncached(&f.catalog);
     let token = store.login(user).await?;
 
@@ -242,8 +225,8 @@ async fn the_stored_row_is_not_the_cookie() -> Result<()> {
 #[tokio::test]
 async fn a_deleted_users_session_stops_resolving_and_never_blocked_the_delete() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", ROLE_ADMIN).await?;
-    let other = create_user(&f.catalog, "b@example.com", "pw", ROLE_ADMIN).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::ADMIN).await?;
+    let other = create_user(&f.catalog, "b@example.com", "pw", Role::ADMIN).await?;
     let store = uncached(&f.catalog);
 
     let token = store.login(user.clone()).await?;
@@ -254,9 +237,9 @@ async fn a_deleted_users_session_stops_resolving_and_never_blocked_the_delete() 
     // removed, and this is the assertion that would fail if a foreign key were
     // ever added without an `ON DELETE` action.
     f.catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(
-            Delete::from(USERS_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(user.id))),
+            Delete::from(USERS_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(user.id()))),
         ))
         .await?
         .try_collect()
@@ -273,7 +256,7 @@ async fn a_deleted_users_session_stops_resolving_and_never_blocked_the_delete() 
 #[tokio::test]
 async fn expired_sessions_lapse_and_are_swept() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", ROLE_ADMIN).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::ADMIN).await?;
     let store = uncached(&f.catalog);
 
     // The live one first: `login` sweeps on its way through (rate-limited to one
@@ -284,8 +267,8 @@ async fn expired_sessions_lapse_and_are_swept() -> Result<()> {
     // Straight to the table, with its lifetime already spent — the store's own
     // `login` cannot make one of these, which is why the free function takes a
     // TTL rather than assuming the default.
-    let stale = create_session(&f.catalog, user.id, Duration::seconds(-1)).await?;
-    let also_stale = create_session(&f.catalog, user.id, Duration::seconds(-1)).await?;
+    let stale = create_session(&f.catalog, user.id(), Duration::seconds(-1)).await?;
+    let also_stale = create_session(&f.catalog, user.id(), Duration::seconds(-1)).await?;
     assert_eq!(session_rows(&f.catalog).await?, 3);
 
     // Lazily: reading a lapsed session both refuses it and purges its row.
@@ -305,19 +288,19 @@ async fn expired_sessions_lapse_and_are_swept() -> Result<()> {
 #[tokio::test]
 async fn a_role_change_reaches_a_live_session() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "a@example.com", "pw", ROLE_ADMIN).await?;
+    let user = create_user(&f.catalog, "a@example.com", "pw", Role::ADMIN).await?;
     let store = uncached(&f.catalog);
     let token = store.login(user.clone()).await?;
 
     // Demote them in the users table, touching no session.
     f.catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(
             sc_query::Update::new(
                 USERS_TABLE,
                 vec![sc_query::Assignment::new("role", Expr::lit(100_i64))],
             )
-            .filter(Expr::col(COL_ID).eq(Expr::lit(user.id))),
+            .filter(Expr::col(COL_ID).eq(Expr::lit(user.id()))),
         ))
         .await?
         .try_collect()
@@ -325,7 +308,8 @@ async fn a_role_change_reaches_a_live_session() -> Result<()> {
 
     let seen = store.user_for(&token).await?.expect("still signed in");
     assert_eq!(
-        seen.role, 100,
+        seen.role(),
+        Role::PUBLIC,
         "the session names the user; it does not carry a copy of them"
     );
     Ok(())

@@ -31,37 +31,13 @@ use crate::backend::OperationOutcome;
 use crate::def::{CFG_CREATE, CFG_PATH, FileStoreDef};
 use crate::paths::suggest_local_dir;
 use crate::store::{Entry, FileMeta, FileStat, FileStore};
+use crate::store_path::StorePath;
 use crate::stream::{BoxAsyncRead, BoxAsyncWrite, check_range};
 
 /// A modification time as RFC 3339 in UTC, which is how every other timestamp
 /// crosses this server's wire.
 fn rfc3339(time: std::time::SystemTime) -> String {
     chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-}
-
-/// Whether a store-relative path is inside (or is) a `.git` directory, at any
-/// depth: a segment that is `.git` in any case, since a case-insensitive file
-/// system opens `.GIT/config` as the same file, and with trailing dots or spaces
-/// ignored, since Windows drops them. `git~1` (and `git~<digits>`) counts too:
-/// it is the 8.3 short name NTFS gives `.git`, which git's own
-/// `core.protectNTFS` refuses for the same reason (security review #31).
-pub fn in_git_dir(path: &str) -> bool {
-    path.split(['/', '\\']).any(|segment| {
-        let segment = segment.trim_end_matches(['.', ' ']);
-        segment.eq_ignore_ascii_case(".git") || is_git_short_name(segment)
-    })
-}
-
-/// `git~1`, in any case, with any number after the tilde.
-fn is_git_short_name(segment: &str) -> bool {
-    match (segment.get(..4), segment.get(4..)) {
-        (Some(head), Some(tail)) => {
-            head.eq_ignore_ascii_case("git~")
-                && !tail.is_empty()
-                && tail.bytes().all(|b| b.is_ascii_digit())
-        }
-        _ => false,
-    }
 }
 
 /// Name of the extended attribute holding a file's serialised [`FileMeta`]. On
@@ -110,15 +86,16 @@ impl LocalFileStore {
     }
 
     /// [`resolve`](Self::resolve) for a path about to be written, created,
-    /// renamed or deleted: refused inside a `.git` directory ([`in_git_dir`]).
+    /// renamed or deleted: refused inside a `.git` directory
+    /// ([`StorePath::in_git_dir`]).
     ///
     /// A repository's `.git/config` and `.git/hooks` are commands the server's
     /// own `git` runs — `core.fsmonitor` on every `git status` — so whoever may
     /// write a file there may run a program as the server's operating-system
     /// user. Nobody who reaches a store through Saltcorn (an agent's edit, an
     /// upload, a File field) has a reason to.
-    fn resolve_for_write(&self, rel: &str) -> Result<PathBuf> {
-        if !self.git_dir_writable && in_git_dir(rel) {
+    fn resolve_for_write(&self, rel: &StorePath) -> Result<PathBuf> {
+        if !self.git_dir_writable && rel.in_git_dir() {
             return Err(Error::invalid(format!(
                 "path {rel:?} is inside a `.git` directory, which file store {} does not write",
                 self.name
@@ -128,11 +105,11 @@ impl LocalFileStore {
     }
 
     /// Resolve a store-relative path to an absolute path inside the root,
-    /// rejecting anything that would escape it — by its spelling
-    /// ([`lexical`](Self::lexical)) or through a symbolic link on disk
-    /// ([`beneath_root`](Self::beneath_root)).
-    fn resolve(&self, rel: &str) -> Result<PathBuf> {
-        let abs = self.lexical(rel)?;
+    /// rejecting anything that would escape it through a symbolic link on disk
+    /// ([`beneath_root`](Self::beneath_root)). The spelling was settled when
+    /// the [`StorePath`] was parsed.
+    fn resolve(&self, rel: &StorePath) -> Result<PathBuf> {
+        let abs = self.lexical(rel);
         self.beneath_root(&abs, rel, true)?;
         Ok(abs)
     }
@@ -141,49 +118,28 @@ impl LocalFileStore {
     /// or moved — so a link is the link and not what it points at: only its
     /// parent has to lie inside the root. A link out of the store can still be
     /// removed, which is the one thing worth doing with it.
-    fn resolve_entry(&self, rel: &str) -> Result<PathBuf> {
-        if !self.git_dir_writable && in_git_dir(rel) {
+    fn resolve_entry(&self, rel: &StorePath) -> Result<PathBuf> {
+        if !self.git_dir_writable && rel.in_git_dir() {
             return Err(Error::invalid(format!(
                 "path {rel:?} is inside a `.git` directory, which file store {} does not write",
                 self.name
             )));
         }
-        let abs = self.lexical(rel)?;
+        let abs = self.lexical(rel);
         self.beneath_root(&abs, rel, false)?;
         Ok(abs)
     }
 
-    /// The path `rel` names under the root, by its spelling alone.
-    ///
-    /// Split on `/` only, and every segment must be one plain name: a `\`, a
-    /// `:` or a NUL is refused rather than handed to [`PathBuf::push`], which on
-    /// Windows reads `..\..\x` as two steps up and `C:\x` as a whole new path —
-    /// and either would also slip past the folder floors `check_access` walks,
-    /// which are split on `/`. So is a segment of nothing but dots and spaces,
-    /// which Windows trims to `..` or to nothing.
-    fn lexical(&self, rel: &str) -> Result<PathBuf> {
-        let escapes = || Error::invalid(format!("path {rel:?} escapes the file store root"));
+    /// The path `rel` names under the root, by its spelling alone: one
+    /// [`PathBuf::push`] per segment, each of which the validator has already
+    /// confined to a plain name (no `\`, `:` or NUL that Windows would read as
+    /// a separator, a drive or a stream; no `..`).
+    fn lexical(&self, rel: &StorePath) -> PathBuf {
         let mut out = self.root.clone();
-        for segment in rel.split('/') {
-            match segment {
-                // Empty (leading/trailing/double slash) and "." are no-ops.
-                "" | "." => continue,
-                ".." => return Err(escapes()),
-                seg if seg.contains(['\\', ':', '\0'])
-                    || seg.trim_end_matches(['.', ' ']).is_empty() =>
-                {
-                    return Err(escapes());
-                }
-                seg => {
-                    let mut components = Path::new(seg).components();
-                    match (components.next(), components.next()) {
-                        (Some(std::path::Component::Normal(_)), None) => out.push(seg),
-                        _ => return Err(escapes()),
-                    }
-                }
-            }
+        for segment in rel.segments() {
+            out.push(segment);
         }
-        Ok(out)
+        out
     }
 
     /// Refuse `abs` if what is on disk takes it out of the root: a symbolic
@@ -199,7 +155,7 @@ impl LocalFileStore {
     /// A check before the open rather than `openat2(RESOLVE_BENEATH)`, so it is
     /// the same on every platform; it stops links that are there when a caller
     /// asks, which is the case a checkout produces.
-    fn beneath_root(&self, abs: &Path, rel: &str, follow_last: bool) -> Result<()> {
+    fn beneath_root(&self, abs: &Path, rel: &StorePath, follow_last: bool) -> Result<()> {
         let escapes = || Error::invalid(format!("path {rel:?} escapes the file store root"));
         let mut probe = if follow_last || abs == self.root {
             abs
@@ -248,13 +204,13 @@ impl LocalFileStore {
     /// a link, and its spelling is already in `rel`. A path spelled inside
     /// `.git` is left to the rules that read its spelling (refused for writes,
     /// decided by `check_access` for reads).
-    fn lands_outside_git(&self, real: &Path, rel: &str) -> Result<()> {
-        if self.git_dir_writable || in_git_dir(rel) {
+    fn lands_outside_git(&self, real: &Path, rel: &StorePath) -> Result<()> {
+        if self.git_dir_writable || rel.in_git_dir() {
             return Ok(());
         }
         let landed = real.strip_prefix(&self.root).is_ok_and(|inside| {
             inside.components().any(|c| match c {
-                std::path::Component::Normal(name) => in_git_dir(&name.to_string_lossy()),
+                std::path::Component::Normal(name) => crate::in_git_dir(&name.to_string_lossy()),
                 _ => false,
             })
         });
@@ -276,7 +232,7 @@ impl LocalFileStore {
     /// path before writing it, and looks for optional files like
     /// `.vscode/settings.json` that are usually absent. A missing file reported as
     /// a system failure makes every one of those an error the admin is shown.
-    fn io<T>(&self, result: std::io::Result<T>, path: &str, doing: &str) -> Result<T> {
+    fn io<T>(&self, result: std::io::Result<T>, path: &StorePath, doing: &str) -> Result<T> {
         match result {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::not_found(format!(
                 "{path:?} does not exist in store {}",
@@ -293,13 +249,13 @@ impl FileStore for LocalFileStore {
         &self.name
     }
 
-    async fn read(&self, path: &str) -> Result<Bytes> {
+    async fn read(&self, path: &StorePath) -> Result<Bytes> {
         let abs = self.resolve(path)?;
         let data = self.io(tokio::fs::read(&abs).await, path, "reading")?;
         Ok(Bytes::from(data))
     }
 
-    async fn write(&self, path: &str, data: Bytes) -> Result<()> {
+    async fn write(&self, path: &StorePath, data: Bytes) -> Result<()> {
         let abs = self.resolve_for_write(path)?;
         if let Some(parent) = abs.parent() {
             tokio::fs::create_dir_all(parent)
@@ -312,12 +268,12 @@ impl FileStore for LocalFileStore {
         Ok(())
     }
 
-    async fn list(&self, dir: &str) -> Result<Vec<Entry>> {
+    async fn list(&self, dir: &StorePath) -> Result<Vec<Entry>> {
         let abs = self.resolve(dir)?;
         let mut read_dir = self.io(tokio::fs::read_dir(&abs).await, dir, "listing")?;
-        // Normalise the directory prefix so child paths are `<dir>/<name>` with
-        // no leading, trailing, or doubled separators.
-        let prefix = dir.trim_matches('/');
+        // Child paths are `<dir>/<name>`: the parsed path has no leading,
+        // trailing or doubled separators.
+        let prefix = dir.as_str();
         let mut entries = Vec::new();
         while let Some(dirent) = read_dir
             .next_entry()
@@ -349,7 +305,7 @@ impl FileStore for LocalFileStore {
         Ok(entries)
     }
 
-    async fn mkdir(&self, path: &str) -> Result<()> {
+    async fn mkdir(&self, path: &StorePath) -> Result<()> {
         let abs = self.resolve_for_write(path)?;
         // A file already sitting there is a real conflict — `create_dir_all`
         // would report an opaque OS error, so name it.
@@ -367,7 +323,7 @@ impl FileStore for LocalFileStore {
         Ok(())
     }
 
-    async fn delete(&self, path: &str) -> Result<bool> {
+    async fn delete(&self, path: &StorePath) -> Result<bool> {
         let abs = self.resolve_entry(path)?;
         // `resolve` collapses "", "/" and "." to the root, so this also catches
         // an attempt to delete the whole store by passing an empty path.
@@ -399,7 +355,7 @@ impl FileStore for LocalFileStore {
         Ok(true)
     }
 
-    async fn rename(&self, from: &str, to: &str) -> Result<()> {
+    async fn rename(&self, from: &StorePath, to: &StorePath) -> Result<()> {
         let src = self.resolve_entry(from)?;
         let dst = self.resolve_for_write(to)?;
         if src == self.root || dst == self.root {
@@ -445,7 +401,7 @@ impl FileStore for LocalFileStore {
         self.root.join(".git").exists()
     }
 
-    fn local_path(&self, rel: &str) -> Result<Option<PathBuf>> {
+    fn local_path(&self, rel: &StorePath) -> Result<Option<PathBuf>> {
         // A local store is all local path; `resolve` applies the same traversal
         // sandboxing the byte-level methods get.
         self.resolve(rel).map(Some)
@@ -457,7 +413,7 @@ impl FileStore for LocalFileStore {
     ///
     /// Follows symlinks, as [`read`](FileStore::read) does: what a caller asks
     /// about is the file they would read.
-    async fn stat(&self, path: &str) -> Result<Option<FileStat>> {
+    async fn stat(&self, path: &StorePath) -> Result<Option<FileStat>> {
         let abs = self.resolve(path)?;
         let meta = match tokio::fs::metadata(&abs).await {
             Ok(meta) => meta,
@@ -484,7 +440,7 @@ impl FileStore for LocalFileStore {
 
     /// The open file itself, seeked and limited to the range: nothing is read
     /// until the stream is.
-    async fn open_read(&self, path: &str, range: Option<Range<u64>>) -> Result<BoxAsyncRead> {
+    async fn open_read(&self, path: &StorePath, range: Option<Range<u64>>) -> Result<BoxAsyncRead> {
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
         let abs = self.resolve(path)?;
         let mut file = self.io(tokio::fs::File::open(&abs).await, path, "opening")?;
@@ -498,7 +454,7 @@ impl FileStore for LocalFileStore {
         let Some(range) = range else {
             return Ok(Box::new(file));
         };
-        check_range(&range, size.len(), path)?;
+        check_range(&range, size.len(), path.as_str())?;
         self.io(
             file.seek(std::io::SeekFrom::Start(range.start)).await,
             path,
@@ -508,7 +464,7 @@ impl FileStore for LocalFileStore {
     }
 
     /// The file opened for appending, created (with its parents) if missing.
-    async fn open_append<'a>(&'a self, path: &str) -> Result<BoxAsyncWrite<'a>> {
+    async fn open_append<'a>(&'a self, path: &StorePath) -> Result<BoxAsyncWrite<'a>> {
         let abs = self.resolve_for_write(path)?;
         if abs == self.root {
             return Err(Error::invalid(format!(
@@ -533,7 +489,7 @@ impl FileStore for LocalFileStore {
     /// Streamed into a temporary file beside the target and renamed over it,
     /// so the target is the whole join or untouched: every part is checked
     /// before a byte is copied, and a failure part-way removes the temporary.
-    async fn concat(&self, parts: &[String], to: &str) -> Result<u64> {
+    async fn concat(&self, parts: &[StorePath], to: &StorePath) -> Result<u64> {
         let target = self.resolve_for_write(to)?;
         if target == self.root {
             return Err(Error::invalid(format!(
@@ -602,7 +558,7 @@ impl FileStore for LocalFileStore {
         Ok(total)
     }
 
-    async fn get_meta(&self, path: &str) -> Result<FileMeta> {
+    async fn get_meta(&self, path: &StorePath) -> Result<FileMeta> {
         let abs = self.resolve(path)?;
         match crate::xattr::get(&abs, META_ATTR).await? {
             Some(bytes) => serde_json::from_slice(&bytes)
@@ -612,7 +568,7 @@ impl FileStore for LocalFileStore {
         }
     }
 
-    async fn set_meta(&self, path: &str, meta: &FileMeta) -> Result<()> {
+    async fn set_meta(&self, path: &StorePath, meta: &FileMeta) -> Result<()> {
         // The target file must exist before it can carry metadata.
         let abs = self.resolve_for_write(path)?;
         if !tokio::fs::try_exists(&abs)
@@ -761,6 +717,7 @@ mod operation_tests {
 #[cfg(all(test, unix))]
 mod git_dir_tests {
     use super::*;
+    use crate::in_git_dir;
 
     /// Security review #31: the `.git` rule is applied to where a path lands,
     /// not only to how it is spelled. A symbolic link in the working tree that
@@ -778,14 +735,21 @@ mod git_dir_tests {
 
         for path in ["innocent/config", "innocent/hooks/pre-commit", "settings"] {
             let err = store
-                .write(path, Bytes::from_static(b"[core]\nfsmonitor = evil\n"))
+                .write(
+                    &StorePath::parse(path).unwrap(),
+                    Bytes::from_static(b"[core]\nfsmonitor = evil\n"),
+                )
                 .await
                 .expect_err(path)
                 .to_string();
             assert!(err.contains("`.git`"), "{path}: {err}");
         }
         for path in ["innocent/config", "settings"] {
-            let err = store.read(path).await.expect_err(path).to_string();
+            let err = store
+                .read(&StorePath::parse(path).unwrap())
+                .await
+                .expect_err(path)
+                .to_string();
             assert!(err.contains("`.git`"), "{path}: {err}");
         }
         assert_eq!(
@@ -801,10 +765,19 @@ mod git_dir_tests {
         assert!(!in_git_dir("é~1/x"));
         // A plain file still reads and writes.
         store
-            .write("notes.txt", Bytes::from_static(b"hi"))
+            .write(
+                &StorePath::from_static("notes.txt"),
+                Bytes::from_static(b"hi"),
+            )
             .await
             .unwrap();
-        assert_eq!(&store.read("notes.txt").await.unwrap()[..], b"hi");
+        assert_eq!(
+            &store
+                .read(&StorePath::from_static("notes.txt"))
+                .await
+                .unwrap()[..],
+            b"hi"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -7,7 +7,7 @@
 //! real WebSocket client to it.
 //!
 //! **No vendor and no token** (decision 7). The provider is
-//! `sc_agent::testing::FakeProvider` behind the [`ProviderConnector`] seam, so
+//! `sc_agent::testing::FakeProvider` behind the [`sc_agent::ProviderConnector`] seam, so
 //! everything under test — the loop, the tool dispatch, the run rows, the socket
 //! — is the production code, and only what answers is scripted.
 //!
@@ -24,26 +24,26 @@
 //!    `aborted`, and what the agent had already done is still in its context.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::{Socket, send};
+use sc_types::Role;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::Router;
 use axum::http::{HeaderValue, StatusCode, header};
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use sc_agent::testing::{FakeProvider, Reply};
 use sc_agent::{Agent, EnabledTrait, RunState};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, SessionStore, User};
+use sc_auth::{SessionStore, User};
 use sc_catalog::{Catalog, DataField};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_llm::{ConnectedModel, LlmProvider};
 use sc_server::{
-    AGENT_CHAT_ROUTE, AgentServices, AppMounts, ProviderConnector, SESSION_COOKIE, ServerConfig,
-    admin_handlers, build_router_with_apps,
+    AGENT_CHAT_ROUTE, AgentServices, AppMounts, SESSION_COOKIE, ServerConfig, admin_handlers,
+    build_router_with_apps,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -53,19 +53,15 @@ use uuid::Uuid;
 /// How long a test waits for an event that should arrive promptly.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// The socket type the client half works over.
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-
 // --- the scripted provider, behind the production seam -----------------------
 
-/// A [`ProviderConnector`] that hands out one scripted provider, whatever agent
+/// A [`sc_agent::ProviderConnector`] that hands out one scripted provider, whatever agent
 /// asks. The seam decision 7 exists for: the loop, the traits and the socket are
 /// the real ones, and only the model is a script.
 struct Scripted(Arc<FakeProvider>);
 
 #[async_trait]
-impl ProviderConnector for Scripted {
+impl sc_agent::ProviderConnector for Scripted {
     async fn connect(
         &self,
         _catalog: &Catalog,
@@ -84,7 +80,7 @@ impl ProviderConnector for Scripted {
 struct Unreachable;
 
 #[async_trait]
-impl ProviderConnector for Unreachable {
+impl sc_agent::ProviderConnector for Unreachable {
     async fn connect(
         &self,
         _catalog: &Catalog,
@@ -134,23 +130,11 @@ impl Server {
 
 /// A server whose agents connect through `providers`, with `books` in the
 /// catalog and `agent` stored.
-async fn serve_with(agent: Agent, providers: Arc<dyn ProviderConnector>) -> Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+async fn serve_with(
+    agent: Agent,
+    providers: Arc<dyn sc_agent::ProviderConnector>,
+) -> Result<Server> {
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_llm::bootstrap_llm_providers(&catalog).await?;
     sc_llm::save_llm_provider(
@@ -206,11 +190,11 @@ async fn serve_with(agent: Agent, providers: Arc<dyn ProviderConnector>) -> Resu
     Ok(Server {
         addr,
         admin: sessions
-            .login(User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap())
+            .login(User::new(Uuid::new_v4(), Role::ADMIN))
             .await
             .unwrap(),
         public: sessions
-            .login(User::new(Uuid::new_v4(), ROLE_PUBLIC).unwrap())
+            .login(User::new(Uuid::new_v4(), Role::PUBLIC))
             .await
             .unwrap(),
         catalog,
@@ -230,13 +214,6 @@ fn reader() -> Agent {
 }
 
 // --- socket helpers ----------------------------------------------------------
-
-async fn send(socket: &mut Socket, message: Value) {
-    socket
-        .send(Message::text(message.to_string()))
-        .await
-        .expect("send");
-}
 
 /// The next event, or a failed test.
 async fn next_event(socket: &mut Socket) -> Value {
@@ -719,7 +696,7 @@ async fn a_server_without_agents_closes_the_socket_with_the_reason() -> Result<(
         let _ = axum::serve(listener, router).await;
     });
     let admin = sessions
-        .login(User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap())
+        .login(User::new(Uuid::new_v4(), Role::ADMIN))
         .await
         .unwrap();
 
@@ -758,7 +735,7 @@ async fn a_server_without_agents_closes_the_socket_with_the_reason() -> Result<(
 #[tokio::test]
 async fn the_chat_and_the_admin_api_share_one_trait_registry() -> Result<()> {
     let server = serve_with(reader(), Arc::new(Unreachable)).await?;
-    let services = AgentServices::new(Arc::new(sc_core_traits::builtin_traits()?));
+    let services = AgentServices::new(Arc::new(sc_agent_builtins::builtin_traits()?));
     // The agent saved through the API validates against the built-in set, which
     // is what `install_agents` assembled; nothing else could have saved it.
     let stored = sc_agent::load_agent_by_name(&server.catalog, "librarian")
@@ -810,7 +787,7 @@ async fn ending_the_session_closes_the_chat_socket() -> Result<()> {
     assert!(server.connect(Some(&server.admin)).await.is_err());
 
     // A second admin's socket closes when all of their sessions are ended.
-    let other = User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap();
+    let other = User::new(Uuid::new_v4(), Role::ADMIN);
     let token = server.sessions.login(other.clone()).await?;
     let mut socket = server.connect(Some(&token)).await.expect("connect");
     send(
@@ -818,7 +795,7 @@ async fn ending_the_session_closes_the_chat_socket() -> Result<()> {
         json!({ "type": "start", "agent": "librarian" }),
     )
     .await;
-    server.sessions.end_user_sessions(other.id).await?;
+    server.sessions.end_user_sessions(other.id()).await?;
     let reason = closed_with(&mut socket).await;
     assert!(reason.contains("session ended"), "{reason}");
     Ok(())

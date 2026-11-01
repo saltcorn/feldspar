@@ -18,6 +18,7 @@ use sc_catalog::{Catalog, DataField, Table};
 use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Value};
+use sc_types::Role;
 use sc_types::{Attrs, BasicType, TypeRef};
 use serde_json::Value as Json;
 
@@ -258,17 +259,12 @@ fn agent_from_row(row: &Row) -> Result<Agent> {
     // valid one would quietly change who may talk to the agent.
     let min_role = match row.get(COL_MIN_ROLE) {
         Some(Value::Null) | None => None,
-        Some(Value::Int(i)) => Some(
-            u8::try_from(*i)
-                .ok()
-                .filter(|r| (1..=100).contains(r))
-                .ok_or_else(|| {
-                    Error::invalid(format!(
-                        "agent `{name}`: {AGENTS_TABLE}.{COL_MIN_ROLE} should be a role \
+        Some(Value::Int(i)) => Some(Role::try_from(*i).ok().ok_or_else(|| {
+            Error::invalid(format!(
+                "agent `{name}`: {AGENTS_TABLE}.{COL_MIN_ROLE} should be a role \
                          between 1 and 100, got {i}"
-                    ))
-                })?,
-        ),
+            ))
+        })?),
         other => return Err(bad_column(COL_MIN_ROLE, "an integer role", other)),
     };
 
@@ -365,7 +361,7 @@ async fn load_one(catalog: &Catalog, filter: Expr) -> Result<Option<Agent>> {
 /// Run a statement that returns no rows of interest.
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()
@@ -376,7 +372,7 @@ async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
 /// Run a select and collect its rows.
 async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

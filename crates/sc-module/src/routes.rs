@@ -32,12 +32,12 @@
 
 use sc_action::TriggerDispatcher;
 use sc_api::code_host::{TableHost, TriggerRunHost, schema_snapshot};
-use sc_catalog::Catalog;
+use sc_catalog::{Catalog, Principal};
 use sc_error::{Error, Result};
 use sc_expr::{CodeHosts, TriggerHost};
 use serde_json::{Map, Value as Json, json};
 
-use crate::host::{CallHosts, ModuleHost, RouteManifest, SystemAsks};
+use crate::host::{Ask, AskSurface, Asks, CallHosts, ModuleHost, RouteManifest};
 use crate::module::ModuleLanguage;
 use crate::modules::{LoadedModule, ModuleSet};
 use crate::webhooks::{WebhookResponse, hook_segment, request_json, response_from};
@@ -151,14 +151,6 @@ pub fn allowed_methods(routes: &[RouteManifest], path: &str) -> Vec<String> {
     methods
 }
 
-/// Who is calling a route: the role, and the user's row (its columns, `id` and
-/// `role` among them) when somebody is signed in.
-#[derive(Debug, Clone)]
-pub struct RouteCaller {
-    pub role: u8,
-    pub user: Option<Json>,
-}
-
 /// One request to a route, as it arrived — the [`crate::WebhookRequest`] shape
 /// (`rest` is the path after the module's segment), plus where it came from.
 #[derive(Debug, Clone, Default)]
@@ -171,7 +163,7 @@ pub struct RouteRequest {
 }
 
 /// `req.user` as v1 has it: the user's columns, with the role as `role_id`.
-fn v1_user(caller: &RouteCaller) -> Json {
+fn v1_user(caller: &Principal) -> Json {
     let Some(Json::Object(fields)) = &caller.user else {
         return Json::Null;
     };
@@ -194,8 +186,8 @@ pub async fn run_route(
     loaded: &LoadedModule,
     matched: &MatchedRoute<'_>,
     request: RouteRequest,
-    caller: &RouteCaller,
-    system: &dyn SystemAsks,
+    caller: &Principal,
+    system: &dyn Ask,
     installation: Json,
 ) -> Result<WebhookResponse> {
     let module = loaded.module.name.as_str();
@@ -212,7 +204,7 @@ pub async fn run_route(
             ..CodeHosts::default()
         },
         schema: schema.as_deref(),
-        system: Some(system),
+        asks: Asks::default().with(AskSurface::System, system),
         ..CallHosts::default()
     };
     let mut arrived = request_json(&request.request);
@@ -246,6 +238,7 @@ pub async fn run_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sc_types::Role;
 
     fn route(method: &str, url: &str) -> RouteManifest {
         RouteManifest {
@@ -285,16 +278,13 @@ mod tests {
 
     #[test]
     fn req_user_is_the_row_with_v1s_role_id() {
-        let caller = RouteCaller {
-            role: 1,
-            user: Some(json!({ "id": "u1", "email": "a@b.c", "role": 1 })),
-        };
+        let caller = Principal::new(
+            Role::ADMIN,
+            Some(json!({ "id": "u1", "email": "a@b.c", "role": 1 })),
+        );
         assert_eq!(v1_user(&caller)["role_id"], json!(1));
         assert_eq!(v1_user(&caller)["email"], json!("a@b.c"));
-        let public = RouteCaller {
-            role: 100,
-            user: None,
-        };
+        let public = Principal::anonymous(Role::PUBLIC);
         assert_eq!(v1_user(&public), Json::Null);
     }
 }

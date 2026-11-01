@@ -14,6 +14,7 @@
 //! does not. Everything else here runs unconditionally.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -22,7 +23,7 @@ use sc_app::{
     app_source_from_config, build_application, emit_app_runtime, save_application, scaffold_app,
     update_app_client,
 };
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -80,7 +81,7 @@ fn todo_app() -> Application {
             .with("store", "apps")
             .with("project", "todo"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"))
 }
@@ -94,7 +95,7 @@ async fn the_server_writes_a_complete_project_against_the_apps_own_tables() -> s
     // invented: the generated documentation names them, because `feldspar auth
     // token --role NAME` takes a name and the project has no other way to know.
     sc_auth::bootstrap(&cat).await?;
-    sc_auth::save_role(&cat, &sc_auth::Role::new(40, "Editor")).await?;
+    sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(40), "Editor")).await?;
     let tmp = TempDir::new("write")?;
     cat.connect_file_store(Arc::new(LocalFileStore::new("apps", tmp.path())?))?;
     // What the boot path does with `--base-domain`: the generated documentation
@@ -395,8 +396,8 @@ async fn the_generated_runtime_is_rewritten_on_build_and_nothing_else_is() -> sc
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     cat.reload().await?;
     // Connected and serving its row API, which is what gives it hooks.
-    app.tables.push(TableId("notes".to_owned()));
-    app.api_tables.push(TableId("notes".to_owned()));
+    app.tables.push("notes".to_owned());
+    app.api_tables.push("notes".to_owned());
 
     let source = app_source_from_config(&app.framework)?;
     let written = emit_app_runtime(&cat, &app, &source, None).await?;

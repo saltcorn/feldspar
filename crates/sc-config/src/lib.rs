@@ -37,6 +37,13 @@
 //! listener and the rustls stack are. This crate says what was configured; it
 //! does not serve anything.
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
+    sc_catalog::Unchecked::system("sc-config: configuration and ACME state");
+
 pub mod acme;
 pub mod authentication;
 pub mod defs;
@@ -52,11 +59,11 @@ pub use authentication::{
     DEFAULT_SESSION_TTL_HOURS, FIRST_USER_TOKEN, FIRST_USER_TOKEN_ENV, MAX_SESSION_TTL_HOURS,
     OAUTH_PRESETS, OAUTH_PROVIDERS, OAuthPreset, OAuthProvider, PERSISTENT_SESSION_COOKIE,
     SECOND_FACTOR_FOR_IDENTITY_PROVIDERS, SECOND_FACTOR_ISSUER, SESSION_TTL_HOURS,
-    SHARED_SESSION_COOKIE, authentication_section, first_user_tokens,
-    first_user_tokens_with, oauth_preset, oauth_provider, oauth_provider_records,
-    oauth_provider_spec, oauth_providers, persistent_session_cookie_from,
-    save_oauth_provider_records, second_factor_for_identity_providers,
-    second_factor_for_identity_providers_from, second_factor_issuer, session_policy, session_policy_from, session_ttl_hours,
+    SHARED_SESSION_COOKIE, authentication_section, first_user_tokens, first_user_tokens_with,
+    oauth_preset, oauth_provider, oauth_provider_records, oauth_provider_spec, oauth_providers,
+    persistent_session_cookie_from, save_oauth_provider_records,
+    second_factor_for_identity_providers, second_factor_for_identity_providers_from,
+    second_factor_issuer, session_policy, session_policy_from, session_ttl_hours,
     session_ttl_hours_from, shared_session_cookie, shared_session_cookie_from,
 };
 pub use defs::{

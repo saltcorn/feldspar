@@ -22,13 +22,14 @@
 //!   without a filter and row access is sent nothing.
 //! - **L3.9**: the counters say what was checked, sent and withheld, and why.
 
+use sc_types::Role;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sc_api::rows;
-use sc_auth::{ROLE_ADMIN, User};
+use sc_access::rows;
+use sc_auth::User;
 use sc_catalog::{
-    Catalog, DataField, DataFieldKind, FieldId, LIVE_EVENTS, TableEvents, TableId, TableMeta,
+    Catalog, DataField, DataFieldKind, FieldId, LIVE_EVENTS, TableEvents, TableMeta,
     bootstrap_table_meta, save_table_meta,
 };
 use sc_db::DatabaseDriver;
@@ -50,28 +51,28 @@ use uuid::Uuid;
 
 /// The role both users hold: below every table's read floor (admin), so what
 /// they may read is what the ownership formula grants.
-const MEMBER: u8 = 40;
+const MEMBER: Role = Role::of(40);
 
 fn alice() -> User {
-    User::new(Uuid::from_u128(0xa11ce), MEMBER).unwrap()
+    User::new(Uuid::from_u128(0xa11ce), MEMBER)
 }
 
 fn bob() -> User {
-    User::new(Uuid::from_u128(0xb0b), MEMBER).unwrap()
+    User::new(Uuid::from_u128(0xb0b), MEMBER)
 }
 
 fn admin() -> User {
-    User::new(Uuid::from_u128(0xad), ROLE_ADMIN).unwrap()
+    User::new(Uuid::from_u128(0xad), Role::ADMIN)
 }
 
 fn id(user: &User) -> String {
-    user.id.hyphenated().to_string()
+    user.id().hyphenated().to_string()
 }
 
 fn key(name: &str, target: &str) -> DataField {
     DataField {
         kind: DataFieldKind::Key {
-            target_table: TableId(target.to_owned()),
+            target_table: target.to_owned(),
             target_field: FieldId("id".to_owned()),
             summary_field: None,
         },
@@ -133,7 +134,7 @@ async fn fixture(formula: &str) -> Result<Fixture> {
         "the formula is live: {:?}",
         cards.ownership_error
     );
-    assert_eq!(cards.access.min_role_read, ROLE_ADMIN, "admin-only floor");
+    assert_eq!(cards.access.min_role_read, Role::ADMIN, "admin-only floor");
 
     let mut registry = StreamRegistry::new();
     registry.register(Arc::new(TableChanges) as Arc<dyn StreamProvider>)?;
@@ -184,7 +185,7 @@ impl Fixture {
             .hub
             .connect(ConnectionInfo {
                 app: "boards".to_owned(),
-                user: Some(user.id),
+                user: Some(user.id()),
                 session: None,
             })
             .expect("connects");
@@ -206,21 +207,39 @@ impl Fixture {
 
     async fn insert(&self, table: &str, row: Json) {
         let table = self.catalog.require(table).unwrap();
-        rows::create_row(&self.catalog, &table, &row).await.unwrap();
+        rows::create_row(
+            &self.catalog,
+            &table,
+            &row,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await
+        .unwrap();
     }
 
     async fn update(&self, table: &str, key: i64, changes: Json) {
         let table = self.catalog.require(table).unwrap();
-        rows::update_row(&self.catalog, &table, &key.to_string(), &changes)
-            .await
-            .unwrap();
+        rows::update_row(
+            &self.catalog,
+            &table,
+            &key.to_string(),
+            &changes,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await
+        .unwrap();
     }
 
     async fn delete(&self, table: &str, key: i64) {
         let table = self.catalog.require(table).unwrap();
-        rows::delete_row(&self.catalog, &table, &key.to_string())
-            .await
-            .unwrap();
+        rows::delete_row(
+            &self.catalog,
+            &table,
+            &key.to_string(),
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await
+        .unwrap();
     }
 
     fn counts(&self) -> ChangeCounts {
@@ -505,7 +524,7 @@ async fn a_users_stream_is_typed_and_sent_without_the_password_hash() -> Result<
     let (connection, mut queue) = hub
         .connect(ConnectionInfo {
             app: "people".to_owned(),
-            user: Some(admin().id),
+            user: Some(admin().id()),
             session: None,
         })
         .expect("connects");
@@ -526,12 +545,20 @@ async fn a_users_stream_is_typed_and_sent_without_the_password_hash() -> Result<
             "id": Uuid::new_v4().to_string(),
             "email": "carol@example.com",
             "password_hash": "not-for-pages",
-            "role": sc_auth::ROLE_PUBLIC,
+            "role": Role::PUBLIC,
         }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let id = created["id"].as_str().expect("a uuid key").to_owned();
-    rows::update_row(&catalog, &users, &id, &json!({ "email": "c@example.com" })).await?;
+    rows::update_row(
+        &catalog,
+        &users,
+        &id,
+        &json!({ "email": "c@example.com" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     for op in ["insert", "update"] {
         let delivery = tokio::time::timeout(Duration::from_secs(10), queue.recv())
             .await

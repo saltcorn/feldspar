@@ -64,16 +64,12 @@ pub const PREVIEW_COOKIE: &str = "sc_preview";
 pub const VISITOR_COOKIE: &str = "sc_visitor";
 /// How long the visitor cookie lasts, in days.
 pub const VISITOR_COOKIE_DAYS: i64 = 365;
-/// Name of the CSRF double-submit cookie (readable by the SPA), and the header a
-/// mutating request must echo it in.
-///
-/// Both come from `sc-api`, which is where the wire contract is stated: the
-/// server enforces the check here and the generated TypeScript client satisfies
-/// it, and a second spelling of either name is exactly how those two stop
-/// agreeing.
-pub use sc_api::auth::{
-    CLIENT_KIND_HEADER, CSRF_COOKIE, CSRF_HEADER, NATIVE_CLIENT, SECURE_CSRF_COOKIE, csrf_cookie,
-};
+// The CSRF double-submit cookie (readable by the SPA), and the header a
+// mutating request must echo it in, are `sc_api::auth`'s, which is where the
+// wire contract is stated: the server enforces the check here and the generated
+// TypeScript client satisfies it, and a second spelling of either name is
+// exactly how those two stop agreeing.
+use sc_api::auth::{CLIENT_KIND_HEADER, CSRF_HEADER, NATIVE_CLIENT, csrf_cookie};
 
 /// The strict Content-Security-Policy served with every response. No
 /// `unsafe-inline` **script**: executable code loads only from the app's own
@@ -487,35 +483,9 @@ fn authority(host_and_port: &str, scheme: Option<&str>) -> String {
 /// port at the first `:`. `blog.example.com:@evil.com` would route to `blog`
 /// while a link built from it lands a browser on `evil.com`, carrying its token.
 pub(crate) fn is_valid_host_header(host: &str) -> bool {
-    let digits =
-        |port: &str| (1..=5).contains(&port.len()) && port.bytes().all(|b| b.is_ascii_digit());
-    let (name, port) = if let Some(rest) = host.strip_prefix('[') {
-        let Some((literal, after)) = rest.split_once(']') else {
-            return false;
-        };
-        if literal.is_empty()
-            || !literal
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
-        {
-            return false;
-        }
-        return match after {
-            "" => true,
-            _ => after.strip_prefix(':').is_some_and(digits),
-        };
-    } else {
-        match host.split_once(':') {
-            Some((name, port)) => (name, Some(port)),
-            None => (host, None),
-        }
-    };
-    !name.is_empty()
-        && name.len() <= 253
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
-        && port.is_none_or(digits)
+    // The one rule, shared with what a `TrustedHost` holds (TODO-code-quality
+    // Q4.2).
+    sc_catalog::is_valid_host(host)
 }
 
 /// Refuse a request whose `Host` header is not [`is_valid_host_header`] with a

@@ -243,9 +243,9 @@ the workflow engine's job, not an action's. Every action's configuration value t
 the event is a **formula** in the same `sc-expr` language under decision 7's scope rule — so one
 language spans ownership, calculated fields, only-if and action configuration.
 
-**Where the built-in actions live — a new crate, `sc-core-actions` (layer 9).**
+**Where the built-in actions live — a new crate, `sc-action-builtins` (layer 9).**
 
-- **`sc-core-actions`** holds **every** core action: `insert_row`, `update_rows`, `delete_rows`,
+- **`sc-action-builtins`** holds **every** core action: `insert_row`, `update_rows`, `delete_rows`,
   `fetch` and `run_js_code`. `builtin_actions()` there is the one constructor a server calls.
   It sits above `sc-api` because three of them must write through the `rows` layer — that is the
   whole point (coercion, File rules, and Phase 4's events) — and `fetch` joins them because "which
@@ -376,7 +376,7 @@ question.
   local listener with its response body returned as the action's result (and a non-2xx surfaced
   as an error); `run_js_code` returning a computed value plus a sandbox assertion that it cannot
   reach the host.
-  **Done for the three row actions** (`sc-core-actions/tests/row_actions.rs`, 9 integration tests on real
+  **Done for the three row actions** (`sc-action-builtins/tests/row_actions.rs`, 9 integration tests on real
   Postgres with the real V8 engine): the field values computed from `row`/`old`/`user` (and `old`
   on an *insert* reading null, not erroring); a value the column cannot hold refused by the `rows`
   layer *naming the field*, with nothing written; the `where` asserted twice over one case as
@@ -388,7 +388,7 @@ question.
   the fix; the same configuration valid on an `insert` trigger and refused on a `login` one; and an
   RLS-forced table where the action inserts and deletes rows *it does not own* while an outsider
   cannot even see them.
-  **Done for `fetch`** (`sc-core-actions/tests/fetch_action.rs`, 6 integration tests against a real socket —
+  **Done for `fetch`** (`sc-action-builtins/tests/fetch_action.rs`, 6 integration tests against a real socket —
   a one-shot listener on port 0 that hands the request it read back to the test — plus 6 unit tests
   for the configuration parsers): the default POST of the event envelope with its headers, asserted
   on the *bytes* (start line, content type, custom header, JSON body) with the parsed response
@@ -398,7 +398,7 @@ question.
   a 250 ms timeout in well under the default 10 s; and 8 save-time refusals (bad URL, `file:`
   scheme, unoffered method, illegal header, over-long timeout, a body on a `GET`, and two body
   formulas that do not resolve) measured against one configuration that validates.
-  **Done for `run_js_code`** (`sc-core-actions/tests/run_js_code.rs`, 7 integration tests against the
+  **Done for `run_js_code`** (`sc-action-builtins/tests/run_js_code.rs`, 7 integration tests against the
   real V8 engine and a real catalog, plus 7 engine-level tests in `sc-expr` and 2 unit tests for the
   action's scope): a body of statements, a loop and a `return` computing an object from
   `row`/`user`, with a scalar and a `return`-less body coming back as themselves; `old === null` on
@@ -431,7 +431,7 @@ question.
     handle at every match.
   - `emit` takes `&Catalog` so the dispatcher does not hold one — the catalog holds the
     dispatcher, and a handle in each direction would be a cycle that never drops.
-- [x] **The caller travels with every write.** `CallerContext` (role + user + **chain**) is built
+- [x] **The caller travels with every write.** `Principal` (role + user + **chain**) is built
   for *every* row write, not only for RLS tables, so an event knows who caused it; RLS keeps
   using it for its GUCs, unchanged. Three consequences:
   - It moved out of `rls.rs` into `caller.rs`, because it is no longer about RLS: it answers
@@ -686,14 +686,14 @@ question.
   and its fail-closed load, the fire path with `observes` as the choke point, the `only_if`
   scope, the recursion bound, the scheduler, how an application reaches a trigger, and what
   `TriggerBody::Workflow` will still need (durability — which is why it is a milestone and not a
-  fourth match arm). The crate map in §2 gains `sc-core-actions` (it was missing entirely) and
+  fourth match arm). The crate map in §2 gains `sc-action-builtins` (it was missing entirely) and
   `sc-action`'s line now says what the crate holds; §9's `_sc_triggers` row describes its real
   columns; §17's "since superseded" note lists it.
 - [x] `docs/tutorial-triggers.md` in the established style: an audit trail from a table trigger
   with an `only_if`, a `none` trigger with a role floor exposed on the app and called from its
   own JavaScript, and a daily sweep at 03:30 UTC — cross-linked from the ownership tutorial, with
   the hygiene test extended (the link, and that all three kinds are still covered).
-  **And executed by a test**: `sc-core-actions/tests/tutorial_triggers.rs` copies the formulas
+  **And executed by a test**: `sc-action-builtins/tests/tutorial_triggers.rs` copies the formulas
   out of the document, puts them through `save_trigger` — the validator the Save button runs —
   and fires them against a real database. Writing it caught one thing to fix in the document
   rather than in the reader's afternoon: a formula has **no `new`**, so `new Date().toISOString()`

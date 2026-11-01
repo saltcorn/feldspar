@@ -397,17 +397,20 @@ async fn features_are_selected_by_condition_shape_and_distance() -> Result<()> {
     })
     .await?
     .expect_err("no such column");
+    let e = e.message();
     assert!(
         e.starts_with("the selection's condition does not work"),
         "{e}"
     );
     let e = select(near(0.0)).await?.expect_err("no distance");
+    let e = e.message();
     assert!(e.contains("positive"), "{e}");
     let e = select(SelectBy::Shape {
         geometry: json!({ "type": "Point", "coordinates": [0, 0] }),
     })
     .await?
     .expect_err("not a polygon");
+    let e = e.message();
     assert!(e.contains("polygon"), "{e}");
     Ok(())
 }
@@ -425,7 +428,7 @@ async fn rows_of(cat: &sc_catalog::Catalog, def: &DatasetDef) -> Result<Vec<Vec<
     Ok(page
         .rows
         .iter()
-        .map(|r| r.iter().map(sc_dataset::value_json).collect())
+        .map(|r| r.iter().map(sc_types::value_to_analysis_json).collect())
         .collect())
 }
 
@@ -554,6 +557,7 @@ fn layer_arg(layer: &MapLayer) -> Json {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_toolbox_makes_datasets_and_layers() -> Result<()> {
     let Some((cat, _db, sites_id, regions_id)) = sites().await? else {
         return Ok(());

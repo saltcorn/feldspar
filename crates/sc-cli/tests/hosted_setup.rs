@@ -5,6 +5,7 @@
 //! Driven through the **real binary** against a **real Postgres**: what each
 //! claims is about the rows another process — the running server — reads.
 
+use sc_types::Role;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -263,9 +264,21 @@ async fn a_routes_only_token_reaches_module_routes_as_a_non_admin() -> sc_error:
     let db = TestDb::new().await?;
     let url = db.url();
     let catalog = connect_catalog(&DbConfig::from_url(&url)).await?;
-    sc_auth::create_user(&catalog, "admin@example.com", "a-long-password", 1).await?;
-    sc_auth::save_role(&catalog, &sc_auth::Role::new(80, "Monitor")).await?;
-    sc_auth::create_user(&catalog, "monitor@example.com", "a-long-password", 80).await?;
+    sc_auth::create_user(
+        &catalog,
+        "admin@example.com",
+        "a-long-password",
+        Role::ADMIN,
+    )
+    .await?;
+    sc_auth::save_role(&catalog, &sc_auth::RoleDef::new(Role::of(80), "Monitor")).await?;
+    sc_auth::create_user(
+        &catalog,
+        "monitor@example.com",
+        "a-long-password",
+        Role::of(80),
+    )
+    .await?;
 
     // An ordinary token for a non-admin is refused at the mint, as before…
     let (ok, _, stderr) = feldspar(
@@ -306,7 +319,7 @@ async fn a_routes_only_token_reaches_module_routes_as_a_non_admin() -> sc_error:
 
     // A module route accepts it, as the role-80 user; the MCP server does not.
     let caller = sc_auth::authenticate_route_token(&catalog, secret).await?;
-    assert_eq!(caller.user.role, 80);
+    assert_eq!(caller.user.role(), Role::of(80));
     let refused = sc_auth::authenticate_api_token(&catalog, secret)
         .await
         .unwrap_err()

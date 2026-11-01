@@ -35,19 +35,19 @@
 //! stream has its generated client rewritten, since the element type it is
 //! typed from may have changed.
 
+use sc_types::ArgsExt;
 use std::sync::Arc;
 
 use sc_api::mcp::{
     AdminTool, Area, GRANT_ACCESS_CHANGES, GRANT_CREATE, GRANT_DROP, GRANT_EDIT, ToolContext,
-    arguments, optional_bool, optional_role, optional_string, require_grant, setting_json,
+    arguments, optional_role, require_grant, setting_json,
 };
 use sc_api::schema_edit::Grants;
-use sc_catalog::{AdminCall, Catalog};
+use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_stream::{Stream, StreamRegistry};
 use serde_json::{Map, Value as Json, json};
 
-use super::required_str;
 use crate::{Application, catalog_stream_registry, list_applications};
 
 /// Lists, creates, changes and deletes the instance's streams.
@@ -251,12 +251,11 @@ async fn edit_streams(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Re
 
     let mut notes = Vec::new();
     let host = ctx.catalog.admin_host();
-    let user = ctx.user.map(|u| u.id);
+    let user = ctx.user.map(|u| u.id());
     for plan in &planned {
         match &host {
             Some(host) => {
-                host.call_admin(AdminCall::new("saveStream", save_body(plan)).user(user))
-                    .await?;
+                host.save_stream(user, save_body(plan)).await?;
             }
             None => sc_stream::save_stream(ctx.catalog, &registry, &plan.stream).await?,
         }
@@ -264,12 +263,7 @@ async fn edit_streams(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Re
     for stream in &doomed {
         match &host {
             Some(host) => {
-                host.call_admin(
-                    AdminCall::new("deleteStream", Json::Null)
-                        .param("id", stream.id.0.to_string())
-                        .user(user),
-                )
-                .await?;
+                host.delete_stream(user, stream.id.0).await?;
             }
             None => {
                 sc_stream::delete_stream(ctx.catalog, stream.id, &[]).await?;
@@ -328,12 +322,14 @@ async fn plan_save(
     grants: &Grants,
     item: &Map<String, Json>,
 ) -> Result<Planned> {
-    let name = required_str(item, ARG_NAME)?;
+    let name = item.required_string(ARG_NAME)?;
     let stored = match has_table {
         true => sc_stream::load_stream_by_name(catalog, &name).await?,
         false => None,
     };
-    let provider = optional_string(item, ARG_PROVIDER)?.map(|p| p.trim().to_owned());
+    let provider = item
+        .optional_string(ARG_PROVIDER)?
+        .map(|p| p.trim().to_owned());
     let created = stored.is_none();
     let mut stream = match stored {
         Some(stored) => {
@@ -358,7 +354,7 @@ async fn plan_save(
         stream.provider = provider;
         stream.configuration.clear();
     }
-    if let Some(description) = optional_string(item, ARG_DESCRIPTION)? {
+    if let Some(description) = item.optional_string(ARG_DESCRIPTION)? {
         stream.description = description;
     }
     match item.get(ARG_CONFIGURATION) {
@@ -389,7 +385,7 @@ async fn plan_save(
             stream.min_role = role;
         }
     }
-    if let Some(enabled) = optional_bool(item, ARG_ENABLED)? {
+    if let Some(enabled) = item.optional_bool(ARG_ENABLED)? {
         stream.set_enabled(enabled);
     }
     Ok(Planned { stream, created })

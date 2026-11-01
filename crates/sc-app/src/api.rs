@@ -156,7 +156,7 @@ pub fn validate_api_config(app: &Application, api: &ApiConfig) -> Result<()> {
             .tables
             .iter()
             .filter(|t| app.api_tables.contains(t))
-            .map(|t| t.0.clone())
+            .cloned()
             .collect();
         sc_api::validate_custom_queries(&queries, &tables)?;
         settings.remove(sc_api::REST_CFG_QUERIES);
@@ -429,7 +429,7 @@ pub fn validate_static_dirs(app: &Application) -> Result<()> {
 /// catalog is an error rather than a silent omission: it means the app is
 /// misconfigured, and quietly serving a smaller API would hide that.
 pub fn app_tables(app: &Application, cat: &Catalog) -> Result<Vec<Table>> {
-    app.tables.iter().map(|id| cat.require(&id.0)).collect()
+    app.tables.iter().map(|id| cat.require(id)).collect()
 }
 
 /// The connected tables whose **generic row API** the application serves
@@ -444,7 +444,7 @@ pub fn app_api_tables(app: &Application, cat: &Catalog) -> Result<Vec<Table>> {
     app.tables
         .iter()
         .filter(|id| app.api_tables.contains(id))
-        .map(|id| cat.require(&id.0))
+        .map(|id| cat.require(id))
         .collect()
 }
 
@@ -732,7 +732,7 @@ pub fn app_graphql(app: &Application, cat: &Catalog) -> Result<Option<AppGraphql
 /// (§13.2) — so the file describes exactly what a query in this project may name,
 /// and calculated fields are omitted because they are not columns.
 pub fn app_schema_sql(app: &Application, cat: &Catalog) -> Result<String> {
-    let driver = cat.primary();
+    let driver = cat.primary_info();
     let mut sql = String::new();
     for table in app_tables(app, cat)? {
         let change = sc_db::SchemaChange::CreateTable {

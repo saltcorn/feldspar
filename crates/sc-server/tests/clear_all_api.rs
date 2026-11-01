@@ -12,6 +12,8 @@
 //! are dropped too, so it lists `users` alone again afterwards.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -21,13 +23,11 @@ use axum::http::{Request, StatusCode, header};
 use sc_api::admin_endpoints;
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-    default_js_evaluator, install_agents, install_triggers,
+    AppMounts, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
+    install_agents, install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -122,24 +122,7 @@ struct Server {
 }
 
 async fn setup() -> sc_error::Result<Server> {
-    let db = TestDb::new().await?;
-    // Neutralise any `users` table inherited from the template database before
-    // bootstrap introspects, exactly as the other server tests do.
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
@@ -217,6 +200,7 @@ async fn ok(client: &mut Client, method: &str, path: &str, body: Value) -> Value
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> sc_error::Result<()>
 {
     // Clear all resets the logging switches, which another test is checking.
@@ -234,16 +218,16 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
     ok(
         c,
         "POST",
-        &format!("/api/users/{}/credits", admin.id),
+        &format!("/api/users/{}/credits", admin.id()),
         json!({ "amount": "5" }),
     )
     .await;
-    sc_auth::save_role(&server.catalog, &sc_auth::Role::new(60, "Pro")).await?;
+    sc_auth::save_role(&server.catalog, &sc_auth::RoleDef::new(Role::of(60), "Pro")).await?;
     sc_auth::grant_role(
         &server.catalog,
         sc_auth::NewRoleGrant {
-            user_id: admin.id,
-            role: 60,
+            user_id: admin.id(),
+            role: Role::of(60),
             source: "test".into(),
             source_ref: "one".into(),
             starts_at: None,
@@ -369,7 +353,15 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
             sqlite: None,
         },
     };
-    sc_migrate::run_one(server.catalog.primary().as_ref(), &[RECORDED], RECORDED.id).await?;
+    sc_migrate::run_one(
+        server
+            .catalog
+            .primary(sc_catalog::Unchecked::system("test"))
+            .as_ref(),
+        &[RECORDED],
+        RECORDED.id,
+    )
+    .await?;
     server.catalog.reload().await?;
 
     let report = ok(
@@ -382,7 +374,7 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
     assert_eq!(report["warnings"], json!([]), "{report}");
     let migrations = server
         .catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&sc_query::Statement::raw(
             "SELECT id FROM \"_fd_migrations\"",
             Vec::new(),
@@ -428,7 +420,7 @@ async fn clear_all_empties_the_installation_and_removes_only_ticked_stores() -> 
     let roles = sc_auth::list_roles(&server.catalog).await?;
     assert_eq!(
         roles.iter().map(|r| r.role).collect::<Vec<_>>(),
-        vec![sc_auth::ROLE_ADMIN, sc_auth::ROLE_PUBLIC],
+        vec![Role::ADMIN, Role::PUBLIC],
         "only the two built-in roles, seeded again"
     );
 

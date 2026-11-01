@@ -46,8 +46,8 @@ pub fn read_rule_tables(catalog: &Catalog, table: &Table) -> BTreeSet<String> {
             let DataFieldKind::Key { target_table, .. } = &field.kind else {
                 break;
             };
-            out.insert(target_table.0.clone());
-            match catalog.get(&target_table.0) {
+            out.insert(target_table.clone());
+            match catalog.get(target_table) {
                 Ok(Some(next)) => current = next,
                 _ => break,
             }

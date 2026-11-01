@@ -287,7 +287,7 @@ pub struct EmailSettings {
     /// The username, empty when the relay does not authenticate.
     pub username: String,
     /// The password that goes with [`username`](EmailSettings::username).
-    pub password: String,
+    pub password: sc_error::Secret<String>,
     /// What messages say they are from.
     pub from: Mailbox,
     /// The name the certificate is checked against in place of
@@ -388,8 +388,8 @@ impl EmailSettings {
             // Not trimmed: leading and trailing space is legal in a password,
             // and silently removing it is a login failure nobody can explain.
             password: match config.get(SMTP_PASSWORD) {
-                Some(Json::String(s)) => s.clone(),
-                _ => String::new(),
+                Some(Json::String(s)) => s.clone().into(),
+                _ => sc_error::Secret::default(),
             },
             from: parse_mailbox(&raw_from)
                 .map_err(|e| Error::invalid(format!("`{EMAIL_FROM}` is not a mailbox: {e}")))?,
@@ -487,7 +487,7 @@ mod tests {
         assert!(settings.authenticates());
         // A password keeps its spaces: they are legal, and removing them is a
         // login failure with no visible cause.
-        assert_eq!(settings.password, " hunter2 ");
+        assert_eq!(settings.password.expose(), " hunter2 ");
         assert_eq!(settings.from.name.as_deref(), Some("Saltcorn"));
         assert_eq!(settings.from.address, "saltcorn@example.com");
     }

@@ -6,6 +6,7 @@
 //! to a projected endpoint actually reads and writes the app's rows, and that
 //! authorization is enforced on the way in.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::{ApiProvider, ApiRequest, ApiResponse, Method, RestProvider};
@@ -44,7 +45,7 @@ fn provider(cat: &Catalog) -> Result<RestProvider> {
 }
 
 fn admin() -> Result<User> {
-    User::new(Uuid::new_v4(), sc_auth::ROLE_ADMIN)
+    Ok(User::new(Uuid::new_v4(), Role::ADMIN))
 }
 
 /// The rows of a list response.
@@ -129,7 +130,7 @@ async fn an_unauthorized_request_is_rejected_and_changes_nothing() -> Result<()>
 
     // An introspected table defaults to admin-only access (§7), so a public-role
     // user clears neither read nor write.
-    let public = User::new(Uuid::new_v4(), sc_auth::ROLE_PUBLIC)?;
+    let public = User::new(Uuid::new_v4(), Role::PUBLIC);
 
     let read = api
         .handle(ApiRequest::get("/api/posts"), &cat, Some(&public))

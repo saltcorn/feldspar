@@ -9,9 +9,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
-use sc_api::rows::Executor;
+use sc_access::rows::Executor;
 use sc_api::schema_edit::{self, ApplyOptions, FieldSettings, FieldSpec, Operation, TableSettings};
 use sc_auth::User;
 use sc_catalog::{Catalog, bootstrap_field_meta, bootstrap_table_meta};
@@ -57,8 +58,8 @@ async fn create_notes(catalog: &Catalog, ownership: &str) -> Result<()> {
             name: "notes".into(),
             database: String::new(),
             settings: TableSettings {
-                min_role_read: Some(1),
-                min_role_write: Some(1),
+                min_role_read: Some(Role::ADMIN),
+                min_role_write: Some(Role::ADMIN),
                 ownership_formula: Some(ownership.into()),
                 ..TableSettings::default()
             },
@@ -82,8 +83,8 @@ async fn create_notes(catalog: &Catalog, ownership: &str) -> Result<()> {
 }
 
 fn writer(email: &str) -> User {
-    let mut user = User::new(uuid::Uuid::new_v4(), 40).unwrap();
-    user.extra.insert("email".into(), Value::Text(email.into()));
+    let mut user = User::new(uuid::Uuid::new_v4(), Role::of(40));
+    user = user.with_field("email", Value::Text(email.into()));
     user
 }
 
@@ -104,11 +105,11 @@ async fn a_left_out_field_takes_its_default_from_the_user_and_the_row() -> Resul
     // lets them write, and it reads the `owner` the default fills in.
     let ada = writer("ada@example.com");
     let evaluator = catalog.formula_evaluator();
-    let row = sc_api::insert_row_as(
+    let row = sc_access::insert_row_as(
         &catalog,
         &notes,
         &json!({ "title": "Hello World" }),
-        40,
+        Role::of(40),
         Some(&ada),
         evaluator.as_ref(),
         &[],
@@ -119,11 +120,11 @@ async fn a_left_out_field_takes_its_default_from_the_user_and_the_row() -> Resul
     assert_eq!(row["slug"], json!("hello-world"));
 
     // A value given is kept, and an explicit null is filled like a missing one.
-    let row = sc_api::insert_row_as(
+    let row = sc_access::insert_row_as(
         &catalog,
         &notes,
         &json!({ "title": "Second", "owner": "ada@example.com", "slug": null }),
-        40,
+        Role::of(40),
         Some(&ada),
         evaluator.as_ref(),
         &[],
@@ -133,11 +134,11 @@ async fn a_left_out_field_takes_its_default_from_the_user_and_the_row() -> Resul
     assert_eq!(row["slug"], json!("second"));
 
     // A given owner that is not the writer is still refused.
-    let err = sc_api::insert_row_as(
+    let err = sc_access::insert_row_as(
         &catalog,
         &notes,
         &json!({ "title": "Third", "owner": "bob@example.com" }),
-        40,
+        Role::of(40),
         Some(&ada),
         evaluator.as_ref(),
         &[],
@@ -148,9 +149,14 @@ async fn a_left_out_field_takes_its_default_from_the_user_and_the_row() -> Resul
     assert!(err.to_string().contains("outside"), "{err}");
 
     // No user: `user.email` gives nothing, and the error names the field.
-    let err = sc_api::rows::create_row(&catalog, &notes, &json!({ "title": "Fourth" }))
-        .await
-        .expect_err("nobody to default to");
+    let err = sc_access::rows::create_row(
+        &catalog,
+        &notes,
+        &json!({ "title": "Fourth" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await
+    .expect_err("nobody to default to");
     assert!(
         err.to_string()
             .contains("default value of `notes.owner` could not be computed"),
@@ -247,11 +253,11 @@ async fn a_nullable_field_takes_its_default_when_it_gives_one() -> Result<()> {
     assert!(!notes.field("tag").unwrap().required);
     let evaluator = catalog.formula_evaluator();
     let ada = writer("ada@example.com");
-    let row = sc_api::insert_row_as(
+    let row = sc_access::insert_row_as(
         &catalog,
         &notes,
         &json!({ "title": "Mine", "owner": "ada@example.com" }),
-        40,
+        Role::of(40),
         Some(&ada),
         evaluator.as_ref(),
         &[],
@@ -260,10 +266,11 @@ async fn a_nullable_field_takes_its_default_when_it_gives_one() -> Result<()> {
     .await?;
     assert_eq!(row["tag"], json!("ada@example.com"));
     // Nobody signed in: the default gives nothing, and the field is left null.
-    let row = sc_api::rows::create_row(
+    let row = sc_access::rows::create_row(
         &catalog,
         &notes,
         &json!({ "title": "Nobody's", "owner": "x" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     assert_eq!(row["tag"], json!(null));
@@ -295,8 +302,8 @@ async fn create_tasks(catalog: &Catalog, formula: &str, rls: bool) -> Result<()>
             name: "tasks".into(),
             database: String::new(),
             settings: TableSettings {
-                min_role_read: Some(1),
-                min_role_write: Some(1),
+                min_role_read: Some(Role::ADMIN),
+                min_role_write: Some(Role::ADMIN),
                 ownership_formula: Some(formula.into()),
                 rls_enabled: Some(rls),
                 ..TableSettings::default()
@@ -335,11 +342,11 @@ async fn a_field_the_insert_leaves_out_is_null_to_the_ownership_formula() -> Res
         let insert = |body: serde_json::Value| {
             let (catalog, tasks, ada, evaluator) = (&catalog, &tasks, &ada, &evaluator);
             async move {
-                sc_api::insert_row_as(
+                sc_access::insert_row_as(
                     catalog,
                     tasks,
                     &body,
-                    40,
+                    Role::of(40),
                     Some(ada),
                     evaluator.as_ref(),
                     &[],
@@ -395,7 +402,13 @@ async fn new_date_is_a_default_for_date_and_timestamp_fields() -> Result<()> {
     );
 
     let before = chrono::Utc::now();
-    let row = sc_api::rows::create_row(&catalog, &events, &json!({ "title": "Launch" })).await?;
+    let row = sc_access::rows::create_row(
+        &catalog,
+        &events,
+        &json!({ "title": "Launch" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let after = chrono::Utc::now();
 
     let day = row["day"].as_str().unwrap();
@@ -448,15 +461,22 @@ async fn a_boolean_literal_is_a_default_for_a_bool_field() -> Result<()> {
     );
 
     // Left out: each takes its default — `false` is a value, not a missing one.
-    let row = sc_api::rows::create_row(&catalog, &flags, &json!({ "title": "a" })).await?;
+    let row = sc_access::rows::create_row(
+        &catalog,
+        &flags,
+        &json!({ "title": "a" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert_eq!(row["active"], json!(true));
     assert_eq!(row["archived"], json!(false));
 
     // Given: the body's value wins, including a `false` over a `true` default.
-    let row = sc_api::rows::create_row(
+    let row = sc_access::rows::create_row(
         &catalog,
         &flags,
         &json!({ "title": "b", "active": false, "archived": true }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     assert_eq!(row["active"], json!(false));

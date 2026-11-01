@@ -3,7 +3,7 @@
 //! The names, the descriptions, the argument schemas and the call are here once,
 //! and the callers are thin: `sc_api::mcp` wraps them as two of its
 //! administrative tools (so the MCP server and `admin_copilot` offer them), and
-//! `sc-core-traits`' `docs` trait as an agent trait for any other agent. A
+//! `sc-agent-builtins`' `docs` trait as an agent trait for any other agent. A
 //! model sees the same two tools whichever of them it is talking through.
 
 use sc_error::{Error, Result};

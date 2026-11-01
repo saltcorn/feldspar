@@ -14,6 +14,8 @@
 //! and `modules_no_node.rs` is the test that says so with the `PATH` stripped.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_catalog::Authority;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,13 +26,11 @@ use axum::http::{Request, StatusCode, header};
 use sc_action::{Action, EventKind, Trigger};
 use sc_auth::SessionStore;
 use sc_catalog::{Catalog, DataField};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ModuleServices, ServerConfig, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_agents, install_triggers,
+    AppMounts, ModuleServices, ServerConfig, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_agents, install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use sc_types::{BasicType, SECRET_SENTINEL, TypeRef};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -175,22 +175,7 @@ struct Server {
 }
 
 async fn setup(tag: &str) -> sc_error::Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
@@ -542,7 +527,12 @@ async fn a_modules_action_becomes_available_to_a_trigger_with_no_restart() -> sc
     // Running it reaches the module, with the trigger's configuration.
     let result = server
         .dispatcher
-        .run_trigger(&server.catalog, "echo a book", json!({ "id": 1 }), None)
+        .run_trigger(
+            &server.catalog,
+            "echo a book",
+            json!({ "id": 1 }),
+            Authority::system("test"),
+        )
         .await?;
     assert_eq!(result["greeting"], json!("hello"));
 
@@ -556,7 +546,12 @@ async fn a_modules_action_becomes_available_to_a_trigger_with_no_restart() -> sc
     assert!(server.modules.modules().modules().is_empty());
     let err = server
         .dispatcher
-        .run_trigger(&server.catalog, "echo a book", json!({ "id": 2 }), None)
+        .run_trigger(
+            &server.catalog,
+            "echo a book",
+            json!({ "id": 2 }),
+            Authority::system("test"),
+        )
         .await
         .unwrap_err();
     assert!(err.to_string().contains("echo_row"), "{err}");
@@ -599,7 +594,7 @@ async fn a_module_that_claims_a_built_ins_name_is_reported_and_does_not_take_it(
     // not depend on what somebody installed.
     assert_eq!(
         registry.require("insert_row").unwrap().description(),
-        sc_core_actions::InsertRow.description()
+        sc_action_builtins::InsertRow.description()
     );
 
     Ok(())
@@ -678,7 +673,7 @@ async fn a_runaway_module_does_not_delay_a_code_body() -> sc_error::Result<()> {
     let runaway = tokio::spawn(async move {
         let started = std::time::Instant::now();
         let err = dispatcher
-            .run_trigger(&catalog, "spin", json!({}), None)
+            .run_trigger(&catalog, "spin", json!({}), Authority::system("test"))
             .await
             .unwrap_err();
         (started.elapsed(), err.to_string())
@@ -691,7 +686,12 @@ async fn a_runaway_module_does_not_delay_a_code_body() -> sc_error::Result<()> {
     for n in 0..5 {
         let value = server
             .dispatcher
-            .run_trigger(&server.catalog, "compute", json!({ "n": n }), None)
+            .run_trigger(
+                &server.catalog,
+                "compute",
+                json!({ "n": n }),
+                Authority::system("test"),
+            )
             .await?;
         assert_eq!(value, json!(n * 2));
     }
@@ -716,7 +716,12 @@ async fn a_runaway_module_does_not_delay_a_code_body() -> sc_error::Result<()> {
     assert_eq!(
         server
             .dispatcher
-            .run_trigger(&server.catalog, "compute", json!({ "n": 21 }), None)
+            .run_trigger(
+                &server.catalog,
+                "compute",
+                json!({ "n": 21 }),
+                Authority::system("test")
+            )
             .await?,
         json!(42)
     );

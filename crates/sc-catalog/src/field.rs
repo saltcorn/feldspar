@@ -2,49 +2,32 @@
 //!
 //! The technical design (§6.2) separates a **database** field ([`DataField`] —
 //! a column in a table) from a [**form** field](sc_types::FormField), and shares
-//! their common shape in [`BaseField`]. The MVP models `DataField` fully —
-//! including the `Key` and `File` kinds, even though the admin UI only exercises
-//! `Plain` — so the data model is right from the start (calculated fields are
-//! post-MVP; see the crate root).
+//! their common shape in [`BaseField`](sc_types::BaseField). A `DataField` is
+//! one of the kinds of [`DataFieldKind`]: a plain column, a key to another
+//! table, a file, or a calculated field with no column of its own.
 //!
 //! Only `DataField` and the identifiers live here. `BaseField` and `FormField`
-//! are in `sc-types` beside [`Attrs`], which they carry and describe. What keeps
+//! are in `sc-types` beside [`Attrs`](sc_types::Attrs), which they carry and describe. What keeps
 //! `DataField` up here is its [`Key`](DataFieldKind::Key)/[`File`](DataFieldKind::File)
 //! kinds, which reference catalog identifiers, and its `Column`/`ColumnDef`
-//! bridge — none of which `BaseField` ever needed. All three are re-exported
-//! from this crate, so a caller reaching for `sc_catalog::BaseField` still finds
-//! it.
+//! bridge — none of which `BaseField` ever needed.
 
 use sc_db::{Column, ColumnDef, ColumnGenerator};
 use sc_types::TypeRef;
 
-/// Type-specific attributes carried by a field or table, always a JSON object
-/// (technical design §6, §9: "a sparse value goes into `attributes`").
-///
-/// Defined in `sc-types` beside [`FormField`](sc_types::FormField), which
-/// describes one entry of it (§6.1), and re-exported here because fields and
-/// tables are where the catalog meets it.
-pub use sc_types::Attrs;
+// A field's type-specific attributes (`Attrs`) and the properties every field
+// shares (`BaseField`) are `sc-types`'s, beside `FormField`, which describes an
+// entry of the one and is the other half of §6.2's split with the other.
+use sc_types::{Attrs, BaseField};
 
-/// Properties shared by every field (technical design §6.2).
-///
-/// Defined in `sc-types` beside [`FormField`](sc_types::FormField), the other
-/// half of §6.2's split, and re-exported here beside [`DataField`].
-pub use sc_types::BaseField;
-
-/// Identifies a table within the catalog. For the MVP — which stores no metadata
-/// beyond `information_schema` — a table's stable identity is simply its name.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TableId(pub String);
-
-/// Identifies a field within a table. As with [`TableId`], the MVP identity is
-/// the field (column) name.
+/// Identifies a field within a table: as with [`TableId`], by its (column)
+/// name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FieldId(pub String);
 
-/// Identifies a connected database. The MVP has a single **primary** database
-/// (see [`DbId::primary`]); the newtype exists so multi-database support slots in
-/// later without changing field signatures.
+/// Identifies a connected database: the **primary** one ([`DbId::primary`]) or
+/// one of the `_fd_db_connections` an administrator added. A table lives in
+/// one database, and a query runs on one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DbId(pub String);
 
@@ -53,8 +36,8 @@ pub struct DbId(pub String);
 pub struct FileStoreId(pub String);
 
 impl DbId {
-    /// The single primary database of the MVP: the one that additionally hosts
-    /// the `users` and (post-MVP) `_fd_*` metadata tables.
+    /// The primary database: the one that also holds the `users` table and the
+    /// `_fd_*` metadata tables.
     pub fn primary() -> DbId {
         DbId("primary".to_owned())
     }
@@ -108,7 +91,7 @@ pub enum DataFieldKind {
     /// label when selecting.
     Key {
         /// The referenced table.
-        target_table: TableId,
+        target_table: String,
         /// The referenced field.
         target_field: FieldId,
         /// A field of the target used as a human label, if chosen.
@@ -324,15 +307,15 @@ impl DataField {
             ..
         } = &self.kind
         {
-            col = col.references(target_table.0.clone(), target_field.0.clone());
+            col = col.references(target_table.clone(), target_field.0.clone());
         }
         col
     }
 
     /// Build a data field from an introspected [`Column`]. Nullability comes from
-    /// the column; uniqueness is not reported by MVP introspection and defaults
-    /// to `false`. The caller supplies primary-key membership and the kind, both
-    /// of which are table-level facts.
+    /// the column. `unique` is `false`: a unique constraint is one of the
+    /// table's constraints, not a fact about the column. The caller supplies
+    /// primary-key membership and the kind, both of which are table-level facts.
     pub fn from_column(col: &Column, primary_key: bool, kind: DataFieldKind) -> DataField {
         DataField {
             base: BaseField {

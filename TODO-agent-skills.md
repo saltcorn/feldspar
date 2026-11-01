@@ -11,7 +11,7 @@ with a task that **replaces that note with a conversion**. When this file is don
 imports with nothing left behind.
 
 This builds on the agent loop (`sc-agent`, TECHNICAL_DESIGN §11) and the built-in traits
-(`sc-core-traits`), the LLM providers (`sc-llm`), the row API (`sc-api` `rows.rs`), constraints
+(`sc-agent-builtins`), the LLM providers (`sc-llm`), the row API (`sc-api` `rows.rs`), constraints
 (`sc-catalog` `constraint.rs`, which already declares a `FullTextSearch` index), file stores
 (`sc-files`), the JavaScript host (`sc-expr` `JsEvaluator`, `sc-api` `code_host`) and the two
 chat surfaces: the admin's (`ui/admin/src/screens/AgentChat.tsx`, `RunPanel.tsx`) and an
@@ -59,7 +59,7 @@ neither needs work.
 
 - **Same rules as the existing traits.** Each trait names its target in its configuration,
   derives its tool names from that configuration, runs as the run's caller, and has a
-  `validate_config` that checks what the spec cannot (`sc-core-traits` lib.rs, "What every
+  `validate_config` that checks what the spec cannot (`sc-agent-builtins` lib.rs, "What every
   trait here has in common").
 - **Facilities are not agent-only.** Full-text search, vector fields, embeddings and generated
   media are things an application wants too. Each one lands in the layer it belongs to (query,
@@ -305,7 +305,7 @@ Both chat surfaces show text and tool calls. They cannot ask, offer a button or 
   final answer of each turn is spoken and attached as an audio display part. It offers no tool.
   (Through a new hook, `AgentTrait::on_final_answer`; the part is kept under
   `answer:<message index>` beside the tool calls' parts. A triggered run is not spoken.)
-- [x] **AS11.3** Tests with the stub server from AS3.6. (`sc-core-traits` `tests/media.rs`.)
+- [x] **AS11.3** Tests with the stub server from AS3.6. (`sc-agent-builtins` `tests/media.rs`.)
 
 ---
 

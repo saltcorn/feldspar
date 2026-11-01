@@ -11,6 +11,7 @@
 //! rest check the ways an overlay could reach a table it has no business
 //! reaching: one whose table is gone, and a system table.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_catalog::{
@@ -49,7 +50,10 @@ async fn create_books(cat: &Catalog) -> Result<()> {
 /// The table as introspection alone would produce it — the "before this feature
 /// existed" reference the merge must not disturb.
 async fn from_introspection(cat: &Catalog, name: &str) -> Result<Table> {
-    let physicals = cat.primary().introspect().await?;
+    let physicals = cat
+        .primary(sc_catalog::Unchecked::system("test"))
+        .introspect()
+        .await?;
     let physical = physicals
         .iter()
         .find(|p| p.name == name)
@@ -89,7 +93,7 @@ async fn an_overlay_reaches_the_cached_table_and_survives_a_reload() -> Result<(
     let meta = TableMeta::new("books")
         .label("Books")
         .description("The library catalogue")
-        .access(80, 40);
+        .access(Role::of(80), Role::of(40));
     save_table_meta(&cat, &meta).await?;
 
     // No explicit reload: saving does it, because the access rules on the
@@ -99,8 +103,8 @@ async fn an_overlay_reaches_the_cached_table_and_survives_a_reload() -> Result<(
     assert_eq!(
         books.access,
         AccessRules {
-            min_role_read: 80,
-            min_role_write: 40,
+            min_role_read: Role::of(80),
+            min_role_write: Role::of(40),
         }
     );
     assert_eq!(books.label, "Books");
@@ -110,11 +114,11 @@ async fn an_overlay_reaches_the_cached_table_and_survives_a_reload() -> Result<(
     // And it is not an artefact of the save path: a fresh reload — and a fresh
     // catalog, which is what a restart is — reads it back from the row.
     cat.reload().await?;
-    assert_eq!(cat.require("books")?.access.min_role_read, 80);
+    assert_eq!(cat.require("books")?.access.min_role_read, Role::of(80));
 
     let restarted = catalog(&db).await?;
     let books = restarted.require("books")?;
-    assert_eq!(books.access.min_role_read, 80);
+    assert_eq!(books.access.min_role_read, Role::of(80));
     assert_eq!(books.overlay, Some(meta.id));
 
     // The database still knows what the database knows: the overlay added
@@ -134,9 +138,9 @@ async fn deleting_the_overlay_returns_the_table_to_admin_only() -> Result<()> {
     bootstrap_table_meta(&cat).await?;
     create_books(&cat).await?;
 
-    let meta = TableMeta::new("books").access(100, 100);
+    let meta = TableMeta::new("books").access(Role::PUBLIC, Role::PUBLIC);
     save_table_meta(&cat, &meta).await?;
-    assert_eq!(cat.require("books")?.access.min_role_read, 100);
+    assert_eq!(cat.require("books")?.access.min_role_read, Role::PUBLIC);
 
     // "Forget what I configured" takes effect now, not at the next restart —
     // and what it reverts to is the closed default, not the last value.
@@ -157,7 +161,11 @@ async fn an_orphan_overlay_merges_onto_nothing_rather_than_inventing_a_table() -
     // A row for a table that does not exist — a restore or an external
     // migration leaves exactly this. It is kept (§1.1), so the merge has to
     // cope with it on every reload.
-    save_table_meta(&cat, &TableMeta::new("ghosts").access(100, 100)).await?;
+    save_table_meta(
+        &cat,
+        &TableMeta::new("ghosts").access(Role::PUBLIC, Role::PUBLIC),
+    )
+    .await?;
 
     assert!(
         cat.get("ghosts")?.is_none(),
@@ -174,7 +182,7 @@ async fn an_orphan_overlay_merges_onto_nothing_rather_than_inventing_a_table() -
             .primary_key()],
     )
     .await?;
-    assert_eq!(cat.require("ghosts")?.access.min_role_read, 100);
+    assert_eq!(cat.require("ghosts")?.access.min_role_read, Role::PUBLIC);
     Ok(())
 }
 
@@ -209,7 +217,7 @@ async fn a_system_table_ignores_an_overlay_inserted_behind_the_api() -> Result<(
             Expr::Lit(Value::Json(serde_json::json!({}))),
         ],
     );
-    cat.primary()
+    cat.primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(insert))
         .await?
         .try_collect()

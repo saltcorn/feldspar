@@ -27,6 +27,8 @@
 //!   endpoint.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
@@ -38,14 +40,12 @@ use sc_api::admin_endpoints;
 use sc_auth::SessionStore;
 use sc_catalog::{Catalog, DataField};
 use sc_config::{MODE_CUSTOM, SSL_MODE, SSL_PRIVATE_KEY, stored_config};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_files::FileStoreDef;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-    default_js_evaluator, install_agents, install_triggers,
+    AppMounts, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
+    install_agents, install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -151,23 +151,7 @@ async fn setup() -> sc_error::Result<Server> {
 
 /// [`setup`] over a database the caller made — one with pgvector, say.
 async fn setup_in(db: TestDb) -> sc_error::Result<Server> {
-    // Neutralise any `users` table inherited from the template database before
-    // bootstrap introspects, exactly as the other server tests do.
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().on(db).build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
@@ -249,6 +233,7 @@ async fn setup_in(db: TestDb) -> sc_error::Result<Server> {
 
 /// A table with rows, a file store with a file in it, an extra role, a trigger on
 /// the table, and a stored SSL setting — one of everything the backup carries.
+#[allow(clippy::too_many_lines)]
 async fn furnish(server: &mut Server) -> sc_error::Result<()> {
     let (status, body) = server
         .client
@@ -526,6 +511,7 @@ fn has_entry(archive: &[u8], path: &str) -> bool {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_backup_restores_into_a_second_installation() -> sc_error::Result<()> {
     let mut source = setup().await?;
     furnish(&mut source).await?;
@@ -912,6 +898,7 @@ const V1_BACKUP: &[u8] = include_bytes!("fixtures/saltcorn-v1-BooksDB.zip");
 /// translation has to get right — v1's types, its numbering of users, its one file
 /// area, its actions — and, just as much, that everything it left behind is *said*.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
     let mut server = setup().await?;
     // The store the import would create points into this machine's data
@@ -1159,7 +1146,7 @@ async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
     assert_eq!(app.framework.config["menu_items"], json!([]));
     let names = |ids: Vec<&String>| ids.into_iter().cloned().collect::<Vec<_>>();
     assert_eq!(
-        names(app.tables.iter().map(|t| &t.0).collect()),
+        names(app.tables.iter().collect()),
         vec!["Books", "Authors", "Publishers"]
     );
     assert_eq!(
@@ -1201,7 +1188,7 @@ async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
             "{}",
             v.name
         );
-        assert_eq!(v.min_role, 1, "{}", v.name);
+        assert_eq!(v.min_role, Role::ADMIN, "{}", v.name);
     }
     assert_eq!(view("List Books").viewpattern, "List");
     assert_eq!(view("List Books").table_name.as_deref(), Some("Books"));
@@ -1218,7 +1205,7 @@ async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
     let pages = sc_viewpattern::list_pages(&server.catalog, app.id).await?;
     assert_eq!(pages.len(), 1);
     assert_eq!(pages[0].name, "BooksOverview");
-    assert_eq!(pages[0].min_role, 1);
+    assert_eq!(pages[0].min_role, Role::ADMIN);
     assert_eq!(pages[0].layout, pack["pages"][0]["layout"]);
     assert_eq!(pages[0].attributes["root_page_for_roles"], json!([]));
 
@@ -1327,6 +1314,7 @@ const V1_ORDERS_BACKUP: &[u8] = include_bytes!("fixtures/saltcorn-v1-feldsparimp
 /// the admin API and then *used*: the calculated fields compute, the user's
 /// reference is there, the agent has its tools, and the workflow runs.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_v1_backup_with_calculated_fields_an_agent_and_a_workflow_is_imported()
 -> sc_error::Result<()> {
     let mut server = setup().await?;
@@ -1616,6 +1604,7 @@ async fn a_v1_calculated_summary_field_and_an_array_aggregation_are_imported()
 /// text. A button that names an action directly, with no trigger, becomes a
 /// trigger the view names instead, and what has no counterpart is reported.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn v1s_built_in_actions_are_translated_and_run() -> sc_error::Result<()> {
     let archive = with_pack(V1_BACKUP, |pack| {
         let triggers = pack["triggers"].as_array_mut().unwrap();
@@ -3001,6 +2990,7 @@ async fn fit(server: &mut Server, id: &str) -> String {
 /// and a draw; a workspace), a stream with a secret, a workflow trigger with
 /// steps, the email settings, a Saltcorn UI application's translations, and a
 /// SQLite connection whose file lives in a file store.
+#[allow(clippy::too_many_lines)]
 async fn furnish_the_rest(server: &mut Server) -> sc_error::Result<()> {
     // --- a table to analyse -----------------------------------------------
     server
@@ -3230,6 +3220,7 @@ async fn furnish_the_rest(server: &mut Server) -> sc_error::Result<()> {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn analytics_streams_workflows_settings_translations_and_connections_travel()
 -> sc_error::Result<()> {
     let mut source = setup().await?;
@@ -3882,7 +3873,7 @@ async fn an_automated_backup_writes_and_prunes_its_directory() -> sc_error::Resu
         std::fs::write(dest.join(name), b"x").unwrap();
     }
 
-    let scheduler = sc_server::BackupScheduler::new(server.catalog.clone());
+    let scheduler = sc_backup::BackupScheduler::new(server.catalog.clone());
     let ran = scheduler.tick(now).await;
     assert_eq!(ran.len(), 1);
     // Not due again a minute later.
@@ -4016,6 +4007,7 @@ fn noise(seed: u64, len: usize) -> Vec<u8> {
 /// deflated again, while text is deflated; and a file whose path is not ASCII
 /// keeps its name.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn large_binary_rows_and_files_stream_through_a_backup_and_restore() -> sc_error::Result<()> {
     const BLOB: usize = 5 * 1024 * 1024;
     const SMALL_ROWS: i32 = 2_500;
@@ -4677,10 +4669,10 @@ async fn a_password_protected_backup_restores_with_its_password() -> sc_error::R
     // The library calls the CLI makes: the same file, by path.
     let path = temp_dir().join("protected.zip");
     std::fs::write(&path, &archive).unwrap();
-    assert!(sc_server::backup_is_encrypted(&path)?);
-    assert!(sc_server::inspect_backup(&path, None).is_err());
-    assert!(sc_server::inspect_backup(&path, Some("nope")).is_err());
-    let (contents, _) = sc_server::inspect_backup(&path, Some(SECRET))?;
+    assert!(sc_backup::is_encrypted(&path)?);
+    assert!(sc_backup::inspect(&path, None).is_err());
+    assert!(sc_backup::inspect(&path, Some("nope")).is_err());
+    let (contents, _) = sc_backup::inspect(&path, Some(SECRET))?;
     assert_eq!(contents.tables[0].name, "books");
     Ok(())
 }
@@ -4708,7 +4700,7 @@ async fn an_automated_backup_can_be_password_protected() -> sc_error::Result<()>
     let id = created["id"].as_str().unwrap().to_owned();
     assert_eq!(created["password"], json!(sc_types::SECRET_SENTINEL));
 
-    let scheduler = sc_server::BackupScheduler::new(server.catalog.clone());
+    let scheduler = sc_backup::BackupScheduler::new(server.catalog.clone());
     assert_eq!(scheduler.tick(chrono::Utc::now()).await.len(), 1);
     let list = ok(&mut server, "GET", "/api/backup/schedules", None).await;
     let entry = &list.as_array().unwrap()[0];

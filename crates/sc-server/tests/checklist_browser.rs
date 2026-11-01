@@ -13,26 +13,25 @@
 //! host without one is `sc-check`'s
 //! `browser_steps_on_a_host_without_chromium_make_the_run_incomplete`.
 
+use sc_types::Role;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use sc_agent::{AppPreviewer, HostCapabilities, RunId};
 use sc_app::{Application, FrameworkRef, bootstrap, save_application};
-use sc_auth::{ROLE_ADMIN, Role, SessionStore, User, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, User, create_user, save_role};
 use sc_catalog::{Catalog, FileStoreId};
 use sc_check::{
     CheckEnv, Checklist, ChecklistInput, Editor, Outcome, RunStatus, SkipReason, StepDraft,
     StepRegistry, edit, run_checklist,
 };
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_files::LocalFileStore;
 use sc_server::{
     AppMounts, AppRequests, ChromiumDriver, ServerConfig, admin_handlers, build_and_mount,
     default_js_evaluator, detect_browser, install_agents_on, install_app_requests, serve_browser,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::json;
 
 const BASE_DOMAIN: &str = "example.com";
@@ -145,21 +144,7 @@ struct Env {
 
 async fn setup(tag: &str, executable: PathBuf) -> Result<Env> {
     let tmp = TempDir::new(tag);
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$;",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;
@@ -176,9 +161,9 @@ async fn setup(tag: &str, executable: PathBuf) -> Result<Env> {
     .unwrap();
     catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", tmp.0.join("site"))?))?;
 
-    save_role(&catalog, &Role::new(80, "Member")).await?;
-    let admin = create_user(&catalog, "admin@example.com", "admin-pw", ROLE_ADMIN).await?;
-    let member = create_user(&catalog, "member@example.com", "member-pw", 80).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Member")).await?;
+    let admin = create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
+    let member = create_user(&catalog, "member@example.com", "member-pw", Role::of(80)).await?;
     let app = shop_app();
     save_application(&catalog, &app).await?;
 
@@ -237,12 +222,12 @@ impl Env {
     ) -> Result<Checklist> {
         let mut input = ChecklistInput::new(name);
         input.application = Some(self.app.id.0);
-        input.run_as = Some(self.member.id);
+        input.run_as = Some(self.member.id());
         input.attributes = attributes.as_object().cloned().unwrap_or_default();
         edit::create_checklist(
             &self.catalog,
             &self.registry,
-            &Editor::Human(self.admin.id),
+            &Editor::Human(self.admin.id()),
             input,
             steps,
         )
@@ -525,11 +510,11 @@ async fn react_steps_wait_for_the_render_and_see_an_error_boundary() -> Result<(
     let live = CheckEnv::new(&env.catalog, &env.registry)
         .with_browser(Some(env.driver.as_ref()))
         .with_screenshots(&shots);
-    let admin = Editor::Human(env.admin.id);
+    let admin = Editor::Human(env.admin.id());
     let checklist = |name: &str, steps: Vec<StepDraft>| {
         let mut input = ChecklistInput::new(name);
         input.application = Some(spa.id.0);
-        input.run_as = Some(env.member.id);
+        input.run_as = Some(env.member.id());
         input.attributes = json!({ "timeout": 8 }).as_object().cloned().unwrap();
         edit::create_checklist(&env.catalog, &env.registry, &admin, input, steps)
     };

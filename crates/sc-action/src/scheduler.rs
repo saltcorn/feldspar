@@ -44,6 +44,7 @@
 //! rule rather than being special-cased: the trigger is due when
 //! `next_due(last_run) <= now`, and after one run `last_run` is now.
 
+use sc_catalog::Authority;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -233,7 +234,12 @@ impl Scheduler {
             // is null and its role is public, which is what a formula in the
             // action will see.
             let outcome = dispatcher
-                .run_trigger(&catalog, &trigger.name, Json::Null, None)
+                .run_trigger(
+                    &catalog,
+                    &trigger.name,
+                    Json::Null,
+                    Authority::system("scheduled trigger"),
+                )
                 .await;
             if let Err(e) = outcome {
                 eprintln!(

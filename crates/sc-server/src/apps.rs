@@ -928,7 +928,7 @@ impl AppMounts {
     /// unrelated one — the same "one bad app must not take the others with it"
     /// rule [`mount_all`] follows.
     pub fn refresh_table(&self, table: &str) -> Result<Vec<ReprojectedApp>> {
-        self.reproject(|app| app.tables.iter().any(|t| t.0 == table))
+        self.reproject(|app| app.tables.iter().any(|t| t == table))
     }
 
     /// Re-project the API providers of every mounted app that exposes a trigger,

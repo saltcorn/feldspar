@@ -30,7 +30,9 @@ fn store(dir: &Path) -> Result<LocalFileStore> {
 /// Keep the JPEG of step `index` (from 0) of `run`, and return its path.
 pub async fn save(dir: &Path, run: Uuid, index: usize, jpeg: Vec<u8>) -> Result<String> {
     let path = format!("{run}/{index}.jpg");
-    store(dir)?.write(&path, jpeg.into()).await?;
+    store(dir)?
+        .write(&sc_files::StorePath::parse(&path)?, jpeg.into())
+        .await?;
     Ok(path)
 }
 
@@ -47,7 +49,10 @@ pub async fn read(dir: &Path, path: &str) -> Result<Vec<u8>> {
             "`{path}` is not a checklist screenshot"
         )));
     }
-    Ok(store(dir)?.read(path).await?.to_vec())
+    Ok(store(dir)?
+        .read(&sc_files::StorePath::parse(path)?)
+        .await?
+        .to_vec())
 }
 
 #[cfg(test)]

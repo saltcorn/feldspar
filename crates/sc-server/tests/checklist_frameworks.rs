@@ -66,11 +66,11 @@ async fn views_render_fails_on_a_view_whose_field_was_deleted() -> sc_error::Res
     let registry = StepRegistry::installed();
     let mut input = ChecklistInput::new("BooksDB views render");
     input.application = Some(app.id.0);
-    input.run_as = Some(admin.id);
+    input.run_as = Some(admin.id());
     let checklist = edit::create_checklist(
         &catalog,
         &registry,
-        &Editor::Human(admin.id),
+        &Editor::Human(admin.id()),
         input,
         vec![StepDraft::new("saltcorn_ui.views_render").label("Every view renders")],
     )
@@ -168,16 +168,22 @@ async fn a_module_step_type_runs_in_its_worker_through_host_calls() -> sc_error:
         .await?;
     let notes = catalog.get("notes")?.expect("the table");
     for title in ["first", "second"] {
-        sc_api::rows::create_row(&catalog, &notes, &json!({ "title": title })).await?;
+        sc_access::rows::create_row(
+            &catalog,
+            &notes,
+            &json!({ "title": title }),
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
     let admin = sc_auth::load_user_by_email(&catalog, "admin@example.com")
         .await?
         .expect("the first user");
-    let human = Editor::Human(admin.id);
+    let human = Editor::Human(admin.id());
     let env = CheckEnv::new(&catalog, &registry);
     let checklist = |name: &str, steps: Vec<StepDraft>| {
         let mut input = ChecklistInput::new(name);
-        input.run_as = Some(admin.id);
+        input.run_as = Some(admin.id());
         edit::create_checklist(&catalog, &registry, &human, input, steps)
     };
 
@@ -243,7 +249,8 @@ async fn a_module_step_type_runs_in_its_worker_through_host_calls() -> sc_error:
         "{}",
         run.steps[0].message
     );
-    let rows = sc_api::rows::list_rows(&catalog, &notes).await?;
+    let rows =
+        sc_access::rows::list_rows(&catalog, &notes, sc_catalog::Unchecked::system("test")).await?;
     assert_eq!(rows.as_array().map(Vec::len), Some(2), "{rows}");
     Ok(())
 }

@@ -231,6 +231,7 @@ struct Source<'a> {
 ///
 /// Only empty rows are filled: a variable the admin bound is never
 /// second-guessed, though what it is bound to informs the sizes.
+#[allow(clippy::too_many_lines)]
 pub fn suggest_bindings(interface: &Interface, model: &Model, schema: &SchemaShape) -> Suggestions {
     let existing: BTreeMap<String, Binding> = match model.configuration.get(BINDINGS_KEY) {
         Some(Json::Object(map)) => map

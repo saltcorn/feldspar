@@ -183,6 +183,7 @@ async fn check(
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn symbolic_and_reified_agree_on_the_translatable_subset() {
     let db = TestDb::new().await.expect("test db");
     let client = db.client().await.expect("client");

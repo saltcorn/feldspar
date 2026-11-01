@@ -25,24 +25,24 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_action::{ActionRegistry, TriggerDispatcher};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{Role, SessionStore, create_user, load_user_by_email, save_role};
-use sc_catalog::{AccessRules, Catalog, TableId, TableMeta, save_table_meta};
+use sc_auth::{RoleDef, SessionStore, create_user, load_user_by_email, save_role};
+use sc_catalog::{AccessRules, Catalog, TableMeta, save_table_meta};
+use sc_config::{Mailbox, parse_mailbox};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
-use sc_email::{Email, Mailbox, Mailer, RecordingMailer, parse_mailbox};
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps,
-};
+use sc_email::{Email, Mailer, RecordingMailer};
+use sc_server::{AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps};
 use sc_test_harness::TestDb;
+use sc_types::Role;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const BASE_DOMAIN: &str = "example.com";
 const CLUB: &str = "club.example.com";
 const LOUNGE: &str = "lounge.example.com";
-const ROLE_MEMBER: u8 = 80;
+const ROLE_MEMBER: Role = Role::of(80);
 
 /// A cookie-carrying client addressing one host, echoing CSRF on mutations.
 struct Client {
@@ -142,7 +142,7 @@ impl Mailer for SwitchMailer {
 fn app(name: &str, subdomain: &str, api: ApiConfig) -> Application {
     Application::new(name, subdomain, FrameworkRef::new("code"))
         .with_api(api)
-        .with_table(TableId(sc_auth::USERS_TABLE.to_owned()))
+        .with_table(sc_auth::USERS_TABLE.to_owned())
 }
 
 struct Fixture {
@@ -170,21 +170,19 @@ async fn setup() -> sc_error::Result<Fixture> {
     db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
-    create_user(&catalog, "admin@example.com", "admin-pw", 1).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
+    create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
 
     // Members read the member list; the public does not.
     let mut meta = TableMeta::new(sc_auth::USERS_TABLE);
     meta.access = AccessRules {
         min_role_read: ROLE_MEMBER,
-        min_role_write: 1,
+        min_role_write: Role::ADMIN,
     };
     save_table_meta(&catalog, &meta).await?;
 
     let mailer = Arc::new(SwitchMailer {
-        recorder: RecordingMailer::sending_as(
-            parse_mailbox("Club <noreply@example.com>").unwrap(),
-        ),
+        recorder: RecordingMailer::sending_as(parse_mailbox("Club <noreply@example.com>").unwrap()),
         failing: AtomicBool::new(false),
     });
     let dispatcher = Arc::new(
@@ -279,7 +277,7 @@ async fn a_sign_up_has_full_access_once_it_follows_the_emailed_link() -> sc_erro
     let stored = load_user_by_email(&fx.catalog, "sam@example.com")
         .await?
         .unwrap();
-    assert_eq!(stored.role, ROLE_MEMBER);
+    assert_eq!(stored.role(), ROLE_MEMBER);
     assert!(stored.email_unproven());
 
     let sent = fx.mailer.recorder.sent();
@@ -339,7 +337,10 @@ async fn a_sign_up_has_full_access_once_it_follows_the_emailed_link() -> sc_erro
     // Signed in afresh on the laptop, the account is a member; the password
     // chosen at sign-up is untouched.
     let mut laptop = Client::new(&fx.router, CLUB).await;
-    assert_eq!(laptop.login("sam@example.com", "sam-pw").await, StatusCode::OK);
+    assert_eq!(
+        laptop.login("sam@example.com", "sam-pw").await,
+        StatusCode::OK
+    );
     let (_, me) = laptop.send("GET", "/api/whoami", None).await;
     assert_eq!(me["role"], json!(ROLE_MEMBER));
     assert_eq!(me["email_verified"], json!(true));
@@ -387,7 +388,11 @@ async fn a_password_reset_link_proves_the_address_too() -> sc_error::Result<()> 
     // The verification link sent at sign-up has nothing left to do.
     let verify = token_in(&sent[0], "http://club.example.com", "/verify-email");
     let (status, _) = other
-        .send("POST", "/api/verify-email", Some(json!({ "token": verify })))
+        .send(
+            "POST",
+            "/api/verify-email",
+            Some(json!({ "token": verify })),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     Ok(())
@@ -404,7 +409,10 @@ async fn only_an_application_that_requires_verification_holds_an_account_back()
     // The lounge does not verify: it has no such endpoints, and serves the
     // same unverified account as the member it is.
     let mut lounge = Client::new(&fx.router, LOUNGE).await;
-    assert_eq!(lounge.login("lee@example.com", "lee-pw").await, StatusCode::OK);
+    assert_eq!(
+        lounge.login("lee@example.com", "lee-pw").await,
+        StatusCode::OK
+    );
     let (_, me) = lounge.send("GET", "/api/whoami", None).await;
     assert_eq!(me["role"], json!(ROLE_MEMBER));
     assert_eq!(me["email_verified"], json!(false));

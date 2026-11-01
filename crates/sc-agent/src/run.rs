@@ -300,7 +300,7 @@ impl Run {
             state: RunState::Running,
             error: None,
             context: serde_json::to_value(state).unwrap_or(Json::Null),
-            user: caller.user.as_ref().map(|u| u.id),
+            user: caller.user.as_ref().map(|u| u.id()),
             // An agent run is pinned to nothing, is always runnable, and is
             // never leased: the loop is driven by whoever started it, not by the
             // workflow queue.
@@ -453,6 +453,7 @@ impl Run {
 mod tests {
     use super::*;
     use sc_auth::User;
+    use sc_types::Role;
 
     fn answered_loop() -> AgentLoop {
         let mut state = AgentLoop::new(20);
@@ -469,8 +470,8 @@ mod tests {
 
     #[test]
     fn a_chat_run_records_the_user_it_is_for() {
-        let user = User::new(Uuid::new_v4(), 40).unwrap();
-        let id = user.id;
+        let user = User::new(Uuid::new_v4(), Role::of(40));
+        let id = user.id();
         let run = Run::new("librarian", &RunCaller::user(user), &AgentLoop::new(20));
         assert_eq!(run.kind, RunKind::Agent);
         assert_eq!(run.subject, "librarian");

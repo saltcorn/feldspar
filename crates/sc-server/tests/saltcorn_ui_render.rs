@@ -26,6 +26,8 @@
 //!
 //! Both need the built Saltcorn UI bundle, and skip without it.
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
@@ -38,15 +40,12 @@ use sc_api::admin_endpoints;
 use sc_app::{Application, save_application};
 use sc_auth::{SessionStore, create_user};
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_files::FileStoreDef;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ModuleServices, SESSION_COOKIE, ServerConfig,
-    admin_handlers, build_and_mount, build_router_with_apps, default_js_evaluator, install_agents,
-    install_triggers,
+    AppMounts, ModuleServices, SESSION_COOKIE, ServerConfig, admin_handlers, build_and_mount,
+    build_router_with_apps, default_js_evaluator, install_agents, install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use sc_viewpattern::{LibraryItem, Page, View};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -241,22 +240,7 @@ pub(crate) async fn setup(tag: &str, bundle: PathBuf) -> sc_error::Result<Server
 
 /// [`setup`], restoring `archive` rather than the plain BooksDB backup.
 async fn setup_from(tag: &str, bundle: PathBuf, archive: &[u8]) -> sc_error::Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
@@ -381,14 +365,14 @@ async fn setup_from(tag: &str, bundle: PathBuf, archive: &[u8]) -> sc_error::Res
     assert_eq!(sc_viewpattern::list_views(&catalog, app.id).await?.len(), 7);
 
     let feed = View::new(app.id, "Feed Books", "Feed", "Books")
-        .min_role(1)
+        .min_role(Role::ADMIN)
         .configuration(object(json!({
             "show_view": "Show Books", "order_field": "title", "descending": false,
             "cols_sm": 1, "cols_md": 1, "cols_lg": 1, "cols_xl": 1,
         })));
     sc_viewpattern::save_view(&catalog, &feed).await?;
     let lsl = View::new(app.id, "Books and details", "ListShowList", "Books")
-        .min_role(1)
+        .min_role(Role::ADMIN)
         .configuration(object(json!({
             "list_view": "List Books", "show_view": "Show Books", "list_width": 4, "subtables": {},
         })));
@@ -585,6 +569,7 @@ async fn book(client: &mut Client, id: &Value) -> Option<Value> {
 /// Phase 6: what a browser does with the forms, buttons and links v1's patterns
 /// render — through the assembled router, CSRF middleware and all.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_views_save_forms_run_actions_filter_and_delete() -> sc_error::Result<()> {
     let Some(bundle) = bundle_dir() else {
         eprintln!(
@@ -841,7 +826,7 @@ async fn an_action_that_is_not_the_applications_is_refused_by_name() -> sc_error
     // application does not declare.
     for action in ["run_js_code", "ReturnBook"] {
         let view = View::new(app.id, "Runs something", "List", "Books")
-            .min_role(1)
+            .min_role(Role::ADMIN)
             .configuration(object(json!({
                 "columns": [{ "type": "Action", "action_name": action, "rndid": "abc123" }],
             })));
@@ -1369,6 +1354,7 @@ async fn the_sign_in_form_is_throttled_like_every_other_login() -> sc_error::Res
 /// only when the settings say so; and a view whose table the application no
 /// longer has fails naming it.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn signing_in_lands_on_the_view_asked_for_and_signing_out_leaves() -> sc_error::Result<()> {
     let Some(bundle) = bundle_dir() else {
         eprintln!(
@@ -1554,7 +1540,7 @@ async fn signing_in_lands_on_the_view_asked_for_and_signing_out_leaves() -> sc_e
     let account = sc_auth::load_user_by_email(&catalog, reader)
         .await?
         .expect("the account");
-    assert_eq!(account.role, 80);
+    assert_eq!(account.role(), Role::of(80));
     // Signed in, and still not allowed: a role-80 user is told so, by name.
     let forbidden = browser.app_get("/view/List%20Books", &[]).await;
     assert_eq!(
@@ -1572,7 +1558,7 @@ async fn signing_in_lands_on_the_view_asked_for_and_signing_out_leaves() -> sc_e
     // 7.4: the application stops having Books, under views that name it. The
     // view and the page embedding one fail with that sentence, not an empty list.
     let mut narrowed = open;
-    narrowed.tables.retain(|t| t.0 != "Books");
+    narrowed.tables.retain(|t| t != "Books");
     let narrowed = save_application(&catalog, &narrowed).await?;
     build_and_mount(&server.apps, narrowed).await?;
     let sentence = "names the table Books, which the application BooksDB does not have";
@@ -1632,8 +1618,8 @@ async fn two_viewers_see_their_own_rows_through_one_view() -> sc_error::Result<(
 
     // Role 80 is v1's `user`, restored with the backup.
     let (alice, bob) = ("alice@example.com", "bob@example.com");
-    create_user(&catalog, alice, "alice-pass", 80).await?;
-    create_user(&catalog, bob, "bob-pass", 80).await?;
+    create_user(&catalog, alice, "alice-pass", Role::of(80)).await?;
+    create_user(&catalog, bob, "bob-pass", Role::of(80)).await?;
     let books = rows_of(client, "Books").await;
     assert!(books.len() >= 2, "{books:?}");
     let mut titles = Vec::new();
@@ -1671,7 +1657,7 @@ async fn two_viewers_see_their_own_rows_through_one_view() -> sc_error::Result<(
         .retain(|b| b["contents"]["type"] == "field" && own_column(&b["contents"]));
     let app = booksdb(&catalog).await;
     let view = View::new(app.id, "My Books", "List", "Books")
-        .min_role(80)
+        .min_role(Role::of(80))
         .configuration(object(configuration));
     sc_viewpattern::save_view(&catalog, &view).await?;
     build_and_mount(&server.apps, app).await?;
@@ -1889,7 +1875,7 @@ async fn the_builder_canvas_calls_answer_their_goldens() -> sc_error::Result<()>
 
     // The table the builder names is the application's, and so is every table
     // it reaches through a key.
-    app.tables.retain(|t| t.0 != "Publishers");
+    app.tables.retain(|t| t != "Publishers");
     save_application(&catalog, &app).await?;
     sc_viewpattern::view_sets().reload(&catalog, app.id).await?;
     let (status, preview) = server
@@ -1931,6 +1917,7 @@ async fn the_builder_canvas_calls_answer_their_goldens() -> sc_error::Result<()>
 /// `SC_DUMP_BUILDER_OPTIONS=<dir>` writes what this server computed, before
 /// anything is normalised, for comparing by hand.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_builder_options_are_what_saltcorn_1_passes() -> sc_error::Result<()> {
     let Some(bundle) = bundle_dir() else {
         eprintln!(
@@ -2074,7 +2061,7 @@ async fn the_builder_options_are_what_saltcorn_1_passes() -> sc_error::Result<()
 
     // --- The subset (5.2, 5.3): without Publishers, Books' key to it is no
     // join, no parent and no table the builder offers.
-    app.tables.retain(|t| t.0 != "Publishers");
+    app.tables.retain(|t| t != "Publishers");
     let app = save_application(&catalog, &app).await?;
     // Saving the row is not deploying it; the mount is what the snapshot the
     // worker holds is rebuilt from (as 7.4's narrowing does).
@@ -2520,6 +2507,7 @@ async fn a_placed_library_item_renders_as_its_inline_equivalent() -> sc_error::R
 /// token and below the page's role. And a page's `no_menu` and
 /// `request_fluid_layout` reach the document.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_pages_action_buttons_run_and_its_properties_shape_the_document() -> sc_error::Result<()>
 {
     let Some(bundle) = bundle_dir() else {
@@ -2660,7 +2648,7 @@ async fn a_pages_action_buttons_run_and_its_properties_shape_the_document() -> s
     assert_eq!(row_count(client, "Authors").await, authors + 2);
 
     // The page's role: an admin-only page refuses a stranger and a member.
-    sc_viewpattern::save_page(&catalog, &actions.clone().min_role(1)).await?;
+    sc_viewpattern::save_page(&catalog, &actions.clone().min_role(Role::ADMIN)).await?;
     build_and_mount(&server.apps, booksdb(&catalog).await).await?;
     let mut stranger = visitor(&server.client);
     stranger.app_get("/auth/login", &[]).await;
@@ -2668,7 +2656,7 @@ async fn a_pages_action_buttons_run_and_its_properties_shape_the_document() -> s
     let refused =
         post_page_action(&mut stranger, "/page/Actions/action/a1b2c3", Some(&token)).await;
     assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.body);
-    create_user(&catalog, "member@example.com", PASSWORD, 80).await?;
+    create_user(&catalog, "member@example.com", PASSWORD, Role::of(80)).await?;
     let mut member = sign_in(&server.client, "member@example.com", PASSWORD).await;
     let token = member.cookies.get(CSRF_COOKIE).cloned().unwrap();
     let refused = post_page_action(&mut member, "/page/Actions/action/a1b2c3", Some(&token)).await;
@@ -2678,7 +2666,7 @@ async fn a_pages_action_buttons_run_and_its_properties_shape_the_document() -> s
     // refused to them although it is found, and a trigger runs at the member's
     // own role, so one whose `min_role` is admin-only is refused too. A trigger
     // open to members runs for them.
-    sc_viewpattern::save_page(&catalog, &actions.clone().min_role(80)).await?;
+    sc_viewpattern::save_page(&catalog, &actions.clone().min_role(Role::of(80))).await?;
     build_and_mount(&server.apps, booksdb(&catalog).await).await?;
     let shown = member.app_get("/page/Actions", &[]).await;
     assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);

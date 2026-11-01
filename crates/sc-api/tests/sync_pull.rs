@@ -4,16 +4,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use sc_api::{ApiProvider, ApiRequest, ApiResponse, Method, RestProvider, schema_edit};
 use sc_auth::{User, bootstrap, create_user};
 use sc_catalog::{Catalog, bootstrap_change_log, bootstrap_field_meta, bootstrap_table_meta};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value as Json, json};
 
 const APP: uuid::Uuid = uuid::Uuid::from_u128(0x5eed);
@@ -28,22 +27,15 @@ struct Fixture {
 /// `notes` belong to their `owner` (admin-only otherwise); `secrets` are
 /// admin-only. Both synced, both in the application.
 async fn fixture(db: &TestDb) -> Result<Fixture> {
-    // The local test template may carry `users` tables from a v1 database.
-    sql(
-        db,
-        "DO $$ DECLARE r record; BEGIN \
-           FOR r IN SELECT table_schema FROM information_schema.tables \
-           WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-             EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-           END LOOP; END $$;
-         CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    let cat = TestServer::builder()
+        .sql(
+            "CREATE EXTENSION IF NOT EXISTS pgcrypto;
          CREATE TABLE notes (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
                              title text, owner uuid);
          CREATE TABLE secrets (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), body text);",
-    )
-    .await?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let cat = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
+        )
+        .build_on(db)
+        .await?;
     bootstrap(&cat).await?;
     bootstrap_table_meta(&cat).await?;
     bootstrap_field_meta(&cat).await?;
@@ -51,8 +43,8 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
     cat.reload().await?;
 
     let settings = |formula: &str| schema_edit::TableSettings {
-        min_role_read: Some(1),
-        min_role_write: Some(1),
+        min_role_read: Some(Role::ADMIN),
+        min_role_write: Some(Role::ADMIN),
         ownership_formula: Some(formula.into()),
         sync_enabled: Some(true),
         ..Default::default()
@@ -73,17 +65,12 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
     )
     .await?;
 
-    sc_auth::save_role(&cat, &sc_auth::Role::new(80, "User")).await?;
-    let ann = create_user(&cat, "ann@example.com", "ann-password", 80).await?;
-    let bob = create_user(&cat, "bob@example.com", "bob-password", 80).await?;
+    sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(80), "User")).await?;
+    let ann = create_user(&cat, "ann@example.com", "ann-password", Role::of(80)).await?;
+    let bob = create_user(&cat, "bob@example.com", "bob-password", Role::of(80)).await?;
     let api = RestProvider::project("/api", &[cat.require("notes")?, cat.require("secrets")?])
         .with_application(APP);
-    Ok(Fixture {
-        cat: Arc::new(cat),
-        api,
-        ann,
-        bob,
-    })
+    Ok(Fixture { cat, api, ann, bob })
 }
 
 async fn sql(db: &TestDb, statements: &str) -> Result<()> {
@@ -153,7 +140,7 @@ fn set(items: &[&str]) -> BTreeSet<String> {
 async fn a_first_pull_returns_every_readable_row() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let (ann, bob) = (f.ann.id, f.bob.id);
+    let (ann, bob) = (f.ann.id(), f.bob.id());
     sql(
         &db,
         &format!(
@@ -204,7 +191,7 @@ async fn a_first_pull_returns_every_readable_row() -> Result<()> {
 async fn a_later_pull_brings_what_changed_and_what_is_gone() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let (ann, bob) = (f.ann.id, f.bob.id);
+    let (ann, bob) = (f.ann.id(), f.bob.id());
     let gone = "00000000-0000-4000-8000-0000000000a3";
     let given = "00000000-0000-4000-8000-0000000000a4";
     let bobs = "00000000-0000-4000-8000-0000000000b3";
@@ -270,7 +257,7 @@ async fn a_later_pull_brings_what_changed_and_what_is_gone() -> Result<()> {
 async fn a_transaction_that_commits_late_is_not_skipped() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let ann = f.ann.id;
+    let ann = f.ann.id();
     let device = register(&f, &f.ann).await?;
     let first = pull(&f, &f.ann, &device, &Json::Null).await?;
 
@@ -303,7 +290,7 @@ async fn a_transaction_that_commits_late_is_not_skipped() -> Result<()> {
 async fn an_open_transaction_elsewhere_does_not_stall_pulls() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let ann = f.ann.id;
+    let ann = f.ann.id();
     let device = register(&f, &f.ann).await?;
     let first = pull(&f, &f.ann, &device, &Json::Null).await?;
 
@@ -361,7 +348,7 @@ async fn a_watermark_that_is_not_one_is_refused() -> Result<()> {
 async fn a_device_not_seen_within_the_retention_reloads_its_tables() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let ann = f.ann.id;
+    let ann = f.ann.id();
     sql(
         &db,
         &format!("INSERT INTO notes (title, owner) VALUES ('ann 1', '{ann}');"),

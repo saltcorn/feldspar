@@ -147,7 +147,7 @@ mod tests {
         // The row layer's own message shape, which is what a form needs to put
         // the complaint on the right input.
         let err =
-            crate::rows::column_value(&tasks(), "id", &serde_json::json!("seven")).unwrap_err();
+            sc_access::rows::column_value(&tasks(), "id", &serde_json::json!("seven")).unwrap_err();
         let gql = mutation_error(&tasks(), err);
         assert_eq!(extension(&gql, "code").as_deref(), Some(BAD_USER_INPUT));
         assert_eq!(extension(&gql, "field").as_deref(), Some("id"));

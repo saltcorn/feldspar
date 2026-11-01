@@ -38,7 +38,7 @@ async fn catalog(db: &TestDb) -> sc_error::Result<Catalog> {
 
 async fn insert_row(cat: &Catalog, table: &str, id: &str, name: &str) -> sc_error::Result<()> {
     let t = cat.require(table)?;
-    cat.provider(&t)?
+    cat.provider(&t, sc_catalog::Unchecked::system("test"))?
         .write(&Statement::from(Insert::row(
             table,
             vec!["id".into(), "name".into()],
@@ -86,7 +86,10 @@ async fn a_required_column_reaches_a_table_with_no_rows() -> sc_error::Result<()
     assert!(added.required, "added as NOT NULL, as declared");
 
     // And it is genuinely NOT NULL in the database, not merely in the cache.
-    let physical = cat.primary().introspect().await?;
+    let physical = cat
+        .primary(sc_catalog::Unchecked::system("test"))
+        .introspect()
+        .await?;
     let widgets = physical
         .iter()
         .find(|t| t.name == "_fd_widgets")

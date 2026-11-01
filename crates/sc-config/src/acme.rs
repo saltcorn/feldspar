@@ -175,7 +175,7 @@ impl AcmeCache {
 
     async fn rows(&self, select: Select) -> Result<Vec<Row>> {
         self.catalog
-            .primary()
+            .primary(crate::INTERNAL_TABLES)
             .query(&Statement::from(select))
             .await?
             .try_collect()
@@ -184,7 +184,7 @@ impl AcmeCache {
 
     async fn run(&self, statement: Statement) -> Result<()> {
         self.catalog
-            .primary()
+            .primary(crate::INTERNAL_TABLES)
             .query(&statement)
             .await?
             .try_collect()

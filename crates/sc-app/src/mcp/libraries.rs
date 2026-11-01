@@ -14,15 +14,14 @@
 //! adding one is harmless until something imports it) and deleting needs
 //! `allow_drop`.
 
+use sc_types::ArgsExt;
 use std::sync::Arc;
 
-use sc_api::mcp::{
-    AdminTool, Area, GRANT_DROP, GRANT_EDIT, ToolContext, arguments, optional_string, require_grant,
-};
+use sc_api::mcp::{AdminTool, Area, GRANT_DROP, GRANT_EDIT, ToolContext, arguments, require_grant};
 use sc_api::schema_edit::Grants;
 use sc_catalog::{Catalog, CodeLibrary};
 use sc_error::{Error, Result};
-use serde_json::{Map, Value as Json, json};
+use serde_json::{Value as Json, json};
 use uuid::Uuid;
 
 use super::{ARG_APPLICATION, unknown_application};
@@ -88,7 +87,7 @@ impl AdminTool for DescribeLibraries {
     async fn call(&self, ctx: &ToolContext<'_>, _grants: &Grants, args: &Json) -> Result<Json> {
         let args = arguments(args, &[ARG_APPLICATION])?;
         let mut libraries = crate::describe_code_libraries(ctx.catalog).await?;
-        if let Some(subdomain) = optional_string(&args, ARG_APPLICATION)? {
+        if let Some(subdomain) = args.optional_string(ARG_APPLICATION)? {
             application_id(ctx, &subdomain).await?;
             libraries
                 .retain(|l| l["application"].is_null() || l["application"] == json!(subdomain));
@@ -168,17 +167,18 @@ impl AdminTool for SaveLibrary {
             &[ARG_NAME, ARG_CODE, ARG_DESCRIPTION, ARG_APPLICATION],
         )?;
         require_grant(grants.edit, "create or change a code library", GRANT_EDIT)?;
-        let name = required(&args, ARG_NAME)?;
-        let code = optional_string(&args, ARG_CODE)?
+        let name = args.required_string(ARG_NAME)?;
+        let code = args
+            .optional_string(ARG_CODE)?
             .ok_or_else(|| Error::invalid(format!("`{ARG_CODE}` is required")))?;
-        let subdomain = optional_string(&args, ARG_APPLICATION)?;
+        let subdomain = args.optional_string(ARG_APPLICATION)?;
         let application = match &subdomain {
             Some(s) => Some(application_id(ctx, s).await?),
             None => None,
         };
         let existing =
             sc_catalog::load_code_library_by_name(ctx.catalog, &name, application).await?;
-        let description = match optional_string(&args, ARG_DESCRIPTION)? {
+        let description = match args.optional_string(ARG_DESCRIPTION)? {
             Some(d) => d,
             None => existing
                 .as_ref()
@@ -256,8 +256,8 @@ impl AdminTool for DeleteLibrary {
     async fn call(&self, ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Json> {
         let args = arguments(args, &[ARG_NAME, ARG_APPLICATION])?;
         require_grant(grants.drop, "delete a code library", GRANT_DROP)?;
-        let name = required(&args, ARG_NAME)?;
-        let application = match optional_string(&args, ARG_APPLICATION)? {
+        let name = args.required_string(ARG_NAME)?;
+        let application = match args.optional_string(ARG_APPLICATION)? {
             Some(s) => Some(application_id(ctx, &s).await?),
             None => None,
         };
@@ -272,13 +272,6 @@ impl AdminTool for DeleteLibrary {
         sc_catalog::delete_code_library(ctx.catalog, library.id).await?;
         Ok(json!({ "deleted": name }))
     }
-}
-
-fn required(args: &Map<String, Json>, key: &str) -> Result<String> {
-    optional_string(args, key)?
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| Error::invalid(format!("`{key}` is required")))
 }
 
 /// The id of the application with this subdomain, or the refusal naming the

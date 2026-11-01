@@ -6,3 +6,7 @@
 # `expect()` freely, so exempt them here.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
+
+# `too_many_lines` (warned in the root Cargo.toml): the length past which a
+# function asks to be split. Comments and blank lines are not counted.
+too-many-lines-threshold = 150

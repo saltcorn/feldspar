@@ -1451,13 +1451,8 @@ impl DenoModuleHost {
             || call.hosts.triggers.is_some()
             || call.hosts.module_fns.is_some()
             || call.hosts.files.is_some()
-            || call.service.is_some()
             || call.module_files.is_some()
-            || call.roles.is_some()
-            || call.credits.is_some()
-            || call.oauth.is_some()
-            || call.system.is_some()
-            || call.check.is_some();
+            || call.asks.any();
         if let Json::Object(map) = &mut request {
             map.insert("asks".to_owned(), Json::Bool(can_ask));
             // The functions this call's modules supply, by name, for v1's
@@ -1496,13 +1491,8 @@ impl DenoModuleHost {
         let triggers = call.hosts.triggers;
         let module_fns = call.hosts.module_fns;
         let files = call.hosts.files;
-        let service = call.service;
         let module_files = call.module_files;
-        let roles = call.roles;
-        let credits = call.credits;
-        let oauth = call.oauth;
-        let system = call.system;
-        let check = call.check;
+        let asks_of = call.asks;
         // The run's budget, and the same one a code body's run gets: a module's
         // N+1 costs what a body's N+1 costs, because it is the same bound on the
         // same server doing the same work. A service has none (`None`).
@@ -1568,13 +1558,8 @@ impl DenoModuleHost {
                             triggers,
                             module_fns,
                             files,
-                            service,
                             module_files,
-                            roles,
-                            credits,
-                            oauth,
-                            system,
-                            check,
+                            asks: asks_of,
                         };
                         let (ok, text) = match serve(surfaces, ask.request).await {
                             Ok(value) => (
@@ -1675,13 +1660,8 @@ struct Surfaces<'a> {
     triggers: Option<&'a dyn TriggerHost>,
     module_fns: Option<&'a dyn sc_expr::ModuleFnHost>,
     files: Option<&'a dyn sc_expr::FileHost>,
-    service: Option<&'a dyn crate::host::ServiceAsks>,
     module_files: Option<&'a dyn sc_expr::FileHost>,
-    roles: Option<&'a dyn crate::host::RoleAsks>,
-    credits: Option<&'a dyn crate::host::CreditAsks>,
-    oauth: Option<&'a dyn crate::host::OAuthAsks>,
-    system: Option<&'a dyn crate::host::SystemAsks>,
-    check: Option<&'a dyn crate::host::CheckAsks>,
+    asks: crate::host::Asks<'a>,
 }
 
 /// One ask, on the surface it names.
@@ -1727,48 +1707,20 @@ async fn serve(surfaces: Surfaces<'_>, request: Json) -> Result<Json> {
                  service",
             )),
         },
-        "service" => match surfaces.service {
-            Some(service) => service.ask(plan).await,
-            None => Err(Error::config(
-                "only a module's running service can ask for this (`ctx.onTableChange`)",
-            )),
+        other => match crate::host::AskSurface::from_name(other) {
+            Some(kind) => match surfaces.asks.get(kind) {
+                Some(ask) => ask.ask(plan).await,
+                None => Err(Error::config(kind.refusal())),
+            },
+            None => Err(unknown_surface(other)),
         },
-        "roles" => match surfaces.roles {
-            Some(roles) => roles.ask(plan).await,
-            None => Err(Error::config(
-                "this module call cannot grant roles: `roles` is there in an action, a \
-                 service and a webhook (TODO-payments P3.3)",
-            )),
-        },
-        "credits" => match surfaces.credits {
-            Some(credits) => credits.ask(plan).await,
-            None => Err(Error::config(
-                "this module call cannot grant credits: `credits` is there in an action, a \
-                 service and a webhook (TODO-payments P6.4)",
-            )),
-        },
-        "oauth" => match surfaces.oauth {
-            Some(oauth) => oauth.ask(plan).await,
-            None => Err(Error::config(
-                "only an action called by a user can ask for their consent (`oauth.begin`)",
-            )),
-        },
-        "system" => match surfaces.system {
-            Some(system) => system.ask(plan).await,
-            None => Err(Error::config(
-                "only a module's route can read the installation's state and the machine's \
-                 resources (`systeminformation`, `EventLog`, `MetaData`)",
-            )),
-        },
-        "check" => match surfaces.check {
-            Some(check) => check.ask(plan).await,
-            None => Err(Error::config(
-                "only a module's checklist step can ask for this (`ctx.browser`, `ctx.http`, \
-                 `ctx.data`, `ctx.runStep`)",
-            )),
-        },
-        other => Err(Error::config(format!(
-            "`{other}` is not something a module can ask this server for; what a module may \
+    }
+}
+
+/// What a module is told when it asks on a surface there is no such thing as.
+fn unknown_surface(other: &str) -> Error {
+    Error::config(format!(
+        "`{other}` is not something a module can ask this server for; what a module may \
              reach is the database (`db`), this server's triggers (`trigger`), its modules' \
              functions (`function`), the file stores it was given (`files`), its own \
              file areas (`module_files`), role grants (`roles`), LLM credits \
@@ -1776,8 +1728,7 @@ async fn serve(surfaces: Surfaces<'_>, request: Json) -> Result<Json> {
              supervisor (`service`), from an action a consent flow (`oauth`) and, \
              from a route, the installation's state (`system`) and, from a checklist step, \
              the run it is a step of (`check`)"
-        ))),
-    }
+    ))
 }
 
 impl Pool {

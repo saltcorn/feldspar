@@ -26,20 +26,19 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::admin_endpoints;
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_app::{
     ApiConfig, Application, BuildTemplate, DeclaredFile, FilePhase, FrameworkDecl, FrameworkHost,
     FrameworkRef, FrameworkSet, InstallSpec, OperationAnswer, TargetOperation, TargetTemplate,
     bootstrap, install_frameworks, load_application, save_application,
 };
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_expr::Template;
 use sc_files::LocalFileStore;
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-};
+use sc_server::{AppMounts, ServerConfig, admin_handlers, build_router_with_apps};
 use sc_test_harness::TestDb;
 use sc_types::{BasicType, FormField, SECRET_SENTINEL};
 use serde_json::{Value, json};
@@ -322,7 +321,7 @@ async fn build_scaffolds_an_empty_project_and_regenerates_its_code_before_buildi
             .with("store", "apps")
             .with("project", "site"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     save_application(&catalog, &app).await?;
@@ -381,7 +380,7 @@ async fn deep_clean_reinstalls_the_dependencies_and_builds() -> sc_error::Result
             .with("store", "apps")
             .with("project", "shop"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     save_application(&catalog, &app).await?;
@@ -435,7 +434,7 @@ async fn deep_clean_reinstalls_the_dependencies_and_builds() -> sc_error::Result
             .with("store", "apps")
             .with("project", "plain"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     save_application(&catalog, &plain).await?;

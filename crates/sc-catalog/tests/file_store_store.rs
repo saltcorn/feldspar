@@ -8,6 +8,7 @@
 //! never seen Saltcorn grows the table without a migration step, and a delete
 //! removes the definition without touching a byte of the data.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_catalog::{
@@ -33,7 +34,7 @@ async fn catalog(db: &TestDb) -> Result<Catalog> {
 fn docs_store() -> FileStoreDef {
     let mut def = FileStoreDef::local("docs", "/srv/docs")
         .description("Shared documents")
-        .min_role(40);
+        .min_role(Role::of(40));
     def.attributes.insert("owner".into(), "facilities".into());
     def
 }
@@ -60,7 +61,7 @@ async fn a_definition_round_trips_through_its_row() -> Result<()> {
         .expect("the definition should load by id");
     assert_eq!(loaded, def);
     assert_eq!(loaded.setting(CFG_PATH), Some("/srv/docs"));
-    assert_eq!(loaded.min_role, Some(40));
+    assert_eq!(loaded.min_role, Some(Role::of(40)));
     assert_eq!(loaded.backend, LOCAL_BACKEND);
     assert_eq!(
         loaded.attributes.get("owner").and_then(|v| v.as_str()),

@@ -80,21 +80,11 @@ pub const COL_EMAIL_VERIFIED: &str = "email_verified";
 /// what is in it, through [`set_check_user`](crate::set_check_user).
 pub const COL_ATTRIBUTES: &str = "attributes";
 
-/// The most-privileged role: full access.
-pub const ROLE_ADMIN: u8 = 1;
-/// The least-privileged role: public / not logged in.
-pub const ROLE_PUBLIC: u8 = 100;
-
-/// Whether `role` is within the valid 1–100 range (technical design §7.1).
-pub fn role_in_range(role: u8) -> bool {
-    (ROLE_ADMIN..=ROLE_PUBLIC).contains(&role)
-}
-
 /// The fields of the users table, in declaration order.
 ///
 /// `role` is a foreign key onto [`_fd_roles`](crate::ROLES_TABLE) (see
 /// [`user_role_field`](crate::roles::user_role_field)); the 1–100 bound is
-/// enforced in application code (see [`role_in_range`]) rather than as a
+/// enforced in application code (by [`Role`](sc_types::Role)) rather than as a
 /// database `CHECK`, which the MVP schema layer does not yet render — but the
 /// *existence* of the role is enforced by the database, because that is the
 /// part concurrency can break.
@@ -229,15 +219,5 @@ mod tests {
             .find(|f| f.base.name == COL_PASSWORD_HASH)
             .unwrap();
         assert!(!pw.required); // nullable
-    }
-
-    #[test]
-    fn role_range_bounds() {
-        assert!(!role_in_range(0));
-        assert!(role_in_range(ROLE_ADMIN));
-        assert!(role_in_range(50));
-        assert!(role_in_range(ROLE_PUBLIC));
-        // 101 is unrepresentable in u8-space only up to 255; 101 is out of range.
-        assert!(!role_in_range(101));
     }
 }

@@ -25,6 +25,8 @@
 //! refusal, a publish's stamped source and the leave.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::{Socket, send};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,9 +35,9 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode, header};
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use sc_app::{ApiConfig, Application, CodeFramework, FrameworkRef, StreamRef};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, Role, SessionStore, UserUpdate, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, UserUpdate, create_user, save_role};
 use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -60,10 +62,7 @@ const VISITOR: &str = "visitor@example.com";
 const COLLEAGUE: &str = "colleague@example.com";
 const PASSWORD: &str = "correct-horse";
 /// The tutorial's Member role.
-const ROLE_MEMBER: u8 = 40;
-
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+const ROLE_MEMBER: Role = Role::of(40);
 
 /// A cookie-jar client addressing one host.
 struct Client {
@@ -88,9 +87,9 @@ impl Client {
             builder = builder.header(header::COOKIE, jar);
         }
         if method != "GET"
-            && let Some(csrf) = self.cookies.get(sc_server::CSRF_COOKIE)
+            && let Some(csrf) = self.cookies.get(sc_api::auth::CSRF_COOKIE)
         {
-            builder = builder.header(sc_server::CSRF_HEADER, csrf);
+            builder = builder.header(sc_api::auth::CSRF_HEADER, csrf);
         }
         let request = match body {
             Some(ref b) => builder
@@ -230,10 +229,10 @@ async fn assumed() -> Result<Tutorial> {
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;
     catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", &dir.0)?))?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
-    create_user(&catalog, ADMIN, PASSWORD, ROLE_ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
+    create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
     create_user(&catalog, MEMBER, PASSWORD, ROLE_MEMBER).await?;
-    create_user(&catalog, VISITOR, PASSWORD, ROLE_PUBLIC).await?;
+    create_user(&catalog, VISITOR, PASSWORD, Role::PUBLIC).await?;
     create_user(&catalog, COLLEAGUE, PASSWORD, ROLE_MEMBER).await?;
 
     let agents = sc_server::install_agents(&catalog).await?;
@@ -333,10 +332,6 @@ fn todo_app() -> Application {
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"))
     .with_stream(StreamRef::new("boiler"))
-}
-
-async fn send(socket: &mut Socket, frame: Value) {
-    socket.send(Message::text(frame.to_string())).await.unwrap();
 }
 
 async fn next_frame(socket: &mut Socket) -> Option<Value> {
@@ -557,12 +552,12 @@ async fn part_one_the_live_socket() -> Result<()> {
     let member_id = sc_auth::load_user_by_email(&tutorial.catalog, MEMBER)
         .await?
         .unwrap()
-        .id;
+        .id();
     sc_auth::update_user(
         &tutorial.catalog,
         member_id,
         UserUpdate {
-            role: Some(ROLE_PUBLIC),
+            role: Some(Role::PUBLIC),
             ..UserUpdate::default()
         },
     )
@@ -717,6 +712,7 @@ async fn elements_until(
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn part_two_notifications_and_progress() -> Result<()> {
     let tutorial = assumed().await?;
     let mut admin = tutorial.on(BASE_DOMAIN);
@@ -724,7 +720,7 @@ async fn part_two_notifications_and_progress() -> Result<()> {
     let member_id = sc_auth::load_user_by_email(&tutorial.catalog, MEMBER)
         .await?
         .unwrap()
-        .id;
+        .id();
 
     // --- Step 1: an internal stream, one topic per user --------------------
     let keys: Value = serde_json::from_str(&doc_block(
@@ -917,7 +913,7 @@ async fn part_two_notifications_and_progress() -> Result<()> {
 /// its topics are rows of.
 fn todo_app_part_four() -> Application {
     todo_app()
-        .with_table(sc_catalog::TableId("boards".to_owned()))
+        .with_table("boards".to_owned())
         .with_stream(StreamRef::new("board_presence"))
 }
 
@@ -986,6 +982,7 @@ async fn diff_with(socket: &mut Socket, sub: &str, part: &str) -> Value {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn part_four_presence_on_the_board() -> Result<()> {
     const OUTSIDER: &str = "outsider@example.com";
     let tutorial = assumed().await?;
@@ -996,7 +993,7 @@ async fn part_four_presence_on_the_board() -> Result<()> {
             .await
             .unwrap()
             .unwrap()
-            .id
+            .id()
             .hyphenated()
             .to_string()
     };
@@ -1026,7 +1023,7 @@ async fn part_four_presence_on_the_board() -> Result<()> {
             "/api/tables/boards",
             Some(json!({
                 "label": "", "description": "",
-                "min_role_read": ROLE_ADMIN, "min_role_write": ROLE_ADMIN,
+                "min_role_read": Role::ADMIN, "min_role_write": Role::ADMIN,
                 "ownership_formula": "board_membersↃboard.some(m => m.member === user.id)",
                 "rls_enabled": false,
                 "sync_enabled": false,

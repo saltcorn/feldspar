@@ -1,0 +1,31 @@
+[package]
+name = "sc-net"
+description = "Outbound connections to the public internet only: the one SSRF resolver, `PublicAddr` and the client that connects to one (layer 0)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sc-error.workspace = true
+# The outbound HTTP client this crate wraps: its resolver hook is where a name
+# becomes the addresses a connection is made to, and its redirect hook where a
+# hop's address literal is checked.
+reqwest.workspace = true
+# `lookup_host`: the process's resolution (`getaddrinfo`, which `sc-dns`
+# intercepts in a static build), filtered here rather than replaced.
+tokio = { workspace = true, features = ["net"] }
+
+[features]
+# `PublicAddr::test_listener`: a test's own loopback listener taken as a public
+# address, so the pinning itself can be tested. Enabled by dev-dependencies
+# only, which a normal build never unifies into.
+test-listener = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }
+
+[lints]
+workspace = true

@@ -131,7 +131,7 @@ impl SchemaProjection {
         for other in &self.tables {
             for field in &other.fields {
                 if let crate::field::DataFieldKind::Key { target_table, .. } = &field.kind
-                    && target_table.0 == table
+                    && target_table == table
                     && other.name != table
                 {
                     out.push((other.name.clone(), field.base.name.clone()));
@@ -145,13 +145,12 @@ impl SchemaProjection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::{DataField, DataFieldKind, DbId, FieldId, TableId};
+    use crate::field::{DataField, DataFieldKind, DbId, FieldId};
     use crate::table::TableSource;
     use sc_types::{BasicType, TypeRef};
 
     fn table(name: &str, fields: Vec<DataField>) -> Table {
         Table {
-            id: TableId(name.to_owned()),
             name: name.to_owned(),
             database: DbId::primary(),
             source: TableSource::Database,
@@ -172,7 +171,7 @@ mod tests {
     fn key(name: &str, target: &str) -> DataField {
         let mut field = DataField::plain(name, TypeRef::Basic(BasicType::Int));
         field.kind = DataFieldKind::Key {
-            target_table: TableId(target.to_owned()),
+            target_table: target.to_owned(),
             target_field: FieldId("id".to_owned()),
             summary_field: None,
         };

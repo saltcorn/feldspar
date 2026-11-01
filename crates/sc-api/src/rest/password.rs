@@ -29,22 +29,24 @@
 //! log and no `Referer`. The page at `/set-password` is the application's own; it
 //! reads the fragment and calls `set-password`.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_auth::{
     InviteOutcome, NewUser, PasswordTokenPurpose, User, invite_user, issue_password_token,
     load_user_by_email, password_token_issued_within, redeem_password_token, user_email,
 };
-use sc_catalog::Catalog;
-use sc_email::{Email, Mailer, parse_mailbox};
+use sc_catalog::{Catalog, PublicBaseUrl};
+use sc_config::{Mailbox, parse_mailbox};
+use sc_email::{Email, Mailer};
 use sc_error::{Error, Result};
 use sc_query::Value;
 use serde_json::{Map, Value as Json, json};
 
 use crate::auth::{user_summary_json, user_summary_schema};
 use crate::provider::{ApiRequest, ApiResponse};
-use crate::rows::{column_value, require_object};
 use crate::schema::{StructField, TypeSchema};
+use sc_access::rows::{column_value, require_object};
 
 /// The setting that projects `POST {mount}/invite`. Off unless an admin turns
 /// it on: making accounts for other people, and sending them mail, is a
@@ -57,7 +59,7 @@ pub const CFG_INVITE_MIN_ROLE: &str = "invite_min_role";
 
 /// What [`CFG_INVITE_MIN_ROLE`] defaults to: admins only, until somebody says
 /// who else.
-pub const DEFAULT_INVITE_MIN_ROLE: u8 = sc_auth::ROLE_ADMIN;
+pub const DEFAULT_INVITE_MIN_ROLE: Role = Role::ADMIN;
 
 /// The path the emailed link opens in the application.
 pub const SET_PASSWORD_PAGE: &str = "/set-password";
@@ -95,7 +97,7 @@ const INVITE_KEYS: [&str; 9] = [
 /// A role outside `1..=99` is `None` rather than a default: the configuration
 /// was checked on save ([`check_invite_config`]), so one out of range now was
 /// never accepted, and failing closed projects nothing.
-pub fn rest_invite_min_role(config: &sc_types::Attrs) -> Option<u8> {
+pub fn rest_invite_min_role(config: &sc_types::Attrs) -> Option<Role> {
     if !config
         .get(CFG_ALLOW_INVITE)
         .and_then(Json::as_bool)
@@ -107,7 +109,7 @@ pub fn rest_invite_min_role(config: &sc_types::Attrs) -> Option<u8> {
         None => Some(DEFAULT_INVITE_MIN_ROLE),
         Some(role) => role
             .as_u64()
-            .and_then(|r| u8::try_from(r).ok())
+            .and_then(|r| Role::try_from(r).ok())
             .filter(|r| invite_min_role_allowed(*r)),
     }
 }
@@ -117,7 +119,7 @@ pub(crate) fn check_invite_config(config: &sc_types::Attrs) -> Result<()> {
     if let Some(role) = config.get(CFG_INVITE_MIN_ROLE).filter(|r| !r.is_null())
         && !role
             .as_u64()
-            .and_then(|r| u8::try_from(r).ok())
+            .and_then(|r| Role::try_from(r).ok())
             .is_some_and(invite_min_role_allowed)
     {
         return Err(Error::invalid(format!(
@@ -128,8 +130,8 @@ pub(crate) fn check_invite_config(config: &sc_types::Attrs) -> Result<()> {
     Ok(())
 }
 
-fn invite_min_role_allowed(role: u8) -> bool {
-    (sc_auth::ROLE_ADMIN..sc_auth::ROLE_PUBLIC).contains(&role)
+fn invite_min_role_allowed(role: Role) -> bool {
+    !role.is_public()
 }
 
 /// The shape of an invitation, as a generated client types it.
@@ -174,14 +176,14 @@ pub(crate) fn ok_schema() -> TypeSchema {
 
 /// A message's content before the link is known: subject, bodies, sender.
 pub(crate) struct Template {
-    pub(crate) from: Option<sc_email::Mailbox>,
+    pub(crate) from: Option<Mailbox>,
     pub(crate) subject: String,
     pub(crate) text: Option<String>,
     pub(crate) html: Option<String>,
 }
 
 impl Template {
-    pub(crate) fn render(&self, sender: sc_email::Mailbox, to: &str, link: &str) -> Result<Email> {
+    pub(crate) fn render(&self, sender: Mailbox, to: &str, link: &str) -> Result<Email> {
         let fill = |s: &str| {
             s.replace(LINK_PLACEHOLDER, link)
                 .replace(EMAIL_PLACEHOLDER, to)
@@ -218,10 +220,10 @@ pub(crate) async fn invite(
     let role = obj
         .get("role")
         .and_then(Json::as_u64)
-        .and_then(|r| u8::try_from(r).ok())
+        .and_then(|r| Role::try_from(r).ok())
         .ok_or_else(|| Error::invalid("`role` must be the new account's role number"))?;
     let language = optional_text(obj, "language")?;
-    let extra = user_fields(cat, obj.get("fields"), inviter.role)?;
+    let extra = user_fields(cat, obj.get("fields"), inviter.role())?;
 
     // Everything that can be wrong with the *message* is found before an
     // account exists, so a bad template never leaves one behind.
@@ -232,12 +234,12 @@ pub(crate) async fn invite(
 
     let new = NewUser {
         email,
-        password: String::new(),
+        password: sc_error::Secret::default(),
         role,
         language,
         extra,
     };
-    let (user, token, created) = match invite_user(cat, new, inviter.role).await? {
+    let (user, token, created) = match invite_user(cat, new, inviter.role()).await? {
         InviteOutcome::Created { user, token } => (user, token, true),
         InviteOutcome::Resent { user, token } => (user, token, false),
         InviteOutcome::AlreadyActive => {
@@ -258,8 +260,8 @@ pub(crate) async fn invite(
         // made a moment ago goes again, and the caller can simply retry. A
         // resent invitation's account was already there and stays.
         if created {
-            sc_auth::delete_password_tokens_for_user(cat, user.id).await?;
-            sc_auth::delete_user(cat, user.id).await?;
+            sc_auth::delete_password_tokens_for_user(cat, user.id()).await?;
+            sc_auth::delete_user(cat, user.id()).await?;
         }
         return Err(Error::msg(format!(
             "the invitation could not be sent, so no account was made: {e}"
@@ -304,13 +306,13 @@ pub(crate) async fn forgot_password(
         _ => return ok(),
     };
     let throttle = chrono::Duration::seconds(RESET_THROTTLE_SECONDS);
-    if password_token_issued_within(cat, user.id, PasswordTokenPurpose::Reset, throttle).await? {
+    if password_token_issued_within(cat, user.id(), PasswordTokenPurpose::Reset, throttle).await? {
         return ok();
     }
     let Some(to) = user_email(&user).map(str::to_owned) else {
         return ok();
     };
-    let token = issue_password_token(cat, user.id, PasswordTokenPurpose::Reset).await?;
+    let token = issue_password_token(cat, user.id(), PasswordTokenPurpose::Reset).await?;
     let template = Template {
         from: None,
         subject: RESET_SUBJECT.to_owned(),
@@ -362,21 +364,23 @@ pub(crate) async fn set_password(req: &ApiRequest, cat: &Catalog) -> Result<ApiR
     }
 }
 
-/// The link a token travels in.
-fn link(origin: &str, token: &str) -> String {
-    format!("{origin}{SET_PASSWORD_PAGE}#token={token}")
+/// The link a token travels in: on a [`PublicBaseUrl`], which only the
+/// configuration and the router's host table make (TODO-code-quality Q4.2).
+fn link(origin: &PublicBaseUrl, token: &str) -> String {
+    origin.join(&format!("{SET_PASSWORD_PAGE}#token={token}"))
 }
 
 /// The origin a link opens: this application's, or the one served on `app`.
-pub(crate) fn link_origin(req: &ApiRequest, app: Option<&str>) -> Result<String> {
-    let links = req.links.as_ref().ok_or_else(|| {
+pub(crate) fn link_origin(req: &ApiRequest, app: Option<&str>) -> Result<PublicBaseUrl> {
+    let no_address = || {
         Error::config(
             "this request did not arrive at an application, so there is no \
              address to build a link to",
         )
-    })?;
+    };
+    let links = req.links.as_ref().ok_or_else(no_address)?;
     match app.map(str::trim).filter(|a| !a.is_empty()) {
-        None => Ok(links.0.own_origin()),
+        None => links.0.own_origin().ok_or_else(no_address),
         Some(app) => links.0.app_origin(app).ok_or_else(|| {
             Error::invalid(format!(
                 "`app`: no application is served on the subdomain `{app}`"
@@ -421,7 +425,7 @@ fn invite_template(obj: &Map<String, Json>) -> Result<Template> {
 /// the users table's own types. System columns are refused further down, by
 /// the same check every other way of making an account has.
 ///
-/// A column flagged [`ADMIN_ONLY_WRITE`](crate::user_rows::ADMIN_ONLY_WRITE)
+/// A column flagged [`ADMIN_ONLY_WRITE`](sc_access::user_rows::ADMIN_ONLY_WRITE)
 /// — the `org_id` a tenancy formula reads — is set by an admin's invitation
 /// only. The account is written directly, not through the row layer that
 /// holds every other write to that rule, so it is held to it here: otherwise a
@@ -429,7 +433,7 @@ fn invite_template(obj: &Map<String, Json>) -> Result<Template> {
 fn user_fields(
     cat: &Catalog,
     fields: Option<&Json>,
-    inviter_role: u8,
+    inviter_role: Role,
 ) -> Result<std::collections::BTreeMap<String, Value>> {
     let mut out = std::collections::BTreeMap::new();
     let Some(fields) = fields.filter(|f| !f.is_null()) else {
@@ -445,9 +449,7 @@ fn user_fields(
                 "`fields`: `{column}` is set by the invitation itself, not as a field"
             )));
         }
-        if inviter_role > sc_auth::ROLE_ADMIN
-            && crate::user_rows::is_admin_only_write(&users, column)
-        {
+        if !inviter_role.is_admin() && sc_access::user_rows::is_admin_only_write(&users, column) {
             return Err(Error::auth(format!(
                 "`fields`: `{column}` of an account is set by an admin only"
             )));
@@ -538,11 +540,11 @@ mod tests {
         config.insert(CFG_ALLOW_INVITE.into(), json!(true));
         assert_eq!(
             rest_invite_min_role(&config),
-            Some(1),
+            Some(Role::ADMIN),
             "admins only by default"
         );
         config.insert(CFG_INVITE_MIN_ROLE.into(), json!(40));
-        assert_eq!(rest_invite_min_role(&config), Some(40));
+        assert_eq!(rest_invite_min_role(&config), Some(Role::of(40)));
         assert!(check_invite_config(&config).is_ok());
         config.insert(CFG_INVITE_MIN_ROLE.into(), json!(100));
         assert!(check_invite_config(&config).is_err());

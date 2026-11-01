@@ -121,7 +121,7 @@ pub async fn system_info(catalog: &Catalog) -> Json {
     let uptime = SystemTime::now()
         .duration_since(started_at)
         .unwrap_or_default();
-    let database = match catalog.primary().server_version().await {
+    let database = match catalog.primary(crate::ADMIN_TASKS).server_version().await {
         Ok(found) => json!({ "product": found.product, "version": found.version, "error": null }),
         Err(e) => json!({ "product": null, "version": null, "error": e.to_string() }),
     };
@@ -150,7 +150,7 @@ pub fn schedule_restart() {
     tokio::spawn(async {
         tokio::time::sleep(RESTART_DELAY).await;
         sc_log::log_info!("restarting at an administrator's request");
-        sc_core_traits::kill_all_processes();
+        sc_agent_builtins::kill_all_processes();
         std::process::exit(RESTART_EXIT_CODE);
     });
 }

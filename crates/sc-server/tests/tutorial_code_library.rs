@@ -10,6 +10,8 @@
 //! both applications answer.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -18,13 +20,13 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::{CustomQuery, Method, QueryLanguage, set_custom_queries};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, SessionStore, create_user};
+use sc_auth::{SessionStore, create_user};
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_triggers,
+    AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_triggers,
 };
 use sc_test_harness::Teardown;
 use serde_json::{Value, json};
@@ -154,15 +156,15 @@ async fn setup(dir: &std::path::Path) -> sc_error::Result<(Router, Teardown)> {
         &sc_files::FileStoreDef::local("files", dir.to_string_lossy()),
     )
     .await?;
-    create_user(&catalog, "admin@example.com", PASSWORD, ROLE_ADMIN).await?;
-    sc_auth::save_role(&catalog, &sc_auth::Role::new(80, "Reader")).await?;
-    create_user(&catalog, "you@example.com", PASSWORD, 80).await?;
+    create_user(&catalog, "admin@example.com", PASSWORD, Role::ADMIN).await?;
+    sc_auth::save_role(&catalog, &sc_auth::RoleDef::new(Role::of(80), "Reader")).await?;
+    create_user(&catalog, "you@example.com", PASSWORD, Role::of(80)).await?;
 
     let step2 = blocks("Step 2");
     let query = |name: &str, method: Method, path: &str, code: &str| {
         CustomQuery::new(name, method, path, code)
             .language(QueryLanguage::Javascript)
-            .min_role(ROLE_PUBLIC)
+            .min_role(Role::PUBLIC)
     };
     let todo = sc_app::save_application(
         &catalog,

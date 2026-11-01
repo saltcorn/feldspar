@@ -24,7 +24,7 @@
 //!
 //! ## Who may read an image
 //!
-//! [`sc_api::RowImage`]: the role floor, then the table's ownership formula —
+//! [`sc_access::RowImage`]: the role floor, then the table's ownership formula —
 //! `owner === user.id` as a field comparison, anything else reified in the
 //! evaluator with its Ⱶ/Ↄ values prefetched once per image. Two economies keep
 //! a thousand subscribers from costing a thousand evaluations:
@@ -39,17 +39,18 @@
 //! ## What is sent
 //!
 //! `{op, key, row?}`, where `row` is the new image in **the REST read's
-//! projection** ([`sc_api::api_row`]) — the users table's password hash is
+//! projection** ([`sc_access::api_row`]) — the users table's password hash is
 //! not in it, because no API returns it — and is absent for `leave`, `delete`
 //! and a stream whose payload is only the key.
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use sc_api::RowImage;
-use sc_auth::{ROLE_PUBLIC, User};
+use sc_access::RowImage;
+use sc_auth::User;
 use sc_catalog::{Catalog, WriteOp};
 use sc_expr::JsEvaluator;
 use sc_stream::providers::table_changes::{KEY_KEY, KEY_OLD, KEY_OP, KEY_ROW};
@@ -303,7 +304,7 @@ impl<'e> Change<'e> {
 
 /// A caller as verdicts are shared: their id (none for anonymous), role and
 /// guest session.
-type Who = (Option<Uuid>, u8, Option<String>);
+type Who = (Option<Uuid>, Role, Option<String>);
 
 /// What is known of one caller's verdicts on the old and the new image — each
 /// asked only once its image matched a filter.
@@ -356,7 +357,7 @@ pub(crate) async fn decide(
             )
         });
         let user = subscriber.caller.get();
-        let role = user.as_ref().map_or(ROLE_PUBLIC, |user| user.role);
+        let role = user.as_ref().map_or(Role::PUBLIC, |user| user.role());
         let guest = subscriber.caller.guest_session();
         // The verdict is asked inside the caller's origin, so that an
         // ownership formula's `session.id` is their guest session's.
@@ -364,7 +365,7 @@ pub(crate) async fn decide(
             app: None,
             session: guest.clone(),
         };
-        let who = (user.as_ref().map(|user| user.id), role, guest);
+        let who = (user.as_ref().map(|user| user.id()), role, guest);
         let known = readable.entry(who).or_insert((None, None));
         let started = Instant::now();
         if matches_old
@@ -437,7 +438,7 @@ pub(crate) async fn decide(
 async fn verdict(
     image: &mut RowImage<'_>,
     access: &ChangeAccess,
-    role: u8,
+    role: Role,
     user: Option<&User>,
 ) -> bool {
     match image
@@ -474,7 +475,7 @@ fn sent(
         && delivered.carries_row()
         && let Some(row) = new
     {
-        value.insert(KEY_ROW.to_owned(), sc_api::api_row(table, row));
+        value.insert(KEY_ROW.to_owned(), sc_access::api_row(table, row));
     }
     Json::Object(value)
 }

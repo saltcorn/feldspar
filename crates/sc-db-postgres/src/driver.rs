@@ -72,7 +72,7 @@ pub struct PgConnectParams {
     pub user: String,
     /// That role's password; empty for a connection that needs none (a Unix
     /// socket with peer authentication, say).
-    pub password: String,
+    pub password: sc_error::Secret<String>,
     /// The one schema the connection presents (see [`PgDriver::schema`]).
     pub schema: String,
 }
@@ -148,7 +148,7 @@ impl PgDriver {
         // makes libpq offer one, which a socket connection using peer
         // authentication refuses.
         if !params.password.is_empty() {
-            config.password(&params.password);
+            config.password(params.password.expose());
         }
 
         Ok(Self::from_config(&config)?.scoped_to(schema))

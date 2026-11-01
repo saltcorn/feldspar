@@ -35,14 +35,15 @@ sc-llm.workspace = true
 # `User`: the caller a run carries, and the identity every tool executes as
 # (decision 5). Layer 5, below this one.
 sc-auth.workspace = true
-# The headless-browser seam `view_app` drives, re-exported from `view`.
-sc-browser.workspace = true
 # `TriggerDispatcher`: what a trait that runs a trigger needs (§11.3's
 # `run_trigger`), carried on the context beside the evaluator for the same
 # reason — it is a capability the deployment has or has not got, and a tool that
 # could not reach one must say so rather than invent a second way to fire an
 # event. Layer 6, below this crate; nothing here knows which triggers exist.
 sc-action.workspace = true
+# `Scoped`: the handle a tool's row reads and writes go through, with the run's
+# caller bound (TODO-code-quality Q3.4). Layer 6, below this crate.
+sc-access.workspace = true
 async-trait.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
@@ -57,7 +58,7 @@ regex-lite.workspace = true
 
 [features]
 # The scripted provider the loop, the traits and the chat socket are tested
-# against. A **feature**, not `#[cfg(test)]`: `sc-core-traits` and `sc-server`
+# against. A **feature**, not `#[cfg(test)]`: `sc-agent-builtins` and `sc-server`
 # test against it too, and a fake that only exists inside this crate's own test
 # build is one they cannot reach (decision 7).
 testing = []

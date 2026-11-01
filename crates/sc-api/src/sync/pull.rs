@@ -12,6 +12,7 @@
 //! device that loses an answer asks again from its old watermark and gets it
 //! again; that is the only repeat, and it does no harm.
 
+use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -26,9 +27,9 @@ use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
 
 use super::device::{check_device, devices_table};
-use crate::ownership;
-use crate::rows::{self, Executor, RowQuery};
 use crate::schema::{StructField, TypeSchema};
+use sc_access::ownership;
+use sc_access::rows::{self, Executor, RowQuery};
 
 /// How many keys one read asks for: a long `IN (…)` list is still one
 /// statement, but not an unbounded one.
@@ -94,13 +95,13 @@ pub(crate) async fn pull(
     let synced: Vec<Table> = exposed
         .iter()
         .filter_map(|name| cat.get(name).ok().flatten())
-        .filter(|table| table.sync_enabled() && may_read(table, user.role))
+        .filter(|table| table.sync_enabled() && may_read(table, user.role()))
         .collect();
 
     let tx = SharedTx::begin_snapshot(cat).await?;
     let read = read_tables(cat, &tx, &request, &synced, user, evaluator).await;
     // Read-only: there is nothing to commit, whichever way the reads went.
-    let _ = tx.rollback().await;
+    tx.abandon().await;
     let (watermark, since, tables) = read?;
 
     // What the device says it has applied — kept for the cleanup that will
@@ -118,6 +119,7 @@ pub(crate) async fn pull(
         &devices,
         &request.client_id.to_string(),
         &Json::Object(seen),
+        sc_catalog::Unchecked::system("sync: record what the caller's device has applied"),
     )
     .await?;
 
@@ -152,7 +154,7 @@ async fn read_tables(
                 "table": table.name,
                 "reset": true,
                 "rows": ownership::read_rows_as_in(
-                    cat, table, &RowQuery::new(), user.role, Some(user), evaluator, &executor,
+                    cat, table, &RowQuery::new(), user.role(), Some(user), evaluator, &executor,
                 ).await?,
                 "removed": [],
             }),
@@ -203,8 +205,8 @@ impl PullRequest {
 
 /// Whether `role` may read `table` at all: the table's floor, or an ownership
 /// formula or row-level security that decides row by row.
-fn may_read(table: &Table, role: u8) -> bool {
-    role <= table.access.min_role_read || table.ownership.is_some() || table.rls_enabled
+fn may_read(table: &Table, role: Role) -> bool {
+    role.meets(table.access.min_role_read) || table.ownership.is_some() || table.rls_enabled
 }
 
 /// What changed in `table` since the device's last pull: the changed rows as
@@ -241,7 +243,7 @@ async fn changes_of(
             cat,
             table,
             &query,
-            user.role,
+            user.role(),
             Some(user),
             evaluator,
             &executor,
@@ -304,16 +306,9 @@ async fn was_held(
             }),
             ..RowQuery::new()
         };
-        let read = ownership::read_rows_as_in(
-            cat,
-            table,
-            &query,
-            sc_auth::ROLE_ADMIN,
-            None,
-            evaluator,
-            executor,
-        )
-        .await?;
+        let read =
+            ownership::read_rows_as_in(cat, table, &query, Role::ADMIN, None, evaluator, executor)
+                .await?;
         for row in read.as_array().into_iter().flatten() {
             if let (Some(key), Json::Object(map)) = (row.get(&pk).map(key_text), row) {
                 current.insert(key, map.clone());
@@ -335,7 +330,7 @@ async fn was_held(
         }
         let image = Json::Object(image);
         let readable = ownership::RowImage::new(table, &image)
-            .readable(cat, user.role, Some(user), evaluator)
+            .readable(cat, user.role(), Some(user), evaluator)
             .await
             .unwrap_or(false);
         if readable {

@@ -4,7 +4,7 @@
 //!
 //! Elements are named by **stable locators** (`button "Save"`, `label=Email`,
 //! `text="Order saved"`, `testid=submit`, `css=…`; see
-//! [`sc_browser::locator`]), never by a snapshot's `@eN` refs, which are valid
+//! [`sc_agent::browser::locator`]), never by a snapshot's `@eN` refs, which are valid
 //! for one snapshot only. An action waits for its element until the step's time
 //! is up, and refuses a locator that matches several; an assertion polls the
 //! page until it holds or the time is up, so no step needs a `core.wait` in
@@ -27,7 +27,7 @@
 use std::str::FromStr;
 use std::time::Duration;
 
-use sc_browser::{BrowserAction, BrowserReport, Element, ElementInfo, Locator, TextMatch};
+use sc_agent::browser::{BrowserAction, BrowserReport, Element, ElementInfo, Locator, TextMatch};
 use sc_error::{Error, Result};
 use sc_types::{BasicType, FormField};
 use serde_json::{Value as Json, json};

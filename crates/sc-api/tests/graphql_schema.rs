@@ -16,7 +16,7 @@
 
 use sc_api::{GraphqlLimits, GraphqlProvider};
 use sc_catalog::{
-    AccessRules, DataField, DataFieldKind, DbId, FieldId, FileStoreId, Table, TableId, TableSource,
+    AccessRules, DataField, DataFieldKind, DbId, FieldId, FileStoreId, Table, TableSource,
 };
 use sc_types::{Attrs, BasicType, TypeRef};
 
@@ -37,7 +37,6 @@ fn table(name: &str, fields: Vec<DataField>) -> Table {
         .map(|f| f.base.name.clone())
         .collect();
     Table {
-        id: TableId(name.to_owned()),
         name: name.to_owned(),
         database: DbId::primary(),
         source: TableSource::Database,
@@ -66,7 +65,7 @@ fn id() -> DataField {
 fn key(name: &str, target_table: &str, target_field: &str) -> DataField {
     let mut field = column(name, BasicType::Int);
     field.kind = DataFieldKind::Key {
-        target_table: TableId(target_table.to_owned()),
+        target_table: target_table.to_owned(),
         target_field: FieldId(target_field.to_owned()),
         summary_field: None,
     };

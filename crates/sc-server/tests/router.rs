@@ -4,16 +4,18 @@
 //! DB-backed tests arrive in the second half of the Phase 6 server subphase.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER, SECURE_CSRF_COOKIE};
+use sc_types::Role;
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::{AuthRequirement, Endpoint, EndpointSet, Method, PathSpec};
-use sc_auth::{ROLE_ADMIN, SessionStore, User};
+use sc_auth::{SessionStore, User};
 use sc_server::{
-    CONTENT_SECURITY_POLICY, CSRF_COOKIE, CSRF_HEADER, HandlerRegistry, HandlerResponse,
-    SECURE_CSRF_COOKIE, SESSION_COOKIE, ServerConfig, build_router,
+    CONTENT_SECURITY_POLICY, HandlerRegistry, HandlerResponse, SESSION_COOKIE, ServerConfig,
+    build_router,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -64,17 +66,17 @@ fn test_registry() -> HandlerRegistry {
             .collect();
         Ok(HandlerResponse::ok(json!(rows)))
     });
-    reg.register("secret", |_ctx| async {
+    reg.register_admin("secret", |_ctx| async {
         Ok(HandlerResponse::ok(json!({ "ok": true })))
     });
     reg.register("login", |_ctx| async {
-        let admin = User::new(Uuid::new_v4(), ROLE_ADMIN)?;
+        let admin = User::new(Uuid::new_v4(), Role::ADMIN);
         Ok(HandlerResponse::start_session(
             admin,
-            json!({ "role": ROLE_ADMIN }),
+            json!({ "role": Role::ADMIN }),
         ))
     });
-    reg.register("logout", |_ctx| async {
+    reg.register_signed_in("logout", |_ctx| async {
         Ok(HandlerResponse::end_session(json!({ "ok": true })))
     });
     reg
@@ -391,11 +393,90 @@ async fn admin_route_requires_authentication() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
+/// An administrator's session that an application issued is not admin
+/// authority on the admin host: it is no session there at all (code quality
+/// Q2.5, security review #15). The same administrator signed in on the admin
+/// host is one.
+#[tokio::test]
+async fn an_application_session_is_no_admin_session_on_the_admin_host() {
+    let (router, sessions) = test_router();
+    let admin = User::new(Uuid::new_v4(), Role::ADMIN);
+    let secret = |token: &str| {
+        Request::get("/api/secret")
+            .header(header::COOKIE, format!("{SESSION_COOKIE}={token}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let app_token = sessions
+        .login_in(admin.clone(), sc_auth::SessionScope::App)
+        .await
+        .unwrap();
+    assert!(app_token.starts_with(sc_auth::APP_TOKEN_PREFIX));
+    // The session is live — the store resolves it — and still refused.
+    assert!(sessions.user_for(&app_token).await.unwrap().is_some());
+    let (status, _, _) = call(&router, secret(&app_token)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let admin_token = sessions.login(admin).await.unwrap();
+    let (status, _, body) = call(&router, secret(&admin_token)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// A handler for an `admin()` endpoint must be registered behind the admin
+/// gate, so it is handed admin authority: one registered with plain
+/// `register` is a router that does not build, not a route that runs the
+/// handler for whoever asks (code quality Q2.7). A `LoggedIn` endpoint's
+/// handler likewise needs a gate that hands it a user.
+#[tokio::test]
+async fn an_admin_endpoint_cannot_be_served_by_an_open_handler() {
+    let build = |reg: HandlerRegistry| {
+        build_router(
+            &test_endpoints(),
+            reg,
+            Arc::new(SessionStore::default()),
+            &ServerConfig::default(),
+        )
+    };
+    assert!(build(test_registry()).is_ok());
+
+    let mut open_admin = test_registry();
+    open_admin.register("secret", |_ctx| async {
+        Ok(HandlerResponse::ok(json!({ "ok": true })))
+    });
+    let err = build(open_admin).expect_err("an open handler for an admin endpoint");
+    assert!(err.to_string().contains("`secret`"), "{err}");
+
+    let mut open_logout = test_registry();
+    open_logout.register("logout", |_ctx| async {
+        Ok(HandlerResponse::end_session(json!({ "ok": true })))
+    });
+    let err = build(open_logout).expect_err("an open handler for a LoggedIn endpoint");
+    assert!(err.to_string().contains("`logout`"), "{err}");
+
+    // And an admin handler, however it is reached, is never called without
+    // admin authority: the registry narrows the caller before the handler runs.
+    let reg = test_registry();
+    let handler = reg.get("secret").unwrap().clone();
+    let ctx = sc_server::HandlerCtx {
+        path_params: Default::default(),
+        query: Vec::new(),
+        body: Value::Null,
+        who: sc_server::Caller::Anonymous,
+        locale: sc_i18n::active().default_locale().clone(),
+        raw_body: None,
+        raw_file: None,
+        client_ip: None,
+        analytics_app: None,
+    };
+    assert!(handler(ctx).await.is_err());
+}
+
 #[tokio::test]
 async fn insufficient_role_is_forbidden() {
     let (router, sessions) = test_router();
     // Seed a session for a non-admin user (role 40) directly in the store.
-    let editor = User::new(Uuid::new_v4(), 40).unwrap();
+    let editor = User::new(Uuid::new_v4(), Role::of(40));
     let token = sessions.login(editor).await.unwrap();
 
     let request = Request::get("/api/secret")

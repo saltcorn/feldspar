@@ -10,10 +10,11 @@
 //! - A secret is always its sentinel, before and after.
 //! - Changesets span tables, so listing and reading them is the admin's alone.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use sc_auth::{ROLE_ADMIN, User};
+use sc_auth::User;
 use sc_catalog::history::{
     self, AsOf, ChangesetFilter, ChangesetRecord, ChangesetSummary, HistoryEntry,
 };
@@ -24,7 +25,7 @@ use sc_query::{Statement, Value};
 use serde_json::{Map, Value as Json, json};
 use uuid::Uuid;
 
-use crate::ownership::{RowImage, row_readable_as};
+use sc_access::ownership::{RowImage, row_readable_as};
 
 /// Who is reading history: their role and user, and the evaluator a reified
 /// read rule needs.
@@ -33,7 +34,7 @@ pub struct HistoryReader<'a> {
     /// The catalog.
     pub catalog: &'a Catalog,
     /// The caller's role (public when nobody is signed in).
-    pub role: u8,
+    pub role: Role,
     /// The caller, when signed in.
     pub user: Option<&'a User>,
     /// For a read rule that needs JavaScript.
@@ -52,14 +53,14 @@ impl<'a> HistoryReader<'a> {
     ) -> HistoryReader<'a> {
         HistoryReader {
             catalog,
-            role: crate::ownership::caller_role(user),
+            role: sc_auth::role_of(user),
             user,
             evaluator,
         }
     }
 
     pub(crate) fn is_admin(&self) -> bool {
-        self.role <= ROLE_ADMIN
+        self.role.is_admin()
     }
 
     /// `name`, when its history is on and open to this caller.
@@ -71,7 +72,7 @@ impl<'a> HistoryReader<'a> {
             )));
         }
         let min_role = history::history_min_role(&table.attributes);
-        if self.role > min_role.max(ROLE_ADMIN) {
+        if !self.role.meets(min_role) {
             return Err(Error::auth(format!(
                 "you may not read the history of `{name}`"
             )));
@@ -272,7 +273,7 @@ impl<'a> HistoryReader<'a> {
         let Some(users) = self.catalog.get(sc_auth::USERS_TABLE)? else {
             return Ok(BTreeMap::new());
         };
-        let dialect = self.catalog.primary().dialect();
+        let dialect = self.catalog.primary_dialect();
         let sql = format!(
             "SELECT {id}, {email} FROM {users} WHERE {id_text} IN ({ids})",
             id = dialect.quote_ident(sc_auth::COL_ID),
@@ -284,8 +285,11 @@ impl<'a> HistoryReader<'a> {
         let ids = Json::Array(ids.iter().map(|id| Json::String(id.to_string())).collect());
         let rows = self
             .catalog
-            .primary()
-            .query(&Statement::raw(sql, vec![Value::Json(ids)]))
+            .primary(crate::INTERNAL_TABLES)
+            .query(&Statement::raw(
+                sc_query::TrustedSql::composed(sql),
+                vec![Value::Json(ids)],
+            ))
             .await?
             .try_collect()
             .await?;

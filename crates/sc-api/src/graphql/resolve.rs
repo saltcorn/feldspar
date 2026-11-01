@@ -67,9 +67,9 @@ use super::args;
 use super::context::{RequestContext, request_context};
 use super::loader::{ChildKey, ChildLoader, ChildRequest};
 use super::names::{self, RelationNames};
-use crate::convert::value_to_json;
-use crate::ownership;
-use crate::rows::{self, RowQuery};
+use sc_access::ownership;
+use sc_access::rows::{self, RowQuery};
+use sc_types::value_to_json;
 
 /// The shape every resolver in this module has.
 pub type Resolver =
@@ -738,7 +738,7 @@ fn collect_extras(
         };
         match &field.kind {
             DataFieldKind::Key { target_table, .. } => {
-                let Ok(target) = cat.require(&target_table.0) else {
+                let Ok(target) = cat.require(target_table) else {
                     // A key out of the application's own tables carries its own
                     // value, which `SELECT *` (or the leaf below) already has.
                     push_leaf(prefix, &ident, &mut out.idents);

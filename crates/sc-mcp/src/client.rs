@@ -132,7 +132,7 @@ pub async fn call_tool(def: &McpServerDef, tool: &str, arguments: Json) -> Resul
 /// One open session.
 struct Session<'a> {
     def: &'a McpServerDef,
-    client: reqwest::Client,
+    client: guard::McpClient,
     headers: HeaderMap,
     next_id: AtomicU64,
     /// Set when a `notifications/tools/list_changed` arrives.
@@ -480,7 +480,7 @@ impl<'a> Session<'a> {
         guard::check_url(self.def, url)?;
         let mut request = self
             .client
-            .post(url.clone())
+            .request(reqwest::Method::POST, url.clone())?
             .headers(self.headers.clone())
             .header(ACCEPT, "application/json, text/event-stream")
             .json(message);
@@ -511,9 +511,10 @@ impl<'a> Session<'a> {
                 let Some(sid) = session_id.lock().await.clone() else {
                     return;
                 };
-                let request = self
-                    .client
-                    .delete(url.clone())
+                let Ok(request) = self.client.request(reqwest::Method::DELETE, url.clone()) else {
+                    return;
+                };
+                let request = request
                     .headers(self.headers.clone())
                     .header("Mcp-Session-Id", sid)
                     .timeout(Duration::from_secs(5));
@@ -558,7 +559,7 @@ impl Drop for Session<'_> {
 /// Open an HTTP+SSE session's event stream, and wait for the endpoint it names.
 async fn open_sse(
     def: &McpServerDef,
-    client: &reqwest::Client,
+    client: &guard::McpClient,
     headers: &HeaderMap,
     url: Url,
     list_changed: Arc<AtomicBool>,
@@ -572,7 +573,7 @@ async fn open_sse(
     let response = tokio::time::timeout(
         def.timeout(),
         client
-            .get(url.clone())
+            .request(reqwest::Method::GET, url.clone())?
             .headers(headers.clone())
             .header(ACCEPT, "text/event-stream")
             .send(),

@@ -119,7 +119,7 @@ every one of them is overloaded somewhere else.
   `sc-files` for the program and the optional raw-run directory.
 - **`sc-server`** registers `StanProvider` in `ModelServices` beside the built-ins, owns the
   process budget and the cancel path, and wires the new endpoints.
-- **`sc-core-actions`** gets `write_posterior` (§16).
+- **`sc-action-builtins`** gets `write_posterior` (§16).
 
 **Why Rust driving CmdStan and not a Python module over `cmdstanpy`:** the binder has to be in
 the host anyway, because it reads *several* datasets through the `DatasetSource` seam and a
@@ -1018,7 +1018,7 @@ Carried past this milestone — see the last section, and the note at the head o
       because `sigma` and `rho` mix slowly. Radon also runs the tutorial's
       prediction-in-code trigger. All three in parallel from a cold cache take 90 s here.
       Found a bug: a time grid's key is an instant, and writing it into a `date` field was
-      refused. Fixed in `sc-core-actions`: a midnight instant goes into a date as its day.)*
+      refused. Fixed in `sc-action-builtins`: a midnight instant goes into a date as its day.)*
 - [x] 11.2 `docs/TECHNICAL_DESIGN.md`: §14.2 gains "Bayesian models" (the nouns, the binder,
       dimensions and coordinates, `_fd_model_draws` and the optional raw run, the host's summary), the crate table and
       layer diagram gain `sc-stan`. *(The crate table and the dependency graph had it since

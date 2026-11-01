@@ -196,7 +196,7 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
                         "a raw statement is rendered on its own, not nested inside another",
                     ));
                 }
-                self.push(sql);
+                self.push(sql.as_str());
                 self.binds.extend(binds.iter().cloned());
                 Ok(())
             }
@@ -490,6 +490,7 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
         self.ident(&c.column);
     }
 
+    #[allow(clippy::too_many_lines)]
     fn expr(&mut self, e: &Expr) -> Result<()> {
         match e {
             Expr::Col(c) => {

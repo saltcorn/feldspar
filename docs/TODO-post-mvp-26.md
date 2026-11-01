@@ -676,7 +676,7 @@ default.
 - [x] 1.2 Remove the default model from the providers' backend specs (`openai_config_spec`,
       `anthropic_config_spec`), `LlmProviderDef::default_model`, and `LlmProviderDef::anthropic`
       / `::openai`. Tests that built a provider with a model now build a provider plus a model
-      row (`sc-llm`, `sc-agent` and `sc-core-traits` test `common` modules, and the server
+      row (`sc-llm`, `sc-agent` and `sc-agent-builtins` test `common` modules, and the server
       tests).
 - [x] 1.3 The per-backend model settings (`model_config_spec(backend)`) as `FormField`s: the
       four prices, context window, working budget, edit format, and each capability override.
@@ -821,7 +821,7 @@ default.
       *(Roles through `FakeModels`; modes through `Match::Offers`, since a request does not
       carry its mode.)*
 
-## Phase 5 — The coding tools, rebuilt (`sc-core-traits/src/coding`)
+## Phase 5 — The coding tools, rebuilt (`sc-agent-builtins/src/coding`)
 
 - [x] 5.1 `read_file`: numbered lines, `offset`/`limit` in lines (default 2000), a per-line
       character cap, paging instructions on truncation, binary detection, and the content hash
@@ -870,7 +870,7 @@ default.
 - [x] 5.12 Tool descriptions rewritten short, since their tokens are paid on every request.
       Measured in 8.3.
 
-## Phase 6 — `check` and the ratchet (`sc-core-traits`)
+## Phase 6 — `check` and the ratchet (`sc-agent-builtins`)
 
 - [x] 6.1 Settings: `checks` (ordered script names), `diagnose` (default `typecheck`),
       `application` (optional subdomain, validated as `build_application` validates it), and
@@ -891,7 +891,7 @@ default.
       added skip/only. Tests for each.
 - [x] 6.6 The `CheckFailed` signal on new failures.
 
-## Phase 6a — The shell (`sc-core-traits/src/coding/shell.rs`)
+## Phase 6a — The shell (`sc-agent-builtins/src/coding/shell.rs`)
 
 - [x] 6a.1 Settings: `may_use_shell` (default off), `shell_timeout` (default 120),
       `shell_timeout_max`, `shell_sandbox` (`none` | `container`), `shell_image`,
@@ -948,7 +948,7 @@ default.
       is no preview, but whose subdomain is served, is also a 404. The idle time is
       `--preview-idle-minutes`, and "idle" is unused rather than unwritten: any mount, lookup or
       request through it counts.)*
-- [x] 6b.4 A `sc-agent` seam for the two capabilities `sc-core-traits` cannot reach:
+- [x] 6b.4 A `sc-agent` seam for the two capabilities `sc-agent-builtins` cannot reach:
       `TraitContext::previews` (`AppPreviewer`: mount/refresh/unmount a preview for this run)
       and `TraitContext::browser` (`BrowserDriver`), both `Option` with `require_*` like the
       evaluator. `Runner::with_previews` / `with_browser`, wired in the server. The run-end
@@ -994,10 +994,10 @@ default.
       default 20, kept by `AgentLoop`. Compaction elides every screenshot but the latest, even
       inside the kept turns. Trace logging replaces image bytes with their size.)*
 
-## Phase 7 — The repo map (`sc-core-traits` or a new `sc-repomap` crate)
+## Phase 7 — The repo map (`sc-agent-builtins` or a new `sc-repomap` crate)
 
 - [x] 7.1 Decide the crate: a new `sc-repomap` crate keeps the tree-sitter C builds out of
-      everything that depends on `sc-core-traits`. Grammar crates for TypeScript/TSX,
+      everything that depends on `sc-agent-builtins`. Grammar crates for TypeScript/TSX,
       JavaScript and Python. Vendor the `tags.scm` queries with licence headers. *(`sc-repomap`,
       with no workspace dependencies: the caller passes paths and bytes. Tree-sitter 0.27 with
       `tree-sitter-tags`. The grammars sit behind the default `grammars` feature. The queries
@@ -1093,7 +1093,7 @@ default.
       scaffold. Three features planned, implemented, checked and committed, with the ledger
       totals and roles asserted. Where a Chromium is installed, the features' `pages` are
       snapshotted from the preview, and the live mount is asserted unchanged. *(The core
-      scenario is `sc-core-traits`' `coding_plan`, with a stand-in type check in place of
+      scenario is `sc-agent-builtins`' `coding_plan`, with a stand-in type check in place of
       `tsc`. The pages are `sc-server`'s `view_app` test.)*
 
 ## Phase 10 — The builder agent, the scaffold, the IDE, the admin UI
@@ -1101,7 +1101,7 @@ default.
 - [x] 10.1 `sc-app/src/builder_agent.rs`: `coding` alone with the §12 configuration. Remove
       `build_application` from the declaration. `FrameworkDecl` may declare `checks`. Shrink
       the prompts to role and platform. Update `TRAIT_CFG_*` constants, `builder_agent.rs`
-      tests, `sc-core-traits/tests/builder_agent_traits.rs`,
+      tests, `sc-agent-builtins/tests/builder_agent_traits.rs`,
       `sc-server/tests/app_builder_agent.rs` and `sc-app/tests/declared_framework.rs`.
       *(**Deviation:** on a server with no headless browser, `create_builder_agent` saves the
       agent with `may_view_app` off, since `coding` refuses the grant there. `check` now says no
@@ -1182,7 +1182,7 @@ default.
       sandbox choice, stated plainly). *(Steps 5a–5f. Two existing steps were wrong and are
       fixed: Step 1 asked for a model on the provider form, which Phase 1 removed, and Step 5
       configured `build_application` beside `coding`, which 10.1 replaced with `coding`'s own
-      `application` setting. `sc-core-traits/tests/docs_agents.rs` holds both documents to the
+      `application` setting. `sc-agent-builtins/tests/docs_agents.rs` holds both documents to the
       code's own labels, values and derived tool names.)*
 - [ ] 12.3 Walk the definition of done by hand against a real provider. Record the eval numbers
       and anything that deviated, then write the CHANGELOG entry.

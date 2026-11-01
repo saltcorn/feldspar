@@ -36,7 +36,7 @@
 //! A `user` stream's subscriber names no topic and is put on their own user
 //! id; an anonymous caller is told the stream is not there. A `row` stream's
 //! subscriber names a row's key, and is let in only if **the application's
-//! REST read of that row, as them,** returns it ([`sc_api::row_readable_as`]) —
+//! REST read of that row, as them,** returns it ([`sc_access::row_readable_as`]) —
 //! a missing row and a forbidden one are the same `unavailable`. A row
 //! subscription then watches its row's table and every table the table's
 //! ownership formula reads ([`sc_live::read_rule_tables`]); a write to one
@@ -61,7 +61,7 @@
 //! A page publishes on a subscription it holds. Whether it may is decided when
 //! the subscription is attached, by [`sc_live::may_publish`] — the stream's
 //! `client_publish`, and on a `row` topic the caller's **update** access to the
-//! row ([`sc_api::row_updatable_as`]) — sent as `can_publish` in `ready`, and
+//! row ([`sc_access::row_updatable_as`]) — sent as `can_publish` in `ready`, and
 //! decided again whenever the subscription's read access is (a touched row, the
 //! clock). A refused publish is `unavailable`, worded like any absence. The
 //! element is the hub's to stamp ([`Connection::publish`]): `source` is
@@ -98,7 +98,7 @@ use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use sc_api::StreamOpening;
 use sc_auth::{SessionStore, User};
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_live::{
     Attached, Caller, ChangeAccess, ClientFrame, CloseReason, Connection, ConnectionInfo, Delivery,
     DocNews, DocRefusal, DocSeat, DocTarget, ErrorCode, FrameError, LikeRules, LiveHub, LiveLimits,
@@ -255,7 +255,7 @@ async fn serve_in(socket: WebSocket, env: LiveEnv, caller: LiveCaller) {
     let limits = env.hub.limits().clone();
     let info = ConnectionInfo {
         app: env.subdomain.clone(),
-        user: caller.user.as_ref().map(|user| user.id),
+        user: caller.user.as_ref().map(|user| user.id()),
         session: caller.session.clone(),
     };
     let (connection, mut deliveries) = match env.hub.connect(info) {
@@ -473,7 +473,7 @@ impl Live {
     /// Who this connection is, as access is decided.
     fn caller(&self) -> Caller {
         let user = self.caller.user.as_ref();
-        Caller::new(user.map(|u| u.role), user.map(|u| u.id))
+        Caller::new(user.map(|u| u.role()), user.map(|u| u.id()))
     }
 
     /// One message from the client.
@@ -790,7 +790,7 @@ impl Live {
         if document.is_none() && row.provider != internal::INTERNAL {
             return Err("it is neither a document stream nor an internal stream".to_owned());
         }
-        if !app.app.can_access_table(&TableId(table.clone())) {
+        if !app.app.can_access_table(&table) {
             return Err(format!("its table `{table}` is not in the application"));
         }
         Ok(QueryGrant {
@@ -911,7 +911,7 @@ impl Live {
             Ok(Some(found)) => found,
             _ => return false,
         };
-        match sc_api::row_updatable_as(
+        match sc_access::row_updatable_as(
             &self.env.catalog,
             &found,
             key,
@@ -1187,7 +1187,7 @@ impl Live {
                     shown_fields(&self.env.catalog, self.caller.user.as_ref(), &shown).await;
                 let (seat, members) = self.connection.join_presence(
                     room,
-                    self.caller.user.as_ref().map(|user| user.id),
+                    self.caller.user.as_ref().map(|user| user.id()),
                     fields,
                 );
                 if let Some(extras) = self.extras.get_mut(sub) {
@@ -1392,8 +1392,8 @@ impl Live {
             // a stream nobody can be sent anything from.
             _ => return Err(format!("its table `{table}` is not there")),
         };
-        let like = match self.env.catalog.driver_for(&found) {
-            Ok(driver) => LikeRules::of(driver.as_ref()),
+        let like = match self.env.catalog.driver_info(&found.database) {
+            Ok(info) => LikeRules::of(info.dialect()),
             Err(_) => LikeRules::POSTGRES,
         };
         let filter = RowFilter::parse(&found, filter, like)
@@ -1476,7 +1476,7 @@ impl Live {
                 // Rule 3: a stream of a table's changes exists for this app
                 // only if the table does — in its subset, and in the catalog.
                 (TopicSpec::PerElementRow { table }, _) => {
-                    let exposed = app.app.can_access_table(&TableId(table.clone()))
+                    let exposed = app.app.can_access_table(table)
                         && matches!(self.env.catalog.get(table), Ok(Some(_)));
                     if !exposed {
                         facts.row = RowFact::TableNotExposed;
@@ -1492,7 +1492,7 @@ impl Live {
     async fn row_fact(&self, app: &MountedApp, table: &str, key: &str) -> RowFact {
         // Rule 3: a table outside the application's subset does not exist for
         // its pages, whatever the caller may read elsewhere.
-        if !app.app.can_access_table(&TableId(table.to_owned())) {
+        if !app.app.can_access_table(table) {
             return RowFact::TableNotExposed;
         }
         let found = match self.env.catalog.get(table) {
@@ -1500,7 +1500,7 @@ impl Live {
             _ => return RowFact::Unreadable,
         };
         let user = self.caller.user.as_ref();
-        match sc_api::row_readable_as(
+        match sc_access::row_readable_as(
             &self.env.catalog,
             &found,
             key,
@@ -1669,7 +1669,7 @@ impl Live {
         let mut now: Option<User> = None;
         if let Some(token) = &self.caller.session {
             match self.env.sessions.user_for(token).await {
-                Ok(Some(user)) => now = Some(user),
+                Ok(Some(user)) => now = Some(user.into_user()),
                 Ok(None) => {
                     return Err(CloseReason {
                         code: ErrorCode::SignedOut,
@@ -1973,7 +1973,7 @@ async fn shown_fields(
     }
     // Read afresh rather than taken from the session's copy, which can be a
     // minute old: a name changed a moment ago is the name shown.
-    let current = match sc_auth::load_user(catalog, user.id).await {
+    let current = match sc_auth::load_user(catalog, user.id()).await {
         Ok(Some(current)) => current,
         Ok(None) => return fields,
         Err(e) => {
@@ -1987,7 +1987,7 @@ async fn shown_fields(
     for name in shown {
         // Never the hash, whatever the settings say (`users` rows never carry
         // it onto a `User`, and the stream form refuses it).
-        if let Some(value) = current.extra.get(name) {
+        if let Some(value) = current.extra().get(name) {
             fields.insert(name.clone(), sc_types::value_to_json(value));
         }
     }

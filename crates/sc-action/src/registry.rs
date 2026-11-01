@@ -32,7 +32,7 @@ pub struct ActionRegistry {
 impl ActionRegistry {
     /// An empty registry.
     ///
-    /// The starting point for everything: `sc_core_actions::builtin_actions()`
+    /// The starting point for everything: `sc_action_builtins::builtin_actions()`
     /// fills one with the core set (design §10.1 — deliberately few), a plugin
     /// adds its own to that, and a test starts from one with just the action it is
     /// about. This crate deliberately registers **nothing** itself: it defines

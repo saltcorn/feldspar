@@ -84,6 +84,7 @@ pub(crate) fn apply(
 }
 
 /// The statements a change becomes, or `None` when it needs the table rebuilt.
+#[allow(clippy::too_many_lines)]
 fn statements(dialect: &SqliteDialect, change: &SchemaChange) -> Result<Option<Vec<String>>> {
     let statements = match change {
         SchemaChange::CreateTable {
@@ -464,6 +465,7 @@ fn translate_default(sql: &str) -> String {
 /// defer_foreign_keys` holds only to the end of the transaction, which is the
 /// savepoint [`run_all`] opens, so the window in which a dropped table's
 /// references dangle closes automatically — and is checked before it does.
+#[allow(clippy::too_many_lines)]
 fn rebuild_statements(
     conn: &Connection,
     dialect: &SqliteDialect,

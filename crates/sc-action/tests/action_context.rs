@@ -13,6 +13,7 @@
 //! trigger's own action body does not; and that the cascade chain defaults to the
 //! trigger itself.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{Action, ActionContext, ActionRegistry, Event, EventKind};
@@ -95,7 +96,7 @@ async fn an_action_sees_its_event_its_config_and_the_catalog() -> Result<()> {
         .on("books")
         .row(json!({ "id": 1, "title": "new" }))
         .old_row(json!({ "id": 1, "title": "old" }))
-        .caller(1, Some(json!({ "email": "admin@example.com" })));
+        .caller(Role::ADMIN, Some(json!({ "email": "admin@example.com" })));
     let mut config = Attrs::new();
     config.insert("message".into(), json!("hello"));
 
@@ -235,5 +236,55 @@ async fn a_registered_action_runs_through_the_registry() -> Result<()> {
     assert_eq!(result["message"], json!("via registry"));
     assert_eq!(result["title"], json!("registered"));
     assert_eq!(result["chain"], json!(["outer", "on-insert"]));
+    Ok(())
+}
+
+/// TODO-code-quality Q3.4: an action is handed its authority, not left to build
+/// it from `event.role` / `event.user`. Its rows are the **trigger's** — the
+/// administrator, in the event's user's name, with the chain that led here,
+/// on the step's transaction — and the event's caller is a principal of its
+/// own, for what a delegated operation acts as.
+#[tokio::test]
+async fn an_action_is_handed_the_triggers_authority_and_the_events_caller() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = Arc::new(catalog(&db).await?);
+    db.on_teardown(cat.teardown_hook());
+
+    let user = json!({ "id": "8f3b1c6e-2d4a-4b1e-9a57-0c2d3e4f5a6b", "email": "s@x" });
+    let event = Event::new(EventKind::Update).caller(Role::of(40), Some(user.clone()));
+    let config = Attrs::new();
+    let ctx = ActionContext::new(&cat, &event, &config, "audit")
+        .with_chain(vec!["outer".into(), "audit".into()]);
+
+    let scoped = ctx.scoped();
+    assert!(scoped.role().is_admin(), "a trigger writes as the admin");
+    let principal = scoped.principal().expect("a caller, not the system");
+    assert_eq!(
+        principal.user.as_ref(),
+        Some(&user),
+        "in the event's user's name"
+    );
+    assert_eq!(principal.chain, ["outer", "audit"]);
+    assert!(
+        scoped.unchecked().is_some(),
+        "the admin's rows are unchecked"
+    );
+    assert!(matches!(
+        scoped.executor(),
+        sc_access::rows::Executor::Pooled
+    ));
+
+    let caller = ctx.caller();
+    assert_eq!(caller.role, Role::of(40));
+    assert_eq!(caller.user, Some(user));
+    assert_eq!(caller.chain, ["outer", "audit"]);
+
+    // A workflow step's transaction is where the scoped handle's statements run.
+    let tx = sc_catalog::SharedTx::begin_primary(&cat)?;
+    let ctx = ActionContext::new(&cat, &event, &config, "audit").with_transaction(tx);
+    assert!(matches!(
+        ctx.scoped().executor(),
+        sc_access::rows::Executor::Transaction(_)
+    ));
     Ok(())
 }

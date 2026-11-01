@@ -8,7 +8,7 @@
 //! scrolling to row 40,000 — cost one page of rows instead of the table.
 //!
 //! Everything the vocabulary *means* is decided elsewhere: a comparison lowers
-//! through [`crate::filter`], shared with GraphQL, and every literal is coerced
+//! through [`sc_access::filter`], shared with GraphQL, and every literal is coerced
 //! against the column it stands beside rather than against JSON. This module is
 //! only the **syntax** — how `gte.2020-01-01`, `published.desc` and `limit=50`
 //! are spelled in a URL — and it parses into the row layer's own
@@ -23,8 +23,8 @@ use sc_error::{Error, Result};
 use sc_query::{Expr, OrderBy};
 use serde_json::Value as Json;
 
-use crate::filter;
-use crate::rows::RowQuery;
+use sc_access::filter;
+use sc_access::rows::RowQuery;
 
 /// The query-string keys that are not filters. A table column of the same name
 /// cannot be filtered on — the same trade PostgREST makes, and the reason these
@@ -72,14 +72,14 @@ pub const RESERVED: [&str; 6] = [
 pub fn row_query(table: &Table, pairs: &[(String, String)], row_cap: u64) -> Result<RowQuery> {
     let mut query = RowQuery::new().where_(column_filters(table, pairs)?);
     let search = match first(pairs, KEY_SEARCH) {
-        Some(phrase) => Some(crate::search::text_search(table, phrase, None)?),
+        Some(phrase) => Some(sc_access::search::text_search(table, phrase, None)?),
         None => None,
     };
     match (first(pairs, KEY_ORDER), &search) {
         (Some(order), _) => {
             query = query.order_by(order_keys_searching(table, order, search.as_ref())?);
         }
-        (None, Some(search)) => query = query.order_by(vec![crate::search::relevance(search)]),
+        (None, Some(search)) => query = query.order_by(vec![sc_access::search::relevance(search)]),
         (None, None) => {}
     }
     if let Some(search) = search {
@@ -90,10 +90,10 @@ pub fn row_query(table: &Table, pairs: &[(String, String)], row_cap: u64) -> Res
     // returns a handful of rows unless a `limit` asks for more.
     let unbounded = match first(pairs, KEY_NEAREST) {
         Some(spec) => {
-            let nearest = crate::vector::Nearest::parse(spec)?;
-            crate::vector::vector_field(table, &nearest.field)?;
+            let nearest = sc_access::vector::Nearest::parse(spec)?;
+            sc_access::vector::vector_field(table, &nearest.field)?;
             query = query.nearest(nearest);
-            crate::vector::DEFAULT_NEAREST
+            sc_access::vector::DEFAULT_NEAREST
         }
         None => row_cap,
     };
@@ -118,7 +118,9 @@ pub fn filter_predicate(table: &Table, pairs: &[(String, String)]) -> Result<Opt
     let Some(phrase) = first(pairs, KEY_SEARCH) else {
         return Ok(filters);
     };
-    let matched = Expr::TextMatch(Box::new(crate::search::text_search(table, phrase, None)?));
+    let matched = Expr::TextMatch(Box::new(sc_access::search::text_search(
+        table, phrase, None,
+    )?));
     Ok(Some(match filters {
         Some(filters) => filters.and(matched),
         None => matched,
@@ -159,7 +161,7 @@ pub fn filter_expr(table: &Table, key: &str, spec: &str) -> Result<Expr> {
             table.name
         )));
     }
-    if crate::user_rows::visible_field(table, key).is_none() {
+    if sc_access::user_rows::visible_field(table, key).is_none() {
         // `or=(…)`/`and=(…)`/`not.…` are PostgREST's, deliberately not taken
         // (see the module docs). They are named as the features they are —
         // unless the application really does have a column called `or`, in which
@@ -265,15 +267,15 @@ fn order_keys_searching(
     for item in spec.split(',').filter(|s| !s.trim().is_empty()) {
         let mut parts = item.trim().split('.');
         let column = parts.next().unwrap_or_default();
-        let visible = crate::user_rows::visible_field(table, column).is_some();
-        if column == crate::search::RELEVANCE && !visible {
+        let visible = sc_access::user_rows::visible_field(table, column).is_some();
+        if column == sc_access::search::RELEVANCE && !visible {
             let Some(search) = search else {
                 return Err(Error::invalid(format!(
                     "`order={column}` orders by how well a row matches a search, and this \
                      read has no `{KEY_SEARCH}`"
                 )));
             };
-            let rank = crate::search::relevance(search);
+            let rank = sc_access::search::relevance(search);
             keys.push(match parts.next() {
                 None | Some("desc") => rank,
                 Some("asc") => OrderBy::asc(rank.expr),

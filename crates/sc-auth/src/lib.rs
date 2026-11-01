@@ -45,6 +45,14 @@
 //! — the payments module does), and the first write made without them creates
 //! them; until then every read answers as if they were empty.
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
+    "sc-auth: users, sessions, tokens, roles, grants and the credits ledger",
+);
+
 mod check_user;
 mod create;
 mod credits;
@@ -109,12 +117,12 @@ pub use password_tokens::{
     PasswordTokenPurpose, RESET_TTL_MINUTES, SECOND_FACTOR_TTL_MINUTES, VERIFY_TTL_HOURS,
     bootstrap_password_tokens, create_invited_user, delete_password_tokens_for_user, invite_user,
     issue_password_token, password_token_holder, password_token_issued_within,
-    spend_password_token, redeem_email_verification, redeem_password_token,
+    redeem_email_verification, redeem_password_token, spend_password_token,
     sweep_expired_password_tokens, user_email, user_has_password,
 };
 pub use roles::{
     COL_ATTRIBUTES as COL_ROLE_ATTRIBUTES, COL_DESCRIPTION as COL_ROLE_DESCRIPTION,
-    COL_NAME as COL_ROLE_NAME, ROLES_TABLE, Role, bootstrap_roles, delete_role, list_roles,
+    COL_NAME as COL_ROLE_NAME, ROLES_TABLE, RoleDef, bootstrap_roles, delete_role, list_roles,
     load_role, load_role_by_name, save_role,
 };
 pub use second_factor::{
@@ -124,13 +132,13 @@ pub use second_factor::{
     finish_second_factor_setup, hotp, issue_second_factor_challenge, matching_step, new_secret,
     otpauth_url, qr_svg, regenerate_recovery_codes, requires_second_factor,
     role_requires_second_factor, second_factor_challenge, second_factor_enabled,
-    second_factor_needed, second_factor_status, second_factor_users,
-    spend_second_factor_challenge, time_step, totp_at, verify_second_factor,
+    second_factor_needed, second_factor_status, second_factor_users, spend_second_factor_challenge,
+    time_step, totp_at, verify_second_factor,
 };
 pub use session::{
-    CACHE_CAPACITY, CACHE_TTL_SECONDS, COL_EXPIRES_AT as COL_SESSION_EXPIRES_AT,
+    APP_TOKEN_PREFIX, CACHE_CAPACITY, CACHE_TTL_SECONDS, COL_EXPIRES_AT as COL_SESSION_EXPIRES_AT,
     COL_TOKEN_HASH as COL_SESSION_TOKEN_HASH, COL_USER as COL_SESSION_USER, DEFAULT_TTL_HOURS,
-    SESSIONS_TABLE, SessionEnded, SessionListener, SessionStore, bootstrap_sessions,
+    SESSIONS_TABLE, SessionEnded, SessionListener, SessionScope, SessionStore, bootstrap_sessions,
     changeset_session_key, changeset_token_key, create_session, delete_sessions_for_user,
 };
 pub use tokens::{
@@ -143,7 +151,7 @@ pub use tokens::{
     bearer_secret_hash, bootstrap_api_tokens, list_api_tokens, load_api_token, mint_api_token,
     new_bearer_secret, revoke_api_token, sweep_expired_api_tokens,
 };
-pub use user::User;
+pub use user::{AuthenticatedUser, User, role_of};
 
 /// Held while the role grants or the credits ledger are created on first use,
 /// so two first writes at once do not both create them.
@@ -151,6 +159,6 @@ static CREATING_TABLES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new((
 
 pub use users::{
     COL_ATTRIBUTES, COL_DISABLED, COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_LANGUAGE,
-    COL_PASSWORD_HASH, COL_ROLE, ROLE_ADMIN, ROLE_PUBLIC, SYSTEM_USER_COLUMNS, USERS_TABLE,
-    bootstrap, is_api_hidden_column, is_system_user_column, role_in_range,
+    COL_PASSWORD_HASH, COL_ROLE, SYSTEM_USER_COLUMNS, USERS_TABLE, bootstrap, is_api_hidden_column,
+    is_system_user_column,
 };

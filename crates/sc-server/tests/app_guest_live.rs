@@ -8,6 +8,8 @@
 //!   the next re-check, as a signed-in session's end does.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::Socket;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +21,7 @@ use futures::{SinkExt, StreamExt};
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation, TableSettings};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -33,9 +35,6 @@ use tower::ServiceExt;
 
 const BASE_DOMAIN: &str = "example.com";
 const HOST: &str = "shop.example.com";
-
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// A browser on the shop.
 struct Browser {
@@ -59,9 +58,9 @@ impl Browser {
             builder = builder.header(header::COOKIE, jar);
         }
         if method != "GET"
-            && let Some(csrf) = self.cookies.get(sc_server::CSRF_COOKIE)
+            && let Some(csrf) = self.cookies.get(sc_api::auth::CSRF_COOKIE)
         {
-            builder = builder.header(sc_server::CSRF_HEADER, csrf);
+            builder = builder.header(sc_api::auth::CSRF_HEADER, csrf);
         }
         let request = match body {
             Some(b) => builder
@@ -197,8 +196,8 @@ async fn setup() -> Result<(Router, std::net::SocketAddr, TestDb)> {
             name: "baskets".into(),
             database: String::new(),
             settings: TableSettings {
-                min_role_read: Some(1),
-                min_role_write: Some(1),
+                min_role_read: Some(Role::ADMIN),
+                min_role_write: Some(Role::ADMIN),
                 ownership_formula: Some("session_id === session.id".into()),
                 ..TableSettings::default()
             },
@@ -234,7 +233,7 @@ async fn setup() -> Result<(Router, std::net::SocketAddr, TestDb)> {
         StreamConfig::default(),
     )
     .await?;
-    let mut stream = Stream::new("basket_changes", "table_changes").min_role(100);
+    let mut stream = Stream::new("basket_changes", "table_changes").min_role(Role::PUBLIC);
     stream.configuration = json!({ "table": "baskets" }).as_object().cloned().unwrap();
     save_stream(&catalog, &registry, &stream).await?;
     streams.reload(&catalog).await?;
@@ -253,7 +252,7 @@ async fn setup() -> Result<(Router, std::net::SocketAddr, TestDb)> {
     );
     let app = Application::new("Shop", "shop", FrameworkRef::new("code"))
         .with_api(ApiConfig::new("rest", "/api"))
-        .with_table(TableId("baskets".to_owned()))
+        .with_table("baskets".to_owned())
         .with_stream(StreamRef::new("basket_changes"))
         .attribute(sc_app::GUEST_SESSIONS_ATTRIBUTE, true);
     apps.mount(sc_server::MountedApp::new_with(

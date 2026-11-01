@@ -16,6 +16,7 @@ mod deno {
     use sc_module::{Module, ModuleSet, ModuleSource, save_module};
     use sc_test_harness::TestDb;
     use sc_types::Attrs;
+    use sc_types::Role;
     use serde_json::{Value, json};
 
     use crate::common::{have_npm, installed, surfaces};
@@ -44,7 +45,7 @@ mod deno {
     ) -> Value {
         let mut event = Event::new(EventKind::None).payload(payload);
         if let Some(id) = user {
-            event = event.caller(80, Some(json!({ "id": id, "role": 80 })));
+            event = event.caller(Role::of(80), Some(json!({ "id": id, "role": 80 })));
         }
         let config = Attrs::new();
         let action = registry.require("connect").unwrap();
@@ -93,7 +94,7 @@ mod deno {
             flow.authorization_url,
             "https://login.example.com/authorize"
         );
-        assert_eq!(flow.client_secret, "csecret");
+        assert_eq!(flow.client_secret.expose(), "csecret");
         assert_eq!(flow.return_to, "/settings/mail");
         assert!(
             flow.params

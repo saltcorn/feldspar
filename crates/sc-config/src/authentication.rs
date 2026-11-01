@@ -16,6 +16,7 @@
 
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
+use sc_types::Role;
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::Value as Json;
 
@@ -211,10 +212,17 @@ pub async fn second_factor_for_identity_providers(catalog: &Catalog) -> Result<b
 
 /// The issuer an authenticator app lists accounts under, when one is set.
 pub async fn second_factor_issuer(catalog: &Catalog) -> Result<Option<String>> {
-    Ok(match crate::store::all_config(catalog).await?.get(SECOND_FACTOR_ISSUER) {
-        Some(Json::String(issuer)) if !issuer.trim().is_empty() => Some(issuer.trim().to_owned()),
-        _ => None,
-    })
+    Ok(
+        match crate::store::all_config(catalog)
+            .await?
+            .get(SECOND_FACTOR_ISSUER)
+        {
+            Some(Json::String(issuer)) if !issuer.trim().is_empty() => {
+                Some(issuer.trim().to_owned())
+            }
+            _ => None,
+        },
+    )
 }
 
 /// The tokens that may create the first user: [`FIRST_USER_TOKEN_ENV`]'s and
@@ -455,7 +463,7 @@ pub fn oauth_provider_spec() -> Vec<FormField> {
 /// The role an account a provider creates gets unless the admin chose one: the
 /// public role, which can do no more than an anonymous caller until an admin
 /// says otherwise.
-pub const DEFAULT_NEW_USER_ROLE: u8 = 100;
+pub const DEFAULT_NEW_USER_ROLE: Role = Role::PUBLIC;
 
 /// One provider, read and checked: the endpoints resolved from its preset.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -464,7 +472,7 @@ pub struct OAuthProvider {
     pub label: String,
     pub preset: String,
     pub client_id: String,
-    pub client_secret: String,
+    pub client_secret: sc_error::Secret<String>,
     pub authorization_url: String,
     pub token_url: String,
     pub userinfo_url: String,
@@ -473,7 +481,7 @@ pub struct OAuthProvider {
     pub admin_login: bool,
     pub app_login: bool,
     pub create_users: bool,
-    pub new_user_role: u8,
+    pub new_user_role: Role,
     /// [`PROVIDER_TRUST_EMAILS`].
     pub trust_emails: bool,
 }
@@ -567,10 +575,10 @@ impl OAuthProvider {
             None | Some(Json::Null) => DEFAULT_NEW_USER_ROLE,
             Some(value) => value
                 .as_u64()
-                .and_then(|r| u8::try_from(r).ok())
+                .and_then(|r| Role::try_from(r).ok())
                 // Never the administrator's: an account anybody with an
                 // address at the provider can make must not be one.
-                .filter(|r| (2..=100).contains(r))
+                .filter(|r| !r.is_admin())
                 .ok_or_else(|| {
                     Error::invalid(format!(
                         "identity provider `{name}`: `{PROVIDER_NEW_USER_ROLE}` must be a role \
@@ -581,7 +589,7 @@ impl OAuthProvider {
         Ok(OAuthProvider {
             label: text(PROVIDER_LABEL),
             client_id: text(PROVIDER_CLIENT_ID),
-            client_secret: text(PROVIDER_CLIENT_SECRET),
+            client_secret: text(PROVIDER_CLIENT_SECRET).into(),
             name,
             preset,
             authorization_url,

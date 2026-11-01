@@ -30,7 +30,7 @@ pub(crate) const NO_BINDS: &[sc_query::Value] = &[];
 /// classifies failures by**.
 ///
 /// SQLite reports a constraint violation as an extended result code rather than
-/// as a five-character SQLSTATE, and the layers above (`sc_api::rows`, the
+/// as a five-character SQLSTATE, and the layers above (`sc_access::rows`, the
 /// catalog's constraint mapping) read the Postgres spelling: `<message>
 /// [<sqlstate>]`. Translating here rather than teaching every reader a second
 /// vocabulary is what makes a unique violation on SQLite reach a form as the

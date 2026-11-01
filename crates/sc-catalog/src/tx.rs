@@ -63,17 +63,18 @@
 //! [`SharedTx::rollback_to_savepoint`] — when the part of the transaction that
 //! added it is wound back.
 
+use sc_types::Role;
 use std::sync::{Arc, Mutex as SyncMutex, MutexGuard};
 
-use sc_db::{DatabaseDriver, Row, SchemaChange};
+use sc_db::{DatabaseDriver, Row};
 use sc_error::{Error, Result};
 use sc_query::Statement;
 use tokio::sync::Mutex;
 
-use crate::caller::CallerContext;
+use crate::caller::{Authority, Unchecked};
 use crate::catalog::Catalog;
 use crate::field::DbId;
-use crate::rls::{clear_caller_context, map_policy_violation, set_caller_context};
+use crate::rls::{map_policy_violation, set_caller_context};
 use crate::table::Table;
 
 /// Where a shared transaction is in its life.
@@ -101,11 +102,8 @@ enum Applied {
     /// Nothing has been applied yet: the next statement must say who it is,
     /// whoever that is.
     Unknown,
-    /// Explicitly nobody — [`clear_caller_context`] — in this ambient
-    /// changeset (its GUC text).
-    Nobody(String),
     /// This `(role, user JSON, changeset GUC text)`.
-    Caller(u8, Option<String>, String),
+    Caller(Role, Option<String>, String),
 }
 
 /// Something to do once the transaction has committed
@@ -122,7 +120,7 @@ pub type AfterCommit = Box<dyn FnOnce() + Send + 'static>;
 struct Pending {
     callbacks: Vec<AfterCommit>,
     /// `(savepoint name, callbacks.len() when it was taken)`, innermost last.
-    savepoints: Vec<(String, usize)>,
+    savepoints: Vec<(&'static str, usize)>,
     /// How the transaction finished, once it has: `Some(true)` committed.
     outcome: Option<bool>,
 }
@@ -170,7 +168,7 @@ impl PartialEq for SharedTx {
 impl SharedTx {
     /// A transaction on `database`, to be begun when something first needs it.
     pub fn begin(catalog: &Catalog, database: &DbId) -> Result<SharedTx> {
-        let driver = catalog.driver_named(database)?;
+        let driver = catalog.driver_of(database)?;
         Ok(SharedTx::begin_on(&driver, database.clone()))
     }
 
@@ -220,35 +218,37 @@ impl SharedTx {
         table.provider().is_none() && table.database == self.database
     }
 
-    /// Run `stmt` as `caller`, collecting its rows.
+    /// Run `stmt` on `authority`, collecting its rows.
     ///
     /// The caller's GUCs are applied first (and re-applied whenever they are not
     /// the ones already in force), so an RLS table's policies decide this
     /// statement by *this* writer — see the module documentation. A policy
     /// violation comes back as a [`NotFound`](Error::not_found), the same
     /// probe-free reading [`run_in_context`](crate::run_in_context) gives it.
-    pub async fn run(&self, caller: Option<&CallerContext>, stmt: &Statement) -> Result<Vec<Row>> {
+    ///
+    /// The statement reaches every row its policies (if any) let `access`'s
+    /// authority reach, so it takes an [`Unchecked`].
+    pub async fn run(&self, access: Unchecked<'_>, stmt: &Statement) -> Result<Vec<Row>> {
+        self.run_as(access.authority(), stmt).await
+    }
+
+    /// [`run`](SharedTx::run) for this crate's own statements.
+    pub(crate) async fn run_as(
+        &self,
+        authority: Authority<'_>,
+        stmt: &Statement,
+    ) -> Result<Vec<Row>> {
         let mut open = self.inner.lock().await;
         if self.caller_gucs {
-            let wanted = match caller {
-                Some(caller) => {
-                    Applied::Caller(caller.role, caller.user_json(), caller.changeset_json())
-                }
-                None => Applied::Nobody(
-                    crate::changeset::current()
-                        .map(|c| c.guc_value(None))
-                        .unwrap_or_default(),
-                ),
-            };
+            // The system runs as the admin role with no user (`Authority`).
+            let caller = authority.as_principal();
+            let wanted = Applied::Caller(caller.role, caller.user_json(), caller.changeset_json());
             if open.applied != wanted {
                 let tx = open.handle(&self.driver).await?;
-                // Absent is spelled out rather than left alone: an unset GUC and
-                // a *stale* one are the same thing to a policy, and only one of
-                // them is what this statement means.
-                match caller {
-                    Some(caller) => set_caller_context(tx, caller).await?,
-                    None => clear_caller_context(tx).await?,
-                }
+                // Every GUC is spelled out rather than left alone: an unset GUC
+                // and a *stale* one are the same thing to a policy, and only one
+                // of them is what this statement means.
+                set_caller_context(tx, &caller).await?;
                 open.applied = wanted;
             }
         }
@@ -260,15 +260,11 @@ impl SharedTx {
         outcome.map_err(map_policy_violation).map_err(poisoned)
     }
 
-    /// Apply a schema change inside the transaction.
-    pub async fn apply_schema(&self, change: &SchemaChange) -> Result<()> {
-        let mut open = self.inner.lock().await;
-        open.handle(&self.driver).await?.apply_schema(change).await
-    }
-
     /// Run a raw SQL batch inside the transaction — savepoints, and the DDL the
-    /// structured [`SchemaChange`] does not model.
-    pub async fn batch(&self, sql: &str) -> Result<()> {
+    /// structured [`SchemaChange`](sc_db::SchemaChange) does not model. Crate-private: raw SQL
+    /// reaches every row, and nothing outside the catalog runs it on a shared
+    /// transaction.
+    pub(crate) async fn batch(&self, sql: &str) -> Result<()> {
         let mut open = self.inner.lock().await;
         open.handle(&self.driver).await?.batch(sql).await
     }
@@ -307,22 +303,26 @@ impl SharedTx {
 
     /// `SAVEPOINT name`, remembering which after-commit callbacks were added
     /// before it, so [`rollback_to_savepoint`](SharedTx::rollback_to_savepoint)
-    /// drops exactly the ones added after. `name` is structural, never user
-    /// data.
-    pub async fn savepoint(&self, name: &str) -> Result<()> {
-        self.batch(&format!("SAVEPOINT {name}")).await?;
+    /// drops exactly the ones added after.
+    ///
+    /// `name` is formatted into the SQL, so it is a `&'static str`: a name
+    /// written in the source, which request data cannot reach.
+    pub async fn savepoint(&self, name: &'static str) -> Result<()> {
+        self.batch(&format!("SAVEPOINT {}", savepoint_name(name)?))
+            .await?;
         let mut pending = lock(&self.pending);
         let mark = pending.callbacks.len();
-        pending.savepoints.push((name.to_owned(), mark));
+        pending.savepoints.push((name, mark));
         Ok(())
     }
 
     /// `RELEASE SAVEPOINT name`: what was added since it stays, now part of
     /// the enclosing transaction (or savepoint).
-    pub async fn release_savepoint(&self, name: &str) -> Result<()> {
-        self.batch(&format!("RELEASE SAVEPOINT {name}")).await?;
+    pub async fn release_savepoint(&self, name: &'static str) -> Result<()> {
+        self.batch(&format!("RELEASE SAVEPOINT {}", savepoint_name(name)?))
+            .await?;
         let mut pending = lock(&self.pending);
-        if let Some(at) = pending.savepoints.iter().rposition(|(n, _)| n == name) {
+        if let Some(at) = pending.savepoints.iter().rposition(|(n, _)| *n == name) {
             // Releasing a savepoint releases every one taken after it too.
             pending.savepoints.truncate(at);
         }
@@ -332,13 +332,14 @@ impl SharedTx {
     /// `ROLLBACK TO SAVEPOINT name`: the writes since it are undone, so the
     /// callbacks announcing them are dropped. The savepoint itself stays, as
     /// it does in SQL.
-    pub async fn rollback_to_savepoint(&self, name: &str) -> Result<()> {
-        self.batch(&format!("ROLLBACK TO SAVEPOINT {name}")).await?;
+    pub async fn rollback_to_savepoint(&self, name: &'static str) -> Result<()> {
+        self.batch(&format!("ROLLBACK TO SAVEPOINT {}", savepoint_name(name)?))
+            .await?;
         // A `SET LOCAL` made since the savepoint is undone with it, so which
         // caller's GUCs are in force is no longer known.
         self.inner.lock().await.applied = Applied::Unknown;
         let mut pending = lock(&self.pending);
-        if let Some(at) = pending.savepoints.iter().rposition(|(n, _)| n == name) {
+        if let Some(at) = pending.savepoints.iter().rposition(|(n, _)| *n == name) {
             let mark = pending.savepoints[at].1;
             pending.savepoints.truncate(at + 1);
             pending.callbacks.truncate(mark);
@@ -357,7 +358,7 @@ impl SharedTx {
             Some(tx) => tx.commit().await,
             None => Ok(()),
         };
-        let callbacks = self.finish(outcome.is_ok());
+        let callbacks = self.close(outcome.is_ok());
         if outcome.is_ok() {
             for callback in callbacks {
                 callback();
@@ -373,14 +374,41 @@ impl SharedTx {
             Some(tx) => tx.rollback().await,
             None => Ok(()),
         };
-        drop(self.finish(false));
+        drop(self.close(false));
         outcome
+    }
+
+    /// Commit if `outcome` is a success, roll back if not, and answer `outcome`
+    /// (or the commit's error).
+    pub async fn finish<T>(&self, outcome: Result<T>) -> Result<T> {
+        match outcome {
+            Ok(value) => {
+                self.commit().await?;
+                Ok(value)
+            }
+            Err(e) => {
+                self.abandon().await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Roll back where nothing waits on the rollback: after a failure, whose
+    /// error is the news, or after reads with nothing to commit. A rollback
+    /// that fails is logged: the connection is dropped, which ends the
+    /// transaction.
+    pub async fn abandon(&self) {
+        if let Err(e) = self.rollback().await {
+            sc_log::log_verbose!(
+                "a transaction could not be rolled back, so its connection is dropped: {e}"
+            );
+        }
     }
 
     /// Record how the transaction ended, and take the callbacks out — to be
     /// run, or dropped, by the caller once the lock is released (a callback's
     /// captures are dropped outside it, whatever their `Drop` does).
-    fn finish(&self, committed: bool) -> Vec<AfterCommit> {
+    fn close(&self, committed: bool) -> Vec<AfterCommit> {
         let mut pending = lock(&self.pending);
         pending.outcome = Some(committed);
         pending.savepoints.clear();
@@ -455,4 +483,34 @@ fn lock(pending: &SyncMutex<Pending>) -> MutexGuard<'_, Pending> {
 
 fn finished() -> Error {
     Error::database("this transaction has already been committed or rolled back")
+}
+
+/// `name` if it is a plain SQL identifier (`[A-Za-z_][A-Za-z0-9_]*`), so that
+/// a typo in a source constant is refused rather than sent as SQL.
+fn savepoint_name(name: &'static str) -> Result<&'static str> {
+    let mut chars = name.chars();
+    let plain = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    match plain {
+        true => Ok(name),
+        false => Err(Error::invalid(format!(
+            "`{name}` is not a savepoint name: use letters, digits and `_`"
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::savepoint_name;
+
+    #[test]
+    fn a_savepoint_name_is_a_plain_identifier() {
+        assert!(savepoint_name("sc_csv_row").is_ok());
+        assert!(savepoint_name("_a1").is_ok());
+        for bad in ["", "1a", "a b", "a;DROP TABLE users", "\"a\""] {
+            assert!(savepoint_name(bad).is_err(), "{bad}");
+        }
+    }
 }

@@ -177,7 +177,7 @@ async fn the_harness_scores_a_solved_task_and_an_unsolved_one() -> sc_error::Res
     ]));
     let connector = Arc::new(FakeModels::new().role(sc_agent::ModelRole::Executor, script.clone()));
 
-    let registry = Arc::new(sc_core_traits::builtin_traits()?);
+    let registry = Arc::new(sc_agent_builtins::builtin_traits()?);
     let host = EvalHost::new(&catalog, &registry).with_connector(connector);
     let args = EvalArgs::parse(&[suite.0.display().to_string()])?;
     let tasks = load_suite(&suite.0)?;

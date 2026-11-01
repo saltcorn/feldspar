@@ -1,8 +1,8 @@
-//! What a model is fitted against: a **named dataset** (analytics TODO A1.8).
+//! What a model is fitted against: a **named dataset**.
 //!
-//! A dataset used to be a list of formulas on the model. It is now a
-//! persistent, named definition in `sc-dataset` — a base and an ordered list of
-//! operations — shared by the models, panels and datasets that read it. A model
+//! A dataset is a persistent, named definition in `sc-dataset` — a base and an
+//! ordered list of operations — shared by the models, panels and datasets that
+//! read it. A model
 //! stores only its id; [`Dataset`] is that id **resolved**: the definitions it
 //! reads (a [`Snapshot`]), the table its rows start from, the columns of its
 //! last stage and what a row is. Resolving is what loading a model does, and a
@@ -181,7 +181,7 @@ impl Dataset {
                     None,
                 )
             }
-            Err(e) => (Vec::new(), None, Some(e)),
+            Err(e) => (Vec::new(), None, Some(e.message().to_owned())),
         };
         Dataset {
             id: def.id,
@@ -431,7 +431,7 @@ fn base_table(library: &Library, def: &DatasetDef) -> Option<String> {
 }
 
 /// The attribute of a fitted instance holding the datasets it read and their
-/// hash (analytics TODO A1.8).
+/// hash.
 pub const ATTR_DATASETS: &str = "datasets";
 
 /// What an instance records about its model's datasets: each one's snapshot,

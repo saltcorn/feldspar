@@ -14,7 +14,7 @@ use sc_app::{
     ApiConfig, Application, FrameworkRef, app_source_from_config, build_application,
     build_application_if_changed,
 };
-use sc_catalog::{Catalog, DataField, TableId};
+use sc_catalog::{Catalog, DataField};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -115,7 +115,7 @@ fn blog() -> Application {
             .with("command", "sh build.sh")
             .with("client", "web/src/client.ts"),
     )
-    .with_table(TableId("posts".to_owned()))
+    .with_table("posts".to_owned())
     .with_api(ApiConfig::new("rest", "/api"))
 }
 

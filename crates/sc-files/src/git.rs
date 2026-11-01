@@ -68,6 +68,7 @@ use crate::def::{
 use crate::local::LocalFileStore;
 use crate::paths::{data_dir, path_safe};
 use crate::store::{Entry, FileMeta, FileStat, FileStore};
+use crate::store_path::StorePath;
 
 /// Where clones live: `<data dir>/git-stores`.
 pub fn clone_dir() -> Result<PathBuf> {
@@ -1084,27 +1085,27 @@ impl FileStore for GitFileStore {
         self.inner.name()
     }
 
-    async fn read(&self, path: &str) -> Result<Bytes> {
+    async fn read(&self, path: &StorePath) -> Result<Bytes> {
         self.inner.read(path).await
     }
 
-    async fn write(&self, path: &str, data: Bytes) -> Result<()> {
+    async fn write(&self, path: &StorePath, data: Bytes) -> Result<()> {
         self.inner.write(path, data).await
     }
 
-    async fn list(&self, dir: &str) -> Result<Vec<Entry>> {
+    async fn list(&self, dir: &StorePath) -> Result<Vec<Entry>> {
         self.inner.list(dir).await
     }
 
-    async fn mkdir(&self, path: &str) -> Result<()> {
+    async fn mkdir(&self, path: &StorePath) -> Result<()> {
         self.inner.mkdir(path).await
     }
 
-    async fn delete(&self, path: &str) -> Result<bool> {
+    async fn delete(&self, path: &StorePath) -> Result<bool> {
         self.inner.delete(path).await
     }
 
-    async fn rename(&self, from: &str, to: &str) -> Result<()> {
+    async fn rename(&self, from: &StorePath, to: &StorePath) -> Result<()> {
         self.inner.rename(from, to).await
     }
 
@@ -1113,35 +1114,35 @@ impl FileStore for GitFileStore {
         true
     }
 
-    fn local_path(&self, rel: &str) -> Result<Option<PathBuf>> {
+    fn local_path(&self, rel: &StorePath) -> Result<Option<PathBuf>> {
         self.inner.local_path(rel)
     }
 
-    async fn stat(&self, path: &str) -> Result<Option<FileStat>> {
+    async fn stat(&self, path: &StorePath) -> Result<Option<FileStat>> {
         self.inner.stat(path).await
     }
 
     async fn open_read(
         &self,
-        path: &str,
+        path: &StorePath,
         range: Option<std::ops::Range<u64>>,
     ) -> Result<crate::BoxAsyncRead> {
         self.inner.open_read(path, range).await
     }
 
-    async fn open_append<'a>(&'a self, path: &str) -> Result<crate::BoxAsyncWrite<'a>> {
+    async fn open_append<'a>(&'a self, path: &StorePath) -> Result<crate::BoxAsyncWrite<'a>> {
         self.inner.open_append(path).await
     }
 
-    async fn concat(&self, parts: &[String], to: &str) -> Result<u64> {
+    async fn concat(&self, parts: &[StorePath], to: &StorePath) -> Result<u64> {
         self.inner.concat(parts, to).await
     }
 
-    async fn get_meta(&self, path: &str) -> Result<FileMeta> {
+    async fn get_meta(&self, path: &StorePath) -> Result<FileMeta> {
         self.inner.get_meta(path).await
     }
 
-    async fn set_meta(&self, path: &str, meta: &FileMeta) -> Result<()> {
+    async fn set_meta(&self, path: &StorePath, meta: &FileMeta) -> Result<()> {
         self.inner.set_meta(path, meta).await
     }
 }

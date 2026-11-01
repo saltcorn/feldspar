@@ -265,7 +265,7 @@ async fn sc_query_write(catalog: &sc_catalog::Catalog, key: &str) -> sc_error::R
         ],
     );
     catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&sc_query::Statement::from(insert))
         .await?
         .try_collect()

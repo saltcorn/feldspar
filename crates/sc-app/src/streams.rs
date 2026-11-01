@@ -68,7 +68,7 @@ static REGISTRY: RwLock<Option<Arc<StreamRegistry>>> = RwLock::new(None);
 /// provider, and a client generated a minute later must type its elements from
 /// the provider that is actually installed.
 pub fn install_stream_registry(cat: &Catalog, registry: Arc<StreamRegistry>) {
-    cat.set_stream_registry(registry.clone());
+    cat.set_extension(Some(registry.clone()));
     let mut guard = match REGISTRY.write() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
@@ -79,8 +79,7 @@ pub fn install_stream_registry(cat: &Catalog, registry: Arc<StreamRegistry>) {
 /// The registry `cat`'s server installed, or [`stream_registry`] when no
 /// server has installed one on it.
 pub fn catalog_stream_registry(cat: &Catalog) -> Arc<StreamRegistry> {
-    cat.stream_registry()
-        .and_then(|any| any.downcast::<StreamRegistry>().ok())
+    cat.extension::<StreamRegistry>()
         .unwrap_or_else(stream_registry)
 }
 

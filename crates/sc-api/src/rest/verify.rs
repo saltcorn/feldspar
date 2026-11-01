@@ -33,17 +33,17 @@ use sc_auth::{
     PasswordTokenPurpose, User, issue_password_token, password_token_issued_within,
     redeem_email_verification, user_email,
 };
-use sc_catalog::Catalog;
+use sc_catalog::{Catalog, PublicBaseUrl};
 use sc_email::Mailer;
 use sc_error::{Error, Result};
-use sc_types::Attrs;
+use sc_types::{Attrs, Role};
 use serde_json::{Value as Json, json};
 
 use super::password::{LINK_PLACEHOLDER, Template, link_origin, ok_schema};
 use crate::auth::{user_summary_json, user_summary_schema};
 use crate::provider::{ApiRequest, ApiResponse};
-use crate::rows::require_object;
 use crate::schema::{StructField, TypeSchema};
+use sc_access::rows::require_object;
 
 /// The setting that turns verification on. Off unless an admin turns it on:
 /// an application that never asked for it must not start sending mail, nor
@@ -57,7 +57,7 @@ pub const CFG_UNVERIFIED_ROLE: &str = "unverified_role";
 /// What [`CFG_UNVERIFIED_ROLE`] defaults to: the public role, so an unverified
 /// account sees what somebody who is not signed in sees — and can still ask
 /// for another link, being signed in.
-pub const DEFAULT_UNVERIFIED_ROLE: u8 = sc_auth::ROLE_PUBLIC;
+pub const DEFAULT_UNVERIFIED_ROLE: Role = Role::PUBLIC;
 
 /// The setting for the message's subject.
 pub const CFG_VERIFY_EMAIL_SUBJECT: &str = "verify_email_subject";
@@ -81,7 +81,7 @@ const VERIFY_TEXT: &str = "Thank you for signing up with {{email}}.\n\n\
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmailVerification {
     /// The role an unproven account is served as.
-    pub unverified_role: u8,
+    pub unverified_role: Role,
     /// The message's subject, when the settings name one.
     pub subject: Option<String>,
     /// The message's text, when the settings give one.
@@ -105,11 +105,11 @@ impl EmailVerification {
     /// `user` as the application serves them: capped at
     /// [`unverified_role`](EmailVerification::unverified_role) while their
     /// address is unproven.
-    pub fn serve_as(&self, user: &User) -> u8 {
+    pub fn serve_as(&self, user: &User) -> Role {
         if user.email_unproven() {
-            user.role.max(self.unverified_role)
+            user.role().least_privileged(self.unverified_role)
         } else {
-            user.role
+            user.role()
         }
     }
 }
@@ -133,8 +133,9 @@ pub fn rest_email_verification(config: &Attrs) -> Option<EmailVerification> {
         Some(role) => role
             .as_u64()
             .and_then(|r| u8::try_from(r).ok())
+            .and_then(Role::new)
             .filter(|r| unverified_role_allowed(*r))
-            .unwrap_or(sc_auth::ROLE_PUBLIC),
+            .unwrap_or(Role::PUBLIC),
     };
     let text = |key: &str| {
         config
@@ -152,7 +153,7 @@ pub fn rest_email_verification(config: &Attrs) -> Option<EmailVerification> {
 
 /// The role an application serves an unproven account as, where it requires
 /// verification — what `sc_app::cap_role` reads.
-pub fn rest_unverified_role(config: &Attrs) -> Option<u8> {
+pub fn rest_unverified_role(config: &Attrs) -> Option<Role> {
     rest_email_verification(config).map(|v| v.unverified_role)
 }
 
@@ -163,6 +164,7 @@ pub(crate) fn check_verify_config(config: &Attrs) -> Result<()> {
         && !role
             .as_u64()
             .and_then(|r| u8::try_from(r).ok())
+            .and_then(Role::new)
             .is_some_and(unverified_role_allowed)
     {
         return Err(Error::invalid(format!(
@@ -182,8 +184,8 @@ pub(crate) fn check_verify_config(config: &Attrs) -> Result<()> {
     Ok(())
 }
 
-fn unverified_role_allowed(role: u8) -> bool {
-    (sc_auth::ROLE_ADMIN + 1..=sc_auth::ROLE_PUBLIC).contains(&role)
+fn unverified_role_allowed(role: Role) -> bool {
+    !role.is_admin()
 }
 
 pub(crate) fn verify_email_schema() -> TypeSchema {
@@ -202,8 +204,8 @@ pub(crate) fn resend_output_schema() -> TypeSchema {
 }
 
 /// The link a verification token travels in.
-fn link(origin: &str, token: &str) -> String {
-    format!("{origin}{VERIFY_EMAIL_PAGE}#token={token}")
+fn link(origin: &PublicBaseUrl, token: &str) -> String {
+    origin.join(&format!("{VERIFY_EMAIL_PAGE}#token={token}"))
 }
 
 /// Issue a verification token for `user` and email the link to their address.
@@ -224,7 +226,7 @@ pub(crate) async fn send_verification(
         .ok_or_else(|| Error::invalid("the account has no email address to verify"))?
         .to_owned();
     let sender = mailer.sender().await?;
-    let token = issue_password_token(cat, user.id, PasswordTokenPurpose::Verify).await?;
+    let token = issue_password_token(cat, user.id(), PasswordTokenPurpose::Verify).await?;
     let message = settings
         .template()
         .render(sender, &to, &link(&origin, &token))?;
@@ -281,7 +283,7 @@ pub(crate) async fn resend_verification(
         return ok();
     }
     let throttle = chrono::Duration::seconds(RESEND_THROTTLE_SECONDS);
-    if password_token_issued_within(cat, user.id, PasswordTokenPurpose::Verify, throttle).await? {
+    if password_token_issued_within(cat, user.id(), PasswordTokenPurpose::Verify, throttle).await? {
         return ok();
     }
     send_verification(req, cat, user, mailer, settings)
@@ -313,10 +315,14 @@ mod tests {
         assert_eq!(rest_email_verification(&config), None);
         config.insert(CFG_VERIFY_EMAIL.into(), json!(true));
         let on = rest_email_verification(&config).unwrap();
-        assert_eq!(on.unverified_role, 100, "the public role by default");
+        assert_eq!(
+            on.unverified_role,
+            Role::PUBLIC,
+            "the public role by default"
+        );
         assert_eq!(on.template().subject, VERIFY_SUBJECT);
         config.insert(CFG_UNVERIFIED_ROLE.into(), json!(90));
-        assert_eq!(rest_unverified_role(&config), Some(90));
+        assert_eq!(rest_unverified_role(&config), Some(Role::of(90)));
     }
 
     #[test]
@@ -327,7 +333,7 @@ mod tests {
         config.insert(CFG_VERIFY_EMAIL.into(), json!(true));
         assert_eq!(
             rest_unverified_role(&config),
-            Some(100),
+            Some(Role::PUBLIC),
             "fails closed when an unchecked value gets through"
         );
         config.insert(CFG_UNVERIFIED_ROLE.into(), json!(2));
@@ -345,13 +351,19 @@ mod tests {
         config.insert(CFG_VERIFY_EMAIL.into(), json!(true));
         config.insert(CFG_VERIFY_EMAIL_SUBJECT.into(), json!("Hi {{email}}"));
         let settings = rest_email_verification(&config).unwrap();
-        let sender = sc_email::parse_mailbox("system@example.com").unwrap();
+        let sender = sc_config::parse_mailbox("system@example.com").unwrap();
         let email = settings
             .template()
             .render(
                 sender,
                 "pat@example.com",
-                &link("https://a.example.com", "tok"),
+                &link(
+                    &PublicBaseUrl::new(
+                        true,
+                        &sc_catalog::TrustedHost::configured("a.example.com").unwrap(),
+                    ),
+                    "tok",
+                ),
             )
             .unwrap();
         assert_eq!(email.subject, "Hi pat@example.com");

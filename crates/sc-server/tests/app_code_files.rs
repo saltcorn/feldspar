@@ -19,6 +19,8 @@
 //!   on a file the caller may not read is a 404.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -29,14 +31,14 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use bytes::Bytes;
 use sc_api::{BodyType, CustomParam, CustomQuery, Method, QueryLanguage, ResponseType, ValueType};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StaticDir};
-use sc_auth::{Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, DataField, FileStoreId};
 use sc_db::{ColumnGenerator, DatabaseDriver};
 use sc_db_sqlite::SqliteDriver;
 use sc_files::{FileMeta, FileStore, LocalFileStore};
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_triggers,
+    AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_triggers,
 };
 use sc_test_harness::Teardown;
 use sc_types::{BasicType, TypeRef};
@@ -47,7 +49,7 @@ use tower::ServiceExt;
 const BASE_DOMAIN: &str = "example.com";
 const APP_HOST: &str = "share.example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 80;
+const ROLE_MEMBER: Role = Role::of(80);
 const MB: usize = 1024 * 1024;
 
 /// A scratch directory removed when the guard drops.
@@ -233,7 +235,7 @@ fn queries() -> Vec<CustomQuery> {
                  media: await store.open("media/a b.png").url({ download: true }),
                };"#,
         )
-        .min_role(sc_auth::ROLE_ADMIN),
+        .min_role(Role::ADMIN),
         // F2.9: a raw body in…
         js(
             "measure",
@@ -265,7 +267,7 @@ fn queries() -> Vec<CustomQuery> {
             ),
         )
         .response_type(ResponseType::Bytes)
-        .min_role(sc_auth::ROLE_PUBLIC),
+        .min_role(Role::PUBLIC),
         // F2.10: a password-protected share, kept in a table.
         js(
             "makeShare",
@@ -275,14 +277,14 @@ fn queries() -> Vec<CustomQuery> {
                await db.shares.insert({ token: body.token, path: body.path, filename: body.filename, hash });
                return { ok: true };"#,
         )
-        .min_role(sc_auth::ROLE_ADMIN),
+        .min_role(Role::ADMIN),
         js(
             "revokeShare",
             Method::Delete,
             "/shares",
             r#"return await db.shares.where({ token: query.token }).delete();"#,
         )
-        .min_role(sc_auth::ROLE_ADMIN),
+        .min_role(Role::ADMIN),
         js(
             "shareFile",
             Method::Get,
@@ -304,7 +306,7 @@ fn queries() -> Vec<CustomQuery> {
             CustomParam::new("password", ValueType::Text).optional(),
         ])
         .response_type(ResponseType::Bytes)
-        .min_role(sc_auth::ROLE_PUBLIC),
+        .min_role(Role::PUBLIC),
         // A handle opened as the caller is checked by the owner rule when served.
         js(
             "mine",
@@ -347,7 +349,7 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<Server> {
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
     let mut users = HashMap::new();
     for who in ["alice", "bob"] {
         let user = create_user(
@@ -357,9 +359,9 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<Server> {
             ROLE_MEMBER,
         )
         .await?;
-        users.insert(who, user.id.to_string());
+        users.insert(who, user.id().to_string());
     }
-    create_user(&catalog, "admin@example.com", PASSWORD, sc_auth::ROLE_ADMIN).await?;
+    create_user(&catalog, "admin@example.com", PASSWORD, Role::ADMIN).await?;
 
     let text = |name: &str| DataField::plain(name, TypeRef::Basic(BasicType::Text));
     catalog
@@ -384,12 +386,14 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<Server> {
     catalog.connect_file_store(store.clone())?;
     // Everything under `private` is the administrator's: a share query is the
     // only way anyone else reads it.
-    store.mkdir("private").await?;
+    store
+        .mkdir(&sc_files::StorePath::from_static("private"))
+        .await?;
     store
         .set_meta(
-            "private",
+            &sc_files::StorePath::from_static("private"),
             &FileMeta {
-                min_role: Some(sc_auth::ROLE_ADMIN),
+                min_role: Some(Role::ADMIN),
                 ..FileMeta::default()
             },
         )
@@ -447,7 +451,10 @@ async fn a_code_body_joins_hashes_and_reads_a_file_larger_than_one_read() -> sc_
     for (i, part) in data.chunks(7 * MB).enumerate() {
         server
             .store
-            .write(&format!("parts/p{i}"), Bytes::from(part.to_vec()))
+            .write(
+                &sc_files::StorePath::parse(&format!("parts/p{i}")).unwrap(),
+                Bytes::from(part.to_vec()),
+            )
             .await?;
     }
     let mut admin = Client::new(server.router.clone());
@@ -481,7 +488,11 @@ async fn a_code_body_joins_hashes_and_reads_a_file_larger_than_one_read() -> sc_
     assert_eq!(out["media"], json!("/media/a%20b.png?download=1"));
     // And the bytes are really there.
     assert_eq!(
-        server.store.read("joined/big.bin").await?.as_ref(),
+        server
+            .store
+            .read(&sc_files::StorePath::from_static("joined/big.bin"))
+            .await?
+            .as_ref(),
         &data[..]
     );
     Ok(())
@@ -538,7 +549,10 @@ async fn a_share_query_serves_a_large_file_by_its_own_rule() -> sc_error::Result
     let data = film(50 * MB);
     server
         .store
-        .write("private/film.mp4", Bytes::from(data.clone()))
+        .write(
+            &sc_files::StorePath::from_static("private/film.mp4"),
+            Bytes::from(data.clone()),
+        )
         .await?;
     let mut admin = Client::new(server.router.clone());
     admin.login("admin@example.com").await;
@@ -614,12 +628,15 @@ async fn a_handle_opened_as_the_caller_is_checked_when_served() -> sc_error::Res
     // Alice's file, in the administrator's folder: hers by the owner rule.
     server
         .store
-        .write("private/alice.txt", Bytes::from_static(b"alice's"))
+        .write(
+            &sc_files::StorePath::from_static("private/alice.txt"),
+            Bytes::from_static(b"alice's"),
+        )
         .await?;
     server
         .store
         .set_meta(
-            "private/alice.txt",
+            &sc_files::StorePath::from_static("private/alice.txt"),
             &FileMeta {
                 owner: Some(server.users["alice"].clone()),
                 ..FileMeta::default()

@@ -56,7 +56,7 @@ assignments, `only_if`, `{{ }}` templates) and in calculated fields.
 
 **The admin API does not change.** `predictRows`, `writePosterior` and the posterior screen's
 **Write back** button stay, because they are the admin's own tools and not the action namespace.
-The one `write_posterior()` function they share moves from `sc-core-actions` into `sc-api`
+The one `write_posterior()` function they share moves from `sc-action-builtins` into `sc-api`
 (`sc_api::models`), which already owns the row layer and depends on `sc-model`, so the admin
 handler and the code host (§3) call the same function.
 
@@ -253,7 +253,7 @@ deny, and a rule that waits on a provider makes every read wait on it.
 | `sc-expr` | `ModelCall`, `Analysis::model_calls`, the hoist in `analyze`, `Untranslatable` in `translate`; the JavaScript `models` prelude becomes the handle |
 | `sc-catalog` | the `ModelHost` trait, `Catalog::set_model_host`/`model_host`, model calls in `prefetch_bindings` |
 | `sc-api` | `models::write_posterior` (moved); the code host's `get`/`predict`/`write_posterior`; the calculated-field fallback and batching in `rows.rs`; the save checks in `schema_edit.rs`; filter/sort refusals |
-| `sc-core-actions` | `predict_row.rs` deleted; `posterior.rs` keeps only `FitModel` (renamed `fit_model.rs`); `register_model_actions` takes the registry and the `FitStarter` only |
+| `sc-action-builtins` | `predict_row.rs` deleted; `posterior.rs` keeps only `FitModel` (renamed `fit_model.rs`); `register_model_actions` takes the registry and the `FitStarter` only |
 | `sc-server` | `ModelServices` implements `ModelHost` and installs it; handlers call `sc_api::models::write_posterior`; the trigger save path runs the formula checks |
 | `ui/admin` | `ModelForm.tsx` and `PosteriorInstance.tsx` wording; `codeTypes.ts` declares the handle |
 
@@ -277,7 +277,7 @@ deny, and a rule that waits on a provider makes every read wait on it.
       `triggers.rs`, `modules.rs`, `apps.rs`). Rewrite the tests that used them
       (`posterior_api.rs`, `trigger_admin_api.rs`, `model_admin_api.rs`, `stan_models.rs`) to
       keep what they covered through the admin API, until Phases 2 and 3 give them their new
-      home. The `sc-core-actions` test asserts the model action set is exactly `fit_model`.
+      home. The `sc-action-builtins` test asserts the model action set is exactly `fit_model`.
 - [x] 1.4 The admin UI's wording: `ModelForm.tsx`'s "what a `predict_row` action names this
       model by" and `PosteriorInstance.tsx`'s "the `write_posterior` action does the same"
       now point at `predict()` and at `m.writePosterior`. The strings go in the `admin` i18n

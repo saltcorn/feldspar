@@ -24,7 +24,7 @@ pub const VECTOR_SCAN_LIMIT: u64 = 50_000;
 /// A role that may not install the extension is not an error: vector fields are
 /// then refused with the sentence this returns.
 pub async fn bootstrap_vector(catalog: &Catalog) -> Result<VectorSupport> {
-    catalog.primary().enable_vector().await
+    catalog.primary_driver().enable_vector().await
 }
 
 /// The expression a value is written to `field` as: the value itself, except

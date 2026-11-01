@@ -21,6 +21,8 @@ uuid.workspace = true
 chrono.workspace = true
 rust_decimal.workspace = true
 regex-lite.workspace = true
+# An archive's bytes (`json::Spelling::Archive`).
+base64.workspace = true
 
 [lints]
 workspace = true

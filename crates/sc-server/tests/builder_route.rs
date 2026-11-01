@@ -23,6 +23,8 @@
 //!   application's, for the builder's own documents only.
 //! - **Admin only**, and a server **without the bundle** says so.
 
+use sc_api::auth::CSRF_COOKIE;
+use sc_types::Role;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -31,7 +33,7 @@ use axum::http::{Request, StatusCode, header};
 use sc_api::EndpointSet;
 use sc_auth::{SessionStore, User};
 use sc_server::{
-    BUILDER_BOOT_ID, BUILDER_CONTENT_SECURITY_POLICY, CSRF_COOKIE, HandlerRegistry, SESSION_COOKIE,
+    BUILDER_BOOT_ID, BUILDER_CONTENT_SECURITY_POLICY, HandlerRegistry, SESSION_COOKIE,
     ServerConfig, build_router, builder_content_security_policy,
 };
 use sc_viewpattern::Page;
@@ -146,6 +148,7 @@ async fn assert_builder_document(client: &mut Client, label: &str, html: &str) {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_builder_opens_each_pattern_and_a_page_and_refuses_the_rest() -> sc_error::Result<()> {
     let (Some(bundle), Some(_)) = (bundle_dir(), builder_bundle_dir()) else {
         eprintln!("skipping: the Saltcorn UI and builder bundles are not built");
@@ -405,7 +408,7 @@ async fn without_the_builder_bundle_the_routes_say_so() {
     )
     .expect("build router");
     let admin = sessions
-        .login(User::new(Uuid::new_v4(), 1).unwrap())
+        .login(User::new(Uuid::new_v4(), Role::ADMIN))
         .await
         .unwrap();
     for path in [
@@ -474,7 +477,7 @@ async fn builder_status_says_whether_the_bundle_is_built() {
         )
         .expect("build router");
         let admin = sessions
-            .login(User::new(Uuid::new_v4(), 1).unwrap())
+            .login(User::new(Uuid::new_v4(), Role::ADMIN))
             .await
             .unwrap();
         let request = Request::get("/api/builder")

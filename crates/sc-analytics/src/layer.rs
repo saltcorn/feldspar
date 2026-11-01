@@ -1,4 +1,4 @@
-//! **Layer data for the browser** (analytics TODO A5.5): a dataset's rows as
+//! **Layer data for the browser**: a dataset's rows as
 //! map features, sent as GeoJSON while a layer is small and as Mapbox vector
 //! tiles once it is not.
 //!
@@ -37,10 +37,11 @@ use serde_json::{Map, Value as Json, json};
 use sc_catalog::Catalog;
 use sc_dataset::{
     Caller, ColType, DatasetDef, DatasetId, Op, OpStatus, Operation, Options, ROW_KEY, Reader,
-    Schema, Stage, StageColumn, compile, read_rows_with, value_json,
+    Schema, Stage, StageColumn, compile, read_rows_with,
 };
 use sc_error::{Error, Result};
 use sc_query::{Expr, OrderBy, Projection, Select, Source, UnOp, Value};
+use sc_types::value_to_analysis_json;
 
 use crate::plot::{DOMAIN_VALUES, Domain};
 
@@ -115,7 +116,7 @@ pub struct LayerRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
     /// Each feature drawn at its centre (`Geo.centroid`): what proportional
-    /// symbols and a heatmap draw a region or a line as (A5.9).
+    /// symbols and a heatmap draw a region or a line as.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub points: bool,
 }
@@ -238,7 +239,7 @@ pub(crate) struct Prepared {
     pub(crate) name: String,
     /// The dataset's columns before the layer added any.
     pub(crate) shape: sc_dataset::StageShape,
-    /// Who reads it (A9.1).
+    /// Who reads it.
     pub(crate) reader: Reader,
 }
 
@@ -251,12 +252,12 @@ async fn prepare(
     catalog: &Catalog,
     caller: &Caller,
     req: &LayerRequest,
-) -> Result<std::result::Result<Prepared, String>> {
+) -> Result<Result<Prepared>> {
     prepare_with(catalog, caller, req, Vec::new()).await
 }
 
 /// The id of the operations a read of a layer adds after its geometry: a
-/// selection's condition, the attribute table's order (A5.10).
+/// selection's condition, the attribute table's order.
 pub(crate) const EXTRA_OP: &str = "layer-extra";
 
 /// [`prepare`], with `extra` operations after the layer's filter and geometry
@@ -267,27 +268,28 @@ pub(crate) async fn prepare_with(
     caller: &Caller,
     req: &LayerRequest,
     extra: Vec<(Operation, &str)>,
-) -> Result<std::result::Result<Prepared, String>> {
+) -> Result<Result<Prepared>> {
     let schema = Schema::of_catalog(catalog)?;
     if let Err(reason) = &schema.spatial {
-        return Ok(Err(format!(
+        return Ok(Err(Error::invalid(format!(
             "a map layer is drawn from geometry the database computes, and {reason}"
-        )));
+        ))));
     }
     let Some(def) = sc_dataset::load_dataset(catalog, req.dataset).await? else {
-        return Ok(Err(
-            "the dataset this layer reads is gone; pick another".to_owned()
-        ));
+        return Ok(Err(Error::invalid(
+            "the dataset this layer reads is gone; pick another",
+        )));
     };
     let mut library = sc_dataset::load_library(catalog).await?;
     let plain = compile(&schema, &library, &def, Options::default());
     let plain_shape = match plain.last() {
         Ok(stage) => stage.shape(),
         Err(e) => {
-            return Ok(Err(format!(
-                "the dataset `{}` does not read: {e}",
-                def.name
-            )));
+            return Ok(Err(Error::invalid(format!(
+                "the dataset `{}` does not read: {}",
+                def.name,
+                e.message()
+            ))));
         }
     };
     let names: Vec<String> = plain_shape.columns.iter().map(|c| c.name.clone()).collect();
@@ -322,27 +324,28 @@ pub(crate) async fn prepare_with(
             continue;
         }
         let error = report.error.clone().unwrap_or_default();
-        return Ok(Err(match op.id.as_str() {
+        return Ok(Err(Error::invalid(match op.id.as_str() {
             FILTER_OP => format!("the layer's filter does not work: {error}"),
             GEOMETRY_OP => format!("the layer's geometry does not work: {error}"),
             id => match said.iter().find(|(i, _)| i == id) {
                 Some((_, what)) => format!("{what} does not work: {error}"),
                 None => format!("the dataset `{}` does not read: {error}", def.name),
             },
-        }));
+        })));
     }
     let stage = match compiled.last() {
         Ok(stage) => stage.clone(),
         Err(e) => {
-            return Ok(Err(format!(
-                "the dataset `{}` does not read: {e}",
-                def.name
-            )));
+            return Ok(Err(Error::invalid(format!(
+                "the dataset `{}` does not read: {}",
+                def.name,
+                e.message()
+            ))));
         }
     };
     let shape = stage.shape();
     let Some(column) = shape.columns.iter().find(|c| c.name == geometry) else {
-        return Ok(Err(format!(
+        return Ok(Err(Error::invalid(format!(
             "`{geometry}` is not a column of `{}` (its columns are {})",
             def.name,
             names
@@ -350,13 +353,13 @@ pub(crate) async fn prepare_with(
                 .map(|n| format!("`{n}`"))
                 .collect::<Vec<_>>()
                 .join(", ")
-        )));
+        ))));
     };
     if !matches!(column.ty, ColType::Geometry | ColType::Unknown) {
-        return Ok(Err(format!(
+        return Ok(Err(Error::invalid(format!(
             "`{geometry}` is {}, not a geometry, so it cannot be drawn on a map",
             column.ty.name()
-        )));
+        ))));
     }
     let properties: Vec<StageColumn> = match &req.properties {
         Some(wanted) => {
@@ -365,10 +368,10 @@ pub(crate) async fn prepare_with(
                 match shape.columns.iter().find(|c| &c.name == w) {
                     Some(c) => out.push(c.clone()),
                     None => {
-                        return Ok(Err(format!(
+                        return Ok(Err(Error::invalid(format!(
                             "`{w}` is not a column of `{}`, so a feature cannot carry it",
                             def.name
-                        )));
+                        ))));
                     }
                 }
             }
@@ -456,9 +459,13 @@ pub async fn layer_data(
 ) -> Result<LayerData> {
     let layer = match prepare(catalog, caller, req).await? {
         Ok(layer) => layer,
-        Err(error) => return Ok(LayerData::Refused { error }),
+        Err(error) => {
+            return Ok(LayerData::Refused {
+                error: error.message().to_owned(),
+            });
+        }
     };
-    let features = layer.stage.features_query().map_err(Error::invalid)?;
+    let features = layer.stage.features_query()?;
     let g = Expr::qcol(FEATURES, layer.geometry.clone());
     let extent = || agg("ST_Extent", vec![g.clone()]);
     let summary = Select::from(Source::subquery(features, FEATURES))
@@ -512,7 +519,7 @@ pub async fn layer_data(
     for (i, row) in rows.rows.iter().enumerate() {
         let shape = geometry
             .and_then(|g| row.get(g))
-            .map_or(Json::Null, value_json);
+            .map_or(Json::Null, value_to_analysis_json);
         if shape.is_null() {
             continue;
         }
@@ -520,7 +527,8 @@ pub async fn layer_data(
         for (name, at) in &carried {
             properties.insert(
                 name.clone(),
-                at.and_then(|a| row.get(a)).map_or(Json::Null, value_json),
+                at.and_then(|a| row.get(a))
+                    .map_or(Json::Null, value_to_analysis_json),
             );
         }
         let id = match rows.keys.get(i) {
@@ -555,14 +563,14 @@ pub enum Spread {
 
 /// What each of `columns` spans over the layer's features that have a
 /// geometry — what a map's colour and size scales and its legend are drawn
-/// from (analytics TODO A5.6), the same [`Domain`] a plot's channels have.
+/// from, the same [`Domain`] a plot's channels have.
 /// One query per column; a column with no values has no domain.
 pub async fn layer_domains(
     catalog: &Catalog,
     caller: &Caller,
     req: &LayerRequest,
     columns: &[(String, Spread)],
-) -> Result<std::result::Result<BTreeMap<String, Domain>, String>> {
+) -> Result<Result<BTreeMap<String, Domain>>> {
     let layer = match prepare(catalog, caller, req).await? {
         Ok(layer) => layer,
         Err(error) => return Ok(Err(error)),
@@ -572,7 +580,7 @@ pub async fn layer_domains(
         if out.contains_key(name) {
             continue;
         }
-        let features = layer.stage.features_query().map_err(Error::invalid)?;
+        let features = layer.stage.features_query()?;
         let g = Expr::qcol(FEATURES, layer.geometry.clone());
         let c = Expr::qcol(FEATURES, name.clone());
         let present = Expr::unary(UnOp::IsNotNull, g).and(Expr::unary(UnOp::IsNotNull, c.clone()));
@@ -608,7 +616,7 @@ pub async fn layer_domains(
                 let rows = run(&layer, select).await?;
                 let values: Vec<Json> = rows
                     .iter()
-                    .filter_map(|r| r.get_index(0).map(value_json))
+                    .filter_map(|r| r.get_index(0).map(value_to_analysis_json))
                     .collect();
                 (!values.is_empty()).then(|| Domain {
                     kind: "discrete",
@@ -633,24 +641,24 @@ pub const SKETCH_VALUES: i64 = 1_000;
 /// have a geometry, sorted — every one of them up to [`SKETCH_VALUES`], and
 /// beyond that values evenly spaced in rank, with the smallest and the
 /// largest: a sorted sample, the same at every read, which a map's class
-/// breaks are computed over (A5.9).
+/// breaks are computed over.
 pub async fn layer_sketch(
     catalog: &Catalog,
     caller: &Caller,
     req: &LayerRequest,
     column: &str,
-) -> Result<std::result::Result<Vec<f64>, String>> {
+) -> Result<Result<Vec<f64>>> {
     let layer = match prepare(catalog, caller, req).await? {
         Ok(layer) => layer,
         Err(error) => return Ok(Err(error)),
     };
     if layer.stage.shape().column(column).is_none() {
-        return Ok(Err(format!(
+        return Ok(Err(Error::invalid(format!(
             "`{column}` is not a column of `{}`",
             layer.name
-        )));
+        ))));
     }
-    let features = layer.stage.features_query().map_err(Error::invalid)?;
+    let features = layer.stage.features_query()?;
     let g = Expr::qcol(FEATURES, layer.geometry.clone());
     let c = Expr::qcol(FEATURES, column.to_owned());
     let as_number = Expr::Cast {
@@ -730,10 +738,8 @@ pub async fn layer_tile(
             "there is no tile {x}/{y} at zoom {z}: each of them is below {side}"
         )));
     }
-    let layer = prepare(catalog, caller, req)
-        .await?
-        .map_err(Error::invalid)?;
-    let features = layer.stage.features_query().map_err(Error::invalid)?;
+    let layer = prepare(catalog, caller, req).await??;
+    let features = layer.stage.features_query()?;
     let int = |n: u32| lit_as(Value::Int(i64::from(n)), "integer");
     let float = |f: f64| lit_as(Value::Float(f), "double precision");
     let world = || {

@@ -31,9 +31,9 @@
 //! the log, and which version a revert went back to is found by looking for the
 //! earlier version it equals ([`step_target`]).
 
+use sc_types::Role;
 use serde_json::{Map, Value as Json, json};
 
-use sc_auth::ROLE_ADMIN;
 use sc_catalog::Table;
 use sc_catalog::history::{self, AsOf, HistoryEntry};
 use sc_error::{Error, Result};
@@ -41,8 +41,8 @@ use sc_error::{Error, Result};
 use super::plan::Authority;
 use super::{Actor, TableHost};
 use crate::history::{HistoryReader, redacted};
-use crate::rows::Executor;
 use crate::undo::Reverser;
+use sc_access::rows::Executor;
 
 /// One `history` request.
 #[derive(Debug, serde::Deserialize)]
@@ -105,10 +105,10 @@ pub(super) async fn answer(host: &TableHost<'_>, request: Json) -> Result<Json> 
     let (role, user) = match &actor {
         // The admin's authority, in the event's user's name.
         Actor::Admin(_) => (
-            ROLE_ADMIN,
-            sc_auth::User::from_json(ROLE_ADMIN, host.user.as_ref())?,
+            Role::ADMIN,
+            sc_auth::User::from_json(Role::ADMIN, host.caller.user.as_ref())?,
         ),
-        Actor::Caller { role, user } => (*role, user.clone()),
+        Actor::Caller { principal, user } => (principal.role, user.clone()),
     };
     let evaluator = host.evaluator.as_ref();
     let reader = HistoryReader {

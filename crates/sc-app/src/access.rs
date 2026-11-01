@@ -22,9 +22,10 @@
 //! application's sign-in surface — the server decides what that is — because
 //! an application nobody can sign in to is an application nobody can use.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, User};
+use sc_auth::User;
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_expr::{Formula, FormulaCall, JsEvaluator, Operation, TableShape};
@@ -61,23 +62,23 @@ impl Application {
     /// Whether the application refuses anybody at all — what lets a request to
     /// an application without these settings skip [`admit`]'s work.
     pub fn is_gated(&self) -> bool {
-        self.min_role < ROLE_PUBLIC || !self.access_if.trim().is_empty()
+        self.min_role.outranks(Role::PUBLIC) || !self.access_if.trim().is_empty()
     }
 
     /// Whether the application caps anybody's role: everybody's, with
     /// `max_role`, or an unverified account's (TODO A2).
     pub fn caps_role(&self) -> bool {
-        self.max_role > ROLE_ADMIN || self.unverified_role().is_some()
+        !self.max_role.is_admin() || self.unverified_role().is_some()
     }
 
     /// The role this application serves an account whose address is unproven
     /// as, when its REST API requires email verification (TODO A2).
-    pub fn unverified_role(&self) -> Option<u8> {
+    pub fn unverified_role(&self) -> Option<Role> {
         self.apis
             .iter()
             .filter(|api| api.provider == sc_api::REST_PROVIDER)
             .filter_map(|api| sc_api::rest_unverified_role(&api.config))
-            .max()
+            .reduce(Role::least_privileged)
     }
 }
 
@@ -91,8 +92,8 @@ pub async fn admit(
     user: Option<User>,
     evaluator: Option<&dyn JsEvaluator>,
 ) -> Admission {
-    let role = user.as_ref().map_or(ROLE_PUBLIC, |u| u.role);
-    if role > app.min_role {
+    let role = user.as_ref().map_or(Role::PUBLIC, |u| u.role());
+    if app.min_role.outranks(role) {
         return Admission::Refused;
     }
     let source = app.access_if.trim();
@@ -125,24 +126,22 @@ pub async fn admit(
 /// The account's own role is not changed, so proving the address by any
 /// route (the verification link, a reset or invitation link, an identity
 /// provider) serves it as its role from the next request.
-pub fn cap_role(app: &Application, mut user: User) -> User {
-    user.role = user.role.max(app.max_role);
-    if user.email_unproven()
-        && let Some(unverified) = app.unverified_role()
-    {
-        user.role = user.role.max(unverified);
+pub fn cap_role(app: &Application, user: User) -> User {
+    let user = user.capped_at(app.max_role);
+    match app.unverified_role() {
+        Some(unverified) if user.email_unproven() => user.capped_at(unverified),
+        _ => user,
     }
-    user
 }
 
 /// The user object as `access_if` sees it: `id`, `role` and every other field
 /// — the shape an ownership formula's `user` has.
 fn user_values(user: &User) -> BTreeMap<String, Value> {
-    let mut map = user.extra.clone();
-    map.insert(sc_auth::COL_ID.to_owned(), Value::Uuid(user.id));
+    let mut map = user.extra().clone();
+    map.insert(sc_auth::COL_ID.to_owned(), Value::Uuid(user.id()));
     map.insert(
         sc_auth::COL_ROLE.to_owned(),
-        Value::Int(i64::from(user.role)),
+        Value::Int(i64::from(user.role())),
     );
     map
 }
@@ -155,7 +154,6 @@ fn user_values(user: &User) -> BTreeMap<String, Value> {
 /// says: only callers at least as privileged as `min_role` get in, and every
 /// one of them is served as `max_role`.
 pub(crate) fn validate_access(catalog: &Catalog, app: &Application) -> Result<()> {
-    validate_roles(app)?;
     let source = app.access_if.trim();
     if source.is_empty() {
         return Ok(());
@@ -186,25 +184,11 @@ pub(crate) fn validate_access(catalog: &Catalog, app: &Application) -> Result<()
     Ok(())
 }
 
-/// The role half of [`validate_access`].
-fn validate_roles(app: &Application) -> Result<()> {
-    let range = ROLE_ADMIN..=ROLE_PUBLIC;
-    for (name, role) in [("min_role", app.min_role), ("max_role", app.max_role)] {
-        if !range.contains(&role) {
-            return Err(Error::invalid(format!(
-                "application `{}`: `{name}` should be a role number, 1 to 100, got {role}",
-                app.name
-            )));
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::application::FrameworkRef;
-    use sc_catalog::Attrs;
+    use sc_types::Attrs;
     use uuid::Uuid;
 
     fn app() -> Application {
@@ -218,10 +202,9 @@ mod tests {
         )
     }
 
-    fn user(role: u8, department: &str) -> User {
-        let mut user = User::new(Uuid::new_v4(), role).unwrap();
-        user.extra
-            .insert("department".into(), Value::Text(department.into()));
+    fn user(role: Role, department: &str) -> User {
+        let mut user = User::new(Uuid::new_v4(), role);
+        user = user.with_field("department", Value::Text(department.into()));
         user
     }
 
@@ -230,7 +213,7 @@ mod tests {
         let app = app();
         assert!(!app.is_gated() && !app.caps_role());
         assert_eq!(admit(&app, None, None).await, Admission::Admitted(None));
-        let admin = user(1, "IT");
+        let admin = user(Role::ADMIN, "IT");
         assert_eq!(
             admit(&app, Some(admin.clone()), None).await,
             Admission::Admitted(Some(admin))
@@ -239,14 +222,14 @@ mod tests {
 
     #[tokio::test]
     async fn min_role_refuses_less_privileged_callers_and_anonymous_ones() {
-        let app = app().min_role(40);
+        let app = app().min_role(Role::of(40));
         assert!(app.is_gated());
         assert_eq!(admit(&app, None, None).await, Admission::Refused);
         assert_eq!(
-            admit(&app, Some(user(80, "")), None).await,
+            admit(&app, Some(user(Role::of(80), "")), None).await,
             Admission::Refused
         );
-        let staff = user(40, "");
+        let staff = user(Role::of(40), "");
         assert_eq!(
             admit(&app, Some(staff.clone()), None).await,
             Admission::Admitted(Some(staff))
@@ -255,39 +238,35 @@ mod tests {
 
     #[tokio::test]
     async fn max_role_caps_a_more_privileged_caller_and_leaves_others_alone() {
-        let app = app().max_role(20);
-        let Admission::Admitted(Some(admin)) = admit(&app, Some(user(1, "")), None).await else {
+        let app = app().max_role(Role::of(20));
+        let Admission::Admitted(Some(admin)) = admit(&app, Some(user(Role::ADMIN, "")), None).await
+        else {
             panic!("an admin is let in");
         };
-        assert_eq!(admin.role, 20, "served as role 20");
-        let Admission::Admitted(Some(staff)) = admit(&app, Some(user(40, "")), None).await else {
+        assert_eq!(admin.role(), Role::of(20), "served as role 20");
+        let Admission::Admitted(Some(staff)) =
+            admit(&app, Some(user(Role::of(40), "")), None).await
+        else {
             panic!("staff are let in");
         };
-        assert_eq!(staff.role, 40, "a less privileged role is not raised");
+        assert_eq!(
+            staff.role(),
+            Role::of(40),
+            "a less privileged role is not raised"
+        );
     }
 
     #[tokio::test]
     async fn access_if_with_no_evaluator_or_a_broken_formula_fails_closed() {
         let app = app().access_if("user.department === \"Finance\"");
         assert_eq!(
-            admit(&app, Some(user(1, "Finance")), None).await,
+            admit(&app, Some(user(Role::ADMIN, "Finance")), None).await,
             Admission::Refused
         );
         let broken = app.clone().access_if("user.department ===");
         assert_eq!(
-            admit(&broken, Some(user(1, "Finance")), None).await,
+            admit(&broken, Some(user(Role::ADMIN, "Finance")), None).await,
             Admission::Refused
         );
-    }
-
-    #[test]
-    fn roles_out_of_range_are_refused() {
-        assert!(validate_roles(&app().min_role(40).max_role(20)).is_ok());
-        // Only staff get in, and all of them are served as role 80.
-        assert!(validate_roles(&app().min_role(40).max_role(80)).is_ok());
-        let zero = validate_roles(&app().min_role(0)).unwrap_err();
-        assert!(zero.to_string().contains("min_role"), "{zero}");
-        assert!(validate_roles(&app().max_role(0)).is_err());
-        assert!(validate_roles(&app().min_role(101)).is_err());
     }
 }

@@ -18,6 +18,7 @@
 //!    store or a database being touched.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -585,7 +586,7 @@ async fn a_coding_agent_translates_an_application_through_the_mcp_tools() -> Res
     let ctx = ToolContext {
         catalog: &server.catalog,
         user: None,
-        role: 1,
+        role: Role::ADMIN,
         triggers: None,
         actor: "the test agent",
     };
@@ -970,7 +971,7 @@ async fn a_coding_agent_fills_the_shared_catalogue_through_the_mcp_tools() -> Re
     let ctx = ToolContext {
         catalog: &server.catalog,
         user: None,
-        role: 1,
+        role: Role::ADMIN,
         triggers: None,
         actor: "the test agent",
     };

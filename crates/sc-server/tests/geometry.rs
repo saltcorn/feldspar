@@ -17,18 +17,16 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::admin_endpoints;
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_app::{
     ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, bootstrap, save_application,
 };
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps,
-};
+use sc_server::{AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps};
 use sc_test_harness::TestDb;
 use sc_types::{BasicType, GeometryKind, TypeRef};
 use serde_json::{Value, json};
@@ -204,6 +202,7 @@ fn park() -> Value {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_geometry_field_is_geojson_through_rest_and_graphql() -> sc_error::Result<()> {
     let Some(db) = TestDb::with_postgis().await? else {
         return Ok(());
@@ -328,7 +327,7 @@ async fn a_geometry_field_is_geojson_through_rest_and_graphql() -> sc_error::Res
             .with("output", "web/dist")
             .with("command", "sh build.sh"),
     )
-    .with_table(TableId("places".to_owned()))
+    .with_table("places".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"))
     .with_api(ApiConfig::new("graphql", "/graphql"));
@@ -398,7 +397,7 @@ async fn a_geometry_field_is_refused_where_there_is_no_postgis() -> sc_error::Re
     // it — and a role that may not install it.
     let db = TestDb::new().await?;
     let mut h = setup(db, "refused").await?;
-    if h.catalog.primary().spatial().is_available() {
+    if h.catalog.primary_info().spatial().is_available() {
         // A machine whose test role may install PostGIS into every database.
         eprintln!("skipped: PostGIS was installed into a plain test database");
         return Ok(());
@@ -575,6 +574,7 @@ async fn a_dataset_is_a_map_layer_as_geojson_or_as_tiles() -> sc_error::Result<(
 /// encoded columns, as GeoJSON and as tiles, and the base map setting — what
 /// `mapSettings` answers and the hosts the Analytics UI's policy names.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_map_panel_is_suggested_drawn_and_its_base_map_allowed() -> sc_error::Result<()> {
     let Some(db) = TestDb::with_postgis().await? else {
         return Ok(());
@@ -837,6 +837,7 @@ async fn analytics_policy(h: &Harness) -> String {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_map_workspace_selects_saves_runs_tools_and_is_a_panel() -> sc_error::Result<()> {
     let Some(db) = TestDb::with_postgis().await? else {
         return Ok(());

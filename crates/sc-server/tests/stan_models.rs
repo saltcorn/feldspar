@@ -40,14 +40,15 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, StanSettings, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_triggers, start_workflow_engine,
+    AppMounts, ServerConfig, StanSettings, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_triggers, start_workflow_engine,
 };
 use sc_test_harness::TestDb;
 use serde_json::{Value, json};
@@ -731,6 +732,7 @@ fn radon_model(bindings: Value) -> Value {
 
 #[tokio::test]
 #[ignore = "needs a real CmdStan: `feldspar cmdstan install`, or set $CMDSTAN"]
+#[allow(clippy::too_many_lines)]
 async fn radon_is_bound_sampled_labelled_by_county_and_written_back() -> Result<()> {
     let mut server = setup("radon", &radon_sql(), &[("models/radon.stan", RADON)]).await?;
     let client = &mut server.client;

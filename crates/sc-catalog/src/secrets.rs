@@ -399,7 +399,7 @@ pub fn reveal_join_value(
         else {
             return Ok(());
         };
-        current = catalog.require(&target_table.0)?;
+        current = catalog.require(target_table)?;
     }
     if !is_secret_column(&current, last) {
         return Ok(());
@@ -459,7 +459,7 @@ pub async fn check_key_at(catalog: &Catalog, path: &Path) -> Result<()> {
             .filter(held);
         select.limit = Some(1);
         let rows: Vec<sc_db::Row> = catalog
-            .driver_for(&table)?
+            .driver_of_table(&table)?
             .query(&Statement::from(select))
             .await?
             .try_collect()

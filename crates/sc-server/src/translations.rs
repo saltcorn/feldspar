@@ -133,9 +133,12 @@ async fn source_strings(cat: &Catalog, app: &Application) -> Result<AppStrings> 
         let Some(language) = Language::for_path(&path) else {
             continue;
         };
-        let Ok(bytes) = store.read(&path).await else {
-            // A file that vanished between the listing and the read is a
-            // project being edited, which is the normal state of one.
+        // A file that vanished between the listing and the read is a project
+        // being edited, which is the normal state of one.
+        let Ok(at) = sc_files::StorePath::parse(&path) else {
+            continue;
+        };
+        let Ok(bytes) = store.read(&at).await else {
             continue;
         };
         // Relative to the project, so the screen's file column reads the way
@@ -204,7 +207,7 @@ fn source_tree(
     let Ok(source) = sc_app::app_source_from_config(&app.framework) else {
         return Ok(None);
     };
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::ADMIN_TASKS)?;
     Ok(Some((store, source.build.source_dir)))
 }
 
@@ -216,7 +219,10 @@ async fn walk(store: &dyn FileStore, dir: &str, out: &mut Vec<String>) -> Result
     // reason to allocate a future per level.
     let mut queue = vec![dir.to_owned()];
     while let Some(current) = queue.pop() {
-        let Ok(mut entries) = store.list(&current).await else {
+        let Ok(at) = sc_files::StorePath::parse(&current) else {
+            continue;
+        };
+        let Ok(mut entries) = store.list(&at).await else {
             continue;
         };
         entries.sort_by(|a, b| a.path.cmp(&b.path));

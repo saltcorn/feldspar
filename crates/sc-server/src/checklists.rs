@@ -22,20 +22,21 @@ use serde_json::{Value as Json, json};
 use uuid::Uuid;
 
 use crate::apps::AppMounts;
-use crate::handler::{HandlerCtx, HandlerRegistry, HandlerResponse};
+use crate::handler::{Admin, HandlerCtx, HandlerRegistry, HandlerResponse};
 
 /// How many runs a checklist's detail carries.
 const DETAIL_RUNS: u64 = 10;
 /// How many runs `listChecklistRuns` returns when it names no limit.
 const DEFAULT_RUNS: u64 = 50;
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: Arc<AppMounts>) {
     macro_rules! handler {
         ($name:literal, |$ctx:ident, $catalog:ident, $registry:ident, $apps:ident| $body:expr) => {
-            reg.register($name, {
+            reg.register_admin($name, {
                 let catalog = catalog.clone();
                 let apps = apps.clone();
-                move |$ctx: HandlerCtx| {
+                move |$ctx: HandlerCtx<Admin>| {
                     let $catalog = catalog.clone();
                     // Per request: a module change installs a new set of
                     // step types (C3.5).
@@ -295,14 +296,14 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
             .and_then(Json::as_bool)
             .ok_or_else(|| Error::invalid("`check_user` should be true or false"))?;
         let user = sc_auth::set_check_user(&catalog, id(&ctx, "id")?, on).await?;
-        json!({ "id": user.id.to_string(), "check_user": user.is_check_user() })
+        json!({ "id": user.id().to_string(), "check_user": user.is_check_user() })
     });
 
     handler!("listChecklistUsers", |ctx, catalog, registry, apps| {
         let mut select = Select::from(Source::table(USERS_TABLE)).columns(vec![Projection::all()]);
         select.order = vec![OrderBy::asc(Expr::col(COL_EMAIL))];
         let rows = catalog
-            .primary()
+            .primary(crate::ADMIN_TASKS)
             .query(&Statement::from(select))
             .await?
             .try_collect()
@@ -311,9 +312,9 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         for row in &rows {
             let user = User::from_row(row)?;
             out.push(json!({
-                "id": user.id.to_string(),
+                "id": user.id().to_string(),
                 "email": user.get(COL_EMAIL).and_then(sc_query::Value::as_text).unwrap_or_default(),
-                "role": i64::from(user.role),
+                "role": i64::from(user.role()),
                 "check_user": user.is_check_user(),
             }));
         }
@@ -430,14 +431,13 @@ async fn detail(catalog: &Catalog, id: Uuid) -> Result<Json> {
 }
 
 /// The person making the change.
-fn editor(ctx: &HandlerCtx) -> Result<Editor> {
-    ctx.user
-        .as_ref()
-        .map(|u| Editor::Human(u.id))
+fn editor(ctx: &HandlerCtx<Admin>) -> Result<Editor> {
+    ctx.user()
+        .map(|u| Editor::Human(u.id()))
         .ok_or_else(|| Error::auth("sign in to change checklists"))
 }
 
-fn id(ctx: &HandlerCtx, name: &str) -> Result<Uuid> {
+fn id<W>(ctx: &HandlerCtx<W>, name: &str) -> Result<Uuid> {
     parse_uuid(ctx.path_param(name)?, name)
 }
 

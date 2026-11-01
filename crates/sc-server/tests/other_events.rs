@@ -16,6 +16,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -25,13 +28,11 @@ use axum::http::{Request, StatusCode, header};
 use sc_action::{EventKind, Trigger, TriggerDispatcher, save_trigger};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-    default_js_evaluator, fire_startup, install_triggers,
+    AppMounts, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
+    fire_startup, install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -123,22 +124,7 @@ fn journal_trigger(name: &str, when: EventKind, values: Value) -> Trigger {
 }
 
 async fn setup() -> sc_error::Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(&format!(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$; {SCHEMA}"
-        ))
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
-    db.on_teardown(catalog.teardown_hook());
+    let TestServer { db, catalog, .. } = TestServer::builder().sql(SCHEMA).build().await?;
     sc_auth::bootstrap(&catalog).await?;
     let agents = sc_server::install_agents(&catalog).await?;
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
@@ -367,15 +353,25 @@ async fn a_none_trigger_runs_by_name_with_its_payload() -> sc_error::Result<()> 
     // answer — the whole contract of a trigger with no intrinsic occurrence.
     let result = server
         .dispatcher
-        .run_trigger(&server.catalog, "double", json!({ "n": 21 }), None)
+        .run_trigger(
+            &server.catalog,
+            "double",
+            json!({ "n": 21 }),
+            Authority::system("test"),
+        )
         .await?;
     assert_eq!(result, json!({ "doubled": 42, "who": Value::Null }));
 
     // The caller travels here too, when one is given.
-    let caller = sc_catalog::CallerContext::new(1, Some(json!({ "email": ADMIN })));
+    let caller = sc_catalog::Principal::new(Role::ADMIN, Some(json!({ "email": ADMIN })));
     let result = server
         .dispatcher
-        .run_trigger(&server.catalog, "double", json!({ "n": 1 }), Some(&caller))
+        .run_trigger(
+            &server.catalog,
+            "double",
+            json!({ "n": 1 }),
+            Authority::Caller(&caller),
+        )
         .await?;
     assert_eq!(result["who"], json!({ "email": ADMIN }));
 
@@ -383,7 +379,12 @@ async fn a_none_trigger_runs_by_name_with_its_payload() -> sc_error::Result<()> 
     // answers, because they call for different fixes.
     let err = server
         .dispatcher
-        .run_trigger(&server.catalog, "nope", Value::Null, None)
+        .run_trigger(
+            &server.catalog,
+            "nope",
+            Value::Null,
+            Authority::system("test"),
+        )
         .await
         .unwrap_err();
     assert!(err.to_string().contains("no trigger named"), "{err}");
@@ -398,7 +399,12 @@ async fn a_none_trigger_runs_by_name_with_its_payload() -> sc_error::Result<()> 
     server.add_trigger(off).await?;
     let err = server
         .dispatcher
-        .run_trigger(&server.catalog, "double", json!({ "n": 1 }), None)
+        .run_trigger(
+            &server.catalog,
+            "double",
+            json!({ "n": 1 }),
+            Authority::system("test"),
+        )
         .await
         .unwrap_err();
     assert!(err.to_string().contains("disabled"), "{err}");

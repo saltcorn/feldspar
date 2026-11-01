@@ -29,6 +29,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -131,7 +132,11 @@ async fn setup(db: &TestDb) -> Result<(Arc<Catalog>, Sql)> {
 /// counted inside the parent's statement.
 async fn protect_employees(cat: &Catalog) -> Result<()> {
     bootstrap_table_meta(cat).await?;
-    save_table_meta(cat, &TableMeta::new("departments").access(100, 1)).await?;
+    save_table_meta(
+        cat,
+        &TableMeta::new("departments").access(Role::PUBLIC, Role::ADMIN),
+    )
+    .await?;
     let mut employees = TableMeta::new("employees");
     employees.set_ownership_formula(Some("owner === user.email"));
     employees.set_rls_enabled(true);
@@ -168,15 +173,14 @@ fn provider_with(cat: &Catalog, limits: GraphqlLimits) -> Result<GraphqlProvider
 
 /// A caller who meets every table's default role floor.
 fn admin() -> Result<User> {
-    User::new(uuid::Uuid::new_v4(), sc_auth::ROLE_ADMIN)
+    Ok(User::new(uuid::Uuid::new_v4(), Role::ADMIN))
 }
 
 /// A caller at the public role, identified by the email the ownership formula
 /// and the generated policy both read.
 fn caller(email: &str) -> Result<User> {
-    let mut user = User::new(uuid::Uuid::new_v4(), 100)?;
-    user.extra
-        .insert("email".to_owned(), Value::Text(email.to_owned()));
+    let mut user = User::new(uuid::Uuid::new_v4(), Role::PUBLIC);
+    user = user.with_field("email".to_owned(), Value::Text(email.to_owned()));
     Ok(user)
 }
 
@@ -398,7 +402,11 @@ async fn a_join_into_a_forced_table_reads_the_callers_own_row() -> Result<()> {
     // protected one here, so an employee's `department { name }` runs the
     // departments' policy inside the employees' statement.
     bootstrap_table_meta(&cat).await?;
-    save_table_meta(&cat, &TableMeta::new("employees").access(100, 1)).await?;
+    save_table_meta(
+        &cat,
+        &TableMeta::new("employees").access(Role::PUBLIC, Role::ADMIN),
+    )
+    .await?;
     let mut departments = TableMeta::new("departments");
     departments.set_ownership_formula(Some("name === user.department"));
     departments.set_rls_enabled(true);
@@ -407,9 +415,7 @@ async fn a_join_into_a_forced_table_reads_the_callers_own_row() -> Result<()> {
     let api = provider(&cat)?;
 
     let mut engineer = caller("ada@example.com")?;
-    engineer
-        .extra
-        .insert("department".to_owned(), Value::Text("Engineering".into()));
+    engineer = engineer.with_field("department".to_owned(), Value::Text("Engineering".into()));
     let body = run_as(
         &api,
         &cat,
@@ -450,8 +456,16 @@ async fn a_key_is_not_a_way_around_the_targets_read_floor() -> Result<()> {
     // policies. A list of departments is refused — and following the key into
     // one has to be refused for the same reason, or the floor means nothing:
     // `employees { department { name } }` would be a department reader.
-    save_table_meta(&cat, &TableMeta::new("employees").access(100, 1)).await?;
-    save_table_meta(&cat, &TableMeta::new("departments").access(1, 1)).await?;
+    save_table_meta(
+        &cat,
+        &TableMeta::new("employees").access(Role::PUBLIC, Role::ADMIN),
+    )
+    .await?;
+    save_table_meta(
+        &cat,
+        &TableMeta::new("departments").access(Role::ADMIN, Role::ADMIN),
+    )
+    .await?;
     let api = provider(&cat)?;
     let public = caller("ada@example.com")?;
 
@@ -488,7 +502,11 @@ async fn a_key_into_a_table_owned_by_a_formula_is_refused_by_name() -> Result<()
     let db = TestDb::new().await?;
     let (cat, _) = setup(&db).await?;
     bootstrap_table_meta(&cat).await?;
-    save_table_meta(&cat, &TableMeta::new("employees").access(100, 1)).await?;
+    save_table_meta(
+        &cat,
+        &TableMeta::new("employees").access(Role::PUBLIC, Role::ADMIN),
+    )
+    .await?;
     // Sub-floor access granted by a formula: this caller may read *some*
     // departments. A Ⱶ-join cannot say which — its subquery is built from the
     // schema shape and has no `WHERE` this provider owns — so answering would

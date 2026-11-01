@@ -12,6 +12,7 @@
 //! [`IDE_PREFIX`], which is the file-store IDE's own bundle, served admin-only and
 //! under its own Content-Security-Policy (design §12.1).
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,8 +41,8 @@ use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::admin_host::HANDOFF_ROUTE;
+use crate::admin_session::{AdminSession, Caller, Who};
 use crate::apps::{AppMounts, MountedApp, subdomain_in};
-use crate::backup::{BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE};
 use crate::chat::{AGENT_CHAT_ROUTE, agent_chat_upgrade};
 use crate::config::ServerConfig;
 use crate::fit_progress::{FIT_PROGRESS_ROUTE, fit_progress_upgrade};
@@ -50,11 +51,13 @@ use crate::lsp::{LSP_ROUTE, ServerSlots, language_server_upgrade, server_slots};
 use crate::mcp::MCP_ROUTE;
 use crate::observe::{STREAM_OBSERVE_ROUTE, stream_observe_upgrade};
 use crate::security::{
-    ANALYTICS_CONTENT_SECURITY_POLICY, AnonymousCaller, CONTENT_SECURITY_POLICY, CSRF_HEADER,
-    CsrfPolicy, GUEST_COOKIE, IDE_CONTENT_SECURITY_POLICY, PREVIEW_COOKIE, SESSION_COOKIE,
+    ANALYTICS_CONTENT_SECURITY_POLICY, AnonymousCaller, CONTENT_SECURITY_POLICY, CsrfPolicy,
+    GUEST_COOKIE, IDE_CONTENT_SECURITY_POLICY, PREVIEW_COOKIE, SESSION_COOKIE,
     admin_content_security_policy, build_cookie, csrf_middleware, is_native_client,
     upgrade_origin_allowed, upgrade_origin_refused,
 };
+use sc_api::auth::CSRF_HEADER;
+use sc_backup::{BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE};
 
 /// A WebSocket upgrade, **if this request is one** — the extractor the fallback
 /// needs and axum does not provide (TODO "Streams" §10, task 8.2).
@@ -223,6 +226,7 @@ pub fn build_router(
 /// keeps a clone to mount/unmount apps at runtime, and this router resolves each
 /// request against the registry's current contents — an app mounted after the
 /// router was built serves immediately, with no restart.
+#[allow(clippy::too_many_lines)]
 pub fn build_router_with_apps(
     endpoints: &EndpointSet,
     handlers: HandlerRegistry,
@@ -270,12 +274,17 @@ pub fn build_router_with_apps(
     let routes = Arc::new(build_matchit(endpoints)?);
     let mut handlers = handlers;
     crate::builder::register_status_handler(&mut handlers, config.builder_dir.clone());
+    // An admin endpoint's handler takes admin authority, and an Analytics
+    // application's endpoints are served by Analytics handlers: refused here,
+    // before anything is served, rather than found by a request (Q2.4).
+    handlers.check_gates(endpoints)?;
+    crate::analytics_app::check_app_gates(&handlers)?;
     let handlers = Arc::new(handlers);
     let mcp_endpoint_tools = Arc::new(crate::mcp::endpoint_tools(endpoints, &handlers));
     // The administrative tools create applications and file stores through
     // these same handlers (§13.6), so the router that serves them installs them.
     if let Some(catalog) = apps.catalog() {
-        crate::mcp::AdminHandlers::install(catalog, &handlers)?;
+        crate::mcp::AdminHandlers::install(catalog, &apps)?;
     }
     let state = AppState {
         routes,
@@ -676,7 +685,7 @@ pub(crate) async fn read_body(
     Ok(out.freeze())
 }
 
-/// Stream a request body into a spool file ([`crate::backup::SpoolFile`]),
+/// Stream a request body into a spool file ([`sc_backup::SpoolFile`]),
 /// refusing it once it passes `limit` bytes — [`read_body`] for a body that is
 /// a file and may be larger than is sensible to hold in memory: an uploaded
 /// backup. The file is deleted if anything goes wrong on the way, by its guard.
@@ -684,7 +693,7 @@ pub(crate) async fn spool_body(
     body: Body,
     limit: u64,
     flag: &str,
-) -> std::result::Result<crate::backup::SpoolFile, Box<Response>> {
+) -> std::result::Result<sc_backup::SpoolFile, Box<Response>> {
     use futures::StreamExt;
     use tokio::io::AsyncWriteExt;
     let failed = |e: String| {
@@ -693,7 +702,7 @@ pub(crate) async fn spool_body(
             format!("could not keep the upload: {e}"),
         ))
     };
-    let spool = crate::backup::SpoolFile::new("upload");
+    let spool = sc_backup::SpoolFile::new("upload");
     let file = spool.create().map_err(|e| failed(e.to_string()))?;
     let mut file = tokio::fs::File::from_std(file);
     let mut stream = body.into_data_stream();
@@ -738,22 +747,12 @@ async fn health() -> Response {
 /// lookup, the admin check, and reading the body.
 async fn upload(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    admin: AdminSession,
     jar: CookieJar,
     AxumPath((store_name, path)): AxumPath<(String, String)>,
     body: axum::body::Body,
 ) -> Response {
-    if let Some(refused) = admin_host_only(&state, &headers, &jar) {
-        return refused;
-    }
-    let session_token = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned());
-    let user = match session_user(&state, &jar).await {
-        Ok(user) => user,
-        Err(response) => return *response,
-    };
-    if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
-        return rejection;
-    }
+    let session_token = Some(admin.token().to_owned());
 
     let Some(handler) = state.handlers.get("uploadFile").cloned() else {
         return json_error(
@@ -774,7 +773,7 @@ async fn upload(
     // Kept for the `error` event, which needs to say where it happened and to
     // whom; the originals move into the handler's context below.
     let (store_for_event, path_for_event) = (store_name.clone(), path.clone());
-    let caller = user.clone();
+    let caller = Some(admin.user().clone().into_user());
     let ctx = HandlerCtx {
         raw_body: Some(bytes),
         raw_file: None,
@@ -783,7 +782,7 @@ async fn upload(
         path_params: HashMap::from([("store".to_owned(), store_name), ("path".to_owned(), path)]),
         query: Vec::new(),
         body: serde_json::Value::Null,
-        user,
+        who: Caller::Admin(admin.into()),
         // A route outside the endpoint set that serves bytes, not prose: the
         // installation default is the honest answer, and nothing here renders a
         // message for a person to read.
@@ -813,23 +812,14 @@ async fn upload(
 /// the same session lookup and admin check as the typed endpoints.
 async fn download(
     State(state): State<AppState>,
+    admin: AdminSession,
     jar: CookieJar,
     method: axum::http::Method,
     uri: Uri,
     headers: axum::http::HeaderMap,
     AxumPath((store_name, path)): AxumPath<(String, String)>,
 ) -> Response {
-    if let Some(refused) = admin_host_only(&state, &headers, &jar) {
-        return refused;
-    }
-    let session_token = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned());
-    let user = match session_user(&state, &jar).await {
-        Ok(user) => user,
-        Err(response) => return *response,
-    };
-    if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
-        return rejection;
-    }
+    let session_token = Some(admin.token().to_owned());
     let Some(handler) = state.handlers.get("downloadFile").cloned() else {
         return json_error(
             StatusCode::NOT_FOUND,
@@ -837,7 +827,7 @@ async fn download(
         );
     };
     let route = format!("/download/{store_name}/{path}");
-    let caller = user.clone();
+    let caller = Some(admin.user().clone().into_user());
     let ctx = HandlerCtx {
         raw_body: None,
         raw_file: None,
@@ -846,7 +836,7 @@ async fn download(
         path_params: HashMap::from([("store".to_owned(), store_name), ("path".to_owned(), path)]),
         query: Vec::new(),
         body: serde_json::Value::Null,
-        user,
+        who: Caller::Admin(admin.into()),
         // As `upload`: bytes, not prose.
         locale: sc_i18n::active().default_locale().clone(),
     };
@@ -870,14 +860,11 @@ async fn download(
 /// admin-only check has already been applied by the time the bytes exist.
 async fn create_backup(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    admin: AdminSession,
     jar: CookieJar,
     body: Bytes,
 ) -> Response {
-    let (user, session_token) = match admin_of(&state, &headers, &jar).await {
-        Ok(pair) => pair,
-        Err(response) => return *response,
-    };
+    let session_token = Some(admin.token().to_owned());
     let Some(handler) = state.handlers.get("createBackup").cloned() else {
         return json_error(
             StatusCode::NOT_FOUND,
@@ -894,7 +881,7 @@ async fn create_backup(
             }
         }
     };
-    let caller = user.clone();
+    let caller = Some(admin.user().clone().into_user());
     let ctx = HandlerCtx {
         raw_body: None,
         raw_file: None,
@@ -903,7 +890,7 @@ async fn create_backup(
         path_params: HashMap::new(),
         query: Vec::new(),
         body: selection,
-        user,
+        who: Caller::Admin(admin.into()),
         // As `upload_file`: this route's response is an archive.
         locale: sc_i18n::active().default_locale().clone(),
     };
@@ -936,14 +923,11 @@ async fn create_backup(
 /// and an admin waiting for it twice.
 async fn upload_backup(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    admin: AdminSession,
     jar: CookieJar,
     body: Body,
 ) -> Response {
-    let (user, session_token) = match admin_of(&state, &headers, &jar).await {
-        Ok(pair) => pair,
-        Err(response) => return *response,
-    };
+    let session_token = Some(admin.token().to_owned());
     let Some(handler) = state.handlers.get("uploadBackup").cloned() else {
         return json_error(
             StatusCode::NOT_FOUND,
@@ -956,7 +940,7 @@ async fn upload_backup(
         Ok(spool) => spool,
         Err(response) => return *response,
     };
-    let caller = user.clone();
+    let caller = Some(admin.user().clone().into_user());
     let ctx = HandlerCtx {
         raw_body: None,
         raw_file: Some(std::sync::Arc::new(spool)),
@@ -965,7 +949,7 @@ async fn upload_backup(
         path_params: HashMap::new(),
         query: Vec::new(),
         body: Value::Null,
-        user,
+        who: Caller::Admin(admin.into()),
         // As `upload_file`: this route takes an archive and answers a manifest.
         locale: sc_i18n::active().default_locale().clone(),
     };
@@ -989,56 +973,6 @@ async fn upload_backup(
     }
 }
 
-/// The session behind an admin-only route outside the endpoint set: the caller,
-/// and the token their cookie carried (which [`apply_response`] needs to leave the
-/// session where it found it).
-///
-/// The `Err` is the refusal to serve, ready to return — the same two answers
-/// `dispatch` gives, so a route that does its own auth cannot accidentally give a
-/// different one.
-async fn admin_of(
-    state: &AppState,
-    headers: &axum::http::HeaderMap,
-    jar: &CookieJar,
-) -> std::result::Result<(Option<User>, Option<String>), Box<Response>> {
-    if let Some(refused) = admin_host_only(state, headers, jar) {
-        return Err(Box::new(refused));
-    }
-    let session_token = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned());
-    let user = session_user(state, jar).await?;
-    if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
-        return Err(Box::new(rejection));
-    }
-    Ok((user, session_token))
-}
-
-/// A `404` for an admin-only real route — a socket, or the file and backup
-/// routes — asked for on an application's host (or a preview's), where it is
-/// nothing.
-///
-/// The Origin check (or the CSRF token, which a page can read from its own
-/// host's cookie) passes there — the page is on the host it calls — and with
-/// sign-in shared between applications, or an admin simply signed in to the
-/// application, the admin's cookie comes along. Without this a script on any
-/// application page an admin opens (an uploaded file, the application's own
-/// code) could hold the admin's chat or language server, download a whole
-/// backup, or read and write any store. The admin UI and the IDE call from the
-/// admin's host, and only from there. `call_api` always sends to an
-/// application's host, so it meets the same refusal.
-fn admin_host_only(
-    state: &AppState,
-    headers: &axum::http::HeaderMap,
-    jar: &CookieJar,
-) -> Option<Response> {
-    match resolve_app(state, headers, jar) {
-        Resolved::Admin => None,
-        Resolved::App(_) | Resolved::HiddenPreview => Some(json_error(
-            StatusCode::NOT_FOUND,
-            "there is nothing at this path",
-        )),
-    }
-}
-
 /// The IDE's language-server socket (design §12.1): admin-only, one process per
 /// connection.
 ///
@@ -1053,23 +987,13 @@ fn admin_host_only(
 /// cookie off the request, but not a sibling subdomain's.
 async fn language_server(
     State(state): State<AppState>,
+    admin: AdminSession,
     headers: axum::http::HeaderMap,
-    jar: CookieJar,
     AxumPath(store): AxumPath<String>,
     ws: axum::extract::ws::WebSocketUpgrade,
 ) -> Response {
-    if let Some(refused) = admin_host_only(&state, &headers, &jar) {
-        return refused;
-    }
     if !upgrade_origin_allowed(&headers) {
         return upgrade_origin_refused();
-    }
-    let user = match session_user(&state, &jar).await {
-        Ok(user) => user,
-        Err(response) => return *response,
-    };
-    if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
-        return rejection;
     }
     language_server_upgrade(
         ws,
@@ -1077,6 +1001,7 @@ async fn language_server(
         &state.lsp_slots,
         Arc::clone(&state.language_server),
         store,
+        admin.watch(state.sessions.clone()),
     )
     .await
 }
@@ -1090,43 +1015,23 @@ async fn language_server(
 /// be this host's own ([`upgrade_origin_allowed`]).
 async fn agent_chat(
     State(state): State<AppState>,
+    admin: AdminSession,
     headers: axum::http::HeaderMap,
-    jar: CookieJar,
     ws: axum::extract::ws::WebSocketUpgrade,
 ) -> Response {
-    if let Some(refused) = admin_host_only(&state, &headers, &jar) {
-        return refused;
-    }
     if !upgrade_origin_allowed(&headers) {
         return upgrade_origin_refused();
     }
-    let user = match session_user(&state, &jar).await {
-        Ok(user) => user,
-        Err(response) => return *response,
-    };
-    if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
-        return rejection;
-    }
-    let Some(user) = user else {
-        // Unreachable: `AuthRequirement::admin()` has just refused every request
-        // without a user. Answered rather than unwrapped, because a run with no
-        // caller is the one thing decision 5 says cannot exist.
-        return json_error(StatusCode::UNAUTHORIZED, "this route requires a session");
-    };
-    // The session is re-read for every turn and watched for its end, so a
-    // sign-out, a disabled account or a demotion closes the socket (#42).
-    let Some(token) = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) else {
-        return json_error(StatusCode::UNAUTHORIZED, "this route requires a session");
-    };
-    let session = crate::chat::ChatSession::new(state.sessions.clone(), token, &user);
+    // The socket holds the session, re-reads it for every turn and is told
+    // when it ends, so a sign-out, a disabled account or a demotion closes it
+    // (#42).
     agent_chat_upgrade(
         ws,
         state.apps.catalog(),
         state.apps.agents(),
         state.apps.evaluator(),
         state.apps.triggers().cloned(),
-        user,
-        session,
+        admin.watch(state.sessions.clone()),
     )
     .await
 }
@@ -1143,31 +1048,21 @@ async fn agent_chat(
 /// ([`upgrade_origin_allowed`]).
 async fn stream_observe(
     State(state): State<AppState>,
+    // This is a real axum route, so it wins over the fallback every
+    // application's request goes through — including an app whose API is
+    // mounted at `/api`. An application observes its streams over its live
+    // socket (`{mount}/live`), so a path spelled like this one on an
+    // application's host is nothing: the `AdminSession` says so.
+    admin: AdminSession,
     headers: axum::http::HeaderMap,
-    jar: CookieJar,
     AxumPath(id): AxumPath<String>,
     // Optional, so a plain `GET` of this path is answered by this handler with
     // a sentence rather than by the extractor's own rejection: the path is one
     // an admin may well try in a browser tab.
     MaybeUpgrade(ws): MaybeUpgrade,
 ) -> Response {
-    // This is a real axum route, so it wins over the fallback every
-    // application's request goes through — including an app whose API is
-    // mounted at `/api`. An application observes its streams over its live
-    // socket (`{mount}/live`), so a path spelled like this one on an
-    // application's host is nothing.
-    if let Resolved::App(_) = resolve_app(&state, &headers, &jar) {
-        return json_error(StatusCode::NOT_FOUND, "there is nothing at this path");
-    }
     if !upgrade_origin_allowed(&headers) {
         return upgrade_origin_refused();
-    }
-    let user = match session_user(&state, &jar).await {
-        Ok(user) => user,
-        Err(response) => return *response,
-    };
-    if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
-        return rejection;
     }
     // A path segment that is not a uuid is answered with a status rather than
     // an upgrade: there is no stream it could be, and the handshake has not
@@ -1189,6 +1084,7 @@ async fn stream_observe(
         state.apps.streams().map(sc_server_stream_supervisor),
         Arc::clone(state.apps.live().hub()),
         sc_stream::StreamId(id),
+        admin.watch(state.sessions.clone()),
     )
     .await
 }
@@ -1198,25 +1094,15 @@ async fn stream_observe(
 /// Observe socket's is.
 async fn fit_progress(
     State(state): State<AppState>,
+    // An application's request on a path spelled like this one is not a fit's
+    // (applications have no model editor): the `AdminSession` refuses it.
+    admin: AdminSession,
     headers: axum::http::HeaderMap,
-    jar: CookieJar,
     AxumPath(id): AxumPath<String>,
     MaybeUpgrade(ws): MaybeUpgrade,
 ) -> Response {
-    // An application's request on a path spelled like this one is not a fit's:
-    // applications have no model editor.
-    if let Resolved::App(_) = resolve_app(&state, &headers, &jar) {
-        return json_error(StatusCode::NOT_FOUND, "there is nothing at this path");
-    }
     if !upgrade_origin_allowed(&headers) {
         return upgrade_origin_refused();
-    }
-    let user = match session_user(&state, &jar).await {
-        Ok(user) => user,
-        Err(response) => return *response,
-    };
-    if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
-        return rejection;
     }
     let Ok(id) = id.parse::<uuid::Uuid>() else {
         return json_error(
@@ -1236,7 +1122,12 @@ async fn fit_progress(
             "this path is a WebSocket: connect to it with `ws:`/`wss:` rather than fetching it",
         );
     };
-    fit_progress_upgrade(ws, catalog, sc_model::InstanceId(id))
+    fit_progress_upgrade(
+        ws,
+        catalog,
+        sc_model::InstanceId(id),
+        admin.watch(state.sessions.clone()),
+    )
 }
 
 /// The supervisor inside a server's stream services — a named function rather
@@ -1496,6 +1387,20 @@ pub(crate) fn resolve_app(
     }
 }
 
+/// The request's `Host` as a [`sc_catalog::TrustedHost`], when it is one this
+/// server serves ([`is_served_host`]) — what a flow that sends a token back to
+/// where it began (OAuth) may link to (TODO-code-quality Q4.2).
+pub(crate) fn served_request_host(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    jar: &CookieJar,
+) -> Option<sc_catalog::TrustedHost> {
+    if !is_served_host(state, headers, jar) {
+        return None;
+    }
+    served_host(headers)
+}
+
 /// Whether the request's `Host` is one this server serves **by name**: an
 /// application's host, or the admin UI's own (under the base domain or an extra
 /// one).
@@ -1711,6 +1616,7 @@ pub(crate) enum Resolved {
 /// `/api/*` is its data and everything else is its UI. Both answers carry the
 /// app's own CSP.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn dispatch_app(
     state: &AppState,
     app: &Arc<MountedApp>,
@@ -1785,6 +1691,7 @@ async fn dispatch_app(
             session: session_token,
             user,
             refused,
+            ..
         } = match app_caller(state, &app.app, &jar, anonymous).await {
             Ok(caller) => caller,
             Err(rejection) => return with_csp(*rejection, &csp),
@@ -1974,6 +1881,7 @@ async fn dispatch_app(
         session: session_token,
         user,
         refused,
+        ..
     } = match app_caller(state, &app.app, &jar, false).await {
         Ok(caller) => caller,
         Err(rejection) => return with_csp(*rejection, &csp),
@@ -1999,7 +1907,7 @@ async fn dispatch_app(
     // it: what a rendered form carries, and what `req.csrfToken()` answers.
     req.csrf_token = csrf
         .or_else(|| {
-            jar.get(crate::security::csrf_cookie(state.secure_cookies))
+            jar.get(sc_api::auth::csrf_cookie(state.secure_cookies))
                 .map(|c| c.value().to_owned())
         })
         .unwrap_or_default();
@@ -2130,6 +2038,7 @@ async fn dispatch_analytics_api(
     let AppCaller {
         session: session_token,
         user,
+        signed_in,
         refused,
     } = match app_caller(state, &app.app, &jar, anonymous).await {
         Ok(caller) => caller,
@@ -2147,7 +2056,7 @@ async fn dispatch_analytics_api(
         app.app.id.0,
         &app.app.name,
         &app.app.framework.config,
-        app.app.tables.iter().map(|t| t.0.clone()),
+        app.app.tables.iter().cloned(),
     )
     .await
     {
@@ -2198,12 +2107,13 @@ async fn dispatch_analytics_api(
     let settings = crate::i18n::app_settings(&app.app, &sc_i18n::active());
     let negotiated = crate::i18n::negotiate(&settings, uri, headers, &jar, user.as_ref());
     let locale = crate::i18n::locale_or_default(&settings, negotiated.as_ref());
-    let caller = user.clone();
+    let caller = user;
     let ctx = HandlerCtx {
         path_params,
         query: parse_query(uri),
         body: parsed_body,
-        user,
+        // Never admin authority on an application's host, whatever the role.
+        who: Caller::in_app(signed_in),
         locale,
         raw_body: None,
         raw_file: None,
@@ -2293,9 +2203,9 @@ async fn serve_static_dir(
     let Some(catalog) = state.apps.catalog() else {
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "no catalog");
     };
-    let Ok(store) = catalog.require_file_store(&dir.store.0) else {
+    if !matches!(catalog.has_file_store(&dir.store.0), Ok(true)) {
         return missing();
-    };
+    }
 
     // A caller the application does not let in (TODO F9) is served as nobody:
     // a file open to the public role is part of the sign-in surface (a page
@@ -2305,23 +2215,22 @@ async fn serve_static_dir(
         Err(rejection) => return *rejection,
     };
     let caller = sc_files::FileCaller::new(
-        user.as_ref().map_or(sc_files::ROLE_PUBLIC, |u| u.role),
-        user.as_ref().map(|u| u.id.to_string()),
+        user.as_ref().map_or(Role::PUBLIC, |u| u.role()),
+        user.as_ref().map(|u| u.id().to_string()),
     );
 
-    let floor = match sc_catalog::load_file_store_by_name(catalog, &dir.store.0).await {
-        Ok(def) => def.and_then(|def| def.min_role),
+    // The store with the viewer bound (TODO-code-quality Q3.6): the read is
+    // checked by the store, not by a call made beside it.
+    let store = match sc_catalog::open_checked_store(catalog, &dir.store.0, caller).await {
+        Ok(store) => store,
         Err(e) => {
             log_failure("reading a static directory's file store", &e);
             return json_error(StatusCode::INTERNAL_SERVER_ERROR, "file store unreadable");
         }
     };
-    if sc_files::check_access(store.as_ref(), floor, &path, &caller)
-        .await
-        .is_err()
-    {
+    let Ok(file) = store.serve(&path).await else {
         return missing();
-    }
+    };
 
     // The shared builder (TODO F2, §2.2): streamed, with Range (so a video
     // seeks), the cheap ETag and the file's own name. The content type is the
@@ -2329,7 +2238,7 @@ async fn serve_static_dir(
     // Revalidated rather than cached blind: an admin who replaces a logo must
     // not have to explain a stale one, and the ETag makes the second request
     // cheap anyway.
-    let file = sc_files::ServeFile::new(store, path.clone())
+    let file = file
         .content_type(sc_app::asset_content_type(&path))
         .cache_control("private, no-cache, must-revalidate");
     crate::file_response::serve(&file, method, uri, headers).await
@@ -2502,7 +2411,7 @@ pub(crate) async fn app_caller(
         .get(SESSION_COOKIE)
         .filter(|_| !anonymous)
         .map(|c| c.value().to_owned());
-    let user = match &session {
+    let signed_in = match &session {
         Some(token) => state.sessions.user_for(token).await.map_err(|e| {
             log_failure("session lookup failed", &e);
             Box::new(json_error(
@@ -2512,7 +2421,18 @@ pub(crate) async fn app_caller(
         })?,
         None => None,
     };
-    let (user, refused) = admit_caller(state, app, user).await;
+    let (user, refused) = admit_caller(
+        state,
+        app,
+        signed_in.clone().map(sc_auth::AuthenticatedUser::into_user),
+    )
+    .await;
+    // The admitted user, still carrying the proof the session gave: admission
+    // only ever lowers the role.
+    let signed_in = match (&user, signed_in) {
+        (Some(admitted), Some(signed_in)) => Some(signed_in.capped_at(admitted.role())),
+        _ => None,
+    };
     // What this request writes, it writes in this application.
     if let Some(changeset) = sc_catalog::changeset::current() {
         changeset.set_application(app.id.0);
@@ -2520,6 +2440,7 @@ pub(crate) async fn app_caller(
     Ok(AppCaller {
         session,
         user,
+        signed_in,
         refused,
     })
 }
@@ -2580,6 +2501,10 @@ pub(crate) struct AppCaller {
     /// Who the request is served as: the user, their role capped at the
     /// application's `max_role`; `None` when anonymous **or refused**.
     pub(crate) user: Option<User>,
+    /// The same user with the proof their session gave
+    /// ([`AuthenticatedUser`](sc_auth::AuthenticatedUser)), for a handler
+    /// that is handed a [`Caller`].
+    pub(crate) signed_in: Option<sc_auth::AuthenticatedUser>,
     /// `Some` when the application does not let this caller in. They may
     /// reach its sign-in surface, as nobody, and nothing else.
     pub(crate) refused: Option<Refused>,
@@ -2662,6 +2587,7 @@ async fn app_live(
         session,
         user,
         refused,
+        ..
     } = match app_caller(state, &app.app, jar, false).await {
         Ok(caller) => caller,
         Err(rejection) => return *rejection,
@@ -2778,15 +2704,6 @@ fn app_request(
     } else {
         sc_app::RequestBody::Empty
     };
-    let host = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-    let scheme = if state.secure_cookies {
-        "https"
-    } else {
-        "http"
-    };
     let mut req = AppRequest::new(method, uri.path());
     req.query = parse_query(uri).into_iter().collect();
     req.body = body;
@@ -2798,11 +2715,10 @@ fn app_request(
         })
         .collect();
     req.user = user;
-    req.base_url = if host.is_empty() {
-        String::new()
-    } else {
-        format!("{scheme}://{host}")
-    };
+    // The application's own origin: a served host (TODO-code-quality Q4.2).
+    req.base_url = served_host(headers)
+        .map(|host| sc_catalog::PublicBaseUrl::new(state.secure_cookies, &host).into())
+        .unwrap_or_default();
     Ok(req)
 }
 
@@ -2830,7 +2746,9 @@ fn request_origin(
     sc_catalog::Origin {
         app: Some(sc_catalog::CallingApp {
             id: app.app.id.0,
-            url: sc_api::AppDirectory::own_origin(&links),
+            url: sc_api::AppDirectory::own_origin(&links)
+                .map(String::from)
+                .unwrap_or_default(),
             scheme,
         }),
         session: None,
@@ -2842,11 +2760,13 @@ fn request_origin(
 /// application this server serves, reached the way this request was — same
 /// scheme, same base domain, same port.
 ///
-/// Only a **served** subdomain has an origin, so a link is never built to a host
-/// a caller made up.
+/// Only built for a request [`resolve_app`] matched to a served application,
+/// so its `Host` is one of the served hosts ([`sc_catalog::TrustedHost::served`]),
+/// and only a **served** subdomain has an origin: a link is never built to a
+/// host a caller made up (TODO-code-quality Q4.2).
 struct RequestLinks {
-    scheme: &'static str,
-    host: String,
+    secure: bool,
+    host: Option<sc_catalog::TrustedHost>,
     base_domain: Option<Arc<String>>,
     apps: Arc<AppMounts>,
 }
@@ -2854,44 +2774,43 @@ struct RequestLinks {
 impl RequestLinks {
     fn new(state: &AppState, headers: &axum::http::HeaderMap) -> RequestLinks {
         RequestLinks {
-            scheme: if state.secure_cookies {
-                "https"
-            } else {
-                "http"
-            },
-            host: headers
-                .get(header::HOST)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or_default()
-                .to_owned(),
+            secure: state.secure_cookies,
+            host: served_host(headers),
             base_domain: state.base_domain.clone(),
             apps: state.apps.clone(),
         }
     }
 }
 
+/// The `Host` of a request [`resolve_app`] matched to an application this
+/// server serves, as a [`sc_catalog::TrustedHost`]; `None` when it has none.
+fn served_host(headers: &axum::http::HeaderMap) -> Option<sc_catalog::TrustedHost> {
+    headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|host| sc_catalog::TrustedHost::served(host).ok())
+}
+
 impl sc_api::AppDirectory for RequestLinks {
-    fn own_origin(&self) -> String {
-        format!("{}://{}", self.scheme, self.host)
+    fn own_origin(&self) -> Option<sc_catalog::PublicBaseUrl> {
+        let host = self.host.as_ref()?;
+        Some(sc_catalog::PublicBaseUrl::new(self.secure, host))
     }
 
-    fn app_origin(&self, subdomain: &str) -> Option<String> {
+    fn app_origin(&self, subdomain: &str) -> Option<sc_catalog::PublicBaseUrl> {
         let base = self.base_domain.as_deref()?;
         self.apps.get(subdomain)?;
-        let port = self
-            .host
-            .rsplit_once(':')
-            .map(|(_, port)| port)
-            .filter(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()));
-        let host = if subdomain == sc_config::ROOT_SUBDOMAIN {
+        let name = if subdomain == sc_config::ROOT_SUBDOMAIN {
             base.to_owned()
         } else {
             format!("{subdomain}.{base}")
         };
-        Some(match port {
-            Some(port) => format!("{}://{host}:{port}", self.scheme),
-            None => format!("{}://{host}", self.scheme),
-        })
+        let host = sc_catalog::TrustedHost::configured(&name).ok()?;
+        let host = match &self.host {
+            Some(own) => host.on_port_of(own),
+            None => host,
+        };
+        Some(sc_catalog::PublicBaseUrl::new(self.secure, &host))
     }
 }
 
@@ -2917,18 +2836,14 @@ async fn handle_api(
     client_ip: Option<std::net::IpAddr>,
     body: &Bytes,
 ) -> Response {
-    // Recover the authenticated user (if any) from the session cookie.
+    // Who is calling, from the session cookie: admin authority only for an
+    // administrator's session issued on the admin host (`crate::admin_session`).
     let session_token = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned());
-    let user = match &session_token {
-        Some(token) => match state.sessions.user_for(token).await {
-            Ok(u) => u,
-            Err(e) => {
-                log_failure("session lookup failed", &e);
-                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "session lookup failed");
-            }
-        },
-        None => None,
+    let who = match Caller::on_admin_host(state, &jar).await {
+        Ok(who) => who,
+        Err(response) => return *response,
     };
+    let user = who.user().cloned();
 
     // Enforce the endpoint's authorization requirement (design §7).
     if let Some(rejection) = enforce_auth(&ep.auth, user.as_ref()) {
@@ -2970,7 +2885,7 @@ async fn handle_api(
 
     // As above: the event reports the route and the caller, and both move into
     // the handler's context.
-    let caller = user.clone();
+    let caller = user;
     let ctx = HandlerCtx {
         raw_body: None,
         raw_file: None,
@@ -2979,7 +2894,7 @@ async fn handle_api(
         path_params,
         query: parse_query(uri),
         body: parsed_body,
-        user,
+        who,
         locale,
     };
 
@@ -3069,7 +2984,7 @@ async fn apply_response(
                 };
                 use futures::StreamExt;
                 let reader: sc_files::BoxAsyncRead = Box::new(tokio::fs::File::from_std(handle));
-                let body = axum::body::Body::from_stream(crate::file_response::chunks(reader).map(
+                let body = axum::body::Body::from_stream(sc_files::read_chunks(reader).map(
                     move |chunk| {
                         let _keep = &guard;
                         chunk
@@ -3202,10 +3117,16 @@ pub(crate) async fn apply_session(
             jar,
             stale: AppendHeaders(None),
         },
+        // Bound to the host that issued it (security review #15): an
+        // application's session is never admin authority on the admin host.
         SessionAction::Start(user)
         | SessionAction::StartUntilBrowserCloses(user)
         | SessionAction::StartVerified { user, .. } => {
-            match state.sessions.login_for(user.clone(), ttl).await {
+            match state
+                .sessions
+                .login_scoped(user.clone(), ttl, client.scope())
+                .await
+            {
                 Ok(token) => {
                     // The session the request arrived with is replaced, not joined:
                     // the cookie is about to name the new one, so leaving the old one
@@ -3213,8 +3134,21 @@ pub(crate) async fn apply_session(
                     // withdraw. That is what makes `becomeUser` a swap — the admin
                     // session that authorised it does not survive behind the session
                     // it turned into.
-                    if let Some(previous) = &session_token {
-                        let _ = state.sessions.logout(previous).await;
+                    //
+                    // A failed logout is logged rather than failing the sign-in: the
+                    // new session already exists and the cookie stops naming the old
+                    // one, so the old token is one no browser presents any more, and
+                    // it expires with its lifetime. Refusing here would instead leave
+                    // the caller holding the old session *and* a new one nobody
+                    // withdrew.
+                    if let Some(previous) = &session_token
+                        && let Err(e) = state.sessions.logout(previous).await
+                    {
+                        log_failure(
+                            "could not end the session a sign-in replaced; it stays valid \
+                             until it expires",
+                            &e,
+                        );
                     }
                     // A guest who signs in or signs up in the same browser stops
                     // being a guest (TODO-payments P1.6): the guest session ends, its
@@ -3242,8 +3176,13 @@ pub(crate) async fn apply_session(
             }
         }
         SessionAction::End => {
-            if let Some(token) = &session_token {
-                let _ = state.sessions.logout(token).await;
+            if let Some(token) = &session_token
+                && let Err(e) = state.sessions.logout(token).await
+            {
+                log_failure(
+                    "could not end the session at logout; it stays valid until it expires",
+                    &e,
+                );
             }
             cookies(jar.remove(session_cookie_removal(domain.as_deref())))
         }
@@ -3375,6 +3314,15 @@ impl SessionClient {
         self.app = Some(Arc::clone(app));
         self
     }
+
+    /// The host scope a session this client starts is issued for: an
+    /// application's when it signs in to one, the admin host's otherwise.
+    pub(crate) fn scope(&self) -> sc_auth::SessionScope {
+        match self.app {
+            Some(_) => sc_auth::SessionScope::App,
+            None => sc_auth::SessionScope::Admin,
+        }
+    }
 }
 
 /// The base domain — or extra base domain — that `host` is, or is under:
@@ -3465,17 +3413,13 @@ async fn serve_ide(
     headers: &axum::http::HeaderMap,
     jar: &CookieJar,
 ) -> Response {
-    let user = match session_user(state, jar).await {
-        Ok(user) => user,
-        Err(response) => return *response,
-    };
-    if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
+    if let Err(refused) = AdminSession::of_request(state, headers, jar).await {
         // A browser navigation gets sent somewhere it can act on the problem; a
         // fetch gets the JSON rejection it can report.
         if accepts_html(headers) {
             return Redirect::to("/").into_response();
         }
-        return rejection;
+        return refused.into_response();
     }
 
     // `/ide/assets/main-a1b2c3.js` is `assets/main-a1b2c3.js` within the bundle,
@@ -3531,15 +3475,11 @@ async fn serve_analytics(
     headers: &axum::http::HeaderMap,
     jar: &CookieJar,
 ) -> Response {
-    let user = match session_user(state, jar).await {
-        Ok(user) => user,
-        Err(response) => return *response,
-    };
-    if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
-        if user.is_none() && accepts_html(headers) {
+    if let Err(refused) = AdminSession::of_request(state, headers, jar).await {
+        if refused.is_anonymous() && accepts_html(headers) {
             return Redirect::to("/").into_response();
         }
-        return rejection;
+        return refused.into_response();
     }
     let rest = uri
         .path()
@@ -3593,19 +3533,16 @@ async fn serve_builder(
     jar: &CookieJar,
     csrf: Option<String>,
 ) -> Response {
-    let user = match session_user(state, jar).await {
-        Ok(user) => user,
-        Err(response) => return *response,
-    };
-    if let Some(rejection) = enforce_auth(&AuthRequirement::admin(), user.as_ref()) {
-        if accepts_html(headers) {
-            return Redirect::to("/").into_response();
+    let admin = match AdminSession::of_request(state, headers, jar).await {
+        Ok(admin) => admin,
+        Err(refused) => {
+            if accepts_html(headers) {
+                return Redirect::to("/").into_response();
+            }
+            return refused.into_response();
         }
-        return rejection;
-    }
-    let Some(user) = user else {
-        return json_error(StatusCode::UNAUTHORIZED, "not signed in");
     };
+    let user = admin.user().clone().into_user();
     let env = crate::builder::BuilderEnv {
         bundle: state.builder_dir.as_deref().map(PathBuf::as_path),
         apps: &state.apps,
@@ -3639,13 +3576,18 @@ pub(crate) async fn session_user(
     let Some(token) = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) else {
         return Ok(None);
     };
-    state.sessions.user_for(&token).await.map_err(|e| {
-        log_failure("session lookup failed", &e);
-        Box::new(json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "session lookup failed",
-        ))
-    })
+    state
+        .sessions
+        .user_for(&token)
+        .await
+        .map(|user| user.map(sc_auth::AuthenticatedUser::into_user))
+        .map_err(|e| {
+            log_failure("session lookup failed", &e);
+            Box::new(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "session lookup failed",
+            ))
+        })
 }
 
 /// Serve a file from the static bundle, falling back to the bundle's own
@@ -3891,7 +3833,7 @@ async fn error_out(
     user: Option<&User>,
 ) -> Response {
     if let (Some(triggers), Some(catalog)) = (state.apps.triggers(), state.apps.catalog()) {
-        let caller = sc_api::caller_context(user);
+        let caller = sc_access::principal_of(user);
         let event =
             sc_action::Event::error(err.kind(), err.to_string(), method, path).caused_by(&caller);
         triggers.fire(catalog, &event).await;
@@ -3902,7 +3844,7 @@ async fn error_out(
 /// Raise the **`login` event** for a session that has just started.
 ///
 /// The user object is built exactly as every other caller's is
-/// ([`sc_api::caller_context`]), so `user.email` means the same thing in a login
+/// ([`sc_access::principal_of`]), so `user.email` means the same thing in a login
 /// trigger's action as it does in an insert trigger's.
 ///
 /// `guest_session` is the public id of the guest session the sign-in ended
@@ -3915,7 +3857,7 @@ async fn fire_login(state: &AppState, user: &User, guest_session: Option<&str>) 
     let (Some(triggers), Some(catalog)) = (state.apps.triggers(), state.apps.catalog()) else {
         return;
     };
-    let caller = sc_api::caller_context(Some(user));
+    let caller = sc_access::principal_of(Some(user));
     let mut event = sc_action::Event::login(caller.role, caller.user.unwrap_or(Value::Null));
     if let Some(guest_session) = guest_session {
         event = event.payload(serde_json::json!({ "guest_session": guest_session }));

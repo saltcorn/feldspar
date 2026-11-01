@@ -298,7 +298,7 @@ Three levels, because the failure modes are at three levels:
 - [x] 1.3 `CodeCall` carries `schema: Option<&SchemaSnapshot>` and its generation;
       `__scDefineSchema(generation, json)` caches it on the isolate and `__scInvoke` passes
       the generation. A run whose generation the isolate does not have carries the JSON.
-- [x] 1.4 `sc_core_actions::Hosts` supplies it from `ctx.catalog`, so a code body, a workflow
+- [x] 1.4 `sc_action_builtins::Hosts` supplies it from `ctx.catalog`, so a code body, a workflow
       step and a module's action all get the one built in one place.
 - [x] 1.5 Unit tests: the snapshot of a fixture catalog has v1's property names with v1's
       values; a reload bumps the generation; a second run at the same generation carries no
@@ -364,8 +364,8 @@ Three levels, because the failure modes are at three levels:
 - [x] 5.2 `ModuleHost::run` and `::call` take `CodeHosts<'_>` and service asks while awaiting
       the reply; a dead worker fails in-flight asks by name, as it already fails calls.
 - [x] 5.3 `ModuleAction` builds the surfaces from its `ActionContext` — the same
-      `sc_core_actions::CodeSurfaces` `PyModuleAction` uses (which needs the `sc-module` →
-      `sc-core-actions` edge `sc-python` already has one layer up).
+      `sc_action_builtins::CodeSurfaces` `PyModuleAction` uses (which needs the `sc-module` →
+      `sc-action-builtins` edge `sc-python` already has one layer up).
 - [x] 5.4 The `@saltcorn/data/models/table` and `.../field` specifiers answer the real classes
       instead of `namedNamespace`; the snapshot and the ask channel reach them through the
       `AsyncLocalStorage` context the host script already keeps per call.

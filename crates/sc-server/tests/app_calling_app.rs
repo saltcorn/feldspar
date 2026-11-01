@@ -4,6 +4,7 @@
 //! native apps — what a checkout's success URL is built from.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use axum::Router;
@@ -12,7 +13,7 @@ use axum::http::{Request, StatusCode, header};
 use sc_action::{EventKind, Trigger, save_trigger};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, TriggerRef};
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
@@ -65,7 +66,7 @@ async fn setup() -> sc_error::Result<(Router, Arc<Catalog>, sc_app::AppId, TestD
         // What the body is told about where it was called from.
         Trigger::new("whereami", EventKind::None, "run_js_code")
             .config("code", "return { app, session };")
-            .min_role(100),
+            .min_role(Role::PUBLIC),
         // And what a write it makes passes on to the event *that* raises: the
         // insert trigger below records the application it sees.
         Trigger::new("visit", EventKind::None, "run_js_code")
@@ -73,7 +74,7 @@ async fn setup() -> sc_error::Result<(Router, Arc<Catalog>, sc_app::AppId, TestD
                 "code",
                 "await db.visits.insert({ note: payload.note }); return true;",
             )
-            .min_role(100),
+            .min_role(Role::PUBLIC),
         Trigger::new("stamp_visit", EventKind::Insert, "run_js_code")
             .on("visits")
             .config(
@@ -91,7 +92,7 @@ async fn setup() -> sc_error::Result<(Router, Arc<Catalog>, sc_app::AppId, TestD
             .with_triggers(dispatcher.clone()),
     );
     let app = Application::new("Shop", "shop", FrameworkRef::new("code"))
-        .with_table(TableId("visits".to_owned()))
+        .with_table("visits".to_owned())
         .with_api(ApiConfig::new("rest", "/api"))
         .with_trigger(TriggerRef::new("whereami"))
         .with_trigger(TriggerRef::new("visit"))

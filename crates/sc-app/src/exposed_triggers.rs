@@ -9,9 +9,10 @@
 //! already exposed is kept whatever it is now, so a list can always be shrunk —
 //! including by removing a trigger that was deleted since.
 
-use sc_action::{EventKind, ROLE_PUBLIC, Trigger};
+use sc_action::{EventKind, Trigger};
 use sc_api::op_name;
 use sc_error::{Error, Result};
+use sc_types::Role;
 use serde_json::{Value as Json, json};
 
 use crate::application::{Application, TriggerRef};
@@ -102,7 +103,7 @@ pub fn change_app_triggers(
 pub fn public_triggers(added: &[Trigger]) -> Vec<&str> {
     added
         .iter()
-        .filter(|t| t.min_role == Some(ROLE_PUBLIC))
+        .filter(|t| t.min_role == Some(Role::PUBLIC))
         .map(|t| t.name.as_str())
         .collect()
 }
@@ -166,9 +167,10 @@ mod tests {
 
     fn live() -> Vec<Trigger> {
         vec![
-            Trigger::new("mail_test_account", EventKind::None, "mail_test_account").min_role(80),
+            Trigger::new("mail_test_account", EventKind::None, "mail_test_account")
+                .min_role(Role::of(80)),
             Trigger::new("mail_send", EventKind::None, "mail_send"),
-            Trigger::new("open_door", EventKind::None, "open_door").min_role(ROLE_PUBLIC),
+            Trigger::new("open_door", EventKind::None, "open_door").min_role(Role::PUBLIC),
             Trigger::new("nightly", EventKind::Daily, "cleanup"),
             Trigger::new("on_order", EventKind::Insert, "notify").on("orders"),
             Trigger::new("mail-send", EventKind::None, "mail_send"),

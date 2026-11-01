@@ -42,6 +42,24 @@
 //! record itself is created by the server, which is the layer that knows agents
 //! exist.
 
+/// The raw file store an application's sources are in (TODO-code-quality
+/// Q3.6): the one `Unchecked::system` the build pipeline (build, scaffold,
+/// targets, catalogues) makes, listed in docs/SECURITY_REVIEW_2026-10.md's
+/// system-authority inventory. Crate-private, so nothing outside the crate
+/// borrows it; a caller's files go through `Catalog::checked_file_store`.
+pub(crate) const APP_SOURCES: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
+    "sc-app: an application's source store, which its build, scaffold, targets and \
+     catalogues read and write (an admin-started task)",
+);
+
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
+    "sc-app: the application, build, host, upload-slot and translation stores",
+);
+
 mod access;
 mod api;
 mod application;
@@ -155,7 +173,7 @@ pub use factory::{
 pub use framework::{
     AppRequest, AppResponse, Asset, AssetBundle, BuildSpec, CFG_CLIENT, CFG_COMMAND, CFG_OUTPUT,
     CFG_SOURCE, CFG_STORE, CODE_FRAMEWORK, CodeFramework, Framework, FrameworkInfo, InstallSpec,
-    Method, RequestBody, asset_content_type, code_config_spec, config_spec_in, default_csp_in,
+    RequestBody, asset_content_type, code_config_spec, config_spec_in, default_csp_in,
     framework_config_spec, framework_default_csp, framework_info_in, framework_serves_ui,
     registered_framework_info, registered_frameworks, serves_ui_in, validate_config_in,
     validate_config_structure_in, validate_framework_config, validate_framework_config_structure,

@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use sc_core_actions::CodeSurfaces;
+use sc_action_builtins::CodeSurfaces;
 use sc_module::{Installer, ModuleHost, ModulePermissions, ModuleSource};
 
 /// The five host surfaces a module's action is built over — the HTTP client

@@ -13,6 +13,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -127,7 +128,7 @@ fn provider(cat: &Catalog) -> Result<GraphqlProvider> {
 
 /// A caller who meets both tables' default role floors.
 fn admin() -> Result<User> {
-    User::new(uuid::Uuid::new_v4(), sc_auth::ROLE_ADMIN)
+    Ok(User::new(uuid::Uuid::new_v4(), Role::ADMIN))
 }
 
 /// POST one document as `user` and return the response body.
@@ -449,7 +450,11 @@ async fn a_per_parent_limit_waits_for_an_untranslatable_ownership_formula() -> R
     let db = TestDb::new().await?;
     let (cat, _) = setup(&db).await?;
     bootstrap_table_meta(&cat).await?;
-    save_table_meta(&cat, &TableMeta::new("departments").access(100, 1)).await?;
+    save_table_meta(
+        &cat,
+        &TableMeta::new("departments").access(Role::PUBLIC, Role::ADMIN),
+    )
+    .await?;
     // `.includes(…)` is a function call, so the formula cannot become SQL and
     // the rows have to be decided one at a time in the evaluator.
     let mut employees = TableMeta::new("employees");
@@ -457,7 +462,7 @@ async fn a_per_parent_limit_waits_for_an_untranslatable_ownership_formula() -> R
     save_table_meta(&cat, &employees).await?;
     let api = provider(&cat)?.with_evaluator(Arc::new(WellPaidOnly));
 
-    let public = User::new(uuid::Uuid::new_v4(), 100)?;
+    let public = User::new(uuid::Uuid::new_v4(), Role::PUBLIC);
     let body = run_as(
         &api,
         &cat,
@@ -494,10 +499,14 @@ async fn a_child_table_the_caller_may_not_read_is_an_error_on_that_field_alone()
     // default. The child read is the child table's decision, so the parents
     // must still come back.
     bootstrap_table_meta(&cat).await?;
-    save_table_meta(&cat, &TableMeta::new("departments").access(100, 1)).await?;
+    save_table_meta(
+        &cat,
+        &TableMeta::new("departments").access(Role::PUBLIC, Role::ADMIN),
+    )
+    .await?;
     let api = provider(&cat)?;
 
-    let public = User::new(uuid::Uuid::new_v4(), 100)?;
+    let public = User::new(uuid::Uuid::new_v4(), Role::PUBLIC);
     let body = run_as(
         &api,
         &cat,

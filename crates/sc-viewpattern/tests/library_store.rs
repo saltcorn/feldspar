@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use sc_app::{AppId, Application, FrameworkRef, save_application};
-use sc_catalog::{Catalog, SharedTx, TableId};
+use sc_catalog::{Catalog, SharedTx};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -50,7 +50,7 @@ async fn catalog(db: &TestDb) -> Result<Catalog> {
 /// A Saltcorn UI application over `books`.
 async fn application(catalog: &Catalog, name: &str, subdomain: &str) -> Result<AppId> {
     let app = Application::new(name, subdomain, FrameworkRef::new("saltcorn-ui"))
-        .with_table(TableId("books".to_owned()));
+        .with_table("books".to_owned());
     Ok(save_application(catalog, &app).await?.id)
 }
 
@@ -65,7 +65,7 @@ async fn code_application(catalog: &Catalog) -> Result<AppId> {
             .with("output", "web/dist")
             .with("command", "sh build.sh"),
     )
-    .with_table(TableId("books".to_owned()));
+    .with_table("books".to_owned());
     Ok(save_application(catalog, &app).await?.id)
 }
 

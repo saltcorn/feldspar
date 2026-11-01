@@ -13,7 +13,7 @@
 //!   deleted field as an empty cell and answer 200, which is the quiet
 //!   breakage a checklist exists to catch.
 
-use sc_browser::Locator;
+use sc_agent::browser::Locator;
 use sc_error::Error;
 use sc_types::{BasicType, FormField};
 use serde_json::{Value as Json, json};
@@ -258,7 +258,7 @@ async fn views_render(cx: &mut StepContext<'_>, params: &Json) -> sc_error::Resu
     let (visible, hidden): (Vec<_>, Vec<_>) = views
         .into_iter()
         .filter(|v| !skip.contains(&v.name))
-        .partition(|v| role <= v.min_role);
+        .partition(|v| role.meets(v.min_role));
     if visible.is_empty() {
         return Ok(StepOutcome::pass(format!(
             "`{}` has no view this user may see{}",

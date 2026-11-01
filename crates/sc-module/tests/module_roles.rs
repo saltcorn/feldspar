@@ -8,10 +8,11 @@
 
 #[cfg(feature = "deno-host")]
 mod deno {
+    use sc_types::Role;
     use std::sync::Arc;
 
     use sc_action::{ActionContext, ActionRegistry, Event, EventKind};
-    use sc_auth::{Role, create_user, find_role_grant, load_user, save_role};
+    use sc_auth::{RoleDef, create_user, find_role_grant, load_user, save_role};
     use sc_catalog::{Catalog, bootstrap_field_meta, bootstrap_table_meta};
     use sc_db::DatabaseDriver;
     use sc_db_postgres::PgDriver;
@@ -34,7 +35,9 @@ mod deno {
         bootstrap_field_meta(&cat).await.unwrap();
         sc_module::bootstrap_modules(&cat).await.unwrap();
         for (role, name) in [(40, "Staff"), (60, "Pro"), (70, "Basic"), (80, "Member")] {
-            save_role(&cat, &Role::new(role, name)).await.unwrap();
+            save_role(&cat, &RoleDef::new(Role::of(role), name))
+                .await
+                .unwrap();
         }
         Arc::new(cat)
     }
@@ -45,7 +48,7 @@ mod deno {
         name: &str,
         host: &Arc<sc_module::ModuleHost>,
         installer: &sc_module::Installer,
-        ceiling: Option<u8>,
+        ceiling: Option<Role>,
         user: uuid::Uuid,
     ) -> Value {
         let mut module = match load_module_by_name(cat, name).await.unwrap() {
@@ -74,12 +77,22 @@ mod deno {
         skip_without!(have_npm(), "npm is not on the PATH");
         let db = TestDb::new().await.unwrap();
         let cat = catalog(&db).await;
-        let user = create_user(&cat, "m@example.com", "pw", 80).await.unwrap();
+        let user = create_user(&cat, "m@example.com", "pw", Role::of(80))
+            .await
+            .unwrap();
         let (installer, host, names) = installed("module-roles", &["roles-module"]).await;
         let name = names[0].clone();
 
         // Allowed roles 60 to 99.
-        let result = run(&cat, &name, &host, &installer, Some(60), user.id).await;
+        let result = run(
+            &cat,
+            &name,
+            &host,
+            &installer,
+            Some(Role::of(60)),
+            user.id(),
+        )
+        .await;
         assert_eq!(result["granted"]["ok"]["role"], json!(70), "{result}");
         assert_eq!(result["granted"]["ok"]["note"], json!("Basic"));
         // The renewal is the same grant, moved to the better tier.
@@ -113,10 +126,13 @@ mod deno {
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(load_user(&cat, user.id).await.unwrap().unwrap().role, 80);
+        assert_eq!(
+            load_user(&cat, user.id()).await.unwrap().unwrap().role(),
+            Role::of(80)
+        );
 
         // Allowed nothing: every grant is refused, saying where to allow it.
-        let result = run(&cat, &name, &host, &installer, None, user.id).await;
+        let result = run(&cat, &name, &host, &installer, None, user.id()).await;
         let refused = result["granted"]["refused"].as_str().unwrap();
         assert!(
             refused.contains("has not been allowed to grant roles"),

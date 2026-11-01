@@ -15,6 +15,8 @@ sc-error.workspace = true
 sc-types.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
+# `read_chunks`: a reader as a stream of body chunks (a served file, an upload).
+futures.workspace = true
 # One job: turning a file's modification time into the RFC 3339 a `stat` reports.
 # Doing it by hand would be a civil-calendar conversion written out for a field
 # that already has one right answer in the workspace.

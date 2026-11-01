@@ -16,9 +16,10 @@ use std::collections::HashMap;
 
 use sc_catalog::Catalog;
 use sc_dataset::Caller;
-use sc_dataset::{ColType, StageShape, scramble, value_json};
+use sc_dataset::{ColType, StageShape, scramble};
 use sc_error::Result;
 use sc_query::{BinOp, Expr, Nulls, OrderBy, OrderDir, Projection, Select, Source, UnOp, Value};
+use sc_types::value_to_analysis_json;
 use serde::Serialize;
 use serde_json::Value as Json;
 
@@ -27,10 +28,10 @@ use super::choose::{
     TestSpec, choose,
 };
 use super::hypothesis::{
-    Moments, TestKind, TestResult, anova, binomial, chisq_fit, chisq_independence, expected_counts,
-    fisher_exact, kruskal_wallis, levene, linear_regression, logistic_regression, mann_whitney,
-    one_sample_t, paired_signed_rank, paired_t, pearson, shapiro, signed_rank, spearman, tukey_hsd,
-    welch_t,
+    Moments, Refusal, TestKind, TestResult, anova, binomial, chisq_fit, chisq_independence,
+    expected_counts, fisher_exact, kruskal_wallis, levene, linear_regression, logistic_regression,
+    mann_whitney, one_sample_t, paired_signed_rank, paired_t, pearson, shapiro, signed_rank,
+    spearman, tukey_hsd, welch_t,
 };
 use crate::crossfilter::Scope;
 use crate::plot::render::{
@@ -212,7 +213,7 @@ impl Section {
         &mut self,
         design: Design,
         test: TestKind,
-        outcome: std::result::Result<TestResult, String>,
+        outcome: std::result::Result<TestResult, Refusal>,
     ) {
         let role = if design.alternatives().contains(&test) {
             "alternative"
@@ -256,7 +257,7 @@ pub async fn run_tests(catalog: &Catalog, caller: &Caller, spec: &TestSpec) -> R
     run_tests_in(catalog, caller, spec, &Scope::none()).await
 }
 
-/// [`run_tests`] over the rows a dashboard's conditions keep (A6.4).
+/// [`run_tests`] over the rows a dashboard's conditions keep.
 pub async fn run_tests_in(
     catalog: &Catalog,
     caller: &Caller,
@@ -265,12 +266,12 @@ pub async fn run_tests_in(
 ) -> Result<TestsAnswer> {
     let rows = match plot_rows_in(catalog, caller, &spec.data, scope).await? {
         Ok(rows) => rows,
-        Err(sentence) => return Ok(TestsAnswer::refuse(sentence)),
+        Err(sentence) => return Ok(TestsAnswer::refuse(sentence.message())),
     };
     let shape = rows.shape.clone();
     let choice = match choose(spec, &shape) {
         Ok(c) => c,
-        Err(sentence) => return Ok(TestsAnswer::refuse(sentence)),
+        Err(sentence) => return Ok(TestsAnswer::refuse(sentence.message())),
     };
     let mut carrier = PlotSpec::single(spec.data.clone(), Layer::new(Mark::Point, Stat::Identity));
     carrier.layers.clear();
@@ -302,7 +303,7 @@ fn canon(values: &[Value]) -> String {
     for value in values {
         match f64_of(value) {
             Some(x) => out.push_str(&format!("n{x:e}|")),
-            None => out.push_str(&format!("{}|", value_json(value))),
+            None => out.push_str(&format!("{}|", value_to_analysis_json(value))),
         }
     }
     out
@@ -858,7 +859,10 @@ impl Tester<'_> {
             let mut x_levels = xs.order;
             let mut y_levels = ys.order;
             let order = |a: &(Vec<Value>, u64), b: &(Vec<Value>, u64)| {
-                crate::plot::render::compare_json(&value_json(&a.0[0]), &value_json(&b.0[0]))
+                crate::plot::render::compare_json(
+                    &value_to_analysis_json(&a.0[0]),
+                    &value_to_analysis_json(&b.0[0]),
+                )
             };
             x_levels.sort_by(order);
             y_levels.sort_by(order);
@@ -1105,9 +1109,9 @@ impl Tester<'_> {
 
 /// Mark a result as read from a sample.
 fn mark(
-    result: std::result::Result<TestResult, String>,
+    result: std::result::Result<TestResult, Refusal>,
     sampled: bool,
-) -> std::result::Result<TestResult, String> {
+) -> std::result::Result<TestResult, Refusal> {
     result.map(|mut r| {
         r.sampled = sampled;
         r

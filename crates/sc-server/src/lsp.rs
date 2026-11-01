@@ -91,12 +91,25 @@ pub(crate) fn language_server_root(
     let Some(catalog) = catalog else {
         return Err("this server has no catalog, so it has no file stores".to_owned());
     };
-    let handle = catalog
-        .file_store(store)
+    if !catalog
+        .has_file_store(store)
         .map_err(|e| format!("file store {store}: {e}"))?
-        .ok_or_else(|| format!("the file store {store} is not connected"))?;
+    {
+        return Err(format!("the file store {store} is not connected"));
+    }
+    // The language server is a process over the whole tree, which no path rule
+    // reaches into: the store is bound to the administrator the socket was
+    // opened for (the route admits an admin session only, and the bridge lives
+    // as long as it does), and only an administrator's binding answers a root.
+    let handle = catalog
+        .checked_file_store(
+            store,
+            None,
+            sc_files::FileCaller::new(sc_types::Role::ADMIN, None),
+        )
+        .map_err(|e| format!("file store {store}: {e}"))?;
     let root = handle
-        .local_path("")
+        .local_root()
         .map_err(|e| format!("file store {store}: {e}"))?
         .ok_or_else(|| {
             format!("{store} has no local path, so it can be edited but not type-checked")
@@ -162,6 +175,7 @@ pub(crate) async fn language_server_upgrade(
     slots: &ServerSlots,
     program: Arc<PathBuf>,
     store: String,
+    session: crate::admin_session::AdminWatch,
 ) -> axum::response::Response {
     // Both questions are answered before the upgrade, so a refusal costs no
     // process and no socket beyond the one it is reported on.
@@ -169,7 +183,11 @@ pub(crate) async fn language_server_upgrade(
         Err(reason) => reason,
         Ok(root) => match Arc::clone(slots).try_acquire_owned() {
             Ok(permit) => {
-                return ws.on_upgrade(move |socket| bridge(socket, program, root, store, permit));
+                // Held open only while the admin session lasts (#42's class):
+                // its end drops the bridge, which kills the process.
+                return ws.on_upgrade(move |socket| {
+                    session.guard(bridge(socket, program, root, store, permit))
+                });
             }
             Err(_) => format!(
                 "the server is already running its maximum of {MAX_LANGUAGE_SERVERS} language servers"

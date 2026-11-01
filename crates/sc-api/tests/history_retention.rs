@@ -5,17 +5,19 @@
 //! readable; a dropped table takes its entries with it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use sc_access::rows;
 use sc_api::history::HistoryReader;
+use sc_api::schema_edit;
 use sc_api::undo::Reverser;
-use sc_api::{rows, schema_edit};
 use sc_auth::User;
 use sc_catalog::retention::{Cleanup, clean_change_log};
 use sc_catalog::{
-    CallerContext, Catalog, Changeset, ChangesetSource, DataFieldKind, FieldMeta, FileOnDelete,
-    FileStoreId, bootstrap_change_log, bootstrap_field_meta, bootstrap_table_meta, changeset,
+    Catalog, Changeset, ChangesetSource, DataFieldKind, FieldMeta, FileOnDelete, FileStoreId,
+    Principal, bootstrap_change_log, bootstrap_field_meta, bootstrap_table_meta, changeset,
     save_field_meta,
 };
 use sc_db::DatabaseDriver;
@@ -102,11 +104,11 @@ async fn docs(db: &TestDb, tag: &str) -> Result<(Arc<Catalog>, PathBuf)> {
 }
 
 fn admin() -> User {
-    User::new(ADMIN.parse().unwrap(), 1).unwrap()
+    User::new(ADMIN.parse().unwrap(), Role::ADMIN)
 }
 
-fn caller() -> CallerContext {
-    CallerContext::new(1, Some(json!({ "id": ADMIN, "role": 1 })))
+fn caller() -> Principal {
+    Principal::new(Role::ADMIN, Some(json!({ "id": ADMIN, "role": 1 })))
 }
 
 /// The writes `f` makes, as one request changeset.
@@ -117,7 +119,13 @@ async fn action<T>(f: impl std::future::Future<Output = Result<T>>) -> Result<T>
 async fn insert(catalog: &Catalog, table: &str, body: Json) -> Result<String> {
     let table = catalog.require(table)?;
     action(async {
-        let row = rows::create_row_ctx(catalog, &table, &body, Some(&caller())).await?;
+        let row = rows::create_row(
+            catalog,
+            &table,
+            &body,
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
+        )
+        .await?;
         Ok(row["id"].to_string())
     })
     .await
@@ -126,7 +134,14 @@ async fn insert(catalog: &Catalog, table: &str, body: Json) -> Result<String> {
 async fn update(catalog: &Catalog, table: &str, id: &str, body: Json) -> Result<()> {
     let table = catalog.require(table)?;
     action(async {
-        rows::update_row_ctx(catalog, &table, id, &body, Some(&caller())).await?;
+        rows::update_row(
+            catalog,
+            &table,
+            id,
+            &body,
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
+        )
+        .await?;
         Ok(())
     })
     .await
@@ -135,7 +150,13 @@ async fn update(catalog: &Catalog, table: &str, id: &str, body: Json) -> Result<
 async fn delete(catalog: &Catalog, table: &str, id: &str) -> Result<()> {
     let table = catalog.require(table)?;
     action(async {
-        rows::delete_row_ctx(catalog, &table, id, Some(&caller())).await?;
+        rows::delete_row(
+            catalog,
+            &table,
+            id,
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
+        )
+        .await?;
         Ok(())
     })
     .await

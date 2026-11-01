@@ -50,6 +50,7 @@ use sc_error::{Error, Result};
 use sc_query::{
     Assignment, BinOp, Delete, Expr, Insert, Projection, Select, Source, Statement, Update, Value,
 };
+use sc_types::Role;
 use sc_types::{BasicType, TypeRef};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -58,9 +59,7 @@ use crate::create::{NewUser, insert_user};
 use crate::lookup::{load_user, load_user_by_email};
 use crate::password::hash_password;
 use crate::user::User;
-use crate::users::{
-    COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_PASSWORD_HASH, ROLE_PUBLIC, USERS_TABLE,
-};
+use crate::users::{COL_EMAIL, COL_EMAIL_VERIFIED, COL_ID, COL_PASSWORD_HASH, USERS_TABLE};
 
 /// Name of the password token table in the primary database.
 pub const PASSWORD_TOKENS_TABLE: &str = "_fd_password_tokens";
@@ -262,20 +261,12 @@ pub async fn redeem_password_token(
         return Ok(None);
     }
     let tx = SharedTx::begin_primary(catalog)?;
-    match spend_in(catalog, &tx, token, password).await {
-        Ok(outcome) => {
-            tx.commit().await?;
-            let Some(user_id) = outcome else {
-                return Ok(None);
-            };
-            crate::session::delete_sessions_for_user(catalog, user_id).await?;
-            load_user(catalog, user_id).await
-        }
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(e)
-        }
-    }
+    let spent = spend_in(catalog, &tx, token, password).await;
+    let Some(user_id) = tx.finish(spent).await? else {
+        return Ok(None);
+    };
+    crate::session::delete_sessions_for_user(catalog, user_id).await?;
+    load_user(catalog, user_id).await
 }
 
 /// The writes of [`redeem_password_token`], in one transaction: a password
@@ -308,12 +299,23 @@ async fn spend_in(
         filter: Some(Expr::col(COL_ID).eq(Expr::lit(user_id))),
         returning: vec![Projection::expr(Expr::col(COL_ID))],
     };
-    if tx.run(None, &Statement::from(update)).await?.is_empty() {
+    if tx
+        .run(
+            sc_catalog::Unchecked::system("password token: spend"),
+            &Statement::from(update),
+        )
+        .await?
+        .is_empty()
+    {
         return Ok(None);
     }
     let others =
         Delete::from(PASSWORD_TOKENS_TABLE).filter(Expr::col(COL_USER).eq(Expr::lit(user_id)));
-    tx.run(None, &Statement::from(others)).await?;
+    tx.run(
+        sc_catalog::Unchecked::system("password token: spend"),
+        &Statement::from(others),
+    )
+    .await?;
     Ok(Some(user_id))
 }
 
@@ -411,7 +413,12 @@ async fn spend_token(
                 .and(purpose),
         )
     };
-    let spent = tx.run(None, &Statement::from(delete)).await?;
+    let spent = tx
+        .run(
+            sc_catalog::Unchecked::system("password token: spend"),
+            &Statement::from(delete),
+        )
+        .await?;
     match spent.first().map(|row| row.get(COL_USER)) {
         None => Ok(None),
         Some(Some(Value::Uuid(id))) => Ok(Some(*id)),
@@ -466,7 +473,11 @@ async fn verify_in(catalog: &Catalog, tx: &SharedTx, token: &str) -> Result<Opti
         filter: Some(Expr::col(COL_ID).eq(Expr::lit(user_id))),
         returning: vec![Projection::expr(Expr::col(COL_ID))],
     };
-    if tx.run(None, &Statement::from(update)).await?.is_empty() {
+    if tx
+        .run(crate::INTERNAL_TABLES, &Statement::from(update))
+        .await?
+        .is_empty()
+    {
         return Ok(None);
     }
     let others = Delete::from(PASSWORD_TOKENS_TABLE).filter(
@@ -474,7 +485,8 @@ async fn verify_in(catalog: &Catalog, tx: &SharedTx, token: &str) -> Result<Opti
             .eq(Expr::lit(user_id))
             .and(Expr::col(COL_PURPOSE).eq(Expr::lit(PasswordTokenPurpose::Verify.as_str()))),
     );
-    tx.run(None, &Statement::from(others)).await?;
+    tx.run(crate::INTERNAL_TABLES, &Statement::from(others))
+        .await?;
     Ok(Some(user_id))
 }
 
@@ -561,7 +573,7 @@ pub enum InviteOutcome {
 pub async fn invite_user(
     catalog: &Catalog,
     new: NewUser,
-    inviter_role: u8,
+    inviter_role: Role,
 ) -> Result<InviteOutcome> {
     check_invite_role(new.role, inviter_role)?;
     let email = new.email.trim().to_owned();
@@ -569,32 +581,32 @@ pub async fn invite_user(
         return Err(Error::invalid("email is required"));
     }
     if let Some(existing) = load_user_by_email(catalog, &email).await? {
-        if user_has_password(catalog, existing.id).await? {
+        if user_has_password(catalog, existing.id()).await? {
             return Ok(InviteOutcome::AlreadyActive);
         }
-        check_invite_role(existing.role, inviter_role)?;
+        check_invite_role(existing.role(), inviter_role)?;
         let token =
-            issue_password_token(catalog, existing.id, PasswordTokenPurpose::Invite).await?;
+            issue_password_token(catalog, existing.id(), PasswordTokenPurpose::Invite).await?;
         return Ok(InviteOutcome::Resent {
             user: existing,
             token,
         });
     }
     let user = create_invited_user(catalog, NewUser { email, ..new }).await?;
-    let token = issue_password_token(catalog, user.id, PasswordTokenPurpose::Invite).await?;
+    let token = issue_password_token(catalog, user.id(), PasswordTokenPurpose::Invite).await?;
     Ok(InviteOutcome::Created { user, token })
 }
 
 /// Refuse an invitation to a role at least as powerful as the inviter's, or to
 /// the public role.
-fn check_invite_role(role: u8, inviter_role: u8) -> Result<()> {
-    if role <= inviter_role {
+fn check_invite_role(role: Role, inviter_role: Role) -> Result<()> {
+    if role.meets(inviter_role) {
         return Err(Error::auth(format!(
             "an invitation may only be to a role less powerful than your own: \
              role {role} is not greater than your role {inviter_role}"
         )));
     }
-    if role >= ROLE_PUBLIC {
+    if role.is_public() {
         return Err(Error::invalid(format!(
             "role {role} is the public role, which a signed-in account cannot hold"
         )));
@@ -620,7 +632,7 @@ fn token_hash(token: &str) -> String {
 
 async fn rows(catalog: &Catalog, statement: Statement) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()
@@ -633,14 +645,23 @@ mod tests {
 
     #[test]
     fn an_invitation_is_only_to_a_less_powerful_signed_in_role() {
-        assert!(check_invite_role(80, 40).is_ok());
-        assert!(check_invite_role(40, 40).is_err(), "not the inviter's own");
-        assert!(check_invite_role(1, 40).is_err(), "not more powerful");
+        assert!(check_invite_role(Role::of(80), Role::of(40)).is_ok());
         assert!(
-            check_invite_role(2, 1).is_ok(),
+            check_invite_role(Role::of(40), Role::of(40)).is_err(),
+            "not the inviter's own"
+        );
+        assert!(
+            check_invite_role(Role::ADMIN, Role::of(40)).is_err(),
+            "not more powerful"
+        );
+        assert!(
+            check_invite_role(Role::of(2), Role::ADMIN).is_ok(),
             "an admin may invite anyone"
         );
-        assert!(check_invite_role(100, 40).is_err(), "not the public role");
+        assert!(
+            check_invite_role(Role::PUBLIC, Role::of(40)).is_err(),
+            "not the public role"
+        );
     }
 
     #[test]
