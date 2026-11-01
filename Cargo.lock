@@ -7863,6 +7863,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+
+[[package]]
 name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9097,7 +9103,10 @@ dependencies = [
  "base64 0.22.1",
  "bcrypt",
  "chrono",
+ "data-encoding",
+ "hmac 0.12.1",
  "lru 0.12.5",
+ "qrcode",
  "rust_decimal",
  "sc-catalog",
  "sc-db",
@@ -9110,6 +9119,7 @@ dependencies = [
  "sc-types",
  "serde",
  "serde_json",
+ "sha1 0.10.7",
  "sha2 0.10.9",
  "tokio",
  "uuid",

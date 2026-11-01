@@ -202,6 +202,8 @@ pub async fn delete_user(catalog: &Catalog, id: Uuid) -> Result<bool> {
     // The grants reference the user; they are the user's and go with them.
     crate::grants::delete_grants_for_user(catalog, id).await?;
     crate::credits::delete_credits_for_user(catalog, id).await?;
+    // So is a second factor: a later account must not inherit the secret.
+    crate::second_factor::disable_second_factor(catalog, id).await?;
     let delete = Delete {
         returning: vec![Projection::expr(Expr::col(COL_ID))],
         ..Delete::from(USERS_TABLE).filter(Expr::col(COL_ID).eq(Expr::lit(id)))

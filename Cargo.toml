@@ -288,6 +288,12 @@ bcrypt = { version = "0.19", default-features = false, features = ["std"] }
 sha2 = "0.10"
 # HMAC for a code body's `crypto.subtle.sign`/`verify` (TODO F1.3), over `sha2`.
 hmac = "0.12"
+# Two-factor authentication (`sc_auth::second_factor`): an authenticator app's
+# codes are HMAC-SHA-1 (RFC 6238 says SHA-1, and every app defaults to it), its
+# secret is written in base32, and the setup screen shows it as a QR code.
+sha1 = "0.10"
+data-encoding = "2"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 # Line and character diffs for the coding trait (TODO §6): the run's unified
 # diff and diffstat from the change ledger, and the similarity ratio the edit
 # cascade's fuzzy step scores a candidate region by.

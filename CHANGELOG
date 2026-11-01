@@ -2,6 +2,69 @@
 
 Changes in reverse chronological order.
 
+## Two-factor authentication
+
+User request: an option for two-factor authentication. Codes from an authenticator app (TOTP)
+with single-use recovery codes, for the admin UI and for applications. Design §7.2 has the
+details.
+
+- **Core** (`sc_auth::second_factor`): RFC 6238 codes (checked against the RFC's test
+  vectors), a 160-bit secret sealed with the instance key, 10 recovery codes stored hashed, and
+  replay protection (a code works once). New tables `_fd_second_factor` and
+  `_fd_recovery_codes`, created by the users bootstrap (additive, so no migration), and deleted
+  with an account. New dependencies: `sha1`, `data-encoding`, and `qrcode` (SVG only).
+- **Sign-in.** `apply_session`, where every session starts, gives an account with a second
+  factor on (or whose role requires one) a **challenge instead of a session**. A client's code
+  gets `second_factor: {token, setup}` in the login answer, next to the user summary, with no
+  session cookie. A page's sign-in (a Saltcorn UI login form, an identity provider) is sent to
+  a server-rendered page at `/_feldspar/second-factor/sign-in`. Every password path is covered
+  this way: the admin and REST logins, set-password, verify-email and sign-up. The new
+  `SessionAction::StartVerified` starts a session that is not challenged: answering a
+  challenge, `becomeUser`, the first user, and identity-provider sign-ins (unless the new
+  setting below asks for a code there too).
+- **Routes** under `/_feldspar/second-factor` on every host: status, `setup`, `enable`,
+  `verify`, `disable`, `recovery-codes`, and the `sign-in` page. Wrong codes are throttled per
+  account (5 per 15 minutes).
+- **Settings.** Users → Roles has a *Requires two-factor* switch per role (new admin endpoint
+  `setRoleSecondFactor`; the role JSON gains `require_second_factor`). Settings →
+  Authentication gains *Ask for a two-factor code after an identity provider* (off) and *Name
+  in authenticator apps*. Users gains a 2FA badge (`listUsers` rows gain `second_factor`) and
+  a *Reset two-factor* action (`resetUserSecondFactor`, which also ends the account's
+  sessions). The CLI gains `feldspar modify-user EMAIL --reset-second-factor` for a locked-out
+  sole admin.
+- **Admin UI.** The sign-in asks for the code, or sets one up when a role requires it and
+  shows the recovery codes. A shield button beside "Log out" opens *Two-factor
+  authentication* (`#/account/security`): turn it on, make new recovery codes, turn it off.
+- **Generated client.** Every client with `login` gains `secondFactorStatus`,
+  `secondFactorSetup`, `secondFactorEnable`, `secondFactorVerify`, `secondFactorDisable` and
+  `secondFactorRecoveryCodes`. The user summary type gains the optional `second_factor`. The
+  four checked-in admin clients are regenerated.
+- **React scaffold.** `src/auth.tsx` handles a challenge (`challenge`, `answerSecondFactor`,
+  `continueSignIn`, `cancelSecondFactor`). New `src/SecondFactor.tsx` is the code step (with
+  setup and recovery codes), shown by `Login.tsx`. New `src/Security.tsx` at `/security` is
+  linked from the header. The generated README tells a coding agent to check for
+  `second_factor`.
+- **Applications made before this.** A build regenerates only `src/feldspar/`, never
+  `Login.tsx` or `auth.tsx`, so an existing React application's sign-in pages know nothing of a
+  challenge. The generated client covers them. Its password sign-ins (`login`, `signup`,
+  `setPassword`, `verifyEmail`) pass their answer through `signInAnswered` (in `helper.ts`).
+  When that answer is a challenge in a browser, it sends the browser to the server's
+  `/_feldspar/second-factor/sign-in` page, which asks for the code (or sets one up) and comes
+  back to the same page signed in. The promise does not settle, so the old page never treats
+  the challenge as a user. An application whose own pages answer the challenge calls
+  `handleSecondFactorInApp()`, which the client re-exports. The new scaffold's `auth.tsx` and
+  the admin UI's `api.ts` do. A native app (no `window`) always gets the challenge back. So an
+  existing application needs **a rebuild and no code changes** before its accounts turn 2FA
+  on.
+- **Compatibility.** Nothing changes for an account until it turns 2FA on or its role
+  requires it, and the API only gains optional fields.
+- Tests: `sc-auth/tests/second_factor.rs` (setup, replay, recovery codes, role requirement,
+  challenge spent once, deletion), `sc-server/tests/second_factor_sign_in.rs` (admin sign-in
+  with a code, a role taking a member through setup on an application, admin reset, becoming
+  a user, the form page), plus unit tests for the codes, the settings, the CLI flag and the
+  admin UI helper, and `signInAnswered.test.ts` (the redirect, the opt-out, a native app).
+  The tutorial build checks that the scaffold's new pages type-check.
+
 ## Email verification for sign-ups (TODO A2.1)
 
 User request: an application where somebody signs up with an email address and gets full

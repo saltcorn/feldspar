@@ -12,7 +12,16 @@
 // that, and is also what makes the session cookie's journey explicit rather than
 // relying on `fetch`'s default.
 
-import { createClient, type ApiClient, type GetBackupOptionsResponse } from "./client";
+import {
+  createClient,
+  handleSecondFactorInApp,
+  type ApiClient,
+  type GetBackupOptionsResponse,
+} from "./client";
+
+// The sign-in screen asks for a two-factor code itself (`SecondFactorSignIn`),
+// so the client must not send the browser to the server's page for it.
+handleSecondFactorInApp();
 
 /** Header the server expects the CSRF cookie echoed in (matches `CSRF_HEADER`). */
 const CSRF_HEADER = "x-csrf-token";

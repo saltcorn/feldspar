@@ -230,7 +230,7 @@ pub fn admin_handlers_with(
                 // Log the new admin straight in — they came from the bootstrap
                 // screen and expect to land in the app.
                 let body = user_summary_json(&user);
-                Ok(HandlerResponse::start_session(user, body))
+                Ok(HandlerResponse::start_verified_session(user, body))
             }
         }
     });
@@ -709,6 +709,38 @@ pub fn admin_handlers_with(
                 role.description = str_field(obj, "description")?.trim().to_owned();
                 save_role(&catalog, &role).await?;
                 Ok(HandlerResponse::ok(role_json(&role)).with_status(201))
+            }
+        }
+    });
+
+    reg.register("setRoleSecondFactor", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let raw = ctx.path_param("role")?;
+                let number = raw
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|r| (ROLE_ADMIN..ROLE_PUBLIC).contains(r))
+                    .ok_or_else(|| {
+                        Error::invalid(format!(
+                            "`{raw}` is not a role between 1 and 99: nobody signs in as the \
+                             public role, so it cannot require anything of them"
+                        ))
+                    })?;
+                let required = matches!(ctx.body.get("required"), Some(Json::Bool(true)));
+                let mut role = sc_auth::load_role(&catalog, number)
+                    .await?
+                    .ok_or_else(|| Error::not_found(format!("no role {number}")))?;
+                if required {
+                    role.attributes
+                        .insert(sc_auth::ATTR_REQUIRE_SECOND_FACTOR.to_owned(), json!(true));
+                } else {
+                    role.attributes.remove(sc_auth::ATTR_REQUIRE_SECOND_FACTOR);
+                }
+                save_role(&catalog, &role).await?;
+                Ok(HandlerResponse::ok(role_json(&role)))
             }
         }
     });
@@ -7022,9 +7054,13 @@ pub fn admin_handlers_with(
                     .await?
                     .try_collect()
                     .await?;
+                let second_factor = sc_auth::second_factor_users(&catalog).await?;
                 let mut out = Vec::with_capacity(rows.len());
                 for row in &rows {
-                    out.push(user_row_json(&User::from_row(row)?));
+                    let user = User::from_row(row)?;
+                    let mut json = user_row_json(&user);
+                    json["second_factor"] = Json::Bool(second_factor.contains(&user.id));
+                    out.push(json);
                 }
                 Ok(HandlerResponse::ok(Json::Array(out)))
             }
@@ -7341,8 +7377,28 @@ pub fn admin_handlers_with(
                 let body = user_summary_json(&user);
                 // A swap, not an addition: starting a session ends the one the
                 // request arrived with, so the admin session does not stay live
-                // behind the one it just became.
-                Ok(HandlerResponse::start_session(user, body))
+                // behind the one it just became. Past the second factor: the
+                // admin signed in with theirs, and could reset this one's.
+                Ok(HandlerResponse::start_verified_session(user, body))
+            }
+        }
+    });
+
+    reg.register("resetUserSecondFactor", {
+        let catalog = catalog.clone();
+        move |ctx| {
+            let catalog = catalog.clone();
+            async move {
+                let id = parse_user_id(ctx.path_param("id")?)?;
+                if load_user(&catalog, id).await?.is_none() {
+                    return Err(Error::not_found(format!("no user with id {id}")));
+                }
+                let reset = sc_auth::disable_second_factor(&catalog, id).await?;
+                // Whoever is signed in to it now may be why it is being reset.
+                Ok(HandlerResponse::end_user_sessions(
+                    id,
+                    json!({ "reset": reset }),
+                ))
             }
         }
     });
@@ -12787,6 +12843,7 @@ pub(crate) fn role_json(role: &Role) -> Json {
         "name": role.name,
         "description": role.description,
         "builtin": role.is_builtin(),
+        "require_second_factor": sc_auth::requires_second_factor(&role.attributes),
     })
 }
 

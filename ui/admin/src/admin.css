@@ -2217,3 +2217,21 @@ div.navbar-brand>a:hover {
 .help-page h4 {
   margin-top: 1rem;
 }
+
+/* Two-factor authentication (screens/SecondFactor.tsx). The QR code stays
+   black on white in a dark theme too, because that is what a camera reads. */
+.second-factor-qr {
+  display: inline-block;
+  padding: 0.5rem;
+  background: #fff;
+  border-radius: 6px;
+}
+.second-factor-qr svg {
+  display: block;
+  width: 200px;
+  height: 200px;
+}
+.second-factor-codes {
+  columns: 2;
+  font-size: 1.05rem;
+}

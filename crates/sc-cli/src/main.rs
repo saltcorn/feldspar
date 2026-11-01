@@ -2374,6 +2374,16 @@ async fn modify_user_command(args: &[String]) -> Result<()> {
             if disabled { "disabled" } else { "enabled" }
         );
     }
+    if parsed.reset_second_factor {
+        sc_auth::disable_second_factor(&catalog, user.id).await?;
+        sc_auth::SessionStore::database(catalog.clone())
+            .end_user_sessions(user.id)
+            .await?;
+        eprintln!(
+            "feldspar: two-factor authentication is off for {}; its sessions have ended",
+            parsed.email.trim()
+        );
+    }
     if role.is_none() && password.is_none() {
         return Ok(());
     }
@@ -3288,7 +3298,7 @@ fn print_usage() {
     eprintln!("  feldspar add-user EMAIL --role ROLE [--password [VALUE]] [database flags]");
     eprintln!(
         "  feldspar modify-user EMAIL [--role ROLE] [--password [VALUE]] [--disabled|--enabled] \
-         [database flags]"
+         [--reset-second-factor] [database flags]"
     );
     eprintln!("  feldspar delete-user EMAIL [database flags]");
     eprintln!("  feldspar role list [--json] [database flags]");
@@ -3412,6 +3422,9 @@ fn print_usage() {
        terminal). A password starting with -- is written --password=VALUE.
        modify-user --disabled stops an account signing in (and ends its
        sessions) without deleting it; --enabled gives it back.
+       modify-user --reset-second-factor turns off the account's two-factor
+       authentication (for a lost phone and lost recovery codes) and ends its
+       sessions.
 
   delete-user: deletes an account. The last enabled admin cannot be deleted
        or disabled, here or anywhere else.

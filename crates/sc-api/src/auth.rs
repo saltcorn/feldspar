@@ -95,6 +95,23 @@ pub fn user_summary_schema() -> TypeSchema {
         // `false` for a self-service sign-up whose address nobody has proven
         // yet (TODO A2) — what an application shows "check your email" on.
         StructField::new("email_verified", TypeSchema::bool()),
+        // Only on a sign-in's answer, and then **no session was started**: the
+        // account has two-factor authentication on (or its role requires it),
+        // and the sign-in is finished with a code (design §7.2) — `token` is
+        // the challenge, `setup` says one must be set up first.
+        StructField::new(
+            "second_factor",
+            TypeSchema::optional(second_factor_challenge_schema()),
+        ),
+    ])
+}
+
+/// The challenge a sign-in is given in place of a session when it must give a
+/// second factor: the summary's `second_factor`.
+pub fn second_factor_challenge_schema() -> TypeSchema {
+    TypeSchema::struct_of([
+        StructField::new("token", TypeSchema::text()),
+        StructField::new("setup", TypeSchema::bool()),
     ])
 }
 
@@ -134,6 +151,9 @@ pub fn user_row_schema() -> TypeSchema {
         // Whether a checklist may run as this account (TODO-checklists C1.5).
         // Set with `setCheckUser`, never through the form's fields.
         StructField::new("check_user", TypeSchema::bool()),
+        // Whether the account is asked for a code from an authenticator app at
+        // sign-in. Said by the users list; absent elsewhere.
+        StructField::new("second_factor", TypeSchema::optional(TypeSchema::bool())),
         // Keyed by column name, since only the admin's own schema knows what is
         // in here — `listFields` on the users table is what names them.
         StructField::new("extra", TypeSchema::json()),

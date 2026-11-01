@@ -221,6 +221,17 @@ pub enum SessionAction {
     /// computer that is not the person's own. The session itself lasts as
     /// long as any other.
     StartUntilBrowserCloses(User),
+    /// [`Start`](SessionAction::Start) a session **past the second factor**
+    /// (design §7.2): one the transport starts as it is, never stopping it to
+    /// ask for a code. For a sign-in that has given its code already, and for
+    /// the few that never ask — an admin becoming a user, the first user of a
+    /// new installation. `remember` is the sign-in's "Remember me".
+    StartVerified {
+        /// The user the session is for.
+        user: User,
+        /// `false`: the browser cookie ends with the browser.
+        remember: bool,
+    },
     /// End the current session (logout): drop the token.
     End,
     /// End **every** session belonging to this user, whoever is asking.
@@ -253,6 +264,16 @@ impl SessionAction {
             SessionAction::Start(user)
         } else {
             SessionAction::StartUntilBrowserCloses(user)
+        }
+    }
+
+    /// The user a session would be started for, whichever kind of start it is.
+    pub fn starts(&self) -> Option<&User> {
+        match self {
+            SessionAction::Start(user)
+            | SessionAction::StartUntilBrowserCloses(user)
+            | SessionAction::StartVerified { user, .. } => Some(user),
+            _ => None,
         }
     }
 }

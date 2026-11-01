@@ -478,6 +478,8 @@ pub fn project_files(ctx: &ProjectContext<'_>) -> Vec<GeneratedFile> {
         files.push(GeneratedFile::new("src/auth.tsx", AUTH_TSX));
         files.push(GeneratedFile::new("src/Login.tsx", LOGIN_TSX));
         files.push(GeneratedFile::new("src/SetPassword.tsx", SET_PASSWORD_TSX));
+        files.push(GeneratedFile::new("src/SecondFactor.tsx", SECOND_FACTOR_TSX));
+        files.push(GeneratedFile::new("src/Security.tsx", SECURITY_TSX));
     }
     for table in &exposed {
         files.push(GeneratedFile::new(
@@ -991,6 +993,22 @@ fn accounts_section(endpoints: &EndpointSet) -> String {
          back to `returnTo` signed in — call `api.whoami()` — or with \
          `?oauth_error=<message>` to show. The scaffold's `src/Login.tsx` already \
          renders a button per provider.\n\
+         \n\
+         **Two-factor authentication** is the account's, not the application's: \
+         anybody can turn it on, and an administrator can require it of a role. \
+         When it applies, `login` (and `setPassword`) answer with \
+         `second_factor: {{ token, setup }}` and **start no session** — always \
+         check for it before treating the answer as a signed-in user. Finish the \
+         sign-in with `api.secondFactorVerify(token, code)`; with `setup: true`, \
+         set one up first with `api.secondFactorSetup(token)` (a QR code to scan) \
+         and `api.secondFactorEnable(code, token)`, which answers the recovery \
+         codes to show once. `src/auth.tsx` and `src/SecondFactor.tsx` already do \
+         all of this, and `src/Security.tsx` (at `/security`) is where a signed-in \
+         person turns it on or off (`api.secondFactorStatus()`, \
+         `secondFactorDisable(code)`, `secondFactorRecoveryCodes(code)`). Keep them, \
+         and keep the `handleSecondFactorInApp()` call at the top of `src/auth.tsx`: \
+         without it the client sends the browser to the server's own page for the \
+         code instead of to `SecondFactor.tsx`.\n\
          \n\
          {signup}\
          \n\
@@ -2406,7 +2424,12 @@ const AUTH_TSX: &str = r#"import {
   useState,
   type ReactNode,
 } from "react";
+import { handleSecondFactorInApp } from "./feldspar/client";
 import { api } from "./feldspar/hooks";
+
+// `SecondFactor.tsx` answers a two-factor challenge in the application, so the
+// client does not send the browser to the server's page for the code.
+handleSecondFactorInApp();
 
 export type User = { id: string; email: string; role: number };
 
@@ -2422,7 +2445,28 @@ export type AuthState = {
    * not the address has an account, so the page cannot say which.
    */
   forgotPassword: (email: string) => Promise<void>;
+  /**
+   * A sign-in whose password was right but which still needs a code from an
+   * authenticator app (two-factor authentication): no session yet. `setup`:
+   * the account's role requires one it has not set up, so it sets one up
+   * first. `null` when nothing is waiting.
+   */
+  challenge: SecondFactorChallenge | null;
+  /**
+   * Answer the challenge with a code. Signs in — except after setting one up,
+   * when it resolves to the recovery codes to show, and `continueSignIn()`
+   * signs in once they have been seen.
+   */
+  answerSecondFactor: (code: string) => Promise<string[] | null>;
+  continueSignIn: () => void;
+  /** Give up on the challenge and go back to the password form. */
+  cancelSecondFactor: () => void;
 };
+
+export type SecondFactorChallenge = { token: string; setup: boolean };
+
+/** What a sign-in answers: the user, or — no session yet — a challenge. */
+type SignInAnswer = User & { second_factor?: SecondFactorChallenge | null };
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
 
@@ -2441,18 +2485,61 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    setUser(await api.login({ email, password }));
+  const [challenge, setChallenge] = useState<SecondFactorChallenge | null>(null);
+  const [pending, setPending] = useState<User | null>(null);
+
+  // A sign-in answers the user it signed in, or a challenge and no session.
+  const answered = useCallback((answer: SignInAnswer) => {
+    if (answer.second_factor) {
+      setChallenge(answer.second_factor);
+    } else {
+      setChallenge(null);
+      setUser(answer);
+    }
   }, []);
+
+  const signIn = useCallback(
+    async (email: string, password: string) => {
+      answered(await api.login({ email, password }));
+    },
+    [answered],
+  );
+
+  const answerSecondFactor = useCallback(
+    async (code: string) => {
+      if (!challenge) return null;
+      const typed = code.replace(/\s+/g, "");
+      if (challenge.setup) {
+        const enabled = await api.secondFactorEnable(typed, challenge.token);
+        setPending(enabled.user ?? null);
+        setChallenge(null);
+        return enabled.recovery_codes;
+      }
+      setUser(await api.secondFactorVerify(challenge.token, typed));
+      setChallenge(null);
+      return null;
+    },
+    [challenge],
+  );
+
+  const continueSignIn = useCallback(() => {
+    if (pending) setUser(pending);
+    setPending(null);
+  }, [pending]);
+
+  const cancelSecondFactor = useCallback(() => setChallenge(null), []);
 
   const signOut = useCallback(async () => {
     await api.logout();
     setUser(null);
   }, []);
 
-  const setPassword = useCallback(async (token: string, password: string) => {
-    setUser(await api.setPassword({ token, password }));
-  }, []);
+  const setPassword = useCallback(
+    async (token: string, password: string) => {
+      answered(await api.setPassword({ token, password }));
+    },
+    [answered],
+  );
 
   const forgotPassword = useCallback(async (email: string) => {
     await api.forgotPassword({ email });
@@ -2460,7 +2547,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, signIn, signOut, setPassword, forgotPassword }}
+      value={{
+        user,
+        signIn,
+        signOut,
+        setPassword,
+        forgotPassword,
+        challenge,
+        answerSecondFactor,
+        continueSignIn,
+        cancelSecondFactor,
+      }}
     >
       {children}
     </AuthContext.Provider>
@@ -2479,10 +2576,11 @@ import type { OAuthProvider } from "./feldspar/client";
 import { api } from "./feldspar/hooks";
 import { useT } from "./feldspar/i18n";
 import { useUser } from "./auth";
+import SecondFactor from "./SecondFactor";
 
 export default function Login() {
   const { t } = useT();
-  const { signIn, forgotPassword } = useUser();
+  const { signIn, forgotPassword, challenge } = useUser();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   // "Forgot your password?" swaps the form for one that emails a reset link.
@@ -2525,6 +2623,9 @@ export default function Login() {
     setSent(false);
     setError(undefined);
   };
+
+  // The password was right; two-factor authentication asks for a code next.
+  if (challenge) return <SecondFactor />;
 
   return (
     <form className="card sc-login" onSubmit={submit}>
@@ -2584,6 +2685,252 @@ export default function Login() {
           </a>
         ))}
     </form>
+  );
+}
+"#;
+
+/// The second half of a sign-in with **two-factor authentication** (design
+/// §7.2): the code from an authenticator app (or a recovery code) — or, when
+/// the account's role requires a second factor it has not set up, the QR code
+/// to scan and its first code, then the recovery codes to keep.
+const SECOND_FACTOR_TSX: &str = r#"import { useEffect, useState, type FormEvent } from "react";
+import type { SecondFactorSetup } from "./feldspar/client";
+import { api } from "./feldspar/hooks";
+import { useT } from "./feldspar/i18n";
+import { useUser } from "./auth";
+
+/** The QR code an authenticator app scans (an SVG the server drew), and the
+ * key to type in instead. */
+export function SetupDetails({ setup }: { setup: SecondFactorSetup }) {
+  const { t } = useT();
+  return (
+    <>
+      <p>
+        {t(
+          "Scan this with an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, …), then enter the code it shows.",
+        )}
+      </p>
+      <div className="sc-qr" dangerouslySetInnerHTML={{ __html: setup.qr_svg }} />
+      <p>
+        {t("Or enter this key by hand:")} <code>{setup.secret}</code>
+      </p>
+    </>
+  );
+}
+
+/** The recovery codes, shown the one time they exist in plain text. */
+export function RecoveryCodes({ codes }: { codes: string[] }) {
+  const { t } = useT();
+  return (
+    <>
+      <p>
+        {t(
+          "Keep these recovery codes somewhere safe. Each one signs you in once if you lose your phone. They are not shown again.",
+        )}
+      </p>
+      <ul className="sc-codes">
+        {codes.map((code) => (
+          <li key={code}>
+            <code>{code}</code>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+export default function SecondFactor() {
+  const { t } = useT();
+  const { challenge, answerSecondFactor, continueSignIn, cancelSecondFactor } = useUser();
+  const [code, setCode] = useState("");
+  const [setup, setSetup] = useState<SecondFactorSetup | null>(null);
+  const [codes, setCodes] = useState<string[] | null>(null);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!challenge?.setup) return;
+    api.secondFactorSetup(challenge.token).then(setSetup, (err: unknown) =>
+      setError(err instanceof Error ? err.message : String(err)),
+    );
+  }, [challenge]);
+
+  if (codes) {
+    return (
+      <div className="card sc-login">
+        <h1>{t("Two-factor authentication is on")}</h1>
+        <RecoveryCodes codes={codes} />
+        <button onClick={continueSignIn}>{t("Continue")}</button>
+      </div>
+    );
+  }
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(undefined);
+    try {
+      const recovery = await answerSecondFactor(code);
+      if (recovery) setCodes(recovery);
+    } catch {
+      setCode("");
+      setError(t("That code is not right, or this sign-in has expired. Try again."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form className="card sc-login" onSubmit={submit}>
+      <h1>
+        {challenge?.setup
+          ? t("Set up two-factor authentication")
+          : t("Two-factor authentication")}
+      </h1>
+      {challenge?.setup ? (
+        setup && <SetupDetails setup={setup} />
+      ) : (
+        <p>{t("Enter the code from your authenticator app, or one of your recovery codes.")}</p>
+      )}
+      <label>
+        {t("Code")}
+        <input
+          value={code}
+          autoFocus
+          autoComplete="one-time-code"
+          onChange={(e) => setCode(e.target.value)}
+        />
+      </label>
+      {error && <p className="sc-error">{error}</p>}
+      <button type="submit" disabled={busy || (challenge?.setup === true && !setup)}>
+        {t("Continue")}
+      </button>
+      <button type="button" className="sc-link" onClick={cancelSecondFactor}>
+        {t("Back to sign in")}
+      </button>
+    </form>
+  );
+}
+"#;
+
+/// The signed-in person's own **two-factor authentication**: turn it on (scan,
+/// first code, recovery codes), make new recovery codes, or turn it off — each
+/// of the last two with a current code. At `/security`, linked from the header.
+const SECURITY_TSX: &str = r#"import { useEffect, useState, type FormEvent } from "react";
+import type { SecondFactorSetup, SecondFactorStatus } from "./feldspar/client";
+import { api } from "./feldspar/hooks";
+import { useT } from "./feldspar/i18n";
+import { RecoveryCodes, SetupDetails } from "./SecondFactor";
+
+export default function Security() {
+  const { t } = useT();
+  const [status, setStatus] = useState<SecondFactorStatus | null>(null);
+  const [setup, setSetup] = useState<SecondFactorSetup | null>(null);
+  const [codes, setCodes] = useState<string[] | null>(null);
+  const [action, setAction] = useState<"disable" | "codes" | null>(null);
+  const [code, setCode] = useState("");
+  const [error, setError] = useState<string | undefined>(undefined);
+
+  const load = () =>
+    api.secondFactorStatus().then(setStatus, (err: unknown) =>
+      setError(err instanceof Error ? err.message : String(err)),
+    );
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const run = async (work: () => Promise<void>) => {
+    setError(undefined);
+    try {
+      await work();
+      setCode("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    const typed = code.replace(/\s+/g, "");
+    void run(async () => {
+      if (setup) {
+        setCodes((await api.secondFactorEnable(typed)).recovery_codes);
+        setSetup(null);
+      } else if (action === "disable") {
+        await api.secondFactorDisable(typed);
+        setCodes(null);
+        setAction(null);
+      } else if (action === "codes") {
+        setCodes((await api.secondFactorRecoveryCodes(typed)).recovery_codes);
+        setAction(null);
+      }
+    });
+  };
+
+  const codeForm = (label: string) => (
+    <form onSubmit={submit}>
+      <label>
+        {t("Code")}
+        <input
+          value={code}
+          autoFocus
+          autoComplete="one-time-code"
+          onChange={(e) => setCode(e.target.value)}
+        />
+      </label>
+      <button type="submit">{label}</button>
+      <button
+        type="button"
+        className="sc-link"
+        onClick={() => {
+          setSetup(null);
+          setAction(null);
+        }}
+      >
+        {t("Cancel")}
+      </button>
+    </form>
+  );
+
+  return (
+    <div className="card sc-login">
+      <h1>{t("Two-factor authentication")}</h1>
+      {error && <p className="sc-error">{error}</p>}
+      {codes && <RecoveryCodes codes={codes} />}
+      {!status ? null : setup ? (
+        <>
+          <SetupDetails setup={setup} />
+          {codeForm(t("Turn on"))}
+        </>
+      ) : status.enabled ? (
+        <>
+          <p>
+            {t("On: a code from your authenticator app is asked for after your password.")}{" "}
+            {t("{count} recovery codes left.", { count: status.recovery_codes_left })}
+          </p>
+          {action ? (
+            codeForm(action === "disable" ? t("Turn off") : t("Make new recovery codes"))
+          ) : (
+            <>
+              <button onClick={() => setAction("codes")}>{t("New recovery codes")}</button>
+              {!status.required && (
+                <button className="sc-link" onClick={() => setAction("disable")}>
+                  {t("Turn off")}
+                </button>
+              )}
+            </>
+          )}
+        </>
+      ) : (
+        <>
+          <p>{t("Off: signing in takes your password only.")}</p>
+          <button onClick={() => void run(async () => setSetup(await api.secondFactorSetup()))}>
+            {t("Set up two-factor authentication")}
+          </button>
+        </>
+      )}
+    </div>
   );
 }
 "#;
@@ -2684,6 +3031,7 @@ fn app_tsx(project: &str, auth: bool) -> String {
           {user ? (
             <>
               {user.email}{" "}
+              <Link to="/security">{t("Security")}</Link>{" "}
               <button onClick={() => void signOut()}>{t("Sign out")}</button>
             </>
           ) : (
@@ -2757,6 +3105,7 @@ fn routes_tsx(tables: &[&Table], auth: bool) -> String {
     if auth {
         imports.push_str("import Login from \"./Login\";\n");
         imports.push_str("import SetPassword from \"./SetPassword\";\n");
+        imports.push_str("import Security from \"./Security\";\n");
     }
     let mut entries = String::new();
     for table in tables {
@@ -2775,7 +3124,8 @@ fn routes_tsx(tables: &[&Table], auth: bool) -> String {
         (
             "  /** Reachable without signing in. Absent means: sign-in required. */\n  public?: boolean;\n",
             "  { path: \"/login\", label: null, element: <Login />, public: true },\n  \
-             { path: \"/set-password\", label: null, element: <SetPassword />, public: true },\n",
+             { path: \"/set-password\", label: null, element: <SetPassword />, public: true },\n  \
+             { path: \"/security\", label: null, element: <Security /> },\n",
         )
     } else {
         ("", "")
@@ -3398,6 +3748,24 @@ th {
   align-items: stretch;
   max-width: 22rem;
   margin: 3rem auto;
+}
+
+/* Two-factor authentication: the QR code stays black on white whatever the
+   theme, because that is what a camera reads. */
+.sc-qr {
+  align-self: flex-start;
+  padding: 0.5rem;
+  background: #fff;
+  border-radius: 6px;
+}
+.sc-qr svg {
+  display: block;
+  width: 200px;
+  height: 200px;
+}
+.sc-codes {
+  columns: 2;
+  padding-left: 1.2rem;
 }
 
 .sc-link {

@@ -156,6 +156,22 @@ export function Users() {
       () => api.setCheckUser(user.id, { check_user: on }),
     );
 
+  /** For somebody who lost their phone and their recovery codes: their next
+   * sign-in takes the password alone (or, if their role requires a second
+   * factor, sets a new one up). Their sessions end with it. */
+  const resetSecondFactor = (user: UserRow) => {
+    if (
+      !window.confirm(
+        t("Turn off two-factor authentication for {address}?", { address: user.email }),
+      )
+    ) {
+      return;
+    }
+    void act("Could not reset two-factor authentication.", () =>
+      api.resetUserSecondFactor(user.id),
+    );
+  };
+
   const forceLogout = (user: UserRow) =>
     void act("Could not end the sessions.", () => api.forceLogoutUser(user.id));
 
@@ -260,6 +276,15 @@ export function Users() {
                       ) : (
                         <StatusBadge tone="green"><T text="Active" /></StatusBadge>
                       )}
+                      {u.second_factor && (
+                        <StatusBadge
+                          tone="blue"
+                          className="ms-1"
+                          title={t("Signs in with a code from an authenticator app")}
+                        >
+                          <T text="2FA" />
+                        </StatusBadge>
+                      )}
                       {u.check_user && (
                         <StatusBadge
                           tone="blue"
@@ -302,6 +327,11 @@ export function Users() {
                             <Dropdown.Item onClick={() => resetPassword(u)}>
                               <T text="Set random password" />
                             </Dropdown.Item>
+                            {u.second_factor && (
+                              <Dropdown.Item onClick={() => resetSecondFactor(u)}>
+                                <T text="Reset two-factor" />
+                              </Dropdown.Item>
+                            )}
                             <Dropdown.Item onClick={() => forceLogout(u)}>
                               <T text="Force logout" />
                             </Dropdown.Item>

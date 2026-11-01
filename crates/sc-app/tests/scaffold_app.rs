@@ -120,6 +120,8 @@ async fn the_server_writes_a_complete_project_against_the_apps_own_tables() -> s
         "src/auth.tsx",
         "src/Login.tsx",
         "src/SetPassword.tsx",
+        "src/SecondFactor.tsx",
+        "src/Security.tsx",
         "src/app.css",
         "src/useAgentChat.ts",
         "AGENTS.md",
@@ -137,12 +139,12 @@ async fn the_server_writes_a_complete_project_against_the_apps_own_tables() -> s
     ] {
         assert!(project.join(expected).is_file(), "missing {expected}");
     }
-    // 15 project files (`CLAUDE.md` importing `AGENTS.md`, and the agent chat
-    // hook) + one page for the app's one table + the ten-file
+    // 17 project files (`CLAUDE.md` importing `AGENTS.md`, the agent chat
+    // hook, and the two-factor sign-in step and security page) + one page for the app's one table + the ten-file
     // runtime (the client, its helper, the hooks, the store, the two halves of
     // the message runtime, the live-update hooks, the schema, and the two
     // documents — one for a person, one for a coding agent).
-    assert_eq!(report.files.len(), 26);
+    assert_eq!(report.files.len(), 28);
 
     // What a coding agent opening this project finds: a root file pointing at the
     // generated directory, and in it a README and a `schema.sql` describing the

@@ -130,6 +130,9 @@ async fn the_tutorial_app_scaffolds_installs_type_checks_builds_and_serves() -> 
     let app = todo_app();
     let scaffold = scaffold_app(&cat, &app, None).await?;
     assert!(scaffold.files.iter().any(|f| f.ends_with("package.json")));
+    // The sign-in pages are in what is type-checked below, the two-factor
+    // step and security page among them.
+    assert!(scaffold.files.iter().any(|f| f.ends_with("src/SecondFactor.tsx")));
 
     // Step 4: Build. Installs dependencies, regenerates the runtime, type-checks
     // and bundles. A failure here carries the tool's own diagnostics, which is

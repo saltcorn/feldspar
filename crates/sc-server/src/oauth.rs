@@ -860,13 +860,29 @@ pub(crate) async fn complete(
         _ => SessionClient::of(&headers),
     };
     let jar = jar.remove(binding_removal());
-    let cookies = match apply_session(
-        &state,
-        jar,
-        session_token,
-        client,
-        SessionAction::Start(user),
-    )
+    // The provider's sign-in is trusted to have asked for its own second
+    // factor, unless Settings → Authentication says to ask for ours as well;
+    // then it is asked for on a page that comes back to `return_to`.
+    let ask = match state.apps.catalog() {
+        Some(catalog) => match sc_config::second_factor_for_identity_providers(catalog).await {
+            Ok(ask) => ask,
+            Err(e) => {
+                log_failure("could not read the two-factor settings", &e);
+                true
+            }
+        },
+        None => false,
+    };
+    let session = if ask {
+        SessionAction::Start(user)
+    } else {
+        SessionAction::StartVerified {
+            user,
+            remember: true,
+        }
+    };
+    let client = client.returning_to(completion.return_to.clone());
+    let cookies = match apply_session(&state, jar, session_token, client, session)
     .await
     {
         Ok(cookies) => cookies,

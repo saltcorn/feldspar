@@ -55,6 +55,7 @@ mod models;
 mod module_routes;
 mod modules;
 mod oauth;
+mod second_factor;
 mod observe;
 mod posterior;
 mod reload;
@@ -83,6 +84,13 @@ pub use backup::{
     BackupScheduler, RestoreReport, Selection as BackupSelection, available as backup_available,
     inspect as inspect_backup, is_encrypted as backup_is_encrypted, restore_backup,
     start_backup_scheduler, write_backup_stream, write_backup_to,
+};
+pub use second_factor::{
+    CHALLENGE_COOKIE as SECOND_FACTOR_COOKIE, DISABLE_ROUTE as SECOND_FACTOR_DISABLE_ROUTE,
+    ENABLE_ROUTE as SECOND_FACTOR_ENABLE_ROUTE, PAGE_ROUTE as SECOND_FACTOR_PAGE_ROUTE,
+    RECOVERY_CODES_ROUTE as SECOND_FACTOR_RECOVERY_CODES_ROUTE,
+    SETUP_ROUTE as SECOND_FACTOR_SETUP_ROUTE, STATUS_ROUTE as SECOND_FACTOR_STATUS_ROUTE,
+    VERIFY_ROUTE as SECOND_FACTOR_VERIFY_ROUTE,
 };
 pub use oauth::{
     BINDING_COOKIE as OAUTH_BINDING_COOKIE, CALLBACK_ROUTE as OAUTH_CALLBACK_ROUTE,

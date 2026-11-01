@@ -1263,6 +1263,72 @@ pub struct User {
   An application's generated client has `oauthProviders()` and
   `oauthSignInUrl(provider, returnTo)` whenever it has `login`, and the scaffold's
   `Login.tsx` renders a button per provider.
+- **Two-factor authentication** (`sc_auth::second_factor`, `sc-server/src/second_factor.rs`).
+  Codes from an authenticator app (TOTP, RFC 6238: HMAC-SHA-1, 6 digits, 30 seconds, one step
+  of drift either way), and 10 single-use recovery codes. It belongs to the **account**, not
+  to an application, so the routes are the server's own, under `/_feldspar/second-factor`,
+  answering on every host as the OAuth routes do:
+
+  - `GET` (signed in): `{enabled, required, recovery_codes_left}`.
+  - `POST setup {token?}`: a new secret, as `{secret, otpauth_url, qr_svg, account}`. The QR
+    code is an SVG drawn on the server. Refused while one is on.
+  - `POST enable {code, token?}`: turn it on with the app's first code. Answers
+    `{recovery_codes}`, shown once.
+  - `POST verify {token, code}`: answer a sign-in's challenge (see below).
+  - `POST disable {code}` and `POST recovery-codes {code}` (signed in): turn it off, or
+    replace the recovery codes. Both need a current code. A role that requires it cannot turn
+    it off.
+  - `GET sign-in?return_to=`: a server-rendered page that does the same with forms, for a
+    sign-in that a page made (below).
+
+  **Storage.** `_fd_second_factor` (`user_id` PK, the secret **sealed** with the instance key
+  as a Secret field is, `enabled_at` (`NULL` while a setup waits for its first code),
+  `last_step`) and `_fd_recovery_codes` (SHA-256 of the account and the code). Both are made by
+  the users bootstrap, are not foreign keys, and are deleted with the account. A code is
+  accepted only for a time-step after `last_step`, in one conditional `UPDATE`, so a code
+  cannot be used twice. A recovery code is spent by `DELETE … RETURNING`.
+
+  **The challenge.** `apply_session` is where every session starts. For a
+  `SessionAction::Start` by an account that has a second factor on, or whose role has
+  `require_second_factor: true` in `_fd_roles.attributes` (the first role-specific setting),
+  it starts **no session**. Instead it issues a challenge: a `second_factor` token in
+  `_fd_password_tokens` (10 minutes, single use, remembering "Remember me"), so whichever node
+  gets the answer can read it. The token goes in an `HttpOnly`, `SameSite=Lax` cookie `sc_2fa`
+  scoped to the routes, and also:
+  - for a client's code, in the JSON answer: the user summary plus
+    `second_factor: {token, setup}`. `setup: true` means a role requires one that the account
+    has not set up, and the token then allows `setup` and `enable` for that account only.
+  - for a sign-in made by a page (`SessionClient::returning_to`), as a redirect to the
+    `sign-in` page instead. This covers a Saltcorn UI application's login form, where the page
+    returns to the form's redirect, and an identity provider's `complete`, where it returns to
+    `return_to`.
+
+  The answer starts the session through `apply_session` with `SessionAction::StartVerified`,
+  which is never challenged. That variant is also what `becomeUser` and the first user's
+  creation use. An identity-provider sign-in uses it too, unless Settings → Authentication
+  *Ask for a two-factor code after an identity provider* is on. Every password path is covered
+  this way without knowing about the second factor: the admin and REST logins, set-password,
+  verify-email, sign-up, and a rendered login form. Wrong codes count against the account (5 in
+  15 minutes, then `429`) as well as the login budget per IP. If the database cannot say
+  whether an account has a second factor, no session is started.
+
+  **Applications made before it.** A build regenerates only an application's `src/feldspar/`
+  runtime, never its own `Login.tsx`, so the generated client covers pages that know nothing of
+  a challenge. A password sign-in method (`rest::PASSWORD_SIGN_INS`: `login`, `signup`,
+  `setPassword`, `verifyEmail`) returns through the helper's `signInAnswered`. When the answer
+  carries `second_factor` in a browser, it goes to the `sign-in` page with `return_to` set to
+  the current page, and its promise never settles. Pages that answer the challenge themselves
+  call `handleSecondFactorInApp()` once: the scaffold's `auth.tsx` and the admin UI's `api.ts`
+  do. Outside a browser the challenge is always returned.
+
+  **Where it is set.** Each account: the admin UI's shield button beside "Log out"
+  (`#/account/security`), and in a React application the scaffold's `src/Security.tsx`
+  (`/security`) through the generated client's `secondFactor*` methods. Each role: a switch on
+  Users → Roles (`setRoleSecondFactor`). Instance-wide: Settings → Authentication, which has the
+  identity-provider switch above and *Name in authenticator apps* (blank means the base
+  domain). An admin can reset an account (`resetUserSecondFactor`, Users → ⋯, which also ends
+  its sessions), and so can the CLI (`feldspar modify-user EMAIL --reset-second-factor`), for a
+  sole admin who is locked out.
 - Further providers (SAML, SSO) via an `AuthMethod` extension.
 
 ### 7.3 Authorization

@@ -35,6 +35,7 @@ import {
   IconMoon,
   IconRobot,
   IconSettings,
+  IconShieldLock,
   IconSun,
   IconTable,
   IconUsers,
@@ -70,6 +71,7 @@ import { LlmProviderForm } from "./screens/LlmProviderForm";
 import { McpServers } from "./screens/McpServers";
 import { Login } from "./screens/Login";
 import { Roles } from "./screens/Roles";
+import { AccountSecurity } from "./screens/SecondFactor";
 import { Settings, settingsTabFromPath } from "./screens/Settings";
 import { CodeLibraries } from "./screens/CodeLibraries";
 import { SharedTranslations } from "./screens/SharedTranslations";
@@ -402,6 +404,16 @@ function Shell({
           <div className="navbar-nav flex-row d-lg-none">
             <ThemeToggle theme={theme} onToggle={toggleTheme} />
             <div className="nav-item ms-2">
+              <a
+                className="nav-link px-0"
+                href="#/account/security"
+                aria-label={t("Two-factor authentication")}
+                title={t("Two-factor authentication")}
+              >
+                <IconShieldLock className="icon-1" />
+              </a>
+            </div>
+            <div className="nav-item ms-2">
               <button
                 type="button"
                 className="nav-link px-0"
@@ -483,6 +495,15 @@ function Shell({
                   <span className="sidebar-wide-only"><T text="Log out" /></span>
                 </button>
                 <ThemeToggle theme={theme} onToggle={toggleTheme} />
+                {/* The admin's own account: two-factor authentication. */}
+                <a
+                  className="btn btn-icon btn-ghost-secondary"
+                  href="#/account/security"
+                  aria-label={t("Two-factor authentication")}
+                  title={t("Two-factor authentication")}
+                >
+                  <IconShieldLock className="icon-2" />
+                </a>
                 {/* Nothing at all on an installation that serves one language
                     (D11): i18n is a thing an admin turns on, not a control
                     every installation grows. */}
@@ -881,6 +902,10 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   // Settings → Translations (shared) (TODO F6).
   if (path === "/translations") {
     return <SharedTranslations />;
+  }
+  // The signed-in admin's own two-factor authentication (design §7.2).
+  if (path === "/account/security") {
+    return <AccountSecurity />;
   }
   return <Tables />;
 }

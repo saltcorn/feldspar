@@ -280,6 +280,19 @@ impl HandlerResponse {
         }
     }
 
+    /// A `200 OK` response that starts a session for `user` **without asking for
+    /// a second factor**: an admin becoming a user, or the first user of a new
+    /// installation, who has none yet.
+    pub fn start_verified_session(user: User, body: Value) -> HandlerResponse {
+        HandlerResponse {
+            session: SessionAction::StartVerified {
+                user,
+                remember: true,
+            },
+            ..HandlerResponse::ok(body)
+        }
+    }
+
     /// A `200 OK` response that also ends the current session (logout).
     pub fn end_session(body: Value) -> HandlerResponse {
         HandlerResponse {

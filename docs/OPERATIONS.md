@@ -1664,6 +1664,15 @@ Leave the password off the command line when you can, because it ends up in the
 shell history and in `ps`. A password that starts with `--` is written
 `--password=VALUE`. Sessions the user already holds are not ended.
 
+An admin who lost the phone with their authenticator app and their recovery codes
+has nobody to reset their two-factor authentication if they are the only admin.
+This turns it off and ends their sessions; the next sign-in takes the password
+alone (or, if their role requires a second factor, sets a new one up):
+
+```bash
+feldspar modify-user admin@example.com --reset-second-factor
+```
+
 #### Backup and restore from a terminal
 
 The zip **Settings → Backup** downloads can be written and restored from a terminal:

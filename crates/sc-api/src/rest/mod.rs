@@ -282,6 +282,12 @@ const SET_PASSWORD: &str = "setPassword";
 /// `POST {mount}/verify-email`, projected where the application requires
 /// email verification ([`verify`]).
 const VERIFY_EMAIL: &str = "verifyEmail";
+
+/// The endpoints that sign somebody in with a password or an emailed link, and
+/// so may answer with a two-factor challenge instead of a session (design
+/// §7.2). The generated client sends a browser to the server's page for the
+/// code from these, unless the application handles the challenge itself.
+pub(crate) const PASSWORD_SIGN_INS: [&str; 4] = [LOGIN, SIGNUP, SET_PASSWORD, VERIFY_EMAIL];
 /// `POST {mount}/resend-verification`, likewise.
 const RESEND_VERIFICATION: &str = "resendVerification";
 
@@ -3010,6 +3016,36 @@ mod tests {
     /// Email verification (TODO A2) projects its two endpoints only where the
     /// settings turn it on: `verify-email` public and a sign-in endpoint,
     /// `resend-verification` for a signed-in caller.
+    #[test]
+    fn a_password_sign_in_in_the_client_can_go_to_the_second_factor_page() {
+        let tables = [table("posts", AccessRules::default())];
+        let mut config = Attrs::new();
+        config.insert(verify::CFG_VERIFY_EMAIL.to_owned(), Json::Bool(true));
+        let rest = RestProvider::project("/api", &tables)
+            .with_email_verification(verify::rest_email_verification(&config));
+        let ts = crate::generate_client(rest.endpoints());
+        // The sign-ins hand their answer to `signInAnswered`, which sends a
+        // browser to the server's page when it is a two-factor challenge...
+        for name in [LOGIN, SET_PASSWORD, VERIFY_EMAIL] {
+            let pascal = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
+            assert!(
+                ts.contains(&format!(
+                    "return signInAnswered(baseUrl, (await res.json()) as {pascal}Response);"
+                )),
+                "{name}: {ts}"
+            );
+        }
+        assert!(ts.contains("trackCsrf, signInAnswered, type ClientOptions"), "{ts}");
+        // ...and an application that answers it itself says so.
+        assert!(ts.contains("export { handleSecondFactorInApp } from \"./helper\";"));
+        // Nothing else does.
+        assert!(!ts.contains("return signInAnswered(baseUrl, (await res.json()) as WhoamiResponse"));
+        assert!(ts.contains("return (await res.json()) as WhoamiResponse;"), "{ts}");
+        let helper = crate::client_helper();
+        assert!(helper.contains("export function signInAnswered<T>("), "{helper}");
+        assert!(helper.contains("/_feldspar/second-factor/sign-in?return_to="));
+    }
+
     #[test]
     fn email_verification_is_projected_only_where_the_settings_turn_it_on() {
         let tables = [table("posts", AccessRules::default())];

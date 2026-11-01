@@ -160,7 +160,7 @@ pub(crate) struct AppState {
     /// dispatcher live, which the MCP route needs (§13.6).
     pub(crate) apps: Arc<AppMounts>,
     /// The domain apps are served under; `None` disables app routing.
-    base_domain: Option<Arc<String>>,
+    pub(crate) base_domain: Option<Arc<String>>,
     /// Further domains the same apps answer under (`--extra-base-domain`).
     extra_base_domains: Arc<Vec<String>>,
     /// How many more language servers the IDE may start (design §12.1).
@@ -420,6 +420,37 @@ pub fn build_router_with_apps(
         .route(
             crate::oauth::COMPLETE_ROUTE,
             axum::routing::get(crate::oauth::complete),
+        )
+        // Two-factor authentication (design §7.2): the challenge a sign-in is
+        // given in place of a session, and an account's own setup, on every
+        // host as the OAuth routes are (`crate::second_factor`).
+        .route(
+            crate::second_factor::STATUS_ROUTE,
+            axum::routing::get(crate::second_factor::status),
+        )
+        .route(
+            crate::second_factor::SETUP_ROUTE,
+            axum::routing::post(crate::second_factor::setup),
+        )
+        .route(
+            crate::second_factor::ENABLE_ROUTE,
+            axum::routing::post(crate::second_factor::enable),
+        )
+        .route(
+            crate::second_factor::VERIFY_ROUTE,
+            axum::routing::post(crate::second_factor::verify),
+        )
+        .route(
+            crate::second_factor::DISABLE_ROUTE,
+            axum::routing::post(crate::second_factor::disable),
+        )
+        .route(
+            crate::second_factor::RECOVERY_CODES_ROUTE,
+            axum::routing::post(crate::second_factor::recovery_codes),
+        )
+        .route(
+            crate::second_factor::PAGE_ROUTE,
+            axum::routing::get(crate::second_factor::page),
         )
         // Module webhooks (TODO-payments P1.1): a provider's events, on every
         // host as the OAuth routes are. A route of their own because the
@@ -1997,7 +2028,17 @@ async fn dispatch_app(
             let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::OK);
             // The same session code an API provider's response goes through, so
             // an application's rendered login sets the same cookie the same way.
-            let client = SessionClient::of(headers).for_app(app);
+            let mut client = SessionClient::of(headers).for_app(app);
+            // A rendered sign-in form answers with a redirect to where it goes
+            // next: a second factor is asked for on a page, which goes there.
+            if resp.session.starts().is_some() {
+                let next = resp
+                    .headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("location"))
+                    .map_or("/", |(_, value)| value.as_str());
+                client = client.returning_to(next);
+            }
             let cookies = match apply_session(state, jar, session_token, client, resp.session).await
             {
                 Ok(cookies) => cookies,
@@ -3103,7 +3144,11 @@ pub(crate) async fn apply_session(
     // response says nothing about the other.
     let carried = jar.get(SESSION_COOKIE).is_some();
     // "Remember me" unticked is a sign-in like any other but for its cookie.
-    let remember = !matches!(session, SessionAction::StartUntilBrowserCloses(_));
+    let remember = match &session {
+        SessionAction::StartUntilBrowserCloses(_) => false,
+        SessionAction::StartVerified { remember, .. } => *remember,
+        _ => true,
+    };
     let stale = || {
         if !carried {
             return None;
@@ -3124,18 +3169,28 @@ pub(crate) async fn apply_session(
     // An account the application does not let in (TODO F9) is refused here,
     // before a session exists — whichever way it signed in: a password, a
     // rendered form, an identity provider.
-    if let (SessionAction::Start(user) | SessionAction::StartUntilBrowserCloses(user), Some(app)) =
-        (&session, &client.app)
+    if let (Some(user), Some(app)) = (session.starts(), &client.app)
         && let Some(refusal) = refuse_sign_in(state, &app.app, user).await
     {
         return Err(Box::new(refusal));
     }
+    // A sign-in by an account with two-factor authentication on, or whose role
+    // requires it, gets a challenge here instead of a session (design §7.2):
+    // every way of signing in starts its session in this one place, so none of
+    // them can forget to ask. `StartVerified` is a sign-in that has answered
+    // it, or one that never asks.
+    if let SessionAction::Start(user) | SessionAction::StartUntilBrowserCloses(user) = &session
+        && let Some(challenge) =
+            crate::second_factor::challenge_for(state, &client, user, remember).await
+    {
+        return Err(Box::new(challenge));
+    }
     // Read from the store for a sign-in rather than believed from this process,
     // so a lifetime saved on another node applies here too.
     let policy = match &session {
-        SessionAction::Start(_) | SessionAction::StartUntilBrowserCloses(_) => {
-            state.apps.current_session_policy().await
-        }
+        SessionAction::Start(_)
+        | SessionAction::StartUntilBrowserCloses(_)
+        | SessionAction::StartVerified { .. } => state.apps.current_session_policy().await,
         _ => crate::apps::SessionPolicy {
             ttl: state.apps.session_ttl(),
             persistent: state.apps.persistent_session_cookie(),
@@ -3147,7 +3202,9 @@ pub(crate) async fn apply_session(
             jar,
             stale: AppendHeaders(None),
         },
-        SessionAction::Start(user) | SessionAction::StartUntilBrowserCloses(user) => {
+        SessionAction::Start(user)
+        | SessionAction::StartUntilBrowserCloses(user)
+        | SessionAction::StartVerified { user, .. } => {
             match state.sessions.login_for(user.clone(), ttl).await {
                 Ok(token) => {
                     // The session the request arrived with is replaced, not joined:
@@ -3285,6 +3342,12 @@ pub(crate) struct SessionClient {
     /// The application the session would be started on, whose access settings
     /// a sign-in must pass (TODO F9); `None` on the admin host.
     app: Option<Arc<MountedApp>>,
+    /// Where a browser is sent on once it is signed in, for a sign-in made by
+    /// a page rather than by a client's code — a rendered form, an identity
+    /// provider. A second factor is then asked for on a page of its own
+    /// ([`crate::second_factor`]), which comes back here; `None`, it is asked
+    /// for in the JSON the client reads.
+    pub(crate) page_return: Option<String>,
 }
 
 impl SessionClient {
@@ -3297,7 +3360,14 @@ impl SessionClient {
                 .and_then(|h| h.to_str().ok())
                 .map(str::to_owned),
             app: None,
+            page_return: None,
         }
+    }
+
+    /// The same client, signed in by a page that goes on to `path` once it is.
+    pub(crate) fn returning_to(mut self, path: impl Into<String>) -> SessionClient {
+        self.page_return = Some(path.into());
+        self
     }
 
     /// The same client, signing in to `app`.

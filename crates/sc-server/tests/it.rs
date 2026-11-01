@@ -59,6 +59,8 @@ mod app_calling_app;
 mod app_code_files;
 #[path = "app_email_verification.rs"]
 mod app_email_verification;
+#[path = "second_factor_sign_in.rs"]
+mod second_factor_sign_in;
 #[path = "app_file_access.rs"]
 mod app_file_access;
 #[path = "app_guest_live.rs"]

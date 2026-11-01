@@ -31,6 +31,8 @@ mod role_gate;
 mod role_grants;
 #[path = "roles_store.rs"]
 mod roles_store;
+#[path = "second_factor.rs"]
+mod second_factor;
 #[path = "user_management.rs"]
 mod user_management;
 #[path = "user_roundtrip.rs"]
