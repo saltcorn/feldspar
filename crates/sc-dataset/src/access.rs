@@ -331,9 +331,10 @@ impl Reader {
                 in_context: false,
             });
         }
-        let Some(formula) = &table.ownership else {
+        let Some(rule) = table.read_rule() else {
             return Err(Error::auth(format!("you may not read `{name}`")));
         };
+        let formula = &*rule;
         let user = UserEnv::Inline(caller.user.clone());
         let calc = table.calc_formulas();
         match translate_rooted(

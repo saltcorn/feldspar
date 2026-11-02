@@ -171,6 +171,24 @@ pub struct Table {
     pub constraints: Vec<TableConstraint>,
 }
 
+/// The rule every signed-in caller has on the users table, whatever its
+/// access settings say: they may read their own row (§7.3). It reveals
+/// nothing a session does not already carry, since the session's user is
+/// that row, and a "me" query is what every page of an application makes.
+/// Read only: what a user may change about themselves is the admin's
+/// ownership formula to grant. An anonymous caller's `user` is null, so it
+/// grants them nothing.
+pub const SELF_READ_FORMULA: &str = "_read && id === user.id";
+
+/// [`SELF_READ_FORMULA`], parsed once. `None` only if the constant stopped
+/// parsing, which a test rules out; the rule then grants nothing (fail closed).
+fn self_read_formula() -> Option<&'static sc_expr::Formula> {
+    static FORMULA: std::sync::OnceLock<Option<sc_expr::Formula>> = std::sync::OnceLock::new();
+    FORMULA
+        .get_or_init(|| sc_expr::Formula::parse(SELF_READ_FORMULA).ok())
+        .as_ref()
+}
+
 impl Table {
     /// Build a catalog table from an introspected [`PhysicalTable`].
     ///
@@ -539,6 +557,37 @@ impl Table {
             field: meta.field_name.clone(),
             message: format!("field `{}.{}` {what}", self.name, meta.field_name),
         }
+    }
+
+    /// The formula that decides a **read** of this table for a caller below
+    /// `min_role_read` (§7.3): the ownership formula, except on the users
+    /// table, where a caller may always read their own row —
+    /// [`SELF_READ_FORMULA`] ORed with whatever the admin's formula grants.
+    ///
+    /// Every read path asks this rather than [`ownership`](Table::ownership):
+    /// the row read, a list, an aggregate, an analytics dataset, a live
+    /// change, a sync pull, a REST download, an embed's guard and an RLS
+    /// policy, so they agree on what the users table hands out. Writes keep
+    /// asking `ownership`; the self-read clause is `_read`-gated, so it would
+    /// grant no write anyway, and leaving it out of the write paths keeps a
+    /// below-floor write to a users table with no formula the floor refusal
+    /// it has always been.
+    ///
+    /// Composed on each call rather than stored, so a schema edit's projected
+    /// table, whose `ownership` the edit has just changed, cannot carry a
+    /// stale combination. The combination is a tree clone, never a parse.
+    pub fn read_rule(&self) -> Option<std::borrow::Cow<'_, sc_expr::Formula>> {
+        use std::borrow::Cow;
+        if self.name != crate::catalog::USERS_TABLE {
+            return self.ownership.as_ref().map(Cow::Borrowed);
+        }
+        let Some(own) = self_read_formula() else {
+            return self.ownership.as_ref().map(Cow::Borrowed);
+        };
+        Some(match &self.ownership {
+            None => Cow::Borrowed(own),
+            Some(admin) => Cow::Owned(own.or(admin)),
+        })
     }
 
     /// Whether this is a system table (`_fd_*`), hidden from users (technical

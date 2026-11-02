@@ -1365,6 +1365,25 @@ Ownership *extends* access below the role floor; it never narrows it. A caller w
 meets `min_role` is unaffected by the formula (and by RLS, through a role-floor clause in
 every policy). A table with no formula behaves exactly as the plain role model does.
 
+**The users table: you may always read yourself.** The one exception to "no formula, plain role
+model" is `users`. On it, a read is also granted by the built-in rule
+`_read && id === user.id` (`sc_catalog::SELF_READ_FORMULA`), ORed with whatever the admin's
+formula grants, so the admin's formula can only widen it. It reveals nothing the session does not
+already carry (the session's user *is* that row), and an application's "me" query depends on it.
+`Table::read_rule()` composes the two (a tree clone, never a parse, and never stored, so a
+projected table cannot carry a stale combination). Every read path asks it rather than
+`Table::ownership`: the row read and list, aggregates, analytics datasets, live row images, sync
+pulls, the REST endpoint gate and file downloads, `join_guard`, and the RLS policies (the clause
+folds away in the write policies). Writes still ask `ownership` only, so the rule grants no
+write, and a below-floor write to a `users` table with no formula gets the floor's refusal as
+before. It is not stored as formula text, so the admin cannot remove it by editing the formula,
+and no stored formula had to be rewritten. Consequences: a below-floor list read of `users`
+answers the caller's own row where it used to be refused; an embed into `users`
+(`created_by(email)`) below the floor is still refused, now by `join_guard`'s "comes from its
+ownership formula" message, because the self-read decides row by row; and a `users` table whose
+RLS was enabled before this rule existed keeps its old policies, without the self-read, until
+they are regenerated (re-saving the formula, or turning RLS off and on).
+
 **The public role is everybody.** A caller nobody is logged in as holds the public role (100),
 so a `min_role` of 100 — on a table operation, an application's custom query or an exposed
 trigger — admits them: no login, no session, and no CSRF token. It does not mean "a logged-in
@@ -7758,7 +7777,7 @@ powerful than the caller's own; on their own row a caller may keep their role. A
 delete reaches only the caller's own row and the rows of less powerful accounts; this rule is
 added to the statement's `WHERE`, so a row out of reach is a 404, exactly like a missing one.
 The table's access rules and ownership formula still decide whether the caller may write the
-table at all.
+table at all. Any signed-in caller may read their own row (§7.3, "you may always read yourself").
 
 A **list read takes a query string** in PostgREST's syntax:
 

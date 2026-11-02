@@ -2,6 +2,36 @@
 
 Changes in reverse chronological order.
 
+## A caller may always read their own `users` row
+
+User report: `db.users.get(user.id)` from a code body acting as a non-admin caller failed with
+"auth error: you may not read `users`", so a "me" query that every page made broke for all staff
+after the 2026-10-30 upgrade. A table below its read floor with no ownership formula refuses
+the read, and `users` was no exception.
+
+- **A built-in self-read rule on `users`** (§7.3): `_read && id === user.id`
+  (`sc_catalog::SELF_READ_FORMULA`), ORed with the admin's ownership formula, which can only
+  widen it. It is not stored as formula text, so no stored formula is rewritten and an admin
+  cannot edit it away. New `Table::read_rule()` composes the two with the new
+  `sc_expr::Formula::or` (a tree clone, no parse).
+- **Every read path decides by `read_rule()`**: `read_row_values_by` (code bodies, agents,
+  REST, GraphQL), aggregates, `join_guard`, live `RowImage` (whose no-evaluator fast path now also
+  takes `_read && column === user.id`), analytics datasets, sync pulls, the REST endpoint gate
+  and file downloads, and the generated RLS policies. **Writes are unchanged**: they still ask
+  `Table::ownership`, so a below-floor write to `users` with no formula is the same floor
+  refusal, and the REST write endpoints keep their `MinRole` gate.
+- **Behaviour changes**: below the floor, a list read of `users` returns the caller's own row
+  instead of an auth error, and an anonymous read returns no rows. An embed into `users` below
+  the floor (`created_by(email)`) is still refused, now with `join_guard`'s "comes from its
+  ownership formula" message. Reading other users' fields is not part of this change.
+- **Existing RLS on `users`**: policies generated before this change lack the self-read until
+  they are regenerated (re-save the formula, or turn RLS off and on). Nothing is regenerated
+  automatically.
+- Tests: `sc-access` `tests/self_read.rs` (own row, others absent, anonymous, no write granted,
+  the admin formula widening, aggregates, the embed refusal, the live image without an
+  evaluator); `sc-catalog` `rls_policies::the_users_policies_carry_the_self_read` (Postgres
+  policies grant the self-read on select only); `sc-expr` `Formula::or` round-trip.
+
 ## Test fix: the cascade-bound tests run on an 8 MiB worker
 
 `code_host_writes::a_code_body_writing_its_own_table_is_stopped_by_the_cascade_bound` aborted the

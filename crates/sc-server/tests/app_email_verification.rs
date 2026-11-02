@@ -290,11 +290,16 @@ async fn a_sign_up_has_full_access_once_it_follows_the_emailed_link() -> sc_erro
     assert_eq!(status, StatusCode::OK, "{me}");
     assert_eq!(me["role"], json!(100));
     assert_eq!(me["email_verified"], json!(false));
-    let (status, _) = laptop.send("GET", "/api/users", None).await;
-    assert!(
-        status.is_client_error(),
-        "an unverified account may not read what members read: {status}"
-    );
+    // An unverified account may not read what members read: of the users
+    // table, only its own row, which every signed-in caller reads (§7.3) and
+    // `/api/whoami` has just shown it anyway.
+    let (status, list) = laptop.send("GET", "/api/users", None).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let emails: Vec<&str> = list
+        .as_array()
+        .map(|rows| rows.iter().filter_map(|r| r["email"].as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(emails, ["sam@example.com"], "{list}");
 
     // A verification link is not a password link.
     let (status, _) = laptop

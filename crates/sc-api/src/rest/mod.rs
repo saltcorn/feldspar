@@ -541,17 +541,19 @@ impl RestProvider {
                 open if open.is_public_role() => open,
                 _ => AuthRequirement::Public,
             };
-            let (read, write) = if table.ownership.is_some() {
-                (
-                    relaxed(table.access.min_role_read),
-                    relaxed(table.access.min_role_write),
-                )
-            } else {
-                (
-                    AuthRequirement::MinRole(table.access.min_role_read),
-                    AuthRequirement::MinRole(table.access.min_role_write),
-                )
+            //
+            // Reads and writes are relaxed apart, because the users table has a
+            // read rule with no formula at all: a caller may read their own row
+            // (`Table::read_rule`), and that grants no write.
+            let gate = |floor: Role, rule: bool| {
+                if rule {
+                    relaxed(floor)
+                } else {
+                    AuthRequirement::MinRole(floor)
+                }
             };
+            let read = gate(table.access.min_role_read, table.read_rule().is_some());
+            let write = gate(table.access.min_role_write, table.ownership.is_some());
             let collection = || path_at(&mount).lit(name);
 
             let mut add = |op: RestOp, ep: Endpoint| {
@@ -1358,16 +1360,20 @@ impl RestProvider {
         // the MinRole gate would have.
         // `Err(())` is "deny as the MinRole gate would" — the response is built
         // at the call site to keep this closure's error small.
-        let formula = |allowed: bool| -> std::result::Result<Option<&sc_expr::Formula>, ()> {
+        //
+        // A read is decided by the table's read rule (the users table's
+        // self-read included), a write by its ownership formula.
+        let read_rule = table.read_rule();
+        fn formula(
+            allowed: bool,
+            rule: Option<&sc_expr::Formula>,
+        ) -> std::result::Result<Option<&sc_expr::Formula>, ()> {
             if allowed {
                 Ok(None)
             } else {
-                match &table.ownership {
-                    Some(f) => Ok(Some(f)),
-                    None => Err(()),
-                }
+                rule.map(Some).ok_or(())
             }
-        };
+        }
         let evaluator = self.evaluator.as_ref();
         // The caller, travelling with every write so the event it raises knows
         // who caused it (§10.2). On this path it sets no GUCs — the table is not
@@ -1381,7 +1387,7 @@ impl RestProvider {
             // whether the caller is refused *as the endpoint's auth would have
             // refused them* (a 401/403 rather than an error), and the read
             // applies §7.3 itself.
-            RestOp::List => match formula(meets_read) {
+            RestOp::List => match formula(meets_read, read_rule.as_deref()) {
                 Err(()) => forbidden(user),
                 Ok(_) => self.list(cat, &table, req, user).await?,
             },
@@ -1420,7 +1426,7 @@ impl RestProvider {
                 }
             }
             RestOp::Download { field } => {
-                match formula(meets_read) {
+                match formula(meets_read, read_rule.as_deref()) {
                     Err(()) => return Ok(forbidden(user)),
                     Ok(None) => {}
                     // A file read is a read of the row (§7.3); the file's own
@@ -1438,7 +1444,7 @@ impl RestProvider {
                     .get("filename")
                     .map(String::as_str)
                     .ok_or_else(|| Error::invalid("missing path parameter `filename`"))?;
-                match formula(meets_write) {
+                match formula(meets_write, table.ownership.as_ref()) {
                     Err(()) => return Ok(forbidden(user)),
                     Ok(None) => {}
                     // An upload updates the row's field: granted on the
