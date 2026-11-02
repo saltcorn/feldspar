@@ -2,6 +2,28 @@
 
 Changes in reverse chronological order.
 
+## REST filters on boolean columns
+
+User report: `GET /api/<table>?pinned=eq.false` answered 400 "value "false" is not a valid
+bool", as did `eq.true`, `eq.f` and `eq.0`, so a generated client's
+`api.<table>.list({ filter: { flag: "eq.false" } })` failed and booleans had to be filtered in
+the browser. A query-string operand is text that is coerced against its column (`gt.100` binds an
+int), but a bool column took only a JSON boolean, so no boolean comparison could be written in a
+URL. A live subscription's `where` (`{ done: "eq.false" }` lowers to `{ done: { eq: "false" } }`)
+failed the same way.
+
+- **A bool column takes the strings `"true"` and `"false"`** (`sc_types::json::json_to_value`), as
+  int, float and date columns take their text. That fixes `eq`/`ne`/`in` on booleans in the REST
+  query string, live-subscription filters, GraphQL `where` and code bodies' `.where()`. Exactly
+  those two spellings: `t`, `0`, `yes` and `TRUE` are still refused. It only loosens: a JSON body
+  may now send `"false"` for a bool field where it was refused before, like `"7"` for an int
+  field.
+- Tests: `a_bool_column_takes_true_and_false_as_text_and_nothing_looser` (sc-types),
+  `a_bool_column_compares_with_true_and_false` (sc-api query string) and
+  `rest_query::a_boolean_column_is_filtered_with_true_and_false` against Postgres. The
+  `rest_query` fixture's catalog now registers its teardown.
+- `docs/tutorial-rest-queries.md` lists the boolean filter.
+
 ## Schema tools: unique on and off, constraints, allowed values, defaults on optional fields (SC1.1)
 
 User report (P2 – Schema): `alter_field unique: false` reported success and changed nothing, so

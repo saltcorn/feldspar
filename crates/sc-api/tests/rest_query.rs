@@ -94,17 +94,18 @@ const FIXTURE: &str = "
         title text not null,
         published date,
         owner text,
+        in_print boolean,
         author bigint references authors(id));
     INSERT INTO publishers VALUES (1, 'London');
     INSERT INTO authors VALUES
         (1, 'Austen', 'GB', 1),
         (2, 'Ibsen',  'NO', NULL);
     INSERT INTO books VALUES
-        (1, 'Emma',       '2019-03-01', 'ada@example.com', 1),
-        (2, 'Persuasion', '2021-06-01', 'ada@example.com', 1),
-        (3, 'Brand',      '2022-01-15', 'bo@example.com',  2),
-        (4, 'Peer Gynt',  '2023-09-30', 'bo@example.com',  2),
-        (5, 'Anonymous',  '2020-01-01', 'ada@example.com', NULL);
+        (1, 'Emma',       '2019-03-01', 'ada@example.com', true,  1),
+        (2, 'Persuasion', '2021-06-01', 'ada@example.com', false, 1),
+        (3, 'Brand',      '2022-01-15', 'bo@example.com',  true,  2),
+        (4, 'Peer Gynt',  '2023-09-30', 'bo@example.com',  NULL,  2),
+        (5, 'Anonymous',  '2020-01-01', 'ada@example.com', false, NULL);
 ";
 
 async fn setup(db: &TestDb) -> Result<(Arc<Catalog>, Sql)> {
@@ -118,8 +119,9 @@ async fn setup(db: &TestDb) -> Result<(Arc<Catalog>, Sql)> {
         inner: Arc::new(PgDriver::from_pool(db.pool().clone())),
         sql: Arc::clone(&sql),
     });
-    let catalog = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
-    Ok((Arc::new(catalog), sql))
+    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
+    Ok((catalog, sql))
 }
 
 /// The REST provider over the three tables the application declares.
@@ -372,6 +374,43 @@ async fn a_read_is_bounded_by_the_applications_row_cap_however_large_a_limit_ask
 // ---------------------------------------------------------------------------
 // Refusals: everything not taken is refused by name
 // ---------------------------------------------------------------------------
+
+/// A boolean column compares with `true` and `false` as the URL spells them —
+/// the text is coerced against the column, as `gt.100` is on an int. `ne` is
+/// SQL's `<>`, so the null `in_print` of Peer Gynt matches neither.
+#[tokio::test]
+async fn a_boolean_column_is_filtered_with_true_and_false() -> Result<()> {
+    let db = TestDb::new().await?;
+    let (cat, _) = setup(&db).await?;
+    let api = provider(&cat)?;
+    let user = admin()?;
+
+    let titles = |rows: Vec<Json>| -> Vec<String> {
+        rows.iter()
+            .map(|row| row["title"].as_str().expect("a title").to_owned())
+            .collect()
+    };
+    let read = |filter: &'static str| {
+        let (api, cat, user) = (&api, &cat, &user);
+        async move {
+            rows(
+                api,
+                cat,
+                Some(user),
+                &[("in_print", filter), ("order", "id")],
+            )
+            .await
+        }
+    };
+    assert_eq!(titles(read("eq.true").await?), ["Emma", "Brand"]);
+    assert_eq!(titles(read("eq.false").await?), ["Persuasion", "Anonymous"]);
+    assert_eq!(titles(read("ne.true").await?), ["Persuasion", "Anonymous"]);
+    assert_eq!(titles(read("is_null.true").await?), ["Peer Gynt"]);
+
+    let refused = refusal(&api, &cat, Some(&user), &[("in_print", "eq.yes")]).await;
+    assert!(refused.contains("in_print"), "{refused}");
+    Ok(())
+}
 
 #[tokio::test]
 async fn an_unknown_column_an_unsupported_operator_and_inner_are_each_refused_by_name() -> Result<()>

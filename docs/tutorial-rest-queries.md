@@ -127,6 +127,7 @@ The filters:
 |---|---|
 | `published=gte.2020-01-01` | `>=` — and the value is coerced against the *column*, so this binds a date |
 | `title=eq.Piranesi` / `ne.` | equality, inequality |
+| `in_print=eq.true` / `eq.false` | a boolean column takes `true` and `false`, spelled exactly so |
 | `pages=gt.` `gte.` `lt.` `lte.` | the orderings |
 | `pages=in.(200,300,400)` | membership; `nin.` for its negation |
 | `title=like.Pir%` / `ilike.pir%` | pattern match, case-sensitive and not |

@@ -358,6 +358,7 @@ mod tests {
                 plain_field("title"),
                 typed_field("pages", BasicType::Int),
                 typed_field("published", BasicType::Date),
+                typed_field("in_print", BasicType::Bool),
                 key_field("author", "authors", "id"),
             ],
         )
@@ -439,6 +440,20 @@ mod tests {
         let (sql, binds) = where_of(&[("pages", "gt.100")]).expect("parses");
         assert_eq!(sql, "(\"pages\" > $1)");
         assert_eq!(binds, vec![Value::Int(100)]);
+    }
+
+    #[test]
+    fn a_bool_column_compares_with_true_and_false() {
+        let (sql, binds) = where_of(&[("in_print", "eq.false")]).expect("parses");
+        assert_eq!(sql, "(\"in_print\" = $1)");
+        assert_eq!(binds, vec![Value::Bool(false)]);
+        let (sql, binds) = where_of(&[("in_print", "ne.true")]).expect("parses");
+        assert_eq!(sql, "(\"in_print\" <> $1)");
+        assert_eq!(binds, vec![Value::Bool(true)]);
+        let (_, binds) = where_of(&[("in_print", "in.(true,false)")]).expect("parses");
+        assert_eq!(binds, vec![Value::Bool(true), Value::Bool(false)]);
+        let refused = error_of(&[("in_print", "eq.yes")]);
+        assert!(refused.contains("in_print"), "{refused}");
     }
 
     #[test]
