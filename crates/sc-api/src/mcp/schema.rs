@@ -19,12 +19,12 @@ use crate::schema_edit::{
     self, ApplyOptions, FieldSettings, FieldSpec, Grants, Operation, TableSettings,
 };
 use sc_catalog::{
-    ATTR_OWNERSHIP_FORMULA, Catalog, DataFieldKind, FieldId, FileOnConflict, FileOnDelete,
-    FileStoreId, Table,
+    ATTR_OWNERSHIP_FORMULA, Catalog, ConstraintKind, DataFieldKind, FieldId, FileOnConflict,
+    FileOnDelete, FileStoreId, Table, TableConstraint,
 };
 use sc_error::{Error, Result};
 use sc_types::ArgsExt;
-use sc_types::Attrs;
+use sc_types::{Attrs, BasicType, RichTypeRef, TypeRef};
 use serde_json::{Map, Value as Json, json};
 
 use super::{AdminTool, ToolContext, optional_role};
@@ -182,7 +182,11 @@ fn describe_table(table: &Table, all: &[Table], rls_available: bool) -> Json {
                 .map(str::to_owned)
         })
         .unwrap_or_default();
-    let fields: Vec<Json> = table.fields.iter().map(describe_field).collect();
+    let fields: Vec<Json> = table
+        .fields
+        .iter()
+        .map(|f| describe_field(table, f))
+        .collect();
     // Both directions, because "what points at `clients`?" is the question a
     // schema is asked and no single field answers it.
     let references: Vec<Json> = table
@@ -236,12 +240,51 @@ fn describe_table(table: &Table, all: &[Table], rls_available: bool) -> Json {
         "history_min_role": sc_catalog::history::history_min_role(&table.attributes),
         "history_keep_days": sc_catalog::retention::history_keep_days(&table.attributes),
         "fields": fields,
+        // Every constraint, so a schema copied from this output keeps its rules:
+        // a jointly-unique key, an index and a row formula are the table's, not
+        // any one field's. A field that is unique on its own is listed here too,
+        // and also says `unique: true`.
+        "constraints": table.constraints.iter().map(describe_constraint).collect::<Vec<_>>(),
         "references": references,
         "referenced_by": referenced_by,
     })
 }
 
-fn describe_field(field: &sc_catalog::DataField) -> Json {
+/// One constraint, in the shape `add_constraint` takes back: `type`, the
+/// `fields` it names (or the `formula`), its `name`, and its `error_message`.
+fn describe_constraint(constraint: &TableConstraint) -> Json {
+    let mut out = Map::new();
+    out.insert("name".to_owned(), json!(constraint.name));
+    out.insert("type".to_owned(), json!(constraint.kind.type_name()));
+    match &constraint.kind {
+        ConstraintKind::Unique { fields } => {
+            out.insert("fields".to_owned(), json!(fields));
+        }
+        ConstraintKind::Index {
+            fields, expression, ..
+        } => {
+            out.insert("fields".to_owned(), json!(fields));
+            if let Some(expression) = expression {
+                out.insert("expression".to_owned(), json!(expression));
+            }
+        }
+        ConstraintKind::FullTextSearch { language } => {
+            out.insert("language".to_owned(), json!(language));
+        }
+        ConstraintKind::Formula { formula } => {
+            out.insert("formula".to_owned(), json!(formula));
+        }
+        ConstraintKind::VectorIndex { field } => {
+            out.insert("fields".to_owned(), json!([field]));
+        }
+    }
+    if let Some(message) = &constraint.error_message {
+        out.insert("error_message".to_owned(), json!(message));
+    }
+    Json::Object(out)
+}
+
+fn describe_field(table: &Table, field: &sc_catalog::DataField) -> Json {
     let mut out = Map::new();
     out.insert("name".to_owned(), json!(field.base.name));
     out.insert("label".to_owned(), json!(field.base.label));
@@ -254,7 +297,15 @@ fn describe_field(field: &sc_catalog::DataField) -> Json {
     if let Some(expression) = &field.default_expression {
         out.insert("default".to_owned(), json!(expression));
     }
-    out.insert("unique".to_owned(), json!(field.unique));
+    // A column's `UNIQUE` is read back as one of the table's constraints, never
+    // as the field's own flag, which would say `false` for every one of them.
+    out.insert(
+        "unique".to_owned(),
+        json!(table.is_unique(&field.base.name)),
+    );
+    if !field.base.attributes.is_empty() {
+        out.insert("attributes".to_owned(), json!(field.base.attributes));
+    }
     out.insert("primary_key".to_owned(), json!(field.primary_key));
     match &field.kind {
         DataFieldKind::Key {
@@ -312,6 +363,10 @@ const ARG_FILE_MIME: &str = "file_mime";
 const ARG_FILE_ON_DELETE: &str = "on_delete";
 /// What an upload into a file field does when the name is taken.
 const ARG_FILE_ON_CONFLICT: &str = "on_conflict";
+/// A field's type settings (`options`, `max_length`, …).
+const ARG_ATTRIBUTES: &str = "attributes";
+/// What `add_constraint` adds and `drop_constraint` drops.
+const ARG_CONSTRAINT: &str = "constraint";
 
 fn edit_description(grants: &Grants, rls_available: bool) -> String {
     let mut allowed: Vec<&str> = Vec::new();
@@ -319,10 +374,11 @@ fn edit_description(grants: &Grants, rls_available: bool) -> String {
         allowed.push("create_table");
     }
     if grants.edit {
-        allowed.push("alter_table, rename_table, add_field, alter_field");
+        allowed.push("alter_table, rename_table, add_field, alter_field, add_constraint");
     }
     if grants.drop {
-        allowed.push("drop_field, drop_table");
+        allowed
+            .push("drop_field, drop_table, drop_constraint (and `unique: false` on alter_field)");
     }
     let permitted = match allowed.is_empty() {
         true => "You are permitted no operations at all; this tool will refuse \
@@ -365,6 +421,17 @@ fn edit_description(grants: &Grants, rls_available: bool) -> String {
          `{ARG_FILE_STORE}: <file store name>` with no `type`: the column holds the \
          file's path in that store, and the app uploads and serves the file \
          through the store, so do not keep file contents in a `bytes` column.\n\n\
+         Rules the database keeps for you: `unique: true` makes one field unique \
+         (on `alter_field` too; `unique: false` drops that rule again); \
+         `add_constraint` with `constraint: {{type: \"unique\", fields: [a, b]}}` makes \
+         several fields unique **together**, and `drop_constraint` removes a \
+         constraint by the `name` `{TOOL_DESCRIBE}` lists it under. A fixed list of \
+         allowed values (states, priorities) is a field of type `string` with \
+         `attributes: {{options: [\"open\", \"closed\"]}}`, refused on every write that \
+         sends anything else. A `default` works on optional fields as well as \
+         required ones: `created_by` with default `user && user.id` is the writing \
+         user's id, and null for a write with no user (a trigger, a scheduled job). \
+         A setting an operation does not use is refused, not ignored.\n\n\
          {permitted} {access}{rls}\n\n\
          The change takes effect with no restart, and the result lists any \
          `applications` it moved: a mounted application serving one of these \
@@ -401,7 +468,7 @@ fn edit_parameters() -> Json {
                             "enum": [
                                 "create_table", "alter_table", "rename_table",
                                 "add_field", "alter_field", "drop_field",
-                                "drop_table",
+                                "drop_table", "add_constraint", "drop_constraint",
                             ],
                         },
                         "table": {
@@ -474,7 +541,12 @@ fn edit_parameters() -> Json {
                         },
                         "unique": {
                             "type": "boolean",
-                            "description": "The column carries a unique constraint.",
+                            "description":
+                                "No two rows may have the same value in this field \
+                                 (nulls excepted). On `alter_field`, `true` adds the \
+                                 rule (refused while rows repeat a value) and `false` \
+                                 drops it. For several fields unique together, use \
+                                 `add_constraint`.",
                         },
                         "primary_key": {
                             "type": "boolean",
@@ -603,7 +675,56 @@ fn edit_parameters() -> Json {
     });
     add_file_properties(&mut parameters);
     add_default_property(&mut parameters);
+    add_attributes_property(&mut parameters);
+    add_constraint_property(&mut parameters);
     parameters
+}
+
+/// The `attributes` property, on an operation and on a `create_table` field —
+/// added after the fact for the reason [`add_file_properties`] is.
+fn add_attributes_property(parameters: &mut Json) {
+    let schema = json!({
+        "type": "object",
+        "description":
+            "The type's settings, as `listFieldTypes` lists them for each type, for \
+             `add_field`, `alter_field` (which replaces them all) and fields of \
+             `create_table`. For `string`: `options` (the only values allowed, \
+             e.g. [\"open\", \"in_progress\", \"closed\"]; on `alter_field` refused \
+             while a row holds another value), `max_length` and `regex`. For \
+             `integer`: `min` and `max`. A basic type such as `text` or `int` has \
+             none: use `string` or `integer` instead.",
+    });
+    let item = &mut parameters["properties"][ARG_OPERATIONS]["items"];
+    item["properties"][ARG_ATTRIBUTES] = schema.clone();
+    item["properties"]["fields"]["items"]["properties"][ARG_ATTRIBUTES] = schema;
+}
+
+/// The `constraint` property of `add_constraint` and `drop_constraint`.
+fn add_constraint_property(parameters: &mut Json) {
+    parameters["properties"][ARG_OPERATIONS]["items"]["properties"][ARG_CONSTRAINT] = json!({
+        "type": "object",
+        "description":
+            "For `add_constraint`: `type` and what it needs — `unique` with `fields` \
+             (unique together, e.g. [\"document_id\", \"version_no\"]; refused while rows \
+             repeat a combination), `index` with `fields` (one field: faster \
+             searching and joining), `formula` with `formula` (a JavaScript \
+             expression every row must satisfy, e.g. `end_date >= start_date`) and a \
+             short `name`, or `full_text_search` with an optional `language`. \
+             `error_message` is shown when a write breaks it. For \
+             `drop_constraint`: `name`, as `describe_schema` lists it.",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": ["unique", "index", "formula", "full_text_search"],
+            },
+            "fields": { "type": "array", "items": { "type": "string" } },
+            "formula": { "type": "string" },
+            "language": { "type": "string" },
+            "name": { "type": "string" },
+            "error_message": { "type": "string" },
+        },
+        "additionalProperties": false,
+    });
 }
 
 /// The `default` property, on an operation and on a `create_table` field alike —
@@ -612,11 +733,15 @@ fn add_default_property(parameters: &mut Json) {
     let schema = json!({
         "type": "string",
         "description":
-            "A default value for a required field: a JavaScript expression evaluated \
-             when an insert leaves the field out or sends null. It sees `user` (the \
-             user writing the row, null for none) and the row's other fields, e.g. \
-             `user.id` for an owner field or `title.toUpperCase()`. An empty string \
-             clears it on `alter_field`.",
+            "A default value, for an optional field as well as a required one: a \
+             JavaScript expression evaluated when an insert leaves the field out or \
+             sends null. It sees `user` (the user writing the row, null when there \
+             is none, as in a trigger or a scheduled job) and the row's other \
+             fields. On an optional field, an expression that gives nothing leaves \
+             the field null: `user && user.id` fills a `created_by` field when a \
+             user writes the row and leaves it empty otherwise. On a required field \
+             it must give a value. `title.toUpperCase()` is another example. An \
+             empty string clears it on `alter_field`.",
     });
     let item = &mut parameters["properties"][ARG_OPERATIONS]["items"];
     item["properties"]["default"] = schema.clone();
@@ -722,6 +847,7 @@ async fn edit(catalog: &Catalog, grants: &Grants, args: &Json) -> Result<Json> {
     }
 
     check_file_stores(catalog, &operations)?;
+    check_attributes(catalog, &operations)?;
 
     let applied = schema_edit::apply(
         catalog,
@@ -748,6 +874,8 @@ async fn edit(catalog: &Catalog, grants: &Grants, args: &Json) -> Result<Json> {
         "fields_added": applied.fields_added,
         "fields_altered": applied.fields_altered,
         "fields_dropped": applied.fields_dropped,
+        "constraints_added": applied.constraints_added,
+        "constraints_dropped": applied.constraints_dropped,
         "applications": applied
             .applications
             .iter()
@@ -817,6 +945,7 @@ fn parse_operation(item: &Json) -> Result<Operation> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| Error::invalid(format!("`{op}` needs a `table`")))?
         .to_owned();
+    refuse_unused_settings(obj, op)?;
 
     match op {
         "create_table" => {
@@ -873,11 +1002,217 @@ fn parse_operation(item: &Json) -> Result<Operation> {
                 .filter(|s| !s.trim().is_empty())
                 .ok_or_else(|| Error::invalid("`rename_table` needs a `rename_to`"))?,
         }),
+        "add_constraint" => {
+            let spec = constraint_object(obj, op)?;
+            let (given_name, constraint) = parse_constraint(spec)?;
+            Ok(Operation::AddConstraint {
+                table,
+                given_name,
+                constraint,
+            })
+        }
+        "drop_constraint" => Ok(Operation::DropConstraint {
+            table,
+            name: constraint_object(obj, op)?
+                .optional_string("name")?
+                .map(|n| n.trim().to_owned())
+                .filter(|n| !n.is_empty())
+                .ok_or_else(|| {
+                    Error::invalid(format!(
+                        "`drop_constraint` needs `{ARG_CONSTRAINT}: {{name: …}}`, the name \
+                         `{TOOL_DESCRIBE}` lists the constraint under"
+                    ))
+                })?,
+        }),
         other => Err(Error::invalid(format!(
-            "unknown `op` `{other}`; it is one of create_table, alter_table, \
-             rename_table, add_field, alter_field, drop_field, drop_table"
+            "unknown `op` `{other}`; it is one of {}",
+            OPS.join(", ")
         ))),
     }
+}
+
+/// The operations, in the order they are listed in messages.
+const OPS: &[&str] = &[
+    "create_table",
+    "alter_table",
+    "rename_table",
+    "add_field",
+    "alter_field",
+    "drop_field",
+    "drop_table",
+    "add_constraint",
+    "drop_constraint",
+];
+
+/// A table's settings, on `create_table` and `alter_table`.
+const TABLE_SETTINGS: &[&str] = &[
+    "label",
+    "description",
+    "min_role_read",
+    "min_role_write",
+    "ownership_formula",
+    "rls_enabled",
+    "sync_enabled",
+    "history_enabled",
+    "history_min_role",
+    "history_keep_days",
+];
+
+/// A field's settings, on `add_field` and `alter_field` (and, less `field`, on
+/// a field of `create_table`).
+const FIELD_SETTINGS: &[&str] = &[
+    "field",
+    "type",
+    "references",
+    "summary_field",
+    "expression",
+    "required",
+    "unique",
+    "primary_key",
+    "label",
+    "description",
+    "default",
+    ARG_ATTRIBUTES,
+    ARG_FILE_STORE,
+    ARG_FILE_FOLDER,
+    ARG_FILE_MIME,
+    ARG_FILE_ON_DELETE,
+    ARG_FILE_ON_CONFLICT,
+];
+
+/// The settings operation `op` reads, besides `op` and `table`; `None` for an
+/// unknown operation, which is reported as one.
+fn op_settings(op: &str) -> Option<Vec<&'static str>> {
+    Some(match op {
+        "create_table" => [TABLE_SETTINGS, &["fields"]].concat(),
+        "alter_table" => TABLE_SETTINGS.to_vec(),
+        "rename_table" => vec!["rename_to"],
+        "add_field" => FIELD_SETTINGS.to_vec(),
+        "alter_field" => [FIELD_SETTINGS, &["rename_to"]].concat(),
+        "drop_field" => vec!["field"],
+        "drop_table" => Vec::new(),
+        "add_constraint" | "drop_constraint" => vec![ARG_CONSTRAINT],
+        _ => return None,
+    })
+}
+
+/// Refuse a setting operation `op` does not read, by name. Every setting is
+/// read by *some* operation, so the tool's schema lets it through, and doing
+/// nothing with it is how `alter_field unique: false` once reported success
+/// and changed nothing. A null counts as not sent.
+fn refuse_unused_settings(obj: &Map<String, Json>, op: &str) -> Result<()> {
+    let Some(settings) = op_settings(op) else {
+        // The `match` below names the operations.
+        return Ok(());
+    };
+    let unused: Vec<String> = obj
+        .iter()
+        .filter(|(key, value)| {
+            !value.is_null()
+                && key.as_str() != "op"
+                && key.as_str() != "table"
+                && !settings.contains(&key.as_str())
+        })
+        .map(|(key, _)| format!("`{key}`"))
+        .collect();
+    if unused.is_empty() {
+        return Ok(());
+    }
+    let takes = match settings.is_empty() {
+        true => "nothing but `table`".to_owned(),
+        false => settings
+            .iter()
+            .map(|s| format!("`{s}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
+    Err(Error::invalid(format!(
+        "`{op}` does not use {}; it takes {takes}. Nothing was changed.",
+        unused.join(", ")
+    )))
+}
+
+/// The `constraint` object of `add_constraint` and `drop_constraint`.
+fn constraint_object<'a>(obj: &'a Map<String, Json>, op: &str) -> Result<&'a Map<String, Json>> {
+    match obj.get(ARG_CONSTRAINT) {
+        Some(Json::Object(spec)) => Ok(spec),
+        None | Some(Json::Null) => Err(Error::invalid(format!(
+            "`{op}` needs a `{ARG_CONSTRAINT}` object"
+        ))),
+        Some(other) => Err(Error::invalid(format!(
+            "`{ARG_CONSTRAINT}` should be an object, got {other}"
+        ))),
+    }
+}
+
+/// Read an `add_constraint`'s `constraint` into the short name given (a row
+/// constraint's) and the constraint, its name left to be derived. The `type`
+/// decides which settings are read, and a missing one is named.
+fn parse_constraint(spec: &Map<String, Json>) -> Result<(String, TableConstraint)> {
+    let fields = || -> Result<Vec<String>> {
+        match spec.get("fields") {
+            Some(Json::Array(items)) => items
+                .iter()
+                .map(|f| {
+                    f.as_str()
+                        .map(|f| f.trim().to_owned())
+                        .filter(|f| !f.is_empty())
+                        .ok_or_else(|| Error::invalid("`fields` should be a list of field names"))
+                })
+                .collect(),
+            _ => Err(Error::invalid(
+                "this constraint needs `fields`, a list of field names",
+            )),
+        }
+    };
+    let type_name = spec
+        .optional_string("type")?
+        .map(|t| t.trim().to_owned())
+        .unwrap_or_default();
+    let kind = match type_name.as_str() {
+        "unique" => ConstraintKind::Unique { fields: fields()? },
+        "index" => ConstraintKind::Index {
+            fields: fields()?,
+            expression: None,
+            method: "btree".to_owned(),
+        },
+        "formula" => ConstraintKind::Formula {
+            formula: spec
+                .optional_string("formula")?
+                .map(|f| f.trim().to_owned())
+                .filter(|f| !f.is_empty())
+                .ok_or_else(|| Error::invalid("a `formula` constraint needs a `formula`"))?,
+        },
+        "full_text_search" => ConstraintKind::FullTextSearch {
+            language: spec
+                .optional_string("language")?
+                .map(|l| l.trim().to_owned())
+                .filter(|l| !l.is_empty())
+                .unwrap_or_else(|| "english".to_owned()),
+        },
+        "" => {
+            return Err(Error::invalid(
+                "the constraint needs a `type`: `unique`, `index`, `formula` or \
+                 `full_text_search`",
+            ));
+        }
+        other => {
+            return Err(Error::invalid(format!(
+                "`{other}` is not a constraint type; it is one of `unique`, `index`, \
+                 `formula` or `full_text_search`"
+            )));
+        }
+    };
+    let mut constraint = TableConstraint::new(String::new(), kind);
+    constraint.error_message = spec
+        .optional_string("error_message")?
+        .map(|m| m.trim().to_owned())
+        .filter(|m| !m.is_empty());
+    let name = spec
+        .optional_string("name")?
+        .map(|n| n.trim().to_owned())
+        .unwrap_or_default();
+    Ok((name, constraint))
 }
 
 /// Refuse a file field whose store does not exist, naming the ones that do.
@@ -956,11 +1291,126 @@ fn parse_field_settings(obj: &Map<String, Json>) -> Result<FieldSettings> {
         description: obj.optional_string("description")?,
         type_name: obj.optional_string("type")?,
         kind,
-        attributes: None,
+        attributes: optional_attributes(obj)?,
         primary_key: obj.optional_bool("primary_key")?,
         required: obj.optional_bool("required")?,
+        unique: obj.optional_bool("unique")?,
         default_expression: obj.optional_string("default")?,
     })
+}
+
+/// The `attributes` object, or `None` when it is not sent.
+fn optional_attributes(obj: &Map<String, Json>) -> Result<Option<Attrs>> {
+    match obj.get(ARG_ATTRIBUTES) {
+        None | Some(Json::Null) => Ok(None),
+        Some(Json::Object(attrs)) => Ok(Some(attrs.clone())),
+        Some(other) => Err(Error::invalid(format!(
+            "`{ARG_ATTRIBUTES}` should be an object such as {{\"options\": [\"open\", \
+             \"closed\"]}}, got {other}"
+        ))),
+    }
+}
+
+/// Refuse `attributes` the field's type does not have, naming the ones it does.
+///
+/// Here rather than in the schema editor, which stores what it is given: the
+/// admin UI only ever sends the attributes its form was built from, while a
+/// model can send `options` on a `text` field, which nothing would enforce.
+/// The type is the one the operation gives, or, for an `alter_field` that
+/// gives none, the field's type as it is.
+fn check_attributes(catalog: &Catalog, operations: &[Operation]) -> Result<()> {
+    for op in operations {
+        let checks: Vec<(String, Option<TypeRef>, &Attrs)> = match op {
+            Operation::CreateTable { fields, .. } => fields
+                .iter()
+                .map(|f| (f.name.clone(), named_type(&f.type_name), &f.attributes))
+                .collect(),
+            Operation::AddField { field, .. } => vec![(
+                field.name.clone(),
+                named_type(&field.type_name),
+                &field.attributes,
+            )],
+            Operation::AlterField {
+                table,
+                field,
+                settings,
+            } => match &settings.attributes {
+                None => Vec::new(),
+                Some(attrs) => {
+                    let type_ = match settings.type_name.as_deref().map(str::trim) {
+                        Some(name) if !name.is_empty() => named_type(name),
+                        Some(_) => None,
+                        None => catalog
+                            .get(table)?
+                            .and_then(|t| t.field(field).map(|f| f.base.type_.clone())),
+                    };
+                    vec![(field.clone(), type_, attrs)]
+                }
+            },
+            _ => Vec::new(),
+        };
+        for (field, type_, attrs) in checks {
+            if attrs.is_empty() {
+                continue;
+            }
+            let (type_label, known) = match &type_ {
+                Some(TypeRef::Rich(rich)) => (
+                    rich.name().to_owned(),
+                    rich.attributes()
+                        .iter()
+                        .map(|a| a.base.name.clone())
+                        .collect::<Vec<_>>(),
+                ),
+                Some(TypeRef::Basic(BasicType::Vector(n))) => (
+                    format!("vector({n})"),
+                    sc_types::vector::vector_attributes()
+                        .into_iter()
+                        .map(|a| a.base.name)
+                        .collect(),
+                ),
+                Some(TypeRef::Basic(basic)) => (basic.name().to_owned(), Vec::new()),
+                // An unknown type is the schema editor's to name.
+                None => continue,
+            };
+            let unknown: Vec<String> = attrs
+                .keys()
+                .filter(|k| !known.contains(k))
+                .map(|k| format!("`{k}`"))
+                .collect();
+            if unknown.is_empty() {
+                continue;
+            }
+            let has = match known.is_empty() {
+                true => format!(
+                    "none — for allowed values or a length limit use type `string`, for \
+                     a range `integer`"
+                ),
+                false => known
+                    .iter()
+                    .map(|k| format!("`{k}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            };
+            return Err(Error::invalid(format!(
+                "field `{field}` is of type `{type_label}`, which has no attribute {}; \
+                 its attributes are {has}. Nothing was changed.",
+                unknown.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The type a `type` name gives, or `None` for none or an unknown one.
+fn named_type(name: &str) -> Option<TypeRef> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    if let Ok(rich) = RichTypeRef::resolve(name) {
+        return Some(TypeRef::Rich(rich));
+    }
+    schema_edit::resolve_field_type(name).ok().map(|(t, _)| t)
 }
 
 fn parse_field_spec(item: &Json) -> Result<FieldSpec> {
@@ -983,7 +1433,7 @@ fn parse_field_spec(item: &Json) -> Result<FieldSpec> {
         unique: obj.optional_bool("unique")?.unwrap_or(false),
         primary_key: obj.optional_bool("primary_key")?.unwrap_or(false),
         kind: field_kind(obj)?.unwrap_or(DataFieldKind::Plain),
-        attributes: Attrs::new(),
+        attributes: optional_attributes(obj)?.unwrap_or_default(),
         default_expression: obj.optional_string("default")?,
     })
 }
@@ -1269,6 +1719,189 @@ mod tests {
         let props = &params["properties"][ARG_OPERATIONS]["items"]["properties"];
         assert_eq!(props["history_enabled"]["type"], json!("boolean"));
         assert_eq!(props["sync_enabled"]["type"], json!("boolean"));
+    }
+
+    #[test]
+    fn alter_field_reads_unique_and_attributes_rather_than_dropping_them() {
+        let Operation::AlterField { settings, .. } = parse_operation(&json!({
+            "op": "alter_field", "table": "docs", "field": "code", "unique": false,
+            "attributes": {"options": ["a", "b"]},
+        }))
+        .unwrap() else {
+            panic!("an alter_field");
+        };
+        assert_eq!(settings.unique, Some(false));
+        assert_eq!(
+            settings.attributes.as_ref().and_then(|a| a.get("options")),
+            Some(&json!(["a", "b"]))
+        );
+        let Operation::AlterField { settings, .. } = parse_operation(&json!({
+            "op": "alter_field", "table": "docs", "field": "code", "label": "Code",
+        }))
+        .unwrap() else {
+            panic!("an alter_field");
+        };
+        assert_eq!(settings.unique, None);
+        assert_eq!(settings.attributes, None);
+
+        let err = parse_operation(&json!({
+            "op": "add_field", "table": "docs", "field": "s", "type": "string",
+            "attributes": "a, b",
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("should be an object"), "{err}");
+    }
+
+    #[test]
+    fn a_setting_an_operation_does_not_use_is_named_and_a_null_is_not_one() {
+        let err = parse_operation(&json!({
+            "op": "drop_field", "table": "docs", "field": "code", "unique": false,
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("`drop_field` does not use `unique`"), "{err}");
+        assert!(err.contains("it takes `field`"), "{err}");
+        let err = parse_operation(&json!({
+            "op": "alter_table", "table": "docs", "fields": [], "required": true,
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("`fields`") && err.contains("`required`"),
+            "{err}"
+        );
+        let err = parse_operation(&json!({ "op": "drop_table", "table": "docs", "field": "x" }))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("nothing but `table`"), "{err}");
+        parse_operation(&json!({
+            "op": "drop_field", "table": "docs", "field": "code", "unique": null,
+        }))
+        .unwrap();
+        // Every setting the tool's schema offers is read by some operation.
+        let params = edit_parameters();
+        let offered = params["properties"][ARG_OPERATIONS]["items"]["properties"]
+            .as_object()
+            .unwrap();
+        for key in offered.keys().filter(|k| *k != "op" && *k != "table") {
+            assert!(
+                OPS.iter()
+                    .any(|op| op_settings(op).unwrap().contains(&key.as_str())),
+                "`{key}` is offered but no operation reads it"
+            );
+        }
+        let ops = params["properties"][ARG_OPERATIONS]["items"]["properties"]["op"]["enum"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(ops, OPS.iter().map(|o| json!(o)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn constraints_are_added_by_type_and_dropped_by_name() {
+        let Operation::AddConstraint {
+            given_name,
+            constraint,
+            ..
+        } = parse_operation(&json!({
+            "op": "add_constraint", "table": "docs",
+            "constraint": {"type": "unique", "fields": ["document_id", "version_no"]},
+        }))
+        .unwrap()
+        else {
+            panic!("an add_constraint");
+        };
+        assert!(given_name.is_empty());
+        assert!(constraint.name.is_empty(), "derived by the schema editor");
+        assert_eq!(
+            constraint.kind,
+            ConstraintKind::Unique {
+                fields: vec!["document_id".into(), "version_no".into()]
+            }
+        );
+        let Operation::DropConstraint { name, .. } = parse_operation(&json!({
+            "op": "drop_constraint", "table": "docs", "constraint": {"name": " sc_uq_x "},
+        }))
+        .unwrap() else {
+            panic!("a drop_constraint");
+        };
+        assert_eq!(name, "sc_uq_x");
+        for (item, needle) in [
+            (
+                json!({"op": "add_constraint", "table": "d"}),
+                "needs a `constraint`",
+            ),
+            (
+                json!({"op": "add_constraint", "table": "d", "constraint": {"type": "check"}}),
+                "not a constraint type",
+            ),
+            (
+                json!({"op": "add_constraint", "table": "d", "constraint": {"type": "unique"}}),
+                "needs `fields`",
+            ),
+            (
+                json!({"op": "drop_constraint", "table": "d", "constraint": {}}),
+                "the name `describe_schema` lists",
+            ),
+        ] {
+            let err = parse_operation(&item).unwrap_err().to_string();
+            assert!(err.contains(needle), "{needle:?} not in {err}");
+        }
+    }
+
+    #[test]
+    fn the_tool_says_an_optional_field_may_have_a_default() {
+        // The report's third point: the description said "for a required field",
+        // so the agent kept `created_by` optional and set it by hand on every
+        // insert. Pinned so the old sentence cannot come back.
+        let params = edit_parameters();
+        let item = &params["properties"][ARG_OPERATIONS]["items"]["properties"];
+        for default in [
+            &item["default"],
+            &item["fields"]["items"]["properties"]["default"],
+        ] {
+            let text = default["description"].as_str().unwrap();
+            assert!(text.contains("for an optional field as well"), "{text}");
+            assert!(text.contains("user && user.id"), "{text}");
+            assert!(!text.contains("for a required field:"), "{text}");
+        }
+        let text = edit_description(&Grants::all(), true);
+        assert!(text.contains("works on optional fields"), "{text}");
+        assert!(text.contains("add_constraint"), "{text}");
+        assert!(text.contains("options"), "{text}");
+    }
+
+    #[test]
+    fn a_field_unique_by_its_constraint_is_described_as_unique() {
+        use sc_types::{BasicType, TypeRef};
+        let mut table = crate::graphql::testing::table_of(
+            "docs",
+            vec![
+                sc_catalog::DataField::plain("code", TypeRef::Basic(BasicType::Text)),
+                sc_catalog::DataField::plain("a", TypeRef::Basic(BasicType::Int)),
+                sc_catalog::DataField::plain("b", TypeRef::Basic(BasicType::Int)),
+            ],
+        );
+        table.constraints = vec![
+            TableConstraint::new(
+                "docs_code_key",
+                ConstraintKind::Unique {
+                    fields: vec!["code".into()],
+                },
+            ),
+            TableConstraint::new(
+                "sc_uq_docs_a_b",
+                ConstraintKind::Unique {
+                    fields: vec!["a".into(), "b".into()],
+                },
+            ),
+        ];
+        let out = describe_table(&table, std::slice::from_ref(&table), true);
+        assert_eq!(out["fields"][0]["unique"], json!(true), "{out}");
+        assert_eq!(out["fields"][1]["unique"], json!(false), "{out}");
+        assert_eq!(out["constraints"][1]["fields"], json!(["a", "b"]));
+        assert_eq!(out["constraints"][0]["name"], json!("docs_code_key"));
     }
 
     #[test]

@@ -4862,6 +4862,22 @@ and one refusal.
   *n* is a better error than a schema the provider silently flattens.
 - **`alter_table` is read-modify-write; omitted means leave.** A deliberate divergence from
   `updateTable`'s whole-object contract, recorded in §13.1 beside the contract it diverges from.
+- **The tools reach what the admin UI reaches** (TODO SC1.1, from a user report): a setting an
+  operation does not read is **refused by name**, not ignored — every setting is read by *some*
+  operation, so the tool's JSON schema lets it through, and `alter_field unique: false` once
+  reported success and changed nothing. `alter_field unique: true|false` adds or drops the
+  field's one-field unique constraint (whatever it is named, including Postgres's
+  `<table>_<field>_key`); `false` needs `allow_drop`, as `drop_constraint` does. `add_constraint`
+  / `drop_constraint` take `constraint: {type, fields | formula, name, error_message}`, the
+  `createConstraint` body. `attributes` (a `string`'s `options`, `max_length`, `regex`; an
+  `integer`'s `min`, `max`) are checked against the type's declared attributes in the MCP layer —
+  `options` on a `text` field is refused, naming `string` — and new `options` on `alter_field`
+  are refused while a row holds another value (only when they change). `describe_schema` reports
+  `unique` from the constraints (introspection reads a column's `UNIQUE` as a table constraint,
+  so `DataField::unique` is `false` for every introspected field; `Table::is_unique` answers
+  instead), lists each table's `constraints` in the shape `add_constraint` takes back, and shows
+  a field's `attributes`. The `default` description says an optional field may have one
+  (`user && user.id` for a `created_by` written by a trigger too).
 
 **The triggers, and the problem they pose.** The other four tools are `describe_triggers`,
 `describe_action`, `save_trigger` and `delete_trigger` — the trigger set read, written and removed
@@ -12831,7 +12847,8 @@ tables: [{                                   // or (configuration) => [...]
 `type` is a basic or rich type name, omitted for the three kinds that decide their own storage:
 `references` (a `Key` to that table's primary key — another module table, or `users`), `secret`
 (a `Secret`, M2) and `file_store` (a `File` field). `default` is a JSON value or an `=`-prefixed
-expression, and becomes the field's `default_expression`, so it needs `required`. Python modules
+expression, and becomes the field's `default_expression`, on an optional field as well as a
+required one (an expression that gives nothing leaves an optional field null). Python modules
 get the same key later; the declaration is language-neutral data, and everything below is Rust.
 
 **The module's code ships the declaration; the server applies it.** The host script passes
@@ -12855,8 +12872,9 @@ The rules, each chosen so that "on every load" is safe:
   theirs. A declared field whose type or reference the database disagrees with is reported as an
   issue on the module's card and left alone: retyping a column with rows in it is a migration, and
   migrations (§5.3) are Feldspar's own, not a module's.
-- **A field an upgrade adds is nullable**, whatever it declares, with no default: the table has
-  rows, and `NOT NULL` on them needs a value nobody declared.
+- **A field an upgrade adds is nullable**, whatever it declares: the table has rows, and
+  `NOT NULL` on them needs a value nobody declared. It keeps its `default`, which fills the rows
+  inserted from then on; the rows already there stay null.
 - **Table settings belong to the creation.** `label`, `ownership` and the minimum roles go into
   the `CreateTable`; after that they are the admin's, and a reload does not reassert them.
 - **Running it twice is a no-op.** That is what lets it run on every load — install, a reinstall

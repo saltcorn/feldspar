@@ -26,6 +26,8 @@ mod admin_copilot;
 mod admin_copilot_apps;
 #[path = "admin_copilot_build.rs"]
 mod admin_copilot_build;
+#[path = "admin_copilot_schema_rules.rs"]
+mod admin_copilot_schema_rules;
 #[path = "admin_copilot_triggers.rs"]
 mod admin_copilot_triggers;
 #[path = "agent_context.rs"]

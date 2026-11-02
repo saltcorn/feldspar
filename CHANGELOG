@@ -2,6 +2,63 @@
 
 Changes in reverse chronological order.
 
+## Schema tools: unique on and off, constraints, allowed values, defaults on optional fields (SC1.1)
+
+User report (P2 – Schema): `alter_field unique: false` reported success and changed nothing, so
+the `<table>_<field>_key` constraint stayed, inserts kept failing and `drop_field` was refused
+because of it. `describe_schema` listed every field as `"unique": false`, so a schema copied from
+it lost its unique rules. A default looked impossible on an optional field, so `created_by` was
+set by hand on every insert. `edit_schema` could not set `string.options` or a unique constraint
+over two columns. Most of this the schema editor could already do; the MCP layer did not pass it
+on, or described it wrongly.
+
+- **`alter_field unique: true|false`** (`FieldSettings::unique`). `true` adds a one-field unique
+  constraint, refused while rows repeat a value (and says how many). `false` drops every
+  one-field unique constraint on the field whatever it is called, including Postgres's own
+  `<table>_<field>_key`, and needs `allow_drop`, as dropping a constraint does. A jointly-unique
+  key the field is part of is left alone. The admin API's `updateField` does not read `unique`:
+  the field editor sends the field as it loaded it.
+- **`add_constraint` / `drop_constraint` in `edit_schema`**, with `constraint: {type, fields |
+  formula, name, error_message}`: unique over several fields (`document_id + version_no`), an
+  index, a row formula or a full-text index. The result lists `constraints_added` and
+  `constraints_dropped`.
+- **`attributes` in `edit_schema`** on `add_field`, `alter_field` and `create_table` fields: a
+  `string`'s `options`, `max_length` and `regex`, an `integer`'s `min` and `max`. They are checked
+  against the type's declared attributes: `options` on a `text` field is refused and names
+  `string`. New `options` on `alter_field` are refused while a row holds another value. That check
+  runs only when the options change, so editing the label of a field whose old rows predate its
+  options still works.
+- **`describe_schema` reports `unique` from the constraints** (`Table::is_unique`): introspection
+  reads a column's `UNIQUE` as a table constraint, so the field's own flag is `false` for every
+  introspected field. Each table now lists its `constraints` in the shape `add_constraint` takes,
+  and a field shows its `attributes`. The code host's `is_unique` (plugin field objects) had the
+  same bug and uses the same answer.
+- **Defaults on optional fields are documented where agents read them.** They already worked
+  (an expression that gives nothing leaves the field null). The `default` parameter said "for a
+  required field"; it now says optional fields may have one, with `user && user.id` for a
+  `created_by` that a trigger or scheduled job also writes. The tool description says it too, and
+  a unit test pins the wording.
+- **A setting an operation does not use is refused by name**, not ignored (`drop_field` with
+  `unique`, `alter_table` with `fields`). Every setting is read by *some* operation, so the tool's
+  JSON schema let it through. A null counts as not sent.
+- **Module table declarations may give an optional field a `default`.** The rule that a `default`
+  needs `required` is gone. A field an upgrade adds to a table that has rows is still nullable,
+  but now keeps its `default` for the rows inserted from then on; the rows already there stay
+  null. Declarations that were accepted before mean what they meant.
+- No migration: no stored data changes, and `describe_schema` and `edit_schema` results only gain
+  keys. **Behaviour change on upgrade:** an `edit_schema` call that sent a setting its operation
+  ignored is now refused.
+- Docs: §13.6 of the design (the `admin_copilot` notes) and the module-tables section of the
+  design.
+- Tests: `sc-agent-builtins/tests/admin_copilot_schema_rules.rs` (unique on, off, refused while
+  rows repeat, then `drop_field`; unique over two fields added, enforced and dropped by name;
+  options set, listed, enforced on a system write, refused when narrowed below the rows, refused
+  on `text`; a default on an optional field is null for a write with no user; an unused setting
+  refuses the whole batch). Unit tests in `sc_api::mcp::schema` (parsing, unused settings, the
+  `default` wording, `unique` described from a constraint) and in `sc_module::tables`.
+- Not done (TODO SC1.2, proposed): `created_at` / `updated_at` / `updated_by` columns kept by the
+  row layer. `updated_*` needs a value on every update, which nothing supplies today.
+
 ## Trigger cascades: limit 10, agent tool calls not counted, refusals reach the caller (T1.1)
 
 User report: a background agent run's library tool ran the app's `case_action` trigger (the

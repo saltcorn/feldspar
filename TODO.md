@@ -872,6 +872,24 @@ insert-or-update write-back pattern).
   chain, for queue-like tables (mail outbox, notifications, webhooks). Must keep the untrusted
   origin mark and needs its own bound, since restarting at depth 0 would unbound a loop.
 
+## SC1 — Schema tools for agents (unique, constraints, attributes, defaults)
+
+User report (P2 – Schema, retested 2026-11-02): `alter_field unique: false` did nothing, so the
+`<table>_<field>_key` constraint stayed and `drop_field` was refused because of it;
+`describe_schema` reported every field as `"unique": false`; a default looked impossible on an
+optional field; `edit_schema` could not set `string.options` or a unique constraint over two
+columns. The engine (`schema_edit`) could already do most of this; the MCP layer did not pass it
+on, or described it wrongly.
+
+- [x] **SC1.1** `edit_schema`: `alter_field unique`, `add_constraint` / `drop_constraint`,
+  `attributes`, settings an op does not use refused by name; `describe_schema` reports `unique`
+  and a `constraints` list; the `default` descriptions say optional fields may have one;
+  module table declarations may give an optional field a `default`.
+- [ ] **SC1.2** (Proposed, not decided) Audit columns: `created_at` / `created_by` /
+  `updated_at` / `updated_by` kept by the row layer, or an "on update" expression beside the
+  default. A default already covers the `created_*` pair (`user && user.id`); `updated_*`
+  needs a value on every update, which nothing supplies today.
+
 ---
 
 ## Open questions

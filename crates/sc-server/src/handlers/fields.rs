@@ -137,6 +137,11 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         .and_then(Json::as_bool),
                     // Back to the whole-object reading: omitted clears it.
                     default_expression: Some(optional_str(obj, "default_expression")),
+                    // Not read from this body: the field editor sends the field
+                    // as it loaded it, and a `unique: false` from a form that
+                    // never asked would drop the column's unique constraint. The
+                    // constraints screen adds and drops those.
+                    unique: None,
                 };
                 schema_edit::apply(
                     &catalog,

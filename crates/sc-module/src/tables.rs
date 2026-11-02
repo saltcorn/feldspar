@@ -182,6 +182,10 @@ impl FieldDecl {
 
     /// The field as the schema editor creates it — on a new table when
     /// `creating`, else added to one that has rows.
+    ///
+    /// A field added to a table that has rows is nullable, since those rows have
+    /// no value for it, but keeps its `default`: a default on a nullable field
+    /// fills the rows inserted from then on.
     fn spec(&self, creating: bool) -> FieldSpec {
         let required = creating && self.required;
         FieldSpec {
@@ -194,7 +198,7 @@ impl FieldDecl {
             primary_key: false,
             kind: self.kind(),
             attributes: Attrs::new(),
-            default_expression: required.then(|| self.default_expression()).flatten(),
+            default_expression: self.default_expression(),
         }
     }
 
@@ -228,12 +232,6 @@ impl FieldDecl {
         if self.file_folder.is_some() && self.file_store.is_none() {
             return Err(Error::invalid(format!(
                 "the field `{table}.{name}` has a `file_folder` but no `file_store`"
-            )));
-        }
-        if self.default.as_ref().is_some_and(|d| !d.is_null()) && !self.required {
-            return Err(Error::invalid(format!(
-                "the field `{table}.{name}` has a `default` but is not `required`: a field \
-                 that may be null is already left null by an insert that omits it"
             )));
         }
         if name == MODULE_TABLE_KEY {
@@ -698,7 +696,6 @@ mod tests {
             { "name": "untyped", "fields": [{ "name": "f" }] },
             { "name": "_fd_mine", "fields": [] },
             { "name": "mail_accounts", "fields": [] },
-            { "name": "defaulted", "fields": [{ "name": "n", "type": "int", "default": 3 }] },
             { "name": "u", "fields": [{ "name": "a", "type": "int" }], "unique": [["a", "b"]] },
             { "name": "i", "fields": [{ "name": "a", "type": "int" }], "indexes": [["c"]] },
             { "name": "s", "fields": [{ "name": "pw", "secret": true }], "indexes": [["pw"]] },
@@ -714,7 +711,6 @@ mod tests {
             "`untyped.f` needs a `type`",
             "`_fd_mine` is one of this server's own tables",
             "`mail_accounts` is declared twice",
-            "has a `default` but is not `required`",
             "`unique` names `b`",
             "`indexes` names `c`",
             "`indexes` names `pw`, which is a secret",
@@ -735,7 +731,27 @@ mod tests {
         assert_eq!(created.default_expression.as_deref(), Some(r#"["INBOX"]"#));
         let added = field.spec(false);
         assert!(!added.required);
-        assert_eq!(added.default_expression, None);
+        assert_eq!(added.default_expression.as_deref(), Some(r#"["INBOX"]"#));
+
+        // An optional field may have a default too (an expression that gives
+        // nothing leaves it null), and the declaration reads.
+        let (decls, issues) = parse(json!([
+            { "name": "notes", "fields": [
+                { "name": "n", "type": "int", "default": 3 },
+                { "name": "created_by", "type": "int", "default": "=user && user.id" },
+            ]},
+        ]));
+        assert!(issues.is_empty(), "{issues:?}");
+        let fields = &decls[0].fields;
+        assert_eq!(
+            fields[0].spec(true).default_expression.as_deref(),
+            Some("3")
+        );
+        assert!(!fields[1].spec(true).required);
+        assert_eq!(
+            fields[1].spec(true).default_expression.as_deref(),
+            Some("user && user.id")
+        );
 
         let field: FieldDecl = serde_json::from_value(json!({
             "name": "n", "type": "int", "required": true, "default": "=1 + 1"
