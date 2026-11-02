@@ -2,6 +2,18 @@
 
 Changes in reverse chronological order.
 
+## Test fix: the cascade-bound tests run on an 8 MiB worker
+
+`code_host_writes::a_code_body_writing_its_own_table_is_stopped_by_the_cascade_bound` aborted the
+`sc-api` test binary with a stack overflow after `MAX_DEPTH` went from 5 to 10, and
+`table_triggers::a_self_feeding_trigger_is_stopped_by_the_depth_limit` did the same to the
+`sc-server` test binary (`it`). In both, each firing is a write nested inside the one before it,
+and ten levels overflow the 2 MiB test thread in a debug build. Each test now runs on a
+one-worker runtime with an 8 MiB stack, the stack the server gives its workers and the same setup
+as the trigger-agent-trigger loop test in `run_agent.rs`. In `code_host_writes`, the extra
+dispatch at the end now uses `MAX_DEPTH` instead of the old literal depth 5. Test only; nothing
+changes in production.
+
 ## REST filters on boolean columns
 
 User report: `GET /api/<table>?pinned=eq.false` answered 400 "value "false" is not a valid

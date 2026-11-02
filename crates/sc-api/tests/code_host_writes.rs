@@ -429,8 +429,26 @@ async fn an_insert_from_a_code_body_fires_the_tables_own_trigger() -> Result<()>
     Ok(())
 }
 
-#[tokio::test]
-async fn a_code_body_writing_its_own_table_is_stopped_by_the_cascade_bound() -> Result<()> {
+/// Every firing is a write inside the one before it, all on one stack, so it runs
+/// on a worker with the stack the server gives its workers (`sc-cli`'s
+/// `WORKER_STACK_BYTES`, 8 MiB): at `MAX_DEPTH` 10 a debug build overflows the
+/// test thread's 2 MiB.
+#[test]
+fn a_code_body_writing_its_own_table_is_stopped_by_the_cascade_bound() -> Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_stack_size(8 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("a runtime")
+        .block_on(async {
+            tokio::spawn(code_body_writing_its_own_table())
+                .await
+                .expect("joined")
+        })
+}
+
+async fn code_body_writing_its_own_table() -> Result<()> {
     let db = TestDb::new().await?;
     let catalog = setup(&db).await?;
     let chains = Arc::new(Mutex::new(Vec::new()));
@@ -475,7 +493,7 @@ async fn a_code_body_writing_its_own_table_is_stopped_by_the_cascade_bound() -> 
     // will get it: one more dispatch of the event the last write raised.
     let event = Event::new(EventKind::Insert)
         .on("links")
-        .row(json!({ "id": 6, "depth": 5 }))
+        .row(json!({ "id": MAX_DEPTH + 1, "depth": MAX_DEPTH }))
         .chained(deepest);
     let runs = dispatcher.dispatch(&catalog, &event).await;
     assert_eq!(runs.len(), 1);

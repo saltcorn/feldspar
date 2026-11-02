@@ -460,8 +460,26 @@ async fn an_only_if_can_read_through_a_join_path() -> sc_error::Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn a_self_feeding_trigger_is_stopped_by_the_depth_limit() -> sc_error::Result<()> {
+/// Every firing is a write inside the one before it, all on one stack, so it runs
+/// on a worker with the stack the server gives its workers (`sc-cli`'s
+/// `WORKER_STACK_BYTES`, 8 MiB): at `MAX_DEPTH` 10 a debug build overflows the
+/// test thread's 2 MiB.
+#[test]
+fn a_self_feeding_trigger_is_stopped_by_the_depth_limit() -> sc_error::Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_stack_size(8 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("a runtime")
+        .block_on(async {
+            tokio::spawn(self_feeding_trigger())
+                .await
+                .expect("joined")
+        })
+}
+
+async fn self_feeding_trigger() -> sc_error::Result<()> {
     let mut server = setup().await?;
     // Every insert into `links` inserts another one. Nothing about this trigger
     // is wrong — a write causing a write is the point of decision 5 — so what
