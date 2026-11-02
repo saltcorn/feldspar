@@ -31,7 +31,7 @@
 //! never for longer than [`LONGEST_WAIT`], so an install that writes for a
 //! minute is still reported while it runs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -86,7 +86,9 @@ pub(crate) struct Changes {
     dir: PathBuf,
     /// The store's `.git`.
     git: PathBuf,
-    watched: usize,
+    /// The directories watched, so that one removed or moved away stops
+    /// counting towards [`MAX_WATCHED_DIRS`], and one is never watched twice.
+    watched: HashSet<PathBuf>,
     pending: BTreeSet<String>,
     /// When the first and the latest of the pending changes arrived.
     first: Option<Instant>,
@@ -112,13 +114,13 @@ impl Changes {
             root,
             dir: dir.clone(),
             git: git.clone(),
-            watched: 0,
+            watched: HashSet::new(),
             pending: BTreeSet::new(),
             first: None,
             latest: None,
         };
         changes.watcher.watch(&dir, RecursiveMode::NonRecursive)?;
-        changes.watched += 1;
+        changes.watched.insert(dir.clone());
         changes.add_below(&dir, None);
         if git.is_dir() {
             changes.watcher.watch(&git, RecursiveMode::NonRecursive)?;
@@ -173,6 +175,10 @@ impl Changes {
         );
         let mut noted = false;
         for path in &event.paths {
+            // A watched directory no longer there was removed or moved away.
+            if self.watched.contains(path) && path.symlink_metadata().is_err() {
+                self.forget(path);
+            }
             if path.starts_with(&self.git) {
                 self.pending.insert(GIT.to_owned());
                 noted = true;
@@ -214,19 +220,47 @@ impl Changes {
         store_path(path.strip_prefix(&self.root).ok()?)
     }
 
+    /// Stop counting a watched directory that is gone (removed, or moved
+    /// away), and everything watched under it. A moved directory's watches
+    /// would follow it under its old name, so they are dropped too; where it
+    /// arrives is watched afresh.
+    fn forget(&mut self, gone: &Path) {
+        let below: Vec<PathBuf> = self
+            .watched
+            .iter()
+            .filter(|dir| dir.starts_with(gone))
+            .cloned()
+            .collect();
+        for dir in below {
+            // The kernel has usually dropped it already; nothing to undo then.
+            let _ = self.watcher.unwatch(&dir);
+            self.watched.remove(&dir);
+        }
+    }
+
     /// Watch a directory that has just appeared, and everything under it;
     /// the files found go into `found`.
     fn add_below_new(&mut self, dir: &Path, found: &mut BTreeSet<String>) {
-        if self.watched >= MAX_WATCHED_DIRS
+        if !self.watch_dir(dir) {
+            return;
+        }
+        self.add_below(dir, Some(found));
+    }
+
+    /// Watch `dir`, unless it is watched already or the limit is reached;
+    /// whether it is now newly watched.
+    fn watch_dir(&mut self, dir: &Path) -> bool {
+        if self.watched.contains(dir)
+            || self.watched.len() >= MAX_WATCHED_DIRS
             || self
                 .watcher
                 .watch(dir, RecursiveMode::NonRecursive)
                 .is_err()
         {
-            return;
+            return false;
         }
-        self.watched += 1;
-        self.add_below(dir, Some(found));
+        self.watched.insert(dir.to_path_buf());
+        true
     }
 
     /// Watch every directory under `dir` that is not skipped, putting the files
@@ -245,15 +279,7 @@ impl Changes {
                     continue;
                 };
                 if kind.is_dir() {
-                    if is_skipped(&entry.file_name()) || self.watched >= MAX_WATCHED_DIRS {
-                        continue;
-                    }
-                    if self
-                        .watcher
-                        .watch(&path, RecursiveMode::NonRecursive)
-                        .is_ok()
-                    {
-                        self.watched += 1;
+                    if !is_skipped(&entry.file_name()) && self.watch_dir(&path) {
                         stack.push(path);
                     }
                 } else if let Some(found) = found.as_deref_mut()
@@ -414,6 +440,28 @@ mod tests {
                 removed: vec!["kept.ts.tmp".to_owned(), "old.ts".to_owned()],
             })
         );
+    }
+
+    #[tokio::test]
+    async fn a_removed_directory_stops_counting_towards_the_limit() {
+        let root = temp_dir("churn");
+        let mut changes = Changes::watch(&root, &root).unwrap();
+        assert_eq!(changes.watched.len(), 1);
+
+        for round in 0..3 {
+            std::fs::create_dir_all(root.join("out/pages")).unwrap();
+            std::fs::write(root.join("out/pages/index.html"), "x").unwrap();
+            next(&mut changes)
+                .await
+                .expect("the new directory is reported");
+            assert_eq!(changes.watched.len(), 3, "round {round}");
+
+            std::fs::remove_dir_all(root.join("out")).unwrap();
+            next_report(&mut changes)
+                .await
+                .expect("the removal is reported");
+            assert_eq!(changes.watched.len(), 1, "round {round}");
+        }
     }
 
     #[test]

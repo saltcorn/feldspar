@@ -95,6 +95,11 @@ const DEFAULT_SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
 /// How long an exited program's status is waited for once its output has ended.
 const EXIT_STATUS_WAIT: Duration = Duration::from_secs(2);
 
+/// How long the close frame may take to reach the browser before the session
+/// is ended without it: a browser that stopped reading (a sleeping laptop, a
+/// lost network) must not keep the program, its slot and its token alive.
+const CLOSE_SEND_WAIT: Duration = Duration::from_secs(2);
+
 /// The environment variables the program inherits from the server.
 ///
 /// An allow-list, not the server's environment: that holds `DATABASE_URL` and
@@ -931,12 +936,11 @@ async fn bridge(
         }
     };
     if let Some(reason) = reason {
-        let _ = sender
-            .send(Message::Close(Some(CloseFrame {
-                code: close_code::NORMAL,
-                reason: fit_close_reason(reason).into(),
-            })))
-            .await;
+        let close = sender.send(Message::Close(Some(CloseFrame {
+            code: close_code::NORMAL,
+            reason: fit_close_reason(reason).into(),
+        })));
+        let _ = tokio::time::timeout(CLOSE_SEND_WAIT, close).await;
     }
 
     // One session per connection, and it goes when the connection does —
@@ -1000,6 +1004,10 @@ mod pty {
     pub(super) struct Session {
         pub(super) pty: pty_process::Pty,
         pub(super) child: Child,
+        /// The program's process id, which is also its session's id. Kept
+        /// from the start, because `child` forgets it once the program has
+        /// been waited for, and what it started may still be running then.
+        pid: Option<libc::pid_t>,
     }
 
     /// Start `program` with `args` in `dir` with exactly `env`, on a new
@@ -1026,7 +1034,8 @@ mod pty {
             .envs(env.iter().map(|(k, v)| (k, v)))
             .kill_on_drop(true)
             .spawn(pts)?;
-        Ok(Session { pty, child })
+        let pid = child.id().and_then(|p| libc::pid_t::try_from(p).ok());
+        Ok(Session { pty, child, pid })
     }
 
     impl Session {
@@ -1043,8 +1052,12 @@ mod pty {
         /// `SIGHUP` first, which is what closing a terminal sends and what a
         /// program expects on it; then `SIGKILL` for whatever ignored that, and
         /// a reap so no zombie is left behind.
+        ///
+        /// The program may already have exited and been waited for (it closed
+        /// the terminal on its own); what it left running in its session is
+        /// ended all the same.
         pub(super) async fn kill(mut self) {
-            let Some(pid) = self.child.id().and_then(|p| libc::pid_t::try_from(p).ok()) else {
+            let Some(pid) = self.pid else {
                 let _ = self.child.kill().await;
                 return;
             };

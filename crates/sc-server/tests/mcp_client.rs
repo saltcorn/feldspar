@@ -334,8 +334,8 @@ async fn a_server_an_agents_mcp_server_trait_names_is_not_deleted() -> sc_error:
 }
 
 /// A server is offered to the IDE's terminal only when the form says so; the
-/// flag reads back, and an update that turns it off keeps the server's other
-/// attributes (design §12.1).
+/// flag reads back, an update that does not mention it keeps it, and an update
+/// that turns it off keeps the server's other attributes (design §12.1).
 #[tokio::test]
 async fn offering_a_server_to_the_terminal_is_a_saved_choice() -> sc_error::Result<()> {
     let (mut client, catalog, url, _db) = setup().await?;
@@ -369,6 +369,12 @@ async fn offering_a_server_to_the_terminal_is_a_saved_choice() -> sc_error::Resu
             .await?
             .offered_to_terminal()
     );
+
+    // An update that does not mention the offer leaves it as it was.
+    let (_, updated) = client
+        .send("PUT", &format!("/api/mcp-servers/{id}"), Some(form(None)))
+        .await;
+    assert_eq!(updated["offer_to_terminal"], true, "{updated}");
 
     // An attribute the form does not know survives an update that turns the
     // offer off.

@@ -43,8 +43,10 @@ terminal panel's "New Terminal" open more sessions.
   filling the page's memory.
 - The program gets an allow-listed environment, not the server's (which holds the database
   credentials). Closing the tab or the page ends it and everything it started, including
-  background jobs and children in a session of their own. So does signing out, or the admin
-  being disabled or demoted: the terminal closes with the reason, and its MCP access ends.
+  background jobs and children in a session of their own; so does the program exiting, for what
+  it left running. So does signing out, or the admin being disabled or demoted: the terminal
+  closes with the reason, and its MCP access ends.
+- An MCP server update that leaves out "Offer to Claude Code in the IDE" keeps the stored choice.
 - Tests: `sc-server/tests/ide_terminal.rs`, `sc-server/src/terminal_watch.rs`,
   `sc-server/tests/mcp_client.rs`, `sc-server/tests/tls_serving.rs`, `ui/ide/src/terminal.test.ts`,
   `ui/admin/src/mcpServers.test.ts`, `ui/admin/src/appNav.test.ts`.

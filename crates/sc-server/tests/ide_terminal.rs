@@ -838,6 +838,34 @@ async fn an_application_terminal_starts_in_its_source_directory() -> Result<()> 
     Ok(())
 }
 
+/// A program that exits on its own still has what it left running ended:
+/// here a background job that let go of the terminal, so the exit is what
+/// closes it.
+#[tokio::test]
+async fn an_exit_ends_what_the_program_left_running() -> Result<()> {
+    let server = serve(&sh(), true).await?;
+    let mut socket = server.open("").await;
+    type_line(
+        &mut socket,
+        r"sleep 1002 </dev/null >/dev/null 2>&1 & printf '\074%s\076\n' $!",
+    )
+    .await;
+    let output = read_until(&mut socket, ">\r").await;
+    let job: i32 = output
+        .rsplit('<')
+        .next()
+        .and_then(|rest| rest.split('>').next())
+        .and_then(|pid| pid.parse().ok())
+        .expect("the shell printed the job's pid");
+    assert!(alive(job));
+
+    type_line(&mut socket, "exit").await;
+    let reason = close_reason(&mut socket).await;
+    assert!(reason.contains("status 0"), "{reason}");
+    assert!(gone(job).await, "a background job outlived the program");
+    Ok(())
+}
+
 /// The program exiting closes the socket normally, with its status.
 #[tokio::test]
 async fn an_exit_closes_the_socket_with_the_status() -> Result<()> {
