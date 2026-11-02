@@ -150,7 +150,14 @@ pub fn validate_api_config(app: &Application, api: &ApiConfig) -> Result<()> {
     // would otherwise refuse `queries` as an unknown setting.
     if api.provider == REST_PROVIDER {
         let queries = sc_api::custom_queries(&api.config)?;
-        let tables: Vec<String> = app.tables.iter().map(|t| t.0.clone()).collect();
+        // Against the tables whose routes are projected: a query only collides
+        // with a table's endpoints when that table has them.
+        let tables: Vec<String> = app
+            .tables
+            .iter()
+            .filter(|t| app.api_tables.contains(t))
+            .cloned()
+            .collect();
         sc_api::validate_custom_queries(&queries, &tables)?;
         settings.remove(sc_api::REST_CFG_QUERIES);
     }
@@ -422,7 +429,23 @@ pub fn validate_static_dirs(app: &Application) -> Result<()> {
 /// catalog is an error rather than a silent omission: it means the app is
 /// misconfigured, and quietly serving a smaller API would hide that.
 pub fn app_tables(app: &Application, cat: &Catalog) -> Result<Vec<Table>> {
-    app.tables.iter().map(|id| cat.require(&id.0)).collect()
+    app.tables.iter().map(|id| cat.require(id)).collect()
+}
+
+/// The connected tables whose **generic row API** the application serves
+/// ([`Application::api_tables`]), resolved against the catalog — what the REST
+/// and GraphQL providers project their routes and types over.
+///
+/// A subset of [`app_tables`], kept in its order. A name in `api_tables` the app
+/// is not connected to is refused on save; one that slipped past (a row edited
+/// by hand) is left out here rather than served, because a row API over a table
+/// the app does not include is exactly what the subset exists to prevent.
+pub fn app_api_tables(app: &Application, cat: &Catalog) -> Result<Vec<Table>> {
+    app.tables
+        .iter()
+        .filter(|id| app.api_tables.contains(id))
+        .map(|id| cat.require(id))
+        .collect()
 }
 
 /// The triggers an application exposes, resolved against the live trigger set
@@ -547,7 +570,12 @@ pub fn app_providers_with(
     dispatcher: Option<&Arc<TriggerDispatcher>>,
 ) -> Result<Vec<Box<dyn ApiProvider>>> {
     validate_api_mounts(app)?;
-    let tables = app_tables(app, cat)?;
+    // Connected tables must all resolve, whether or not they serve rows: a
+    // dropped table is a misconfiguration either way.
+    app_tables(app, cat)?;
+    // The providers project their row routes and types over the tables whose
+    // row API the app serves — none, unless somebody opted a table in.
+    let tables = app_api_tables(app, cat)?;
     if app.apis.is_empty() {
         return Ok(Vec::new());
     }
@@ -568,6 +596,8 @@ pub fn app_providers_with(
                     // its invitations likewise…
                     .with_signup(sc_api::rest_signup_role(&api.config))
                     .with_invite(sc_api::rest_invite_min_role(&api.config))
+                    // …and email verification of its sign-ups (TODO A2)…
+                    .with_email_verification(sc_api::rest_email_verification(&api.config))
                     // …and guest sessions, where the application keeps them
                     // (TODO-payments P1.5)…
                     .with_guest_sessions(app.guest_session_days())
@@ -679,7 +709,7 @@ pub fn app_graphql(app: &Application, cat: &Catalog) -> Result<Option<AppGraphql
     let Some(api) = app.apis.iter().find(|a| a.provider == GRAPHQL_PROVIDER) else {
         return Ok(None);
     };
-    let tables = app_tables(app, cat)?;
+    let tables = app_api_tables(app, cat)?;
     let provider = graphql_provider(app, api, &tables)?;
     Ok(Some(AppGraphql {
         mount: provider.mount(),
@@ -702,7 +732,7 @@ pub fn app_graphql(app: &Application, cat: &Catalog) -> Result<Option<AppGraphql
 /// (§13.2) — so the file describes exactly what a query in this project may name,
 /// and calculated fields are omitted because they are not columns.
 pub fn app_schema_sql(app: &Application, cat: &Catalog) -> Result<String> {
-    let driver = cat.primary();
+    let driver = cat.primary_info();
     let mut sql = String::new();
     for table in app_tables(app, cat)? {
         let change = sc_db::SchemaChange::CreateTable {

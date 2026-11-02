@@ -24,8 +24,9 @@ use std::sync::Arc;
 use bytes::Bytes;
 use sc_action::TriggerDispatcher;
 use sc_api::{EndpointSet, generate_app_client};
-use sc_catalog::{Attrs, Catalog, FileStoreId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_error::{Context, Error, Result};
+use sc_types::Attrs;
 use sc_types::FormField;
 use serde_json::Value as Json;
 use tokio::process::Command;
@@ -305,7 +306,7 @@ pub struct BuildReport {
 /// Fails if the store is not connected, has no on-disk path, or the build itself
 /// fails.
 pub async fn build_app(cat: &Catalog, source: &AppSource) -> Result<BuildReport> {
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     let root = store_root(&store, source)?;
     let mut report = run_build(&source.build, &root).await?;
     report.git_repo = store.is_git_repo();
@@ -319,13 +320,15 @@ pub async fn build_app(cat: &Catalog, source: &AppSource) -> Result<BuildReport>
 /// object-store-backed app is refused here with one message rather than two
 /// (§13.3).
 fn store_root(store: &Arc<dyn sc_files::FileStore>, source: &AppSource) -> Result<PathBuf> {
-    store.local_path("")?.ok_or_else(|| {
-        Error::config(format!(
-            "file store {:?} has no local path, so it cannot host a code framework's \
+    store
+        .local_path(&sc_files::StorePath::root())?
+        .ok_or_else(|| {
+            Error::config(format!(
+                "file store {:?} has no local path, so it cannot host a code framework's \
              build step; use a local store",
-            source.store.0
-        ))
-    })
+                source.store.0
+            ))
+        })
 }
 
 /// Delete an application's installed dependencies — a `react` app's
@@ -338,7 +341,7 @@ fn store_root(store: &Arc<dyn sc_files::FileStore>, source: &AppSource) -> Resul
 /// anything to delete. Refused for a framework with no install step, whose
 /// dependencies — if it has any — are not the server's to manage.
 pub async fn remove_app_dependencies(cat: &Catalog, source: &AppSource) -> Result<bool> {
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     let root = store_root(&store, source)?;
     remove_dependencies(&source.build, &root).await
 }
@@ -392,7 +395,7 @@ pub fn load_app_bundle(cat: &Catalog, source: &AppSource) -> Result<AssetBundle>
 /// build has written it yet. What [`load_app_bundle`] reads, and what a coding
 /// run's `view_app` previews when the run has built nothing of its own.
 pub fn app_output_dir(cat: &Catalog, source: &AppSource) -> Result<PathBuf> {
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     let root = store_root(&store, source)?;
     resolve_under(&root, &source.build.output_dir)
 }
@@ -459,7 +462,7 @@ pub async fn build_application_quick(
     source: &AppSource,
     dispatcher: Option<&std::sync::Arc<sc_action::TriggerDispatcher>>,
 ) -> Result<BuildReport> {
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     let root = store_root(&store, source)?;
     let source_dir = resolve_under(&root, &source.build.source_dir)?;
     let installed = source
@@ -508,7 +511,7 @@ pub async fn build_application_if_changed(
     dispatcher: Option<&Arc<TriggerDispatcher>>,
 ) -> Result<BuildReport> {
     let (client_path, generated) = emit_generated(cat, app, source, dispatcher).await?;
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     let root = store_root(&store, source)?;
     let source_dir = resolve_under(&root, &source.build.source_dir)?;
     let output_dir = resolve_under(&root, &source.build.output_dir)?;
@@ -613,7 +616,7 @@ pub async fn emit_client(
     let Some(path) = &source.client_path else {
         return Ok(Vec::new());
     };
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     // The streams this app exposes ride in the same module as its endpoints
     // (TODO "Streams" §10): they are not endpoints — a subscription has no
     // shape in that model — but they are this application's contract with its
@@ -628,18 +631,28 @@ pub async fn emit_client(
         // …and its exposed agents (§11.7): `api.agents["<name>"]`.
         &crate::agent_exports(app),
     );
-    store.write(path, Bytes::from(client.into_bytes())).await?;
+    store
+        .write(
+            &sc_files::StorePath::parse(path)?,
+            Bytes::from(client.into_bytes()),
+        )
+        .await?;
     let mut written = vec![path.clone()];
     for (name, text) in sc_api::client_runtime(sc_api::has_offline_sync(endpoints)) {
         let at = sibling(path, name);
-        store.write(&at, Bytes::from(text.into_bytes())).await?;
+        store
+            .write(
+                &sc_files::StorePath::parse(&at)?,
+                Bytes::from(text.into_bytes()),
+            )
+            .await?;
         written.push(at);
     }
     let skill = sibling(path, crate::SKILL_FILE);
     let client_file = path.rsplit('/').next().unwrap_or(path.as_str()).to_owned();
     store
         .write(
-            &skill,
+            &sc_files::StorePath::parse(&skill)?,
             Bytes::from(crate::generate_skill(cat, app, &client_file).into_bytes()),
         )
         .await?;
@@ -685,6 +698,96 @@ pub async fn emit_app_client(
     }
     let endpoints = app_endpoints_with(app, cat, dispatcher)?;
     emit_client(cat, app, &source, &endpoints).await
+}
+
+/// What the type checker said of an application's source
+/// ([`typecheck_application`]).
+#[derive(Debug, Clone)]
+pub struct TypecheckReport {
+    /// Whether it found nothing to complain about.
+    pub passed: bool,
+    /// The command it ran, as a person would type it.
+    pub command: String,
+    /// What it printed, stdout then stderr.
+    pub output: String,
+    /// The errors it named, with their files and lines.
+    pub diagnostics: Vec<crate::Diagnostic>,
+}
+
+/// Type-check an application's source against its **current generated
+/// client** (TODO-checklists C3.2): regenerate the client and runtime as a
+/// build would, install the dependencies if they are not, and run the
+/// project's `typecheck` script — `tsc --noEmit` in every scaffolded project —
+/// or `tsc --noEmit` itself where the project declares no such script.
+///
+/// Nothing is bundled and nothing served changes. This is the check a renamed
+/// field fails: the client is regenerated with the new name, and the compiler
+/// names every component that still uses the old one, without a browser and in
+/// the time `tsc` takes.
+///
+/// An `Err` is a check that could not run (no source, no TypeScript project,
+/// an install that failed); type errors are a [`TypecheckReport`] that did not
+/// pass.
+pub async fn typecheck_application(
+    cat: &Catalog,
+    app: &Application,
+    dispatcher: Option<&Arc<TriggerDispatcher>>,
+) -> Result<TypecheckReport> {
+    let source = app_source_from_config(&app.framework)?;
+    emit_generated(cat, app, &source, dispatcher).await?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
+    let root = store_root(&store, &source)?;
+    let source_dir = resolve_under(&root, &source.build.source_dir)?;
+    if !source_dir.join("tsconfig.json").is_file() {
+        return Err(Error::config(format!(
+            "`{}` has no tsconfig.json in {}, so there is no TypeScript project to check",
+            app.subdomain,
+            source_dir.display()
+        )));
+    }
+
+    // With the builds, for the reason they are serialised: an install and a
+    // `tsc` both hold a few hundred megabytes on a small server.
+    let _serialised = BUILD_LOCK.lock().await;
+    run_install(source.build.install.as_ref(), &source_dir, &BTreeMap::new()).await?;
+
+    let script = BuildSpec {
+        command: "npm".to_owned(),
+        args: vec!["run".to_owned(), "typecheck".to_owned()],
+        ..source.build.clone()
+    };
+    let (command, output) = match NpmScript::resolve(&script, &source_dir) {
+        Some(npm) => (command_line(&script), npm.run(&source_dir).await),
+        None => {
+            let local = source_dir.join("node_modules").join(".bin").join("tsc");
+            let tsc = if local.is_file() {
+                local.into_os_string()
+            } else {
+                OsString::from("tsc")
+            };
+            (
+                "tsc --noEmit".to_owned(),
+                Command::new(tsc)
+                    .arg("--noEmit")
+                    .current_dir(&source_dir)
+                    .output()
+                    .await,
+            )
+        }
+    };
+    let output =
+        output.with_context(|| format!("launching `{command}` in {}", source_dir.display()))?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(TypecheckReport {
+        passed: output.status.success(),
+        command,
+        diagnostics: crate::parse_diagnostics(&text),
+        output: text,
+    })
 }
 
 /// Build an application and return a [`CodeFramework`] serving the result, with
@@ -996,7 +1099,7 @@ pub async fn build_application_target(
     dispatcher: Option<&Arc<TriggerDispatcher>>,
 ) -> Result<TargetReport> {
     let source = app_source_from_config(&app.framework)?;
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     let root = store_root(&store, &source)?;
     emit_generated(cat, app, &source, dispatcher).await?;
 
@@ -1016,7 +1119,7 @@ pub async fn prepare_remote_target(
     dispatcher: Option<&Arc<TriggerDispatcher>>,
 ) -> Result<PathBuf> {
     let source = app_source_from_config(&app.framework)?;
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     let root = store_root(&store, &source)?;
     emit_generated(cat, app, &source, dispatcher).await?;
     Ok(root)
@@ -1026,7 +1129,7 @@ pub async fn prepare_remote_target(
 /// host's job is packed from, and where its log and artifact are written.
 pub fn app_store_root(cat: &Catalog, app: &Application) -> Result<PathBuf> {
     let source = app_source_from_config(&app.framework)?;
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     store_root(&store, &source)
 }
 

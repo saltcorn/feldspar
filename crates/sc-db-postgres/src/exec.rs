@@ -31,7 +31,7 @@ use crate::value::{PgParam, decode};
 ///   rule was broken and whose message to say instead.
 ///
 /// The format is stable because upper layers read it back
-/// (`sc_api::rows::constraint_message`): `<message> [<sqlstate>]` with, when
+/// (`sc_access::rows::constraint_message`): `<message> [<sqlstate>]` with, when
 /// there is one, ` (constraint "<name>")`.
 pub(crate) fn db_error(e: &tokio_postgres::Error) -> String {
     match e.as_db_error() {

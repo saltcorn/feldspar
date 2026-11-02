@@ -729,6 +729,131 @@ workflow) found what the first importer left behind. Fixture:
   A restored agent whose trait still fails (a trigger that was not imported) keeps its other
   traits, the failing one dropped with a warning.
 
+- [x] **F10.9** Every one of v1's 31 built-in actions has a deliberate outcome on import:
+  translated (mostly into a `run_js_code` body in v1's scope, `send_email` into this one's
+  templates), or refused with the reason. Same-named actions (`delete_rows`, `send_email`,
+  `run_js_code`) are translated too, because their settings differ. Multi-step triggers
+  run their steps, a view's or page's button that names a built-in action becomes a trigger,
+  and workflow steps use the same converter.
+- [ ] **F10.10** What F10.9 refuses: `send_email` with a view as its body (needs
+  view-to-email rendering), a confirmation field, `notify_user` (needs notifications),
+  `emit_event`, and server-side `sleep` / `loop_rows`' interval (no timers in a code body).
+
+## S1 — Saltcorn UI view runtime: remaining hardening from security review #36
+
+`{{= }}` no longer evaluates row data (see the CHANGELOG). What the review also recommended:
+
+- [ ] **S1.1** Run the Saltcorn UI view runtime in its own worker, so a formula that escapes the
+  evaluator's `vm` context does not share a realm with other modules' calls.
+- [ ] **S1.2** Clamp the view call's file host and `V1Trigger.run` to the viewer's authority.
+
+## S2 — Claiming a fresh instance
+
+- [x] **S2.1** A first-user token (`first_user_token`, set with `set-cfg` before the first
+  `serve`) that creating the first user requires; the admin UI takes it from
+  `?first_user_token=`, and Clear all keeps it.
+- [x] **S2.2** The first-user token can also be set with `FELDSPAR_FIRST_USER_TOKEN`; when both it
+  and the stored setting are set, either is accepted.
+
+## D1 — Installing from one line
+
+- [x] **D1.1** `scripts/install.sh`, the curl-to-sh installer: Debian, Ubuntu and Alpine on
+  x86_64; installs the static release at `/opt/feldspar`, `feldspar` on `PATH`, and only
+  `ca-certificates`, a downloader and `tar` beside it. `build-static.sh --release` publishes it
+  to the bucket as `install.sh`.
+- [x] **D1.2** `feldspar setup`: a development instance (user config, `feldspar serve` by hand) or a
+  production one (system account, `/etc/feldspar/feldspar.toml`, systemd unit or OpenRC
+  script), over SQLite or PostgreSQL, local (installed when not running) or remote; asked at a
+  terminal or given as flags, with `--server` and `--dev` as presets that ask nothing.
+- [x] **D1.3** `feldspar setup` installs Node.js (with npm 9.3 or newer) and a headless browser,
+  as `setup-host.sh` does, so that it can replace that script.
+- [ ] **D1.4** An end-to-end run of `feldspar setup --server` on Alpine with OpenRC. Debian and
+  Ubuntu have been run under systemd, and Alpine so far only through its plan.
+- [x] **D1.5** Three ways to get the executable and no more, for the general release: the curl
+  installer, the tarball by hand, and a source build that runs where it was built. The static
+  artifact is retired (TODO-portable-release R3.3) and `debian13-python` is no longer published;
+  `build-static.sh --deploy` and `--variant`, and the installer's `--variant`, are gone;
+  `scripts/setup-host.sh` is replaced by `feldspar setup`, which gained Fedora/RHEL, openSUSE
+  and Arch and the bundled Python's `SSL_CERT_FILE` check; the tarball's `install.sh` links
+  `feldspar` onto `PATH`. docs/OPERATIONS.md §1–§3 rewritten, §12 (Docker) and §13 (releases)
+  added. Still to do by hand: one real `feldspar setup --server` on Fedora (the old script's
+  run there does not cover the port), and deleting `feldspar-debian13-python.tar.gz` from the
+  bucket once no host fetches it.
+
+## M1 — Migrations
+
+The design is TECHNICAL_DESIGN §5.3. The registry starts empty: nothing from
+`TABLES_RENAME.sql` becomes a migration.
+
+- [x] **M1.1** The `sc-migrate` crate (depends on `sc-db` only): `Migration`, `Body::{Sql, Rust}`,
+  `MigrationCtx` (transaction, backend, `table_exists`, `column_exists`), the empty
+  `MIGRATIONS` registry with a check that ids are well-formed, unique and sorted.
+- [x] **M1.2** The runner, `sc_migrate::run(&driver)`: `_fd_migrations`; a new database
+  stamped with every id; a pre-framework database (has `_fd_*` tables) gets an empty record;
+  each pending migration in its own locked transaction with its record; refusal on an unknown
+  id; failure names the migration. `run_one(id)` for tests. Tests on Postgres and SQLite, using
+  test-only registries: stamping, running, a second start running nothing, rollback on failure,
+  the unknown-id refusal, two concurrent runners.
+- [x] **M1.3** Call it from `sc_cli::connect_catalog` before `Catalog::init`; log each applied
+  migration and its duration.
+- [x] **M1.4** `feldspar migrate status` and `feldspar migrate`.
+- [x] **M1.5** Retire the prototype wording: `bootstrap_table`'s "There is no migration
+  framework here" message; freeze `TABLES_RENAME.sql` with a header saying so; ask the human
+  to update CLAUDE.md's "Status" paragraph (new database changes the bootstrap cannot make
+  are migrations in `sc-migrate`, each with a test).
+
+## O1 — First-run onboarding
+
+- [x] **O1.1** The first admin to sign in is shown a sequence of dialogs, written in a small
+  dialog language in the admin UI (`ui/admin/src/onboarding/flow.ts`: `ask`, `say`, `form`,
+  `run`, `finish`). The script (`onboarding/script.ts`) asks how to build: **Generative AI**
+  uses the provider already there or sets one up in a form here, then makes an `admin_copilot`
+  agent and opens its chat; **Point and click** creates a Saltcorn UI application, selects it
+  and points at Tables; **Write code** goes to the MCP settings, or creates a React application
+  and opens the IDE. `authStatus.onboarding_pending` / `finishOnboarding` keep it to once.
+- [ ] **O1.2** A way to run it again (a link under Settings, or `#/onboarding`).
+- [ ] **O1.3** Point and click: create the first table in the dialog (blank, or from a CSV), add
+  it to the new application's tables, and offer to generate its views.
+- [ ] **O1.4** Generative AI: offer the models the provider lists (`fetch_host_models`) instead
+  of a free-text model name, and test the key before the copilot is made.
+- [ ] **O1.5** Translations of the onboarding's messages in `ui/admin/src/locales/*.json`.
+
+## A1 — Sign-ins that survive closing the browser
+
+User report (P0): users sign in again every time the browser closes, although
+`session_ttl_hours` is 8760. A browser's `sc_session` had no `Max-Age`; only a native app's did.
+Decision: persistent by default, with an instance setting to turn it off and a per-sign-in
+"remember me". Sliding renewal is declined (expiry stays fixed at login, design §7).
+
+- [x] **A1.1** `persistent_session_cookie` (Settings → Authentication, default on, live): a
+  browser sign-in's cookie gets `Max-Age` = the session's lifetime in `apply_session` and the
+  admin handoff. `remember: false` on password login and set-password, and a "Remember me"
+  checkbox on the Saltcorn UI login form, give a session-only cookie for that sign-in. Tests in
+  `sc-server/tests`.
+
+## A2 — Email verification for sign-ups
+
+User request: an application where somebody signs up with an email address and has full access
+only after following a link emailed to that address. The `users.email_verified` flag already
+exists (security review #41: sign-up leaves it `false`; a reset or invitation link and an
+identity provider sign-in set it), but nothing sends a verification link or acts on the flag.
+Decision: an unverified account keeps its role and is **served as a less privileged role** by
+an application that requires verification, the way `max_role` caps (F9). So every way of
+proving the address (the new link, a reset link, an invitation, an identity provider) gives
+full access with nothing further to do, and turning the setting off restores it.
+
+- [x] **A2.1** REST settings `verify_email` and `unverified_role` (default 100), with an optional
+  `verify_email_subject` / `verify_email_body`. `sc_auth`: a `verify` token purpose (48 hours),
+  `redeem_email_verification`, and the password links refuse a verify token.
+  `sc_app::cap_role` serves an unproven account as `unverified_role`. Sign-up emails the link
+  (`{origin}/verify-email#token=…`), and `POST {mount}/verify-email` and
+  `POST {mount}/resend-verification` are added. The user summary gains `email_verified`.
+  Test: `sc-server/tests/app_email_verification.rs`.
+- [ ] **A2.2** The React scaffold's `/verify-email` page and a "check your email" banner, and the
+  builder agent's prompt.
+- [ ] **A2.3** Saltcorn UI applications: the sign-up form sends the link and the framework
+  serves `/auth/verify-email`. Until then, Saltcorn UI sign-ups are not verified.
+
 ---
 
 ## Open questions

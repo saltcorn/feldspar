@@ -12,9 +12,11 @@ use sc_query::{Statement, Value};
 use sc_types::{BasicType, TypeRef};
 use serde_json::Value as Json;
 
+use crate::caller::Authority;
 use crate::catalog::Catalog;
-use crate::field::{Attrs, DataField};
+use crate::field::DataField;
 use crate::tx::SharedTx;
+use sc_types::Attrs;
 
 /// One row per registered device: whose it is, for which application, and the
 /// watermark of the last pull it confirmed having applied.
@@ -153,7 +155,7 @@ impl std::fmt::Display for SyncWatermark {
 }
 
 fn require_sync(catalog: &Catalog) -> Result<()> {
-    if catalog.primary().capabilities().change_triggers {
+    if catalog.primary_driver().capabilities().change_triggers {
         Ok(())
     } else {
         Err(Error::invalid(
@@ -168,16 +170,16 @@ fn require_sync(catalog: &Catalog) -> Result<()> {
 /// it sees, so what the reads return and what the watermark names agree.
 pub async fn sync_watermark(catalog: &Catalog, tx: &SharedTx) -> Result<SyncWatermark> {
     require_sync(catalog)?;
-    if catalog.primary().dialect().is_sqlite() {
+    if catalog.primary_driver().dialect().is_sqlite() {
         let rows = tx
-            .run(
-                None,
+            .run_as(
+                Authority::system("sync: read the change-log watermark"),
                 &Statement::raw(
-                    format!(
+                    sc_query::TrustedSql::composed(format!(
                         "SELECT max(coalesce((SELECT seq FROM sqlite_sequence WHERE name = '{log}'), 0), \
                          coalesce((SELECT max(seq) FROM \"{log}\"), 0)) AS seq",
                         log = crate::change_log::CHANGES_TABLE
-                    ),
+                    )),
                     Vec::new(),
                 ),
             )
@@ -190,8 +192,8 @@ pub async fn sync_watermark(catalog: &Catalog, tx: &SharedTx) -> Result<SyncWate
         };
     }
     let rows = tx
-        .run(
-            None,
+        .run_as(
+            Authority::system("sync: read the change-log watermark"),
             &Statement::raw("SELECT txid_current_snapshot()::text", Vec::new()),
         )
         .await?;
@@ -243,7 +245,7 @@ pub async fn changed_entries(
     until: &SyncWatermark,
 ) -> Result<Vec<ChangedEntry>> {
     require_sync(catalog)?;
-    let (sql, binds) = if catalog.primary().dialect().is_sqlite() {
+    let (sql, binds) = if catalog.primary_driver().dialect().is_sqlite() {
         (
             format!(
                 "SELECT row_key, op, old_values, seq FROM \"{log}\" \
@@ -267,7 +269,7 @@ pub async fn changed_entries(
                    AND NOT txid_visible_in_snapshot(txid, $5::text::txid_snapshot) \
                  ORDER BY seq",
                 log = catalog
-                    .primary()
+                    .primary_driver()
                     .dialect()
                     .quote_ident(crate::change_log::CHANGES_TABLE),
             ),
@@ -280,7 +282,12 @@ pub async fn changed_entries(
             ],
         )
     };
-    let rows = tx.run(None, &Statement::raw(sql, binds)).await?;
+    let rows = tx
+        .run_as(
+            Authority::system("sync: read the change log"),
+            &Statement::raw(sc_query::TrustedSql::composed(sql), binds),
+        )
+        .await?;
     Ok(rows
         .iter()
         .filter_map(|row| {

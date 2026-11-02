@@ -52,6 +52,13 @@
 //! rewritten. That is the whole implementation of "a suspended run finishes with
 //! its version of the workflow".
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
+    sc_catalog::Unchecked::system("sc-workflow: the workflow queue, versions and traces");
+
 pub mod driver;
 pub mod engine;
 pub mod machine;
@@ -64,12 +71,12 @@ pub mod validate;
 pub mod versions;
 pub mod workflow;
 
-pub use driver::{Advanced, Clock, Driver, ManualClock, SystemClock, node_id, start_run};
+pub use driver::{Advanced, Driver, node_id, start_run};
 pub use engine::{DEFAULT_LEASE_SECONDS, DEFAULT_POLL_SECONDS, WorkflowEngineTask};
 pub use machine::{Conclusion, Decision, PendingForm, WorkflowRun};
 pub use ops::{
-    INLINE_LEASE_SECONDS, ROLE_ADMIN, cancel_run, check_may_resume, list_workflow_runs, may_resume,
-    resume_run, retry_run,
+    INLINE_LEASE_SECONDS, cancel_run, check_may_resume, list_workflow_runs, may_resume, resume_run,
+    retry_run,
 };
 pub use queue::{DEFAULT_BATCH, DatabaseQueue, WorkQueue};
 pub use run::{

@@ -25,6 +25,7 @@ use sc_error::{Error, Result};
 use sc_query::{
     Assignment, Delete, Expr, Insert, OrderBy, Select, Source, Statement, Update, Value,
 };
+use sc_types::Role;
 use sc_types::{BasicType, TypeRef};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
@@ -176,7 +177,7 @@ pub struct Workspace {
     /// The least privileged role it is shared with (A9.1); `None` for nobody
     /// but its owner.
     #[serde(default)]
-    pub share_role: Option<u8>,
+    pub share_role: Option<Role>,
     /// The application it belongs to (A9.3); `None` for the unrestricted
     /// Analytics UI's.
     #[serde(default)]
@@ -304,14 +305,9 @@ pub async fn rename_workspace(catalog: &Catalog, id: WorkspaceId, name: &str) ->
 pub async fn share_workspace(
     catalog: &Catalog,
     id: WorkspaceId,
-    share_role: Option<u8>,
+    share_role: Option<Role>,
 ) -> Result<Workspace> {
-    let workspace = require_workspace(catalog, id).await?;
-    Sharing {
-        share_role,
-        ..workspace.sharing()
-    }
-    .check()?;
+    require_workspace(catalog, id).await?;
     update(
         catalog,
         id,
@@ -324,7 +320,7 @@ pub async fn share_workspace(
     require_workspace(catalog, id).await
 }
 
-fn share_role_value(role: Option<u8>) -> Value {
+fn share_role_value(role: Option<Role>) -> Value {
     role.map_or(Value::Null, |r| Value::Int(i64::from(r)))
 }
 
@@ -448,7 +444,7 @@ fn from_row(row: &Row) -> Result<Workspace> {
         other => return Err(bad(COL_UPDATED_AT, other)),
     };
     let share_role = match row.get(COL_SHARE_ROLE) {
-        Some(Value::Int(n)) => u8::try_from(*n).ok(),
+        Some(Value::Int(n)) => Role::try_from(*n).ok(),
         Some(Value::Null) | None => None,
         other => return Err(bad(COL_SHARE_ROLE, other)),
     };
@@ -471,7 +467,7 @@ fn from_row(row: &Row) -> Result<Workspace> {
 
 async fn exec(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()
@@ -481,7 +477,7 @@ async fn exec(catalog: &Catalog, statement: Statement) -> Result<()> {
 
 async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

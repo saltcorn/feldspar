@@ -52,18 +52,14 @@ use sc_error::{Error, Result};
 
 pub use mjml::render_mjml;
 pub use relay::{
-    SUBMISSION_STARTTLS_PORT, SUBMISSION_TLS_PORT, check_relay, is_public, relay_mailer,
-    resolve_public, security_for_port,
+    SUBMISSION_STARTTLS_PORT, SUBMISSION_TLS_PORT, check_relay, relay_mailer, resolve_public,
+    security_for_port,
 };
-// The address vocabulary, re-exported: a crate that builds a message should not
-// have to depend on the *settings* crate to name an address. Parsed there, and
-// only there, because the from-address is a setting and a setting is checked
-// where it is declared — this is that one grammar, borrowed.
-pub use sc_config::{Mailbox, parse_mailbox};
-// And the settings a server is described by, for a caller that names one of
-// its own ([`Mailer::send_via`]).
+// The address vocabulary and the settings a server is described by are
+// `sc-config`'s: the from-address is a setting, and a setting is parsed and
+// checked where it is declared.
 use sc_config::{CERTIFICATE_ACCEPT_ANY, SMTP_CERTIFICATE_CHECK, SMTP_CERTIFICATE_NAME};
-pub use sc_config::{EmailSettings, SmtpSecurity};
+use sc_config::{EmailSettings, Mailbox, SmtpSecurity, parse_mailbox};
 
 /// One message, independent of how it is sent.
 ///
@@ -198,6 +194,12 @@ pub trait Mailer: Send + Sync {
     async fn send_via(&self, server: &EmailSettings, email: &Email) -> Result<()> {
         relay_mailer(server).await?.send(email).await
     }
+
+    /// Whether this transport already keeps a checklist run's messages back
+    /// ([`Withholding`]), so it is not wrapped twice.
+    fn withholds(&self) -> bool {
+        false
+    }
 }
 
 /// Split a rendered recipient string into mailboxes.
@@ -280,7 +282,7 @@ impl SmtpMailer {
         if settings.authenticates() {
             builder = builder.credentials(Credentials::new(
                 settings.username.clone(),
-                settings.password.clone(),
+                settings.password.expose().clone(),
             ));
         }
         Ok(SmtpMailer {
@@ -504,6 +506,80 @@ impl Mailer for SettingsMailer {
 
     async fn send(&self, email: &Email) -> Result<()> {
         SmtpMailer::new(&self.settings().await?)?.send(email).await
+    }
+}
+
+/// The mailer a dispatcher installs around the one it is handed: a message
+/// sent on behalf of a checklist run goes to the
+/// [run's outbox](sc_catalog::outbox) instead (TODO-checklists C4.1), and
+/// every other message to the transport it wraps.
+///
+/// A wrapper rather than a check in each transport, so a transport added later
+/// cannot forget it: every message a trigger, a workflow or an auth route sends
+/// reaches the transport through the dispatcher's mailer, which is this.
+pub struct Withholding {
+    inner: Arc<dyn Mailer>,
+}
+
+impl Withholding {
+    /// `inner`, withholding what a checklist run sends. Wrapping one that is
+    /// already wrapped returns it as it is.
+    pub fn wrap(inner: Arc<dyn Mailer>) -> Arc<dyn Mailer> {
+        if inner.withholds() {
+            return inner;
+        }
+        Arc::new(Withholding { inner })
+    }
+
+    /// Keep `email` on `outbox`, after the checks the real transport makes, so
+    /// a check cannot pass on a message SMTP would refuse to build.
+    fn withhold(outbox: &sc_catalog::outbox::RunOutbox, email: &Email) -> Result<()> {
+        email.check()?;
+        build_message(email)?;
+        let body = email
+            .text
+            .clone()
+            .or_else(|| email.html.clone())
+            .unwrap_or_default();
+        outbox.capture(sc_catalog::outbox::Sent::new(
+            sc_catalog::outbox::SentKind::Email,
+            email
+                .recipients()
+                .iter()
+                .map(|m| m.address.clone())
+                .collect(),
+            email.subject.clone(),
+            serde_json::Value::String(body),
+        ));
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Mailer for Withholding {
+    async fn sender(&self) -> Result<Mailbox> {
+        self.inner.sender().await
+    }
+
+    async fn send(&self, email: &Email) -> Result<()> {
+        match sc_catalog::outbox::current() {
+            Some(outbox) => Withholding::withhold(&outbox, email),
+            None => self.inner.send(email).await,
+        }
+    }
+
+    async fn send_via(&self, server: &EmailSettings, email: &Email) -> Result<()> {
+        match sc_catalog::outbox::current() {
+            Some(outbox) => {
+                check_relay(server)?;
+                Withholding::withhold(&outbox, email)
+            }
+            None => self.inner.send_via(server, email).await,
+        }
+    }
+
+    fn withholds(&self) -> bool {
+        true
     }
 }
 

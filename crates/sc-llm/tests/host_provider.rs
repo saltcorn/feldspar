@@ -77,7 +77,7 @@ async fn the_hosts_provider_is_found_like_a_stored_one_and_never_stored() -> Res
 
     // And no row was written for it: the key is in no table.
     let rows = catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&sc_query::Statement::from(sc_query::Select::from(
             sc_query::Source::table(sc_llm::LLM_PROVIDERS_TABLE),
         )))

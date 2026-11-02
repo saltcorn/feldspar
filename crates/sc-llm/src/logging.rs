@@ -276,15 +276,19 @@ fn without_images(req: &crate::message::LlmRequest) -> serde_json::Value {
     let mut value = serde_json::to_value(req).unwrap_or(serde_json::Value::Null);
     if let Some(messages) = value.get_mut("messages").and_then(|m| m.as_array_mut()) {
         for message in messages {
-            let Some(images) = message.get_mut("images").and_then(|i| i.as_array_mut()) else {
-                continue;
-            };
-            for image in images {
-                if let Some(data) = image.get_mut("data") {
-                    let chars = data.as_str().map_or(0, str::len);
-                    *data = serde_json::Value::String(format!(
-                        "‹{chars} base64 characters not logged›"
-                    ));
+            // A user message's attachments are not logged either: an image is
+            // a screenshot's equal, and a document is the person's file.
+            for key in ["images", "attachments"] {
+                let Some(images) = message.get_mut(key).and_then(|i| i.as_array_mut()) else {
+                    continue;
+                };
+                for image in images {
+                    if let Some(data) = image.get_mut("data") {
+                        let chars = data.as_str().map_or(0, str::len);
+                        *data = serde_json::Value::String(format!(
+                            "‹{chars} base64 characters not logged›"
+                        ));
+                    }
                 }
             }
         }

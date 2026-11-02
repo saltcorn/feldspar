@@ -1,6 +1,7 @@
 // Top-level admin app: bootstraps auth state and gates the three top-level
 // states the design calls for — create-first-user, login, and the authenticated
-// admin shell — then routes between the admin screens with a tiny hash router
+// admin shell, which opens over itself the first-run onboarding dialogs the
+// first time an admin arrives (`onboarding/`) — then routes between the admin screens with a tiny hash router
 // (no router dependency, and no inline styles, so the strict CSP holds).
 //
 // The shell is Tabler's **vertical layout**: a dark sidebar holding the brand
@@ -34,6 +35,7 @@ import {
   IconMoon,
   IconRobot,
   IconSettings,
+  IconShieldLock,
   IconSun,
   IconTable,
   IconUsers,
@@ -53,6 +55,9 @@ import { ApplicationForm } from "./screens/ApplicationForm";
 import { ApplicationLibrary } from "./screens/ApplicationLibrary";
 import { ApplicationTranslations } from "./screens/Translations";
 import { ApplicationViews } from "./screens/ApplicationViews";
+import { ChecklistDetail } from "./screens/ChecklistDetail";
+import { ChecklistRun } from "./screens/ChecklistRun";
+import { Checklists } from "./screens/Checklists";
 import { PageProperties } from "./screens/PageProperties";
 import { ViewEditor } from "./screens/ViewEditor";
 import { DbConnections } from "./screens/DbConnections";
@@ -66,7 +71,8 @@ import { LlmProviderForm } from "./screens/LlmProviderForm";
 import { McpServers } from "./screens/McpServers";
 import { Login } from "./screens/Login";
 import { Roles } from "./screens/Roles";
-import { Settings } from "./screens/Settings";
+import { AccountSecurity } from "./screens/SecondFactor";
+import { Settings, settingsTabFromPath } from "./screens/Settings";
 import { CodeLibraries } from "./screens/CodeLibraries";
 import { SharedTranslations } from "./screens/SharedTranslations";
 import { StreamForm } from "./screens/StreamForm";
@@ -84,6 +90,7 @@ import { WorkflowEditor } from "./screens/WorkflowEditor";
 import { WorkflowRuns } from "./screens/WorkflowRuns";
 import { T, useT } from "./i18n";
 import { modelRedirect } from "./modelRedirect";
+import { Onboarding } from "./onboarding/Onboarding";
 
 /** The authenticated user, as reported by `authStatus` / `login`. */
 export type CurrentUser = NonNullable<AuthStatusResponse["current_user"]>;
@@ -168,13 +175,17 @@ export function App() {
   return (
     <I18nProvider locale={status.locales?.current ?? "en"}>
       {!status.any_user_exists ? (
-        <FirstUser onCreated={refresh} />
+        <FirstUser
+          tokenRequired={status.first_user_token_required}
+          onCreated={refresh}
+        />
       ) : !status.current_user ? (
         <Login onLoggedIn={refresh} />
       ) : (
         <Shell
           user={status.current_user}
           locales={status.locales}
+          onboarding={status.onboarding_pending}
           onLogout={refresh}
         />
       )}
@@ -268,7 +279,10 @@ export const NAV: NavItem[] = [
     // Last, and one entry however many sections it grows: settings are about
     // the *installation* rather than about anything in it, and an admin looks
     // for them in one place rather than under whichever thing they configure.
-    matches: ["/settings", "/code-libraries", "/translations"],
+    // The data-only checklists (TODO-checklists C1.16) are its Checklists tab,
+    // so a checklist's own screen and its runs light it up as well. An
+    // application's checklists are under that application instead.
+    matches: ["/settings", "/code-libraries", "/translations", "/checklists", "/checklist-runs"],
   },
 ];
 
@@ -276,14 +290,20 @@ export const NAV: NavItem[] = [
 function Shell({
   user,
   locales,
+  onboarding,
   onLogout,
 }: {
   user: CurrentUser;
   locales: AuthStatusResponse["locales"];
+  /** Show the first-run onboarding dialogs (`onboarding/script.ts`). */
+  onboarding: boolean;
   onLogout: () => void;
 }) {
   const { t } = useT();
   const route = useHashRoute();
+  // Held here rather than read from `onboarding` each render: closing the
+  // dialogs is immediate, and the server's record of it is not re-fetched.
+  const [onboardingOpen, setOnboardingOpen] = useState(onboarding);
   const [menuOpen, setMenuOpen] = useState(false);
   const [theme, toggleTheme] = useTheme();
   const [folded, toggleFolded] = useFoldedSidebar();
@@ -390,6 +410,16 @@ function Shell({
           <div className="navbar-nav flex-row d-lg-none">
             <ThemeToggle theme={theme} onToggle={toggleTheme} />
             <div className="nav-item ms-2">
+              <a
+                className="nav-link px-0"
+                href="#/account/security"
+                aria-label={t("Two-factor authentication")}
+                title={t("Two-factor authentication")}
+              >
+                <IconShieldLock className="icon-1" />
+              </a>
+            </div>
+            <div className="nav-item ms-2">
               <button
                 type="button"
                 className="nav-link px-0"
@@ -471,6 +501,15 @@ function Shell({
                   <span className="sidebar-wide-only"><T text="Log out" /></span>
                 </button>
                 <ThemeToggle theme={theme} onToggle={toggleTheme} />
+                {/* The admin's own account: two-factor authentication. */}
+                <a
+                  className="btn btn-icon btn-ghost-secondary"
+                  href="#/account/security"
+                  aria-label={t("Two-factor authentication")}
+                  title={t("Two-factor authentication")}
+                >
+                  <IconShieldLock className="icon-2" />
+                </a>
                 {/* Nothing at all on an installation that serves one language
                     (D11): i18n is a thing an admin turns on, not a control
                     every installation grows. */}
@@ -501,6 +540,7 @@ function Shell({
       {/* A build started from the sidebar finishes wherever the admin has got
           to by then; the applications list has its own banner for the news. */}
       {path !== "/applications" && <AppOutcomeToast />}
+      {onboardingOpen && <Onboarding onClose={() => setOnboardingOpen(false)} />}
     </div>
   );
 }
@@ -651,6 +691,34 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
     return (
       <ApplicationTranslations appId={decodeURIComponent(translationsMatch[1])} />
     );
+  }
+  // An application's checklists (TODO-checklists C1.16) live under its own
+  // route, so the sidebar keeps it current; the data-only ones are below.
+  const appChecklistRunMatch = path.match(
+    /^\/applications\/([^/]+)\/checklists\/runs\/([^/]+)$/,
+  );
+  if (appChecklistRunMatch) {
+    return (
+      <ChecklistRun
+        key={path}
+        appId={decodeURIComponent(appChecklistRunMatch[1])}
+        runId={decodeURIComponent(appChecklistRunMatch[2])}
+      />
+    );
+  }
+  const appChecklistMatch = path.match(/^\/applications\/([^/]+)\/checklists\/([^/]+)$/);
+  if (appChecklistMatch) {
+    return (
+      <ChecklistDetail
+        key={path}
+        appId={decodeURIComponent(appChecklistMatch[1])}
+        checklistId={decodeURIComponent(appChecklistMatch[2])}
+      />
+    );
+  }
+  const appChecklistsMatch = path.match(/^\/applications\/([^/]+)\/checklists$/);
+  if (appChecklistsMatch) {
+    return <Checklists key={path} appId={decodeURIComponent(appChecklistsMatch[1])} />;
   }
   const libraryMatch = path.match(/^\/applications\/([^/]+)\/library$/);
   if (libraryMatch) {
@@ -808,6 +876,22 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   if (runMatch) {
     return <RunDetail runId={decodeURIComponent(runMatch[1])} />;
   }
+  const checklistRunMatch = path.match(/^\/checklist-runs\/([^/]+)$/);
+  if (checklistRunMatch) {
+    return (
+      <ChecklistRun key={path} appId={null} runId={decodeURIComponent(checklistRunMatch[1])} />
+    );
+  }
+  const checklistMatch = path.match(/^\/checklists\/([^/]+)$/);
+  if (checklistMatch) {
+    return (
+      <ChecklistDetail
+        key={path}
+        appId={null}
+        checklistId={decodeURIComponent(checklistMatch[1])}
+      />
+    );
+  }
   if (path.startsWith("/users")) {
     return <Users />;
   }
@@ -815,7 +899,7 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
     return <Roles />;
   }
   if (path.startsWith("/settings")) {
-    return <Settings />;
+    return <Settings key={path} requestedTab={settingsTabFromPath(path)} />;
   }
   // Settings → Development → Code library (TODO F3.3).
   if (path.startsWith("/code-libraries")) {
@@ -824,6 +908,10 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   // Settings → Translations (shared) (TODO F6).
   if (path === "/translations") {
     return <SharedTranslations />;
+  }
+  // The signed-in admin's own two-factor authentication (design §7.2).
+  if (path === "/account/security") {
+    return <AccountSecurity />;
   }
   return <Tables />;
 }

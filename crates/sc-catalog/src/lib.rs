@@ -44,6 +44,7 @@ mod model_host;
 mod module_tables;
 mod observer;
 mod origin;
+pub mod outbox;
 mod prefetch;
 mod projection;
 mod provider;
@@ -51,6 +52,7 @@ mod rename;
 pub mod retention;
 mod rls;
 pub mod secrets;
+mod services;
 mod spatial;
 mod sync;
 mod table;
@@ -59,12 +61,12 @@ mod tx;
 mod vector;
 mod wakeups;
 
-pub use admin_host::{AdminCall, AdminHost};
+pub use admin_host::{AdminHost, AdminUser, BackendOperation, NewFileStore, TranslationsOf};
 pub use caller::{
-    CallerContext, CallingApp, Origin, UNTRUSTED_ORIGIN, current_origin, is_untrusted_chain,
-    untrusted_chain, with_origin,
+    Authority, CallingApp, Origin, Principal, SystemReason, TaskScope, UNTRUSTED_ORIGIN, Unchecked,
+    current_origin, is_untrusted_chain, spawn_scoped, untrusted_chain, with_origin,
 };
-pub use catalog::{Catalog, ProvidedTableIssue, SchemaStep};
+pub use catalog::{Catalog, CatalogSchema, DriverInfo, ProvidedTableIssue, SchemaStep};
 pub use change_log::{
     CHANGES_TABLE, ChangeLogFeature, as_text_sql, bootstrap_change_log, change_log_enabled,
     change_log_key, disable_change_log_sql, enable_change_log_sql, history_enabled,
@@ -95,8 +97,7 @@ pub use edited::{
 };
 pub use events::{LIVE_EVENTS, TRIGGER_EVENTS, TableEvents, TableWrite, WriteOp};
 pub use field::{
-    Attrs, BaseField, DataField, DataFieldKind, DbId, FieldId, FileOnConflict, FileOnDelete,
-    FileStoreId, TableId,
+    DataField, DataFieldKind, DbId, FieldId, FileOnConflict, FileOnDelete, FileStoreId,
 };
 pub use field_meta::{
     FIELD_META_TABLE, FieldMeta, FieldMetaId, KIND_CALC, KIND_FILE, KIND_KEY, KIND_PLAIN,
@@ -109,13 +110,13 @@ pub use file_stores::{
     QUERY_STORE_FILES, StoreFileSetting, bootstrap_file_stores, check_file_store_saveable,
     choosable_file_stores, connect_all_file_stores, connect_file_store_def, delete_file_store,
     file_store_field_references, file_store_settings, list_file_stores, load_file_store,
-    load_file_store_by_name, resolve_options, save_file_store, store_file_settings,
-    unique_file_store_name,
+    load_file_store_by_name, open_checked_store, resolve_options, save_file_store,
+    store_file_settings, unique_file_store_name,
 };
 pub use model_host::{ModelHost, ModelSummary, PredictRows, check_model_calls};
 pub use module_tables::{ModuleTableClaim, ModuleTables};
 pub use observer::{ReprojectedApp, SchemaChanged, SchemaObserver, TableRenameHook};
-pub use origin::PublicOrigin;
+pub use origin::{PublicBaseUrl, PublicOrigin, TrustedHost, is_valid_host};
 pub use prefetch::prefetch_bindings;
 pub use projection::SchemaProjection;
 pub use provider::{
@@ -128,6 +129,7 @@ pub use rls::{
     enable_rls_sql, run_in_context, run_in_context_read_only, set_caller_context,
 };
 pub use secrets::SecretKey;
+pub use services::{Extensions, Services};
 pub use spatial::bootstrap_spatial;
 pub use sync::{
     ChangedEntry, SYNC_CLIENTS_TABLE, SYNC_KEYS_TABLE, SyncWatermark, changed_entries,
@@ -148,6 +150,7 @@ pub use wakeups::RunWakeups;
 mod tests {
     use super::*;
     use sc_db::{Column, ColumnGenerator, ForeignKey, PhysicalTable};
+    use sc_types::Role;
     use sc_types::{BasicType, TypeRef};
 
     #[test]
@@ -188,7 +191,7 @@ mod tests {
 
     #[test]
     fn base_field_label_defaults_to_name() {
-        let b = BaseField::new("count", TypeRef::Basic(BasicType::Int));
+        let b = sc_types::BaseField::new("count", TypeRef::Basic(BasicType::Int));
         assert_eq!(b.name, "count");
         assert_eq!(b.label, "count");
         assert!(b.attributes.is_empty());
@@ -233,7 +236,6 @@ mod tests {
     #[test]
     fn table_from_physical_maps_pk_types_and_nullability() {
         let table = Table::from_physical(DbId::primary(), &physical_with_fk());
-        assert_eq!(table.id, TableId("book".into()));
         assert_eq!(table.name, "book");
         assert_eq!(table.database, DbId::primary());
         assert_eq!(table.source, TableSource::Database);
@@ -258,7 +260,7 @@ mod tests {
         assert_eq!(
             author.kind,
             DataFieldKind::Key {
-                target_table: TableId("person".into()),
+                target_table: "person".into(),
                 target_field: FieldId("id".into()),
                 summary_field: None,
             }
@@ -268,8 +270,8 @@ mod tests {
     #[test]
     fn access_rules_default_is_admin_only() {
         let rules = AccessRules::default();
-        assert_eq!(rules.min_role_read, 1);
-        assert_eq!(rules.min_role_write, 1);
+        assert_eq!(rules.min_role_read, Role::ADMIN);
+        assert_eq!(rules.min_role_write, Role::ADMIN);
     }
 
     #[test]
@@ -296,20 +298,19 @@ mod tests {
         let meta = TableMeta::new("book")
             .label("Books")
             .description("The library catalogue")
-            .access(80, 40);
+            .access(Role::of(80), Role::of(40));
         table.apply_overlay(&meta);
 
         // Added: exactly the four things the overlay is the authority on.
         assert_eq!(table.label, "Books");
         assert_eq!(table.description, "The library catalogue");
-        assert_eq!(table.access.min_role_read, 80);
-        assert_eq!(table.access.min_role_write, 40);
+        assert_eq!(table.access.min_role_read, Role::of(80));
+        assert_eq!(table.access.min_role_write, Role::of(40));
         assert_eq!(table.overlay, Some(meta.id));
 
         // Untouched: everything the database is the authority on. The merge has
         // no conflict semantics because the two sets do not intersect, and this
         // is what asserts they still don't.
-        assert_eq!(table.id, plain.id);
         assert_eq!(table.name, plain.name);
         assert_eq!(table.fields, plain.fields);
         assert_eq!(table.primary_key, plain.primary_key);
@@ -320,10 +321,10 @@ mod tests {
     #[test]
     fn an_empty_label_means_none_given_not_a_blank_label() {
         let mut table = Table::from_physical(DbId::primary(), &physical_with_fk());
-        table.apply_overlay(&TableMeta::new("book").access(100, 100));
+        table.apply_overlay(&TableMeta::new("book").access(Role::PUBLIC, Role::PUBLIC));
         assert_eq!(table.label, "book", "the table's own name stays the label");
         assert_eq!(table.description, "");
-        assert_eq!(table.access.min_role_read, 100);
+        assert_eq!(table.access.min_role_read, Role::PUBLIC);
     }
 
     #[test]
@@ -338,31 +339,11 @@ mod tests {
         table.apply_overlay(
             &TableMeta::new("_fd_config")
                 .label("Config")
-                .access(100, 100),
+                .access(Role::PUBLIC, Role::PUBLIC),
         );
 
         assert_eq!(table.access, AccessRules::default());
         assert_eq!(table.label, "_fd_config");
         assert_eq!(table.overlay, None);
-    }
-
-    #[test]
-    fn attrs_and_base_field_are_re_exported_from_sc_types_not_redefined() {
-        // Both moved down to `sc-types` (layer 3) so `FormField` — which carries
-        // a `BaseField` and describes `Attrs` entries — can live beside them.
-        // This crate re-exports both, so the old paths still resolve and every
-        // existing call site is untouched. These assignments compile only if the
-        // names are the *same* types, not look-alikes.
-        let attrs: Attrs = sc_types::Attrs::new();
-        let _: sc_types::Attrs = attrs;
-        let base: BaseField = sc_types::BaseField::new("x", TypeRef::Basic(BasicType::Text));
-        let _: sc_types::BaseField = base;
-
-        // `DataField` stays here — its `Key`/`File` kinds reference catalog ids —
-        // and still builds on the very same `BaseField`.
-        let mut field = DataField::plain("x", TypeRef::Basic(BasicType::Text));
-        field.base.attributes.insert("max".to_owned(), 10.into());
-        let _: &sc_types::BaseField = &field.base;
-        let _: &sc_types::Attrs = &field.base.attributes;
     }
 }

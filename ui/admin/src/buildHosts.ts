@@ -1,4 +1,4 @@
-// Settings → Build hosts: the machines that build an application's targets for
+// Settings → Development → Build hosts: the machines that build an application's targets for
 // this server, such as a Mac for iOS while the server runs on Linux
 // (`TODO-build-hosts.md`). The pure half of the tab, so it is testable.
 //

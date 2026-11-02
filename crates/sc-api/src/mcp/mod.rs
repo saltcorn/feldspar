@@ -12,7 +12,7 @@
 //! [`crate::schema_edit`]'s module comment was written to prevent,
 //! moved up one level: two bodies that check grants slightly differently and
 //! drift within a release. So the bodies live at the lowest layer that can hold
-//! them, and the copilot — `sc-core-traits`'s `admin_copilot` — and the MCP
+//! them, and the copilot — `sc-agent-builtins`'s `admin_copilot` — and the MCP
 //! server are both thin things over a [`ToolSet`].
 //!
 //! ## What a caller supplies, and what it does not
@@ -56,7 +56,9 @@
 //! The full ten-tool set is therefore assembled by `sc_app::mcp::tool_set`, the
 //! lowest layer that can name every tool in it.
 
+use sc_types::Role;
 mod code_api;
+mod docs;
 mod endpoint_tool;
 mod json_schema;
 mod schema;
@@ -91,6 +93,17 @@ pub const GRANT_EDIT: &str = schema_edit::GRANT_EDIT;
 pub const GRANT_DROP: &str = schema_edit::GRANT_DROP;
 /// May write the access rules of §7.3, a trigger's `min_role` and a query's.
 pub const GRANT_ACCESS_CHANGES: &str = schema_edit::GRANT_ACCESS_CHANGES;
+
+/// The key the **checklists grant** is stored under:
+/// `none`, `append` (the default) or `full`. Not one of the boolean
+/// [`FLAG_KEYS`] — it has three values — but stored beside them, on an
+/// `admin_copilot` agent's configuration and on a token's grants alike, so the
+/// two callers of the checklist tools read the same answer. `sc-check` gives
+/// the values their meaning.
+pub const CHECKLISTS_GRANT: &str = "checklists";
+
+/// The values [`CHECKLISTS_GRANT`] may take.
+pub const CHECKLISTS_GRANT_VALUES: [&str; 3] = ["none", "append", "full"];
 
 /// The half of the surface a tool belongs to, where it belongs to one.
 ///
@@ -345,6 +358,14 @@ pub fn token_flags_from_submitted(submitted: &Attrs) -> Attrs {
         .and_then(Json::as_bool)
         .unwrap_or(false);
     out.insert(ALLOW_ALL.to_owned(), Json::Bool(all));
+    // The checklists grant is written explicitly too, `append` when the mint
+    // said nothing: `full` is never anybody's default, `allow_all` included.
+    let checklists = submitted
+        .get(CHECKLISTS_GRANT)
+        .and_then(Json::as_str)
+        .filter(|v| CHECKLISTS_GRANT_VALUES.contains(v))
+        .unwrap_or("append");
+    out.insert(CHECKLISTS_GRANT.to_owned(), Json::from(checklists));
     out
 }
 
@@ -379,6 +400,15 @@ pub fn validate_token_flags(submitted: &Attrs) -> Result<()> {
 /// The validation both writers share: an agent's `validate_config` and a token
 /// mint ask the same question of the same six keys.
 pub fn validate_flags(config: &Attrs) -> Result<()> {
+    match config.get(CHECKLISTS_GRANT) {
+        None | Some(Json::Null) => {}
+        Some(Json::String(s)) if CHECKLISTS_GRANT_VALUES.contains(&s.as_str()) => {}
+        Some(other) => {
+            return Err(Error::invalid(format!(
+                "`{CHECKLISTS_GRANT}` should be one of none, append or full, got {other}"
+            )));
+        }
+    }
     for key in FLAG_KEYS {
         match config.get(key) {
             None | Some(Json::Null) | Some(Json::Bool(_)) => {}
@@ -407,7 +437,7 @@ pub struct ToolContext<'a> {
     pub user: Option<&'a User>,
     /// The role this call is authorized at: the user's own, or 1 for a system
     /// run. Every tool here refuses anything but 1.
-    pub role: u8,
+    pub role: Role,
     /// The trigger dispatcher, where this process has one.
     ///
     /// Carried rather than reached for, exactly as `TraitContext` carries it: a
@@ -475,8 +505,8 @@ pub struct ToolSet {
 }
 
 impl ToolSet {
-    /// The tools this crate can hold: the schema's two, the triggers' four and
-    /// the code-body reference.
+    /// The tools this crate can hold: the schema's two, the triggers' four, the
+    /// code-body reference and the documentation's two.
     ///
     /// Not the whole surface — `sc_app::mcp::tool_set` adds the three
     /// application tools and is what a caller should normally build.
@@ -490,6 +520,8 @@ impl ToolSet {
                 Arc::new(triggers::SaveTrigger),
                 Arc::new(triggers::DeleteTrigger),
                 Arc::new(code_api::DescribeCodeApi),
+                Arc::new(docs::SearchDocs),
+                Arc::new(docs::ReadDocs),
             ],
             grants,
             areas,
@@ -594,8 +626,8 @@ impl ToolSet {
 /// The check is on the **call's** caller, not on any agent's `min_role`: an
 /// agent may be reachable at role 80 for everything else it does and still must
 /// not hand that caller the schema.
-pub fn require_admin(role: u8, tool: &str) -> Result<()> {
-    if role == 1 {
+pub fn require_admin(role: Role, tool: &str) -> Result<()> {
+    if role.is_admin() {
         return Ok(());
     }
     Err(Error::invalid(format!(
@@ -655,36 +687,13 @@ pub fn arguments(args: &Json, allowed: &[&str]) -> Result<Map<String, Json>> {
     Ok(obj)
 }
 
-/// An optional string argument, or the refusal that says what it should be.
-pub fn optional_string(obj: &Map<String, Json>, key: &str) -> Result<Option<String>> {
-    match obj.get(key) {
-        None | Some(Json::Null) => Ok(None),
-        Some(Json::String(s)) => Ok(Some(s.clone())),
-        Some(other) => Err(Error::invalid(format!(
-            "`{key}` should be a string, got {other}"
-        ))),
-    }
-}
-
-/// An optional boolean argument, or the refusal that says what it should be.
-pub fn optional_bool(obj: &Map<String, Json>, key: &str) -> Result<Option<bool>> {
-    match obj.get(key) {
-        None | Some(Json::Null) => Ok(None),
-        Some(Json::Bool(b)) => Ok(Some(*b)),
-        Some(other) => Err(Error::invalid(format!(
-            "`{key}` should be true or false, got {other}"
-        ))),
-    }
-}
-
 /// An optional role argument, checked against the 1–100 scale.
-pub fn optional_role(obj: &Map<String, Json>, key: &str) -> Result<Option<u8>> {
+pub fn optional_role(obj: &Map<String, Json>, key: &str) -> Result<Option<Role>> {
     match obj.get(key) {
         None | Some(Json::Null) => Ok(None),
         Some(Json::Number(n)) => n
             .as_i64()
-            .and_then(|n| u8::try_from(n).ok())
-            .filter(|r| (1..=100).contains(r))
+            .and_then(|n| Role::try_from(n).ok())
             .map(Some)
             .ok_or_else(|| {
                 Error::invalid(format!(
@@ -717,8 +726,10 @@ mod tests {
 
     #[test]
     fn only_an_admin_reaches_these_tools() {
-        assert!(require_admin(1, TOOL_EDIT).is_ok());
-        let err = require_admin(40, TOOL_EDIT).unwrap_err().to_string();
+        assert!(require_admin(Role::ADMIN, TOOL_EDIT).is_ok());
+        let err = require_admin(Role::of(40), TOOL_EDIT)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("only available to an administrator"), "{err}");
         assert!(err.contains("role-40"), "{err}");
     }
@@ -726,11 +737,15 @@ mod tests {
     #[test]
     fn an_area_that_is_off_takes_its_tools_out_of_the_listing() {
         let set = ToolSet::core(Grants::all(), Areas::none());
-        // The schema's two and the code-body reference are unconditional; the
-        // triggers' four are gone.
-        assert_eq!(set.all_names().len(), 7);
+        // The schema's two, the code-body reference and the documentation's two
+        // are unconditional; the triggers' four are gone.
+        assert_eq!(set.all_names().len(), 9);
         assert!(set.offers(TOOL_DESCRIBE) && set.offers(TOOL_EDIT));
         assert!(set.offers(TOOL_DESCRIBE_CODE_API));
+        assert!(
+            set.offers(sc_docs::tools::TOOL_SEARCH_DOCS)
+                && set.offers(sc_docs::tools::TOOL_READ_DOCS)
+        );
         assert!(!set.offers(TOOL_SAVE_TRIGGER));
 
         let set = ToolSet::core(Grants::all(), Areas::all());
@@ -791,8 +806,10 @@ mod tests {
     #[test]
     fn a_token_minted_with_nothing_said_is_granted_everything() {
         let stored = token_flags_from_submitted(&Attrs::new());
-        // The eight, and `allow_all` written down as off.
-        assert_eq!(stored.len(), FLAG_KEYS.len() + 1);
+        // The eight, `allow_all` written down as off, and the checklists grant
+        // written down as `append` — never `full` by default.
+        assert_eq!(stored.len(), FLAG_KEYS.len() + 2);
+        assert_eq!(stored[CHECKLISTS_GRANT], Json::from("append"));
         assert_eq!(grants_from_attrs(&stored), Grants::all());
         let areas = areas_from_attrs(&stored);
         assert!(areas.triggers && areas.applications && areas.modules && areas.history);
@@ -805,6 +822,15 @@ mod tests {
         assert_eq!(stored[GRANT_ACCESS_CHANGES], Json::Bool(true));
         assert_eq!(stored[Area::Modules.key()], Json::Bool(true));
         assert_eq!(stored[ALLOW_ALL], Json::Bool(false));
+
+        // A checklists grant that was said is kept, and a bad one refused.
+        said.insert(CHECKLISTS_GRANT.to_owned(), Json::from("full"));
+        assert_eq!(
+            token_flags_from_submitted(&said)[CHECKLISTS_GRANT],
+            Json::from("full")
+        );
+        said.insert(CHECKLISTS_GRANT.to_owned(), Json::from("all"));
+        assert!(validate_token_flags(&said).is_err());
     }
 
     #[test]

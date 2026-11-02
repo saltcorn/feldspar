@@ -27,6 +27,8 @@
 //!   endpoint.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
@@ -38,14 +40,12 @@ use sc_api::admin_endpoints;
 use sc_auth::SessionStore;
 use sc_catalog::{Catalog, DataField};
 use sc_config::{MODE_CUSTOM, SSL_MODE, SSL_PRIVATE_KEY, stored_config};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_files::FileStoreDef;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-    default_js_evaluator, install_agents, install_triggers,
+    AppMounts, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
+    install_agents, install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -151,22 +151,7 @@ async fn setup() -> sc_error::Result<Server> {
 
 /// [`setup`] over a database the caller made — one with pgvector, say.
 async fn setup_in(db: TestDb) -> sc_error::Result<Server> {
-    // Neutralise any `users` table inherited from the template database before
-    // bootstrap introspects, exactly as the other server tests do.
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().on(db).build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
@@ -248,6 +233,7 @@ async fn setup_in(db: TestDb) -> sc_error::Result<Server> {
 
 /// A table with rows, a file store with a file in it, an extra role, a trigger on
 /// the table, and a stored SSL setting — one of everything the backup carries.
+#[allow(clippy::too_many_lines)]
 async fn furnish(server: &mut Server) -> sc_error::Result<()> {
     let (status, body) = server
         .client
@@ -429,6 +415,7 @@ async fn furnish(server: &mut Server) -> sc_error::Result<()> {
 
 /// A fresh, unique temp directory (created on disk) for one server's file store.
 fn temp_dir() -> std::path::PathBuf {
+    sc_test_harness::sweep_stale_scratch("sc-backup-test");
     let base = std::env::temp_dir().join(format!(
         "sc-backup-test-{}-{:?}",
         std::process::id(),
@@ -524,6 +511,7 @@ fn has_entry(archive: &[u8], path: &str) -> bool {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_backup_restores_into_a_second_installation() -> sc_error::Result<()> {
     let mut source = setup().await?;
     furnish(&mut source).await?;
@@ -910,6 +898,7 @@ const V1_BACKUP: &[u8] = include_bytes!("fixtures/saltcorn-v1-BooksDB.zip");
 /// translation has to get right — v1's types, its numbering of users, its one file
 /// area, its actions — and, just as much, that everything it left behind is *said*.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
     let mut server = setup().await?;
     // The store the import would create points into this machine's data
@@ -1097,9 +1086,9 @@ async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
             .any(|l| l == &json!("trigger `AddBook`: with its workflow (1 step)")),
         "{report}"
     );
-    // A v1 action this system does not have is refused by name by the ordinary
-    // trigger validation, not quietly turned into the nearest thing that exists.
-    assert!(warned("TrimPages") && warned("modify_row"), "{report}");
+    // v1's `modify_row`, which this system has no action of, is translated into
+    // a body that does what it did — and so restores like any other trigger.
+    assert!(!warned("TrimPages"), "{report}");
 
     // --- the application its views and page became (§13) --------------------
     let did = |report: &Value, text: &str| {
@@ -1157,7 +1146,7 @@ async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
     assert_eq!(app.framework.config["menu_items"], json!([]));
     let names = |ids: Vec<&String>| ids.into_iter().cloned().collect::<Vec<_>>();
     assert_eq!(
-        names(app.tables.iter().map(|t| &t.0).collect()),
+        names(app.tables.iter().collect()),
         vec!["Books", "Authors", "Publishers"]
     );
     assert_eq!(
@@ -1199,7 +1188,7 @@ async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
             "{}",
             v.name
         );
-        assert_eq!(v.min_role, 1, "{}", v.name);
+        assert_eq!(v.min_role, Role::ADMIN, "{}", v.name);
     }
     assert_eq!(view("List Books").viewpattern, "List");
     assert_eq!(view("List Books").table_name.as_deref(), Some("Books"));
@@ -1216,7 +1205,7 @@ async fn a_saltcorn_1_backup_is_imported() -> sc_error::Result<()> {
     let pages = sc_viewpattern::list_pages(&server.catalog, app.id).await?;
     assert_eq!(pages.len(), 1);
     assert_eq!(pages[0].name, "BooksOverview");
-    assert_eq!(pages[0].min_role, 1);
+    assert_eq!(pages[0].min_role, Role::ADMIN);
     assert_eq!(pages[0].layout, pack["pages"][0]["layout"]);
     assert_eq!(pages[0].attributes["root_page_for_roles"], json!([]));
 
@@ -1325,6 +1314,7 @@ const V1_ORDERS_BACKUP: &[u8] = include_bytes!("fixtures/saltcorn-v1-feldsparimp
 /// the admin API and then *used*: the calculated fields compute, the user's
 /// reference is there, the agent has its tools, and the workflow runs.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_v1_backup_with_calculated_fields_an_agent_and_a_workflow_is_imported()
 -> sc_error::Result<()> {
     let mut server = setup().await?;
@@ -1420,7 +1410,7 @@ async fn a_v1_backup_with_calculated_fields_an_agent_and_a_workflow_is_imported(
         .collect();
     assert_eq!(
         traits,
-        vec!["run_js_code", "query_table", "insert_row"],
+        vec!["run_js_code", "query_table", "edit_table_rows"],
         "{agent}"
     );
     // The JavaScript tool is the agent's own, its code as v1 wrote it.
@@ -1605,6 +1595,320 @@ async fn a_v1_calculated_summary_field_and_an_array_aggregation_are_imported()
     assert_eq!(rows[0]["label"], json!("My things!"), "{rows}");
     assert_eq!(rows[0]["qtys"], json!([5]), "{rows}");
     Ok(())
+}
+
+/// Every kind of v1 built-in action, imported and **run** (TODO F10.9): each
+/// is translated into an action here that does what v1's did — mostly a
+/// `run_js_code` body in v1's scope — so the generated code is executed by the
+/// real engine here, against the restored rows, rather than only compared as
+/// text. A button that names an action directly, with no trigger, becomes a
+/// trigger the view names instead, and what has no counterpart is reported.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn v1s_built_in_actions_are_translated_and_run() -> sc_error::Result<()> {
+    let archive = with_pack(V1_BACKUP, |pack| {
+        let triggers = pack["triggers"].as_array_mut().unwrap();
+        let never = |name: &str, action: &str, table: Option<&str>, configuration: Value| {
+            json!({ "name": name, "description": "", "action": action, "when_trigger": "Never",
+                    "table_name": table, "configuration": configuration, "channel": null,
+                    "min_role": 100 })
+        };
+        triggers.extend([
+            never("Hello", "toast", Some("Books"),
+                json!({ "notify_type": "Success", "text": "Read {{title}}!", "title": "Books" })),
+            never("ShowIt", "navigate", Some("Books"),
+                json!({ "nav_action": "Go to View", "view": "Show Books", "state_formula": "{id}" })),
+            never("Back", "navigate", None, json!({ "nav_action": "Back" })),
+            never("Dup", "duplicate_row", Some("Books"), json!({})),
+            never("Gone", "delete_rows", Some("Books"), json!({ "delete_triggering_row": true })),
+            never("Penname", "insert_any_row", Some("Books"), json!({ "table": "Authors",
+                "row_expr": "{ first_name: title.split(' ')[0], last_name: 'Pen' }" })),
+            never("Hook", "webhook", None, json!({ "url": "http://127.0.0.1:9/{{x}}" })),
+            // v1 numbers the pack's triggers from 1: TrimPages is the first.
+            never("TrimAll", "loop_rows", None, json!({ "table_name": "Books",
+                "where": "{ pages: { gt: 600 } }", "trigger_id": 1 })),
+            json!({ "name": "TwoSteps", "description": "", "action": "Multi-step action",
+                    "when_trigger": "Never", "table_name": "Books", "channel": null,
+                    "min_role": 100, "configuration": { "steps": [
+                        { "step_action_name": "toast", "text": "first" },
+                        { "step_action_name": "TrimPages", "step_only_if": "pages > 100" },
+                        { "step_action_name": "step_control_flow", "control_action": "Halt steps" },
+                        { "step_action_name": "toast", "text": "never" },
+                    ] } }),
+            never("Ping", "notify_user", None, json!({ "user_spec": "*", "title": "hi" })),
+            never("Mixed", "delete_rows", None,
+                json!({ "table_name": "Authors", "delete_where": "{ last_name: 'Pen' }" })),
+            // v1's own code: the row's fields bare, and another trigger as an action.
+            never("Code", "run_js_code", Some("Books"), json!({ "run_where": "Server",
+                "code": "const title = 'shadowed';\nconst toast = await Actions.Hello({ title: 'x' });\nreturn { twice: pages * 2, title, toast };" })),
+            never("CodeInField", "run_js_code_in_field", Some("Books"),
+                json!({ "code_field": "title", "run_where": "Server" })),
+            never("Clip", "copy_to_clipboard", Some("Books"), json!({ "text_template": "{{title}}" })),
+            never("French", "set_user_language", None, json!({ "language": "fr" })),
+            never("Fetch", "download_file_to_browser", None, json!({ "file_field": "path" })),
+        ]);
+        // A button of the list that runs v1's `toast` directly, with no trigger.
+        let list = pack["views"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|v| v["name"] == json!("List Books"))
+            .unwrap();
+        list["configuration"]["columns"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+            "type": "Action", "rndid": "t0a5t1", "action_name": "toast", "minRole": 80,
+            "configuration": { "text": "Hi {{title}}" } }));
+    });
+    let mut server = setup_for_booksdb().await?;
+    let report = restore_everything(&mut server, &archive).await;
+    let warned = |text: &str| report_has(&report, "warnings", text);
+    for name in [
+        "Hello", "ShowIt", "Back", "Dup", "Gone", "Penname", "Hook", "TrimAll", "TwoSteps", "Mixed",
+    ] {
+        assert!(!warned(&format!("`{name}`")), "{name}: {report}");
+    }
+    // What has nothing to become is said, with the reason.
+    assert!(warned("`Ping`") && warned("no notifications"), "{report}");
+    // `navigate`'s Back answers the page with a script, so the application's
+    // policy is relaxed to run it — and the report says so.
+    assert!(warned("'unsafe-eval'"), "{report}");
+
+    let (_, triggers) = server.client.send("GET", "/api/triggers", None).await;
+    let moby = book_rows(&mut server)
+        .await
+        .into_iter()
+        .find(|b| b["title"] == json!("Moby Dick"))
+        .unwrap();
+
+    // The browser's answers are v1's objects, the row's fields read by name.
+    assert_eq!(
+        run_named(&mut server, &triggers, "Hello", moby.clone()).await,
+        json!({ "notify_success": "Read Moby Dick!", "toast_title": "Books" })
+    );
+    assert_eq!(
+        run_named(&mut server, &triggers, "ShowIt", moby.clone()).await,
+        json!({ "goto": "/view/Show Books?id=1" })
+    );
+    assert_eq!(
+        run_named(&mut server, &triggers, "Back", json!({})).await,
+        json!({ "eval_js": "history.back()" })
+    );
+
+    // v1's `modify_row` on the row it was run on: 500 pages, 10% fewer.
+    run_named(&mut server, &triggers, "TrimPages", moby.clone()).await;
+    let pages = |rows: &[Value], title: &str| {
+        rows.iter().find(|b| b["title"] == json!(title)).unwrap()["pages"].clone()
+    };
+    assert_eq!(
+        pages(&book_rows(&mut server).await, "Moby Dick"),
+        json!(450)
+    );
+
+    // `loop_rows` runs the first trigger of the pack over the rows its query
+    // picks: only War and Peace has more than 600 pages.
+    run_named(&mut server, &triggers, "TrimAll", json!({})).await;
+    let rows = book_rows(&mut server).await;
+    assert_eq!(pages(&rows, "War and Peace"), json!(900));
+    assert_eq!(pages(&rows, "Moby Dick"), json!(450));
+
+    // A multi-step trigger: a toast, TrimPages (its `only_if` holds), then a
+    // halt, so the last toast never runs.
+    let moby = rows
+        .iter()
+        .find(|b| b["title"] == json!("Moby Dick"))
+        .unwrap()
+        .clone();
+    assert_eq!(
+        run_named(&mut server, &triggers, "TwoSteps", moby.clone()).await,
+        json!({ "notify": "first", "halt_steps": true })
+    );
+    assert_eq!(
+        pages(&book_rows(&mut server).await, "Moby Dick"),
+        json!(405)
+    );
+
+    // Rows written and deleted through v1's `Table`, with the row's fields.
+    run_named(&mut server, &triggers, "Penname", moby.clone()).await;
+    let (_, authors) = server
+        .client
+        .send("GET", "/api/tables/Authors/rows", None)
+        .await;
+    assert!(
+        authors
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["first_name"] == json!("Moby") && a["last_name"] == json!("Pen")),
+        "{authors}"
+    );
+    run_named(&mut server, &triggers, "Mixed", json!({})).await;
+    let (_, authors) = server
+        .client
+        .send("GET", "/api/tables/Authors/rows", None)
+        .await;
+    assert!(
+        !authors
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["last_name"] == json!("Pen")),
+        "{authors}"
+    );
+    run_named(&mut server, &triggers, "Dup", moby.clone()).await;
+    let copies: Vec<Value> = book_rows(&mut server)
+        .await
+        .into_iter()
+        .filter(|b| b["title"] == json!("Moby Dick"))
+        .collect();
+    assert_eq!(copies.len(), 2, "{copies:?}");
+    // The copy is of the row it was handed, which is the one before TwoSteps.
+    let copy = copies
+        .iter()
+        .find(|b| b["id"] != moby["id"])
+        .unwrap()
+        .clone();
+    assert_eq!(copy["pages"], moby["pages"]);
+    run_named(&mut server, &triggers, "Gone", copy.clone()).await;
+    assert_eq!(
+        book_rows(&mut server)
+            .await
+            .iter()
+            .filter(|b| b["title"] == json!("Moby Dick"))
+            .count(),
+        1
+    );
+
+    // v1's code, in v1's scope.
+    assert_eq!(
+        run_named(
+            &mut server,
+            &triggers,
+            "Code",
+            json!({ "pages": 21, "title": "T" })
+        )
+        .await,
+        json!({ "twice": 42, "title": "shadowed",
+                "toast": { "notify_success": "Read x!", "toast_title": "Books" } })
+    );
+    assert_eq!(
+        run_named(
+            &mut server,
+            &triggers,
+            "CodeInField",
+            json!({ "pages": 4, "title": "return { n: pages + row.pages };" })
+        )
+        .await,
+        json!({ "n": 8 })
+    );
+    assert_eq!(
+        run_named(
+            &mut server,
+            &triggers,
+            "Clip",
+            json!({ "title": "a \"b\"" })
+        )
+        .await,
+        json!({ "eval_js": "navigator.clipboard.writeText(\"a \\\"b\\\"\")" })
+    );
+    assert_eq!(
+        run_named(&mut server, &triggers, "French", json!({})).await,
+        json!({ "reload_page": true })
+    );
+    let (_, users) = server
+        .client
+        .send("GET", "/api/tables/users/rows", None)
+        .await;
+    assert!(
+        users
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|u| u["language"] == json!("fr")),
+        "{users}"
+    );
+    let download = run_named(
+        &mut server,
+        &triggers,
+        "Fetch",
+        json!({ "path": "Each+session+is+30+mins.png" }),
+    )
+    .await;
+    assert_eq!(
+        download["download"]["filename"],
+        json!("Each+session+is+30+mins.png"),
+        "{download}"
+    );
+    assert_eq!(
+        download["download"]["mimetype"],
+        json!("image/png"),
+        "{download}"
+    );
+    assert!(
+        download["download"]["blob"]
+            .as_str()
+            .unwrap()
+            .starts_with("iVBORw0KGgo"),
+        "{download}"
+    );
+
+    // The list's button became a trigger of its own, which the view now names,
+    // at the stricter of the view's role and the button's.
+    let made = triggers
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == json!("List Books · toast 1"))
+        .unwrap_or_else(|| panic!("{triggers}"));
+    assert_eq!(made["min_role"], json!(1), "{made}");
+    assert_eq!(
+        run_named(&mut server, &triggers, "List Books · toast 1", moby.clone()).await,
+        json!({ "notify": "Hi Moby Dick" })
+    );
+    let (_, apps) = server.client.send("GET", "/api/applications", None).await;
+    let app = apps
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["subdomain"] == json!("booksdb"))
+        .unwrap_or_else(|| panic!("{apps}"));
+    assert!(
+        app["triggers"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("List Books · toast 1")),
+        "{app}"
+    );
+    Ok(())
+}
+
+/// Run the trigger called `name` (one of `triggers`, the trigger list) with
+/// `payload`, and answer what its action answered.
+async fn run_named(server: &mut Server, triggers: &Value, name: &str, payload: Value) -> Value {
+    let id = triggers
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == json!(name))
+        .unwrap_or_else(|| panic!("no trigger `{name}`: {triggers}"))["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (status, ran) = server
+        .client
+        .send("POST", &format!("/api/triggers/{id}/run"), Some(payload))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{name}: {ran}");
+    ran["result"].clone()
+}
+
+async fn book_rows(server: &mut Server) -> Vec<Value> {
+    let (_, rows) = server
+        .client
+        .send("GET", "/api/tables/Books/rows", None)
+        .await;
+    rows.as_array().unwrap().clone()
 }
 
 /// A server with the `BooksDB` store defined at its own temp path, which is
@@ -2262,7 +2566,7 @@ fn git(dir: &std::path::Path, args: &[&str]) -> String {
 
 /// The same zip with its `pack.json` edited by `edit` — a variant of a v1
 /// fixture without a second binary checked in.
-fn with_pack(archive: &[u8], edit: impl FnOnce(&mut Value)) -> Vec<u8> {
+pub(crate) fn with_pack(archive: &[u8], edit: impl FnOnce(&mut Value)) -> Vec<u8> {
     let mut source = zip::ZipArchive::new(std::io::Cursor::new(archive)).expect("a zip");
     let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let mut edit = Some(edit);
@@ -2686,6 +2990,7 @@ async fn fit(server: &mut Server, id: &str) -> String {
 /// and a draw; a workspace), a stream with a secret, a workflow trigger with
 /// steps, the email settings, a Saltcorn UI application's translations, and a
 /// SQLite connection whose file lives in a file store.
+#[allow(clippy::too_many_lines)]
 async fn furnish_the_rest(server: &mut Server) -> sc_error::Result<()> {
     // --- a table to analyse -----------------------------------------------
     server
@@ -2915,6 +3220,7 @@ async fn furnish_the_rest(server: &mut Server) -> sc_error::Result<()> {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn analytics_streams_workflows_settings_translations_and_connections_travel()
 -> sc_error::Result<()> {
     let mut source = setup().await?;
@@ -3567,7 +3873,7 @@ async fn an_automated_backup_writes_and_prunes_its_directory() -> sc_error::Resu
         std::fs::write(dest.join(name), b"x").unwrap();
     }
 
-    let scheduler = sc_server::BackupScheduler::new(server.catalog.clone());
+    let scheduler = sc_backup::BackupScheduler::new(server.catalog.clone());
     let ran = scheduler.tick(now).await;
     assert_eq!(ran.len(), 1);
     // Not due again a minute later.
@@ -3701,6 +4007,7 @@ fn noise(seed: u64, len: usize) -> Vec<u8> {
 /// deflated again, while text is deflated; and a file whose path is not ASCII
 /// keeps its name.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn large_binary_rows_and_files_stream_through_a_backup_and_restore() -> sc_error::Result<()> {
     const BLOB: usize = 5 * 1024 * 1024;
     const SMALL_ROWS: i32 = 2_500;
@@ -4362,10 +4669,10 @@ async fn a_password_protected_backup_restores_with_its_password() -> sc_error::R
     // The library calls the CLI makes: the same file, by path.
     let path = temp_dir().join("protected.zip");
     std::fs::write(&path, &archive).unwrap();
-    assert!(sc_server::backup_is_encrypted(&path)?);
-    assert!(sc_server::inspect_backup(&path, None).is_err());
-    assert!(sc_server::inspect_backup(&path, Some("nope")).is_err());
-    let (contents, _) = sc_server::inspect_backup(&path, Some(SECRET))?;
+    assert!(sc_backup::is_encrypted(&path)?);
+    assert!(sc_backup::inspect(&path, None).is_err());
+    assert!(sc_backup::inspect(&path, Some("nope")).is_err());
+    let (contents, _) = sc_backup::inspect(&path, Some(SECRET))?;
     assert_eq!(contents.tables[0].name, "books");
     Ok(())
 }
@@ -4393,7 +4700,7 @@ async fn an_automated_backup_can_be_password_protected() -> sc_error::Result<()>
     let id = created["id"].as_str().unwrap().to_owned();
     assert_eq!(created["password"], json!(sc_types::SECRET_SENTINEL));
 
-    let scheduler = sc_server::BackupScheduler::new(server.catalog.clone());
+    let scheduler = sc_backup::BackupScheduler::new(server.catalog.clone());
     assert_eq!(scheduler.tick(chrono::Utc::now()).await.len(), 1);
     let list = ok(&mut server, "GET", "/api/backup/schedules", None).await;
     let entry = &list.as_array().unwrap()[0];

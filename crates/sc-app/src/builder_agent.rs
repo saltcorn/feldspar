@@ -14,12 +14,12 @@
 //!
 //! ## Why the traits are named as strings
 //!
-//! The trait itself (`coding`) lives in `sc-core-traits`,
+//! The trait itself (`coding`) lives in `sc-agent-builtins`,
 //! which is layer 9 and sits *above* this crate — as it must, since a trait's
 //! writes go through the row layer. A framework here can therefore only *name* the
 //! trait it wants and the settings to give it, exactly as an application names its
 //! API providers rather than holding them. That the names and the configuration
-//! keys still match the real traits is asserted from above, in `sc-core-traits`'
+//! keys still match the real traits is asserted from above, in `sc-agent-builtins`'
 //! own tests, where both sides are visible at once.
 //!
 //! Assembling a spec into an [`Agent`](sc_agent::Agent) and storing it is the
@@ -29,10 +29,11 @@
 //!
 //! The agent is `coding`, plus `http` so it can read the documentation of what
 //! it is building with, plus `preview_pane` pointed at the application's own
-//! subdomain (TODO §12, "The preview pane"). Building the application is one of
-//! `coding`'s checks — its `application` setting — rather than a second trait
-//! with a tool of its own, so the build runs where the ratchet, the baseline and
-//! the preview mount are, and a model is never offered two ways to ask "does
+//! subdomain (TODO §12, "The preview pane"). *This server's* documentation is
+//! `coding`'s own (`search_docs`, `read_docs`), so it needs no trait of its
+//! own. Building the application is one of `coding`'s checks — its
+//! `application` setting — rather than a second trait with a tool of its own,
+//! so the build runs where the ratchet, the baseline and the preview mount are, and a model is never offered two ways to ask "does
 //! this compile?". It starts in `plan` mode (`workflow: planned`), may check its
 //! work and look at the result, and may not run arbitrary scripts or a shell:
 //! those execute code nobody reviewed, and are grants the admin gives
@@ -375,12 +376,13 @@ fn react_prompt(app: &Application, store: &str, root: &str) -> String {
 /// What a builder is told about being handed a whole application, which is how
 /// the `admin_copilot` agent uses it (§13.6): the tables already exist and are
 /// connected, and the brief is the specification.
-const BUILDING: &str = "When you are handed an application to build, the tables it needs \
-have been created and connected for you, so they are already in `src/feldspar/`. You cannot \
-change the schema: if data the brief needs is not in the client, build what you can and say \
-exactly which table or field is missing in your report. Replace the scaffold's placeholder \
-pages with the real ones, implement every page the brief describes, and run `check` until it \
-passes before you report.";
+const BUILDING: &str = "When you are handed an application to build, its tables have been \
+created and connected, and its data is reached through the **custom queries** written for it: \
+typed methods in `src/feldspar/`, over the tables `schema.sql` describes. You cannot change the \
+schema or the API: if a page needs a query that is missing, build what you can and name the \
+missing query (parameters, result) in your report. Replace the scaffold's placeholder pages \
+with the real ones, implement every page the brief describes, and run `check` until it passes \
+before you report.";
 
 /// Where `app` is served, as a prompt says it: on its subdomain, or — for `@`
 /// — on the base domain, which has no subdomain to name.

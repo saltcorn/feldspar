@@ -431,7 +431,15 @@ fn call(py: Python<'_>, surface: Surface, request: &Bound<'_, PyAny>) -> PyResul
     let answer = py.detach(move || rx.recv_timeout(ticket.remaining));
     match answer {
         Ok(Ok(value)) => Ok(convert::from_json(py, &value)?.unbind()),
-        Ok(Err(e)) => Err(surface.raise(refusal(&e))),
+        Ok(Err(e)) => {
+            let raised = surface.raise(refusal(&e));
+            if let Some(message) = e.auth_message() {
+                // Best effort: an exception that will not take the mark is
+                // still the refusal, and fails its run as any other would.
+                raised.value(py).setattr(REFUSED_ATTR, message).ok();
+            }
+            Err(raised)
+        }
         // §4, amended by phase 0.3: the *pending* call is bounded too. Without
         // this a body inside a slow request reaches no bytecode boundary, so
         // neither the deadline check above nor `SetAsyncExc` can reach it.
@@ -445,6 +453,12 @@ fn call(py: Python<'_>, surface: Surface, request: &Bound<'_, PyAny>) -> PyResul
         }
     }
 }
+
+/// The attribute an auth refusal's exception carries its own message under, so
+/// a run that lets it escape ends as that refusal (`interp::body_error`), which
+/// a transport answers with a 403 naming it rather than the 500 any other
+/// failure is. The JavaScript side's `REFUSED` symbol, in Python's terms.
+pub(crate) const REFUSED_ATTR: &str = "__sc_refused__";
 
 /// A host's `Err` as the sentence the body sees. The error's own message, not
 /// its chain: what a `except DbError as e` prints should be the refusal, and the

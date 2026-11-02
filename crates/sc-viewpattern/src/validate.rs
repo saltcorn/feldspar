@@ -73,13 +73,11 @@ pub(crate) fn check_view_shape(
             "view `{}` has no table, and the `{}` pattern needs one",
             view.name, pattern.name
         ))),
-        (Some(table), _) if !app.tables.iter().any(|t| t.0 == *table) => {
-            Err(Error::invalid(format!(
-                "view `{}` is over the table `{table}`, which is not in application `{}`'s \
+        (Some(table), _) if !app.tables.iter().any(|t| t == table) => Err(Error::invalid(format!(
+            "view `{}` is over the table `{table}`, which is not in application `{}`'s \
                  table subset; add it to the application first",
-                view.name, app.name
-            )))
-        }
+            view.name, app.name
+        ))),
         _ => Ok(()),
     }
 }
@@ -241,6 +239,42 @@ pub fn referenced_views(value: &Json) -> Vec<String> {
     out.into_iter().collect()
 }
 
+/// The keys whose text names a field of the view's own table: a column's or a
+/// layout item's field, a feed's sort order, and a join's first hop.
+const FIELD_REFERENCE_KEYS: [&str; 3] = ["field_name", "order_field", "join_field"];
+
+/// Every field of its own table a view's configuration names, sorted and
+/// without repeats — a column's or layout item's `field_name`, a feed's
+/// `order_field`, and the key a `join_field` (`author.last_name`) starts from.
+///
+/// What a checklist's `saltcorn_ui.views_render` checks against the table as
+/// it is now (TODO-checklists C3.3): v1's patterns render a field that has gone
+/// as an empty cell or a missing column, not as an error, so a view broken by a
+/// field's deletion still answers 200.
+pub fn referenced_fields(configuration: &Json) -> Vec<String> {
+    fn walk(out: &mut std::collections::BTreeSet<String>, value: &Json) {
+        match value {
+            Json::Object(item) => {
+                for (key, child) in item {
+                    if FIELD_REFERENCE_KEYS.contains(&key.as_str())
+                        && let Some(raw) = child.as_str()
+                        && let Some(first) = raw.split('.').next().map(str::trim)
+                        && !first.is_empty()
+                    {
+                        out.insert(first.to_owned());
+                    }
+                    walk(out, child);
+                }
+            }
+            Json::Array(items) => items.iter().for_each(|i| walk(out, i)),
+            _ => {}
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    walk(&mut out, configuration);
+    out.into_iter().collect()
+}
+
 /// Refuse a view that names an action this server will not run (§12.3): every
 /// action it names is one of v1's [`VIEW_ACTIONS`] or a trigger in the
 /// application's declared subset. A v1 state action, a plugin's action, a
@@ -274,7 +308,6 @@ mod tests {
     use super::*;
     use crate::patterns::builtin_patterns;
     use sc_app::FrameworkRef;
-    use sc_catalog::TableId;
 
     #[test]
     fn a_v1_name_with_spaces_is_a_name() {
@@ -296,7 +329,7 @@ mod tests {
     #[test]
     fn a_view_may_run_the_view_actions_and_the_applications_triggers_and_nothing_else() {
         let app = Application::new("Books", "books", FrameworkRef::new("saltcorn-ui"))
-            .with_table(TableId("books".to_owned()))
+            .with_table("books".to_owned())
             .with_trigger(sc_app::TriggerRef::new("TrimPages"));
         let configuration = serde_json::json!({
             "columns": [
@@ -368,11 +401,27 @@ mod tests {
     #[test]
     fn a_tableless_view_of_a_pattern_that_needs_a_table_is_refused() {
         let app = Application::new("Books", "books", FrameworkRef::new("saltcorn-ui"))
-            .with_table(TableId("books".to_owned()));
+            .with_table("books".to_owned());
         let mut view = View::new(app.id, "List Books", "List", "books");
         assert!(check_view_shape(&view, &app, &builtin_patterns()).is_ok());
         view.table_name = None;
         let err = check_view_shape(&view, &app, &builtin_patterns()).unwrap_err();
         assert!(err.to_string().contains("needs one"), "{err}");
+    }
+    #[test]
+    fn the_fields_a_configuration_names_are_its_own_tables() {
+        let configuration = serde_json::json!({
+            "columns": [
+                { "type": "Field", "field_name": "pages" },
+                { "type": "JoinField", "join_field": "author.last_name" },
+                { "type": "ViewLink", "view": "Show Books" },
+            ],
+            "layout": { "above": [{ "type": "field", "field_name": "title" }, { "field_name": "" }] },
+            "order_field": "title",
+        });
+        assert_eq!(
+            referenced_fields(&configuration),
+            ["author", "pages", "title"]
+        );
     }
 }

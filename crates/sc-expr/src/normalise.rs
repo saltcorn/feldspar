@@ -63,6 +63,7 @@ pub(crate) fn render_js_hoisted(ast: &Ast, hoisted: &BTreeMap<String, String>) -
     out
 }
 
+#[allow(clippy::too_many_lines)]
 fn render(
     ast: &Ast,
     locals: &mut Vec<String>,

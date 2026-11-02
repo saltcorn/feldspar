@@ -10,6 +10,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::ApiProvider;
@@ -333,8 +334,8 @@ fn as_user<'a>(cat: &'a Catalog, user: &sc_auth::User) -> TableHost<'a> {
     sc_expr::set_isolate_prime(sc_module::prime_v8);
     TableHost::new(cat)
         .caused_by(
-            user.role,
-            Some(json!({ "id": user.id.to_string(), "role": user.role })),
+            user.role(),
+            Some(json!({ "id": user.id().to_string(), "role": user.role() })),
         )
         .with_evaluator(Some(Arc::new(DenoEvaluator::new()) as Arc<dyn JsEvaluator>))
 }
@@ -377,11 +378,11 @@ async fn ownership_joins_through_the_module_tables_for_reads_and_writes() -> Res
     assert!(report.issues.is_empty(), "{:?}", report.issues);
 
     for (role, name) in [(40, "Staff"), (80, "User")] {
-        sc_auth::save_role(&cat, &sc_auth::Role::new(role, name)).await?;
+        sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(role), name)).await?;
     }
-    let staff = sc_auth::create_user(&cat, "staff@example.com", "pw-staff-1", 40).await?;
-    let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", 80).await?;
-    let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", 80).await?;
+    let staff = sc_auth::create_user(&cat, "staff@example.com", "pw-staff-1", Role::of(40)).await?;
+    let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", Role::of(80)).await?;
+    let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", Role::of(80)).await?;
 
     // What the service writes, with the module's authority: a shared account
     // for staff, and ann's personal one, a message and an attachment in each.
@@ -396,7 +397,7 @@ async fn ownership_joins_through_the_module_tables_for_reads_and_writes() -> Res
     let anns = ask(
         &admin,
         json!({ "op": "insert", "table": "mail_accounts",
-                "values": { "label": "ann@", "owner": ann.id.to_string(), "min_role": 1 } }),
+                "values": { "label": "ann@", "owner": ann.id().to_string(), "min_role": 1 } }),
     )
     .await?["id"]
         .clone();
@@ -448,12 +449,12 @@ async fn ownership_joins_through_the_module_tables_for_reads_and_writes() -> Res
     ask(
         &ann_host,
         json!({ "op": "insert", "table": "mail_accounts", "authority": "user",
-                "values": { "label": "ann-2@", "owner": ann.id.to_string(), "min_role": 1 } }),
+                "values": { "label": "ann-2@", "owner": ann.id().to_string(), "min_role": 1 } }),
     )
     .await?;
     for values in [
         json!({ "label": "shared@", "min_role": 80 }),
-        json!({ "label": "bobs@", "owner": bob.id.to_string(), "min_role": 1 }),
+        json!({ "label": "bobs@", "owner": bob.id().to_string(), "min_role": 1 }),
     ] {
         let refused = ask(
             &ann_host,
@@ -478,7 +479,7 @@ async fn ownership_joins_through_the_module_tables_for_reads_and_writes() -> Res
     let given = ask(
         &ann_host,
         json!({ "op": "update", "table": "mail_accounts", "authority": "user",
-                "where": { "id": anns }, "values": { "owner": bob.id.to_string() } }),
+                "where": { "id": anns }, "values": { "owner": bob.id().to_string() } }),
     )
     .await;
     assert!(given.is_err(), "{given:?}");
@@ -684,14 +685,14 @@ async fn an_owner_may_update_their_own_account() -> Result<()> {
     let cat = Arc::new(catalog(&db).await?);
     let report = sync(&cat, MODULE, &mail_tables(), &ModuleTables::new()).await;
     assert!(report.issues.is_empty(), "{:?}", report.issues);
-    sc_auth::save_role(&cat, &sc_auth::Role::new(80, "User")).await?;
-    let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", 80).await?;
-    let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", 80).await?;
+    sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(80), "User")).await?;
+    let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", Role::of(80)).await?;
+    let bob = sc_auth::create_user(&cat, "bob@example.com", "pw-bob-1", Role::of(80)).await?;
     let admin = TableHost::new(&cat);
     let anns = ask(
         &admin,
         json!({ "op": "insert", "table": "mail_accounts",
-                "values": { "label": "ann@", "owner": ann.id.to_string(), "min_role": 1,
+                "values": { "label": "ann@", "owner": ann.id().to_string(), "min_role": 1,
                             "imap_password": "hunter2" } }),
     )
     .await?["id"]
@@ -705,16 +706,16 @@ async fn an_owner_may_update_their_own_account() -> Result<()> {
         let (accounts, evaluator, id, user) = (&accounts, &evaluator, &id, user.clone());
         let cat = &cat;
         async move {
-            sc_api::update_row_as(
+            sc_access::update_row_as(
                 cat,
                 accounts,
                 id,
                 &body,
-                user.role,
+                user.role(),
                 Some(&user),
                 Some(evaluator),
                 &[],
-                &sc_api::rows::Executor::Pooled,
+                &sc_access::rows::Executor::Pooled,
             )
             .await
         }
@@ -723,7 +724,7 @@ async fn an_owner_may_update_their_own_account() -> Result<()> {
     assert_eq!(renamed["label"], json!("Ann's mail"));
     let whole = update(
         &ann,
-        json!({ "id": anns, "label": "Ann", "owner": ann.id.to_string(), "min_role": 1,
+        json!({ "id": anns, "label": "Ann", "owner": ann.id().to_string(), "min_role": 1,
                 "imap_password": "••••••••" }),
     )
     .await?;

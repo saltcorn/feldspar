@@ -88,6 +88,12 @@ pub enum LlmMessage {
     User {
         /// The message text.
         content: String,
+        /// Files the person attached to the message: images the model looks
+        /// at, and text documents it reads. An adapter sends an image where the
+        /// model has `vision` and a stub where it has not; a text document is
+        /// sent as text, to every model.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<Attachment>,
     },
     /// What the model said: text, tool calls, or both. Both providers may emit
     /// a sentence and a tool call in one turn, so this is not an either/or.
@@ -151,6 +157,167 @@ impl ImagePart {
     }
 }
 
+/// How many files one message may carry.
+pub const MAX_ATTACHMENTS: usize = 10;
+
+/// The largest image one message may carry: the strictest vendor's limit
+/// (Anthropic refuses an image over 5 MB).
+pub const MAX_IMAGE_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
+
+/// The largest text document one message may carry. A document is sent with
+/// every later turn of the conversation, so this is about the context window
+/// as much as the request.
+pub const MAX_TEXT_ATTACHMENT_BYTES: usize = 1024 * 1024;
+
+/// The image types every vision model takes.
+const IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/// A file attached to a user message: an image or a text document.
+///
+/// The bytes are serialised as base64, as an [`ImagePart`]'s are, which is
+/// also how a client sends one: `{ "name", "media_type", "data" }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    /// The file's name, as the person's computer had it.
+    pub name: String,
+    /// The media type, such as `image/png` or `text/markdown`.
+    #[serde(default)]
+    pub media_type: String,
+    /// The file's bytes.
+    #[serde(with = "base64_bytes")]
+    pub data: Vec<u8>,
+}
+
+impl Attachment {
+    /// A file called `name` of `media_type` holding `data`.
+    pub fn new(
+        name: impl Into<String>,
+        media_type: impl Into<String>,
+        data: impl Into<Vec<u8>>,
+    ) -> Attachment {
+        Attachment {
+            name: name.into(),
+            media_type: media_type.into(),
+            data: data.into(),
+        }
+    }
+
+    /// Whether this is an image, which a model looks at rather than reads.
+    pub fn is_image(&self) -> bool {
+        self.media_type.starts_with("image/")
+    }
+
+    /// The document's text, for one that is not an image.
+    pub fn text(&self) -> std::borrow::Cow<'_, str> {
+        String::from_utf8_lossy(&self.data)
+    }
+
+    /// The image this attachment is, as a tool result's image is.
+    pub fn image(&self) -> ImagePart {
+        ImagePart::new(self.media_type.clone(), self.data.clone())
+    }
+
+    /// The attachment as the model is sent it, checked: an image of a type
+    /// every vision model takes, or text.
+    ///
+    /// A browser often has no type for a Markdown or source file, or calls it
+    /// `application/octet-stream`; such a file that is valid UTF-8 is taken as
+    /// text (`text/markdown` for a `.md`). Anything else is refused with a
+    /// reason the person can act on, as is a file over its size limit.
+    pub fn checked(mut self) -> sc_error::Result<Attachment> {
+        self.name = self.name.trim().to_owned();
+        if self.name.is_empty() {
+            self.name = "attachment".to_owned();
+        }
+        self.media_type = self.media_type.trim().to_ascii_lowercase();
+        if let Some((essence, _)) = self.media_type.split_once(';') {
+            self.media_type = essence.trim().to_owned();
+        }
+        if self.media_type == "image/jpg" {
+            self.media_type = "image/jpeg".to_owned();
+        }
+        let name = &self.name;
+        if self.is_image() {
+            if !IMAGE_TYPES.contains(&self.media_type.as_str()) {
+                return Err(sc_error::Error::invalid(format!(
+                    "`{name}` is a {}, and only PNG, JPEG, GIF and WebP images can be attached",
+                    self.media_type
+                )));
+            }
+            if self.data.len() > MAX_IMAGE_ATTACHMENT_BYTES {
+                return Err(sc_error::Error::invalid(format!(
+                    "`{name}` is {} bytes, and an attached image may be at most {} MiB",
+                    self.data.len(),
+                    MAX_IMAGE_ATTACHMENT_BYTES / (1024 * 1024)
+                )));
+            }
+            return Ok(self);
+        }
+        if std::str::from_utf8(&self.data).is_err() || self.data.contains(&0) {
+            return Err(sc_error::Error::invalid(format!(
+                "`{name}` is not text, and only images and text documents can be attached"
+            )));
+        }
+        if self.data.len() > MAX_TEXT_ATTACHMENT_BYTES {
+            return Err(sc_error::Error::invalid(format!(
+                "`{name}` is {} bytes, and an attached document may be at most {} MiB",
+                self.data.len(),
+                MAX_TEXT_ATTACHMENT_BYTES / (1024 * 1024)
+            )));
+        }
+        if !is_text_type(&self.media_type) {
+            let lower = name.to_ascii_lowercase();
+            self.media_type = if lower.ends_with(".md") || lower.ends_with(".markdown") {
+                "text/markdown"
+            } else {
+                "text/plain"
+            }
+            .to_owned();
+        }
+        Ok(self)
+    }
+
+    /// A text document as the model reads it: its text, wrapped in a tag that
+    /// names it, so a prompt can refer to it by name.
+    pub fn as_prompt_text(&self) -> String {
+        let name = self.name.replace('"', "'");
+        format!(
+            "<attachment name=\"{name}\" type=\"{}\">\n{}\n</attachment>",
+            self.media_type,
+            self.text().trim_end()
+        )
+    }
+}
+
+/// `attachments` [`checked`](Attachment::checked), and no more of them than
+/// [`MAX_ATTACHMENTS`].
+pub fn check_attachments(attachments: Vec<Attachment>) -> sc_error::Result<Vec<Attachment>> {
+    if attachments.len() > MAX_ATTACHMENTS {
+        return Err(sc_error::Error::invalid(format!(
+            "a message may carry at most {MAX_ATTACHMENTS} attachments, not {}",
+            attachments.len()
+        )));
+    }
+    attachments.into_iter().map(Attachment::checked).collect()
+}
+
+/// Whether `media_type` is one a document is read as text under.
+fn is_text_type(media_type: &str) -> bool {
+    media_type.starts_with("text/")
+        || matches!(
+            media_type,
+            "application/json"
+                | "application/xml"
+                | "application/yaml"
+                | "application/x-yaml"
+                | "application/toml"
+                | "application/javascript"
+                | "application/typescript"
+                | "application/sql"
+                | "application/x-sh"
+        )
+}
+
 /// Serde for bytes as a base64 string.
 mod base64_bytes {
     use base64::Engine as _;
@@ -208,8 +375,14 @@ pub enum ProviderItem {
 impl LlmMessage {
     /// A user message.
     pub fn user(content: impl Into<String>) -> LlmMessage {
+        LlmMessage::user_with(content, Vec::new())
+    }
+
+    /// A user message with files attached.
+    pub fn user_with(content: impl Into<String>, attachments: Vec<Attachment>) -> LlmMessage {
         LlmMessage::User {
             content: content.into(),
+            attachments,
         }
     }
 
@@ -521,6 +694,63 @@ impl AssistantMessage {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn attachments_are_checked_and_typed() {
+        // A Markdown file the browser gave no type is text/markdown.
+        let md = Attachment::new(" plan.md ", "", b"# Plan".to_vec())
+            .checked()
+            .unwrap();
+        assert_eq!(
+            (md.name.as_str(), md.media_type.as_str()),
+            ("plan.md", "text/markdown")
+        );
+        let csv = Attachment::new("a.csv", "application/octet-stream", b"a,b".to_vec())
+            .checked()
+            .unwrap();
+        assert_eq!(csv.media_type, "text/plain");
+        let jpg = Attachment::new("p.jpg", "image/jpg", vec![1, 2])
+            .checked()
+            .unwrap();
+        assert_eq!(jpg.media_type, "image/jpeg");
+        assert!(jpg.is_image());
+
+        let binary = Attachment::new("a.bin", "application/octet-stream", vec![0, 159, 146]);
+        assert!(
+            binary
+                .checked()
+                .unwrap_err()
+                .to_string()
+                .contains("not text")
+        );
+        let tiff = Attachment::new("a.tiff", "image/tiff", vec![1]);
+        assert!(tiff.checked().unwrap_err().to_string().contains("PNG"));
+        let huge = Attachment::new(
+            "big.txt",
+            "text/plain",
+            vec![b'a'; super::MAX_TEXT_ATTACHMENT_BYTES + 1],
+        );
+        assert!(huge.checked().unwrap_err().to_string().contains("at most"));
+        let many = vec![Attachment::new("a.txt", "text/plain", b"a".to_vec()); MAX_ATTACHMENTS + 1];
+        assert!(check_attachments(many).is_err());
+    }
+
+    #[test]
+    fn a_user_message_round_trips_its_attachments_and_omits_none() {
+        let plain = serde_json::to_value(LlmMessage::user("hi")).unwrap();
+        assert_eq!(
+            plain,
+            serde_json::json!({ "role": "user", "content": "hi" })
+        );
+        let message = LlmMessage::user_with(
+            "look",
+            vec![Attachment::new("a.png", "image/png", b"png".to_vec())],
+        );
+        let json = serde_json::to_value(&message).unwrap();
+        assert_eq!(json["attachments"][0]["data"], "cG5n");
+        assert_eq!(serde_json::from_value::<LlmMessage>(json).unwrap(), message);
+    }
+
     use super::*;
     use serde_json::json;
 

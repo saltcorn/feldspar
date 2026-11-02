@@ -9,17 +9,16 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::process::Stdio;
 use std::sync::Arc;
 
 use sc_api::{ApiProvider, ApiRequest, Method, RestProvider, schema_edit};
 use sc_auth::{User, bootstrap, create_user};
 use sc_catalog::{Catalog, bootstrap_change_log, bootstrap_field_meta, bootstrap_table_meta};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
 use sc_expr::{DenoEvaluator, JsEvaluator};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value as Json, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -132,30 +131,24 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
 /// [`fixture`], with `notes` read through `formula`, or readable by every user
 /// when `None`.
 async fn fixture_with(db: &TestDb, formula: Option<&str>) -> Result<Fixture> {
-    sql(
-        db,
-        "DO $$ DECLARE r record; BEGIN \
-           FOR r IN SELECT table_schema FROM information_schema.tables \
-           WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-             EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-           END LOOP; END $$;
-         CREATE TABLE notes (id uuid PRIMARY KEY, title text NOT NULL, owner uuid);
+    let cat = TestServer::builder()
+        .sql(
+            "CREATE TABLE notes (id uuid PRIMARY KEY, title text NOT NULL, owner uuid);
          CREATE TABLE items (id uuid PRIMARY KEY, note uuid REFERENCES notes(id) ON DELETE CASCADE,
                              label text, rank integer, done boolean);
          CREATE TABLE lists (id serial PRIMARY KEY, name text NOT NULL);
          CREATE TABLE entries (id serial PRIMARY KEY,
                                list int REFERENCES lists(id) ON DELETE CASCADE, text text);",
-    )
-    .await?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let cat = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
+        )
+        .build_on(db)
+        .await?;
     bootstrap(&cat).await?;
     bootstrap_table_meta(&cat).await?;
     bootstrap_field_meta(&cat).await?;
     bootstrap_change_log(&cat).await?;
     cat.reload().await?;
 
-    let synced = |read: u8, formula: Option<&str>| schema_edit::TableSettings {
+    let synced = |read: Role, formula: Option<&str>| schema_edit::TableSettings {
         min_role_read: Some(read),
         min_role_write: Some(read),
         ownership_formula: formula.map(Into::into),
@@ -168,29 +161,29 @@ async fn fixture_with(db: &TestDb, formula: Option<&str>) -> Result<Fixture> {
             schema_edit::Operation::AlterTable {
                 table: "notes".into(),
                 settings: match formula {
-                    Some(formula) => synced(1, Some(formula)),
-                    None => synced(80, None),
+                    Some(formula) => synced(Role::ADMIN, Some(formula)),
+                    None => synced(Role::of(80), None),
                 },
             },
             schema_edit::Operation::AlterTable {
                 table: "items".into(),
-                settings: synced(80, None),
+                settings: synced(Role::of(80), None),
             },
             schema_edit::Operation::AlterTable {
                 table: "lists".into(),
-                settings: synced(80, None),
+                settings: synced(Role::of(80), None),
             },
             schema_edit::Operation::AlterTable {
                 table: "entries".into(),
-                settings: synced(80, None),
+                settings: synced(Role::of(80), None),
             },
         ],
         &schema_edit::ApplyOptions::default(),
     )
     .await?;
 
-    sc_auth::save_role(&cat, &sc_auth::Role::new(80, "User")).await?;
-    let ann = create_user(&cat, "ann@example.com", "ann-password", 80).await?;
+    sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(80), "User")).await?;
+    let ann = create_user(&cat, "ann@example.com", "ann-password", Role::of(80)).await?;
     let tables = ["notes", "items", "lists", "entries"]
         .iter()
         .map(|t| cat.require(t))
@@ -198,11 +191,7 @@ async fn fixture_with(db: &TestDb, formula: Option<&str>) -> Result<Fixture> {
     let api = RestProvider::project("/api", &tables)
         .with_application(APP)
         .with_evaluator(Arc::new(DenoEvaluator::new()) as Arc<dyn JsEvaluator>);
-    Ok(Fixture {
-        cat: Arc::new(cat),
-        api,
-        ann,
-    })
+    Ok(Fixture { cat, api, ann })
 }
 
 async fn sql(db: &TestDb, statements: &str) -> Result<()> {
@@ -350,7 +339,7 @@ async fn a_device_works_on_its_copy_offline_and_syncs_it() -> Result<()> {
         &db,
         &format!(
             "INSERT INTO notes (id, title, owner) VALUES ('{SERVER_NOTE}', 'Server note', '{}')",
-            f.ann.id
+            f.ann.id()
         ),
     )
     .await?;
@@ -365,7 +354,7 @@ async fn a_device_works_on_its_copy_offline_and_syncs_it() -> Result<()> {
         &f,
         "client",
         DRIVER_TS,
-        &[SERVER_NOTE, &f.ann.id.to_string()],
+        &[SERVER_NOTE, &f.ann.id().to_string()],
     )
     .await?;
 
@@ -870,7 +859,7 @@ async fn the_copy_answers_every_read_like_the_server() -> Result<()> {
     // `notes` readable without a formula: the server does not follow a key into
     // a table read through one, and the copy would (see the TODO).
     let f = fixture_with(&db, None).await?;
-    let ann = f.ann.id;
+    let ann = f.ann.id();
     sql(
         &db,
         &format!(

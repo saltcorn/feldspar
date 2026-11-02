@@ -16,6 +16,7 @@ async fn a_saltcorn_ui_app_fails_to_mount_naming_the_missing_bundle() -> sc_erro
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     let app = Application::new("Books", "books", FrameworkRef::new("saltcorn-ui"));
 
     // A binary built with SC_BUILD_ADMIN=0 records no directory at all.

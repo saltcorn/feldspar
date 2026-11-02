@@ -15,6 +15,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -129,7 +130,7 @@ fn provider(cat: &Catalog) -> Result<GraphqlProvider> {
 
 /// A caller who meets both tables' default role floors.
 fn admin() -> Result<User> {
-    User::new(uuid::Uuid::new_v4(), sc_auth::ROLE_ADMIN)
+    Ok(User::new(uuid::Uuid::new_v4(), Role::ADMIN))
 }
 
 /// POST one document as `admin` and return the response body.

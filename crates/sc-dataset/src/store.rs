@@ -18,6 +18,7 @@
 //!   name, a base that does not exist or leads back to the dataset, a changed
 //!   base, and operation ids that are empty or repeated.
 
+use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sc_catalog::{Catalog, DataField, Table};
@@ -58,7 +59,7 @@ fn dataset_fields() -> Vec<DataField> {
         DataField::plain(COL_BASE, json()).required(),
         DataField::plain(COL_OPERATIONS, json()).required(),
         DataField::plain(COL_ATTRIBUTES, json()).required(),
-        // Who made it and whom it is shared with (A9.1): nullable, so the
+        // Who made it and whom it is shared with: nullable, so the
         // bootstrap adds them to a table that already has rows. They are not
         // part of the definition, so changing them changes no fit's hash.
         DataField::plain(COL_OWNER, TypeRef::Basic(BasicType::Uuid)),
@@ -310,7 +311,7 @@ pub async fn clone_dataset(
 }
 
 /// Who owns the dataset with this id and whom it is shared with, or `None`
-/// when there is no such dataset (A9.1).
+/// when there is no such dataset.
 pub async fn dataset_sharing(catalog: &Catalog, id: DatasetId) -> Result<Option<Sharing>> {
     let select =
         Select::from(Source::table(DATASETS_TABLE)).filter(Expr::col(COL_ID).eq(Expr::lit(id.0)));
@@ -330,7 +331,6 @@ pub async fn list_dataset_sharing(catalog: &Catalog) -> Result<BTreeMap<DatasetI
 
 /// Set who owns a dataset and whom it is shared with.
 pub async fn set_dataset_sharing(catalog: &Catalog, id: DatasetId, sharing: Sharing) -> Result<()> {
-    sharing.check()?;
     let update = Update::new(
         DATASETS_TABLE,
         vec![
@@ -361,7 +361,7 @@ fn sharing_from_row(row: &Row) -> Sharing {
             _ => None,
         },
         share_role: match row.get(COL_SHARE_ROLE) {
-            Some(Value::Int(n)) => u8::try_from(*n).ok(),
+            Some(Value::Int(n)) => Role::try_from(*n).ok(),
             _ => None,
         },
     }
@@ -382,7 +382,7 @@ fn dataset_from_row(row: &Row) -> Result<DatasetDef> {
         Some(Value::Text(t)) => t.clone(),
         other => return Err(bad(COL_NAME, "text", other)),
     };
-    let at = |e: String| Error::invalid(format!("dataset `{name}`: {e}"));
+    let at = |e: Error| Error::invalid(format!("dataset `{name}`: {}", e.message()));
     let description = match row.get(COL_DESCRIPTION) {
         Some(Value::Text(t)) => t.clone(),
         Some(Value::Null) | None => String::new(),
@@ -399,19 +399,14 @@ fn dataset_from_row(row: &Row) -> Result<DatasetDef> {
     })
 }
 
-fn json_column<T: serde::de::DeserializeOwned>(
-    row: &Row,
-    column: &str,
-) -> std::result::Result<T, String> {
+fn json_column<T: serde::de::DeserializeOwned>(row: &Row, column: &str) -> Result<T> {
     match row.get(column) {
-        Some(Value::Json(v)) => {
-            serde_json::from_value(v.clone()).map_err(|e| format!("{column} is not readable: {e}"))
-        }
+        Some(Value::Json(v)) => serde_json::from_value(v.clone())
+            .map_err(|e| Error::invalid(format!("{column} is not readable: {e}"))),
         // SQLite hands JSON back as text when it cannot tell.
-        Some(Value::Text(t)) => {
-            serde_json::from_str(t).map_err(|e| format!("{column} is not readable: {e}"))
-        }
-        other => Err(bad(column, "json", other).to_string()),
+        Some(Value::Text(t)) => serde_json::from_str(t)
+            .map_err(|e| Error::invalid(format!("{column} is not readable: {e}"))),
+        other => Err(bad(column, "json", other)),
     }
 }
 
@@ -432,7 +427,7 @@ async fn load_one(catalog: &Catalog, filter: Expr) -> Result<Option<DatasetDef>>
 
 async fn exec(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()
@@ -442,7 +437,7 @@ async fn exec(catalog: &Catalog, statement: Statement) -> Result<()> {
 
 pub(crate) async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()

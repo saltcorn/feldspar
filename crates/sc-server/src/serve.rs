@@ -52,6 +52,8 @@ pub async fn serve(
     // because this is the function that owns the process's signal behaviour, and
     // it holds the registry a reload mutates.
     crate::reload::spawn_sighup_reload(apps.clone());
+    // Settings → System's uptime, where the kernel cannot say when this started.
+    crate::system::started_at();
     // Previews a crashed run left behind go when idle (TODO §7b).
     spawn_preview_sweep(apps.clone());
     // Uploads abandoned for a day go, with their bytes (TODO F2, §2.3).
@@ -88,7 +90,7 @@ pub async fn serve(
 
     let TlsSettings::Off = &config.tls else {
         let result = serve_with_tls(config, app, service).await;
-        sc_core_traits::kill_all_processes();
+        sc_agent_builtins::kill_all_processes();
         if let Some(browser) = &browser {
             browser.shutdown();
         }
@@ -120,7 +122,7 @@ pub async fn serve(
     }
     // The coding agents' managed processes stop with the server (TODO 6a.4),
     // and so does their browser.
-    sc_core_traits::kill_all_processes();
+    sc_agent_builtins::kill_all_processes();
     if let Some(browser) = &browser {
         browser.shutdown();
     }

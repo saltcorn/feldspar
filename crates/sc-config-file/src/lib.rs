@@ -124,6 +124,11 @@ pub const CONFIG_PATH_VAR: &str = "FELDSPAR_CONFIG";
 /// Environment variable selecting the environment, when `--environment` is not
 /// passed. Selecting one this way is as explicit as the flag.
 pub const ENVIRONMENT_VAR: &str = "FELDSPAR_ENV";
+/// Environment variable pinning `ssl_mode` over the selected environment's
+/// (and over `_fd_config`): how a container image, which cannot know what file
+/// will be mounted into it, says that TLS is the proxy's business —
+/// `FELDSPAR_SSL_MODE=proxy`. Empty is unset.
+pub const SSL_MODE_VAR: &str = "FELDSPAR_SSL_MODE";
 /// The environment used when the file names no `default_environment` and the
 /// command line selects none.
 pub const DEFAULT_ENVIRONMENT: &str = "production";
@@ -175,7 +180,7 @@ pub struct Environment {
     pub host: Option<String>,
     pub port: Option<u16>,
     pub user: Option<String>,
-    pub password: Option<String>,
+    pub password: Option<sc_error::Secret<String>>,
     /// The database name (`database`, not `dbname`: this is a file a person
     /// writes, and `--db-name`'s spelling is the CLI's own abbreviation).
     pub database: Option<String>,
@@ -253,7 +258,7 @@ pub struct Environment {
     /// Whether that browser runs with its own sandbox — `false` is
     /// `--no-browser-sandbox`. On by default; off only for a kernel that refuses
     /// the unprivileged user namespaces the sandbox needs, which
-    /// `scripts/setup-host.sh` detects and names.
+    /// `feldspar setup` detects and names.
     pub browser_sandbox: Option<bool>,
     /// The CmdStan Stan models use — `--cmdstan` (Stan TODO §20). Unset, the
     /// server takes `$CMDSTAN`, else the newest `~/.cmdstan/cmdstan-*`.
@@ -287,6 +292,11 @@ pub struct Environment {
     /// Unset means the server default (`template1`), which is what a clean CI
     /// Postgres wants.
     pub test_template: Option<String>,
+    /// Whether this environment is **production** (TODO-checklists C1.6): a
+    /// checklist that writes data is refused there unless the checklist itself
+    /// is allowed on production. Unset, the environment *named* `production`
+    /// is one and every other is not ([`Environment::is_production`]).
+    pub production: Option<bool>,
     /// An LLM provider this host supplies — `[environments.NAME.llm_provider]`.
     ///
     /// Like the TLS keys, it **wins over the database** and the admin cannot
@@ -316,7 +326,7 @@ pub struct LlmProviderSection {
     /// A human description, shown under the name.
     pub description: Option<String>,
     /// The API key — optional only for an `openai_chat` local host.
-    pub api_key: Option<String>,
+    pub api_key: Option<sc_error::Secret<String>>,
     /// The endpoint, when it is not the backend's own default.
     pub base_url: Option<String>,
     /// The model an agent naming this provider and no model calls. May be left
@@ -436,6 +446,12 @@ impl Environment {
         .collect()
     }
 
+    /// Whether the environment called `name` with this section is production:
+    /// its `production` key, or else whether it is called `production`.
+    pub fn is_production(&self, name: &str) -> bool {
+        self.production.unwrap_or(name == DEFAULT_ENVIRONMENT)
+    }
+
     /// Whether this section says nothing at all. An empty section is treated as
     /// no configuration rather than as "connect to the defaults", so a
     /// placeholder `[environments.staging]` with the parameters still to be
@@ -515,6 +531,12 @@ pub struct SelectedEnvironment {
 }
 
 impl SelectedEnvironment {
+    /// Whether the selected environment is production
+    /// ([`Environment::is_production`]).
+    pub fn is_production(&self) -> bool {
+        self.section.is_production(&self.name)
+    }
+
     /// A one-line description for the startup log: which environment, from where.
     pub fn describe(&self) -> String {
         format!("the `{}` environment of {}", self.name, self.path.display())
@@ -629,6 +651,18 @@ pub fn search_paths() -> Vec<PathBuf> {
     paths
 }
 
+/// The per-user configuration file — the first of [`search_paths`], and where
+/// `feldspar setup --dev` writes one.
+pub fn user_config_file() -> Option<PathBuf> {
+    user_config_dir().map(|dir| dir.join(APP_DIR).join(FILE_NAME))
+}
+
+/// The system-wide configuration file — the last of [`search_paths`], and where
+/// `feldspar setup --server` writes one for the service account.
+pub fn system_config_file() -> Option<PathBuf> {
+    system_config_dir().map(|dir| dir.join(APP_DIR).join(FILE_NAME))
+}
+
 /// [`search_paths`], rendered for an error message.
 fn describe_search_paths() -> String {
     let paths = search_paths();
@@ -681,7 +715,7 @@ fn env_var(name: &str) -> Option<String> {
 /// a file other people can read is worth a sentence, and the operator is the
 /// only one who can see it.
 ///
-/// "Other people" is the part worth being careful about. `scripts/setup-host.sh`
+/// "Other people" is the part worth being careful about. `feldspar setup`
 /// writes this file `root:feldspar 0640` on purpose: the server reads its
 /// configuration and never writes it, so leaving it to root means a compromised
 /// server cannot rewrite the file that decides what the next restart does. The
@@ -771,6 +805,25 @@ test_template = "saltcorn_template"
             file.environments["test"].database.as_deref(),
             Some("saltcorn_test")
         );
+    }
+
+    #[test]
+    fn the_production_environment_is_marked_by_name_or_by_key() {
+        let file = parse(
+            "[environments.production]\nhost = \"db\"\n\
+             [environments.live]\nhost = \"db\"\nproduction = true\n\
+             [environments.staging]\nhost = \"db\"\n\
+             [environments.demo]\nhost = \"db\"\n",
+        )
+        .expect("parses");
+        let prod = |name: &str| file.environments[name].is_production(name);
+        assert!(prod("production"));
+        assert!(prod("live"));
+        assert!(!prod("staging"));
+        // And `production = false` unmarks the one named production.
+        let file = parse("[environments.production]\nhost = \"db\"\nproduction = false\n")
+            .expect("parses");
+        assert!(!file.environments["production"].is_production("production"));
     }
 
     #[test]
@@ -938,7 +991,10 @@ name = "claude-haiku-4-5"
             .expect("the section is read");
         assert_eq!(provider.name, "hosted");
         assert_eq!(provider.backend, "anthropic");
-        assert_eq!(provider.api_key.as_deref(), Some("sk-ant-x"));
+        assert_eq!(
+            provider.api_key.as_ref().map(|k| k.expose().as_str()),
+            Some("sk-ant-x")
+        );
         assert!(provider.base_url.is_none());
         assert_eq!(provider.models.len(), 2);
         assert_eq!(
@@ -1100,7 +1156,7 @@ port = "5432"
 
     /// Which modes are worth a word on stderr.
     ///
-    /// `scripts/setup-host.sh` writes the file `root:feldspar 0640` on purpose —
+    /// `feldspar setup` writes the file `root:feldspar 0640` on purpose —
     /// the server reads its configuration and never writes it, so root keeps
     /// ownership and a compromised server cannot rewrite what the next restart
     /// connects to. Warning about that would be telling the operator to undo the
@@ -1109,7 +1165,7 @@ port = "5432"
     #[cfg(unix)]
     #[test]
     fn a_group_readable_config_is_only_a_problem_when_the_group_is_someone_else() {
-        // The setup-host.sh layout: root:feldspar 0640, read as feldspar.
+        // The `feldspar setup` layout: root:feldspar 0640, read as feldspar.
         assert!(!reachable_by_others(0o640, 42, 42));
         // The same mode, but the group is not the server's.
         assert!(reachable_by_others(0o640, 43, 42));

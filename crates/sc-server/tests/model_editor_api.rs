@@ -3,6 +3,7 @@
 //! socket, the list of fits saying which are out of date, and the view state
 //! beside the model.
 
+use crate::support::Socket;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,13 +12,14 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode, header};
 use futures::StreamExt;
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-    default_js_evaluator, install_triggers,
+    AppMounts, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
+    install_triggers,
 };
 use sc_test_harness::TestDb;
 use serde_json::{Value, json};
@@ -113,9 +115,6 @@ struct Server {
     _db: TestDb,
 }
 
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-
 impl Server {
     /// Open the progress socket of fit `id`, as the admin or as nobody.
     async fn progress(
@@ -171,6 +170,7 @@ async fn serve() -> sc_error::Result<Server> {
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     // For a calculated field that predicts (`what_uses_a_model…`).
     sc_catalog::bootstrap_table_meta(&catalog).await?;

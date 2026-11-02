@@ -4,16 +4,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::{ApiProvider, ApiRequest, Method, RestProvider, schema_edit};
 use sc_auth::{User, bootstrap, create_user};
 use sc_catalog::{Catalog, bootstrap_change_log, bootstrap_field_meta, bootstrap_table_meta};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
 use sc_expr::{DenoEvaluator, JsEvaluator};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value as Json, json};
 
 const APP: uuid::Uuid = uuid::Uuid::from_u128(0x5eed);
@@ -31,14 +30,9 @@ struct Fixture {
 /// `drafts` is in the application but not synced. `lists` and their `entries`
 /// are synced, with integer keys the server issues.
 async fn fixture(db: &TestDb) -> Result<Fixture> {
-    sql(
-        db,
-        "DO $$ DECLARE r record; BEGIN \
-           FOR r IN SELECT table_schema FROM information_schema.tables \
-           WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-             EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-           END LOOP; END $$;
-         CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    let cat = TestServer::builder()
+        .sql(
+            "CREATE EXTENSION IF NOT EXISTS pgcrypto;
          CREATE TABLE notes (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
                              title text NOT NULL, owner uuid);
          CREATE TABLE items (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -46,10 +40,9 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
          CREATE TABLE drafts (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), body text);
          CREATE TABLE lists (id serial PRIMARY KEY, name text NOT NULL);
          CREATE TABLE entries (id serial PRIMARY KEY, list int REFERENCES lists(id), text text);",
-    )
-    .await?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let cat = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
+        )
+        .build_on(db)
+        .await?;
     bootstrap(&cat).await?;
     bootstrap_table_meta(&cat).await?;
     bootstrap_field_meta(&cat).await?;
@@ -57,15 +50,15 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
     cat.reload().await?;
 
     let settings = |formula: &str, sync: bool| schema_edit::TableSettings {
-        min_role_read: Some(1),
-        min_role_write: Some(1),
+        min_role_read: Some(Role::ADMIN),
+        min_role_write: Some(Role::ADMIN),
         ownership_formula: Some(formula.into()),
         sync_enabled: Some(sync),
         ..Default::default()
     };
     let anyone = |sync: bool| schema_edit::TableSettings {
-        min_role_read: Some(80),
-        min_role_write: Some(80),
+        min_role_read: Some(Role::of(80)),
+        min_role_write: Some(Role::of(80)),
         sync_enabled: Some(sync),
         ..Default::default()
     };
@@ -81,8 +74,8 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
             alter(
                 "items",
                 schema_edit::TableSettings {
-                    min_role_read: Some(80),
-                    min_role_write: Some(80),
+                    min_role_read: Some(Role::of(80)),
+                    min_role_write: Some(Role::of(80)),
                     sync_enabled: Some(true),
                     ..Default::default()
                 },
@@ -92,8 +85,8 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
             alter(
                 "drafts",
                 schema_edit::TableSettings {
-                    min_role_read: Some(80),
-                    min_role_write: Some(80),
+                    min_role_read: Some(Role::of(80)),
+                    min_role_write: Some(Role::of(80)),
                     ..Default::default()
                 },
             ),
@@ -102,9 +95,9 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
     )
     .await?;
 
-    sc_auth::save_role(&cat, &sc_auth::Role::new(80, "User")).await?;
-    let ann = create_user(&cat, "ann@example.com", "ann-password", 80).await?;
-    let bob = create_user(&cat, "bob@example.com", "bob-password", 80).await?;
+    sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(80), "User")).await?;
+    let ann = create_user(&cat, "ann@example.com", "ann-password", Role::of(80)).await?;
+    let bob = create_user(&cat, "bob@example.com", "bob-password", Role::of(80)).await?;
     let api = RestProvider::project(
         "/api",
         &[
@@ -118,20 +111,7 @@ async fn fixture(db: &TestDb) -> Result<Fixture> {
     .with_application(APP)
     // Ownership checks on writes run the formula.
     .with_evaluator(Arc::new(DenoEvaluator::new()) as Arc<dyn JsEvaluator>);
-    Ok(Fixture {
-        cat: Arc::new(cat),
-        api,
-        ann,
-        bob,
-    })
-}
-
-async fn sql(db: &TestDb, statements: &str) -> Result<()> {
-    db.client()
-        .await?
-        .batch_execute(statements)
-        .await
-        .map_err(|e| Error::database(format!("{e:?}")))
+    Ok(Fixture { cat, api, ann, bob })
 }
 
 async fn query(db: &TestDb, statement: &str) -> Result<Vec<String>> {
@@ -184,7 +164,7 @@ fn statuses(results: &[Json]) -> Vec<&str> {
 async fn a_device_uploads_what_it_did_offline() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let ann = f.ann.id.to_string();
+    let ann = f.ann.id().to_string();
     let device = register(&f, &f.ann).await?;
     let note = NOTE.replace('n', "a");
     let item = ITEM.replace('i', "b");
@@ -241,7 +221,7 @@ async fn a_device_uploads_what_it_did_offline() -> Result<()> {
 async fn a_refused_change_does_not_stop_the_others() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let (ann, bob) = (f.ann.id.to_string(), f.bob.id.to_string());
+    let (ann, bob) = (f.ann.id().to_string(), f.bob.id().to_string());
     let device = register(&f, &f.ann).await?;
     let mine = NOTE.replace('n', "a");
     let gone = NOTE.replace('n', "f");
@@ -302,7 +282,7 @@ async fn a_refused_change_does_not_stop_the_others() -> Result<()> {
 async fn a_retried_upload_is_applied_once() -> Result<()> {
     let db = TestDb::new().await?;
     let f = fixture(&db).await?;
-    let ann = f.ann.id.to_string();
+    let ann = f.ann.id().to_string();
     let device = register(&f, &f.ann).await?;
     let changes = |from: i64| {
         json!([

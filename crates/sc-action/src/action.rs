@@ -17,13 +17,15 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use sc_catalog::{Catalog, SharedTx};
+use sc_access::Scoped;
+use sc_access::rows::Executor;
+use sc_catalog::{Authority, Catalog, Principal, SharedTx};
 use sc_email::Mailer;
 use sc_error::{Error, Result};
-use sc_expr::{
-    Ambient, CodeAdapter, ConsoleSink, Formula, JsEvaluator, SchemaShape, Template, value_from_json,
-};
+use sc_expr::{Ambient, CodeAdapter, ConsoleSink, Formula, JsEvaluator, SchemaShape, Template};
 use sc_query::Value;
+use sc_types::Role;
+use sc_types::value_from_json;
 use sc_types::{Attrs, FormField};
 use serde_json::Value as Json;
 
@@ -197,9 +199,12 @@ pub trait FileUrls: Send + Sync {
 /// the caller's stack, and copying a catalog handle and a configuration map per
 /// firing would be waste for no gain in clarity.
 pub struct ActionContext<'a> {
-    /// The data layer. An action that writes rows goes through the row layer
-    /// (`sc-api`, above this crate) rather than the driver, so its writes are
-    /// themselves events — which is what makes a cascade possible, and bounded.
+    /// The catalog: the schema, the configuration, the services. An action's
+    /// rows are read and written through [`scoped`](ActionContext::scoped) —
+    /// the row layer (`sc-access`) with the trigger's authority bound — so its
+    /// writes are themselves events, which is what makes a cascade possible,
+    /// and bounded. The catalog alone reaches no row without an
+    /// `sc_catalog::Unchecked` token somebody had to write down.
     pub catalog: &'a Catalog,
     /// What happened.
     pub event: &'a Event,
@@ -299,6 +304,16 @@ pub struct ActionContext<'a> {
     /// trigger, which belongs to no application and imports instance-wide
     /// libraries only.
     application: Option<uuid::Uuid>,
+    /// Whether a code body's handles act **as the event's caller** unless the
+    /// body says `asAdmin()` — a custom query's (§13.4), which answers an
+    /// outside request and so must not be wider than the row API by default.
+    /// `false` everywhere else: a trigger is server-side configuration and acts
+    /// as the admin.
+    as_caller: bool,
+    /// The principal [`scoped`](ActionContext::scoped) binds: built on first
+    /// use, which is inside the event's origin and changeset (the dispatcher
+    /// enters both around `Action::run`).
+    principal: std::sync::OnceLock<Principal>,
 }
 
 impl<'a> ActionContext<'a> {
@@ -331,7 +346,44 @@ impl<'a> ActionContext<'a> {
             request: None,
             file_urls: None,
             application: None,
+            as_caller: false,
+            principal: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The row layer with this action's authority bound to it (code-quality
+    /// review §4.4): the **trigger's** — the administrator, in the event's
+    /// user's name, carrying the chain of triggers that led here — on the
+    /// step's transaction when there is one, with this context's formula
+    /// engine.
+    ///
+    /// An action's writes are the admin's, not the caller's: a trigger is
+    /// server-side configuration, and an audit row a user may not insert is the
+    /// archetype of what a trigger exists to write. The event's user still
+    /// travels, so an RLS policy that reads `user` and the event the write
+    /// raises both see who caused it.
+    pub fn scoped(&self) -> Scoped<'_> {
+        let principal = self.principal.get_or_init(|| {
+            Principal::new(Role::ADMIN, self.event.user.clone())
+                .chained(self.chain.clone())
+                .in_current_origin()
+        });
+        let scoped = Scoped::new(self.catalog, Authority::Caller(principal))
+            .in_executor(Executor::of(self.tx.clone()));
+        match self.evaluator {
+            Some(evaluator) => scoped.with_evaluator(Some(Arc::clone(evaluator))),
+            None => scoped,
+        }
+    }
+
+    /// The event's **caller**, as a principal: the role the event was served at
+    /// and the user, with the chain that led here — who a delegated operation
+    /// (`asUser()`, `undo`) acts as. Built from the event rather than read from
+    /// `event.role` / `event.user` at each call site.
+    pub fn caller(&self) -> Principal {
+        Principal::new(self.event.role, self.event.user.clone())
+            .chained(self.chain.clone())
+            .in_current_origin()
     }
 
     /// Supply the JavaScript engine (the server's one isolate, §7.3).
@@ -493,6 +545,19 @@ impl<'a> ActionContext<'a> {
         self.file_urls.as_ref()
     }
 
+    /// Make the event's caller the authority a code body's handles default to
+    /// (a custom query's), in place of the admin's.
+    pub fn as_caller(mut self, as_caller: bool) -> ActionContext<'a> {
+        self.as_caller = as_caller;
+        self
+    }
+
+    /// Whether a code body's handles default to the event's caller rather than
+    /// the admin ([`as_caller`](ActionContext::as_caller)).
+    pub fn acts_as_caller(&self) -> bool {
+        self.as_caller
+    }
+
     /// Run this action as code belonging to `application` (a custom query's).
     pub fn with_application(mut self, application: Option<uuid::Uuid>) -> ActionContext<'a> {
         self.application = application;
@@ -507,6 +572,7 @@ impl<'a> ActionContext<'a> {
     /// Supply the chain this run descends from (`Event::firing`'s result).
     pub fn with_chain(mut self, chain: Vec<String>) -> ActionContext<'a> {
         self.chain = chain;
+        self.principal = std::sync::OnceLock::new();
         self
     }
 

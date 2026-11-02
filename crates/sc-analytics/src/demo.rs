@@ -50,7 +50,7 @@
 //! made again; datasets are never dropped.
 
 use chrono::{Duration, NaiveDate};
-use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, TableId};
+use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId};
 use sc_dataset::{DatasetDef, Op, Operation};
 use sc_db::ColumnGenerator;
 use sc_error::{Context, Error, Result};
@@ -179,7 +179,7 @@ fn id() -> DataField {
 fn key(name: &str, table: &str) -> DataField {
     let mut field = DataField::plain(name, TypeRef::Basic(BasicType::Int));
     field.kind = DataFieldKind::Key {
-        target_table: TableId(table.to_owned()),
+        target_table: table.to_owned(),
         target_field: FieldId("id".to_owned()),
         summary_field: None,
     };
@@ -188,6 +188,7 @@ fn key(name: &str, table: &str) -> DataField {
 
 /// Make the demo's tables in `catalog`, refusing to touch any that are there
 /// unless `replace`.
+#[allow(clippy::too_many_lines)]
 pub async fn demo_analytics(catalog: &Catalog, replace: bool) -> Result<DemoReport> {
     let present: Vec<String> = DEMO_TABLES
         .iter()
@@ -494,8 +495,11 @@ async fn events(catalog: &Catalog) -> Result<()> {
         f = hash(1_583_458_089, 784_588_716),
     );
     catalog
-        .primary()
-        .query(&Statement::raw(sql, Vec::new()))
+        .primary(crate::INTERNAL_TABLES)
+        .query(&Statement::raw(
+            sc_query::TrustedSql::composed(sql),
+            Vec::new(),
+        ))
         .await?
         .try_collect()
         .await
@@ -811,7 +815,7 @@ async fn insert(
             returning: Vec::new(),
         };
         catalog
-            .primary()
+            .primary(crate::INTERNAL_TABLES)
             .query(&Statement::from(insert))
             .await?
             .try_collect()

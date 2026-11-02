@@ -27,9 +27,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use sc_action::TriggerDispatcher;
+use sc_action_builtins::CodeSurfaces;
 use sc_app::{FrameworkSet, install_frameworks};
 use sc_catalog::{Catalog, TableProviderHosts};
-use sc_core_actions::CodeSurfaces;
 use sc_error::{Context, Error, Result};
 use sc_expr::ModuleFnHosts;
 use sc_module::{
@@ -300,6 +300,11 @@ impl ModuleServices {
                 sc_error::format_chain(&e)
             );
         }
+        // And the **checklist step types** a module declares (TODO-checklists
+        // C3.5), into `sc-check`'s registry — whole, like the frameworks, so a
+        // step of an uninstalled module's type errors naming why instead of
+        // half-running.
+        crate::check_steps::install_module_step_types(&self.host, &set);
         // And the **view patterns** (TODO "Saltcorn UI" 11.1): into
         // `sc-viewpattern`'s registry, which a view's save is checked against,
         // and into the view runtime's, which renders them — both whole, so an
@@ -621,7 +626,7 @@ impl ModuleServices {
         &self,
         segment: &str,
         request: sc_module::RouteRequest,
-        caller: &sc_module::RouteCaller,
+        caller: &sc_catalog::Principal,
     ) -> Result<Option<sc_module::WebhookResponse>> {
         let set = self.modules();
         let Some(loaded) = sc_module::route_module(&set, segment)? else {

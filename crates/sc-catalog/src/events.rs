@@ -26,7 +26,7 @@ use serde_json::Value as Json;
 
 use sc_error::Result;
 
-use crate::caller::CallerContext;
+use crate::caller::Principal;
 use crate::catalog::Catalog;
 use crate::table::Table;
 use crate::tx::SharedTx;
@@ -91,7 +91,7 @@ pub struct TableWrite<'a> {
     pub old_row: Option<Json>,
     /// Who caused the write, and which triggers led here. `None` where a caller
     /// was not supplied, which reads as an anonymous, un-chained write.
-    pub caller: Option<&'a CallerContext>,
+    pub caller: Option<&'a Principal>,
     /// The transaction the write was made in, when it was made in one — a
     /// workflow step's (§10.3, decision 6), or an import's.
     ///
@@ -130,6 +130,11 @@ pub trait TableEvents: Send + Sync {
     /// [`TableWrite::tx`] is how a listener joins it, so what it does about the
     /// write shares the write's fate.
     async fn emit(&self, catalog: &Catalog, write: TableWrite<'_>) -> Result<()>;
+
+    /// Let go of whatever this listener holds that holds it back — called by
+    /// [`Catalog::teardown`] on each listener before it is taken off the seam.
+    /// Nothing by default.
+    fn teardown(&self) {}
 }
 
 #[cfg(test)]

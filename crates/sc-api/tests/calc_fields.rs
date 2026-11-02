@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use sc_api::rows;
+use sc_access::rows;
 use sc_catalog::{Catalog, DataFieldKind, FieldMeta, bootstrap_field_meta, save_field_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -67,7 +67,7 @@ async fn calc_fields_are_computed_on_read() -> Result<()> {
     );
 
     let books = catalog.require("books")?;
-    let list = rows::list_rows(&catalog, &books).await?;
+    let list = rows::list_rows(&catalog, &books, sc_catalog::Unchecked::system("test")).await?;
     let row = &list.as_array().unwrap()[0];
 
     assert_eq!(row["double_pages"], Json::from(200));
@@ -92,6 +92,7 @@ async fn a_calc_field_cannot_be_written() -> Result<()> {
         &books,
         "1",
         &serde_json::json!({ "double_pages": 5 }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await
     .unwrap_err();
@@ -101,7 +102,7 @@ async fn a_calc_field_cannot_be_written() -> Result<()> {
         "got: {err}"
     );
     // The stored row is untouched.
-    let list = rows::list_rows(&catalog, &books).await?;
+    let list = rows::list_rows(&catalog, &books, sc_catalog::Unchecked::system("test")).await?;
     assert_eq!(list.as_array().unwrap()[0]["double_pages"], Json::from(200));
     Ok(())
 }
@@ -123,7 +124,7 @@ async fn a_calc_field_cycle_is_reported_and_the_fields_vanish() -> Result<()> {
     // Fail closed: neither calc field is exposed.
     let books = catalog.require("books")?;
     assert!(books.field("a").is_none() && books.field("b").is_none());
-    let list = rows::list_rows(&catalog, &books).await?;
+    let list = rows::list_rows(&catalog, &books, sc_catalog::Unchecked::system("test")).await?;
     let row = &list.as_array().unwrap()[0];
     assert!(row.get("a").is_none() && row.get("b").is_none());
     Ok(())

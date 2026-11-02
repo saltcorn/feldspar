@@ -14,7 +14,7 @@ use sc_app::{
     ApiConfig, Application, CspPolicy, FrameworkRef, StaticDir, bootstrap, delete_application,
     list_applications, load_application, load_application_by_subdomain, save_application,
 };
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -65,12 +65,13 @@ fn code_framework() -> FrameworkRef {
 
 /// An application exercising every column: both §9 required extras
 /// (description, attributes), a configured framework, both subsets, an API, a
-/// static dir, and a non-default CSP.
+/// static dir, a non-default CSP, and one connected table serving its row API
+/// beside one that does not.
 fn blog() -> Application {
     Application::new("My Blog", "blog", code_framework())
         .description("The company blog")
-        .with_table(TableId("posts".to_owned()))
-        .with_table(TableId("comments".to_owned()))
+        .with_table("posts".to_owned())
+        .with_connected_table("comments".to_owned())
         .with_file_store(FileStoreId("uploads".to_owned()))
         .with_api(ApiConfig::new("rest", "/api").with("row_cap", 100))
         .with_static_dir(StaticDir::new(
@@ -95,6 +96,17 @@ async fn an_application_round_trips_through_the_table() -> Result<()> {
     // app's only definition, so anything lost here is lost for good.
     let loaded = load_application(&cat, app.id).await?.expect("saved app");
     assert_eq!(loaded, app);
+    // …which includes which connected tables serve a row API.
+    assert_eq!(loaded.api_tables, vec!["posts".to_owned()]);
+
+    // A row API over a table the app is not connected to is refused on save.
+    let mut wider = app.clone();
+    wider.api_tables.push("users".to_owned());
+    let refused = save_application(&cat, &wider)
+        .await
+        .expect_err("users is not connected")
+        .to_string();
+    assert!(refused.contains("not connected"), "{refused}");
 
     // Including each API provider's own settings, which are as much part of the
     // app's definition as the framework's: a row that lost them would be an app
@@ -135,7 +147,7 @@ async fn saving_an_existing_application_updates_it_in_place() -> Result<()> {
     // Editing in the admin UI saves the same app (same id), it does not add one.
     app.name = "The Blog".to_owned();
     app.description = String::new();
-    app.tables = vec![TableId("posts".to_owned())];
+    app.tables = vec!["posts".to_owned()];
     app.apis.push(ApiConfig::new("rest", "/api/v2"));
     save_application(&cat, &app).await?;
 
@@ -144,7 +156,7 @@ async fn saving_an_existing_application_updates_it_in_place() -> Result<()> {
     assert_eq!(all[0], app);
     assert_eq!(all[0].name, "The Blog");
     assert_eq!(all[0].description, "");
-    assert_eq!(all[0].tables, vec![TableId("posts".to_owned())]);
+    assert_eq!(all[0].tables, vec!["posts".to_owned()]);
 
     // Keeping its own subdomain across an edit is not a clash with itself.
     save_application(&cat, &app).await?;
@@ -464,7 +476,10 @@ async fn a_defined_but_unconnected_store_is_still_choosable() -> Result<()> {
     bootstrap(&cat).await?;
 
     // Defined, never connected — nothing was ever mounted at `/srv/x`.
-    assert!(cat.file_store("apps")?.is_none());
+    assert!(
+        cat.file_store("apps", sc_catalog::Unchecked::system("test"))?
+            .is_none()
+    );
 
     let app = Application::new(
         "Blog",

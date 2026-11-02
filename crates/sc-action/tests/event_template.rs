@@ -12,13 +12,14 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{
     ActionContext, EVENT_SCOPE, Event, EventKind, action_shape, check_template,
     render_event_template, template_scope,
 };
-use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, TableId};
+use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -50,7 +51,7 @@ async fn shop(db: &TestDb) -> Result<Catalog> {
     .await?;
     let mut customer = DataField::plain("customer", int());
     customer.kind = DataFieldKind::Key {
-        target_table: TableId("customers".to_owned()),
+        target_table: "customers".to_owned(),
         target_field: FieldId("id".to_owned()),
         summary_field: None,
     };
@@ -80,7 +81,7 @@ fn order_event() -> Event {
     Event::new(EventKind::None)
         .on("orders")
         .row(json!({ "id": 42, "total": 250, "note": null, "customer": 7 }))
-        .caller(1, Some(json!({ "email": "admin@example.com" })))
+        .caller(Role::ADMIN, Some(json!({ "email": "admin@example.com" })))
 }
 
 #[tokio::test]

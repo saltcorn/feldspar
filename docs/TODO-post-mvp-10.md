@@ -211,7 +211,7 @@ to send through without it. The action-facing half — how a `send_email` action
       `sc_test_harness::TestSmtp`, beside `TestDb`, because `sc-server`'s test-email test needs
       it too.
 
-## Phase 4 — The `send_email` action (`sc-core-actions`)
+## Phase 4 — The `send_email` action (`sc-action-builtins`)
 
 - [x] **`send_email`**, configured as templates: `to`, `cc`, `bcc`, `subject`, `html`, `text`,
       and an optional `from` overriding the configured one. Every one is a `Template` rendered
@@ -239,7 +239,7 @@ to send through without it. The action-facing half — how a `send_email` action
 - [x] **The mailer reaches the action the way the evaluator does**: through `ActionContext`,
       absent in contexts that have none (client generation, unit tests), so an action asking for
       one out of context gets a named configuration error rather than doing nothing. Registered
-      in `sc-core-actions`' registry beside `insert_row` and `fetch`. The two seams are now one
+      in `sc-action-builtins`' registry beside `insert_row` and `fetch`. The two seams are now one
       `ActionServices` the dispatcher holds, and the mailer a server installs is
       `sc_email::SettingsMailer`, which reads the saved settings per message — so an admin who
       fixes an SMTP password does not have to restart. `Mailer` gained `sender()`: the
@@ -349,7 +349,7 @@ work is findable. It closes the "subagent handoff" line item carried out of
 - [x] **The child inherits the caller and nothing else**: same `RunCaller` (so §7.3 applies one
       level down and delegation cannot escalate), the sub-agent's own `min_role` on top, and a
       fresh context whose only content is the briefing.
-- [x] **`subagent` in `sc-core-traits`**: one tool per configured agent
+- [x] **`subagent` in `sc-agent-builtins`**: one tool per configured agent
       (`delegate_to_<agent>`), configured with the agent, a "when to use it" sentence for the
       *parent* model's tool description, a per-delegation step budget and a depth bound.
       Validated on save and on load — the agent exists, it is not this agent, the bounds mean

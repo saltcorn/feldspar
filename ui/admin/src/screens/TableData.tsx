@@ -27,7 +27,7 @@ import Nav from "react-bootstrap/Nav";
 import { api, errorMessage } from "../api";
 import { navigate } from "../App";
 import { DataGrid, fileStoreOf, isCalc, isDocument, isSecret, type FieldInfo } from "./DataGrid";
-import { display, type RowRecord } from "../grid/gridValues";
+import { display, fromPicker, pickerType, toPicker, type RowRecord } from "../grid/gridValues";
 import { IconArrowLeft } from "../icons";
 import { PageBody, PageHeader } from "../layout";
 import { ALL_WRITES, canSubmit, formOffered, writesOf, type TableWrites } from "../tableWrites";
@@ -97,7 +97,9 @@ export function TableData({ table }: { table: string }) {
   const openRow = useCallback((row: RowRecord | null) => setFormRow(row), []);
 
   return (
-    <>
+    // `.data-page` gives the screen the viewport, so the grid runs to its foot
+    // (`admin.css`).
+    <div className="data-page">
       <PageHeader
         pretitle="Table data"
         title={label}
@@ -172,7 +174,7 @@ export function TableData({ table }: { table: string }) {
           }}
         />
       )}
-    </>
+    </div>
   );
 }
 
@@ -217,7 +219,13 @@ function RowForm({
     const initial: Record<string, string> = {};
     // A secret's box opens empty: what the row holds is its sentinel, not its value.
     if (row !== null)
-      for (const f of editable) initial[f.name] = isSecret(f) ? "" : display(row[f.name]);
+      for (const f of editable) {
+        initial[f.name] = isSecret(f)
+          ? ""
+          : pickerType(f.type) !== null
+            ? toPicker(f.type, row[f.name])
+            : display(row[f.name]);
+      }
     return initial;
   });
   const [busy, setBusy] = useState(false);
@@ -235,7 +243,8 @@ function RowForm({
     for (const f of editable) {
       // An empty secret box means "keep what is there" (or nothing, on a new row).
       if (isSecret(f) && (values[f.name] ?? "") === "") continue;
-      const value = parseInput(values[f.name] ?? "");
+      const raw = values[f.name] ?? "";
+      const value = pickerType(f.type) !== null ? fromPicker(f.type, raw) : parseInput(raw);
       // A blank box on a column that fills itself in means "let it" — an identity
       // key numbers itself, a UUID key generates itself — and sending an explicit
       // null instead would be refused by the NOT NULL every key column has.
@@ -315,6 +324,9 @@ function RowForm({
                   />
                 ) : (
                   <Form.Control
+                    // A date, a time or a timestamp is picked, as in the grid.
+                    type={pickerType(f.type) ?? "text"}
+                    step={pickerType(f.type) === "date" || pickerType(f.type) === null ? undefined : 1}
                     value={values[f.name] ?? ""}
                     // The key addresses the row being edited; changing it here
                     // would mean "move this row to another key", which the form

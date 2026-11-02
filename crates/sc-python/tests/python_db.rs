@@ -124,7 +124,7 @@ return (db.invoices
         json!({
             "op": "select",
             "table": "invoices",
-            "authority": "admin",
+            "authority": "default",
             "where": { "and": [
                 { "paid": false, "due": { "lt": "2026-01-01" } },
                 { "formula": "amount > 10" },
@@ -249,7 +249,7 @@ return (db.books
         json!({
             "op": "aggregate",
             "table": "books",
-            "authority": "admin",
+            "authority": "default",
             "group": ["author"],
             "aggregate": [
                 { "alias": "n", "fn": "count", "arg": null },
@@ -289,7 +289,7 @@ async fn every_scalar_terminal_is_one_nameless_group_unwrapped() {
             json!({
                 "op": "aggregate",
                 "table": "books",
-                "authority": "admin",
+                "authority": "default",
                 "aggregate": [{ "alias": "value", "fn": func, "arg": arg }],
             }),
             "{call}"
@@ -332,7 +332,7 @@ async fn a_write_is_spelled_three_ways_and_means_the_same_plan() {
             json!({
                 "op": "insert",
                 "table": "books",
-                "authority": "admin",
+                "authority": "default",
                 "values": { "title": "Dune", "pages": 412 },
             }),
             "{body}"
@@ -360,7 +360,7 @@ async fn a_write_is_spelled_three_ways_and_means_the_same_plan() {
         json!({
             "op": "update",
             "table": "books",
-            "authority": "admin",
+            "authority": "default",
             "where": { "id": 3 },
             "values": { "pages": 500 },
         })
@@ -453,7 +453,7 @@ async fn iter_walks_more_rows_than_one_batch_and_the_query_itself_is_the_same_wa
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_authority_is_the_admins_until_the_body_delegates() {
+async fn the_authority_is_the_runs_default_until_the_body_delegates() {
     let host = Recorder::silent();
     run(
         &host,
@@ -470,7 +470,7 @@ db.as_user().books.as_admin().rows()
         .iter()
         .map(|p| p["authority"].as_str().unwrap_or("?"))
         .collect();
-    assert_eq!(authorities, vec!["admin", "user", "user", "admin"]);
+    assert_eq!(authorities, vec!["default", "user", "user", "admin"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -486,7 +486,7 @@ async fn the_bodys_own_sql_sends_its_text_and_its_binds_apart() {
         host.plan(),
         json!({
             "op": "sql",
-            "authority": "admin",
+            "authority": "default",
             "sql": "select * from books where pages > $1",
             "params": [200],
         })
@@ -540,7 +540,7 @@ return {
     assert_eq!(out["errors"], json!([true, true]));
     assert_eq!(
         out["table"],
-        json!("<saltcorn query on `customer orders` as admin>"),
+        json!("<saltcorn query on `customer orders` as default>"),
         "a name that is not an identifier is reached with db.table(...)"
     );
 }

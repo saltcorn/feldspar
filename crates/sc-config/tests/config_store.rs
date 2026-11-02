@@ -15,9 +15,10 @@ use std::sync::Arc;
 
 use sc_catalog::Catalog;
 use sc_config::{
-    ACME_CONTACT_EMAIL, MODE_CUSTOM, MODE_LETSENCRYPT, REDIRECT_HTTP_TO_HTTPS, SMTP_PORT,
-    SSL_CERTIFICATE, SSL_MODE, SSL_PRIVATE_KEY, SslMode, all_config, bootstrap, config_value,
-    delete_config, set_config, set_config_many, ssl_settings, stored_config, stray_config_keys,
+    ACME_CONTACT_EMAIL, FIRST_USER_TOKEN, MODE_CUSTOM, MODE_LETSENCRYPT, REDIRECT_HTTP_TO_HTTPS,
+    SMTP_PORT, SSL_CERTIFICATE, SSL_MODE, SSL_PRIVATE_KEY, SslMode, all_config, bootstrap,
+    config_value, delete_config, first_user_tokens_with, set_config, set_config_many, ssl_settings,
+    stored_config, stray_config_keys,
 };
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -159,7 +160,7 @@ async fn a_stray_row_is_reported_rather_than_read() -> Result<()> {
         vec![Expr::lit("legacy_setting"), Expr::lit(json!("x"))],
     );
     catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(insert))
         .await?
         .try_collect()
@@ -189,6 +190,34 @@ async fn a_secret_setting_is_stored_verbatim() -> Result<()> {
         stored_config(&catalog, SSL_PRIVATE_KEY).await?,
         Some(json!(pem))
     );
+    Ok(())
+}
+
+/// The first-user token comes from the environment, the table, or both, and
+/// when both are set and differ either is accepted. Blank counts as unset.
+#[tokio::test]
+async fn first_user_tokens_come_from_the_environment_and_the_table() -> Result<()> {
+    let (catalog, _db) = fixture().await?;
+    let env = |v: &str| Some(v.to_owned());
+
+    assert!(first_user_tokens_with(&catalog, None).await?.is_empty());
+    assert!(
+        first_user_tokens_with(&catalog, env("  "))
+            .await?
+            .is_empty()
+    );
+    assert_eq!(first_user_tokens_with(&catalog, env(" e1 ")).await?, ["e1"]);
+
+    set_config(&catalog, FIRST_USER_TOKEN, json!("c1")).await?;
+    assert_eq!(first_user_tokens_with(&catalog, None).await?, ["c1"]);
+    assert_eq!(
+        first_user_tokens_with(&catalog, env("e1")).await?,
+        ["e1", "c1"]
+    );
+    assert_eq!(first_user_tokens_with(&catalog, env("c1")).await?, ["c1"]);
+
+    set_config(&catalog, FIRST_USER_TOKEN, json!("")).await?;
+    assert_eq!(first_user_tokens_with(&catalog, env("e1")).await?, ["e1"]);
     Ok(())
 }
 
@@ -279,5 +308,41 @@ async fn a_key_the_host_pins_wins_over_the_table_and_cannot_be_saved_over() -> R
         config_value(&catalog, SSL_MODE).await?,
         json!(MODE_LETSENCRYPT)
     );
+    Ok(())
+}
+
+/// `proxy` is a mode only the host may choose: it pins like any other, reads
+/// back as HTTPS in public and plain HTTP here, and a save cannot store it —
+/// it is not among the settings screen's options.
+#[tokio::test]
+async fn the_proxy_mode_is_pinned_by_the_host_and_never_saved() -> Result<()> {
+    let (catalog, _db) = fixture().await?;
+
+    let refused = set_config(&catalog, SSL_MODE, json!(sc_config::MODE_PROXY))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains(SSL_MODE), "{refused}");
+    assert_eq!(stored_config(&catalog, SSL_MODE).await?, None);
+
+    let pinned: Attrs = json!({ SSL_MODE: sc_config::MODE_PROXY })
+        .as_object()
+        .unwrap()
+        .clone();
+    sc_config::set_host_config(&catalog, pinned)?;
+    let settings = ssl_settings(&catalog).await?;
+    assert_eq!(settings.mode, SslMode::Proxy);
+    assert!(!settings.enabled());
+    assert!(settings.public_https());
+    assert_eq!(sc_config::host_config_keys(&catalog), [SSL_MODE]);
+
+    // The settings form, hidden section and all, still saves the rest.
+    let form: Attrs = json!({ SSL_MODE: sc_config::MODE_PROXY, SMTP_PORT: 2525 })
+        .as_object()
+        .unwrap()
+        .clone();
+    set_config_many(&catalog, &form).await?;
+    assert_eq!(stored_config(&catalog, SSL_MODE).await?, None);
+    assert_eq!(stored_config(&catalog, SMTP_PORT).await?, Some(json!(2525)));
     Ok(())
 }

@@ -39,6 +39,7 @@ sc-expr.workspace = true
 # built — `TableHost`, `FileStoreHost`, `TriggerRunHost` — and serves an
 # application's files under the stores' own access rules.
 sc-api.workspace = true
+sc-access.workspace = true
 sc-action.workspace = true
 sc-files.workspace = true
 async-trait.workspace = true

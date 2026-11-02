@@ -9,17 +9,16 @@
 //! handle while the same `router` answers every request.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::blog_app;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use sc_app::{
-    ApiConfig, Application, FrameworkRef, bootstrap, delete_application, save_application,
-};
+use sc_app::{Application, FrameworkRef, bootstrap, delete_application, save_application};
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -91,22 +90,6 @@ fn write_bundler(root: &Path, marker: &str, succeed: bool) {
     }
 }
 
-fn code_framework() -> FrameworkRef {
-    FrameworkRef::new("code")
-        .with("store", "apps")
-        .with("source", "web")
-        .with("output", "web/dist")
-        .with("command", "sh build.sh")
-        .with("client", "web/src/client.ts")
-}
-
-fn blog_app() -> Application {
-    Application::new("Blog", "blog", code_framework())
-        .with_table(TableId("posts".to_owned()))
-        .with_file_store(FileStoreId("apps".to_owned()))
-        .with_api(ApiConfig::new("rest", "/api"))
-}
-
 /// Bring up a catalog with the applications + posts tables and an `apps` file
 /// store rooted at `tmp`, plus the assembled router over a *shared, empty*
 /// [`AppMounts`]. The returned handle is what the test mutates live.
@@ -124,6 +107,7 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<(Arc<AppMounts>, Router, Arc<C
 
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     bootstrap(&catalog).await?;
     catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", tmp.path())?))?;
@@ -277,7 +261,7 @@ async fn a_reload_serves_what_was_built_on_disk_without_building_anything() -> s
         )
         .await
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
-    let edited = app.clone().with_table(TableId("comments".to_owned()));
+    let edited = app.clone().with_table("comments".to_owned());
     save_application(&catalog, &edited).await?;
 
     // Any build now fails, which is how this test proves a reload runs none: if
@@ -312,7 +296,7 @@ async fn a_reload_serves_what_was_built_on_disk_without_building_anything() -> s
     // them: the app now declares `comments`, so its REST provider projects it.
     let mounted = apps.get("blog").expect("blog is mounted");
     assert!(
-        mounted.app.tables.contains(&TableId("comments".to_owned())),
+        mounted.app.tables.contains(&"comments".to_owned()),
         "the stored row should have been re-read"
     );
     let provider = mounted
@@ -437,5 +421,38 @@ async fn boot_mounts_every_built_app_without_building_and_skips_an_unbuilt_one()
     build_and_mount(&apps, broken).await?;
     let (_, body) = get(&router, "broken.example.com", "/").await;
     assert_eq!(body, b"<!doctype html><div id=root>fixed</div>");
+    Ok(())
+}
+
+/// A code library changed by another process — straight into
+/// `_fd_code_libraries` — is what a body imports after a reload. Before it,
+/// the set loaded at boot is still the one held.
+#[tokio::test]
+async fn a_reload_picks_up_a_code_library_changed_in_the_database() -> sc_error::Result<()> {
+    let tmp = TempDir::new("reload-libraries");
+    let (apps, _router, catalog, db) = setup(&tmp).await?;
+    sc_catalog::bootstrap_code_libraries(&catalog).await?;
+    sc_catalog::save_code_library(
+        &catalog,
+        &sc_catalog::CodeLibrary::new("greet", "exports.hello = 1;"),
+    )
+    .await?;
+    let held = |catalog: &Catalog| {
+        catalog
+            .code_libraries_for(None)
+            .and_then(|set| set.get("greet").map(str::to_owned))
+    };
+    assert_eq!(held(&catalog).as_deref(), Some("exports.hello = 1;"));
+
+    db.client()
+        .await?
+        .batch_execute("UPDATE _fd_code_libraries SET code = 'exports.hello = 2;'")
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    assert_eq!(held(&catalog).as_deref(), Some("exports.hello = 1;"));
+
+    let report = reload_all(&apps).await;
+    assert!(report.code_libraries_error.is_none(), "{report:?}");
+    assert_eq!(held(&catalog).as_deref(), Some("exports.hello = 2;"));
     Ok(())
 }

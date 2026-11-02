@@ -97,7 +97,7 @@ pub fn field_type(field: &DataField, names: &SchemaNames) -> TypeRef {
         // A key projects as the object it points at — but only when this
         // application exposes that table. When it does not, the column's own
         // value is still real data and is served as such.
-        DataFieldKind::Key { target_table, .. } => match names.get(&target_table.0) {
+        DataFieldKind::Key { target_table, .. } => match names.get(target_table) {
             // Never non-null: even a `NOT NULL` foreign key resolves to `null`
             // when the caller may not read the referenced row, and a non-null
             // field that resolves to null is a GraphQL error that would take

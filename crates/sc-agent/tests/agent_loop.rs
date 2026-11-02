@@ -9,6 +9,7 @@
 //! No test here needs an API key or spends a token (decision 7).
 
 use crate::common;
+use sc_types::Role;
 
 use std::sync::Arc;
 
@@ -390,8 +391,8 @@ async fn a_trait_speaks_before_every_turn_and_the_run_records_its_caller() -> Re
         Reply::calls("count_books", json!({})),
         Reply::says("Three, on a Tuesday."),
     ]));
-    let user = User::new(Uuid::new_v4(), 40)?;
-    let user_id = user.id;
+    let user = User::new(Uuid::new_v4(), Role::of(40));
+    let user_id = user.id();
     let runner = Runner::new(
         &catalog,
         &registry,
@@ -461,7 +462,7 @@ async fn per_step_context_follows_a_byte_identical_prefix() -> Result<()> {
     let second = &requests[1].messages;
     assert_eq!(first[..first.len() - 1], second[..first.len() - 1]);
     let last_text = |m: &[sc_llm::LlmMessage]| match m.last() {
-        Some(sc_llm::LlmMessage::User { content }) => content.clone(),
+        Some(sc_llm::LlmMessage::User { content, .. }) => content.clone(),
         other => panic!("the request should end on the context: {other:?}"),
     };
     assert!(last_text(first).contains("The page is /books. (step 1)"));

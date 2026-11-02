@@ -22,16 +22,14 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_app::{Application, AssetBundle, BuildSpec, CodeFramework, FrameworkRef};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, SESSION_COOKIE, ServerConfig, admin_handlers,
-    build_router_with_apps,
+    AppMounts, MountedApp, SESSION_COOKIE, ServerConfig, admin_handlers, build_router_with_apps,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -50,6 +48,8 @@ struct Answer {
     status: StatusCode,
     location: Option<String>,
     body: Vec<u8>,
+    /// The response's `Set-Cookie` lines, whole.
+    set_cookie: Vec<String>,
 }
 
 impl Answer {
@@ -103,6 +103,12 @@ impl Browser {
             None => builder.body(Body::empty()).unwrap(),
         };
         let response = self.router.clone().oneshot(request).await.unwrap();
+        let set_cookie: Vec<String> = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|raw| raw.to_str().unwrap().to_owned())
+            .collect();
         for raw in response.headers().get_all(header::SET_COOKIE) {
             let pair = raw.to_str().unwrap().split(';').next().unwrap_or("");
             if let Some((name, value)) = pair.split_once('=') {
@@ -126,6 +132,7 @@ impl Browser {
             status,
             location,
             body,
+            set_cookie,
         }
     }
 
@@ -146,20 +153,7 @@ impl Browser {
 
 /// A database with the platform tables and nobody in it.
 async fn fresh_catalog() -> sc_error::Result<(Arc<Catalog>, TestDb)> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
@@ -282,6 +276,16 @@ async fn the_admin_ui_moves_without_a_restart_and_the_admin_follows_signed_in()
     assert!(landed.status.is_redirection(), "{}", landed.status);
     assert_eq!(landed.location.as_deref(), Some("/#/settings"));
     assert!(new.cookies.contains_key(SESSION_COOKIE));
+    // As lasting as a sign-in on the new host would be (TODO A1.1).
+    let session = landed
+        .set_cookie
+        .iter()
+        .find(|line| line.starts_with(&format!("{SESSION_COOKIE}=")))
+        .unwrap();
+    assert!(
+        session.contains(&format!("Max-Age={}", 24 * 3600)),
+        "{session}"
+    );
     let (_, status_body) = new.api("GET", "/api/auth/status", None).await;
     assert_eq!(
         status_body["current_user"]["email"],

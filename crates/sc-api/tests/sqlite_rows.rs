@@ -13,6 +13,7 @@
 //! Neither needs a server or a harness: a SQLite database is a file.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_catalog::{Catalog, DataField};
@@ -56,7 +57,7 @@ async fn a_csv_with_its_own_keys_imports_and_the_next_insert_does_not_collide()
         &catalog,
         &table,
         "id,title,pages\n1,Orlando,288\n2,The Waves,228\n",
-        None,
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     assert_eq!(outcome.inserted, 2, "{:?}", outcome.errors);
@@ -64,7 +65,7 @@ async fn a_csv_with_its_own_keys_imports_and_the_next_insert_does_not_collide()
 
     // The rows are there…
     let rows = catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .query(&Select::from(Source::table("book")))
         .await?
         .try_collect()
@@ -75,7 +76,7 @@ async fn a_csv_with_its_own_keys_imports_and_the_next_insert_does_not_collide()
     // table, so there is no sequence to have fallen behind — which is exactly
     // why the Postgres statement that winds one must not be sent here.
     let inserted = catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .write(&Statement::from(
             Insert::row("book", vec!["title".into()], vec![Expr::lit("Flush")])
                 .returning(vec![Projection::expr(Expr::col("id"))]),
@@ -95,15 +96,25 @@ async fn a_second_import_of_the_same_keys_updates_them() -> sc_error::Result<()>
     let catalog = catalog_with_books().await?;
     let table = catalog.require("book")?;
 
-    sc_api::csv::import_table(&catalog, &table, "id,title,pages\n1,Orlando,288\n", None).await?;
-    let outcome =
-        sc_api::csv::import_table(&catalog, &table, "id,title,pages\n1,Orlando,300\n", None)
-            .await?;
+    sc_api::csv::import_table(
+        &catalog,
+        &table,
+        "id,title,pages\n1,Orlando,288\n",
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
+    let outcome = sc_api::csv::import_table(
+        &catalog,
+        &table,
+        "id,title,pages\n1,Orlando,300\n",
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert_eq!(outcome.updated, 1, "{:?}", outcome.errors);
     assert_eq!(outcome.inserted, 0);
 
     let rows = catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .query(&Select::from(Source::table("book")))
         .await?
         .try_collect()
@@ -121,7 +132,7 @@ async fn a_caller_context_read_runs_where_there_are_no_policies() -> sc_error::R
     let catalog = catalog_with_books().await?;
     let table = catalog.require("book")?;
     catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .write(&Statement::from(Insert::row(
             "book",
             vec!["title".into()],
@@ -131,13 +142,14 @@ async fn a_caller_context_read_runs_where_there_are_no_policies() -> sc_error::R
         .try_collect()
         .await?;
 
-    let caller = sc_catalog::CallerContext::anonymous(1);
+    let caller = sc_catalog::Principal::anonymous(Role::ADMIN);
+    let access = sc_catalog::Unchecked::admin(&caller).expect("an administrator");
     let statement = Statement::from(Select::from(Source::table("book")));
-    let rows = sc_catalog::run_in_context(&catalog, &caller, &statement).await?;
+    let rows = sc_catalog::run_in_context(&catalog, access, &statement).await?;
     assert_eq!(rows.len(), 1);
 
     // …and the read-only form, which a custom SQL query declared read-only uses.
-    let rows = sc_catalog::run_in_context_read_only(&catalog, &caller, &statement).await?;
+    let rows = sc_catalog::run_in_context_read_only(&catalog, access, &statement).await?;
     assert_eq!(rows.len(), 1);
 
     // A write in a read-only transaction is still refused — by the database,
@@ -148,7 +160,7 @@ async fn a_caller_context_read_runs_where_there_are_no_policies() -> sc_error::R
         vec![Expr::lit("The Waves")],
     ));
     assert!(
-        sc_catalog::run_in_context_read_only(&catalog, &caller, &write)
+        sc_catalog::run_in_context_read_only(&catalog, access, &write)
             .await
             .is_err(),
         "a read-only transaction must refuse a write"
@@ -157,7 +169,7 @@ async fn a_caller_context_read_runs_where_there_are_no_policies() -> sc_error::R
     // The connection that transaction used goes back to the pool usable: a
     // `query_only` left on it would make the next writer fail.
     catalog
-        .provider(&table)?
+        .provider(&table, access)?
         .write(&Statement::from(Insert::row(
             "book",
             vec!["title".into()],

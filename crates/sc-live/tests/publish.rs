@@ -15,11 +15,12 @@
 //! - **L4.3** a seat in a room hands back the member list, the others are told
 //!   of the join, the state and the leave, and dropping the seat leaves.
 
+use sc_types::Role;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sc_auth::{ROLE_ADMIN, User};
-use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, TableId, TableMeta};
+use sc_auth::User;
+use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, TableMeta};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
@@ -33,7 +34,7 @@ use serde_json::{Map, json};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-const MEMBER: u8 = 40;
+const MEMBER: Role = Role::of(40);
 
 /// An `internal` stream with one topic that pages may publish to.
 async fn board_presence() -> (Arc<StreamSupervisor>, Arc<RunningStream>) {
@@ -214,7 +215,7 @@ async fn updating_a_row_topic_is_the_tables_update_rule() -> Result<()> {
         .await?;
     let board_key = DataField {
         kind: DataFieldKind::Key {
-            target_table: TableId("boards".to_owned()),
+            target_table: "boards".to_owned(),
             target_field: FieldId("id".to_owned()),
             summary_field: None,
         },
@@ -240,23 +241,30 @@ async fn updating_a_row_topic_is_the_tables_update_rule() -> Result<()> {
     let boards = catalog.require("boards")?;
     assert!(boards.ownership.is_some(), "{:?}", boards.ownership_error);
 
-    let user = |n: u128| User::new(Uuid::from_u128(n), MEMBER).unwrap();
+    let user = |n: u128| User::new(Uuid::from_u128(n), MEMBER);
     let (owner, editor, reader, stranger) = (user(1), user(2), user(3), user(4));
-    let id = |u: &User| u.id.hyphenated().to_string();
+    let id = |u: &User| u.id().hyphenated().to_string();
     let shares = catalog.require("shares")?;
-    sc_api::rows::create_row(&catalog, &boards, &json!({ "id": 1, "owner": id(&owner) })).await?;
+    sc_access::rows::create_row(
+        &catalog,
+        &boards,
+        &json!({ "id": 1, "owner": id(&owner) }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     for (n, member, can_edit) in [(1, &editor, true), (2, &reader, false)] {
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             &catalog,
             &shares,
             &json!({ "id": n, "board": 1, "member": id(member), "can_edit": can_edit }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
     let evaluator: Arc<dyn JsEvaluator> = Arc::new(DenoEvaluator::new());
     let boards = catalog.require("boards")?;
     let may = async |u: &User, key: &str| {
-        sc_api::row_updatable_as(&catalog, &boards, key, u.role, Some(u), Some(&evaluator))
+        sc_access::row_updatable_as(&catalog, &boards, key, u.role(), Some(u), Some(&evaluator))
             .await
             .unwrap()
     };
@@ -274,18 +282,18 @@ async fn updating_a_row_topic_is_the_tables_update_rule() -> Result<()> {
     }
     // The reader may read what they may not update: the two rules differ.
     assert!(
-        sc_api::row_readable_as(
+        sc_access::row_readable_as(
             &catalog,
             &boards,
             "1",
-            reader.role,
+            reader.role(),
             Some(&reader),
             Some(&evaluator)
         )
         .await?
     );
     // The write floor passes without the formula.
-    let admin = User::new(Uuid::from_u128(9), ROLE_ADMIN).unwrap();
+    let admin = User::new(Uuid::from_u128(9), Role::ADMIN);
     assert!(may(&admin, "1").await);
     assert!(
         !may(&admin, "2").await,

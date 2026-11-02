@@ -26,15 +26,14 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_action::TriggerDispatcher;
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-    default_js_evaluator, install_triggers,
+    AppMounts, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
+    install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -135,21 +134,7 @@ fn trigger_body(name: &str, when: &str, action: &str, configuration: Value) -> V
 }
 
 async fn setup() -> sc_error::Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(&format!(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$; {SCHEMA}"
-        ))
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().sql(SCHEMA).build().await?;
     sc_auth::bootstrap(&catalog).await?;
     let agents = sc_server::install_agents(&catalog).await?;
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
@@ -796,7 +781,7 @@ async fn the_actions_describe_their_own_settings() -> sc_error::Result<()> {
     let actions = actions.as_array().cloned().unwrap_or_default();
 
     let names: Vec<&str> = actions.iter().filter_map(|a| a["name"].as_str()).collect();
-    // `run_agent` is among them although it is not one of `sc-core-actions`'
+    // `run_agent` is among them although it is not one of `sc-action-builtins`'
     // built-ins (§11.5): a server registers it beside them from the assembled
     // agent services, and the trigger form must offer it like any other.
     assert_eq!(
@@ -818,6 +803,8 @@ async fn the_actions_describe_their_own_settings() -> sc_error::Result<()> {
             "insert_row",
             "publish",
             "run_agent",
+            // Scheduled checklist runs (TODO-checklists C4.4).
+            "run_checklists",
             "run_js_code",
             "run_python_code",
             "send_email",

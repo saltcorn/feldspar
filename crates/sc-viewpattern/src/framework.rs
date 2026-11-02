@@ -41,6 +41,9 @@
 //! surfaces a call carries are built from the request's user, exactly as a code
 //! body's are built from its event's caller (§11).
 
+// Text for HTML content and attribute values: the one escape (Q4.5).
+use sc_expr::html::escape;
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -48,11 +51,12 @@ use std::sync::{Arc, OnceLock, RwLock};
 use async_trait::async_trait;
 use bytes::Bytes;
 use sc_action::TriggerDispatcher;
+use sc_api::Method;
 use sc_api::SessionAction;
 use sc_api::code_host::{FileStoreHost, TableHost, TriggerRunHost, schema_snapshot};
 use sc_app::{
     AppRequest, AppResponse, Application, BuildSpec, CspPolicy, Framework, FrameworkFactory,
-    FrameworkInfo, Method, MountContext, RequestBody, TriggerRef,
+    FrameworkInfo, MountContext, RequestBody, TriggerRef,
 };
 use sc_auth::User;
 use sc_catalog::Catalog;
@@ -89,7 +93,7 @@ pub const CFG_ALLOW_SIGNUP: &str = "allow_signup";
 pub const CFG_NEW_USER_ROLE: &str = "new_user_role";
 
 /// The role [`CFG_NEW_USER_ROLE`] defaults to — v1's `user` role.
-const DEFAULT_NEW_USER_ROLE: u8 = 80;
+const DEFAULT_NEW_USER_ROLE: Role = Role::of(80);
 
 /// The `getConfig` keys the view runtime answers that are **not** settings: the
 /// application knows them (`base_url`), or the server decides them
@@ -101,12 +105,6 @@ pub const DERIVED_CONFIG_KEYS: [&str; 2] = ["base_url", "enable_dynamic_updates"
 /// The version tag in `/static_assets/<tag>/…`. The server's version, so an
 /// upgrade is a new URL and a year-long cache is safe.
 pub const ASSET_VERSION_TAG: &str = env!("CARGO_PKG_VERSION");
-
-/// The public role, which an anonymous viewer has.
-const ROLE_PUBLIC: u8 = 100;
-
-/// The admin role, which sign-up may never give.
-const ROLE_ADMIN: u8 = 1;
 
 /// The view sets every Saltcorn UI application renders from, one per
 /// application, shared by the mount, the renders and every writer.
@@ -215,7 +213,8 @@ pub fn check_saltcorn_ui_config(config: &Attrs) -> Result<()> {
     if let Some(role) = config.get(CFG_NEW_USER_ROLE).filter(|r| !r.is_null())
         && !role
             .as_u64()
-            .is_some_and(|r| (u64::from(ROLE_ADMIN) + 1..=u64::from(ROLE_PUBLIC)).contains(&r))
+            .and_then(|r| Role::try_from(r).ok())
+            .is_some_and(|r| !r.is_admin())
     {
         return Err(Error::invalid(format!(
             "framework `{SALTCORN_UI_FRAMEWORK}`: `{CFG_NEW_USER_ROLE}` must be a role from 2 to \
@@ -442,7 +441,7 @@ impl SaltcornUiFramework {
     /// there are (DoD step 5).
     async fn index(&self, req: &AppRequest, cat: &Catalog) -> Result<AppResponse> {
         let set = view_sets().get(cat, self.app.id).await?;
-        let role = role_of(req);
+        let role = sc_auth::role_of(req.user.as_ref());
         if let Some(page) = self.home_page(cat, &set, role).await? {
             return self.render_page(req, cat, &set, page).await;
         }
@@ -499,7 +498,7 @@ impl SaltcornUiFramework {
         &self,
         cat: &Catalog,
         set: &'s ViewSet,
-        role: u8,
+        role: Role,
     ) -> Result<Option<&'s Page>> {
         let configured = self
             .app
@@ -532,7 +531,7 @@ impl SaltcornUiFramework {
                 .as_array()
                 .is_some_and(|roles| {
                     roles.iter().any(|r| {
-                        r.as_u64() == Some(u64::from(role))
+                        r.as_u64() == Some(u64::from(role.get()))
                             || r.as_str().is_some_and(|s| {
                                 s == role.to_string() || Some(s) == role_name.as_deref()
                             })
@@ -768,21 +767,21 @@ impl SaltcornUiFramework {
                 self.app.name
             )))
         };
-        if !self.app.tables.iter().any(|t| t.0 == table_name) {
+        if !self.app.tables.iter().any(|t| t == table_name) {
             return no_table();
         }
         let Some(table) = cat.get(table_name)? else {
             return no_table();
         };
-        let deleted = sc_api::delete_row_as(
+        let deleted = sc_access::delete_row_as(
             cat,
             &table,
             id,
-            role_of(req),
+            sc_auth::role_of(req.user.as_ref()),
             req.user.as_ref(),
             self.evaluator.as_ref(),
             &[],
-            &sc_api::rows::Executor::Pooled,
+            &sc_access::rows::Executor::Pooled,
         )
         .await;
         match deleted {
@@ -862,7 +861,7 @@ impl SaltcornUiFramework {
             return Ok(out);
         }
         match sc_auth::authenticate(cat, &email, &password).await? {
-            Some(user) => Ok(signed_in(user, dest)),
+            Some(user) => Ok(signed_in(user, dest, remember_ticked(req))),
             None => {
                 sc_api::throttle::login_failed(&email);
                 Ok(self.auth_form(
@@ -901,7 +900,7 @@ impl SaltcornUiFramework {
         }
         // Recorded as unproven: the visitor chose the address (security review #41).
         match sc_auth::sign_up_user(cat, &email, &password, self.new_user_role()).await {
-            Ok(user) => Ok(signed_in(user, dest)),
+            Ok(user) => Ok(signed_in(user, dest, true)),
             // "role 80 does not exist" is the admin's to fix, and the one
             // sentence that says how.
             Err(e) if e.kind() == ErrorKind::Application => again(&reason_of(&e)),
@@ -920,14 +919,14 @@ impl SaltcornUiFramework {
 
     /// The role a new account gets. The settings are checked on save to be a
     /// role from 2 to 100 ([`check_saltcorn_ui_config`]).
-    fn new_user_role(&self) -> u8 {
+    fn new_user_role(&self) -> Role {
         self.app
             .framework
             .config
             .get(CFG_NEW_USER_ROLE)
             .and_then(Json::as_u64)
-            .and_then(|r| u8::try_from(r).ok())
-            .filter(|r| (ROLE_ADMIN + 1..=ROLE_PUBLIC).contains(r))
+            .and_then(|r| Role::try_from(r).ok())
+            .filter(|r| !r.is_admin())
             .unwrap_or(DEFAULT_NEW_USER_ROLE)
     }
 
@@ -974,7 +973,16 @@ impl SaltcornUiFramework {
             })
             .unwrap_or_default();
         let repeat = match kind {
-            AuthForm::Login => String::new(),
+            // Ticked to begin with: the instance's setting decides whether a
+            // sign-in outlives the browser, and unticking it is the person at
+            // a shared computer saying this one should not.
+            AuthForm::Login => format!(
+                "<input type=\"hidden\" name=\"{REMEMBER_SHOWN}\" value=\"1\">\
+                 <div class=\"mb-3 form-check\"><input class=\"form-check-input\" \
+                 type=\"checkbox\" id=\"remember\" name=\"remember\" value=\"on\" checked>\
+                 <label class=\"form-check-label\" for=\"remember\">{}</label></div>",
+                escape(&t!(req.locale, "Remember me"))
+            ),
             AuthForm::Signup => format!(
                 "<div class=\"mb-3\"><label class=\"form-label\" for=\"passwordRepeat\">{}\
                  </label><input class=\"form-control\" type=\"password\" id=\"passwordRepeat\" \
@@ -1272,8 +1280,8 @@ impl SaltcornUiFramework {
     /// Nobody, navigating, is sent to sign in with the way back; nobody asking
     /// by ajax or posting gets the 401 (a redirect to a form is no answer to
     /// either). Somebody signed in is told their role may not, naming what.
-    fn refused(&self, req: &AppRequest, what: &str, min_role: u8) -> Option<AppResponse> {
-        if role_of(req) <= min_role {
+    fn refused(&self, req: &AppRequest, what: &str, min_role: Role) -> Option<AppResponse> {
+        if sc_auth::role_of(req.user.as_ref()).meets(min_role) {
             return None;
         }
         Some(match req.user {
@@ -1410,7 +1418,7 @@ fn v1_page_globals(csrf_token: &str) -> String {
 }
 
 /// The surfaces one render reaches, on the viewer's terms — built the way
-/// `sc_core_actions::code_body::Hosts` builds a code body's from its event, with
+/// `sc_action_builtins::code_body::Hosts` builds a code body's from its event, with
 /// the request's user as the caller. No `fetch`: the view runtime is granted no
 /// network.
 struct ViewerHosts<'a> {
@@ -1428,7 +1436,7 @@ impl<'a> ViewerHosts<'a> {
         triggers: Option<&'a TriggerDispatcher>,
         declared: &'a [TriggerRef],
     ) -> ViewerHosts<'a> {
-        let caller = sc_api::caller_context(user);
+        let caller = sc_access::principal_of(user);
         ViewerHosts {
             // The viewer's authority is the ceiling (7.2): a read a pattern
             // leaves unmarked is the viewer's, not the admin's it would be in a
@@ -1635,12 +1643,12 @@ pub(crate) async fn application_snapshot(
 
 pub(crate) fn view_user(user: &User) -> ViewUser {
     ViewUser {
-        id: user.id.to_string(),
-        email: match user.extra.get("email") {
+        id: user.id().to_string(),
+        email: match user.extra().get("email") {
             Some(sc_query::Value::Text(email)) => email.clone(),
             _ => String::new(),
         },
-        role_id: user.role,
+        role_id: user.role(),
     }
 }
 
@@ -1652,11 +1660,28 @@ enum AuthForm {
 }
 
 /// Signed in as `user`, and on to `dest` if it is a path on this application,
-/// else to `/`.
-fn signed_in(user: User, dest: &str) -> AppResponse {
+/// else to `/`. Not `remember`ed, the session's cookie ends with the browser.
+fn signed_in(user: User, dest: &str, remember: bool) -> AppResponse {
     let mut out = AppResponse::redirect(safe_redirect(Some(dest).filter(|d| !d.is_empty())));
-    out.session = SessionAction::Start(user);
+    out.session = SessionAction::start(user, remember);
     out
+}
+
+/// The hidden field the sign-in form sends beside its "Remember me" box, so an
+/// unticked box — which a form does not send at all — is told apart from a
+/// client that never showed one.
+const REMEMBER_SHOWN: &str = "remember_shown";
+
+/// Whether a `POST /auth/login` asks to stay signed in after the browser
+/// closes (TODO A1.1): the form's box, ticked; a JSON body's `remember`, unless
+/// it is `false`; and yes for a caller that offered no choice.
+fn remember_ticked(req: &AppRequest) -> bool {
+    let body = body_json(&req.body);
+    match body.get("remember") {
+        Some(Json::Bool(remember)) => *remember,
+        Some(Json::String(value)) => !matches!(value.as_str(), "" | "0" | "off" | "false"),
+        _ => body.get(REMEMBER_SHOWN).is_none(),
+    }
 }
 
 /// A field of the request: the form's (or the JSON body's) on a POST, the
@@ -1723,29 +1748,19 @@ pub async fn serve_store_file(
             None => return Ok(AppResponse::not_found()),
         },
     };
-    let Ok(store) = cat.require_file_store(&store_name) else {
-        return Ok(AppResponse::not_found());
-    };
-    let floor = sc_catalog::load_file_store_by_name(cat, &store_name)
-        .await?
-        .and_then(|def| def.min_role);
-    let caller = sc_files::FileCaller::new(
-        user.map_or(ROLE_PUBLIC, |u| u.role),
-        user.map(|u| u.id.to_string()),
-    );
-    if sc_files::check_access(store.as_ref(), floor, &path, &caller)
-        .await
-        .is_err()
-    {
+    if !cat.has_file_store(&store_name)? {
         return Ok(AppResponse::not_found());
     }
-    Ok(AppResponse::serve_file(sc_files::ServeFile::new(
-        store, path,
-    )))
-}
-
-fn role_of(req: &AppRequest) -> u8 {
-    req.user.as_ref().map_or(ROLE_PUBLIC, |u| u.role)
+    let caller = sc_files::FileCaller::new(
+        user.map_or(Role::PUBLIC, |u| u.role()),
+        user.map(|u| u.id().to_string()),
+    );
+    // Every read checked for the viewer (TODO-code-quality Q3.6).
+    let store = sc_catalog::open_checked_store(cat, &store_name, caller).await?;
+    match store.serve(&path).await {
+        Ok(file) => Ok(AppResponse::serve_file(file)),
+        Err(_) => Ok(AppResponse::not_found()),
+    }
 }
 
 fn is_xhr(req: &AppRequest) -> bool {
@@ -1855,15 +1870,6 @@ fn percent_encode(s: &str) -> String {
         }
     }
     out
-}
-
-/// Escape text for HTML content and attribute values.
-fn escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 fn poisoned() -> Error {

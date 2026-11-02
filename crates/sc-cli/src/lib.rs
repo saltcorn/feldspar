@@ -2,14 +2,14 @@
 //!
 //! The binary ([`main`](../main/index.html)) stays thin; the reusable pieces —
 //! parsing the database connection ([`DbConfig`]), reading the per-environment
-//! configuration file (`sc-config-file`, re-exported here as [`config_file`]),
+//! configuration file (the `sc-config-file` crate),
 //! the coding agent's evaluation harness ([`eval`]), the `i18n` commands and the
 //! domains they read ([`i18n`]), the `cmdstan` commands' arguments and status
 //! report ([`cmdstan`]), parsing the `api` commands' flags
 //! ([`api`]), the `get-cfg`/`set-cfg` commands' arguments ([`config`]), the
-//! `mcp-token` commands ([`mcp_token`]), the `module` commands ([`module`]), the `add-user`/`modify-user`
+//! `mcp-token` commands ([`mcp_token`]), the `module` commands ([`module`]), `python check` ([`python`]), the `add-user`/`modify-user`
 //! commands' arguments and password prompt ([`users`]), the `backup`/`restore`
-//! password ([`backup_password`]), resolving an application's project
+//! password ([`backup_password`]), `feldspar setup` ([`setup`]), resolving an application's project
 //! directory for `app list` ([`app`]) and
 //! standing up a connected [`Catalog`] ([`connect_catalog`]) —
 //! live here so integration tests can drive the same boot path the CLI uses.
@@ -19,6 +19,7 @@ pub mod app;
 pub mod auth;
 pub mod backup_password;
 pub mod build_agent;
+pub mod check;
 pub mod cmdstan;
 pub mod config;
 pub mod db;
@@ -28,13 +29,9 @@ pub mod eval;
 pub mod i18n;
 pub mod mcp_token;
 pub mod module;
+pub mod python;
+pub mod setup;
 pub mod users;
-
-/// The `feldspar.toml` reader. It lives in its own layer-0 crate because the
-/// integration-test harness reads the same file (for the `test` environment),
-/// and the harness cannot depend on the binary that sits at the top of the
-/// workspace.
-pub use sc_config_file as config_file;
 
 use std::sync::Arc;
 
@@ -42,20 +39,54 @@ use sc_catalog::{
     Catalog, DbConnections, FileStoreConnections, connect_all_db_connections,
     connect_all_file_stores,
 };
+use sc_db::DatabaseDriver;
 use sc_error::{Context, Error, Result};
 use sc_files::{FileStoreDef, connect_from_def};
 
-pub use config_file::{ConfigFile, Environment, SelectedEnvironment};
 pub use db::{DbConfig, Serving};
+
+/// The seccomp profile the Docker image runs under — `feldspar seccomp-profile`
+/// prints it. Docker's default profile with one entry added: the `clone`,
+/// `unshare` and `chroot` that Chromium's sandbox makes inside the user
+/// namespace it creates, which the default allows only to a privileged
+/// container. Without it `view_app` cannot start its browser sandboxed, and is
+/// never started without the sandbox instead (docs/OPERATIONS.md §12).
+pub const SECCOMP_PROFILE: &str = include_str!("../../../deploy/docker/seccomp.json");
+
+/// Apply the pending migrations to `driver`'s database, saying on stderr what
+/// runs and how long it took. A database new to Feldspar is recorded as having
+/// them all, silently: there is nothing to tell.
+pub async fn migrate_database(driver: &dyn DatabaseDriver) -> Result<sc_migrate::Report> {
+    sc_migrate::run(driver, &mut |event| match event {
+        sc_migrate::Event::Stamped { .. } => {}
+        sc_migrate::Event::Applying(migration) => eprintln!(
+            "feldspar: applying migration `{}` ({})",
+            migration.id, migration.description
+        ),
+        sc_migrate::Event::Applied {
+            migration,
+            duration,
+        } => eprintln!(
+            "feldspar: migration `{}` applied in {} ms",
+            migration.id,
+            duration.as_millis()
+        ),
+    })
+    .await
+}
 
 /// Connect to the primary database described by `db`, initialise the
 /// [`Catalog`] from its live schema, and ensure the platform tables (`users`,
 /// `_fd_applications`, `_fd_file_stores`, `_fd_tables`) exist.
 ///
 /// This is the whole "bring the data layer up" step of `feldspar serve`. The
-/// first real connection happens inside [`Catalog::init`] (introspection), so a
-/// database that is unreachable or misconfigured fails here — with the redacted
+/// first real connection happens in [`migrate_database`], so a database that is
+/// unreachable or misconfigured fails here — with the redacted
 /// [`DbConfig::target`] in the message rather than a silent, half-booted server.
+///
+/// **Migrations run first** (technical design §5.3), before the catalog reads
+/// the schema: each sees the schema of the release before it, and the catalog
+/// and the bootstraps see what they leave.
 ///
 /// Every bootstrap is idempotent (each no-ops when its table already exists), so
 /// this runs on every boot: a legacy database gains the tables on first serve,
@@ -71,6 +102,9 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
         .connect()
         .await
         .with_context(|| format!("connecting to database {}", db.target()))?;
+    migrate_database(driver.as_ref())
+        .await
+        .with_context(|| format!("migrating database {}", db.target()))?;
     let catalog = Catalog::init(driver)
         .await
         .with_context(|| format!("reading the schema of database {}", db.target()))?;
@@ -119,9 +153,14 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
         .context("ensuring the runs table exists")?;
     // Long-term agent memory (TODO-agent-skills AS8.3): a system table with a
     // full-text constraint, read by the `memory` trait and the admin screen.
-    sc_core_traits::bootstrap_agent_memory(&catalog)
+    sc_agent_builtins::bootstrap_agent_memory(&catalog)
         .await
         .context("ensuring the agent memory table exists")?;
+    // Checklists (TODO-checklists C1.1): what "working" means for an
+    // application, its steps' versions, its runs and its pending proposals.
+    sc_check::bootstrap_checklists(&catalog)
+        .await
+        .context("ensuring the checklist tables exist")?;
     // The Analytics UI's datasets and workspaces (analytics TODO A1). Models
     // bootstrap the datasets table too, because a model's dataset is a row of
     // it; this is for a server whose models are never installed.
@@ -164,15 +203,22 @@ pub async fn connect_catalog(db: &DbConfig) -> Result<Arc<Catalog>> {
     // The TLS settings the selected environment pins (§13.5), before anything
     // reads a setting: from here every read of them — the boot's, the settings
     // screen's, `get-cfg`'s — sees the file's value, and a write is refused.
-    let pinned = db.serving().host_config();
+    // `FELDSPAR_SSL_MODE` pins the mode on the same terms.
+    let pinned = db.host_config();
     if !pinned.is_empty() {
         eprintln!(
-            "feldspar: {} set by the configuration file",
+            "feldspar: {} set by the host configuration",
             pinned.keys().cloned().collect::<Vec<_>>().join(", ")
         );
     }
     sc_config::set_host_config(&catalog, pinned)
-        .context("reading the TLS settings in the configuration file")?;
+        .context("reading the TLS settings the host configuration pins")?;
+    // A production environment refuses checklists that write data unless they
+    // are allowed there (TODO-checklists C1.6).
+    if db.is_production() {
+        eprintln!("feldspar: this is a production environment");
+    }
+    catalog.set_production(db.is_production());
     // The LLM provider the selected environment supplies, on the same footing:
     // usable by every agent, listed read-only, never stored.
     let provider = db
@@ -345,7 +391,7 @@ pub fn connect_file_stores(catalog: &Catalog, specs: &[String]) -> Result<()> {
                 "invalid --file-store `{spec}`: the name must not be empty"
             )));
         }
-        if catalog.file_store(name)?.is_some() {
+        if catalog.has_file_store(name)? {
             return Err(Error::config(format!(
                 "--file-store `{name}` clashes with a configured file store of the same name; \
                  rename one, or drop the flag and edit the store in the admin UI"

@@ -20,9 +20,10 @@ sc-types.workspace = true
 sc-catalog.workspace = true
 sc-query.workspace = true
 sc-db.workspace = true
-# `is_public`: the one definition of a public address, shared with the `http`
-# trait's guard and an SMTP override's check.
-sc-email.workspace = true
+# The public-only client and the one definition of a public address, shared
+# with the `http` trait's guard, the `fetch` action and an SMTP override's
+# check (TODO-code-quality Q4.3).
+sc-net.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

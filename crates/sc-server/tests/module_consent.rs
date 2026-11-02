@@ -8,6 +8,8 @@
 //! finished in another browser, write nothing.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -19,13 +21,11 @@ use base64::Engine;
 use sc_action::{ActionContext, Event, EventKind};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ModuleServices, OAUTH_BINDING_COOKIE, ServerConfig,
-    admin_handlers, build_router_with_apps, default_js_evaluator, install_agents, install_triggers,
+    AppMounts, ModuleServices, OAUTH_BINDING_COOKIE, ServerConfig, admin_handlers,
+    build_router_with_apps, default_js_evaluator, install_agents, install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use sc_types::Attrs;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -200,20 +200,7 @@ impl Drop for Server {
 }
 
 async fn setup() -> sc_error::Result<(Server, Browser)> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
@@ -291,7 +278,10 @@ async fn setup() -> sc_error::Result<(Server, Browser)> {
 async fn begin(server: &Server, user: &sc_auth::User, provider: &str) -> String {
     let event = Event::new(EventKind::None)
         .payload(json!({ "account_id": 1, "provider": provider }))
-        .caller(1, Some(json!({ "id": user.id.to_string(), "role": 1 })));
+        .caller(
+            Role::ADMIN,
+            Some(json!({ "id": user.id().to_string(), "role": 1 })),
+        );
     let config = Attrs::new();
     let registry = server.dispatcher.registry();
     let action = registry.require("connect").unwrap();
@@ -368,7 +358,7 @@ async fn a_modules_consent_flow_stores_the_tokens_in_its_row() -> sc_error::Resu
         .await?
         .batch_execute(&format!(
             "INSERT INTO oa_accounts (owner, email, auth) VALUES ('{}', 'ada@outlook.com', 'password')",
-            user.id
+            user.id()
         ))
         .await
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
@@ -457,7 +447,12 @@ async fn a_modules_consent_flow_stores_the_tokens_in_its_row() -> sc_error::Resu
     }
     // …and revealed to the server's own reader.
     let table = server.catalog.require("oa_accounts")?;
-    let rows = sc_api::rows::list_rows(&server.catalog, &table).await?;
+    let rows = sc_access::rows::list_rows(
+        &server.catalog,
+        &table,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let mut revealed = rows[0].clone();
     sc_catalog::secrets::reveal_json(&server.catalog, &table, &mut revealed)?;
     assert_eq!(revealed["access_token"], json!("at-two"));

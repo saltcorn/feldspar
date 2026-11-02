@@ -52,6 +52,13 @@
 //! value. What *is* guaranteed is that it does not leave through the API —
 //! see [`sc_types::redact_attrs`] and [`FormField::secret`](sc_types::FormField::secret).
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
+    sc_catalog::Unchecked::system("sc-llm: LLM usage and conversation storage");
+
 pub mod anthropic;
 pub mod capabilities;
 pub mod def;
@@ -96,8 +103,9 @@ pub use image::{GeneratedImage, ImageRequest, generate_image};
 pub use listing::{fetch_host_models, parse_model_listing};
 pub use logging::{LoggedProvider, request_summary, response_summary};
 pub use message::{
-    AssistantMessage, CachePlan, ImagePart, LlmDelta, LlmMessage, LlmRequest, ProviderItem,
-    StopReason, ToolCall, ToolSpec, Usage,
+    AssistantMessage, Attachment, CachePlan, ImagePart, LlmDelta, LlmMessage, LlmRequest,
+    MAX_ATTACHMENTS, MAX_IMAGE_ATTACHMENT_BYTES, MAX_TEXT_ATTACHMENT_BYTES, ProviderItem,
+    StopReason, ToolCall, ToolSpec, Usage, check_attachments,
 };
 pub use model::{
     ConnectedModel, LlmModelDef, LlmModelDefId, ModelKind, model_config_spec,

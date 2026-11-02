@@ -710,12 +710,15 @@ impl ModelProvider for StanProvider {
         let run: RunLocation = serde_json::from_value(run.clone())
             .map_err(|e| Error::msg(format!("the instance's run location is unreadable: {e}")))?;
         let store = self.stores.store(&run.store)?;
-        store.delete(&run.path).await.with_context(|| {
-            format!(
-                "deleting the raw run {} from the file store `{}`",
-                run.path, run.store
-            )
-        })?;
+        store
+            .delete(&sc_files::StorePath::parse(&run.path)?)
+            .await
+            .with_context(|| {
+                format!(
+                    "deleting the raw run {} from the file store `{}`",
+                    run.path, run.store
+                )
+            })?;
         Ok(())
     }
 }

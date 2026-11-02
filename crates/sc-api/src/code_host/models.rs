@@ -33,8 +33,8 @@ use sc_error::{Error, Result};
 use sc_model::{DrawsRequest, Model, ModelInstance, PosteriorWrite, Selection};
 use serde_json::{Value as Json, json};
 
+use super::TableHost;
 use super::plan::Authority;
-use super::{Actor, TableHost};
 
 /// The most numbers one `m.draws` answer carries: a quarter of what the admin
 /// API allows, because a code body holds its answer in an isolate with a heap
@@ -152,24 +152,8 @@ pub(super) async fn answer(host: &TableHost<'_>, request: Json) -> Result<Json> 
             })?;
             let write = PosteriorWrite::from_json(spec)?;
             let actor = host.actor(&plan.authority).await?;
-            let writer = match &actor {
-                Actor::Admin(context) => crate::models::Writer::Context(context),
-                Actor::Caller { role, user } => crate::models::Writer::As {
-                    role: *role,
-                    user: user.as_ref(),
-                    evaluator: host.evaluator.as_ref(),
-                    chain: &host.chain,
-                },
-            };
-            crate::models::write_posterior(
-                catalog,
-                &model,
-                &instance,
-                &write,
-                &writer,
-                &host.executor,
-            )
-            .await
+            crate::models::write_posterior(catalog, &model, &instance, &write, &host.scope(&actor))
+                .await
         }
         other => Err(Error::msg(format!(
             "models `{other}` was admitted and not answered"
@@ -287,7 +271,7 @@ pub(super) async fn predict_through(
     rows: &[Json],
     detail: bool,
 ) -> Result<Json> {
-    let pk = crate::rows::single_pk(table).ok();
+    let pk = sc_access::rows::single_pk(table).ok();
     let mut keys = Vec::new();
     let mut literals = Vec::new();
     // For each row, whether it is keyed and its index among its kind.

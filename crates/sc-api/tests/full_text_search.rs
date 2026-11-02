@@ -7,11 +7,12 @@
 //! Postgres, that the search really is answered by the index; on SQLite, that
 //! the index follows writes and survives its table's text fields changing.
 
+use sc_types::Role;
 use std::sync::Arc;
 
+use sc_access::rows;
+use sc_api::query_string;
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation};
-use sc_api::{query_string, rows};
-use sc_auth::ROLE_ADMIN;
 use sc_catalog::{
     Catalog, ConstraintKind, DataField, DataFieldKind, SecretKey, TableConstraint,
     bootstrap_field_meta, bootstrap_table_meta,
@@ -81,7 +82,13 @@ async fn posts(driver: Arc<dyn DatabaseDriver>, indexed: bool) -> Result<Arc<Cat
         json!({ "title": "Gardening", "body": "Running tomatoes up a cane.", "note": "rust" }),
         json!({ "title": "Cooking", "body": "A segmentation fault in the kitchen." }),
     ] {
-        rows::create_row(&catalog, &table, &row).await?;
+        rows::create_row(
+            &catalog,
+            &table,
+            &row,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
     Ok(catalog)
 }
@@ -99,7 +106,7 @@ async fn titles(catalog: &Catalog, pairs: &[(&str, &str)]) -> Result<Vec<String>
         .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
         .collect();
     let query = query_string::row_query(&table, &pairs, 50)?;
-    let found = sc_api::read_rows_as(catalog, &table, &query, ROLE_ADMIN, None, None).await?;
+    let found = sc_access::read_rows_as(catalog, &table, &query, Role::ADMIN, None, None).await?;
     Ok(found
         .as_array()
         .into_iter()
@@ -150,23 +157,23 @@ async fn the_common_contract(catalog: &Catalog) -> Result<()> {
     // The fields a caller names are the only ones matched — the shape an
     // agent's allow-list takes.
     let table = catalog.require("posts")?;
-    let only_title = sc_api::search::text_search(&table, "ownership", Some(&["title".into()]))?;
+    let only_title = sc_access::search::text_search(&table, "ownership", Some(&["title".into()]))?;
     let query = rows::RowQuery::new().searching(only_title);
-    let found = sc_api::read_rows_as(catalog, &table, &query, ROLE_ADMIN, None, None).await?;
+    let found = sc_access::read_rows_as(catalog, &table, &query, Role::ADMIN, None, None).await?;
     assert_eq!(found, json!([]));
-    let body = sc_api::search::text_search(&table, "ownership", Some(&["body".into()]))?;
-    let found = sc_api::read_rows_as(
+    let body = sc_access::search::text_search(&table, "ownership", Some(&["body".into()]))?;
+    let found = sc_access::read_rows_as(
         catalog,
         &table,
         &rows::RowQuery::new().searching(body),
-        ROLE_ADMIN,
+        Role::ADMIN,
         None,
         None,
     )
     .await?;
     assert_eq!(found.as_array().map(Vec::len), Some(1));
     // A secret cannot be named either.
-    let err = sc_api::search::text_search(&table, "rust", Some(&["note".into()]))
+    let err = sc_access::search::text_search(&table, "rust", Some(&["note".into()]))
         .unwrap_err()
         .to_string();
     assert!(err.contains("is a secret"), "{err}");
@@ -190,7 +197,7 @@ async fn postgres_searches_ranks_and_uses_the_index() -> Result<()> {
     // The statement a search renders is answered by the constraint's index —
     // the document is spelled once, for both, and this is what that is for.
     let table = catalog.require("posts")?;
-    let search = sc_api::search::text_search(&table, "rust", None)?;
+    let search = sc_access::search::text_search(&table, "rust", None)?;
     let select = sc_query::Select::from(sc_query::Source::table("posts"))
         .columns(vec![sc_query::Projection::expr(sc_query::Expr::col("id"))])
         .filter(sc_query::Expr::TextMatch(Box::new(search)));
@@ -237,10 +244,17 @@ async fn sqlite_searches_through_an_fts5_table_that_follows_the_rows() -> Result
     let cooking = titles(&catalog, &[("search", "kitchen")]).await?;
     assert_eq!(cooking, ["Cooking"]);
     let table = catalog.require("posts")?;
-    rows::update_row(&catalog, &table, "4", &json!({ "body": "Baking bread." })).await?;
+    rows::update_row(
+        &catalog,
+        &table,
+        "4",
+        &json!({ "body": "Baking bread." }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert!(titles(&catalog, &[("search", "kitchen")]).await?.is_empty());
     assert_eq!(titles(&catalog, &[("search", "bread")]).await?, ["Cooking"]);
-    rows::delete_row(&catalog, &table, "4").await?;
+    rows::delete_row(&catalog, &table, "4", sc_catalog::Unchecked::system("test")).await?;
     assert!(titles(&catalog, &[("search", "bread")]).await?.is_empty());
 
     // A text field added is searchable; one dropped goes — and dropping it is
@@ -263,6 +277,7 @@ async fn sqlite_searches_through_an_fts5_table_that_follows_the_rows() -> Result
         &table,
         "3",
         &json!({ "summary": "Allotment diary" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     assert_eq!(
@@ -302,7 +317,10 @@ async fn a_table_without_the_index_is_scanned_only_while_it_is_small() -> Result
     rust.sort();
     assert_eq!(rust, ["Java and Rust", "Rust in production"]);
 
-    let mut tx = catalog.primary().begin().await?;
+    let mut tx = catalog
+        .primary(sc_catalog::Unchecked::system("test"))
+        .begin()
+        .await?;
     tx.batch(
         "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5000) \
          INSERT INTO posts (title) SELECT 'filler ' || i FROM n",
@@ -324,7 +342,7 @@ async fn rest_and_graphql_take_a_search() -> Result<()> {
 
     let catalog = posts(Arc::new(SqliteDriver::open_in_memory()?), true).await?;
     let table = catalog.require("posts")?;
-    let user = sc_auth::User::new(uuid::Uuid::new_v4(), ROLE_ADMIN)?;
+    let user = sc_auth::User::new(uuid::Uuid::new_v4(), Role::ADMIN);
     let title_list = |body: &Json| -> Vec<String> {
         body.as_array()
             .into_iter()
@@ -403,7 +421,14 @@ async fn sqlite_rebuilds_the_index_of_a_renamed_table() -> Result<()> {
     apply(&catalog, rename("articles", "posts")).await?;
     assert_eq!(titles(&catalog, &[("search", "run")]).await?, ["Gardening"]);
     let table = catalog.require("posts")?;
-    rows::update_row(&catalog, &table, "4", &json!({ "body": "Baking bread." })).await?;
+    rows::update_row(
+        &catalog,
+        &table,
+        "4",
+        &json!({ "body": "Baking bread." }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert_eq!(titles(&catalog, &[("search", "bread")]).await?, ["Cooking"]);
     Ok(())
 }

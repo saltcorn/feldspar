@@ -94,14 +94,16 @@ use sc_api::mcp::{
 use sc_api::schema_edit::Grants;
 use sc_api::{Endpoint, EndpointSet, HandlerRef};
 use sc_app::build_diagnostics;
-use sc_auth::{ApiCaller, authenticate_api_token};
+use sc_auth::{ApiCaller, SessionStore, authenticate_api_token};
 use sc_catalog::Catalog;
 use sc_config::mcp_settings;
 use sc_error::{Error, Result};
 use sc_log::Verbosity;
 use serde_json::{Value as Json, json};
 
-use crate::handler::{HandlerCtx, HandlerRegistry};
+use crate::admin_session::Revalidated;
+use crate::handler::{Admin, Caller, HandlerCtx, HandlerRegistry};
+use crate::handlers::{self, HandlerState};
 use crate::router::AppState;
 use crate::terminal::SessionGrant;
 
@@ -202,7 +204,7 @@ pub(crate) async fn mcp(State(state): State<AppState>, request: Request) -> Resp
                 "a terminal's session token is accepted only from the server's own machine",
             );
         }
-        return match terminal_caller(&catalog, &grant).await {
+        return match terminal_caller(&state.sessions, &grant).await {
             Ok(caller) => dispatch_rpc(&state, &catalog, &caller, &body).await,
             Err(e) => json_rpc_error(
                 StatusCode::UNAUTHORIZED,
@@ -282,25 +284,23 @@ pub(crate) async fn mcp(State(state): State<AppState>, request: Request) -> Resp
 /// The caller an open terminal's session token stands for: the admin who opened
 /// it, with every flag, as a token minted with "allow all" would have.
 ///
-/// The user is read per request, as a table token's is, so an admin who is
-/// demoted or disabled while the terminal is open loses MCP at once.
-pub(crate) async fn terminal_caller(catalog: &Catalog, grant: &SessionGrant) -> Result<ApiCaller> {
-    let Some(user) = sc_auth::load_user(catalog, grant.user_id).await? else {
-        return Err(Error::auth(
-            "the admin who opened this terminal no longer exists",
-        ));
+/// The admin session the terminal was opened from is re-read per request, as a
+/// table token's user is, so a sign-out, a disabled account or a demotion
+/// while the terminal is open ends MCP at once.
+pub(crate) async fn terminal_caller(
+    sessions: &SessionStore,
+    grant: &SessionGrant,
+) -> Result<ApiCaller> {
+    let user = match grant.admin.revalidate(sessions).await {
+        Revalidated::Admin(admin) => admin.user().clone(),
+        Revalidated::Lost(reason) => return Err(Error::auth(reason)),
+        Revalidated::Unknown => {
+            return Err(Error::auth(
+                "the session this terminal was opened from could not be checked",
+            ));
+        }
     };
-    if user.is_disabled() {
-        return Err(Error::auth(
-            "the admin who opened this terminal is disabled",
-        ));
-    }
-    if user.role > sc_auth::ROLE_ADMIN {
-        return Err(Error::auth(
-            "the user who opened this terminal is no longer an administrator",
-        ));
-    }
-    let label = match user.extra.get("email") {
+    let label = match user.get("email") {
         Some(sc_query::Value::Text(email)) => format!("Claude Code terminal ({email})"),
         _ => "Claude Code terminal".to_owned(),
     };
@@ -309,7 +309,7 @@ pub(crate) async fn terminal_caller(catalog: &Catalog, grant: &SessionGrant) -> 
     Ok(ApiCaller {
         token: sc_auth::ApiToken {
             id: grant.session,
-            user_id: grant.user_id,
+            user_id: user.id(),
             label,
             grants,
             created_at: grant.opened,
@@ -377,6 +377,9 @@ async fn dispatch_rpc(
             let listed: Vec<Json> = tools
                 .specs(catalog)
                 .into_iter()
+                // The checklist tools (TODO-checklists C1.15): `sc-check`'s,
+                // the same six the copilot offers.
+                .chain(sc_check::tools::tool_specs())
                 .map(|spec| {
                     json!({
                         "name": spec.name,
@@ -458,7 +461,10 @@ user management. Code you store here — a `run_js_code` trigger or workflow ste
 `javascript` API query — runs against this server's own JavaScript API, which is not one you \
 know from elsewhere: call `describe_code_api` before writing any. Code that two queries or \
 triggers share goes in a code library (`describe_code_libraries`, `save_code_library`), \
-imported with `lib(\"name\")`, rather than being copied into each.
+imported with `lib(\"name\")`, rather than being copied into each \
+This server's documentation — its tutorials, references and help pages — is searchable with \
+`search_docs` and readable with `read_docs`: when you are unsure how one of its features \
+works, search it before guessing.
 
 Building a new application. When the user asks you to build an application, a site or a tool \
 (\"build me a to-do list\"), build the whole first working draft without asking them anything \
@@ -485,6 +491,13 @@ subdomain; fix whatever the diagnostics report and build again until it succeeds
 
 To change an existing application, `describe_applications` gives its `project_dir`: work \
 there, connect any new table with `update_application`, and rebuild.
+
+Checklists record what \"working\" means for an application, so a later change can be checked \
+against it. After building something the user asked for, write one with `save_checklist` (the \
+step types are in `describe_step_types`), and after every change `run_checklists` and fix what \
+fails. Add steps freely with `append_steps`. Never weaken a check to make it pass: changing an \
+existing step is a proposal (`propose_step_change`) that a person accepts or rejects, and the \
+old step keeps running until then.
 
 Live updates (pages that update when rows change, collaborative editing, presence, toasts). \
 `edit_streams` creates the stream: `table_changes` for row changes, `document` on a \
@@ -526,6 +539,13 @@ async fn call_tool(
     };
     let arguments = params.get("arguments").cloned().unwrap_or(Json::Null);
 
+    if sc_check::tools::is_tool(name) {
+        return json_rpc_result(
+            id,
+            tool_result(checklist_tool(state, catalog, caller, name, &arguments).await),
+        );
+    }
+
     let tools = tool_set(state, caller);
     // An unknown tool is wrong with the *call*, so it is a JSON-RPC error rather
     // than a result the model reads — there is nothing for the model to correct
@@ -545,7 +565,7 @@ async fn call_tool(
     let ctx = ToolContext {
         catalog,
         user: Some(&caller.user),
-        role: caller.user.role,
+        role: caller.user.role(),
         triggers: state.apps.triggers(),
         actor: &caller.token.label,
     };
@@ -606,6 +626,43 @@ fn tool_result(outcome: Result<Json>) -> Json {
             "isError": true,
         }),
     }
+}
+
+/// One of the checklist tools, as this token: the token is the "run" whose
+/// unaccepted steps it may still edit (an MCP session has no run of its own),
+/// and its `checklists` grant decides the rest (docs/CHECKLISTS.md §4).
+async fn checklist_tool(
+    state: &AppState,
+    catalog: &Arc<Catalog>,
+    caller: &ApiCaller,
+    name: &str,
+    arguments: &Json,
+) -> Result<Json> {
+    let flags = sc_api::mcp::token_flags(&caller.token.grants);
+    let registry = sc_check::StepRegistry::installed();
+    let services = state.apps.agents().map(|a| a.registry().view_services());
+    let requests = services
+        .and_then(|s| s.requests())
+        .map(|r| r.as_ref() as &dyn sc_agent::AppRequester);
+    let browser = services
+        .and_then(|s| s.browser())
+        .map(|b| b.as_ref() as &dyn sc_agent::BrowserDriver);
+    let evaluator = state.apps.evaluator();
+    let env = sc_check::CheckEnv::new(catalog, &registry)
+        .with_triggers(state.apps.triggers())
+        .with_evaluator(evaluator.as_ref())
+        .with_requests(requests)
+        .with_browser(browser);
+    let call = sc_check::tools::ToolCall {
+        env,
+        editor: sc_check::Editor::Agent {
+            run: format!("mcp:{}", caller.token.id),
+            grant: sc_check::ChecklistGrant::from_attrs(&flags),
+        },
+        role: caller.user.role(),
+    };
+    sc_log::log_info!("MCP [{}] {name}", caller.token.label);
+    sc_check::tools::call_tool(name, arguments, &call).await
 }
 
 /// The tools this token was granted: the fifteen composite ones and the tagged
@@ -685,7 +742,9 @@ impl AdminTool for EndpointTool {
             path_params: call.path_params,
             query: call.request.query,
             body: call.request.body,
-            user: ctx.user.cloned(),
+            // `check_caller` has just required the admin role and the
+            // endpoint's own requirement: this tool layer vouches for it.
+            who: Caller::Admin(Admin::delegated(ctx.user.cloned(), "mcp endpoint tool")),
             // A projected tool never carries bytes: the endpoints that do are
             // tier 3, and a JSON arguments object has no shape for them.
             raw_body: None,
@@ -763,65 +822,190 @@ fn resolve(handlers: &HandlerRegistry, endpoint: &Endpoint) -> Result<crate::han
 /// The bearer credential this request presents, if it presents one.
 ///
 /// A cookie is not consulted, here or anywhere on this route.
-/// The admin handlers, offered to the administrative tools through the
+/// The admin operations, offered to the administrative tools through the
 /// catalog (see [`sc_catalog::AdminHost`]): how `create_application` — whether
 /// the chat copilot or an MCP client called it — runs the same handler the
-/// admin's Create button does.
+/// admin's Create button does. Each method calls that handler's function, not
+/// an endpoint looked up by name.
 ///
-/// Holds the registry **weakly**: the catalog outlives every router, and a
-/// strong handle here would be a cycle through the handlers' own clones of the
-/// catalog.
+/// Holds the catalog and the mount registry **weakly**: the catalog outlives
+/// every router, and a strong handle here would be a cycle through the
+/// services' own clones of the catalog.
 pub(crate) struct AdminHandlers {
-    handlers: std::sync::Weak<HandlerRegistry>,
     catalog: std::sync::Weak<Catalog>,
+    apps: std::sync::Weak<crate::apps::AppMounts>,
 }
 
 impl AdminHandlers {
-    /// Install `handlers` on `catalog`.
-    pub(crate) fn install(catalog: &Arc<Catalog>, handlers: &Arc<HandlerRegistry>) -> Result<()> {
+    /// Install the operations of the server around `apps` on `catalog`.
+    pub(crate) fn install(
+        catalog: &Arc<Catalog>,
+        apps: &Arc<crate::apps::AppMounts>,
+    ) -> Result<()> {
         catalog.set_admin_host(Arc::new(AdminHandlers {
-            handlers: Arc::downgrade(handlers),
             catalog: Arc::downgrade(catalog),
+            apps: Arc::downgrade(apps),
         }))
     }
-}
 
-#[async_trait::async_trait]
-impl sc_catalog::AdminHost for AdminHandlers {
-    async fn call_admin(&self, call: sc_catalog::AdminCall) -> Result<Json> {
-        let handlers = self.handlers.upgrade().ok_or_else(|| {
+    /// The handlers' state and a request as `user`, with `params` bound — what
+    /// the router would hand the handler after the admin check passed.
+    async fn request(
+        &self,
+        user: sc_catalog::AdminUser,
+        params: &[(&str, String)],
+    ) -> Result<(HandlerState, HandlerCtx<Admin>)> {
+        let catalog = self
+            .catalog
+            .upgrade()
+            .ok_or_else(|| Error::config("the server's catalog has been dropped"))?;
+        let apps = self.apps.upgrade().ok_or_else(|| {
             Error::config("the server that installed the admin handlers has stopped")
         })?;
-        let handler = handlers.get(&call.endpoint).cloned().ok_or_else(|| {
-            Error::config(format!(
-                "this process registers no handler for `{}`",
-                call.endpoint
-            ))
-        })?;
-        drop(handlers);
-        let user = match call.user {
-            Some(id) => {
-                let catalog = self
-                    .catalog
-                    .upgrade()
-                    .ok_or_else(|| Error::config("the server's catalog has been dropped"))?;
-                sc_auth::load_user(&catalog, id).await?
-            }
+        let user = match user {
+            Some(id) => sc_auth::load_user(&catalog, id).await?,
             None => None,
         };
-        let response = handler(HandlerCtx {
-            path_params: call.path_params.into_iter().collect(),
+        let ctx = HandlerCtx {
+            path_params: params
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), value.clone()))
+                .collect(),
             query: Vec::new(),
-            body: call.body,
-            user,
+            body: Json::Null,
+            // The admin tools behind `AdminHost` (`sc_app::mcp`) are reached
+            // only by a caller that passed their admin check.
+            who: Admin::delegated(user, "catalog admin host"),
             raw_body: None,
             raw_file: None,
             analytics_app: None,
             client_ip: None,
             locale: sc_i18n::active().default_locale().clone(),
-        })
-        .await?;
-        Ok(response.body)
+        };
+        Ok((HandlerState { catalog, apps }, ctx))
+    }
+}
+
+/// The body of a handler's answer.
+fn answer(response: Result<crate::handler::HandlerResponse>) -> Result<Json> {
+    Ok(response?.body)
+}
+
+#[async_trait::async_trait]
+impl sc_catalog::AdminHost for AdminHandlers {
+    async fn backend_operation(
+        &self,
+        user: sc_catalog::AdminUser,
+        op: sc_catalog::BackendOperation,
+    ) -> Result<Json> {
+        let (state, ctx) = self
+            .request(
+                user,
+                &[("backend", op.backend), ("operation", op.operation)],
+            )
+            .await?;
+        let body = json!({ "name": op.name, "config": op.config, "input": {} });
+        answer(handlers::file_stores::backend_operation(state, ctx, body).await)
+    }
+
+    async fn create_file_store(
+        &self,
+        user: sc_catalog::AdminUser,
+        store: sc_catalog::NewFileStore,
+    ) -> Result<Json> {
+        let (state, ctx) = self.request(user, &[]).await?;
+        let body = json!({
+            "name": store.name,
+            "backend": store.backend,
+            "description": store.description,
+            "config": store.config,
+        });
+        answer(handlers::file_stores::create_file_store(state, ctx, body).await)
+    }
+
+    async fn create_application(
+        &self,
+        user: sc_catalog::AdminUser,
+        application: Json,
+    ) -> Result<Json> {
+        let (state, ctx) = self.request(user, &[]).await?;
+        answer(handlers::applications::create_application(state, ctx, application).await)
+    }
+
+    async fn list_applications(&self, user: sc_catalog::AdminUser) -> Result<Vec<Json>> {
+        let (state, ctx) = self.request(user, &[]).await?;
+        match answer(handlers::applications::list_all_applications(state, ctx, Json::Null).await)? {
+            Json::Array(apps) => Ok(apps),
+            other => Err(Error::msg(format!(
+                "listing the applications answered {other} rather than a list"
+            ))),
+        }
+    }
+
+    async fn update_application(
+        &self,
+        user: sc_catalog::AdminUser,
+        id: uuid::Uuid,
+        application: Json,
+    ) -> Result<Json> {
+        let (state, ctx) = self.request(user, &[("id", id.to_string())]).await?;
+        answer(handlers::applications::update_application(state, ctx, application).await)
+    }
+
+    async fn build_application(&self, user: sc_catalog::AdminUser, id: uuid::Uuid) -> Result<Json> {
+        let (state, ctx) = self.request(user, &[("id", id.to_string())]).await?;
+        answer(handlers::applications::build_application(state, ctx, Json::Null).await)
+    }
+
+    async fn translations(
+        &self,
+        user: sc_catalog::AdminUser,
+        of: sc_catalog::TranslationsOf,
+    ) -> Result<Json> {
+        match of {
+            sc_catalog::TranslationsOf::Application(id) => {
+                let (state, ctx) = self.request(user, &[("id", id.to_string())]).await?;
+                answer(handlers::translations::get_translations(state, ctx, Json::Null).await)
+            }
+            sc_catalog::TranslationsOf::Instance => {
+                let (state, ctx) = self.request(user, &[]).await?;
+                answer(
+                    handlers::translations::get_instance_translations(state, ctx, Json::Null).await,
+                )
+            }
+        }
+    }
+
+    async fn save_translations(
+        &self,
+        user: sc_catalog::AdminUser,
+        of: sc_catalog::TranslationsOf,
+        locale: String,
+        messages: serde_json::Map<String, Json>,
+    ) -> Result<Json> {
+        let body = json!({ "messages": messages });
+        match of {
+            sc_catalog::TranslationsOf::Application(id) => {
+                let (state, ctx) = self
+                    .request(user, &[("id", id.to_string()), ("locale", locale)])
+                    .await?;
+                answer(handlers::translations::save_translations(state, ctx, body).await)
+            }
+            sc_catalog::TranslationsOf::Instance => {
+                let (state, ctx) = self.request(user, &[("locale", locale)]).await?;
+                answer(handlers::translations::save_instance_translations(state, ctx, body).await)
+            }
+        }
+    }
+
+    async fn save_stream(&self, user: sc_catalog::AdminUser, stream: Json) -> Result<Json> {
+        let (state, ctx) = self.request(user, &[]).await?;
+        answer(handlers::streams::save_stream(state, ctx, stream).await)
+    }
+
+    async fn delete_stream(&self, user: sc_catalog::AdminUser, id: uuid::Uuid) -> Result<Json> {
+        let (state, ctx) = self.request(user, &[("id", id.to_string())]).await?;
+        answer(handlers::streams::delete_stream(state, ctx, Json::Null).await)
     }
 }
 

@@ -27,18 +27,16 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::admin_endpoints;
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_app::{
     ApiConfig, Application, CodeFramework, FrameworkRef, bootstrap, save_application, scaffold_app,
 };
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps,
-};
+use sc_server::{AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps};
 use sc_test_harness::TestDb;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -158,6 +156,7 @@ async fn setup(tag: &str) -> sc_error::Result<Harness> {
 
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
@@ -196,7 +195,7 @@ async fn setup(tag: &str) -> sc_error::Result<Harness> {
             .with("store", "apps")
             .with("project", "todo"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     save_application(&catalog, &app).await?;

@@ -392,7 +392,7 @@ async fn a_spatial_join_says_what_it_cannot_do() -> Result<()> {
     // Without PostGIS, both are refused with the reason, and the stage
     // before still reads.
     for fx in both().await? {
-        if fx.cat.primary().spatial().is_available() {
+        if fx.cat.primary_info().spatial().is_available() {
             continue;
         }
         let schema = Schema::of_catalog(&fx.cat)?;

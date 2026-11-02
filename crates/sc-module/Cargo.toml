@@ -51,10 +51,11 @@ sc-types.workspace = true
 sc-catalog.workspace = true
 # A module's **declared tables** (TODO-imap M4) are created through the schema
 # editor — the rule the admin API and an agent change a schema by — so they are
-# ordinary tables. `sc-api` is already below this crate (`sc-core-actions`
+# ordinary tables. `sc-api` is already below this crate (`sc-action-builtins`
 # depends on it); this names the edge. `sc-files` for the local store a declared
 # file field gets when none of its name exists.
 sc-api.workspace = true
+sc-access.workspace = true
 # The admin role a module's **service** writes at (TODO-imap M5): the module's
 # own authority, over its own tables.
 sc-auth.workspace = true
@@ -73,11 +74,11 @@ sc-expr.workspace = true
 # The five host surfaces a module's action reaches, built from its
 # `ActionContext` by `CodeSurfaces` — the very ones `run_js_code` builds, so a
 # module's write carries the event's caller and this trigger's chain. The edge
-# runs the way `sc-python`'s does one layer up: `sc-core-actions` is layer 9 and
+# runs the way `sc-python`'s does one layer up: `sc-action-builtins` is layer 9 and
 # knows nothing of modules, so there is no cycle, and building the surfaces here
 # a second time is exactly how the two would come to disagree about who a
 # module's write is caused by.
-sc-core-actions.workspace = true
+sc-action-builtins.workspace = true
 # A module also supplies **model providers**, and `ModelProviderHost` — the seam
 # for them — is declared in `sc-model` beside this crate at layer 6, for exactly
 # the reason `TableProviderHost` is declared in `sc-catalog` below it: a trait a
@@ -93,7 +94,7 @@ sc-stream.workspace = true
 # And a module supplies **application frameworks** (§13.3), whose `FrameworkHost`
 # seam is declared in `sc-app` for the same reason again: a trait a module
 # implements has to be declared somewhere a module can see. `sc-app` depends on
-# neither this crate nor `sc-core-actions`, so the edge is acyclic — it is the
+# neither this crate nor `sc-action-builtins`, so the edge is acyclic — it is the
 # same shape as the one to `sc-model`, one layer higher.
 sc-app.workspace = true
 # And Saltcorn UI's **view runtime** (TODO "Saltcorn UI" §3): `sc-viewpattern`

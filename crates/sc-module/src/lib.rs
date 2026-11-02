@@ -57,6 +57,13 @@
 //! ([`ModuleManifest::unsupported`](host::ModuleManifest::unsupported)) so an
 //! admin knows what they are not getting, and loading them is a later milestone.
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
+    sc_catalog::Unchecked::system("sc-module: the module store");
+
 pub mod action;
 pub mod bounds;
 pub mod bundled;
@@ -99,9 +106,9 @@ pub use deno::{DenoModuleHost, PoolBounds};
 pub use frameworks::ModuleFrameworks;
 pub use functions::ModuleFunctions;
 pub use host::{
-    ActionManifest, CallHosts, FrameworkManifest, FunctionArg, FunctionManifest,
-    ModelProviderManifest, ModuleHost, ModuleManifest, OAuthAsks, RouteManifest, ServiceAsks,
-    ServiceManifest, SystemAsks, TableProviderManifest, UnsupportedEntity, WebhookManifest,
+    ActionManifest, Ask, AskSurface, Asks, CallHosts, CheckStepManifest, FrameworkManifest,
+    FunctionArg, FunctionManifest, ModelProviderManifest, ModuleHost, ModuleManifest,
+    RouteManifest, ServiceManifest, TableProviderManifest, UnsupportedEntity, WebhookManifest,
     prime_v8,
 };
 pub use install::{
@@ -118,8 +125,8 @@ pub use permissions::{
 };
 pub use roles::ModuleRoles;
 pub use routes::{
-    MatchedRoute, ROUTES_PREFIX, RouteCaller, RouteRequest, allowed_methods, match_route,
-    route_module, route_path, run_route,
+    MatchedRoute, ROUTES_PREFIX, RouteRequest, allowed_methods, match_route, route_module,
+    route_path, run_route,
 };
 pub use services::{Backoff, SERVICE_EVENTS, ServiceState, ServiceStatus, ServiceSupervisor};
 pub use spec::config_fields_to_form_fields;

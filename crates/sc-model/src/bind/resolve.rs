@@ -253,6 +253,7 @@ fn declared<'a>(spec: &'a Spec, name: &str) -> Option<&'a DimensionSpec> {
 
 /// Everything about the bindings that can be checked without reading data
 /// (§10's save-time half), answering the order the datasets resolve in.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn check_structure<'a>(
     interface: &Interface,
     config: &sc_types::Attrs,
@@ -663,6 +664,7 @@ impl Working {
 /// A related dataset's label arrives as the [`LABEL_COLUMN`] its read added
 /// (see [`binding_dataset`](super::binding_dataset)); it becomes the labels of
 /// that dataset's rows and is not a column bindings can name.
+#[allow(clippy::too_many_lines)]
 pub fn bind_data(
     interface: &Interface,
     config: &sc_types::Attrs,
@@ -1293,6 +1295,7 @@ fn numbers(
 
 /// One binding's value.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 fn evaluate(
     decl: &Declaration,
     binding: &Binding,

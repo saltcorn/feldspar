@@ -17,12 +17,12 @@
 //! an ordinary [`EndpointSet`], an application's typed client comes from the same
 //! [`generate_client`] the admin API uses.
 //!
-//! [`rows`] holds the table row CRUD both the admin API's handlers and a
-//! provider run, [`filter`] the comparison vocabulary every filtering syntax
-//! lowers through, [`schema_edit`] the schema-changing rule the admin handlers and
-//! an agent's `admin_copilot` trait both go through (§3.3, §11.3), [`auth`] the login vocabulary they share, and [`convert`] the
-//! bridge from JSON to the query layer's `Value` — all kept here, below every API
-//! surface, so there is one implementation rather than one per protocol.
+//! The row-access layer — table row CRUD, the filter vocabulary, the ownership
+//! rule and the `Scoped` handle — is the `sc-access` crate below this one
+//! (TODO-code-quality Q3.1). What stays here is what speaks a wire format or
+//! the admin API: [`schema_edit`], the schema-changing rule the admin handlers
+//! and an agent's `admin_copilot` trait both go through (§3.3, §11.3), and
+//! [`auth`], the login vocabulary they share.
 //!
 //! [`mcp`] is the same argument applied one level up: the **administrative
 //! tools** that build an application's configuration half — the schema, the
@@ -30,14 +30,19 @@
 //! both to the built-in copilot agent and to the administration MCP server
 //! (§13.6), rather than implemented once per caller.
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
+    sc_catalog::Unchecked::system("sc-api: the change log's user names for the history reader");
+
 pub mod auth;
 // The host behind a code body's `db` (§10.1): plans in, rows out.
 pub mod code_host;
-pub mod convert;
 // `csv`, not `bulk`: the module is named for the format it speaks. Inside it
 // the crate of the same name is reached as `::csv`.
 pub mod csv;
-pub mod filter;
 pub mod geo_import;
 pub mod history;
 // The administrative tool surface (§13.6): one implementation of the tools that
@@ -51,27 +56,20 @@ pub mod models;
 pub mod provided_tables;
 pub mod public_datasets;
 pub mod query_string;
-pub mod rows;
 pub mod schema_edit;
-pub mod search;
 pub mod throttle;
 pub mod undo;
-pub mod vector;
 
 mod admin;
 mod analytics;
-mod calc_read;
 mod endpoint;
 mod graphql;
-mod ownership;
 mod provider;
 mod resource;
 mod rest;
 mod schema;
 mod sync;
 mod typescript;
-mod user_rows;
-mod write_as;
 
 pub use admin::{ADMIN_API_PREFIX, ROW_PAGE_CAP, admin_endpoints};
 pub use endpoint::{
@@ -84,10 +82,6 @@ pub use graphql::{
     DEFAULT_ROW_CAP as GRAPHQL_DEFAULT_ROW_CAP, DEFAULT_STATEMENT_BUDGET, GRAPHQL_CLIENT_FILE,
     GRAPHQL_PROVIDER, GRAPHQL_SCHEMA_FILE, GraphqlLimits, GraphqlProvider, SchemaNames,
     generate_graphql_client, graphql_config_spec,
-};
-pub use ownership::{
-    RowImage, caller_context, caller_context_at, delete_row_as, insert_row_as, read_row_values_as,
-    read_rows_as, row_readable_as, row_updatable_as, update_row_as,
 };
 pub use provider::{
     ApiProvider, ApiRequest, ApiResponse, AppDirectory, AppLinks, RawBody, SessionAction,
@@ -105,6 +99,12 @@ pub use rest::password::{
     SET_PASSWORD_PAGE, rest_invite_min_role,
 };
 pub use rest::returns::{check_returns, parse_returns};
+pub use rest::verify::{
+    CFG_UNVERIFIED_ROLE as REST_CFG_UNVERIFIED_ROLE, CFG_VERIFY_EMAIL as REST_CFG_VERIFY_EMAIL,
+    CFG_VERIFY_EMAIL_BODY as REST_CFG_VERIFY_EMAIL_BODY,
+    CFG_VERIFY_EMAIL_SUBJECT as REST_CFG_VERIFY_EMAIL_SUBJECT, EmailVerification,
+    VERIFY_EMAIL_PAGE, rest_email_verification, rest_unverified_role,
+};
 pub use rest::{
     AUTH_ENDPOINTS, CFG_ALLOW_SIGNUP as REST_CFG_ALLOW_SIGNUP,
     CFG_NEW_USER_ROLE as REST_CFG_NEW_USER_ROLE, DEFAULT_ROW_CAP as REST_DEFAULT_ROW_CAP,
@@ -117,7 +117,6 @@ pub use typescript::{
     client_property, client_runtime, generate_app_client, generate_client,
     generate_client_with_streams, has_offline_sync,
 };
-pub use user_rows::{ADMIN_ONLY_WRITE, api_row};
 
 #[cfg(test)]
 mod tests {

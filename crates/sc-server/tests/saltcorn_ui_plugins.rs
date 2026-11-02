@@ -29,15 +29,14 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use sc_api::admin_endpoints;
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ModuleServices, SESSION_COOKIE, ServerConfig,
-    admin_handlers, build_router_with_apps, default_js_evaluator, install_agents, install_triggers,
+    AppMounts, ModuleServices, SESSION_COOKIE, ServerConfig, admin_handlers,
+    build_router_with_apps, default_js_evaluator, install_agents, install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -256,21 +255,7 @@ struct Server {
 /// A server with every platform table bootstrapped, the modules (and so the
 /// view runtime) running, and an admin signed in.
 async fn setup(bundle: PathBuf, tag: &str) -> sc_error::Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
@@ -525,6 +510,7 @@ fn id_json(id: &str) -> Value {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_plugins_view_pattern_is_configured_rendered_with_its_headers_and_posted_to()
 -> sc_error::Result<()> {
     let bundle = bundle_and_npm_or_skip!();

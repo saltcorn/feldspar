@@ -25,10 +25,11 @@
 //! [`Event`] is not `Serialize` — it is a live value passed down a call stack —
 //! so [`StoredEvent`] is its JSON shape, and the round trip is tested.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use sc_action::{Event, EventKind, ROLE_PUBLIC, Trigger, TriggerId};
+use sc_action::{Event, EventKind, Trigger, TriggerId};
 use sc_agent::{Run, RunId, RunKind, RunState};
 use sc_catalog::{Changeset, ChangesetSource};
 use sc_error::{Error, Result};
@@ -86,7 +87,7 @@ pub struct StoredEvent {
     pub payload: Json,
     /// The caller's role.
     #[serde(default = "public_role")]
-    pub role: u8,
+    pub role: Role,
     /// The caller's fields, or `None` for an anonymous event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<Json>,
@@ -99,8 +100,8 @@ pub struct StoredEvent {
     pub session: Option<String>,
 }
 
-fn public_role() -> u8 {
-    ROLE_PUBLIC
+fn public_role() -> Role {
+    Role::PUBLIC
 }
 
 impl StoredEvent {
@@ -410,7 +411,7 @@ mod tests {
             .row(json!({ "id": 7, "total": 120 }))
             .payload(json!({ "note": "from the shop" }))
             .caller(
-                40,
+                Role::of(40),
                 Some(json!({ "id": Uuid::nil().to_string(), "email": "a@b.c" })),
             )
             .from_origin(sc_catalog::Origin {

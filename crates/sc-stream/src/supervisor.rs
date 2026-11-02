@@ -183,6 +183,21 @@ pub struct StreamSupervisor {
     running: Mutex<BTreeMap<StreamId, Arc<RunningStream>>>,
 }
 
+/// A dropped supervisor stops what it ran.
+///
+/// Each running stream holds its sink beside its subscription, and the sink holds
+/// the running stream back — and the consumer, which is the trigger bridge with
+/// its catalog and dispatcher. So a supervisor dropped without a
+/// [`shutdown`](StreamSupervisor::shutdown) left every stream it had started,
+/// and everything that consumer reaches, alive for the rest of the process. A
+/// server's supervisor lives as long as the server; a test's is dropped at the
+/// end of each test.
+impl Drop for StreamSupervisor {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 impl StreamSupervisor {
     /// A supervisor over `registry`, running nothing yet — a server calls
     /// [`reload`](StreamSupervisor::reload) once the catalog is up.

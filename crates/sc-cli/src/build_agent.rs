@@ -141,7 +141,7 @@ pub fn read_token(args: &AgentArgs, env: Option<String>) -> Result<String> {
     if token.is_empty() {
         return Err(Error::config(format!(
             "build-agent needs the build host's token, shown when the host was added under \
-             Settings → Build hosts: in a file named by --token-file, or in {TOKEN_ENV}"
+             Settings → Development → Build hosts: in a file named by --token-file, or in {TOKEN_ENV}"
         )));
     }
     Ok(token)

@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use sc_catalog::{
-    Attrs, Catalog, DataField, ProvidedTableDef, ProvidedWrites, TableMeta, TableProviderHost,
+    Catalog, DataField, ProvidedTableDef, ProvidedWrites, TableMeta, TableProviderHost,
     TableProviderKind, bootstrap_table_meta, save_table_meta,
 };
 use sc_db_postgres::PgDriver;
@@ -30,6 +30,7 @@ use sc_query::{
     Assignment, BinOp, Delete, Expr, Insert, Projection, Select, Source, Statement, Update, Value,
 };
 use sc_test_harness::TestDb;
+use sc_types::Attrs;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value as Json, json};
 
@@ -297,7 +298,7 @@ async fn an_insert_becomes_insert_row_and_returns_the_row_the_provider_now_has()
     let insert =
         Insert::row("remote", vec!["title".to_owned()], vec![Expr::lit("delta")]).returning(all());
     let rows = catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .write(&Statement::from(insert))
         .await?
         .try_collect()
@@ -342,7 +343,7 @@ async fn an_update_is_resolved_to_keys_and_applied_one_row_at_a_time() -> Result
         returning: all(),
     };
     let rows = catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .write(&Statement::from(update))
         .await?
         .try_collect()
@@ -402,7 +403,7 @@ async fn a_delete_reads_first_and_names_the_rows_it_means() -> Result<()> {
         returning: all(),
     };
     let rows = catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .write(&Statement::from(delete))
         .await?
         .try_collect()
@@ -443,7 +444,7 @@ async fn a_delete_matching_nothing_touches_nothing() -> Result<()> {
         returning: all(),
     };
     let rows = catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .write(&Statement::from(delete))
         .await?
         .try_collect()
@@ -465,7 +466,7 @@ async fn a_provider_with_no_primary_key_cannot_be_addressed_and_says_so() -> Res
     let db = TestDb::new().await?;
     let catalog = with_table(&db, RemoteTable::keyless()).await?;
     let table = catalog.require("remote")?;
-    let provider = catalog.provider(&table)?;
+    let provider = catalog.provider(&table, sc_catalog::Unchecked::system("test"))?;
 
     let update = Update {
         table: "remote".to_owned(),
@@ -512,7 +513,7 @@ async fn an_expression_with_no_database_to_evaluate_it_in_is_refused() -> Result
         returning: all(),
     };
     let Err(err) = catalog
-        .provider(&table)?
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
         .write(&Statement::from(update))
         .await
     else {
@@ -530,7 +531,11 @@ async fn a_select_is_not_a_write() -> Result<()> {
     let catalog = with_table(&db, RemoteTable::new(false)).await?;
     let table = catalog.require("remote")?;
     let select = Statement::Select(Box::new(Select::from(Source::table("remote"))));
-    let Err(err) = catalog.provider(&table)?.write(&select).await else {
+    let Err(err) = catalog
+        .provider(&table, sc_catalog::Unchecked::system("test"))?
+        .write(&select)
+        .await
+    else {
         panic!("a SELECT is not a write");
     };
     let err = err.to_string();

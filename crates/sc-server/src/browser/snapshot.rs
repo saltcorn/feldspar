@@ -257,7 +257,7 @@ impl Renderer<'_> {
 }
 
 /// A value's text: a string as it is, anything else as JSON, nothing as empty.
-fn text_of(value: Option<&AxValue>) -> String {
+pub(crate) fn text_of(value: Option<&AxValue>) -> String {
     match value.and_then(|v| v.value.as_ref()) {
         None | Some(Json::Null) => String::new(),
         Some(Json::String(s)) => s.clone(),

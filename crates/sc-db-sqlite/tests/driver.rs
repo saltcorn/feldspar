@@ -894,7 +894,10 @@ async fn a_raw_statement_runs_with_its_named_parameters() -> Result<()> {
     assert_eq!(named.params, vec!["least"]);
     let found = rows(
         &driver,
-        Statement::raw(named.sql.clone(), vec![Value::Int(250)]),
+        Statement::raw(
+            sc_query::TrustedSql::admin_authored(named.sql.clone()),
+            vec![Value::Int(250)],
+        ),
     )
     .await?;
     assert_eq!(found.len(), 1);
@@ -991,7 +994,7 @@ async fn a_transaction_local_setting_lives_as_long_as_its_transaction() -> Resul
     .await?;
     tx.commit().await?;
 
-    let read = |sql: String| Statement::raw(sql, Vec::new());
+    let read = |sql: String| Statement::raw(sc_query::TrustedSql::composed(sql), Vec::new());
     let mut tx = driver.begin().await?;
     tx.set_local("sc.changeset", "{\"id\":\"a\"}").await?;
     tx.set_local("sc.changeset", "{\"id\":\"b\"}").await?;
@@ -1053,5 +1056,21 @@ async fn concurrent_queries_do_not_queue_behind_one_connection() -> Result<()> {
     for task in tasks {
         assert_eq!(task.await.expect("task")?.len(), 10);
     }
+    Ok(())
+}
+
+/// Settings → System names the database: the engine linked into the binary,
+/// and the version `sqlite_version()` reports from inside it.
+#[tokio::test]
+async fn names_itself_and_its_version() -> Result<()> {
+    let driver = driver();
+    let found = DatabaseDriver::server_version(&driver).await?;
+    assert_eq!(found.product, "SQLite");
+    let rows = driver
+        .query(&Statement::raw("SELECT sqlite_version() AS v", vec![]))
+        .await?
+        .try_collect()
+        .await?;
+    assert_eq!(rows[0].get("v"), Some(&Value::Text(found.version.clone())));
     Ok(())
 }

@@ -2,7 +2,7 @@
 //! (the milestone "Tables in code", phase 4).
 //!
 //! Nothing here can be proved against a plan. The whole claim of §5 is that a
-//! delegated operation goes through [`sc_api::ownership`]'s `*_as` functions —
+//! delegated operation goes through [`sc_access::ownership`]'s `*_as` functions —
 //! §7.3's rule, the same functions the agent tools use — and every consequence
 //! that matters is a consequence of *those* running: the formula narrows a read
 //! in the `WHERE` where it can and row by row where it cannot, an update is
@@ -19,13 +19,14 @@
 //! suite reports rather than a subtlety nobody re-derives.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_action::{
     Action, ActionContext, ActionRegistry, EventKind, Trigger, TriggerDispatcher,
     bootstrap_triggers, save_trigger,
 };
-use sc_api::code_host::TableHost;
+use sc_api::code_host::{Authority, TableHost};
 use sc_catalog::{Catalog, TableMeta, bootstrap_table_meta, enable_rls, save_table_meta};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -58,6 +59,7 @@ async fn setup(db: &TestDb) -> Result<Arc<Catalog>> {
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let cat = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(cat.teardown_hook());
     bootstrap_table_meta(&cat).await?;
     Ok(cat)
 }
@@ -87,7 +89,7 @@ async fn own_books(cat: &Catalog, formula: &str, rls: bool) -> Result<()> {
 /// uuid string, the role, and the fields a formula reads.
 fn as_reader<'a>(cat: &'a Catalog, email: &str) -> TableHost<'a> {
     TableHost::new(cat).caused_by(
-        40,
+        Role::of(40),
         Some(json!({
             "id": uuid::Uuid::new_v4().to_string(),
             "role": 40,
@@ -229,7 +231,7 @@ async fn a_delegated_read_of_an_rls_table_sees_what_the_policies_allow() -> Resu
     .await?;
     assert_eq!(titles(&rows), vec!["Emma", "Ubik"]);
 
-    // And the admin's own path still reads the whole table: `ROLE_ADMIN` clears
+    // And the admin's own path still reads the whole table: `Role::ADMIN` clears
     // the policy's role floor, as the admin API's row editor does.
     let all = ask(
         &host,
@@ -544,6 +546,92 @@ async fn a_delegated_aggregate_over_an_untranslatable_formula_says_where_to_put_
     assert!(
         refused.to_string().contains("cannot be aggregated for you"),
         "{refused}"
+    );
+    Ok(())
+}
+
+/// A **custom query's** host defaults to the caller: a plan that names no
+/// authority, or names `default`, is narrowed by the ownership formula exactly
+/// as `asUser()` is, and only an explicit `admin` reads the whole table. A
+/// trigger's host keeps the admin default for the same plans.
+#[tokio::test]
+async fn a_hosts_default_authority_decides_a_plan_that_names_none() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = setup(&db).await?;
+    own_books(&cat, "owner === user.email", false).await?;
+    let read = |authority: Option<&str>| {
+        let mut plan = json!({
+            "op": "select", "table": "books",
+            "select": ["id", "title"], "order": [ { "field": "id" } ],
+        });
+        if let Some(authority) = authority {
+            plan["authority"] = json!(authority);
+        }
+        plan
+    };
+
+    let query = as_reader(&cat, "ada@example.com").defaulting_to(Authority::User);
+    for authority in [None, Some("default"), Some("user")] {
+        assert_eq!(
+            titles(&ask(&query, read(authority)).await?),
+            vec!["Dune", "Ilium"],
+            "{authority:?}: a custom query reads as its caller"
+        );
+    }
+    assert_eq!(
+        titles(&ask(&query, read(Some("admin"))).await?),
+        vec!["Dune", "Emma", "Ilium", "Ubik"],
+        "`asAdmin()` is the explicit way out"
+    );
+
+    let trigger = as_reader(&cat, "ada@example.com");
+    for authority in [None, Some("default")] {
+        assert_eq!(
+            titles(&ask(&trigger, read(authority)).await?),
+            vec!["Dune", "Emma", "Ilium", "Ubik"],
+            "{authority:?}: a trigger still reads as the admin"
+        );
+    }
+    Ok(())
+}
+
+/// The same rule from a real JavaScript body: `db.books` with nothing said is
+/// the caller's view in a query, `db.asAdmin()` is the table, and a write the
+/// formula does not grant is refused rather than made.
+#[tokio::test]
+async fn a_query_bodys_db_acts_as_the_caller_unless_it_says_as_admin() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = setup(&db).await?;
+    own_books(&cat, "owner === user.email", false).await?;
+    let host = as_reader(&cat, "bob@example.com").defaulting_to(Authority::User);
+    let runtime = CodeRuntime::new();
+    let out = runtime
+        .run(CodeCall {
+            code: r#"
+                const mine = await db.books.select("title").orderBy("id").rows();
+                const all = await db.asAdmin().books.count();
+                let refused = null;
+                try {
+                  await db.books.insert({ title: "Mine now", pages: 1, owner: "ada@example.com" });
+                } catch (e) {
+                  refused = String(e.message || e);
+                }
+                return { mine: mine.map((b) => b.title), all: all, refused: refused !== null };
+            "#
+            .to_owned(),
+            host: Some(&host),
+            ..CodeCall::default()
+        })
+        .await?;
+    assert_eq!(
+        out,
+        json!({ "mine": ["Emma", "Ubik"], "all": 4, "refused": true }),
+        "bob's rows by default, the table under asAdmin(), and no insert as ada"
+    );
+    assert_eq!(
+        rows_of(&db, "SELECT title FROM books WHERE title = 'Mine now'").await,
+        Vec::<Vec<Option<String>>>::new(),
+        "the refused insert wrote nothing"
     );
     Ok(())
 }

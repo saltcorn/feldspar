@@ -207,7 +207,7 @@ pub async fn save_view_with_library_updates(
         save_view_on(catalog, Some(&tx), view).await
     }
     .await;
-    finish(tx, saved).await
+    tx.finish(saved).await
 }
 
 /// Save a page whose layout the builder changed, and the library edits it
@@ -235,7 +235,7 @@ pub async fn save_page_with_library_updates(
         save_page_on(catalog, Some(&tx), page).await
     }
     .await;
-    finish(tx, saved).await
+    tx.finish(saved).await
 }
 
 /// Refuse an edited item's layout that places an item the application does not
@@ -258,21 +258,6 @@ pub fn check_update_placements(
         )?;
     }
     Ok(())
-}
-
-/// Commit `tx` if `result` is a success, else roll it back and answer the
-/// refusal. A rollback that also fails has nothing to add to the refusal.
-async fn finish<T>(tx: SharedTx, result: Result<T>) -> Result<T> {
-    match result {
-        Ok(value) => {
-            tx.commit().await?;
-            Ok(value)
-        }
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(e)
-        }
-    }
 }
 
 /// Every page a view's configuration or a page's layout names, sorted and

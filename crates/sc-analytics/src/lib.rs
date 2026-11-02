@@ -14,6 +14,14 @@
 //! TODO-astro W3.6); and the demo data ([`demo`]). Datasets are not here: they are `sc-dataset`'s, because models
 //! read them too.
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
+    "sc-analytics: the workspace store and the demo dataset an admin installs",
+);
+
 pub mod ab;
 pub mod app;
 pub mod card;

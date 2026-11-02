@@ -652,6 +652,46 @@ same options, and one thing about it is worth knowing before you build anything 
 server will not run that SQL for you.** There is no v1 `db` module here, so the statement is
 for inspecting and logging, and `db.sql()` (Step 5) is how you run one you wrote.
 
+### What a Saltcorn 1 backup's actions become
+
+Restoring a Saltcorn 1 backup translates every one of v1's built-in actions rather than
+carrying it by name, because the names that the two systems share do not mean the same
+settings (v1's `delete_rows` takes a query object, this one takes a formula). Most become a
+`run_js_code` body that does what v1's `run` did, written against the `Table` above. The body
+opens with a comment naming the v1 action it came from. A button that runs one of v1's
+actions directly, with no trigger (an action column, or an action in a view's, page's or
+library item's layout), becomes a trigger called `<view> · <action> <n>`, and the
+button is rewritten to name it.
+
+In those bodies `row` is the row the action ran on. That is a table event's `row`, the
+`payload` a view's button passes, or a workflow's `context`. The row's fields are also in
+scope by their own names, as in v1, so a v1 expression like `{ pages: Math.round(pages*0.9) }`
+is pasted in unchanged.
+
+| v1 action | Here |
+|---|---|
+| `run_js_code`, `blocks` | `run_js_code`, the body unchanged inside v1's scope: `row`, `context`, `table`, `channel`, the fields by name, `Actions.<trigger>(…)`, `fetchJSON`. A **Client page** body is sent to the page as `eval_js` |
+| `run_js_code_in_field` | `run_js_code` that runs the field's code |
+| `modify_row`, `insert_any_row`, `insert_joined_row`, `duplicate_row`, `delete_rows` | `run_js_code` over v1's `Table`. A form or filter target answers `set_fields` |
+| `loop_rows` | `run_js_code` that runs the trigger once per row. v1 numbers triggers by their order in the backup. The delay between rows is dropped, because there are no timers |
+| `sync_table_from_external` | `run_js_code` that inserts, updates and deletes the same way v1 did |
+| `webhook` | `run_js_code` with `fetch`, writing the response to the field or the variable |
+| `send_email` | `send_email`. A text, HTML or MJML field becomes the body, and *Only if* becomes the trigger's `only_if`. **A view rendered as the body is refused**, as is a confirmation field. Attachments from related rows are not carried |
+| `navigate`, `toast`, `progress_bar`, `reload_embedded_view`, `copy_to_clipboard`, `form_action`, `duplicate_row_prefill_edit`, `step_control_flow` | `run_js_code` that answers the page with the same object v1 did (`goto`, `notify`, `set_fields`, …) |
+| `sleep` | In the page, an `eval_js` promise. **On the server it is refused** (no timers) |
+| `set_user_language` | Writes the signed-in user's `language`. A visitor who is not signed in got a cookie in v1, and gets nothing here |
+| `recalculate_stored_fields`, `refresh_user_session` | A body that does nothing. Calculated fields are computed on read here, and a session reads its user from the users table |
+| `download_file_to_browser` | Reads the file from the imported store and answers `download` |
+| Multi-step action | A body that runs each step as a trigger, with v1's `only_if`, goto, halt and clear |
+| `emit_event`, `notify_user`, `find_or_create_dm_room`, `convert_session_to_user`, `train_model_instance`, `install_progressive_web_app` | **Refused**, with the reason in the restore report. This system has no custom events, notifications, Room views, pre-login sessions, v1 models or v1 PWA |
+
+A trigger that was refused stays declared by the application, so a view that names it still
+saves, and pressing its button reports that the trigger is missing. Some answers are
+JavaScript for the page to run (Back, form submit, copy to clipboard, client-side code). The
+page can only run those when the application's content security policy allows
+`'unsafe-eval'`, so the import adds that to the policy when one of these actions is present,
+and the report says so.
+
 ### The Saltcorn 1 `Table` and `Field` compatibility table
 
 Every method of v1's two classes, and what it does here. *Implemented* means what v1's
@@ -811,6 +851,50 @@ Microsoft 365 file whatever you send through their SMTP into the account's Sent 
 themselves. Most other providers (GMX, IONOS, Fastmail, a plain Dovecot/Postfix) do not, and the
 mail will not appear there.
 
+### When a trigger fails: the `error` event
+
+A trigger on a row write runs **after the write has committed**. So when its action fails, say a
+`send_email` to a mail server that is down or refuses the message, the write still succeeds.
+The request that saved the row gets its row back, and nothing is written to the row for you.
+What happens instead is that the server raises an **`error` event**, and a trigger on that event
+can do something about it.
+
+The event's payload is the one every `error` event has, plus four fields that say which run
+failed:
+
+| Field | Value |
+|---|---|
+| `kind` | `application` or `system` |
+| `message` | ``trigger `send_mail` on the update event: …``, the whole reason |
+| `method` | `TRIGGER` |
+| `path` | `/send_mail`, the failed trigger's name |
+| `trigger` | `send_mail` |
+| `event` | the event it was handling: `insert`, `update`, `delete`, `login`, … |
+| `table` | the table the row is in, or null for an event with no table |
+| `key` | the row's primary key, or null when there is no row (an object of the key's columns for a composite key) |
+
+`user` is whoever made the write, as it was for the trigger that failed.
+
+To record the outcome on the row, give the table a column for it and add one trigger:
+
+- **Event** `error`, **Action** `update_rows`
+- `table`: `mails`
+- `where`: `id === payload.key && payload.method === "TRIGGER"`
+- `assignments`: `status` ← `'failed'`, `error` ← `payload.message`
+
+An `error` event also fires when a request fails, which is why the `where` checks `method`. When
+`key` is null, as it is for a failed `login` trigger, `id === null` matches no row.
+
+Some things raise no `error` event, because someone is already waiting for the answer:
+
+- **A trigger you run directly** (the **Run** button, the app's `POST /actions/{name}`, or
+  `trigger("…").run()` in code) returns its failure to whoever ran it instead. In code that is
+  an exception to catch.
+- **A failure while handling an `error` event** raises nothing more, so a broken alerting trigger
+  cannot loop. It is still logged.
+
+Every failure is also written to the server log, whether or not anything handles the event.
+
 ### `undo`, an Undo button for your application
 
 `undo` takes back what the person pressing the button last did, the way an editor's undo does:
@@ -893,8 +977,9 @@ triggers did outside the database, such as an email they sent, is not undone.
   `{{ }}` template are evaluated in a sandbox with no database access at all, on purpose: a
   formula that could query is a formula that could be slow on every row of every read. If a
   condition needs a lookup, put the lookup in a `run_js_code` body.
-- **Errors are events, but rejections are not.** The `error` event fires when a request fails,
-  not when one is refused: a 404 for a bad URL or a 401 from the auth gate is a rejection, and an
+- **Errors are events, but rejections are not.** The `error` event fires when a request fails
+  or when a trigger nobody ran directly fails (see
+  [When a trigger fails](#when-a-trigger-fails-the-error-event)), not when a request is refused: a 404 for a bad URL or a 401 from the auth gate is a rejection, and an
   alerting trigger that fired on every probe of a wrong path would be useless for what it is for.
 
 ## What next

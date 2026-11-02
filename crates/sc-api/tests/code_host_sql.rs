@@ -14,6 +14,7 @@
 //! visible from Rust at all.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::code_host::{HostLimits, TableHost};
@@ -61,7 +62,7 @@ async fn rls_books(cat: &Catalog, formula: &str) -> Result<()> {
 /// A host whose event was caused by `email` at role 40.
 fn as_reader<'a>(cat: &'a Catalog, email: &str) -> TableHost<'a> {
     TableHost::new(cat).caused_by(
-        40,
+        Role::of(40),
         Some(json!({
             "id": uuid::Uuid::new_v4().to_string(),
             "role": 40,
@@ -185,7 +186,7 @@ async fn a_delegated_statement_runs_where_the_policies_can_see_it() -> Result<()
     );
 
     // The default is the trigger's own authority, which is admin — and
-    // `ROLE_ADMIN` clears every policy's role floor, exactly as it does for the
+    // `Role::ADMIN` clears every policy's role floor, exactly as it does for the
     // admin API's row editor. One host, one statement, one field of difference.
     let every = host
         .call(json!({ "op": "sql", "sql": "select title from books order by id" }))

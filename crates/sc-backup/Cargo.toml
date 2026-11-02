@@ -1,0 +1,68 @@
+[package]
+name = "sc-backup"
+description = "Backup and restore, and the entity JSON codecs the admin API and a backup share (layer 9)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sc-error.workspace = true
+sc-log.workspace = true
+sc-types.workspace = true
+sc-query.workspace = true
+sc-db.workspace = true
+sc-catalog.workspace = true
+sc-files.workspace = true
+sc-auth.workspace = true
+sc-config.workspace = true
+sc-access.workspace = true
+sc-expr.workspace = true
+sc-action.workspace = true
+sc-api.workspace = true
+sc-app.workspace = true
+sc-agent.workspace = true
+sc-agent-builtins.workspace = true
+sc-dataset.workspace = true
+sc-analytics.workspace = true
+sc-llm.workspace = true
+sc-mcp.workspace = true
+sc-model.workspace = true
+sc-module.workspace = true
+sc-stream.workspace = true
+sc-viewpattern.workspace = true
+sc-workflow.workspace = true
+sc-i18n.workspace = true
+
+tokio.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+# Restoring a backup must give back the exact float written: deno_core turns this on in the
+# server binary, but the backup crate must not depend on that.
+serde.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+uuid.workspace = true
+rust_decimal.workspace = true
+# The backup archive: an installation's metadata, rows and files as one zip.
+zip.workspace = true
+# A Saltcorn 1 backup lists its files in `files.csv` (`v1`).
+csv.workspace = true
+# Automated backups sent off the server (`destination`): an S3-compatible
+# bucket, signed by hand (`s3`) with `sha2` over `reqwest`, or an SFTP server
+# through `russh` + `russh-sftp`.
+reqwest.workspace = true
+sha2.workspace = true
+russh.workspace = true
+russh-sftp.workspace = true
+
+[dev-dependencies]
+sc-test-harness.workspace = true
+sc-db-sqlite.workspace = true
+sc-db-postgres.workspace = true
+
+[lints]
+workspace = true

@@ -72,7 +72,7 @@ pub struct PgConnectParams {
     pub user: String,
     /// That role's password; empty for a connection that needs none (a Unix
     /// socket with peer authentication, say).
-    pub password: String,
+    pub password: sc_error::Secret<String>,
     /// The one schema the connection presents (see [`PgDriver::schema`]).
     pub schema: String,
 }
@@ -148,7 +148,7 @@ impl PgDriver {
         // makes libpq offer one, which a socket connection using peer
         // authentication refuses.
         if !params.password.is_empty() {
-            config.password(&params.password);
+            config.password(params.password.expose());
         }
 
         Ok(Self::from_config(&config)?.scoped_to(schema))
@@ -367,6 +367,20 @@ impl DatabaseDriver for PgDriver {
 
     fn dialect(&self) -> &dyn SqlDialect {
         &self.dialect
+    }
+
+    /// `server_version` is the bare number (`16.4`), where `version()` is a
+    /// sentence naming the compiler as well.
+    async fn server_version(&self) -> Result<sc_db::DbVersion> {
+        let client = self.client().await?;
+        let row = client
+            .query_one("SHOW server_version", &[])
+            .await
+            .map_err(|e| Error::database(format!("read the server version: {e}")))?;
+        Ok(sc_db::DbVersion {
+            product: "PostgreSQL",
+            version: row.get::<_, String>(0),
+        })
     }
 
     fn spatial(&self) -> SpatialSupport {

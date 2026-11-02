@@ -9,13 +9,14 @@
 //! whole reason the IDE is a separate page on a separate prefix.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::{AuthRequirement, Endpoint, EndpointSet, Method, PathSpec};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, SessionStore, User};
+use sc_auth::{SessionStore, User};
 use sc_server::{
     CONTENT_SECURITY_POLICY, HandlerRegistry, IDE_CONTENT_SECURITY_POLICY, SESSION_COOKIE,
     ServerConfig, build_router,
@@ -71,8 +72,8 @@ fn router_with_ide(dir: Option<std::path::PathBuf>) -> (Router, Arc<SessionStore
 }
 
 /// A logged-in session for a user of `role`.
-async fn session_for(sessions: &SessionStore, role: u8) -> String {
-    let user = User::new(Uuid::new_v4(), role).unwrap();
+async fn session_for(sessions: &SessionStore, role: Role) -> String {
+    let user = User::new(Uuid::new_v4(), role);
     sessions.login(user).await.unwrap()
 }
 
@@ -91,7 +92,7 @@ fn get(path: &str, session: Option<&str>, html: bool) -> Request<Body> {
 async fn an_admin_gets_the_ide_bundle_under_the_relaxed_policy() {
     let dir = ide_bundle("admin");
     let (router, sessions) = router_with_ide(Some(dir.clone()));
-    let token = session_for(&sessions, ROLE_ADMIN).await;
+    let token = session_for(&sessions, Role::ADMIN).await;
 
     // The document: `/ide/` is the bundle's own index.html.
     let response = router
@@ -167,7 +168,7 @@ async fn the_ide_is_not_served_to_anyone_but_an_admin() {
     assert!(!String::from_utf8_lossy(&body).contains("export const workbench"));
 
     // A logged-in non-admin is refused too: this milestone's IDE is admin-only.
-    let public = session_for(&sessions, ROLE_PUBLIC).await;
+    let public = session_for(&sessions, Role::PUBLIC).await;
     let response = router
         .clone()
         .oneshot(get("/ide/assets/main-a1b2c3.js", Some(&public), false))
@@ -182,7 +183,7 @@ async fn the_ide_is_not_served_to_anyone_but_an_admin() {
 async fn the_relaxed_policy_stays_on_the_ide_route() {
     let dir = ide_bundle("policy");
     let (router, sessions) = router_with_ide(Some(dir.clone()));
-    let token = session_for(&sessions, ROLE_ADMIN).await;
+    let token = session_for(&sessions, Role::ADMIN).await;
 
     // The admin SPA, fetched by the same admin in the same session, is still
     // strict — no inline styles, no blob workers, no eval.
@@ -239,7 +240,7 @@ async fn the_relaxed_policy_stays_on_the_ide_route() {
 #[tokio::test]
 async fn without_a_bundle_nothing_under_the_prefix_is_html() {
     let (router, sessions) = router_with_ide(None);
-    let token = session_for(&sessions, ROLE_ADMIN).await;
+    let token = session_for(&sessions, Role::ADMIN).await;
 
     for path in [
         "/ide/",
@@ -273,7 +274,7 @@ async fn without_a_bundle_nothing_under_the_prefix_is_html() {
 async fn an_asset_outside_the_bundle_is_a_404() {
     let dir = ide_bundle("missing-asset");
     let (router, sessions) = router_with_ide(Some(dir.clone()));
-    let token = session_for(&sessions, ROLE_ADMIN).await;
+    let token = session_for(&sessions, Role::ADMIN).await;
 
     let response = router
         .clone()

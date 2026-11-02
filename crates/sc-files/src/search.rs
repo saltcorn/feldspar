@@ -25,7 +25,9 @@
 
 use crate::access::filter_visible;
 use crate::store::{Entry, FileStore};
+use crate::store_path::StorePath;
 use sc_error::{Error, Result};
+use sc_types::Role;
 
 /// Directory names skipped unless the caller asks for them by searching inside
 /// one.
@@ -143,7 +145,7 @@ pub struct SearchOutcome {
 /// manager's rule applied to a walk instead of to a single path.
 pub async fn search_store(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
+    store_min_role: Option<Role>,
     caller: &crate::FileCaller,
     query: &SearchQuery,
 ) -> Result<SearchOutcome> {
@@ -159,7 +161,7 @@ pub async fn search_store(
     let mut stack = vec![(query.dir.clone(), root_floor)];
 
     while let Some((dir, floor)) = stack.pop() {
-        let entries = store.list(&dir).await?;
+        let entries = store.list(&StorePath::parse(&dir)?).await?;
         let visible = filter_visible(store, floor, entries, caller).await?;
         // Reversed onto the stack so the pops come back in listing order.
         let mut directories = Vec::new();
@@ -180,7 +182,7 @@ pub async fn search_store(
                 return Ok(outcome);
             }
             outcome.files_scanned += 1;
-            let bytes = store.read(&entry.path).await?;
+            let bytes = store.read(&StorePath::parse(&entry.path)?).await?;
             // Not text: nothing here has lines, and pretending otherwise fills
             // a result list with mojibake.
             let Ok(text) = std::str::from_utf8(&bytes) else {
@@ -517,7 +519,7 @@ pub struct FoundFiles {
 /// entries visited and `max_results` returned.
 pub async fn find_files(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
+    store_min_role: Option<Role>,
     caller: &crate::FileCaller,
     dir: &str,
     query: &str,
@@ -535,7 +537,7 @@ pub async fn find_files(
     let mut stack = vec![(dir.to_owned(), root_floor)];
 
     while let Some((current, floor)) = stack.pop() {
-        let entries = store.list(&current).await?;
+        let entries = store.list(&StorePath::parse(&current)?).await?;
         let visible = filter_visible(store, floor, entries, caller).await?;
         let mut directories = Vec::new();
         for entry in visible {
@@ -579,7 +581,7 @@ const GENERATED_PROJECT_DIRS: [&str; 2] = ["android", "ios"];
 /// of images and none of them is the app's.
 pub async fn find_by_extension(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
+    store_min_role: Option<Role>,
     caller: &crate::FileCaller,
     dir: &str,
     extensions: &[String],
@@ -623,7 +625,7 @@ fn has_extension(name: &str, extensions: &[String]) -> bool {
 /// outcome says when that stopped the walk.
 pub async fn walk_store(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
+    store_min_role: Option<Role>,
     caller: &crate::FileCaller,
     dir: &str,
     exclude_dirs: &[&str],
@@ -632,7 +634,7 @@ pub async fn walk_store(
     let root_floor = crate::effective_min_role(store, store_min_role, dir).await?;
     let mut stack = vec![(dir.to_owned(), root_floor)];
     while let Some((current, floor)) = stack.pop() {
-        let entries = store.list(&current).await?;
+        let entries = store.list(&StorePath::parse(&current)?).await?;
         let visible = filter_visible(store, floor, entries, caller).await?;
         let mut directories = Vec::new();
         for entry in visible {

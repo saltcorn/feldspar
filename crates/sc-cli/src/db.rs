@@ -7,7 +7,7 @@
 //!    individual `host`/`port`/`user`/`password`/`db` parts (`--db-host` etc.).
 //! 2. **The environment** — `DATABASE_URL`, or the conventional `PG*` variables.
 //! 3. **The configuration file** — the environment selected out of
-//!    `feldspar.toml` ([`crate::config_file`]), which is where a deployment keeps
+//!    `feldspar.toml` ([`sc_config_file`]), which is where a deployment keeps
 //!    production's, staging's and test's parameters side by side.
 //!
 //! A URL, wherever it comes from, wins wholesale over the parts; otherwise the
@@ -49,7 +49,7 @@ use sc_db_postgres::PgDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_error::{Error, Result};
 
-use crate::config_file::{self, Environment, SelectedEnvironment};
+use sc_config_file::{Environment, SelectedEnvironment};
 
 /// The serving settings of a selected environment: where this deployment's
 /// applications are reachable in a browser.
@@ -141,7 +141,7 @@ impl Serving<'_> {
         let mut def = sc_llm::LlmProviderDef::new(&section.name, &section.backend)
             .description(section.description.clone().unwrap_or_default());
         if let Some(key) = &section.api_key {
-            def = def.with(sc_llm::CFG_API_KEY, key.clone());
+            def = def.with(sc_llm::CFG_API_KEY, key.expose().clone());
         }
         if let Some(url) = &section.base_url {
             def = def.with(sc_llm::CFG_BASE_URL, url.clone());
@@ -277,7 +277,7 @@ pub struct DbConfig {
     host: Option<String>,
     port: Option<String>,
     user: Option<String>,
-    password: Option<String>,
+    password: Option<sc_error::Secret<String>>,
     dbname: Option<String>,
     /// A SQLite file to use instead of a Postgres server.
     sqlite: Option<String>,
@@ -327,12 +327,15 @@ impl DbConfig {
         let mut rest = Vec::new();
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
+            if arg.as_ref() == "--db-password" {
+                cfg.password = Some(next_value(&mut it, "--db-password")?.into());
+                continue;
+            }
             let slot = match arg.as_ref() {
                 "--database-url" => &mut cfg.url,
                 "--db-host" => &mut cfg.host,
                 "--db-port" => &mut cfg.port,
                 "--db-user" => &mut cfg.user,
-                "--db-password" => &mut cfg.password,
                 "--db-name" => &mut cfg.dbname,
                 "--sqlite" => &mut cfg.sqlite,
                 "--environment" | "--env" => &mut environment,
@@ -345,7 +348,7 @@ impl DbConfig {
             let flag = arg.as_ref().to_owned();
             *slot = Some(next_value(&mut it, &flag)?);
         }
-        cfg.selected = config_file::select(config_path.as_deref(), environment.as_deref())?;
+        cfg.selected = sc_config_file::select(config_path.as_deref(), environment.as_deref())?;
         Ok((cfg, rest))
     }
 
@@ -358,6 +361,15 @@ impl DbConfig {
     /// The name of the selected environment, if a configuration file was used.
     pub fn environment(&self) -> Option<&str> {
         self.selected.as_ref().map(|s| s.name.as_str())
+    }
+
+    /// Whether the selected environment is marked `production`
+    /// (TODO-checklists C1.6). No configuration file is not production: there
+    /// is nothing that says so.
+    pub fn is_production(&self) -> bool {
+        self.selected
+            .as_ref()
+            .is_some_and(SelectedEnvironment::is_production)
     }
 
     /// The **serving** half of the selected environment: where this deployment's
@@ -373,6 +385,18 @@ impl DbConfig {
         Serving {
             section: self.section(),
         }
+    }
+
+    /// The TLS settings this host pins over `_fd_config`: the selected
+    /// environment's ([`Serving::host_config`]), with `ssl_mode` taken from
+    /// [`FELDSPAR_SSL_MODE`](sc_config_file::SSL_MODE_VAR) when that is set. The
+    /// variable outranks the file for the reason `DATABASE_URL` does: it is what
+    /// a container image sets, and the image cannot see the file a user mounts.
+    pub fn host_config(&self) -> sc_types::Attrs {
+        with_ssl_mode(
+            self.serving().host_config(),
+            env_var(sc_config_file::SSL_MODE_VAR),
+        )
     }
 
     /// Connect to the database, returning a pooled driver. A URL (from the flag,
@@ -400,8 +424,10 @@ impl DbConfig {
         if let Some(user) = self.resolved(&self.user, "PGUSER", |e| e.user.clone()) {
             config.user(user);
         }
-        if let Some(password) = self.resolved(&self.password, "PGPASSWORD", |e| e.password.clone())
-        {
+        let flag = self.password.as_ref().map(|p| p.expose().clone());
+        if let Some(password) = self.resolved(&flag, "PGPASSWORD", |e| {
+            e.password.as_ref().map(|p| p.expose().clone())
+        }) {
             config.password(password);
         }
         if let Some(dbname) = self.resolved(&self.dbname, "PGDATABASE", |e| e.database.clone()) {
@@ -523,6 +549,14 @@ impl DbConfig {
     }
 }
 
+/// `pinned` with `ssl_mode` replaced by `mode`, when there is one.
+fn with_ssl_mode(mut pinned: sc_types::Attrs, mode: Option<String>) -> sc_types::Attrs {
+    if let Some(mode) = mode {
+        pinned.insert(sc_config::SSL_MODE.to_owned(), mode.into());
+    }
+    pinned
+}
+
 /// Read an environment variable, treating empty as absent.
 fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
@@ -594,12 +628,42 @@ mod tests {
         assert!(Serving { section: None }.host_config().is_empty());
     }
 
+    /// `FELDSPAR_SSL_MODE` replaces the file's mode and keeps the rest of its
+    /// pins; unset, the file's pins stand as they are.
+    #[test]
+    fn the_ssl_mode_variable_outranks_the_file_s_mode() {
+        let section = Environment {
+            ssl_mode: Some("letsencrypt".to_owned()),
+            acme_contact_email: Some("ops@example.com".to_owned()),
+            ..Environment::default()
+        };
+        let file = Serving {
+            section: Some(&section),
+        }
+        .host_config();
+        assert_eq!(with_ssl_mode(file.clone(), None), file);
+        assert_eq!(
+            serde_json::Value::Object(with_ssl_mode(file, Some("proxy".to_owned()))),
+            serde_json::json!({
+                "ssl_mode": "proxy",
+                "acme_contact_email": "ops@example.com",
+            })
+        );
+        assert_eq!(
+            serde_json::Value::Object(with_ssl_mode(
+                sc_types::Attrs::new(),
+                Some("proxy".to_owned())
+            )),
+            serde_json::json!({ "ssl_mode": "proxy" })
+        );
+    }
+
     /// The file's `llm_provider` becomes a checked host provider: its key and
     /// endpoint as the backend's settings, a model's TOML settings as the JSON
     /// a stored model holds, and a typo refused rather than dropped.
     #[test]
     fn the_file_s_llm_provider_becomes_a_checked_host_provider() {
-        let file = config_file::ConfigFile::parse(
+        let file = sc_config_file::ConfigFile::parse(
             r#"
 [environments.production.llm_provider]
 name = "hosted"
@@ -681,7 +745,10 @@ vision = "no"
         assert_eq!(cfg.host.as_deref(), Some("db.internal"));
         assert_eq!(cfg.port.as_deref(), Some("6543"));
         assert_eq!(cfg.user.as_deref(), Some("sc"));
-        assert_eq!(cfg.password.as_deref(), Some("secret"));
+        assert_eq!(
+            cfg.password.as_ref().map(sc_error::Secret::expose_str),
+            Some("secret")
+        );
         assert_eq!(cfg.dbname.as_deref(), Some("app"));
         // Non-database flags are handed back for the server parser, in order.
         assert_eq!(rest, ["--bind", "0.0.0.0:80", "--secure-cookies"]);
@@ -724,7 +791,7 @@ vision = "no"
             host: Some("h".to_owned()),
             port: Some("6000".to_owned()),
             dbname: Some("mydb".to_owned()),
-            password: Some("secret".to_owned()),
+            password: Some("secret".into()),
             ..DbConfig::default()
         };
         // Call the parts formatter directly: whether `target()` takes the parts

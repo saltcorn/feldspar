@@ -102,6 +102,11 @@ pub const STARTUP_HISTORY_DAYS: i64 = 7;
 /// else the first by name (`sc_llm::default_llm_provider`).
 pub const DEFAULT_LLM_PROVIDER: &str = "default_llm_provider";
 
+/// Whether the admin UI's first-run onboarding (the "How do you want to build?"
+/// dialogs) has been finished or skipped. Unset until then, so the first admin
+/// to sign in is shown it once, and nobody after it is.
+pub const ONBOARDING_DONE: &str = "onboarding_done";
+
 /// Every section, in screen order.
 pub fn config_sections() -> &'static [ConfigSection] {
     static SECTIONS: OnceLock<Vec<ConfigSection>> = OnceLock::new();
@@ -114,6 +119,16 @@ pub fn config_sections() -> &'static [ConfigSection] {
             crate::localisation::localisation_section(),
         ]
     })
+}
+
+/// The sections the settings screen is not shown on this host: the TLS section
+/// while the host pins `ssl_mode = "proxy"` ([`crate::ssl::proxy_pinned`]).
+pub fn hidden_sections(catalog: &sc_catalog::Catalog) -> Vec<&'static str> {
+    if crate::ssl::proxy_pinned(catalog) {
+        vec![crate::ssl::SSL_SECTION]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Keys that are stored configuration but belong to **no settings form**.
@@ -151,6 +166,18 @@ pub fn internal_defs() -> &'static [ConfigDef] {
             ConfigDef::new(
                 FormField::new(DEFAULT_LLM_PROVIDER, sc_types::BasicType::Text)
                     .label("Default LLM provider"),
+            ),
+            ConfigDef::new(
+                FormField::new(ONBOARDING_DONE, sc_types::BasicType::Bool)
+                    .label("Onboarding finished"),
+            ),
+            ConfigDef::new(
+                FormField::new(
+                    crate::authentication::FIRST_USER_TOKEN,
+                    sc_types::BasicType::Text,
+                )
+                .label("First user token")
+                .secret(),
             ),
             // A list of provider records, each checked against
             // `oauth_provider_spec` when it is saved.
@@ -234,10 +261,13 @@ mod tests {
             BACKUP_SCHEDULE_STATUS,
             DEFAULT_LLM_PROVIDER,
             crate::authentication::OAUTH_PROVIDERS,
+            crate::authentication::FIRST_USER_TOKEN,
         ] {
             assert!(known_keys().contains(&key));
             assert!(!config_spec().iter().any(|f| f.name() == key));
         }
+        // Nothing prints the first user's token back.
+        assert!(definition(crate::authentication::FIRST_USER_TOKEN).is_some_and(|f| f.secret));
     }
 
     #[test]

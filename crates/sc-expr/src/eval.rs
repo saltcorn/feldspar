@@ -49,6 +49,8 @@ use async_trait::async_trait;
 use sc_error::Error;
 use sc_error::Result;
 use sc_query::Value;
+#[cfg(feature = "eval")]
+use sc_types::value_to_script_json;
 
 #[cfg(feature = "eval")]
 use crate::analyze::{Ambient, OpFlag};
@@ -724,7 +726,7 @@ fn build_script(call: &FormulaCall, value_mode: bool) -> Result<String> {
             .map_err(|e| Error::msg(format!("encode module call key: {e}")))?;
         consts.push_str(&format!("const {binding} = __b[{quoted}];\n"));
         if let Some(value) = call.row.get(&key) {
-            bindings.insert(key.clone(), value_to_json(value));
+            bindings.insert(key.clone(), value_to_script_json(value));
         }
         hoisted.insert(key, binding);
     }
@@ -804,14 +806,14 @@ fn binding_for(call: &FormulaCall, ident: &str) -> Result<Option<serde_json::Val
                 Some(fields) => serde_json::Value::Object(
                     fields
                         .iter()
-                        .map(|(k, v)| (k.clone(), value_to_json(v)))
+                        .map(|(k, v)| (k.clone(), value_to_script_json(v)))
                         .collect(),
                 ),
             }));
         }
     }
     if let Some(v) = call.row.get(ident) {
-        return Ok(Some(value_to_json(v)));
+        return Ok(Some(value_to_script_json(v)));
     }
     if crate::analyze::GLOBALS.contains(&ident) {
         return Ok(None);
@@ -846,93 +848,6 @@ fn flag_value(op: Operation, flag: OpFlag) -> bool {
         OpFlag::Update => op == Operation::Update,
         OpFlag::Delete => op == Operation::Delete,
         OpFlag::Write => op != Operation::Read,
-    }
-}
-
-/// A SQL [`Value`] as the JSON (hence JS) value the formula sees. The mapping
-/// is chosen to line up with the symbolic side: text-like values (UUIDs,
-/// dates, times) become strings — which is also what their SQL comparisons
-/// compare — and numbers become JS numbers.
-///
-/// Lossy corners, deliberate and documented: an `i64` beyond 2^53 loses
-/// precision (JS numbers are f64); a non-finite float and a `Decimal` beyond
-/// f64 become `null`; `Bytes` has no JS literal and becomes `null` (a formula
-/// over a bytea column is not a supported thing).
-pub fn value_to_json(v: &Value) -> serde_json::Value {
-    use serde_json::Value as J;
-    match v {
-        Value::Null => J::Null,
-        Value::Bool(b) => J::Bool(*b),
-        Value::Int(i) => J::Number((*i).into()),
-        Value::Float(f) => serde_json::Number::from_f64(*f).map_or(J::Null, J::Number),
-        Value::Text(s) => J::String(s.clone()),
-        Value::Uuid(u) => J::String(u.to_string()),
-        Value::Date(d) => J::String(d.to_string()),
-        Value::Time(t) => J::String(t.to_string()),
-        Value::Timestamp(ts) => J::String(ts.to_rfc3339()),
-        Value::Decimal(d) => {
-            let f: f64 = (*d).try_into().unwrap_or(f64::NAN);
-            serde_json::Number::from_f64(f).map_or(J::Null, J::Number)
-        }
-        Value::Json(j) => j.clone(),
-        Value::Bytes(_) => J::Null,
-    }
-}
-
-/// A JSON value read as the [`Value`] its own shape implies — the inverse of
-/// [`value_to_json`] as far as JSON can express it (a timestamp that became a
-/// string comes back as text).
-///
-/// This is for values that arrive as JSON with **no column behind them**: a
-/// trigger event's row, the caller object, an action's computed setting. Where a
-/// column *is* known the caller should coerce to its type instead (`sc-api`'s
-/// `json_to_value`), which recovers the uuid, timestamp and decimal this leaves
-/// as text — the distinction matters only for SQL translation, since a reified
-/// evaluation renders both back through [`value_to_json`] to the same JS value.
-pub fn value_from_json(json: &serde_json::Value) -> Value {
-    use serde_json::Value as J;
-    match json {
-        J::Null => Value::Null,
-        J::Bool(b) => Value::Bool(*b),
-        J::Number(n) => match (n.as_i64(), n.as_f64()) {
-            (Some(i), _) => Value::Int(i),
-            (None, Some(f)) => Value::Float(f),
-            // Not representable as either: `serde_json` cannot produce this, and
-            // carrying the digits as text loses nothing that was there.
-            (None, None) => Value::Text(n.to_string()),
-        },
-        J::String(s) => Value::Text(s.clone()),
-        // A composite has one faithful `Value`, and it is the JSON itself.
-        J::Array(_) | J::Object(_) => Value::Json(json.clone()),
-    }
-}
-
-#[cfg(test)]
-mod json_tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn a_typeless_json_value_reads_as_its_own_shape_and_round_trips() {
-        assert_eq!(value_from_json(&json!(null)), Value::Null);
-        assert_eq!(value_from_json(&json!(false)), Value::Bool(false));
-        assert_eq!(value_from_json(&json!(4)), Value::Int(4));
-        assert_eq!(value_from_json(&json!(1.5)), Value::Float(1.5));
-        assert_eq!(value_from_json(&json!("x")), Value::Text("x".into()));
-        let obj = json!({ "a": [1, 2] });
-        assert_eq!(value_from_json(&obj), Value::Json(obj.clone()));
-        // The pair agrees in both directions for everything JSON can say, which
-        // is what lets an event's row be bound without a column to type it.
-        for value in [
-            json!(null),
-            json!(true),
-            json!(2),
-            json!(1.5),
-            json!("s"),
-            obj,
-        ] {
-            assert_eq!(value_to_json(&value_from_json(&value)), value);
-        }
     }
 }
 

@@ -118,9 +118,10 @@ pub async fn publish(
     };
     if store.is_git_repo() {
         let ignore = format!("{runs_dir}/.gitignore");
-        if store.stat(&ignore).await?.is_none() {
+        let at = sc_files::StorePath::parse(&ignore)?;
+        if store.stat(&at).await?.is_none() {
             store
-                .write(&ignore, Bytes::from_static(b"*\n"))
+                .write(&at, Bytes::from_static(b"*\n"))
                 .await
                 .with_context(|| {
                     format!("writing {ignore} in the file store `{}`", store.name())
@@ -144,7 +145,7 @@ pub async fn publish(
         };
         let path = format!("{target}/{name}");
         store
-            .write(&path, Bytes::from(bytes))
+            .write(&sc_files::StorePath::parse(&path)?, Bytes::from(bytes))
             .await
             .with_context(|| format!("publishing {path} to the file store `{}`", store.name()))?;
     }
@@ -191,7 +192,7 @@ pub async fn read_published(store: &dyn FileStore, path: &str) -> Result<Vec<(St
     let mut dirs = vec![root.to_owned()];
     while let Some(dir) = dirs.pop() {
         let entries = store
-            .list(&dir)
+            .list(&sc_files::StorePath::parse(&dir)?)
             .await
             .with_context(|| format!("listing {dir} in the file store `{}`", store.name()))?;
         for entry in entries {
@@ -200,7 +201,7 @@ pub async fn read_published(store: &dyn FileStore, path: &str) -> Result<Vec<(St
                 continue;
             }
             let bytes = store
-                .read(&entry.path)
+                .read(&sc_files::StorePath::parse(&entry.path)?)
                 .await
                 .with_context(|| format!("reading {} from `{}`", entry.path, store.name()))?;
             let relative = entry

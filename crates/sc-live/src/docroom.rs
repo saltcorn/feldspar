@@ -25,7 +25,7 @@
 //! holds the database), merged into the room — so whatever another process
 //! persisted meanwhile is kept, and relayed to this room's members — and the
 //! merged state is written with the text mirror through the row layer as a
-//! system write ([`sc_api::rows::write_document_in`]), so update triggers and
+//! system write ([`sc_access::rows::write_document_in`]), so update triggers and
 //! `table_changes` streams see it. CRDT merges are idempotent and commutative,
 //! which is why two processes persisting one document lose nothing. A persist
 //! is **skipped** when nothing changed since the last one, so a room closing
@@ -44,8 +44,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
-use sc_api::rows;
-use sc_catalog::{Catalog, SharedTx};
+use sc_access::rows;
+use sc_catalog::{Catalog, SharedTx, Unchecked};
+
+/// The authority a room persists its merged state under, after the join's own
+/// access check (the system-authority inventory lists it).
+const PERSIST: Unchecked<'static> = Unchecked::system("live document: persist merged state");
 use sc_error::{Error, Result};
 use sc_query::{Expr, Projection, Select, Source, Statement, Value};
 use sc_stream::{DocSettings, RunningStream, StreamId};
@@ -355,7 +359,15 @@ impl DocRoom {
     /// is not there is an error: there is nothing to edit.
     async fn read_stored(&self) -> Result<Option<Vec<u8>>> {
         let table = self.catalog.require(&self.target.table)?;
-        match rows::read_field(&self.catalog, &table, &self.target.field, &self.target.key).await? {
+        match rows::read_field(
+            &self.catalog,
+            &table,
+            &self.target.field,
+            &self.target.key,
+            Unchecked::system("live document: load the stored state"),
+        )
+        .await?
+        {
             Value::Bytes(bytes) => Ok(Some(bytes)),
             Value::Null => Ok(None),
             other => Err(Error::invalid(format!(
@@ -484,7 +496,7 @@ impl DocRoom {
                 .columns(vec![Projection::expr(Expr::col(self.target.field.clone()))])
                 .filter(filter)
                 .for_update();
-            let found = tx.run(None, &Statement::from(select)).await?;
+            let found = tx.run(PERSIST, &Statement::from(select)).await?;
             let row = found.first().ok_or_else(|| {
                 Error::not_found(format!(
                     "the row `{}` of `{}` holding this document is gone",
@@ -524,23 +536,16 @@ impl DocRoom {
                 &self.target.field,
                 &state,
                 mirror.as_ref().map(|(c, t)| (c.as_str(), t.as_str())),
+                PERSIST,
                 &rows::Executor::Transaction(tx.clone()),
             )
             .await?;
             Ok::<_, Error>(())
         }
         .await;
-        match outcome {
-            Ok(()) => {
-                tx.commit().await?;
-                self.persisted.store(version, Ordering::Release);
-                Ok(true)
-            }
-            Err(e) => {
-                let _ = tx.rollback().await;
-                Err(e)
-            }
-        }
+        tx.finish(outcome).await?;
+        self.persisted.store(version, Ordering::Release);
+        Ok(true)
     }
 
     /// A member left: close the room — persisting first — when it was the last.

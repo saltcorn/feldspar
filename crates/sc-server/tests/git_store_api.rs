@@ -18,12 +18,11 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
-use sc_server::{AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router};
-use sc_test_harness::TestDb;
+use sc_server::{AppMounts, ServerConfig, admin_handlers, build_router};
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -101,6 +100,8 @@ impl Client {
 fn data_dir() -> &'static Path {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
+        // Never removed (it outlives every test), so a later run clears it.
+        sc_test_harness::sweep_stale_scratch("sc-git-api");
         let dir = std::env::temp_dir().join(format!("sc-git-api-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // Never the developer's real data directory: a test that cloned there
@@ -153,23 +154,7 @@ fn origin_with_a_commit(tag: &str) -> PathBuf {
 /// admin logged in.
 async fn setup() -> sc_error::Result<(Client, Arc<Catalog>, TestDb)> {
     data_dir();
-    let db = TestDb::new().await?;
-    // Neutralise any `users` table inherited from the template database before
-    // bootstrap introspects (see `file_store_admin_api.rs`).
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
@@ -242,6 +227,7 @@ async fn create_git_store(client: &mut Client, name: &str, url: &str) -> (Status
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_git_store_is_cloned_on_save_and_serves_the_repository() -> sc_error::Result<()> {
     let (mut client, catalog, _db) = setup().await?;
     let origin = origin_with_a_commit("serve");
@@ -362,7 +348,11 @@ async fn a_git_store_is_cloned_on_save_and_serves_the_repository() -> sc_error::
 
     // It is in the live registry, so the file manager reaches it with no
     // restart, and it serves what the remote had.
-    assert!(catalog.file_store("site")?.is_some());
+    assert!(
+        catalog
+            .file_store("site", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
     let (status, listing) = client
         .send(
             "POST",
@@ -643,7 +633,11 @@ async fn a_failed_clone_creates_nothing_and_the_retry_succeeds() -> sc_error::Re
         stores.as_array().unwrap().is_empty(),
         "a failed create must leave no store: {stores}"
     );
-    assert!(catalog.file_store("retried")?.is_none());
+    assert!(
+        catalog
+            .file_store("retried", sc_catalog::Unchecked::system("test"))?
+            .is_none()
+    );
 
     // So correcting the URL and pressing Create again — with the same name —
     // works, instead of colliding with the failed attempt.
@@ -652,7 +646,11 @@ async fn a_failed_clone_creates_nothing_and_the_retry_succeeds() -> sc_error::Re
         create_git_store(&mut client, "retried", &origin.to_string_lossy()).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     assert_eq!(created["connected"], json!(true));
-    assert!(catalog.file_store("retried")?.is_some());
+    assert!(
+        catalog
+            .file_store("retried", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
 
     Ok(())
 }
@@ -703,7 +701,11 @@ async fn a_clone_that_fails_on_edit_keeps_the_store_and_reports_why() -> sc_erro
         updated["error"].as_str().unwrap().contains("gone-away"),
         "{updated}"
     );
-    assert!(catalog.file_store("edited")?.is_none());
+    assert!(
+        catalog
+            .file_store("edited", sc_catalog::Unchecked::system("test"))?
+            .is_none()
+    );
 
     // And pointing it back at a real repository is the repair, with no restart.
     let (status, repaired) = client
@@ -722,7 +724,11 @@ async fn a_clone_that_fails_on_edit_keeps_the_store_and_reports_why() -> sc_erro
     assert_eq!(status, StatusCode::OK, "{repaired}");
     assert_eq!(repaired["connected"], json!(true));
     assert_eq!(repaired["error"], Value::Null);
-    assert!(catalog.file_store("edited")?.is_some());
+    assert!(
+        catalog
+            .file_store("edited", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
 
     Ok(())
 }
@@ -822,8 +828,16 @@ async fn renaming_a_git_store_keeps_its_working_tree() -> sc_error::Result<()> {
     assert_eq!(renamed["connected"], json!(true));
     // The old handle is gone from the registry; the new name serves the *same*
     // working tree.
-    assert!(catalog.file_store("before")?.is_none());
-    assert!(catalog.file_store("after")?.is_some());
+    assert!(
+        catalog
+            .file_store("before", sc_catalog::Unchecked::system("test"))?
+            .is_none()
+    );
+    assert!(
+        catalog
+            .file_store("after", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
 
     let after = operation(&mut client, &id, "status", None).await;
     assert_eq!(working_copy_line(&after), tree);
@@ -912,7 +926,11 @@ async fn a_chosen_working_copy_directory_is_used_and_then_fixed() -> sc_error::R
         !elsewhere.exists(),
         "nothing may be cloned into the new path"
     );
-    assert!(catalog.file_store("chosen")?.is_some());
+    assert!(
+        catalog
+            .file_store("chosen", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
     let report = operation(&mut client, &id, "status", None).await;
     assert_eq!(
         working_copy_line(&report)
@@ -1030,7 +1048,11 @@ async fn an_existing_checkout_is_adopted_with_no_url() -> sc_error::Result<()> {
     assert_eq!(created["connected"], json!(true));
     assert_eq!(created["is_git_repo"], json!(true));
     let id = created["id"].as_str().unwrap().to_owned();
-    assert!(catalog.file_store("adopted")?.is_some());
+    assert!(
+        catalog
+            .file_store("adopted", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
 
     // Adopted, not re-cloned: the uncommitted file is still there and is
     // reported as a change.
@@ -1125,7 +1147,11 @@ async fn a_local_store_can_be_given_a_suggested_directory() -> sc_error::Result<
     assert_eq!(status, StatusCode::CREATED, "{created}");
     assert_eq!(created["connected"], json!(true));
     assert!(Path::new(&suggested).is_dir());
-    assert!(catalog.file_store("scratch-space")?.is_some());
+    assert!(
+        catalog
+            .file_store("scratch-space", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
 
     // It is a working store: a file written through it lands in the suggested
     // directory.
@@ -1216,7 +1242,11 @@ async fn a_new_application_can_ask_for_a_new_local_store() -> sc_error::Result<(
         def.setting(sc_files::CFG_PATH),
         Some(dir.to_string_lossy().as_ref())
     );
-    assert!(catalog.file_store("notebook1")?.is_some());
+    assert!(
+        catalog
+            .file_store("notebook1", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
     assert!(dir.join("package.json").is_file(), "{created}");
 
     // An application that is refused takes its new store with it: otherwise the
@@ -1231,7 +1261,11 @@ async fn a_new_application_can_ask_for_a_new_local_store() -> sc_error::Result<(
             .await?
             .is_none()
     );
-    assert!(catalog.file_store("notebook2")?.is_none());
+    assert!(
+        catalog
+            .file_store("notebook2", sc_catalog::Unchecked::system("test"))?
+            .is_none()
+    );
     assert!(!data_dir().join("local-stores/notebook2").exists());
 
     // And the sentinel can never be a store's real name.

@@ -25,10 +25,10 @@ mod build_agent;
 mod build_app;
 #[path = "build_script.rs"]
 mod build_script;
-#[path = "build_static_deploy.rs"]
-mod build_static_deploy;
 #[path = "build_static_release.rs"]
 mod build_static_release;
+#[path = "check.rs"]
+mod check;
 #[path = "cmdstan.rs"]
 mod cmdstan;
 #[path = "config_file.rs"]
@@ -39,21 +39,29 @@ mod config_values;
 mod core_deps;
 #[path = "demo.rs"]
 mod demo;
+#[path = "docker_image.rs"]
+mod docker_image;
 #[path = "hosted_setup.rs"]
 mod hosted_setup;
 #[path = "i18n.rs"]
 mod i18n;
+#[path = "install_script.rs"]
+mod install_script;
+#[path = "install_tree.rs"]
+mod install_tree;
 #[path = "mcp_token.rs"]
 mod mcp_token;
 #[path = "repo_hygiene.rs"]
 mod repo_hygiene;
 #[path = "serve.rs"]
 mod serve;
-#[path = "setup_host.rs"]
-mod setup_host;
+#[path = "setup.rs"]
+mod setup;
 #[path = "sqlite_primary.rs"]
 mod sqlite_primary;
 #[path = "users.rs"]
 mod users;
+#[path = "version.rs"]
+mod version;
 #[path = "whale_ci.rs"]
 mod whale_ci;

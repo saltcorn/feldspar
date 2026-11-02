@@ -26,7 +26,7 @@ use std::process::Command;
 
 use sc_api::{ApiProvider, RestProvider};
 use sc_catalog::{
-    AccessRules, DataField, DataFieldKind, DbId, FieldId, FileStoreId, Table, TableId, TableSource,
+    AccessRules, DataField, DataFieldKind, DbId, FieldId, FileStoreId, Table, TableSource,
 };
 use sc_db::ColumnGenerator;
 use sc_types::{BasicType, TypeRef};
@@ -574,6 +574,60 @@ fn generated_changes_client_type_checks() -> std::io::Result<()> {
     type_check("changes", &client_ts, CHANGES_USAGE_TS)
 }
 
+/// A usage module for an application that exposes a table's changes without
+/// serving that table's row API: the change's key is a `LiveTopic`, and the
+/// client must still compile.
+const CHANGES_WITHOUT_ROW_API_USAGE_TS: &str = r#"
+import { createClient, type LiveTopic, type PostsLiveEnvelope } from "./client";
+
+export function exercise(): void {
+  const api = createClient({ baseUrl: "https://blog.example.com" });
+  api.live.posts_live
+    .subscribe(
+      {},
+      {
+        element(envelope: PostsLiveEnvelope) {
+          const key: LiveTopic = envelope.value.key;
+          void key;
+        },
+      },
+    )
+    .close();
+}
+"#;
+
+#[test]
+fn generated_changes_client_without_row_api_type_checks() -> std::io::Result<()> {
+    use sc_api::{StreamExport, StreamTopics, TypeSchema};
+
+    // `posts` is in no endpoint set: the app streams its changes but serves no
+    // row API for it (it is not in `api_tables`).
+    let streams = [StreamExport {
+        name: "posts_live".to_owned(),
+        path: "/api/live".to_owned(),
+        value: TypeSchema::json(),
+        topics: StreamTopics::Changes {
+            table: "posts".to_owned(),
+        },
+        presence: false,
+        client_publish: false,
+    }];
+    let client_ts = sc_api::generate_client_with_streams(&sc_api::EndpointSet::new(), &streams);
+    // Checked without `tsc` too, so the regression is caught where no compiler
+    // is installed: the envelope names `LiveTopic`, so the client imports it.
+    assert!(client_ts.contains("LiveChange<Record<string, unknown>, LiveTopic>"));
+    let import = client_ts
+        .lines()
+        .find(|line| line.starts_with("import {") && line.ends_with("from \"./helper\";"))
+        .expect("the client imports its helper");
+    assert!(import.contains("type LiveTopic"), "{import}");
+    type_check(
+        "changes-without-row-api",
+        &client_ts,
+        CHANGES_WITHOUT_ROW_API_USAGE_TS,
+    )
+}
+
 #[test]
 fn generated_query_parameter_client_type_checks() -> std::io::Result<()> {
     use sc_api::{Endpoint, EndpointSet, Method, PathSpec, QueryParam, TypeSchema, ValueType};
@@ -704,10 +758,12 @@ fn generated_bytes_and_uploads_client_type_checks() -> std::io::Result<()> {
 /// or by a template's values, each typed.
 const AGENTS_USAGE_TS: &str = r#"
 import {
+  agentAttachment,
   applyAgentEvent,
   createClient,
   userMessage,
   type AgentAnswer,
+  type AgentAttachment,
   type AgentMessage,
   type AgentRunSummary,
 } from "./client";
@@ -727,6 +783,18 @@ export async function exercise(): Promise<void> {
     const parts: number = again.messages.flatMap((m) => m.parts).length;
     await api.agents.helpdesk.runs.rename(run, `Order ${parts}`);
     await api.agents.helpdesk.runs.delete(run);
+  }
+  // Files go with a message: an image and a document, asked about.
+  const files: AgentAttachment[] = [
+    await agentAttachment(new File(["Ship on Friday."], "plan.md", { type: "text/markdown" })),
+    { name: "shot.png", media_type: "image/png", data: "iVBORw==" },
+  ];
+  messages = [...messages, userMessage("What does the plan say?", files)];
+  for await (const event of api.agents.helpdesk.chat("What does the plan say?", { run, attachments: files })) {
+    messages = applyAgentEvent(messages, event);
+  }
+  for (const part of messages.flatMap((m) => m.parts)) {
+    if (part.type === "attachment") console.log(part.name, part.size, part.url ?? "");
   }
   const answer: AgentAnswer = await api.agents.helpdesk.prompt("Tidy my tasks");
   console.log(history.length, answer.answer, messages.length);
@@ -856,7 +924,7 @@ fn generated_offline_client_type_checks() -> std::io::Result<()> {
 fn blog_tables() -> Vec<Table> {
     let mut author = DataField::plain("author", TypeRef::Basic(BasicType::Int)).required();
     author.kind = DataFieldKind::Key {
-        target_table: TableId("authors".to_owned()),
+        target_table: "authors".to_owned(),
         target_field: FieldId("id".to_owned()),
         summary_field: None,
     };
@@ -907,7 +975,6 @@ fn key_column(name: &str) -> DataField {
 
 fn table(name: &str, fields: Vec<DataField>) -> Table {
     Table {
-        id: TableId(name.to_owned()),
         name: name.to_owned(),
         database: DbId::primary(),
         source: TableSource::Database,

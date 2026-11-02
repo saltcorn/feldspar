@@ -2,14 +2,14 @@
 //! every pull and upload.
 
 use sc_auth::User;
-use sc_catalog::{Catalog, SYNC_CLIENTS_TABLE, Table};
+use sc_catalog::{Catalog, SYNC_CLIENTS_TABLE, Table, Unchecked};
 use sc_error::{Error, Result};
 use sc_query::{Expr, Value};
 use serde_json::{Value as Json, json};
 use uuid::Uuid;
 
-use crate::rows::{self, RowQuery};
 use crate::schema::{StructField, TypeSchema};
+use sc_access::rows::{self, RowQuery};
 
 /// `POST {mount}/sync/register`'s body: an optional name for the device, so an
 /// admin can tell a user's phone from their tablet.
@@ -44,10 +44,11 @@ pub(crate) async fn register(
         &devices,
         &json!({
             "id": id.to_string(),
-            "user_id": user.id.to_string(),
+            "user_id": user.id().to_string(),
             "application": application.to_string(),
             "name": name,
         }),
+        Unchecked::system("sync: register the caller's device"),
     )
     .await?;
     Ok(json!({ "client_id": id.to_string() }))
@@ -76,17 +77,21 @@ pub(super) async fn check_device(
         filter: Some(
             Expr::col("id")
                 .eq(Expr::lit(Value::Uuid(id)))
-                .and(Expr::col("user_id").eq(Expr::lit(Value::Uuid(user.id))))
+                .and(Expr::col("user_id").eq(Expr::lit(Value::Uuid(user.id()))))
                 .and(Expr::col("application").eq(Expr::lit(Value::Uuid(application)))),
         ),
         limit: Some(1),
         ..RowQuery::new()
     };
-    let Some(device) = rows::list_row_values(cat, devices, &query, None)
-        .await?
-        .into_iter()
-        .next()
-    else {
+    let Some(device) = rows::list_row_values(
+        cat,
+        devices,
+        &query,
+        Unchecked::system("sync: look up the caller's device"),
+    )
+    .await?
+    .into_iter()
+    .next() else {
         return Err(Error::not_found(
             "unknown device: register it with `sync/register` first",
         ));

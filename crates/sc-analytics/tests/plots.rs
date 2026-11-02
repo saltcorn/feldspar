@@ -20,7 +20,7 @@ use sc_analytics::plot::{
     AggregateFn, Bin, Channel, DataRef, FieldDef, Fold, Layer, Mark, PlotData, PlotSpec, Rendered,
     Scale, ScaleKind, SmoothMethod, Stat, render_plot,
 };
-use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, TableId};
+use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId};
 use sc_dataset::{Base, DatasetDef, DatasetId, Op, Operation, save_dataset};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -49,7 +49,7 @@ pub(crate) async fn fill(cat: &Catalog) -> Result<DatasetId> {
         .await?;
     let mut hood = column("neighbourhood", BasicType::Int);
     hood.kind = DataFieldKind::Key {
-        target_table: TableId("neighbourhoods".into()),
+        target_table: "neighbourhoods".into(),
         target_field: FieldId("id".into()),
         summary_field: None,
     };
@@ -75,7 +75,7 @@ pub(crate) async fn fill(cat: &Catalog) -> Result<DatasetId> {
         returning: Vec::new(),
     };
     let run = |i: Insert| async move {
-        cat.primary()
+        cat.primary(sc_catalog::Unchecked::system("test"))
             .query(&Statement::from(i))
             .await?
             .try_collect()

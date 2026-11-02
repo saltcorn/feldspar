@@ -4,15 +4,17 @@
 //! changes, the cleanup job, and `seq` as sync's watermark.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
+use sc_access::rows;
 use sc_api::history::HistoryReader;
+use sc_api::schema_edit;
 use sc_api::undo::{Reverser, UndoOutcome};
-use sc_api::{rows, schema_edit};
 use sc_auth::User;
 use sc_catalog::retention::clean_change_log;
 use sc_catalog::{
-    CallerContext, Catalog, Changeset, ChangesetSource, SchemaStep, SharedTx, bootstrap_change_log,
+    Catalog, Changeset, ChangesetSource, Principal, SchemaStep, SharedTx, bootstrap_change_log,
     bootstrap_field_meta, bootstrap_table_meta, changed_keys, changeset, sync_watermark,
 };
 use sc_db::DatabaseDriver;
@@ -72,8 +74,11 @@ async fn edit(catalog: &Catalog, op: schema_edit::Operation) -> Result<()> {
 
 async fn rows_of(catalog: &Catalog, sql: &str) -> Result<Vec<sc_db::Row>> {
     catalog
-        .primary()
-        .query(&Statement::raw(sql, Vec::new()))
+        .primary(sc_catalog::Unchecked::system("test"))
+        .query(&Statement::raw(
+            sc_query::TrustedSql::composed(sql),
+            Vec::new(),
+        ))
         .await?
         .try_collect()
         .await
@@ -117,11 +122,11 @@ async fn entries(catalog: &Catalog) -> Result<Vec<(String, String, String, Json,
 }
 
 fn admin() -> User {
-    User::new(ADMIN.parse().unwrap(), 1).unwrap()
+    User::new(ADMIN.parse().unwrap(), Role::ADMIN)
 }
 
-fn caller() -> CallerContext {
-    CallerContext::new(1, Some(json!({ "id": ADMIN, "role": 1 })))
+fn caller() -> Principal {
+    Principal::new(Role::ADMIN, Some(json!({ "id": ADMIN, "role": 1 })))
 }
 
 fn request() -> Arc<Changeset> {
@@ -131,7 +136,10 @@ fn request() -> Arc<Changeset> {
 /// Statements run in one transaction under `changeset`'s settings, the way
 /// `set_caller_context` passes them.
 async fn in_changeset(catalog: &Catalog, changeset: &Changeset, sql: &str) -> Result<()> {
-    let mut tx = catalog.primary().begin().await?;
+    let mut tx = catalog
+        .primary(sc_catalog::Unchecked::system("test"))
+        .begin()
+        .await?;
     tx.set_local("sc.role", "1").await?;
     tx.set_local("sc.user", "").await?;
     tx.set_local("sc.changeset", &changeset.guc_value(None))
@@ -151,27 +159,27 @@ async fn writes_are_merged_into_one_entry_per_row_per_changeset() -> Result<()> 
     // to another table: one entry per row.
     let first = request();
     changeset::scope(first.clone(), async {
-        rows::update_row_ctx(
+        rows::update_row(
             &catalog,
             &todo,
             "1",
             &json!({ "title": "oat milk" }),
-            Some(&caller()),
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
         )
         .await?;
-        rows::update_row_ctx(
+        rows::update_row(
             &catalog,
             &todo,
             "1",
             &json!({ "done": true }),
-            Some(&caller()),
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
         )
         .await?;
-        rows::create_row_ctx(
+        rows::create_row(
             &catalog,
             &audit,
             &json!({ "what": "done" }),
-            Some(&caller()),
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
         )
         .await
     })
@@ -218,20 +226,20 @@ async fn writes_are_merged_into_one_entry_per_row_per_changeset() -> Result<()> 
     // JSON column as JSON and the boolean as a boolean.
     let second = request();
     changeset::scope(second.clone(), async {
-        let row = rows::create_row_ctx(
+        let row = rows::create_row(
             &catalog,
             &todo,
             &json!({ "title": "bread", "meta": { "aisle": [3, 4] } }),
-            Some(&caller()),
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
         )
         .await?;
         let id = row["id"].to_string();
-        rows::update_row_ctx(
+        rows::update_row(
             &catalog,
             &todo,
             &id,
             &json!({ "title": "rye" }),
-            Some(&caller()),
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
         )
         .await
     })
@@ -258,12 +266,12 @@ async fn writes_are_merged_into_one_entry_per_row_per_changeset() -> Result<()> 
     assert_eq!(entries(&catalog).await?.len(), before);
 
     // An update that changes nothing records nothing.
-    rows::update_row_ctx(
+    rows::update_row(
         &catalog,
         &todo,
         "1",
         &json!({ "title": "oat milk" }),
-        Some(&caller()),
+        sc_catalog::Unchecked::vouched(&caller(), "test"),
     )
     .await?;
     assert_eq!(entries(&catalog).await?.len(), before);
@@ -339,19 +347,19 @@ async fn history_is_read_restored_and_undone() -> Result<()> {
 
     let edit_one = request();
     changeset::scope(edit_one.clone(), async {
-        rows::update_row_ctx(
+        rows::update_row(
             &catalog,
             &todo,
             "1",
             &json!({ "title": "oat milk" }),
-            Some(&caller()),
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
         )
         .await?;
-        rows::create_row_ctx(
+        rows::create_row(
             &catalog,
             &audit,
             &json!({ "what": "renamed" }),
-            Some(&caller()),
+            sc_catalog::Unchecked::vouched(&caller(), "test"),
         )
         .await
     })
@@ -382,7 +390,13 @@ async fn history_is_read_restored_and_undone() -> Result<()> {
     assert!(rows_of(&catalog, "SELECT * FROM audit").await?.is_empty());
 
     // Delete, list as deleted, restore.
-    rows::delete_row_ctx(&catalog, &todo, "1", Some(&caller())).await?;
+    rows::delete_row(
+        &catalog,
+        &todo,
+        "1",
+        sc_catalog::Unchecked::vouched(&caller(), "test"),
+    )
+    .await?;
     let deleted = reader.deleted_rows("todo", None, 0).await?;
     assert_eq!(deleted[0]["key"], json!("1"));
     assert_eq!(deleted[0]["row"]["title"], json!("milk"));
@@ -410,12 +424,12 @@ async fn the_triggers_follow_the_tables_columns() -> Result<()> {
         },
     )
     .await?;
-    rows::update_row_ctx(
+    rows::update_row(
         &catalog,
         &todo(),
         "1",
         &json!({ "note": "2%" }),
-        Some(&caller()),
+        sc_catalog::Unchecked::vouched(&caller(), "test"),
     )
     .await?;
     assert_eq!(entries(&catalog).await?[0].4, json!({ "note": "2%" }));
@@ -435,12 +449,12 @@ async fn the_triggers_follow_the_tables_columns() -> Result<()> {
     )
     .await?;
     assert_eq!(entries(&catalog).await?[0].4, json!({ "remark": "2%" }));
-    rows::update_row_ctx(
+    rows::update_row(
         &catalog,
         &todo(),
         "1",
         &json!({ "remark": "whole" }),
-        Some(&caller()),
+        sc_catalog::Unchecked::vouched(&caller(), "test"),
     )
     .await?;
     assert_eq!(
@@ -458,12 +472,12 @@ async fn the_triggers_follow_the_tables_columns() -> Result<()> {
         },
     )
     .await?;
-    rows::update_row_ctx(
+    rows::update_row(
         &catalog,
         &todo(),
         "1",
         &json!({ "title": "cream" }),
-        Some(&caller()),
+        sc_catalog::Unchecked::vouched(&caller(), "test"),
     )
     .await?;
     assert_eq!(entries(&catalog).await?[2].4, json!({ "title": "cream" }));
@@ -557,12 +571,12 @@ async fn a_renamed_table_keeps_its_history() -> Result<()> {
         ]
     );
 
-    rows::update_row_ctx(
+    rows::update_row(
         &catalog,
         &tasks,
         "1",
         &json!({ "title": "bread" }),
-        Some(&caller()),
+        sc_catalog::Unchecked::vouched(&caller(), "test"),
     )
     .await?;
     let tables: Vec<String> = entries(&catalog).await?.into_iter().map(|e| e.0).collect();

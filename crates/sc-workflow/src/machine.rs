@@ -58,6 +58,7 @@
 //! loop means "come back for the next item" and `Next::End` outside one means
 //! "the run is over". Which it is, is a question the stack answers.
 
+use sc_types::Role;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -149,7 +150,7 @@ pub struct PendingForm {
     pub assign_to: String,
     /// The role floor for answering; `None` is admin-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min_role: Option<u8>,
+    pub min_role: Option<Role>,
 }
 
 /// How a run ended.
@@ -1351,7 +1352,7 @@ mod tests {
                 StepKind::UserForm {
                     fields: vec![FieldDecl::new("ok", "bool").required()],
                     assign_to: "approval".to_owned(),
-                    min_role: Some(40),
+                    min_role: Some(Role::of(40)),
                     timeout: None,
                 },
             ),
@@ -2016,7 +2017,7 @@ mod tests {
                         FieldDecl::new("note", "text"),
                     ],
                     assign_to: "approval".to_owned(),
-                    min_role: Some(40),
+                    min_role: Some(Role::of(40)),
                     timeout: None,
                 },
             )
@@ -2036,7 +2037,7 @@ mod tests {
         // No clock will make this runnable, which is what a NULL `wake_at` means.
         assert_eq!(until, None);
         assert_eq!(form.assign_to, "approval");
-        assert_eq!(form.min_role, Some(40));
+        assert_eq!(form.min_role, Some(Role::of(40)));
         assert_eq!(form.fields.len(), 2);
         assert_eq!(run.pending_form(), Some(&form));
 

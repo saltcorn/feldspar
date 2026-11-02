@@ -19,7 +19,7 @@ JavaScript worker the server already has, so there is no `node` process beside t
 That npm has to be **9.3.0 or newer**, which `apt install npm` on Debian or Ubuntu is not:
 their package is 9.2.0, and an npm that old fails every install here with `Invalid comparator:
 file:…`. The tab says so too, with the two version numbers; install Node from NodeSource (as
-`scripts/setup-host.sh` does) or upgrade npm alone with `sudo npm install -g npm@latest`.
+`feldspar setup` does) or upgrade npm alone with `sudo npm install -g npm@latest`.
 
 ## What a module is
 

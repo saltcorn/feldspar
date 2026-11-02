@@ -58,8 +58,11 @@ import Alert from "react-bootstrap/Alert";
 import { api, errorMessage } from "../api";
 import type { GetRunResponse, ListRunsResponse } from "../client";
 import {
+  ATTACHMENT_ACCEPT,
   ChatSession,
+  MAX_ATTACHMENTS,
   PANE_WIDTHS,
+  attachmentView,
   agentChatUrl,
   compactionLabel,
   conclusionLabel,
@@ -68,8 +71,11 @@ import {
   groupTranscript,
   previewPaneOf,
   resolvePaneUrl,
+  readAttachment,
   splitCodeBlocks,
   transcriptFromRun,
+  type Attachment,
+  type AttachmentView,
   type ChatState,
   type ComposerControl,
   type Conclusion,
@@ -98,12 +104,14 @@ import {
   IconDeviceDesktop,
   IconDeviceMobile,
   IconDeviceTablet,
+  IconFile,
   IconLayoutColumns,
   IconLayoutSidebar,
   IconMessagePlus,
   IconMinus,
   IconPictureInPicture,
   IconPlayerStop,
+  IconPlus,
   IconRefresh,
   IconRobot,
   IconSparkles,
@@ -188,6 +196,8 @@ export function AgentChat({
   const [viewing, setViewing] = useState<{ run: RunItem; entries: Entry[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState(initial?.draft ?? "");
+  // The files attached to the message being written, sent with it.
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   // The rail starts open where there is room for it beside the transcript, and
   // shut where it would cover it (below Tabler's `lg`, it is a drawer; in a
   // window there is no room for it at all until it goes full screen).
@@ -312,9 +322,33 @@ export function AgentChat({
 
   const send = () => {
     const text = draft;
+    const attached = attachments;
     setDraft("");
+    setAttachments([]);
     following.current = true;
-    session.current?.send(text);
+    session.current?.send(text, attached);
+  };
+
+  /** Read what was picked, dropped or pasted, attaching what can be and
+   * saying, by name, why the rest cannot. */
+  const attach = async (files: File[]) => {
+    const read: Attachment[] = [];
+    const refused: string[] = [];
+    for (const file of files) {
+      try {
+        read.push(await readAttachment(file));
+      } catch (err) {
+        refused.push(errorMessage(err, `${file.name}: could not be read`));
+      }
+    }
+    setAttachments((now) => {
+      const room = MAX_ATTACHMENTS - now.length;
+      if (read.length > room) {
+        refused.push(t("A message may carry at most {n} attachments.", { n: MAX_ATTACHMENTS }));
+      }
+      return [...now, ...read.slice(0, Math.max(room, 0))];
+    });
+    setError(refused.length > 0 ? refused.join(" ") : null);
   };
 
   const openRun = async (run: RunItem) => {
@@ -534,6 +568,9 @@ export function AgentChat({
             ) : (
               <Composer
                 draft={draft}
+                attachments={attachments}
+                onAttach={(files) => void attach(files)}
+                onDetach={(index) => setAttachments((now) => now.filter((_, i) => i !== index))}
                 running={chat.running}
                 controls={chat.controls}
                 values={chat.controlValues}
@@ -918,10 +955,15 @@ function PastConversationBar({
   );
 }
 
-/** The entry box: the text, and under it the toolbar — a trait's controls on
- * the left, send (or stop) on the right, in the same place either way. */
+/** The entry box: the files attached so far, the text, and under it the
+ * toolbar — the attach button and a trait's controls on the left, send (or
+ * stop) on the right, in the same place either way. A file can also be
+ * dropped on the box or pasted into it. */
 function Composer({
   draft,
+  attachments,
+  onAttach,
+  onDetach,
   running,
   controls,
   values,
@@ -932,6 +974,9 @@ function Composer({
   onAbort,
 }: {
   draft: string;
+  attachments: Attachment[];
+  onAttach: (files: File[]) => void;
+  onDetach: (index: number) => void;
   running: boolean;
   controls: ComposerControl[];
   values: Record<string, ControlValue>;
@@ -943,6 +988,9 @@ function Composer({
 }) {
   const { t } = useT();
   const box = useRef<HTMLTextAreaElement | null>(null);
+  const picker = useRef<HTMLInputElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const empty = draft.trim() === "" && attachments.length === 0;
 
   // Grow with what is typed, up to the height `admin.css` caps it at — a
   // three-line box that scrolls hides the beginning of a long instruction,
@@ -956,12 +1004,35 @@ function Composer({
 
   return (
     <form
-      className="chat-composer"
+      className={`chat-composer${dragging ? " chat-composer-drop" : ""}`}
       onSubmit={(e) => {
         e.preventDefault();
-        onSend();
+        if (!empty) onSend();
+      }}
+      onDragOver={(e) => {
+        if (running || !e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        setDragging(false);
+        if (running || e.dataTransfer.files.length === 0) return;
+        e.preventDefault();
+        onAttach(Array.from(e.dataTransfer.files));
       }}
     >
+      {attachments.length > 0 && (
+        <div className="chat-attachments">
+          {attachments.map((attachment, index) => (
+            <AttachmentChip
+              key={`${index}-${attachment.name}`}
+              attachment={attachmentView(attachment)}
+              onRemove={running ? undefined : () => onDetach(index)}
+            />
+          ))}
+        </div>
+      )}
       <textarea
         ref={box}
         rows={1}
@@ -970,16 +1041,46 @@ function Composer({
         placeholder={running ? "Waiting for the agent…" : "Ask the agent…"}
         disabled={running}
         onChange={(e) => onDraft(e.target.value)}
+        // A pasted screenshot is attached; pasted text is just text.
+        onPaste={(e) => {
+          const files = Array.from(e.clipboardData.files);
+          if (files.length === 0) return;
+          e.preventDefault();
+          onAttach(files);
+        }}
         // Enter sends, Shift+Enter is a newline — the convention every chat box
         // in the world has taught.
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
-            onSend();
+            if (!empty) onSend();
           }
         }}
       />
       <div className="chat-composer-bar">
+        <button
+          type="button"
+          className="chat-attach"
+          aria-label={t("Attach files")}
+          title={t("Attach an image or a text document")}
+          disabled={running || attachments.length >= MAX_ATTACHMENTS}
+          onClick={() => picker.current?.click()}
+        >
+          <IconPlus className="icon-2" />
+        </button>
+        <input
+          ref={picker}
+          type="file"
+          multiple
+          hidden
+          accept={ATTACHMENT_ACCEPT}
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            // Cleared, so picking the same file again is a change.
+            e.target.value = "";
+            if (files.length > 0) onAttach(files);
+          }}
+        />
         <div className="chat-composer-controls">
           {controls.map((control) => (
             <ComposerControlView
@@ -1011,13 +1112,54 @@ function Composer({
             className="chat-send"
             aria-label={t("Send")}
             title={t("Send")}
-            disabled={draft.trim() === ""}
+            disabled={empty}
           >
             <IconArrowUp className="icon-2" />
           </button>
         )}
       </div>
     </form>
+  );
+}
+
+/** An attached file: an image's thumbnail, or a document's name and size, with
+ * a remove button while it is still in the composer. */
+function AttachmentChip({
+  attachment,
+  onRemove,
+}: {
+  attachment: AttachmentView;
+  onRemove?: () => void;
+}) {
+  const { t } = useT();
+  const size =
+    attachment.size < 1024
+      ? `${attachment.size} B`
+      : attachment.size < 1024 * 1024
+        ? `${Math.round(attachment.size / 1024)} KB`
+        : `${(attachment.size / (1024 * 1024)).toFixed(1)} MB`;
+  return (
+    <span className="chat-attachment" title={`${attachment.name} · ${size}`}>
+      {attachment.url ? (
+        <img src={attachment.url} alt={attachment.name} />
+      ) : (
+        <>
+          <IconFile className="icon-2 text-secondary" />
+          <span className="chat-attachment-name">{attachment.name}</span>
+          <span className="chat-attachment-size">{size}</span>
+        </>
+      )}
+      {onRemove && (
+        <button
+          type="button"
+          className="chat-attachment-remove"
+          aria-label={t("Remove {name}", { name: attachment.name })}
+          onClick={onRemove}
+        >
+          <IconX className="icon-1" />
+        </button>
+      )}
+    </span>
   );
 }
 
@@ -1312,7 +1454,14 @@ function TranscriptEntry({ entry }: { entry: Entry }) {
   if (entry.kind === "user") {
     return (
       <div className="chat-turn chat-turn-user">
-        <div className="chat-bubble">{entry.text}</div>
+        {entry.attachments && entry.attachments.length > 0 && (
+          <div className="chat-attachments chat-attachments-sent">
+            {entry.attachments.map((attachment, index) => (
+              <AttachmentChip key={`${index}-${attachment.name}`} attachment={attachment} />
+            ))}
+          </div>
+        )}
+        {entry.text !== "" && <div className="chat-bubble">{entry.text}</div>}
       </div>
     );
   }

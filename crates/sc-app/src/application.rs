@@ -16,11 +16,11 @@
 //! and the human-facing key that must be unique is its
 //! [`subdomain`](Application::subdomain), which is what routing dispatches on.
 
-use std::collections::BTreeMap;
-
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC};
-use sc_catalog::{Attrs, FileStoreId, TableId};
+use sc_catalog::FileStoreId;
+use sc_types::Attrs;
+use sc_types::Role;
 use serde_json::Value as Json;
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use crate::exposed_agents::AgentExposure;
@@ -102,9 +102,8 @@ impl FrameworkRef {
 /// endpoint at a differently-named action; referring by name breaks the reference
 /// visibly, which is what a rename *is*.
 ///
-/// A newtype for the same reason [`TableId`] is one: an app's declaration is a
-/// list of names, and a `Vec<String>` beside `Vec<TableId>` invites passing one
-/// where the other belongs.
+/// A newtype because an app's declaration is several lists of names, and a
+/// trigger's name passed where a stream's belongs should not compile.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TriggerRef(pub String);
 
@@ -537,8 +536,22 @@ pub struct Application {
     /// Additional frameworks the app may bring in (default stance: one primary
     /// framework per app; design Open Questions §18).
     pub extra_frameworks: Vec<FrameworkRef>,
-    /// The subset of tables the app can access.
-    pub tables: Vec<TableId>,
+    /// The subset of tables the app is **connected** to: what its custom
+    /// queries, views, streams and generated schema (`schema.sql`) may name.
+    ///
+    /// Connecting a table does *not* publish it. Its generic row API — list,
+    /// read, create, update, delete over REST, and its GraphQL type — exists
+    /// only for the tables in [`api_tables`](Application::api_tables).
+    pub tables: Vec<String>,
+    /// The connected tables whose **generic row API** the app serves: an
+    /// opt-in subset of [`tables`](Application::tables), empty for a new app.
+    ///
+    /// Off by default because a generic row API is the widest door an app can
+    /// open onto a table, and most apps need only the handful of reads and
+    /// writes their pages make — which a custom query states one endpoint at a
+    /// time, running as its caller (§13.4). A table named here that is not
+    /// connected is refused on save.
+    pub api_tables: Vec<String>,
     /// The subset of file stores the app can access.
     pub file_stores: Vec<FileStoreId>,
     /// The triggers the app exposes as API endpoints (§10.2).
@@ -579,12 +592,12 @@ pub struct Application {
     /// The least privileged role that may use the application at all
     /// ([`crate::admit`]): a caller whose role number is higher is refused
     /// everything — sign-in included. `100` (public) lets everybody in.
-    pub min_role: u8,
+    pub min_role: Role,
     /// The most privileged role a caller holds **while using this
     /// application**: an admin (role 1) on an application with `max_role` 20
     /// is served as role 20 — by its endpoints, its ownership formulas, RLS and
     /// its code queries alike. `1` caps nobody.
-    pub max_role: u8,
+    pub max_role: Role,
     /// A formula over `user` (and anything else a formula may read, such as
     /// the time) that must hold for a caller to use the application at all —
     /// `user.department === "Finance"`. Empty means no condition. Evaluated
@@ -664,6 +677,7 @@ impl Application {
             framework,
             extra_frameworks: Vec::new(),
             tables: Vec::new(),
+            api_tables: Vec::new(),
             file_stores: Vec::new(),
             triggers: Vec::new(),
             streams: Vec::new(),
@@ -672,8 +686,8 @@ impl Application {
             uploads: Vec::new(),
             agents: Vec::new(),
             csp: CspPolicy::strict(),
-            min_role: ROLE_PUBLIC,
-            max_role: ROLE_ADMIN,
+            min_role: Role::PUBLIC,
+            max_role: Role::ADMIN,
             access_if: String::new(),
             attributes: Attrs::new(),
         }
@@ -692,8 +706,17 @@ impl Application {
         self
     }
 
-    /// Grant the app access to a table.
-    pub fn with_table(mut self, table: TableId) -> Application {
+    /// Connect a table **and serve its generic row API** — the REST routes and
+    /// GraphQL type over it ([`api_tables`](Application::api_tables)).
+    pub fn with_table(mut self, table: String) -> Application {
+        self.api_tables.push(table.clone());
+        self.tables.push(table);
+        self
+    }
+
+    /// Connect a table without serving its row API: custom queries, views and
+    /// streams may name it, and nothing else reaches it.
+    pub fn with_connected_table(mut self, table: String) -> Application {
         self.tables.push(table);
         self
     }
@@ -753,13 +776,13 @@ impl Application {
     }
 
     /// Set the least privileged role that may use the application.
-    pub fn min_role(mut self, role: u8) -> Application {
+    pub fn min_role(mut self, role: Role) -> Application {
         self.min_role = role;
         self
     }
 
     /// Set the most privileged role a caller holds while using the application.
-    pub fn max_role(mut self, role: u8) -> Application {
+    pub fn max_role(mut self, role: Role) -> Application {
         self.max_role = role;
         self
     }
@@ -806,8 +829,13 @@ impl Application {
     }
 
     /// Whether the app is permitted to access `table`.
-    pub fn can_access_table(&self, table: &TableId) -> bool {
-        self.tables.contains(table)
+    pub fn can_access_table(&self, table: &str) -> bool {
+        self.tables.iter().any(|t| t == table)
+    }
+
+    /// Whether the app serves `table`'s generic row API.
+    pub fn serves_table_api(&self, table: &str) -> bool {
+        self.api_tables.iter().any(|t| t == table) && self.can_access_table(table)
     }
 
     /// Whether the app is permitted to access `store`.
@@ -950,7 +978,7 @@ mod tests {
                 .with("output", "web/dist"),
         )
         .description("The company blog")
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_file_store(FileStoreId("uploads".to_owned()))
         .with_trigger(TriggerRef::new("send_digest"))
         .with_stream(StreamRef::new("boiler"))
@@ -967,8 +995,8 @@ mod tests {
         assert_eq!(app.framework.config_str("output"), Some("web/dist"));
 
         // Access is limited to the declared subset.
-        assert!(app.can_access_table(&TableId("posts".to_owned())));
-        assert!(!app.can_access_table(&TableId("users".to_owned())));
+        assert!(app.can_access_table("posts"));
+        assert!(!app.can_access_table("users"));
         assert!(app.can_access_file_store(&FileStoreId("uploads".to_owned())));
         assert!(!app.can_access_file_store(&FileStoreId("secrets".to_owned())));
         // Triggers are the same opt-in subset: one is exposed, everything else

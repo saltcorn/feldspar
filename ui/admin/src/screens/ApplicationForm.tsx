@@ -211,6 +211,10 @@ export function ApplicationForm({
   const [frameworkName, setFrameworkName] = useState("");
   const [config, setConfig] = useState<Record<string, string>>({});
   const [tables, setTables] = useState<string[]>([]);
+  // The connected tables whose generic row API the app serves: none for a new
+  // application, and each one ticked deliberately — its data is otherwise
+  // reached through custom queries.
+  const [apiTables, setApiTables] = useState<string[]>([]);
   const [fileStores, setFileStores] = useState<string[]>([]);
   const [triggers, setTriggers] = useState<string[]>([]);
   const [streams, setStreams] = useState<string[]>([]);
@@ -242,6 +246,8 @@ export function ApplicationForm({
   // one lasts — its cookie's age — in days.
   const [guestSessions, setGuestSessions] = useState(false);
   const [guestDays, setGuestDays] = useState("30");
+  // Run the application's checklists after each build (TODO-checklists C4.3).
+  const [checkAfterBuild, setCheckAfterBuild] = useState(false);
 
   // Load the frameworks (always) and, when editing, the app to prefill.
   useEffect(() => {
@@ -305,6 +311,7 @@ export function ApplicationForm({
           setFrameworkName(existing.framework.name);
           setConfig(readConfig(existing.framework.config));
           setTables(existing.tables);
+          setApiTables(existing.api_tables);
           setFileStores(existing.file_stores);
           setTriggers(existing.triggers);
           setStreams(existing.streams);
@@ -322,6 +329,7 @@ export function ApplicationForm({
           setCspSources(cspSourcesOf(existing.attributes));
           const attributes = attributesOf(existing.attributes);
           setGuestSessions(attributes.guest_sessions === true);
+          setCheckAfterBuild(attributes.check_after_build === true);
           if (typeof attributes.guest_session_days === "number") {
             setGuestDays(String(attributes.guest_session_days));
           }
@@ -408,6 +416,8 @@ export function ApplicationForm({
         },
         extra_frameworks: [],
         tables,
+        // Only connected tables can serve a row API; one unticked above drops out.
+        api_tables: apiTables.filter((t) => tables.includes(t)),
         file_stores: fileStores,
         triggers,
         streams,
@@ -427,6 +437,7 @@ export function ApplicationForm({
           csp_sources: cspSources,
           guest_sessions: guestSessions,
           guest_session_days: Number.parseInt(guestDays, 10) || 30,
+          check_after_build: checkAfterBuild,
         },
         min_role: minRole,
         max_role: maxRole,
@@ -736,7 +747,22 @@ export function ApplicationForm({
                     onChange={setTables}
                     emptyText="This server has no tables yet."
                   />
-                  <Form.Text muted><T text="The tables this app may access." /></Form.Text>
+                  <Form.Text muted>
+                    <T text="The tables this app's custom queries, views and streams may use. Connecting a table publishes no endpoint for it." />
+                  </Form.Text>
+                </Form.Group>
+                <Form.Group className="mb-3">
+                  <Form.Label htmlFor="appApiTables"><T text="Tables with a row API" /></Form.Label>
+                  <MultiSelect
+                    id="appApiTables"
+                    options={tables.map((table) => ({ value: table }))}
+                    selected={apiTables.filter((t) => tables.includes(t))}
+                    onChange={setApiTables}
+                    emptyText="Connect a table above first."
+                  />
+                  <Form.Text muted>
+                    <T text="Serve generic list, read, create, update and delete routes for these tables. Leave this empty unless the app needs generic row access: custom queries expose only what each page does." />
+                  </Form.Text>
                 </Form.Group>
               </Col>
               <Col md={6}>
@@ -1201,6 +1227,18 @@ export function ApplicationForm({
                     formula: <code>session_id === session.id</code>,
                   }}
                 />
+              </Form.Text>
+            </Form.Group>
+
+            <Form.Group className="mb-3" controlId="appCheckAfterBuild">
+              <Form.Check
+                type="switch"
+                checked={checkAfterBuild}
+                onChange={(e) => setCheckAfterBuild(e.target.checked)}
+                label={t("Run this application's checklists after each build")}
+              />
+              <Form.Text muted>
+                <T text="Every enabled checklist runs after a full build, and the build reports how they went. Mail, webhooks and payment calls made during a run are kept on the run instead of sent." />
               </Form.Text>
             </Form.Group>
 

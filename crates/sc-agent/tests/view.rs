@@ -4,6 +4,7 @@
 //! including when they come from the registry rather than the runner.
 
 use crate::common;
+use sc_types::Role;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -67,12 +68,19 @@ impl BrowserDriver for Browser {
     async fn act(&self, request: BrowserRequest<'_>) -> Result<BrowserReport> {
         self.0.push(format!("act {}", request.action.name()));
         Ok(BrowserReport {
-            url: format!("http://{}/", request.preview.host),
+            url: format!(
+                "http://{}/",
+                request
+                    .target
+                    .preview
+                    .as_ref()
+                    .map_or("", |p| p.host.as_str())
+            ),
             screenshot: Some(vec![0xff, 0xd8, 0xff]),
             ..BrowserReport::default()
         })
     }
-    fn close(&self, _run: RunId) {
+    fn close(&self, _context: uuid::Uuid) {
         self.0.push("close".to_owned());
     }
 }
@@ -110,12 +118,12 @@ impl AgentTrait for Look {
             .require_previews()?
             .mount_preview(ctx.run, "todo", Path::new("/nowhere"))
             .await?;
-        let user = User::new(uuid::Uuid::new_v4(), 1)?;
+        let user = User::new(uuid::Uuid::new_v4(), Role::ADMIN);
         let report = ctx
             .require_browser()?
             .act(BrowserRequest {
-                run: ctx.run,
-                preview: &preview,
+                context: ctx.run.0,
+                target: &preview.target(ctx.run),
                 user: Some(&user),
                 action: BrowserAction::Screenshot { full_page: false },
                 timeout: std::time::Duration::from_secs(5),

@@ -1,4 +1,10 @@
 -- ---------------------------------------------------------------------------
+-- FROZEN (2026-10-30). Database changes are now migrations, applied once on the
+-- first start of the release that brings them (`crates/sc-migrate`, technical
+-- design §5.3). Nothing is added to this file any more; it stays only to bring
+-- a database from before the migration framework up to date by hand.
+-- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
 -- Feldspar: rename the metadata tables from the `_sc_` prefix to `_fd_`.
 -- ---------------------------------------------------------------------------
 --
@@ -875,3 +881,99 @@ CREATE TABLE IF NOT EXISTS "_fd_table_edits" (
   "name" text PRIMARY KEY,
   "updated_at" timestamptz NOT NULL
 );
+
+-- TODO-checklists C1.1: checklists, every version of their steps, their runs and
+-- their pending agent proposals (2026-10-28). Bootstrap creates these too.
+-- Postgres; on SQLite use `TEXT` for uuid/jsonb/timestamptz, `INTEGER` for
+-- boolean and `REAL` for double precision.
+CREATE TABLE IF NOT EXISTS "_fd_checklists" (
+  "id" uuid NOT NULL PRIMARY KEY,
+  "name" text NOT NULL UNIQUE,
+  "description" text,
+  "application" uuid,
+  "run_as" uuid,
+  "enabled" boolean NOT NULL,
+  "mutates" boolean NOT NULL,
+  "attributes" jsonb NOT NULL,
+  "updated_at" timestamptz
+);
+CREATE TABLE IF NOT EXISTS "_fd_checklist_steps" (
+  "id" uuid NOT NULL PRIMARY KEY,
+  "checklist" uuid NOT NULL,
+  "position" double precision NOT NULL,
+  "type" text NOT NULL,
+  "params" jsonb NOT NULL,
+  "label" text,
+  "capture" text,
+  "author" text NOT NULL,
+  "accepted" boolean NOT NULL,
+  "superseded_by" uuid,
+  "deleted" boolean NOT NULL,
+  "created_at" timestamptz NOT NULL
+);
+CREATE TABLE IF NOT EXISTS "_fd_checklist_runs" (
+  "id" uuid NOT NULL PRIMARY KEY,
+  "checklist" uuid NOT NULL,
+  "checklist_name" text NOT NULL,
+  "trigger" text NOT NULL,
+  "target" text NOT NULL,
+  "status" text NOT NULL,
+  "run_as" uuid,
+  "started_at" timestamptz NOT NULL,
+  "finished_at" timestamptz NOT NULL,
+  "step_versions" jsonb NOT NULL,
+  "steps" jsonb NOT NULL,
+  "cleanup_errors" jsonb NOT NULL,
+  "message" text
+);
+CREATE TABLE IF NOT EXISTS "_fd_checklist_proposals" (
+  "id" uuid NOT NULL PRIMARY KEY,
+  "checklist" uuid NOT NULL,
+  "kind" text NOT NULL,
+  "step" uuid,
+  "change" jsonb NOT NULL,
+  "reason" text NOT NULL,
+  "author" text NOT NULL,
+  "created_at" timestamptz NOT NULL
+);
+
+-- TODO-checklists C1.5: a user's system attributes, where the check-user flag
+-- lives (`{"check_user": true}`). NULL reads as none. (Bootstrap adds it too.)
+-- On SQLite use `ADD COLUMN "attributes" TEXT` without `IF NOT EXISTS`.
+ALTER TABLE IF EXISTS "users" ADD COLUMN IF NOT EXISTS "attributes" jsonb;
+
+-- TODO-checklists C4.1: what a checklist run kept instead of sending (its
+-- outbox), as a JSON array. NULL reads as nothing. (Bootstrap adds it too.)
+-- On SQLite use `ADD COLUMN "outbox" TEXT` without `IF NOT EXISTS`.
+ALTER TABLE IF EXISTS "_fd_checklist_runs" ADD COLUMN IF NOT EXISTS "outbox" jsonb;
+
+-- The `insert_row`, `update_rows` and `delete_rows` agent traits are merged
+-- into `edit_table_rows`, whose `allow_insert` / `allow_update` /
+-- `allow_delete` checkboxes say which tools it offers. Each old entry becomes
+-- one `edit_table_rows` entry over the same table with its one box ticked (the
+-- tool names are unchanged). Idempotent: rewritten entries no longer match.
+-- (Postgres only; on SQLite re-save the agents from the admin UI instead.)
+-- Guarded so the script also runs on a database with no agents table yet.
+DO $$
+BEGIN
+  IF to_regclass('"_fd_agents"') IS NOT NULL THEN
+    UPDATE "_fd_agents" a
+    SET "traits" = (
+      SELECT jsonb_agg(
+        CASE t->>'trait'
+          WHEN 'insert_row' THEN jsonb_build_object('trait', 'edit_table_rows',
+            'config', coalesce(t->'config', '{}'::jsonb) || '{"allow_insert": true}'::jsonb)
+          WHEN 'update_rows' THEN jsonb_build_object('trait', 'edit_table_rows',
+            'config', coalesce(t->'config', '{}'::jsonb) || '{"allow_update": true}'::jsonb)
+          WHEN 'delete_rows' THEN jsonb_build_object('trait', 'edit_table_rows',
+            'config', coalesce(t->'config', '{}'::jsonb) || '{"allow_delete": true}'::jsonb)
+          ELSE t
+        END ORDER BY ord)
+      FROM jsonb_array_elements(a."traits") WITH ORDINALITY AS e(t, ord)
+    )
+    WHERE jsonb_typeof(a."traits") = 'array'
+      AND EXISTS (SELECT 1 FROM jsonb_array_elements(a."traits") t
+                  WHERE t->>'trait' IN ('insert_row', 'update_rows', 'delete_rows'));
+  END IF;
+END $$;
+

@@ -32,7 +32,7 @@ fn custom_settings(certificate: String, private_key: String) -> SslSettings {
     SslSettings {
         mode: SslMode::Custom,
         certificate,
-        private_key,
+        private_key: private_key.into(),
         ..SslSettings::default()
     }
 }

@@ -33,13 +33,10 @@ pub fn parse_list(args: &[String]) -> Result<bool> {
     }
 }
 
-pub use sc_app::app_source_location as source_location;
-pub use sc_app::store_dir as project_dir;
-
 /// One application as `app list --json` reports it.
 pub fn app_json(catalog: &Catalog, app: &Application) -> Json {
-    let located = source_location(app)
-        .and_then(|(store, dir)| project_dir(catalog, &store, &dir).map(|p| (store, dir, p)));
+    let located = sc_app::app_source_location(app)
+        .and_then(|(store, dir)| sc_app::store_dir(catalog, &store, &dir).map(|p| (store, dir, p)));
     let mut out = json!({
         "id": app.id.0,
         "name": app.name,
@@ -97,6 +94,12 @@ pub type TablesArgs = TriggersArgs;
 /// names.
 pub fn parse_tables(args: &[String]) -> Result<TablesArgs> {
     parse_names("tables", "table", args)
+}
+
+/// Parse `app api-tables`'s arguments: `app tables`'s, over the connected
+/// tables whose generic row API the application serves.
+pub fn parse_api_tables(args: &[String]) -> Result<TablesArgs> {
+    parse_names("api-tables", "table", args)
 }
 
 /// `app <section> (add|remove|list) --app SUBDOMAIN [NAME…] [--json]`.

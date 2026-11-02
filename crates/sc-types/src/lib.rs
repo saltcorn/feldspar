@@ -20,10 +20,12 @@
 //!   (§6.2). `FormField` is **also** how every configurable extension point
 //!   declares its settings (§13.3), so the admin UI renders one form for all of
 //!   them and knows about none of them.
+//! - [`ArgsExt`] — reading a tool's arguments or a body's members one at a
+//!   time, with the refusals callers rely on ([`args`]).
 //! - [`Attrs`] — the JSON bag those settings land in; a `FormField` describes one
 //!   entry of it.
 //! - [`catchall`] — the reduced display/edit path (value → text, text → value)
-//!   that stands in for the full `FieldView` trait until post-MVP.
+//!   a type uses when it has no display or editor of its own.
 //! - [`translate_spec`] — the labels of a declared spec, translated against a
 //!   request's locale before the admin API serialises them (§16.1, [`i18n`]).
 //!
@@ -34,9 +36,11 @@
 //! that was always the only part that had to. Both are re-exported from
 //! `sc-catalog`, so `sc_catalog::{Attrs, BaseField}` still resolve.
 
+pub mod args;
 mod attrs;
 mod basic;
 pub mod catchall;
+pub mod clock;
 mod field;
 pub mod geometry;
 pub mod i18n;
@@ -44,9 +48,11 @@ mod json;
 mod operation;
 mod rich;
 mod rich_types;
+mod role;
 mod type_ref;
 pub mod vector;
 
+pub use args::ArgsExt;
 pub use attrs::Attrs;
 pub use basic::BasicType;
 pub use field::{
@@ -55,10 +61,16 @@ pub use field::{
 };
 pub use geometry::GeometryKind;
 pub use i18n::{translate_field, translate_spec};
-pub use json::{json_to_value, value_to_json};
+pub use json::{
+    Spelling, json_to_value, json_to_value_as, value_from_json, value_to_analysis_json,
+    value_to_json, value_to_json_as, value_to_script_json,
+};
 pub use operation::{Operation, OperationScope};
 pub use rich::{RichType, RichTypeRef, registered_rich_types, rich_type, rich_type_config_spec};
-pub use rich_types::{COLLAB_DOC, CollabDocType, IntegerType, StringType, is_collab_doc};
+pub use rich_types::{
+    COLLAB_DOC, CollabDocType, IntegerType, StringType, is_collab_doc, parse_string_options,
+};
+pub use role::{Role, RoleOutOfRange};
 pub use type_ref::TypeRef;
 
 #[cfg(test)]

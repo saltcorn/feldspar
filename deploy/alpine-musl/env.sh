@@ -1,3 +1,4 @@
+# shellcheck shell=sh
 # Source from the repository root before a native cargo build on Alpine/musl:
 #
 #     . deploy/alpine-musl/env.sh

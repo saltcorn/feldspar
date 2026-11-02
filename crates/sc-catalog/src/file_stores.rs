@@ -28,6 +28,7 @@ use sc_db::Row;
 use sc_error::{Error, Result};
 use sc_files::{FileStoreDef, FileStoreDefId, connect_from_def, validate_file_store_config};
 use sc_query::{Assignment, Delete, Expr, Insert, Select, Source, Statement, Value};
+use sc_types::Role;
 use sc_types::{Attrs, BasicType, FormField, TypeRef};
 use serde_json::Value as Json;
 
@@ -202,6 +203,30 @@ pub async fn load_file_store_by_name(
     name: &str,
 ) -> Result<Option<FileStoreDef>> {
     load_one(catalog, Expr::col(COL_NAME).eq(Expr::lit(name))).await
+}
+
+/// The connected store `name` as `caller` reaches it, its floor read from the
+/// stored definition (`None` for a store with no definition row — an
+/// ephemeral `--file-store` — the answer every file route resolves for one).
+/// An administrator clears every floor, so for one it is not read.
+///
+/// The way a route reaches a caller's files (TODO-code-quality Q3.6): every
+/// operation of the [`CheckedStore`](sc_files::CheckedStore) checks the
+/// path-cumulative rule, where the raw store
+/// ([`Catalog::file_store`](crate::Catalog::file_store)) takes a token.
+pub async fn open_checked_store(
+    catalog: &Catalog,
+    name: &str,
+    caller: sc_files::FileCaller,
+) -> Result<sc_files::CheckedStore> {
+    let store = catalog.require_raw_file_store(name)?;
+    let floor = match caller.is_admin() {
+        true => None,
+        false => load_file_store_by_name(catalog, name)
+            .await?
+            .and_then(|def| def.min_role),
+    };
+    Ok(sc_files::CheckedStore::new(store, floor, caller))
 }
 
 /// Every stored definition, ordered by name — what the server connects at boot
@@ -569,13 +594,11 @@ fn file_store_from_row(row: &Row) -> Result<FileStoreDef> {
     // change who can reach the store.
     let min_role = match row.get(COL_MIN_ROLE) {
         Some(Value::Null) | None => None,
-        Some(Value::Int(i)) => Some(u8::try_from(*i).ok().filter(|r| (1..=100).contains(r)).ok_or_else(
-            || {
-                Error::invalid(format!(
-                    "{FILE_STORES_TABLE}.{COL_MIN_ROLE} should be a role between 1 and 100, got {i}"
-                ))
-            },
-        )?),
+        Some(Value::Int(i)) => Some(Role::try_from(*i).map_err(|_| {
+            Error::invalid(format!(
+                "{FILE_STORES_TABLE}.{COL_MIN_ROLE} should be a role between 1 and 100, got {i}"
+            ))
+        })?),
         other => return Err(bad_column(COL_MIN_ROLE, "an integer role", other)),
     };
 
@@ -622,7 +645,7 @@ fn bad_column(column: &str, expected: &str, got: Option<&Value>) -> Error {
 /// Run a statement that returns no rows of interest.
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary_driver()
         .query(&statement)
         .await?
         .try_collect()
@@ -633,7 +656,7 @@ async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
 /// Run a select and collect its rows.
 async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary_driver()
         .query(&Statement::from(select))
         .await?
         .try_collect()
@@ -740,7 +763,7 @@ mod tests {
             .unwrap();
         assert_eq!(values[idx], Value::Null);
 
-        let restricted = FileStoreDef::local("apps", "/srv/apps").min_role(40);
+        let restricted = FileStoreDef::local("apps", "/srv/apps").min_role(Role::of(40));
         assert_eq!(store_values(&restricted)[idx], Value::Int(40));
     }
 }

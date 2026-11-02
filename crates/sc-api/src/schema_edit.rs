@@ -9,12 +9,12 @@
 //! primary-key field is stored, the DDL-then-overlay sequence, the
 //! calculated-field check, the ownership validation and the RLS sync. That was fine while an
 //! HTTP request was the only way to change a schema. It stopped being fine the
-//! moment an **agent** could (§11.3's `admin_copilot`): `sc-core-traits` is
+//! moment an **agent** could (§11.3's `admin_copilot`): `sc-agent-builtins` is
 //! layer 9 and cannot name `sc-server`, so a trait that re-implemented any of it
 //! would be a second answer to "what does creating a field mean", and the two
 //! would drift within a release.
 //!
-//! So the rule lives here, beside [`rows`](crate::rows) and for the same reason:
+//! So the rule lives here, beside [`rows`](sc_access::rows) and for the same reason:
 //! the admin API and an agent are two callers of one implementation, not two
 //! implementations. The handlers are thin callers of this module exactly as the
 //! REST provider is a thin caller of `rows`.
@@ -54,15 +54,16 @@
 //! *and* an edit, and a batch that half-applied for want of a grant is the state
 //! the transaction exists to avoid.
 
+use sc_types::Attrs;
+use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sc_catalog::{
-    ATTR_OWNERSHIP_FORMULA, Attrs, Catalog, ChangeLogFeature, ConstraintKind, DataField,
-    DataFieldKind, DbId, FIELD_META_TABLE, FieldId, FieldMeta, ReprojectedApp, SchemaChanged,
-    SchemaProjection, SchemaStep, Table, TableConstraint, TableId, TableMeta,
-    create_constraint_steps, disable_rls_sql, drop_constraint_steps, enable_rls_sql,
-    formula_fields, load_field_meta_by_field, load_table_meta_by_name, save_field_meta_row,
-    save_table_meta_row, validate_formula,
+    ATTR_OWNERSHIP_FORMULA, Catalog, ChangeLogFeature, ConstraintKind, DataField, DataFieldKind,
+    DbId, FIELD_META_TABLE, FieldId, FieldMeta, ReprojectedApp, SchemaChanged, SchemaProjection,
+    SchemaStep, Table, TableConstraint, TableMeta, create_constraint_steps, disable_rls_sql,
+    drop_constraint_steps, enable_rls_sql, formula_fields, load_field_meta_by_field,
+    load_table_meta_by_name, save_field_meta_row, save_table_meta_row, validate_formula,
 };
 use sc_db::{ColumnGenerator, ColumnRef, SchemaChange};
 use sc_error::{Error, Result};
@@ -343,9 +344,9 @@ pub struct TableSettings {
     /// The description.
     pub description: Option<String>,
     /// Least-privileged role that may read rows.
-    pub min_role_read: Option<u8>,
+    pub min_role_read: Option<Role>,
     /// Least-privileged role that may write rows.
-    pub min_role_write: Option<u8>,
+    pub min_role_write: Option<Role>,
     /// The ownership formula source; `Some("")` clears it.
     pub ownership_formula: Option<String>,
     /// Whether the database enforces the formula with policies.
@@ -356,7 +357,7 @@ pub struct TableSettings {
     pub history_enabled: Option<bool>,
     /// The least-privileged role that may read the table's history; the
     /// admin's by default (§14.12 "Reading"). Kept only while history is on.
-    pub history_min_role: Option<u8>,
+    pub history_min_role: Option<Role>,
     /// How many days the table's history keeps an entry; `0` keeps it
     /// forever, the default (§14.12). Kept only while history is on.
     pub history_keep_days: Option<u32>,
@@ -1143,7 +1144,7 @@ impl Plan {
         // connection called `reporting`" is reported while the whole batch is
         // still a plan and nothing has been applied.
         let database = parse_database(database);
-        catalog.driver_named(&database)?;
+        catalog.driver_info(&database)?;
         let mut table = Table::projected(database, name, Vec::new(), Vec::new());
         // In the projection before the fields resolve, so a self-referencing key
         // (`employees.manager` → `employees`) finds its own primary key — which
@@ -1277,10 +1278,10 @@ impl Plan {
         }
         let mut access = meta.access.clone();
         if let Some(role) = settings.min_role_read {
-            access.min_role_read = check_role(role, "min_role_read")?;
+            access.min_role_read = role;
         }
         if let Some(role) = settings.min_role_write {
-            access.min_role_write = check_role(role, "min_role_write")?;
+            access.min_role_write = role;
         }
         let access_moved = access != meta.access;
         meta.access = access;
@@ -1343,11 +1344,6 @@ impl Plan {
             self.change_log_dirty.insert(table.to_owned());
         }
         if let Some(role) = settings.history_min_role {
-            if !(1..=100).contains(&role) {
-                return Err(Error::invalid(format!(
-                    "`history_min_role` must be a role from 1 to 100, not {role}"
-                )));
-            }
             sc_catalog::history::set_history_min_role(&mut meta.attributes, role);
         }
         if let Some(days) = settings.history_keep_days {
@@ -1449,6 +1445,7 @@ impl Plan {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn alter_field(
         &mut self,
         catalog: &Catalog,
@@ -1809,7 +1806,7 @@ impl Plan {
                     target_table,
                     target_field,
                     ..
-                } => Some((target_table.0.as_str(), target_field.0.as_str())),
+                } => Some((target_table.as_str(), target_field.0.as_str())),
                 _ => None,
             }
         }
@@ -1820,10 +1817,8 @@ impl Plan {
         let field = &existing.base.name;
         let references = match wanted {
             Some((target_table, target_field)) => {
-                let storage = self.key_storage_type(
-                    &TableId(target_table.to_owned()),
-                    &FieldId(target_field.to_owned()),
-                )?;
+                let storage =
+                    self.key_storage_type(target_table, &FieldId(target_field.to_owned()))?;
                 let column = TypeRef::from_sql_type(existing.base.type_.sql_type());
                 if storage.sql_type() != column.sql_type() {
                     return Err(Error::invalid(format!(
@@ -1901,11 +1896,11 @@ impl Plan {
             if let Some(live) = catalog.get(&table)?
                 && live.field(&field).is_some_and(|f| !f.is_calc())
             {
-                let nulls = crate::rows::count_rows_where(
+                let nulls = sc_access::rows::count_rows_where(
                     catalog,
                     &live,
                     Some(Expr::unary(UnOp::IsNull, Expr::col(field.as_str()))),
-                    None,
+                    sc_catalog::Unchecked::system("schema edit: check existing rows"),
                 )
                 .await?;
                 if nulls > 0 {
@@ -2149,10 +2144,7 @@ impl Plan {
             // content from the table *by name*, which the rename does not
             // follow: it is dropped under the old name and built again,
             // under the name derived from the new one.
-            if catalog
-                .driver_named(&projected.database)?
-                .dialect()
-                .is_sqlite()
+            if catalog.driver_info(&projected.database)?.is_sqlite()
                 && let Some(fts) = projected
                     .constraints
                     .iter()
@@ -2172,7 +2164,6 @@ impl Plan {
 
         let mut renamed = projected;
         renamed.name = to.to_owned();
-        renamed.id = sc_catalog::TableId(to.to_owned());
         for constraint in &mut renamed.constraints {
             if constraint.name == TableConstraint::derived_name(table, &constraint.kind, "")
                 && matches!(constraint.kind, ConstraintKind::FullTextSearch { .. })
@@ -2194,9 +2185,9 @@ impl Plan {
             };
             for field in &mut other.fields {
                 if let DataFieldKind::Key { target_table, .. } = &mut field.kind
-                    && target_table.0 == table
+                    && target_table == table
                 {
-                    *target_table = sc_catalog::TableId(to.to_owned());
+                    *target_table = to.to_owned();
                 }
             }
         }
@@ -2598,11 +2589,11 @@ impl Plan {
         else {
             return Ok(kind.clone());
         };
-        let target = self.projection.get(&target_table.0).ok_or_else(|| {
+        let target = self.projection.get(target_table).ok_or_else(|| {
             Error::invalid(format!(
                 "field `{table}.{field}` references table `{}`, which does not exist; \
                  the tables are {}",
-                target_table.0,
+                target_table,
                 quoted(&self.table_names())
             ))
         })?;
@@ -2613,7 +2604,7 @@ impl Plan {
                     return Err(Error::invalid(format!(
                         "field `{table}.{field}` references `{}`, which has no single-column \
                          primary key to point at",
-                        target_table.0
+                        target_table
                     )));
                 }
             }
@@ -2621,7 +2612,7 @@ impl Plan {
             if target.field(&target_field.0).is_none() {
                 return Err(Error::invalid(format!(
                     "field `{table}.{field}` references `{}.{}`, which does not exist",
-                    target_table.0, target_field.0
+                    target_table, target_field.0
                 )));
             }
             target_field.clone()
@@ -2631,7 +2622,7 @@ impl Plan {
         {
             return Err(Error::invalid(format!(
                 "field `{table}.{field}` names summary field `{}`, which `{}` does not have",
-                summary.0, target_table.0
+                summary.0, target_table
             )));
         }
         Ok(DataFieldKind::Key {
@@ -2644,15 +2635,15 @@ impl Plan {
     /// The storage type a foreign key takes: the target column's, never the
     /// caller's — a key whose type disagrees with what it points at is a column
     /// Postgres refuses, and the caller has no reason to know the answer.
-    fn key_storage_type(&self, target_table: &TableId, target_field: &FieldId) -> Result<TypeRef> {
+    fn key_storage_type(&self, target_table: &str, target_field: &FieldId) -> Result<TypeRef> {
         let target = self
             .projection
-            .get(&target_table.0)
-            .ok_or_else(|| Error::invalid(format!("table `{}` does not exist", target_table.0)))?;
+            .get(target_table)
+            .ok_or_else(|| Error::invalid(format!("table `{}` does not exist", target_table)))?;
         let field = target.field(&target_field.0).ok_or_else(|| {
             Error::invalid(format!(
                 "`{}.{}` does not exist",
-                target_table.0, target_field.0
+                target_table, target_field.0
             ))
         })?;
         // The *storage* type, so a rich-typed key is referenced by the column
@@ -2728,7 +2719,7 @@ impl Plan {
     /// order the caller wrote it, then the policy DDL, which is emitted last
     /// because it may reference columns the DDL above it creates.
     fn steps(&mut self, catalog: &Catalog) -> Result<Vec<SchemaStep>> {
-        let dialect = catalog.primary().dialect();
+        let dialect = catalog.primary_dialect();
         // A full-text index is dropped *before* the columns change: on SQLite
         // it is kept by triggers that name every text column, and SQLite
         // refuses to drop or retype a column a trigger names. Its rebuild, if
@@ -2815,7 +2806,7 @@ impl Plan {
 /// changes it in: the log is kept in Saltcorn's own database, once it has been
 /// bootstrapped there.
 fn has_change_log(catalog: &Catalog, projection: &SchemaProjection, table: &str) -> bool {
-    catalog.primary().capabilities().change_triggers
+    catalog.primary_info().capabilities().change_triggers
         && catalog
             .get(sc_catalog::CHANGES_TABLE)
             .is_ok_and(|log| log.is_some())
@@ -2839,7 +2830,7 @@ fn rename_in_change_log_sql(
     if !has_change_log(catalog, projection, table) {
         return None;
     }
-    let dialect = catalog.primary().dialect();
+    let dialect = catalog.primary_dialect();
     if dialect.is_sqlite() {
         let path =
             |key: &str| dialect.quote_literal(&format!("$.\"{}\"", key.replace('"', "\\\"")));
@@ -2894,7 +2885,7 @@ fn rename_in_change_log_tables_sql(
     if !has_change_log(catalog, projection, from) {
         return None;
     }
-    let dialect = catalog.primary().dialect();
+    let dialect = catalog.primary_dialect();
     let (from, to) = (dialect.quote_literal(from), dialect.quote_literal(to));
     let mut sql = format!(
         "UPDATE {log} SET table_name = {to} WHERE table_name = {from};\n\
@@ -2925,7 +2916,7 @@ fn forget_in_change_log_sql(
     if !has_change_log(catalog, projection, table) {
         return None;
     }
-    let dialect = catalog.primary().dialect();
+    let dialect = catalog.primary_dialect();
     let table = dialect.quote_literal(table);
     Some(format!(
         "DELETE FROM {log} WHERE table_name = {table};\n\
@@ -3029,7 +3020,7 @@ fn validate_ownership(
     if !table.rls_enabled {
         return Ok(());
     }
-    if !catalog.primary().capabilities().row_level_security {
+    if !catalog.primary_info().capabilities().row_level_security {
         return Err(Error::invalid(
             "the connected database does not support row-level security",
         ));
@@ -3262,7 +3253,7 @@ fn check_spatial(catalog: &Catalog, database: &DbId, field: &DataField) -> Resul
         return Ok(());
     }
     catalog
-        .driver_named(database)?
+        .driver_info(database)?
         .spatial()
         .require()
         .map_err(|reason| {
@@ -3280,7 +3271,7 @@ fn check_vector(catalog: &Catalog, database: &DbId, field: &DataField) -> Result
         return Ok(());
     }
     catalog
-        .driver_named(database)?
+        .driver_info(database)?
         .vector()
         .require()
         .map_err(|reason| {
@@ -3390,19 +3381,6 @@ pub(crate) fn check_identifier(name: &str, what: &str) -> Result<()> {
     Ok(())
 }
 
-/// A role on the `1..=100` scale. Rejected rather than clamped, for the reason
-/// the storage layer rejects: the nearest legal role is still a decision about
-/// who reaches the data.
-fn check_role(role: u8, key: &str) -> Result<u8> {
-    if (1..=100).contains(&role) {
-        Ok(role)
-    } else {
-        Err(Error::invalid(format!(
-            "`{key}` must be a role between 1 and 100, got {role}"
-        )))
-    }
-}
-
 /// Refuse what a [`Secret`](DataFieldKind::Secret) field cannot be: a key, unique, a
 /// type other than text, or filled in by a default. Each value is encrypted
 /// with a fresh nonce, so two equal secrets are two different column values,
@@ -3456,7 +3434,7 @@ fn keys_targeting(projection: &SchemaProjection, table: &str, field: &str) -> Ve
                 target_field,
                 ..
             } = &f.kind
-                && target_table.0 == table
+                && target_table == table
                 && target_field.0 == field
                 && !(other.name == table && f.base.name == field)
             {
@@ -3566,7 +3544,7 @@ mod tests {
     #[test]
     fn omitted_settings_leave_what_they_do_not_name() {
         let settings = TableSettings {
-            min_role_read: Some(40),
+            min_role_read: Some(Role::of(40)),
             ..TableSettings::default()
         };
         assert!(settings.touches_access());

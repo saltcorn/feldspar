@@ -21,14 +21,10 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
-use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, ServerConfig, admin_handlers, build_router,
-};
-use sc_test_harness::TestDb;
+use sc_server::{AppMounts, SESSION_COOKIE, ServerConfig, admin_handlers, build_router};
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -108,26 +104,14 @@ impl Client {
 /// A router over the admin endpoints backed by a fresh catalog, with the first
 /// (admin) user created and signed in, and role 40 available to hold.
 async fn setup() -> sc_error::Result<(Client, TestDb)> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     // The overlay tables a field edit writes its settings into, which `serve`
     // has by the time anyone reaches a screen.
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;
+    // Where the onboarding's "done" is kept.
+    sc_config::bootstrap(&catalog).await?;
 
     let sessions = Arc::new(SessionStore::default());
     let apps = Arc::new(AppMounts::new(catalog.clone()));
@@ -498,5 +482,34 @@ async fn a_user_can_be_deleted() -> sc_error::Result<()> {
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
+    Ok(())
+}
+
+/// The first-run onboarding is offered to an admin until somebody finishes or
+/// skips it, and then to nobody: not again to that admin, not to the next one,
+/// and never to a user who is not an admin.
+#[tokio::test]
+async fn onboarding_is_pending_for_an_admin_until_it_is_finished() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+
+    let (_, status) = client.send("GET", "/api/auth/status", None).await;
+    assert_eq!(status["onboarding_pending"], json!(true), "{status}");
+
+    // Signed out, nobody learns the answer.
+    let mut stranger = client.fork().await;
+    let (_, status) = stranger.send("GET", "/api/auth/status", None).await;
+    assert_eq!(status["onboarding_pending"], json!(false), "{status}");
+    // ...and cannot finish it either.
+    let (code, _) = stranger.send("POST", "/api/onboarding/finish", None).await;
+    assert_ne!(code, StatusCode::OK);
+
+    let (code, body) = client.send("POST", "/api/onboarding/finish", None).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_eq!(body["done"], json!(true));
+    let (_, status) = client.send("GET", "/api/auth/status", None).await;
+    assert_eq!(status["onboarding_pending"], json!(false), "{status}");
+    // Finishing twice is not an error.
+    let (code, _) = client.send("POST", "/api/onboarding/finish", None).await;
+    assert_eq!(code, StatusCode::OK);
     Ok(())
 }

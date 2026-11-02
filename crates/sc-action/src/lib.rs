@@ -11,7 +11,7 @@
 //! layer can emit events without knowing whether anything listens.
 //!
 //! It holds no actions itself — the core set is a crate of its own
-//! (`sc-core-actions`, above the row layer, because three of them write rows) —
+//! (`sc-action-builtins`, above the row layer, because three of them write rows) —
 //! but it does hold the machinery *every* action's configuration goes through:
 //! what a configured formula may name ([`action_shape`], [`EVENT_SCOPE`]), what an
 //! event binds it to ([`EventBindings`]), and how a setting is parsed
@@ -39,7 +39,7 @@
 //!
 //! Layering: this is the lowest crate that both holds a [`Catalog`](sc_catalog::Catalog)
 //! and needs the formula language, and nothing below it may depend on it. Two
-//! crates above it do. `sc-core-actions` holds the built-in actions that **write
+//! crates above it do. `sc-action-builtins` holds the built-in actions that **write
 //! rows** (`insert_row`/`update_rows`/`delete_rows`), which must go through the
 //! row layer so a trigger's write is coerced, validated and observable exactly
 //! like an API caller's; the rule is "an action lives where the things it needs
@@ -47,6 +47,14 @@
 //! them through [`TriggerDispatcher`] (§13.4). Emitting runs the other way
 //! regardless: the row layer raises an event through a seam the catalog holds
 //! (Phase 4), never by calling in here.
+
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
+    "sc-action: the trigger and schedule store (`_fd_triggers`, `_fd_trigger_log`)",
+);
 
 mod action;
 mod dispatch;
@@ -68,7 +76,7 @@ pub use dispatch::{
     fire_trigger_with,
 };
 pub use engine::{WorkflowEngine, WorkflowStarted};
-pub use event::{EVENT_KINDS, Event, EventKind, MAX_DEPTH, ROLE_PUBLIC};
+pub use event::{EVENT_KINDS, Event, EventKind, MAX_DEPTH};
 pub use observer::TriggerObserver;
 pub use registry::ActionRegistry;
 pub use schedule::{ATTR_DAY_OF_WEEK, ATTR_HOUR, ATTR_MINUTE, OFTEN_MINUTES, Schedule, day_name};

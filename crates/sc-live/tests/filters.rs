@@ -14,7 +14,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use sc_api::rows::{self, RowQuery};
+use sc_access::rows::{self, RowQuery};
 use sc_catalog::{Catalog, DataField};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -104,20 +104,38 @@ async fn parity(catalog: Arc<Catalog>) -> Result<()> {
     catalog.reload().await?;
     let table = catalog.require("cards")?;
     for row in rows() {
-        rows::create_row(&catalog, &table, &row).await?;
+        rows::create_row(
+            &catalog,
+            &table,
+            &row,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
-    let like = LikeRules::of(catalog.driver_for(&table)?.as_ref());
+    let like = LikeRules::of(catalog.driver_info(&table.database)?.dialect());
     // The rows as the REST read returns them — what a change's image is.
-    let all = match rows::list_rows_query(&catalog, &table, &RowQuery::new(), None).await? {
+    let all = match rows::list_rows_query(
+        &catalog,
+        &table,
+        &RowQuery::new(),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?
+    {
         Json::Array(all) => all,
         other => panic!("a read returns an array, got {other}"),
     };
     assert_eq!(all.len(), rows().len());
 
     for filter in filters() {
-        let lowered = sc_api::filter::api_where(&table, Some(&filter))?;
-        let read =
-            rows::list_rows_query(&catalog, &table, &RowQuery::new().where_(lowered), None).await?;
+        let lowered = sc_access::filter::api_where(&table, Some(&filter))?;
+        let read = rows::list_rows_query(
+            &catalog,
+            &table,
+            &RowQuery::new().where_(lowered),
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
         let read = ids(read.as_array().map(Vec::as_slice).unwrap_or_default());
         let parsed = RowFilter::parse(&table, Some(&filter), like)?;
         let rust: Vec<Json> = all
@@ -139,7 +157,7 @@ async fn the_rust_verdict_is_the_sqlite_reads() -> Result<()> {
     let driver: Arc<dyn DatabaseDriver> = Arc::new(SqliteDriver::open_in_memory()?);
     let catalog = Arc::new(Catalog::init(driver).await?);
     assert_eq!(
-        LikeRules::of(catalog.primary().as_ref()),
+        LikeRules::of(catalog.primary_dialect()),
         LikeRules::SQLITE,
         "SQLite's dialect says its LIKE folds case"
     );
@@ -152,7 +170,7 @@ async fn the_rust_verdict_is_the_postgres_reads() -> Result<()> {
     let driver: Arc<dyn DatabaseDriver> = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver).await?);
     assert_eq!(
-        LikeRules::of(catalog.primary().as_ref()),
+        LikeRules::of(catalog.primary_dialect()),
         LikeRules::POSTGRES
     );
     parity(catalog).await

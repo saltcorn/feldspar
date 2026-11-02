@@ -14,6 +14,8 @@
 //! the person, a triggered run carries the trigger's authority, and a `Runner`
 //! that never said which cannot be built.
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -304,8 +306,17 @@ impl<'a> Runner<'a> {
     /// runner's starting mode and role — not yet saved, so a caller can give it
     /// a description first.
     pub fn new_run(&self, message: impl Into<String>) -> Result<Run> {
+        self.new_run_attached(message, Vec::new())
+    }
+
+    /// [`new_run`](Runner::new_run), with files attached to the first message.
+    pub fn new_run_attached(
+        &self,
+        message: impl Into<String>,
+        attachments: Vec<sc_llm::Attachment>,
+    ) -> Result<Run> {
         let mut state = AgentLoop::for_agent(self.agent);
-        state.push_user(message)?;
+        state.push_user_attached(message, attachments, Default::default())?;
         Ok(Run::new(&self.agent.name, &self.caller, &state)
             .with_mode(self.mode)
             .with_role(self.role))
@@ -345,7 +356,8 @@ impl<'a> Runner<'a> {
         message: impl Into<String>,
         controls: std::collections::BTreeMap<String, Json>,
     ) -> Result<Conclusion> {
-        self.push_message(run, message, controls).await?;
+        self.push_message(run, message, Vec::new(), controls)
+            .await?;
         self.drive(run).await
     }
 
@@ -368,11 +380,12 @@ impl<'a> Runner<'a> {
         &self,
         run: &mut Run,
         message: impl Into<String>,
+        attachments: Vec<sc_llm::Attachment>,
         controls: std::collections::BTreeMap<String, Json>,
     ) -> Result<()> {
         crate::interact::check_controls(&self.controls().await?, &controls)?;
         let mut state = run.agent_loop()?;
-        state.push_user_with(message, controls)?;
+        state.push_user_attached(message, attachments, controls)?;
         run.record(&state);
         save_run(self.catalog, run).await
     }
@@ -591,6 +604,7 @@ impl<'a> Runner<'a> {
     ///
     /// Resuming is the same call: the state came off the row, so a run reloaded
     /// after a restart carries on from the step it was on.
+    #[allow(clippy::too_many_lines)]
     pub async fn drive(&self, run: &mut Run) -> Result<Conclusion> {
         let mut state = run.agent_loop()?;
         let mode = run.mode()?;
@@ -834,7 +848,7 @@ impl<'a> Runner<'a> {
         let Some(meter) = self.meter else {
             return Ok(None);
         };
-        if self.caller.role <= sc_auth::ROLE_ADMIN {
+        if self.caller.role.is_admin() {
             return Ok(None);
         }
         match &self.caller.user {
@@ -854,7 +868,7 @@ impl<'a> Runner<'a> {
         let Some((user, meter)) = self.payer()? else {
             return Ok(true);
         };
-        let balance = sc_auth::credit_balance(self.catalog, user.id)
+        let balance = sc_auth::credit_balance(self.catalog, user.id())
             .await?
             .balance;
         let enough =
@@ -863,7 +877,7 @@ impl<'a> Runner<'a> {
             sc_log::log_info!(
                 "agent `{}`: user {} has {balance} LLM credits{}, so the run stops",
                 self.agent.name,
-                user.id,
+                user.id(),
                 if starting && meter.min_balance > rust_decimal::Decimal::ZERO {
                     format!(" and this agent needs {} to start", meter.min_balance)
                 } else {
@@ -926,7 +940,7 @@ impl<'a> Runner<'a> {
         let debited = sc_auth::debit_credits(
             self.catalog,
             sc_auth::CreditDebit {
-                user_id: user.id,
+                user_id: user.id(),
                 amount,
                 key,
                 run: Some(run.0),
@@ -939,13 +953,13 @@ impl<'a> Runner<'a> {
                     .map(sc_auth::credits),
                 note: None,
             },
-            Some(&caller_context(&self.caller)),
+            Authority::Caller(&principal_of(&self.caller)),
         )
         .await?;
         sc_log::log_verbose!(
             "agent `{}` run {run}: charged {amount} LLM credits to user {}, leaving {}",
             self.agent.name,
-            user.id,
+            user.id(),
             debited.balance
         );
         Ok(())
@@ -1078,7 +1092,7 @@ impl<'a> Runner<'a> {
             .messages()
             .iter()
             .find_map(|m| match m {
-                LlmMessage::User { content } => Some(content.clone()),
+                LlmMessage::User { content, .. } => Some(content.clone()),
                 _ => None,
             })
             .unwrap_or_default();
@@ -1557,7 +1571,8 @@ impl<'a> Runner<'a> {
     }
 
     /// Which enabled trait offers `tool` in this mode, by position, and the
-    /// tool's spec — the answer validation guaranteed is unique.
+    /// tool's spec — the answer validation guaranteed is unique, or, for a
+    /// tool two traits offer identically, the first of them.
     fn owner(&self, tool: &str, cx: &ToolsContext<'_>) -> Option<(usize, ToolSpec)> {
         self.agent
             .traits
@@ -1579,12 +1594,11 @@ impl<'a> Runner<'a> {
         let mut names: Vec<String> = Vec::new();
         for enabled in &self.agent.traits {
             if let Ok(trait_) = self.registry.require(&enabled.trait_) {
-                names.extend(
-                    trait_
-                        .tools(cx, &enabled.config)
-                        .into_iter()
-                        .map(|t| t.name),
-                );
+                for tool in trait_.tools(cx, &enabled.config) {
+                    if !names.contains(&tool.name) {
+                        names.push(tool.name);
+                    }
+                }
             }
         }
         if names.is_empty() {
@@ -1595,6 +1609,7 @@ impl<'a> Runner<'a> {
 
     /// Start or resume a child run for `request`, from a run in `parent_mode`
     /// (§11.3, TODO §5).
+    #[allow(clippy::too_many_lines)]
     async fn delegate_from(
         &self,
         parent_mode: RunMode,
@@ -1693,7 +1708,7 @@ impl<'a> Runner<'a> {
             return Err(Error::auth(format!(
                 "agent `{parent}`: you may not use `{target}`; \
                  it needs role {} or better",
-                sub.min_role.unwrap_or(1)
+                sub.min_role.unwrap_or(Role::ADMIN)
             )));
         }
 
@@ -1830,7 +1845,7 @@ impl Drop for RunEnded<'_, '_> {
             previews.unmount_previews(self.run);
         }
         if let Some(browser) = self.runner.browser() {
-            browser.close(self.run);
+            browser.close(self.run.0);
         }
     }
 }
@@ -1862,13 +1877,21 @@ pub fn stable_prefix(
     let mut tools: Vec<ToolSpec> = Vec::new();
     for enabled in &agent.traits {
         let trait_ = registry.require(&enabled.trait_)?;
+        // Each text once: two traits that say the same thing about a tool they
+        // both offer say it once, as the tool is offered once.
         if let Some(text) = trait_
             .prompt(cx, &enabled.config)
-            .filter(|t| !t.trim().is_empty())
+            .filter(|t| !t.trim().is_empty() && !parts.contains(t))
         {
             parts.push(text);
         }
-        tools.extend(trait_.tools(cx, &enabled.config));
+        // A tool two traits offer identically is one tool (validation refuses
+        // two *different* tools under one name).
+        for tool in trait_.tools(cx, &enabled.config) {
+            if !tools.contains(&tool) {
+                tools.push(tool);
+            }
+        }
     }
     // An agent with no traits offers no tools, which is a request with an
     // empty list rather than one with a field the vendors read as "call
@@ -1883,18 +1906,18 @@ pub fn stable_prefix(
 
 /// The caller the events a credit debit raises report: the run's user, at the
 /// run's role.
-fn caller_context(caller: &RunCaller) -> sc_catalog::CallerContext {
+fn principal_of(caller: &RunCaller) -> sc_catalog::Principal {
     let user = caller.user.as_ref().map(|u| {
         let mut fields: serde_json::Map<String, Json> = u
-            .extra
+            .extra()
             .iter()
-            .map(|(k, v)| (k.clone(), sc_expr::value_to_json(v)))
+            .map(|(k, v)| (k.clone(), sc_types::value_to_script_json(v)))
             .collect();
-        fields.insert("id".to_owned(), Json::String(u.id.to_string()));
-        fields.insert("role".to_owned(), Json::from(u.role));
+        fields.insert("id".to_owned(), Json::String(u.id().to_string()));
+        fields.insert("role".to_owned(), Json::from(u.role()));
         Json::Object(fields)
     });
-    sc_catalog::CallerContext::new(caller.role, user).in_current_origin()
+    sc_catalog::Principal::new(caller.role, user).in_current_origin()
 }
 
 fn conclusion_label(conclusion: &Conclusion) -> String {

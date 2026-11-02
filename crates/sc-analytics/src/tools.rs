@@ -1,4 +1,4 @@
-//! **The Map workspace's toolbox** (analytics TODO A5.12): spatial analysis
+//! **The Map workspace's toolbox**: spatial analysis
 //! as shortcuts to dataset operations.
 //!
 //! A tool is a form whose answer is an ordinary global dataset, added to the
@@ -200,15 +200,21 @@ impl ToolContext {
     }
 
     /// The last stage's shape of a stored dataset, or why it has none.
-    pub fn shape_of(&self, dataset: DatasetId) -> std::result::Result<StageShape, String> {
+    pub fn shape_of(&self, dataset: DatasetId) -> Result<StageShape> {
         let def = self
             .library
             .get(dataset)
-            .ok_or("the dataset of one of the layers is gone")?;
+            .ok_or_else(|| Error::invalid("the dataset of one of the layers is gone"))?;
         compile(&self.schema, &self.library, def, Options::default())
             .last()
             .map(|s| s.shape())
-            .map_err(|e| format!("the dataset `{}` does not read: {e}", def.name))
+            .map_err(|e| {
+                Error::invalid(format!(
+                    "the dataset `{}` does not read: {}",
+                    def.name,
+                    e.message()
+                ))
+            })
     }
 
     /// A stored dataset's name.
@@ -244,24 +250,25 @@ impl ToolArgs {
     }
 
     /// The layer the field `name` picked.
-    pub fn layer(&self, name: &str) -> std::result::Result<MapLayer, String> {
+    pub fn layer(&self, name: &str) -> Result<MapLayer> {
         let raw = self
             .get(name)
-            .ok_or_else(|| format!("pick the layer for `{name}`"))?;
-        serde_json::from_value(raw.clone()).map_err(|e| format!("`{name}` is not a layer: {e}"))
+            .ok_or_else(|| Error::invalid(format!("pick the layer for `{name}`")))?;
+        serde_json::from_value(raw.clone())
+            .map_err(|e| Error::invalid(format!("`{name}` is not a layer: {e}")))
     }
 
     /// The number in the field `name`.
-    pub fn number(&self, name: &str) -> std::result::Result<f64, String> {
+    pub fn number(&self, name: &str) -> Result<f64> {
         match self.get(name) {
             Some(Json::Number(n)) => n
                 .as_f64()
-                .ok_or_else(|| format!("`{name}` is not a number")),
+                .ok_or_else(|| Error::invalid(format!("`{name}` is not a number"))),
             Some(Json::String(s)) => s
                 .trim()
                 .parse()
-                .map_err(|_| format!("`{s}` is not a number for `{name}`")),
-            _ => Err(format!("give a number for `{name}`")),
+                .map_err(|_| Error::invalid(format!("`{s}` is not a number for `{name}`"))),
+            _ => Err(Error::invalid(format!("give a number for `{name}`"))),
         }
     }
 
@@ -275,14 +282,14 @@ impl ToolArgs {
     }
 
     /// A distance in metres, positive.
-    fn metres(&self, name: &str) -> std::result::Result<f64, String> {
+    fn metres(&self, name: &str) -> Result<f64> {
         let d = self.number(name)?;
         if d.is_finite() && d > 0.0 {
             Ok(d)
         } else {
-            Err(format!(
+            Err(Error::invalid(format!(
                 "{d} metres is not a distance; give a positive number"
-            ))
+            )))
         }
     }
 }
@@ -306,7 +313,7 @@ pub trait MapTool: Send + Sync {
     fn descriptor(&self) -> ToolDescriptor;
     /// The dataset and layer the answers make, or the sentence saying why
     /// they make none.
-    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> std::result::Result<ToolBuild, String>;
+    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> Result<ToolBuild>;
 }
 
 // --- helpers the built-ins share ----------------------------------------------------
@@ -314,10 +321,7 @@ pub trait MapTool: Send + Sync {
 /// A new dataset over a layer's rows: its dataset, its filter as a Filter,
 /// and its geometry as a column — the column itself, or a Calculated column
 /// of its formula. Answers the dataset and that column's name.
-fn over_layer(
-    ctx: &ToolContext,
-    layer: &MapLayer,
-) -> std::result::Result<(DatasetDef, String, Vec<String>), String> {
+fn over_layer(ctx: &ToolContext, layer: &MapLayer) -> Result<(DatasetDef, String, Vec<String>)> {
     let shape = ctx.shape_of(layer.dataset)?;
     let mut names: Vec<String> = shape.columns.iter().map(|c| c.name.clone()).collect();
     let mut def = DatasetDef::new("", Base::dataset(layer.dataset));
@@ -344,7 +348,7 @@ fn over_layer(
 /// column of it. A layer whose geometry is computed, or that shows some of
 /// its rows, is refused with a sentence: the join would read every row of its
 /// dataset, not what the layer shows.
-fn joinable(ctx: &ToolContext, layer: &MapLayer) -> std::result::Result<(Other, String), String> {
+fn joinable(ctx: &ToolContext, layer: &MapLayer) -> Result<(Other, String)> {
     let name = layer
         .name
         .clone()
@@ -354,10 +358,10 @@ fn joinable(ctx: &ToolContext, layer: &MapLayer) -> std::result::Result<(Other, 
         .as_deref()
         .is_some_and(|f| !f.trim().is_empty())
     {
-        return Err(format!(
+        return Err(Error::invalid(format!(
             "the layer \"{name}\" shows some of its dataset's rows; save those as a dataset of \
              their own to use them here"
-        ));
+        )));
     }
     match &layer.geometry {
         GeometrySource::Column { column } => Ok((
@@ -366,14 +370,14 @@ fn joinable(ctx: &ToolContext, layer: &MapLayer) -> std::result::Result<(Other, 
             },
             column.clone(),
         )),
-        GeometrySource::LonLat { .. } => Err(format!(
+        GeometrySource::LonLat { .. } => Err(Error::invalid(format!(
             "the layer \"{name}\" makes its points from two columns; add them as a geometry \
              column (Geo.point) to its dataset to use it here"
-        )),
-        GeometrySource::Key { column, .. } => Err(format!(
+        ))),
+        GeometrySource::Key { column, .. } => Err(Error::invalid(format!(
             "the layer \"{name}\" takes its geometry along `{column}` from another table; use a \
              layer of that table here"
-        )),
+        ))),
     }
 }
 
@@ -468,7 +472,7 @@ impl MapTool for Buffer {
         }
     }
 
-    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> std::result::Result<ToolBuild, String> {
+    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> Result<ToolBuild> {
         let layer = args.layer("layer")?;
         let d = args.metres("distance")?;
         let (mut dataset, g, names) = over_layer(ctx, &layer)?;
@@ -508,7 +512,7 @@ impl MapTool for DistanceToNearest {
         }
     }
 
-    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> std::result::Result<ToolBuild, String> {
+    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> Result<ToolBuild> {
         let layer = args.layer("layer")?;
         let to = args.layer("to")?;
         let (other, right) = joinable(ctx, &to)?;
@@ -552,7 +556,7 @@ impl MapTool for WithinDistance {
         }
     }
 
-    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> std::result::Result<ToolBuild, String> {
+    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> Result<ToolBuild> {
         let layer = args.layer("layer")?;
         let of = args.layer("of")?;
         let d = args.metres("distance")?;
@@ -617,14 +621,18 @@ impl MapTool for Join {
         }
     }
 
-    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> std::result::Result<ToolBuild, String> {
+    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> Result<ToolBuild> {
         let layer = args.layer("layer")?;
         let with = args.layer("with")?;
         let relation = match args.text("relation").as_deref().unwrap_or("intersects") {
             "intersects" => SpatialRelation::Intersects,
             "within" => SpatialRelation::Within,
             "contains" => SpatialRelation::Contains,
-            other => return Err(format!("`{other}` is not a relation an overlay knows")),
+            other => {
+                return Err(Error::invalid(format!(
+                    "`{other}` is not a relation an overlay knows"
+                )));
+            }
         };
         let kind = match args.text("keep").as_deref().unwrap_or("left") {
             "inner" => JoinKind::Inner,
@@ -667,7 +675,7 @@ impl MapTool for Intersection {
         }
     }
 
-    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> std::result::Result<ToolBuild, String> {
+    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> Result<ToolBuild> {
         let layer = args.layer("layer")?;
         let with = args.layer("with")?;
         let (other, right) = joinable(ctx, &with)?;
@@ -748,22 +756,22 @@ impl MapTool for PerRegion {
         }
     }
 
-    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> std::result::Result<ToolBuild, String> {
+    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> Result<ToolBuild> {
         let layer = args.layer("layer")?;
         let regions = args.layer("regions")?;
         let (other, right) = joinable(ctx, &regions)?;
         let regions_shape = ctx.shape_of(regions.dataset)?;
         let regions_name = layer_name(ctx, &regions);
         let Grain::Table { table, key } = &regions_shape.grain else {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "the regions of \"{regions_name}\" are not rows of a table, so features cannot \
                  be counted per region of them; use a layer of the regions' table"
-            ));
+            )));
         };
         if regions_shape.column(key).is_none() {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "\"{regions_name}\" has dropped its key `{key}`, which tells the regions apart"
-            ));
+            )));
         }
         // The map draws each region by its key, from the table's geometry.
         let table_geometry = ctx.table_geometry(table);
@@ -771,24 +779,28 @@ impl MapTool for PerRegion {
             right.clone()
         } else {
             table_geometry.first().cloned().ok_or_else(|| {
-                format!("the table `{table}` has no geometry column to draw the regions by")
+                Error::invalid(format!(
+                    "the table `{table}` has no geometry column to draw the regions by"
+                ))
             })?
         };
         let column = if self.sum {
             let column = args
                 .text("column")
-                .ok_or("pick the column whose values are summed")?;
+                .ok_or_else(|| Error::invalid("pick the column whose values are summed"))?;
             let shape = ctx.shape_of(layer.dataset)?;
             match shape.column(&column) {
                 Some(c)
                     if c.key.is_none()
                         && matches!(c.ty, ColType::Int | ColType::Float | ColType::Decimal) => {}
-                Some(_) => return Err(format!("`{column}` is not a number to sum")),
+                Some(_) => {
+                    return Err(Error::invalid(format!("`{column}` is not a number to sum")));
+                }
                 None => {
-                    return Err(format!(
+                    return Err(Error::invalid(format!(
                         "`{column}` is not a column of \"{}\"",
                         layer_name(ctx, &layer)
-                    ));
+                    )));
                 }
             }
             Some(column)
@@ -904,17 +916,17 @@ impl MapTool for Dissolve {
         }
     }
 
-    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> std::result::Result<ToolBuild, String> {
+    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> Result<ToolBuild> {
         let layer = args.layer("layer")?;
         let by = args
             .text("by")
-            .ok_or("pick the column the features are merged by")?;
+            .ok_or_else(|| Error::invalid("pick the column the features are merged by"))?;
         let (mut dataset, g, names) = over_layer(ctx, &layer)?;
         if !names.contains(&by) {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "`{by}` is not a column of \"{}\"",
                 layer_name(ctx, &layer)
-            ));
+            )));
         }
         let shape = unique_name("geometry", &[by.clone(), "count".into()]);
         dataset.operations.push(Operation::new(
@@ -1011,21 +1023,21 @@ pub struct TemplateTool {
 impl TemplateTool {
     /// The tool `module` declares as `raw`, or the sentence saying why it is
     /// not one.
-    pub fn from_json(module: &str, raw: &Json) -> std::result::Result<TemplateTool, String> {
+    pub fn from_json(module: &str, raw: &Json) -> Result<TemplateTool> {
         let template: ToolTemplate = serde_json::from_value(raw.clone())
-            .map_err(|e| format!("its map tool does not read: {e}"))?;
+            .map_err(|e| Error::invalid(format!("its map tool does not read: {e}")))?;
         if template.id.trim().is_empty() || template.label.trim().is_empty() {
-            return Err("a map tool needs an id and a label".to_owned());
+            return Err(Error::invalid("a map tool needs an id and a label"));
         }
         if !template
             .params
             .iter()
             .any(|p| p.name == template.base && p.kind == ParamKind::Layer)
         {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "the map tool `{}` is based on `{}`, which is not one of its layer fields",
                 template.id, template.base
-            ));
+            )));
         }
         Ok(TemplateTool {
             module: module.to_owned(),
@@ -1080,7 +1092,7 @@ impl MapTool for TemplateTool {
         }
     }
 
-    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> std::result::Result<ToolBuild, String> {
+    fn build(&self, ctx: &ToolContext, args: &ToolArgs) -> Result<ToolBuild> {
         let t = &self.template;
         let mut vars: BTreeMap<String, Json> = BTreeMap::new();
         for p in &t.params {
@@ -1099,7 +1111,7 @@ impl MapTool for TemplateTool {
                         vars.insert(p.name.clone(), v.clone());
                     }
                     None if p.optional => {}
-                    None => return Err(format!("fill in `{}`", p.label)),
+                    None => return Err(Error::invalid(format!("fill in `{}`", p.label))),
                 },
             }
         }
@@ -1111,33 +1123,40 @@ impl MapTool for TemplateTool {
             let mut object = match filled {
                 Json::Object(o) => o,
                 _ => {
-                    return Err(format!(
+                    return Err(Error::invalid(format!(
                         "operation {} of the tool is not an operation",
                         i + 1
-                    ));
+                    )));
                 }
             };
             object
                 .entry("id")
                 .or_insert_with(|| json!(format!("tool-{}", i + 1)));
-            let op: Operation = serde_json::from_value(Json::Object(object))
-                .map_err(|e| format!("operation {} of the tool does not read: {e}", i + 1))?;
+            let op: Operation = serde_json::from_value(Json::Object(object)).map_err(|e| {
+                Error::invalid(format!(
+                    "operation {} of the tool does not read: {e}",
+                    i + 1
+                ))
+            })?;
             dataset.operations.push(op);
         }
         let mut layer = MapLayer::new(DatasetId::new(), base.geometry.clone());
         if let Some(raw) = &t.layer {
             let filled = fill_in(raw, &vars);
             if let Some(g) = filled.get("geometry") {
-                layer.geometry = serde_json::from_value(g.clone())
-                    .map_err(|e| format!("the tool's layer geometry does not read: {e}"))?;
+                layer.geometry = serde_json::from_value(g.clone()).map_err(|e| {
+                    Error::invalid(format!("the tool's layer geometry does not read: {e}"))
+                })?;
             }
             if let Some(e) = filled.get("encoding") {
-                layer.encoding = serde_json::from_value(e.clone())
-                    .map_err(|e| format!("the tool's layer encoding does not read: {e}"))?;
+                layer.encoding = serde_json::from_value(e.clone()).map_err(|e| {
+                    Error::invalid(format!("the tool's layer encoding does not read: {e}"))
+                })?;
             }
             if let Some(s) = filled.get("style") {
-                layer.style = serde_json::from_value(s.clone())
-                    .map_err(|e| format!("the tool's layer style does not read: {e}"))?;
+                layer.style = serde_json::from_value(s.clone()).map_err(|e| {
+                    Error::invalid(format!("the tool's layer style does not read: {e}"))
+                })?;
             }
         }
         let name = match &t.name {
@@ -1180,7 +1199,7 @@ pub fn install_plugin_tools(declared: &[(String, Json)]) -> Vec<String> {
                 taken.push(id);
                 tools.push(Arc::new(tool));
             }
-            Err(e) => problems.push(format!("the module {module}: {e}")),
+            Err(e) => problems.push(format!("the module {module}: {}", e.message())),
         }
     }
     if let Ok(mut installed) = PLUGIN_TOOLS.write() {
@@ -1238,7 +1257,7 @@ pub async fn run_tool(
     let ctx = ToolContext::load(catalog).await?;
     let built = tool
         .build(&ctx, args)
-        .map_err(|e| Error::invalid(format!("{label}: {e}")))?;
+        .map_err(|e| Error::invalid(format!("{label}: {}", e.message())))?;
     let mut dataset = built.dataset;
     dataset.id = DatasetId::new();
     dataset.name = match name.map(str::trim).filter(|n| !n.is_empty()) {

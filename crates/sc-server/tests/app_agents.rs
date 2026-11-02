@@ -15,6 +15,8 @@
 //! 5. **A client that goes away stops the agent**, and the run says `aborted`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,16 +30,14 @@ use futures::StreamExt;
 use sc_agent::testing::{FakeProvider, Reply};
 use sc_agent::{Agent, EnabledTrait, RunState};
 use sc_app::{AgentExposure, ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, DataField};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
-use sc_llm::{ConnectedModel, LlmDelta, LlmProvider, LlmRequest, LlmStream};
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ProviderConnector, ServerConfig,
-    admin_handlers, build_router_with_apps,
-};
+use sc_llm::{ConnectedModel, LlmDelta, LlmMessage, LlmProvider, LlmRequest, LlmStream};
+use sc_server::{AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps};
+use sc_test_harness::Teardown;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -47,7 +47,7 @@ const APP_HOST: &str = "shop.example.com";
 /// A second application exposing the same agents.
 const OTHER_HOST: &str = "library.example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 80;
+const ROLE_MEMBER: Role = Role::of(80);
 
 // --- providers ----------------------------------------------------------------
 
@@ -55,7 +55,7 @@ const ROLE_MEMBER: u8 = 80;
 struct Scripted(Arc<dyn LlmProvider>);
 
 #[async_trait]
-impl ProviderConnector for Scripted {
+impl sc_agent::ProviderConnector for Scripted {
     async fn connect(
         &self,
         _catalog: &Catalog,
@@ -86,7 +86,7 @@ impl LlmProvider for Endless {
 
 // --- the server ---------------------------------------------------------------
 
-struct TempDir(PathBuf);
+struct TempDir(PathBuf, Teardown);
 
 impl TempDir {
     fn new(tag: &str) -> TempDir {
@@ -96,7 +96,7 @@ impl TempDir {
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        TempDir(dir)
+        TempDir(dir, Teardown::new())
     }
 
     fn path(&self) -> &Path {
@@ -215,7 +215,7 @@ impl sc_agent::AgentTrait for Interview {
 fn greeter() -> Agent {
     Agent::new("greeter", "house")
         .system_prompt("You greet people.")
-        .min_role(100)
+        .min_role(Role::PUBLIC)
 }
 
 fn shop(tools: sc_app::ToolDetail) -> Application {
@@ -235,10 +235,11 @@ async fn serve(provider: Arc<dyn LlmProvider>, tools: sc_app::ToolDetail) -> Res
     let tmp = TempDir::new("srv");
     let driver = Arc::new(SqliteDriver::open(tmp.path().join("shop.db"))?);
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    tmp.1.add(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
     for who in ["alice", "bob"] {
         create_user(
             &catalog,
@@ -275,7 +276,7 @@ async fn serve(provider: Arc<dyn LlmProvider>, tools: sc_app::ToolDetail) -> Res
 
     // The tables; then the built-in traits and the test's own.
     sc_server::install_agents(&catalog).await?;
-    let mut registry = sc_core_traits::builtin_traits()?;
+    let mut registry = sc_agent_builtins::builtin_traits()?;
     registry.register(Arc::new(Interview))?;
     let services = sc_server::AgentServices::new(Arc::new(registry))
         .with_providers(Arc::new(Scripted(provider)));
@@ -567,6 +568,97 @@ async fn a_chat_turn_streams_and_leaves_a_conversation_its_owner_can_manage() ->
         .await
         .json();
     assert_eq!(listed, json!([]));
+    Ok(())
+}
+
+/// Files sent with a chat turn reach the model — an image as an image, a
+/// document as text it can be asked about — and come back in the transcript
+/// as `attachment` parts. A file that is neither is refused before a turn is
+/// spent on it.
+#[tokio::test]
+async fn a_chat_turn_carries_attached_images_and_documents() -> Result<()> {
+    use base64::Engine as _;
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    let provider = Arc::new(FakeProvider::new([Reply::says(
+        "It says to ship on Friday.",
+    )]));
+    let server = serve(provider.clone(), sc_app::ToolDetail::Names).await?;
+    let mut alice = Browser::new(&server);
+    alice.login("alice").await;
+
+    let refused = alice
+        .send(
+            "POST",
+            "/api/_agents/helpdesk/chat",
+            Some(json!({
+                "message": "What is this?",
+                "attachments": [{ "name": "a.bin", "media_type": "application/octet-stream",
+                                  "data": b64(&[0, 159, 146]) }],
+            })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert!(String::from_utf8_lossy(&refused.body).contains("not text"));
+    assert!(provider.last_request().is_none(), "no turn was spent");
+
+    let turn = alice
+        .send(
+            "POST",
+            "/api/_agents/helpdesk/chat",
+            Some(json!({
+                "message": "When do we ship?",
+                "attachments": [
+                    { "name": "plan.md", "media_type": "", "data": b64(b"# Plan\nShip on Friday.") },
+                    { "name": "chart.png", "media_type": "image/png", "data": b64(b"png") },
+                ],
+            })),
+        )
+        .await;
+    assert_eq!(
+        turn.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&turn.body)
+    );
+    let events = turn.events();
+    assert_eq!(text_of(&events), "It says to ship on Friday.");
+    let run = events[0]["run"].as_str().unwrap().to_owned();
+
+    let asked = provider.last_request().unwrap();
+    let LlmMessage::User {
+        content,
+        attachments,
+    } = &asked.messages[0]
+    else {
+        panic!("the person's message first: {:?}", asked.messages);
+    };
+    assert_eq!(content, "When do we ship?");
+    let kinds: Vec<(&str, &str)> = attachments
+        .iter()
+        .map(|a| (a.name.as_str(), a.media_type.as_str()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [("plan.md", "text/markdown"), ("chart.png", "image/png")]
+    );
+    assert_eq!(attachments[0].text(), "# Plan\nShip on Friday.");
+
+    let read = alice
+        .send("GET", &format!("/api/_agents/helpdesk/runs/{run}"), None)
+        .await
+        .json();
+    let parts = &read["messages"][0]["parts"];
+    assert_eq!(parts[0]["type"], "attachment", "{read}");
+    assert_eq!(parts[0]["name"], "plan.md");
+    assert!(parts[0].get("url").is_none(), "a document is not repeated");
+    assert_eq!(
+        parts[1]["url"],
+        format!("data:image/png;base64,{}", b64(b"png"))
+    );
+    assert_eq!(
+        parts[2],
+        json!({ "type": "text", "text": "When do we ship?" })
+    );
     Ok(())
 }
 

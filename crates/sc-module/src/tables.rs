@@ -48,13 +48,15 @@
 //! Running it twice is a no-op, which is what lets it run on **every** load:
 //! install, upgrade, a configuration change and a restart are one path.
 
+use sc_types::Attrs;
+use sc_types::Role;
 use std::collections::BTreeSet;
 
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation, TableSettings};
 use sc_catalog::{
-    Attrs, Catalog, ConstraintKind, DataField, DataFieldKind, FILE_STORES_TABLE, FieldId,
-    FileStoreId, ModuleTables, Table, TableConstraint, TableId, connect_file_store_def,
-    load_file_store_by_name, save_file_store,
+    Catalog, ConstraintKind, DataField, DataFieldKind, FILE_STORES_TABLE, FieldId, FileStoreId,
+    ModuleTables, Table, TableConstraint, connect_file_store_def, load_file_store_by_name,
+    save_file_store,
 };
 use sc_error::{Error, Result};
 use serde::Deserialize;
@@ -92,10 +94,10 @@ pub struct TableDecl {
     pub ownership: Option<String>,
     /// The least role that may read rows, applied when the table is created.
     #[serde(default)]
-    pub min_role_read: Option<u8>,
+    pub min_role_read: Option<Role>,
     /// The least role that may write rows, applied when the table is created.
     #[serde(default)]
-    pub min_role_write: Option<u8>,
+    pub min_role_write: Option<Role>,
 }
 
 /// One declared field.
@@ -146,7 +148,7 @@ impl FieldDecl {
     fn kind(&self) -> DataFieldKind {
         if let Some(target) = &self.references {
             DataFieldKind::Key {
-                target_table: TableId(target.trim().to_owned()),
+                target_table: target.trim().to_owned(),
                 target_field: FieldId(String::new()),
                 summary_field: None,
             }
@@ -601,7 +603,7 @@ fn mismatch(existing: &DataField, decl: &FieldDecl) -> Option<String> {
             DataFieldKind::Key {
                 target_table: have, ..
             } if *have == target_table => return None,
-            _ => format!("a reference to `{}`", target_table.0),
+            _ => format!("a reference to `{}`", target_table),
         },
         DataFieldKind::Secret if matches!(existing.kind, DataFieldKind::Secret) => return None,
         DataFieldKind::File { store, .. } => match &existing.kind {
@@ -616,7 +618,7 @@ fn mismatch(existing: &DataField, decl: &FieldDecl) -> Option<String> {
 fn describe(kind: &DataFieldKind, type_name: Option<&str>) -> String {
     match kind {
         DataFieldKind::Plain => format!("`{}`", type_name.unwrap_or("?")),
-        DataFieldKind::Key { target_table, .. } => format!("a reference to `{}`", target_table.0),
+        DataFieldKind::Key { target_table, .. } => format!("a reference to `{}`", target_table),
         DataFieldKind::File { store, .. } => format!("a file in the store `{}`", store.0),
         DataFieldKind::Calc { .. } => "a calculated field".to_owned(),
         DataFieldKind::Secret => "a secret".to_owned(),
@@ -636,7 +638,7 @@ async fn create_file_stores(
         .filter_map(|f| f.file_store.as_deref().map(str::trim))
         .collect();
     for name in wanted {
-        if catalog.file_store(name)?.is_some() {
+        if catalog.has_file_store(name)? {
             continue;
         }
         if catalog.get(FILE_STORES_TABLE)?.is_none() {

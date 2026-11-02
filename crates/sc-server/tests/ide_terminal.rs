@@ -26,7 +26,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{HeaderValue, Request, StatusCode, header};
 use futures::{SinkExt, StreamExt};
 use sc_app::{Application, FrameworkRef};
-use sc_auth::{NewApiToken, ROLE_PUBLIC, SessionStore, User};
+use sc_auth::{NewApiToken, SessionStore, User};
 use sc_catalog::Catalog;
 use sc_config::{IDE_TERMINAL_ENABLED, set_config};
 use sc_db::DatabaseDriver;
@@ -71,6 +71,7 @@ struct Server {
     admin: String,
     admin_id: Uuid,
     public: String,
+    sessions: Arc<SessionStore>,
     catalog: Arc<Catalog>,
     root: PathBuf,
     _db: TestDb,
@@ -169,11 +170,12 @@ async fn serve(program: &Path, enabled: bool) -> Result<Server> {
     Ok(Server {
         addr,
         router,
-        admin_id: admin.id,
+        admin_id: admin.id(),
         admin: sessions.login(admin).await?,
         public: sessions
-            .login(User::new(Uuid::new_v4(), ROLE_PUBLIC)?)
+            .login(User::new(Uuid::new_v4(), sc_types::Role::PUBLIC))
             .await?,
+        sessions,
         catalog,
         root,
         _db: db,
@@ -526,6 +528,35 @@ async fn a_session_token_opens_mcp_while_its_terminal_is_open() -> Result<()> {
     assert!(!config.exists(), "the MCP config outlived its session");
     let left: Vec<_> = std::fs::read_dir(&server.root)?.flatten().collect();
     assert!(left.is_empty(), "written into the store: {left:?}");
+    Ok(())
+}
+
+/// A terminal lives as long as the admin session it was opened from: signing
+/// out closes it with the reason, ends the program, and its token stops
+/// opening MCP.
+#[tokio::test]
+async fn signing_out_ends_the_terminal_and_its_token() -> Result<()> {
+    let claude = StandIn::new();
+    let server = serve(&claude.program, true).await?;
+    let mut socket = server.open("").await;
+    let (_, url, token) = claude.mcp().await;
+    assert_eq!(ping(&url, &token).await.0, StatusCode::OK);
+    type_line(&mut socket, r"printf '\074%s\076\n' $$").await;
+    let output = read_until(&mut socket, ">\r").await;
+    let shell: i32 = output
+        .rsplit('<')
+        .next()
+        .and_then(|rest| rest.split('>').next())
+        .and_then(|pid| pid.parse().ok())
+        .expect("the shell printed its pid");
+
+    server.sessions.logout(&server.admin).await?;
+    assert!(
+        close_reason(&mut socket).await.contains("session ended"),
+        "the close says why"
+    );
+    assert!(gone(shell).await, "the program outlived the session");
+    assert_ne!(ping(&url, &token).await.0, StatusCode::OK);
     Ok(())
 }
 

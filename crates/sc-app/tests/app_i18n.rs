@@ -310,7 +310,7 @@ async fn the_instance_catalogue_is_rows_with_no_application() -> Result<()> {
     shared.save(&cat, &french()).await?;
     shared.save(&cat, &french()).await?;
     let rows: Vec<sc_db::Row> = cat
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&sc_query::Statement::from(sc_query::Select::from(
             sc_query::Source::table(TRANSLATIONS_TABLE),
         )))

@@ -14,6 +14,9 @@
 //!    and the chosen model answers in place of the agent's own.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::{Socket, next_frame};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,21 +26,21 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode, header};
-use futures::{SinkExt, StreamExt};
+use futures::SinkExt;
 use sc_agent::testing::{FakeProvider, Reply};
 use sc_agent::{Agent, EnabledTrait};
 use sc_app::{AgentExposure, ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{ROLE_ADMIN, Role, SessionStore, User, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, User, create_user, save_role};
 use sc_catalog::{Catalog, DataField};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
 use sc_llm::{ConnectedModel, LlmProvider};
 use sc_server::{
-    AGENT_CHAT_ROUTE, AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ProviderConnector,
-    SESSION_COOKIE, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
-    install_triggers,
+    AGENT_CHAT_ROUTE, AppMounts, MountedApp, SESSION_COOKIE, ServerConfig, admin_handlers,
+    build_router_with_apps, default_js_evaluator, install_triggers,
 };
+use sc_test_harness::Teardown;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
@@ -48,7 +51,7 @@ use uuid::Uuid;
 const BASE_DOMAIN: &str = "example.com";
 const APP_HOST: &str = "shelf.example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 80;
+const ROLE_MEMBER: Role = Role::of(80);
 /// The model a person may pick, under the `house` provider.
 const FAST: &str = "claude-haiku-4-5";
 
@@ -61,7 +64,7 @@ struct Picking {
 }
 
 #[async_trait]
-impl ProviderConnector for Picking {
+impl sc_agent::ProviderConnector for Picking {
     async fn connect(
         &self,
         _catalog: &Catalog,
@@ -147,7 +150,7 @@ fn picker() -> Agent {
 
 // --- the server -----------------------------------------------------------------
 
-struct TempDir(PathBuf);
+struct TempDir(PathBuf, Teardown);
 
 impl TempDir {
     fn new() -> TempDir {
@@ -157,7 +160,7 @@ impl TempDir {
             Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        TempDir(dir)
+        TempDir(dir, Teardown::new())
     }
 
     fn path(&self) -> &Path {
@@ -187,10 +190,11 @@ async fn serve(own: Vec<Reply>, fast: Vec<Reply>) -> Result<Server> {
     let tmp = TempDir::new();
     let driver = Arc::new(SqliteDriver::open(tmp.path().join("shelf.db"))?);
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    tmp.1.add(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
     create_user(&catalog, "alice@example.com", PASSWORD, ROLE_MEMBER).await?;
     sc_llm::bootstrap_llm_providers(&catalog).await?;
     sc_llm::save_llm_provider(
@@ -223,24 +227,25 @@ async fn serve(own: Vec<Reply>, fast: Vec<Reply>) -> Result<Server> {
     let mut meta = sc_catalog::TableMeta::new("personas");
     meta.access = sc_catalog::AccessRules {
         min_role_read: ROLE_MEMBER,
-        min_role_write: 1,
+        min_role_write: Role::ADMIN,
     };
     sc_catalog::save_table_meta(&catalog, &meta).await?;
     for (id, name, prompt, active) in [
         (1, "Librarian", "Answer as a librarian would.", true),
         (2, "Retired", "Never shown.", false),
     ] {
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             &catalog,
             &personas,
             &json!({ "id": id, "name": name, "prompt": prompt, "active": active }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
 
     let own = Arc::new(FakeProvider::new(own));
     let fast = Arc::new(FakeProvider::new(fast));
-    let providers: Arc<dyn ProviderConnector> = Arc::new(Picking {
+    let providers: Arc<dyn sc_agent::ProviderConnector> = Arc::new(Picking {
         own: own.clone(),
         fast: fast.clone(),
     });
@@ -298,7 +303,7 @@ async fn serve(own: Vec<Reply>, fast: Vec<Reply>) -> Result<Server> {
         let _ = axum::serve(listener, admin_router).await;
     });
     let admin = sessions
-        .login(User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap())
+        .login(User::new(Uuid::new_v4(), Role::ADMIN))
         .await
         .unwrap();
     Ok(Server {
@@ -440,9 +445,6 @@ fn sent(provider: &FakeProvider) -> String {
 
 // --- the admin socket ------------------------------------------------------------
 
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-
 async fn admin_socket(server: &Server, agent: &str) -> (Socket, Option<Value>) {
     let mut request = format!("ws://{}{AGENT_CHAT_ROUTE}", server.addr)
         .into_client_request()
@@ -469,16 +471,6 @@ async fn admin_socket(server: &Server, agent: &str) -> (Socket, Option<Value>) {
 
 async fn socket_send(socket: &mut Socket, frame: Value) {
     socket.send(Message::text(frame.to_string())).await.unwrap();
-}
-
-async fn next_frame(socket: &mut Socket) -> Value {
-    loop {
-        match socket.next().await.expect("the socket closed").unwrap() {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
-            Message::Close(frame) => panic!("closed: {frame:?}"),
-            _ => {}
-        }
-    }
 }
 
 /// One turn's events over the socket, up to `done`.
@@ -538,14 +530,14 @@ async fn ask_user_and_plan_approval_through_the_application_chat() -> Result<()>
     assert_eq!(question["kind"], "choice");
     let options = question["options"].as_array().unwrap();
     assert_eq!(options.len(), 3, "two options and discuss: {question}");
-    assert_eq!(options[2]["value"], sc_core_traits::DISCUSS_VALUE);
+    assert_eq!(options[2]["value"], sc_agent_builtins::DISCUSS_VALUE);
     assert_eq!(options[2]["label"], "Discuss instead");
 
     // "Discuss instead" reaches the model as the discuss prompt.
     let discussed = alice
         .chat(
             "asker",
-            json!({ "answers_request": question["id"], "value": sc_core_traits::DISCUSS_VALUE, "run": run }),
+            json!({ "answers_request": question["id"], "value": sc_agent_builtins::DISCUSS_VALUE, "run": run }),
         )
         .await;
     assert_eq!(done(&discussed)["answer"], "Let's talk about it.");
@@ -601,7 +593,7 @@ async fn ask_user_and_plan_approval_through_the_admin_chat() -> Result<()> {
     assert_eq!(question["kind"], "choice", "{asked:#?}");
     let discussed = socket_turn(
         &mut socket,
-        json!({ "type": "message", "answers_request": question["id"], "value": sc_core_traits::DISCUSS_VALUE }),
+        json!({ "type": "message", "answers_request": question["id"], "value": sc_agent_builtins::DISCUSS_VALUE }),
     )
     .await;
     assert_eq!(done(&discussed)["answer"], "Let's talk about it.");
@@ -645,7 +637,7 @@ async fn ask_user_and_plan_approval_through_the_admin_chat() -> Result<()> {
 #[tokio::test]
 async fn a_code_button_answers_without_the_model_on_both_surfaces() -> Result<()> {
     let server = serve(vec![Reply::says("Noted.")], Vec::new()).await?;
-    let control = sc_core_traits::button_control("Count books");
+    let control = sc_agent_builtins::button_control("Count books");
     assert_eq!(control, "js_count_books");
 
     // The application's chat lists the button, and a press is answered by the
@@ -881,6 +873,7 @@ async fn a_pickable_model_that_does_not_resolve_is_refused_on_save() -> Result<(
     let tmp = TempDir::new();
     let driver = Arc::new(SqliteDriver::open(tmp.path().join("v.db"))?);
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    tmp.1.add(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_llm::bootstrap_llm_providers(&catalog).await?;
     sc_llm::save_llm_provider(

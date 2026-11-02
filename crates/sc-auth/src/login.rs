@@ -44,7 +44,7 @@ pub async fn authenticate(catalog: &Catalog, email: &str, password: &str) -> Res
         .filter(Expr::col(COL_EMAIL).eq(Expr::lit(email)))
         .limit(1);
     let rows = catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()
@@ -76,11 +76,11 @@ pub async fn authenticate(catalog: &Catalog, email: &str, password: &str) -> Res
     // moment it ever is. Best-effort: the password was right, and a failed
     // upgrade is tried again at the next login rather than refusing this one.
     if needs_rehash(&hash)
-        && let Err(e) = crate::manage::set_user_password(catalog, user.id, password).await
+        && let Err(e) = crate::manage::set_user_password(catalog, user.id(), password).await
     {
         sc_log::log_warn!(
             "the legacy password hash of user {} could not be replaced: {}",
-            user.id,
+            user.id(),
             sc_error::format_chain(&e)
         );
     }

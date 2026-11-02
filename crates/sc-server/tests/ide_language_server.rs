@@ -23,6 +23,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![cfg(unix)]
 
+use sc_types::Role;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,7 +34,7 @@ use axum::Router;
 use axum::http::{HeaderValue, StatusCode, header};
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, SessionStore, User};
+use sc_auth::{SessionStore, User};
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -74,31 +75,31 @@ impl FileStore for ObjectStore {
     fn name(&self) -> &str {
         &self.name
     }
-    async fn read(&self, _path: &str) -> Result<Bytes> {
+    async fn read(&self, _path: &sc_files::StorePath) -> Result<Bytes> {
         no_bytes("read")
     }
-    async fn write(&self, _path: &str, _data: Bytes) -> Result<()> {
+    async fn write(&self, _path: &sc_files::StorePath, _data: Bytes) -> Result<()> {
         no_bytes("write")
     }
-    async fn list(&self, _dir: &str) -> Result<Vec<Entry>> {
+    async fn list(&self, _dir: &sc_files::StorePath) -> Result<Vec<Entry>> {
         Ok(Vec::new())
     }
-    async fn mkdir(&self, _path: &str) -> Result<()> {
+    async fn mkdir(&self, _path: &sc_files::StorePath) -> Result<()> {
         no_bytes("mkdir")
     }
-    async fn delete(&self, _path: &str) -> Result<bool> {
+    async fn delete(&self, _path: &sc_files::StorePath) -> Result<bool> {
         no_bytes("delete")
     }
-    async fn rename(&self, _from: &str, _to: &str) -> Result<()> {
+    async fn rename(&self, _from: &sc_files::StorePath, _to: &sc_files::StorePath) -> Result<()> {
         no_bytes("rename")
     }
     fn is_git_repo(&self) -> bool {
         false
     }
-    async fn get_meta(&self, _path: &str) -> Result<FileMeta> {
+    async fn get_meta(&self, _path: &sc_files::StorePath) -> Result<FileMeta> {
         Ok(FileMeta::default())
     }
-    async fn set_meta(&self, _path: &str, _meta: &FileMeta) -> Result<()> {
+    async fn set_meta(&self, _path: &sc_files::StorePath, _meta: &FileMeta) -> Result<()> {
         no_bytes("set_meta")
     }
 }
@@ -246,11 +247,11 @@ async fn serve(router: Router, sessions: &SessionStore, db: Option<TestDb>) -> S
     Server {
         addr,
         admin: sessions
-            .login(User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap())
+            .login(User::new(Uuid::new_v4(), Role::ADMIN))
             .await
             .unwrap(),
         public: sessions
-            .login(User::new(Uuid::new_v4(), ROLE_PUBLIC).unwrap())
+            .login(User::new(Uuid::new_v4(), Role::PUBLIC))
             .await
             .unwrap(),
         _db: db,
@@ -266,6 +267,7 @@ async fn serve_with_stores(
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     for store in stores {
         catalog.connect_file_store(store)?;
     }

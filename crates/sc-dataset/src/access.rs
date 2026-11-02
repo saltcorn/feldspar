@@ -23,7 +23,7 @@
 //!
 //! - **Not one of the application's tables** (`Caller::tables`): refused. This
 //!   is how a self-serve application's table subset is enforced on reads — at
-//!   the statement, whatever the client sent (A9.4).
+//!   the statement, whatever the client sent.
 //! - **Row-level security** on the table: the database decides, inside a
 //!   transaction that carries the caller ([`sc_catalog::set_caller_context`]).
 //! - **The caller meets `min_role_read`**: read as it is.
@@ -41,11 +41,12 @@
 //! that did not draw — and it is the same whether the table is the base or
 //! three joins away.
 
+use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use sc_auth::{COL_ID, COL_PASSWORD_HASH, COL_ROLE, ROLE_ADMIN, ROLE_PUBLIC, USERS_TABLE, User};
-use sc_catalog::{CallerContext, Catalog, Table};
+use sc_auth::{COL_ID, COL_PASSWORD_HASH, COL_ROLE, USERS_TABLE, User};
+use sc_catalog::{Catalog, Principal, Table};
 use sc_db::{DatabaseDriver, Row};
 use sc_error::{Error, Result};
 use sc_expr::{Env, Operation, SchemaShape, TranslateError, UserEnv, translate_rooted};
@@ -57,12 +58,12 @@ use serde_json::Value as Json;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Caller {
     /// The role: the user's, or public for nobody.
-    pub role: u8,
+    pub role: Role,
     /// The user, as the formula's `user` sees it: `id`, `role` and every other
     /// column. `None` for nobody, and for the server reading on its own
     /// authority.
     pub user: Option<BTreeMap<String, Value>>,
-    /// The tables an application lets its users read (A9.4); `None` is every
+    /// The tables an application lets its users read; `None` is every
     /// table, which is the unrestricted Analytics UI.
     pub tables: Option<Arc<BTreeSet<String>>>,
 }
@@ -73,7 +74,7 @@ impl Caller {
     /// test reads as.
     pub fn admin() -> Caller {
         Caller {
-            role: ROLE_ADMIN,
+            role: Role::ADMIN,
             user: None,
             tables: None,
         }
@@ -82,11 +83,11 @@ impl Caller {
     /// The caller a request's user is, or nobody's (the public role).
     pub fn of_user(user: Option<&User>) -> Caller {
         Caller {
-            role: user.map_or(ROLE_PUBLIC, |u| u.role),
+            role: user.map_or(Role::PUBLIC, |u| u.role()),
             user: user.map(|u| {
-                let mut fields = u.extra.clone();
-                fields.insert(COL_ID.to_owned(), Value::Uuid(u.id));
-                fields.insert(COL_ROLE.to_owned(), Value::Int(i64::from(u.role)));
+                let mut fields = u.extra().clone();
+                fields.insert(COL_ID.to_owned(), Value::Uuid(u.id()));
+                fields.insert(COL_ROLE.to_owned(), Value::Int(i64::from(u.role())));
                 fields
             }),
             tables: None,
@@ -102,7 +103,7 @@ impl Caller {
 
     /// Whether this is the admin role.
     pub fn is_admin(&self) -> bool {
-        self.role <= ROLE_ADMIN
+        self.role.is_admin()
     }
 
     /// The user's id, if a user is reading.
@@ -119,7 +120,7 @@ impl Caller {
     }
 
     /// The context a row-level-security policy reads the caller from.
-    pub fn context(&self) -> CallerContext {
+    pub fn context(&self) -> Principal {
         let user = self.user.as_ref().map(|fields| {
             Json::Object(
                 fields
@@ -128,12 +129,11 @@ impl Caller {
                     .collect(),
             )
         });
-        CallerContext::new(self.role, user)
+        Principal::new(self.role, user)
     }
 }
 
-/// Who owns a dataset or a workspace, and the roles it is shared with
-/// (analytics TODO A9.1).
+/// Who owns a dataset or a workspace, and the roles it is shared with.
 ///
 /// Sharing is by **role floor**, the one way this system says "these people":
 /// shared with role 40, a thing is seen by every user whose role is 40 or more
@@ -146,7 +146,7 @@ pub struct Sharing {
     pub owner: Option<uuid::Uuid>,
     /// The least privileged role it is shared with; `None` for nobody but its
     /// owner.
-    pub share_role: Option<u8>,
+    pub share_role: Option<Role>,
 }
 
 impl Sharing {
@@ -163,22 +163,14 @@ impl Sharing {
     pub fn admits(&self, caller: &Caller) -> bool {
         caller.is_admin()
             || (self.owner.is_some() && self.owner == caller.user_id())
-            || self.share_role.is_some_and(|floor| caller.role <= floor)
+            || self
+                .share_role
+                .is_some_and(|floor| caller.role.meets(floor))
     }
 
     /// Whether `caller` may change it: the admin, or its owner.
     pub fn may_change(&self, caller: &Caller) -> bool {
         caller.is_admin() || (self.owner.is_some() && self.owner == caller.user_id())
-    }
-
-    /// Refuse a role to share with that is not one.
-    pub fn check(&self) -> Result<()> {
-        match self.share_role {
-            Some(role) if !(ROLE_ADMIN..=ROLE_PUBLIC).contains(&role) => Err(Error::invalid(
-                format!("{role} is not a role to share with: roles run from 1 to 100"),
-            )),
-            _ => Ok(()),
-        }
     }
 }
 
@@ -212,7 +204,11 @@ impl std::fmt::Debug for Reader {
 impl Reader {
     /// `caller`'s view of the catalog's primary database, as the catalog is now.
     pub fn new(catalog: &Catalog, caller: &Caller) -> Result<Reader> {
-        let db = Arc::clone(catalog.primary());
+        // The reader applies its caller's floors and, on an RLS table, runs in the
+        // caller's context: the driver is how it reaches the rows it decides.
+        let db = Arc::clone(catalog.primary(sc_catalog::Unchecked::system(
+            "dataset reader: the rows its caller's floors and RLS context decide",
+        )));
         let row_level_security = db.capabilities().row_level_security;
         Ok(Reader {
             inner: Arc::new(ReaderInner {
@@ -280,16 +276,7 @@ impl Reader {
             Ok(stream) => stream.try_collect().await,
             Err(e) => Err(e),
         };
-        match outcome {
-            Ok(rows) => {
-                tx.commit().await?;
-                Ok(rows)
-            }
-            Err(e) => {
-                let _ = tx.rollback().await;
-                Err(e)
-            }
-        }
+        sc_db::finish(tx, outcome).await
     }
 
     /// What reading `name` under the alias `root` means for this caller.
@@ -338,7 +325,7 @@ impl Reader {
                 in_context: true,
             });
         }
-        if caller.role <= table.access.min_role_read {
+        if caller.role.meets(table.access.min_role_read) {
             return Ok(TableRead {
                 rows: only(None),
                 in_context: false,
@@ -524,8 +511,8 @@ mod tests {
 
     #[test]
     fn a_thing_is_seen_by_its_owner_the_roles_it_is_shared_with_and_the_admin() {
-        let alice = User::new(uuid::Uuid::new_v4(), 40).unwrap();
-        let bob = User::new(uuid::Uuid::new_v4(), 80).unwrap();
+        let alice = User::new(uuid::Uuid::new_v4(), Role::of(40));
+        let bob = User::new(uuid::Uuid::new_v4(), Role::of(80));
         let (alice, bob) = (Caller::of_user(Some(&alice)), Caller::of_user(Some(&bob)));
         let private = Sharing::owned_by(alice.user_id());
         assert!(private.admits(&alice) && private.may_change(&alice));
@@ -534,61 +521,45 @@ mod tests {
         assert!(!private.admits(&Caller::of_user(None)));
         // Shared with role 80: bob sees it and still may not change it.
         let shared = Sharing {
-            share_role: Some(80),
+            share_role: Some(Role::of(80)),
             ..private
         };
         assert!(shared.admits(&bob) && !shared.may_change(&bob));
         // Shared with role 40 is not shared with 80.
         let staff = Sharing {
-            share_role: Some(40),
+            share_role: Some(Role::of(40)),
             ..private
         };
         assert!(!staff.admits(&bob));
         // The admin's own, from before owners: nobody else's to change.
         let old = Sharing::default();
         assert!(!old.admits(&alice) && !old.may_change(&alice));
-        assert!(
-            Sharing {
-                share_role: Some(0),
-                ..old
-            }
-            .check()
-            .is_err()
-        );
-        assert!(
-            Sharing {
-                share_role: Some(100),
-                ..old
-            }
-            .check()
-            .is_ok()
-        );
     }
 
     #[test]
     fn a_caller_knows_its_user_and_its_tables() {
-        let user = User::new(uuid::Uuid::new_v4(), 40).unwrap();
+        let user = User::new(uuid::Uuid::new_v4(), Role::of(40));
         let caller = Caller::of_user(Some(&user)).within(["houses".to_owned()]);
-        assert_eq!(caller.role, 40);
-        assert_eq!(caller.user_id(), Some(user.id));
+        assert_eq!(caller.role, Role::of(40));
+        assert_eq!(caller.user_id(), Some(user.id()));
         assert!(caller.may_name("houses"));
         assert!(!caller.may_name("incidents"));
         assert!(!caller.is_admin());
         let nobody = Caller::of_user(None);
-        assert_eq!(nobody.role, ROLE_PUBLIC);
+        assert_eq!(nobody.role, Role::PUBLIC);
         assert!(nobody.user.is_none());
         assert!(nobody.may_name("anything"));
         assert!(Caller::admin().is_admin());
         // The policy context carries the user's fields as JSON.
         let context = caller.context();
-        assert_eq!(context.role, 40);
+        assert_eq!(context.role, Role::of(40));
         assert_eq!(
             context
                 .user
                 .as_ref()
                 .and_then(|u| u.get("id"))
                 .and_then(Json::as_str),
-            Some(user.id.to_string().as_str())
+            Some(user.id().to_string().as_str())
         );
     }
 }

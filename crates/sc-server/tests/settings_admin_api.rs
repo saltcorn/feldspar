@@ -27,6 +27,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
 use sc_config::{
@@ -36,10 +37,8 @@ use sc_config::{
     SMTP_SECURITY, SMTP_USERNAME, SSL_CERTIFICATE, SSL_MODE, SSL_PRIVATE_KEY, SslMode,
     mcp_settings, ssl_settings, stored_config,
 };
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
-use sc_server::{AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router};
-use sc_test_harness::{TestDb, TestSmtp};
+use sc_server::{AppMounts, ServerConfig, admin_handlers, build_router};
+use sc_test_harness::{TestDb, TestServer, TestSmtp};
 use sc_types::SECRET_SENTINEL;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -118,21 +117,7 @@ fn self_signed() -> (String, String) {
 /// A router over a real database with the platform tables bootstrapped, and an
 /// admin logged in.
 async fn setup() -> sc_error::Result<(Client, Arc<Catalog>, TestDb)> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
 
@@ -915,5 +900,56 @@ async fn a_verbosity_that_is_not_a_level_is_refused() -> sc_error::Result<()> {
         "{body}"
     );
     assert_eq!(stored_config(&catalog, LOG_VERBOSITY).await?, None);
+    Ok(())
+}
+
+/// With `ssl_mode = "proxy"` pinned the screen is not handed a TLS section at
+/// all — no tab of settings that do nothing — while the other sections, and a
+/// save of them, work as before and leave the stored TLS rows alone.
+#[tokio::test]
+async fn a_proxy_pinned_host_has_no_tls_section() -> sc_error::Result<()> {
+    let (mut client, catalog, _db) = setup().await?;
+    sc_config::set_config(&catalog, ACME_CONTACT_EMAIL, json!("ops@example.com")).await?;
+    sc_config::set_host_config(
+        &catalog,
+        json!({ SSL_MODE: sc_config::MODE_PROXY })
+            .as_object()
+            .unwrap()
+            .clone(),
+    )?;
+
+    let (status, body) = client.send("GET", "/api/settings", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let names: Vec<&str> = body["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&sc_config::SSL_SECTION), "{names:?}");
+    assert!(names.contains(&"email"), "{names:?}");
+
+    let (status, saved) = client
+        .send(
+            "POST",
+            "/api/settings",
+            Some(json!({ "values": { SMTP_PORT: 2525 } })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert!(
+        saved["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["name"] != json!(sc_config::SSL_SECTION)),
+        "{saved}"
+    );
+    assert_eq!(stored_config(&catalog, SMTP_PORT).await?, Some(json!(2525)));
+    assert_eq!(
+        stored_config(&catalog, ACME_CONTACT_EMAIL).await?,
+        Some(json!("ops@example.com"))
+    );
+    assert_eq!(ssl_settings(&catalog).await?.mode, SslMode::Proxy);
     Ok(())
 }

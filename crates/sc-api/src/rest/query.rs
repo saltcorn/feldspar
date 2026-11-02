@@ -2,10 +2,10 @@
 //!
 //! `?select=title,author(name,country)&published=gte.2020-01-01&order=published.desc&limit=20`
 //! parses here, and it parses into the row layer's own
-//! [`RowQuery`](crate::rows::RowQuery) — the *same* value the GraphQL provider's
+//! [`RowQuery`](sc_access::rows::RowQuery) — the *same* value the GraphQL provider's
 //! list arguments lower to, run through the *same*
 //! [`ownership::read_row_values_as`]. REST is a **syntax over the read layer**,
-//! not a second reader: one place decides what a filter may say (`crate::filter`,
+//! not a second reader: one place decides what a filter may say (`sc_access::filter`,
 //! shared with GraphQL), one place decides which rows a caller may see, and one
 //! statement answers the request.
 //!
@@ -24,11 +24,12 @@
 //! `sc-expr` Ⱶ-join correlated subquery per requested leaf, projected as extra
 //! columns of the same `SELECT` and nested back into `{"author": {"name": …}}`
 //! on the way out. Which is why every embed passes
-//! [`ownership::join_guard`](crate::ownership::join_guard) first: a subquery has
+//! [`ownership::join_guard`](sc_access::ownership::join_guard) first: a subquery has
 //! no `WHERE` this provider owns, so a caller whose access to the target table
 //! comes from an ownership formula is refused by name rather than handed a
 //! withheld row one column at a time.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 
 use sc_catalog::{Catalog, DataFieldKind, Table};
@@ -37,11 +38,11 @@ use sc_expr::JOIN;
 use sc_query::{Projection, Value};
 use serde_json::{Map, Value as Json};
 
-use crate::convert::value_to_json;
-use crate::ownership;
 use crate::provider::ApiRequest;
 use crate::query_string::{self, KEY_SELECT};
-use crate::rows::RowQuery;
+use sc_access::ownership;
+use sc_access::rows::RowQuery;
+use sc_types::value_to_json;
 
 /// How deep a `select` may nest embeds.
 ///
@@ -139,7 +140,7 @@ pub(crate) fn parse(
     cat: &Catalog,
     table: &Table,
     req: &ApiRequest,
-    role: u8,
+    role: Role,
     row_cap: u64,
 ) -> Result<ListQuery> {
     // The filters, the ordering and the bounds are the shared vocabulary
@@ -326,7 +327,7 @@ fn resolve(
     table: &Table,
     items: &[Item<'_>],
     prefix: Option<&str>,
-    role: u8,
+    role: Role,
     plan: &mut Plan,
 ) -> Result<Vec<Node>> {
     let mut nodes = Vec::with_capacity(items.len());
@@ -338,7 +339,7 @@ fn resolve(
             )));
         }
         let key = item.alias.unwrap_or(name).to_owned();
-        let Some(field) = crate::user_rows::visible_field(table, name) else {
+        let Some(field) = sc_access::user_rows::visible_field(table, name) else {
             // An embed of a *table* name rather than of one of this table's keys
             // is PostgREST's one-to-many embed: a second, batched read, and the
             // shape of paging and ordering *within* it is undecided. Named as
@@ -380,7 +381,7 @@ fn resolve(
                 table.name
             )));
         };
-        let target = cat.require(&target_table.0)?;
+        let target = cat.require(target_table)?;
         // A joined row is *read*, so the target's read rule holds — an embed
         // must not become a way around the floor a list over the same table
         // enforces, and a formula-granted access cannot be carried by a

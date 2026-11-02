@@ -12,6 +12,7 @@
 //! restart forgets the jobs, and one cut short leaves no tables behind, because
 //! its rows were never committed.
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -156,7 +157,7 @@ impl InstallJobs {
         catalog: Arc<Catalog>,
         key: &str,
         fetch: Arc<dyn Fetch>,
-        context: sc_catalog::CallerContext,
+        context: sc_catalog::Principal,
     ) -> InstallJob {
         let job = {
             let Ok(mut jobs) = self.jobs.lock() else {
@@ -181,7 +182,7 @@ impl InstallJobs {
         let owned_key = key.to_owned();
         let progress_jobs = Arc::clone(&self.jobs);
         let progress_key = owned_key.clone();
-        let install = tokio::spawn(async move {
+        let install = sc_catalog::spawn_scoped(async move {
             let progress = move |p: Progress| {
                 if let Ok(mut jobs) = progress_jobs.lock()
                     && let Some(job) = jobs.get_mut(&progress_key)
@@ -190,7 +191,14 @@ impl InstallJobs {
                     job.status = JobStatus::Running(Some(p));
                 }
             };
-            public_datasets::install(&catalog, &owned_key, &*fetch, &progress, Some(&context)).await
+            public_datasets::install(
+                &catalog,
+                &owned_key,
+                &*fetch,
+                &progress,
+                sc_access::admin_access(&context)?,
+            )
+            .await
         });
         // A supervisor awaits the install, so one that panics is recorded as
         // failed rather than leaving the job running for good.
@@ -198,7 +206,7 @@ impl InstallJobs {
         let key = key.to_owned();
         tokio::spawn(async move {
             let outcome = match install.await {
-                Ok(outcome) => outcome.map_err(|e| public_datasets::plain(&e)),
+                Ok(outcome) => outcome.map_err(|e| e.message_and_causes()),
                 Err(joined) => Err(if joined.is_panic() {
                     "the install stopped unexpectedly (a panic in the server); see the server log"
                         .to_owned()
@@ -234,7 +242,7 @@ fn failed_now(key: &str, error: &str) -> InstallJob {
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, fetch: Arc<dyn Fetch>) {
     let jobs = InstallJobs::default();
 
-    reg.register("listPublicDatasets", {
+    reg.register_admin("listPublicDatasets", {
         let catalog = catalog.clone();
         let jobs = jobs.clone();
         move |_ctx| {
@@ -255,7 +263,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, fetch: 
         }
     });
 
-    reg.register("installPublicDataset", {
+    reg.register_admin("installPublicDataset", {
         let catalog = catalog.clone();
         let jobs = jobs.clone();
         move |ctx| {
@@ -266,14 +274,14 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, fetch: 
                 let key = ctx.path_param("key")?;
                 // An unknown key is a 404 now, not a failed job later.
                 public_datasets::find(key)?;
-                let caller = sc_api::caller_context_at(sc_auth::ROLE_ADMIN, ctx.user.as_ref());
+                let caller = sc_access::principal_at(Role::ADMIN, ctx.user());
                 let job = jobs.start(catalog, key, fetch, caller);
                 Ok(HandlerResponse::ok(job.to_json()).with_status(202))
             }
         }
     });
 
-    reg.register("getPublicDatasetInstall", {
+    reg.register_admin("getPublicDatasetInstall", {
         let jobs = jobs.clone();
         move |ctx| {
             let jobs = jobs.clone();

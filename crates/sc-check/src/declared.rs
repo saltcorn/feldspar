@@ -162,9 +162,9 @@ impl StepType for DeclaredStep {
                 "run": { "id": cx.run_id.to_string() },
                 "vars": cx.vars,
                 "user": cx.run_as.map(|u| json!({
-                    "id": u.id.to_string(),
+                    "id": u.id().to_string(),
                     "email": u.get(sc_auth::COL_EMAIL).and_then(sc_query::Value::as_text),
-                    "role": u.role,
+                    "role": u.role(),
                 })),
                 "application": cx.application.map(|a| json!({
                     "id": a.id.0.to_string(),
@@ -308,10 +308,10 @@ pub(crate) async fn answer(
         "inspect" => {
             let locator = match plan.get("locator").and_then(Json::as_str).map(str::trim) {
                 None | Some("") => None,
-                Some(raw) => Some(raw.parse::<sc_browser::Locator>()?),
+                Some(raw) => Some(raw.parse::<sc_agent::browser::Locator>()?),
             };
             let report = cx
-                .browser(sc_browser::BrowserAction::Inspect { locator })
+                .browser(sc_agent::browser::BrowserAction::Inspect { locator })
                 .await?;
             Ok(json!({
                 "url": report.url,
@@ -331,7 +331,7 @@ pub(crate) async fn answer(
         "rows" => {
             let table = crate::steps::data::table(cx, plan)?;
             let filter =
-                sc_api::filter::api_where(&table, plan.get("where").filter(|w| !w.is_null()))?;
+                sc_access::filter::api_where(&table, plan.get("where").filter(|w| !w.is_null()))?;
             let limit = plan
                 .get("limit")
                 .and_then(Json::as_u64)

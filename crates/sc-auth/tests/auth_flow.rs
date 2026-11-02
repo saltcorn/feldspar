@@ -6,41 +6,22 @@
 //! `role_gate`); this file is the consolidated Phase 5 definition-of-done for the
 //! users-and-auth story.
 
-use std::sync::Arc;
+use sc_types::Role;
 use std::time::Duration as StdDuration;
 
 use chrono::Duration;
 use sc_auth::{
-    CACHE_CAPACITY, COL_EMAIL, ROLE_ADMIN, SessionStore, any_user_exists, authenticate, bootstrap,
+    CACHE_CAPACITY, COL_EMAIL, SessionStore, any_user_exists, authenticate, bootstrap,
     create_first_user,
 };
-use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_query::Value;
-use sc_test_harness::TestDb;
+use sc_test_harness::TestServer;
 
 #[tokio::test]
 async fn phase5_auth_acceptance_walk() -> sc_error::Result<()> {
-    let db = TestDb::new().await?;
-
-    // The multi-tenant v1 test template carries `users` tables in several
-    // schemas; drop them all so bootstrap creates the clean MVP table. No-op in
-    // clean CI.
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver.clone() as Arc<dyn DatabaseDriver>).await?);
+    let TestServer {
+        db: _db, catalog, ..
+    } = TestServer::builder().build().await?;
     bootstrap(&catalog).await?;
 
     // --- create-first-user ----------------------------------------------------
@@ -80,8 +61,8 @@ async fn phase5_auth_acceptance_walk() -> sc_error::Result<()> {
     let user = authenticate(&catalog, "admin@example.com", "s3cret-pw")
         .await?
         .expect("valid credentials authenticate");
-    assert_eq!(user.id, admin.id);
-    assert_eq!(user.role, ROLE_ADMIN);
+    assert_eq!(user.id(), admin.id());
+    assert_eq!(user.role(), Role::ADMIN);
     assert_eq!(
         user.get(COL_EMAIL),
         Some(&Value::Text("admin@example.com".into()))
@@ -93,7 +74,7 @@ async fn phase5_auth_acceptance_walk() -> sc_error::Result<()> {
     let sessions = SessionStore::database(catalog.clone());
     let token = sessions.login(user.clone()).await?;
     assert_eq!(
-        sessions.user_for(&token).await?,
+        sessions.user_for(&token).await?.map(|u| u.into_user()),
         Some(user.clone()),
         "session resolves before logout"
     );
@@ -116,7 +97,7 @@ async fn phase5_auth_acceptance_walk() -> sc_error::Result<()> {
     );
     let expiring = short.login(user.clone()).await?;
     assert_eq!(
-        short.user_for(&expiring).await?,
+        short.user_for(&expiring).await?.map(|u| u.into_user()),
         Some(user),
         "session valid within its TTL"
     );

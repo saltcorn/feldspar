@@ -284,7 +284,6 @@ export function ModulesTab() {
         <div className="card-body">
           <p className="text-secondary">
             <T text="A module is a Javascript npm or Python pypi package that supplies actions, tables, functions and/or frameworks." />{" "}
-            {" "}
             <T
               text="A {python} module is a distribution installed into this server’s Python environment and runs in the server’s own interpreter, with the server’s own privileges: there is no sandbox for one and nothing to grant."
               values={{
@@ -354,7 +353,7 @@ export function ModulesTab() {
           </div>
           <div className="card-body">
             <p className="text-secondary">
-              <T text="These modules are maintained and bundled within the core Saltcorn instancem but still need to be activated before they can be used." />{" "}
+              <T text="These modules are maintained and bundled within the core Saltcorn instance, but still need to be activated before they can be used." />{" "}
               <T
                 text="What is {not_} shipped is what each one depends on — installing fetches that from {npm} or {pypi}, which is the one part of the click that reaches the network."
                 values={{

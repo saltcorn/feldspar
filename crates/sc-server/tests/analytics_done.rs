@@ -74,6 +74,8 @@
 //! formula gives `staff` the newer houses only, and every count, box and test
 //! in both applications is of those rows, against the admin's 200.
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -85,8 +87,8 @@ use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-    default_js_evaluator, install_triggers,
+    AppMounts, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
+    install_triggers,
 };
 use sc_test_harness::TestDb;
 use serde_json::{Value, json};
@@ -221,6 +223,7 @@ async fn serve(
 ) -> sc_error::Result<(Client, TestDb)> {
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;
@@ -277,6 +280,7 @@ fn f(v: &Value) -> Option<f64> {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_try_it_of_milestone_a1() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;
 
@@ -636,6 +640,7 @@ fn result<'a>(section: &'a Value, kind: &str) -> &'a Value {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_try_it_of_milestone_a2() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;
     let r = reference();
@@ -1111,6 +1116,7 @@ fn terms(answer: &Value) -> Vec<String> {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_try_it_of_milestone_a3() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;
     let client = &mut client;
@@ -1569,6 +1575,7 @@ fn users(usage: &Value) -> Vec<(String, String, i64)> {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_try_it_of_milestone_a4() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;
     let client = &mut client;
@@ -1934,6 +1941,7 @@ impl Client {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_try_it_of_milestone_a5() -> sc_error::Result<()> {
     let Some(db) = TestDb::with_postgis().await? else {
         return Ok(());
@@ -2505,6 +2513,7 @@ fn months(
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_try_it_of_milestone_a6() -> sc_error::Result<()> {
     let Some(db) = TestDb::with_postgis().await? else {
         return Ok(());
@@ -2991,7 +3000,7 @@ impl Client {
 
     /// A table's read access: `min_role_read`, and the ownership formula that
     /// grants rows below it.
-    async fn table_readable(&mut self, table: &str, min_role_read: u8, formula: &str) {
+    async fn table_readable(&mut self, table: &str, min_role_read: Role, formula: &str) {
         self.ok(
             "PUT",
             &format!("/api/tables/{table}"),
@@ -3022,6 +3031,7 @@ fn per_neighbourhood<'a>(houses: impl Iterator<Item = &'a House>) -> BTreeMap<St
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_try_it_of_milestone_a9() -> sc_error::Result<()> {
     // A stand-in for the built Analytics UI: an application serves it at `/`.
     let bundle = std::env::temp_dir().join(format!("sc-analytics-a9-{}", uuid::Uuid::new_v4()));
@@ -3146,7 +3156,7 @@ async fn the_try_it_of_milestone_a9() -> sc_error::Result<()> {
         why.to_string().contains("you may not read `houses`"),
         "{why}"
     );
-    admin.table_readable("houses", 40, "").await;
+    admin.table_readable("houses", Role::of(40), "").await;
 
     // 2. Sam, a `staff` user, at the application's address. The page is the
     //    Analytics UI's; the shell is the dashboard alone.
@@ -3278,7 +3288,9 @@ async fn the_try_it_of_milestone_a9() -> sc_error::Result<()> {
 
     // 3. The self-serve application: `houses` and `neighbourhoods`, the
     //    Dataset editor on, the Data explorer.
-    admin.table_readable("neighbourhoods", 40, "").await;
+    admin
+        .table_readable("neighbourhoods", Role::of(40), "")
+        .await;
     let serve_app = admin
         .ok(
             "POST",
@@ -3443,7 +3455,7 @@ async fn the_try_it_of_milestone_a9() -> sc_error::Result<()> {
     //    and an ownership formula granting the rest. Sam's plots and tests in
     //    both applications include those rows only; the admin's all of them.
     admin
-        .table_readable("houses", 1, "user && year_built >= 1990")
+        .table_readable("houses", Role::ADMIN, "user && year_built >= 1990")
         .await;
     let theirs: Vec<&House> = all.iter().filter(newer).collect();
     assert!(

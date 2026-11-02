@@ -15,8 +15,8 @@
 use std::sync::Arc;
 
 use sc_action::ActionRegistry;
+use sc_action_builtins::CodeSurfaces;
 use sc_catalog::Catalog;
-use sc_core_actions::CodeSurfaces;
 use sc_error::Result;
 use sc_module::{LoadedModule, Module, ModuleLanguage, list_modules};
 use serde_json::Value as Json;

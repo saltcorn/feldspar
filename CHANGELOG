@@ -43,10 +43,2156 @@ terminal panel's "New Terminal" open more sessions.
   filling the page's memory.
 - The program gets an allow-listed environment, not the server's (which holds the database
   credentials). Closing the tab or the page ends it and everything it started, including
-  background jobs and children in a session of their own.
+  background jobs and children in a session of their own. So does signing out, or the admin
+  being disabled or demoted: the terminal closes with the reason, and its MCP access ends.
 - Tests: `sc-server/tests/ide_terminal.rs`, `sc-server/src/terminal_watch.rs`,
   `sc-server/tests/mcp_client.rs`, `sc-server/tests/tls_serving.rs`, `ui/ide/src/terminal.test.ts`,
   `ui/admin/src/mcpServers.test.ts`, `ui/admin/src/appNav.test.ts`.
+
+## CI: clippy and rustfmt clean under the current stable toolchain
+
+A newer toolchain made both CI checks fail on code that had not changed (on `main` as well):
+
+- `clippy::result_large_err` on the functions in `sc-server/src/second_factor.rs` (module-level
+  allow) and `build_agent.rs`'s `authenticated` / `held_job` that return `Result<_, Response>`.
+  Allowed with the reason `builder.rs` already gives: the `Err` is the response to send, returned
+  unchanged by the handler, not an error being propagated, so boxing it buys nothing.
+- `sc-python/src/env.rs`: one expression reformatted by rustfmt.
+
+No behaviour change. `cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo fmt --all --check` pass.
+
+## Migration: end administrators' sessions at upgrade (security review #15)
+
+This branch scopes a session to the host that issued it: a token issued on an application's host
+starts with `app-`, and the admin host refuses it admin authority. Tokens from before the upgrade
+carry no prefix and read as admin-host tokens, so an administrator who had signed in on an
+application before the upgrade would still have held a session the admin host accepts, until it
+expired (up to `session_ttl_hours`, at most a year).
+
+- New migration `2026-11-01-admin-sessions-rescoped` (`crates/sc-migrate/src/registry.rs`)
+  deletes the `_fd_sessions` rows of users with role 1 (administrator). Only an administrator's
+  session can carry admin authority, so every other user stays signed in.
+- **Upgrade note:** administrators sign in once more after the upgrade. Tokens made with
+  `feldspar auth token` for an administrator are sessions too and stop working; make a new one.
+  API tokens (`_fd_api_tokens`) are not sessions and are not touched.
+- A database without a session or users table records the migration and does nothing; a new
+  database records it without running it, as every migration.
+
+Tests: `admin_sessions_end_others_are_kept` and `no_session_table_is_nothing_to_do`
+(`crates/sc-migrate/tests/migrate.rs`, on SQLite and Postgres).
+
+## Merge of main (session cookies, email verification, two-factor authentication) into the code-quality branch
+
+The three entries below were made on `main` against the code before the code-quality milestones
+(Q2 to Q6). They are carried over to the new structure without changing what they do on the wire
+or in the database:
+
+- `sc-server/src/handlers.rs` and `sc-api/src/admin.rs` are split per domain on this branch:
+  `setRoleSecondFactor` and `resetUserSecondFactor` are in `handlers/users.rs` and
+  `admin/users.rs`, the login and first-user changes in `handlers/auth.rs`, and the
+  persistent-cookie setting in `handlers/settings.rs`. `role_json` moved to
+  `sc_backup::codec`, so `require_second_factor` is added there (backups carry it, as on
+  `main`). The CLI's `--reset-second-factor` and the boot-time session policy are in
+  `sc-cli/src/commands/`.
+- Roles are `sc_types::Role`, not `u8`: the unverified role (`EmailVerification::unverified_role`,
+  `rest_unverified_role`, `Application::unverified_role`) is a `Role`, `cap_role` caps with
+  `User::capped_at`, and a role from 2 to 100 is accepted as before. `User`'s fields are read with
+  `id()` / `role()`. Internal-table statements use `sc-auth`'s `INTERNAL_TABLES` token, and links
+  are built on a `PublicBaseUrl`.
+- `apply_session` keeps this branch's host-scoped sessions (`login_scoped`, and logging a failed
+  logout) for all three ways of starting one (`Start`, `StartUntilBrowserCloses`,
+  `StartVerified`).
+- **Behaviour change (security review #15):** the `/_feldspar/second-factor/*` routes read the
+  session as every other admin-host route does. A session issued on an application's host counts
+  for nothing off an application's host, so it cannot read, turn off or replace a second factor
+  on the admin host.
+- §9.2's ER diagram draws `_fd_second_factor` and `_fd_recovery_codes`, and lists the new
+  password-token purposes (`repo_hygiene` checks this). The four admin clients are regenerated,
+  and the new code is rustfmt-clean.
+
+Test: `second_factor_sign_in::an_applications_session_is_nobody_on_the_admin_host`. The tests
+from `main` are ported to `Role`, `RoleDef` and the `Unchecked` API.
+
+## Two-factor authentication
+
+User request: an option for two-factor authentication. Codes from an authenticator app (TOTP)
+with single-use recovery codes, for the admin UI and for applications. Design §7.2 has the
+details.
+
+- **Core** (`sc_auth::second_factor`): RFC 6238 codes (checked against the RFC's test
+  vectors), a 160-bit secret sealed with the instance key, 10 recovery codes stored hashed, and
+  replay protection (a code works once). New tables `_fd_second_factor` and
+  `_fd_recovery_codes`, created by the users bootstrap (additive, so no migration), and deleted
+  with an account. New dependencies: `sha1`, `data-encoding`, and `qrcode` (SVG only).
+- **Sign-in.** `apply_session`, where every session starts, gives an account with a second
+  factor on (or whose role requires one) a **challenge instead of a session**. A client's code
+  gets `second_factor: {token, setup}` in the login answer, next to the user summary, with no
+  session cookie. A page's sign-in (a Saltcorn UI login form, an identity provider) is sent to
+  a server-rendered page at `/_feldspar/second-factor/sign-in`. Every password path is covered
+  this way: the admin and REST logins, set-password, verify-email and sign-up. The new
+  `SessionAction::StartVerified` starts a session that is not challenged: answering a
+  challenge, `becomeUser`, the first user, and identity-provider sign-ins (unless the new
+  setting below asks for a code there too).
+- **Routes** under `/_feldspar/second-factor` on every host: status, `setup`, `enable`,
+  `verify`, `disable`, `recovery-codes`, and the `sign-in` page. Wrong codes are throttled per
+  account (5 per 15 minutes).
+- **Settings.** Users → Roles has a *Requires two-factor* switch per role (new admin endpoint
+  `setRoleSecondFactor`; the role JSON gains `require_second_factor`). Settings →
+  Authentication gains *Ask for a two-factor code after an identity provider* (off) and *Name
+  in authenticator apps*. Users gains a 2FA badge (`listUsers` rows gain `second_factor`) and
+  a *Reset two-factor* action (`resetUserSecondFactor`, which also ends the account's
+  sessions). The CLI gains `feldspar modify-user EMAIL --reset-second-factor` for a locked-out
+  sole admin.
+- **Admin UI.** The sign-in asks for the code, or sets one up when a role requires it and
+  shows the recovery codes. A shield button beside "Log out" opens *Two-factor
+  authentication* (`#/account/security`): turn it on, make new recovery codes, turn it off.
+- **Generated client.** Every client with `login` gains `secondFactorStatus`,
+  `secondFactorSetup`, `secondFactorEnable`, `secondFactorVerify`, `secondFactorDisable` and
+  `secondFactorRecoveryCodes`. The user summary type gains the optional `second_factor`. The
+  four checked-in admin clients are regenerated.
+- **React scaffold.** `src/auth.tsx` handles a challenge (`challenge`, `answerSecondFactor`,
+  `continueSignIn`, `cancelSecondFactor`). New `src/SecondFactor.tsx` is the code step (with
+  setup and recovery codes), shown by `Login.tsx`. New `src/Security.tsx` at `/security` is
+  linked from the header. The generated README tells a coding agent to check for
+  `second_factor`.
+- **Applications made before this.** A build regenerates only `src/feldspar/`, never
+  `Login.tsx` or `auth.tsx`, so an existing React application's sign-in pages know nothing of a
+  challenge. The generated client covers them. Its password sign-ins (`login`, `signup`,
+  `setPassword`, `verifyEmail`) pass their answer through `signInAnswered` (in `helper.ts`).
+  When that answer is a challenge in a browser, it sends the browser to the server's
+  `/_feldspar/second-factor/sign-in` page, which asks for the code (or sets one up) and comes
+  back to the same page signed in. The promise does not settle, so the old page never treats
+  the challenge as a user. An application whose own pages answer the challenge calls
+  `handleSecondFactorInApp()`, which the client re-exports. The new scaffold's `auth.tsx` and
+  the admin UI's `api.ts` do. A native app (no `window`) always gets the challenge back. So an
+  existing application needs **a rebuild and no code changes** before its accounts turn 2FA
+  on.
+- **Compatibility.** Nothing changes for an account until it turns 2FA on or its role
+  requires it, and the API only gains optional fields.
+- Tests: `sc-auth/tests/second_factor.rs` (setup, replay, recovery codes, role requirement,
+  challenge spent once, deletion), `sc-server/tests/second_factor_sign_in.rs` (admin sign-in
+  with a code, a role taking a member through setup on an application, admin reset, becoming
+  a user, the form page), plus unit tests for the codes, the settings, the CLI flag and the
+  admin UI helper, and `signInAnswered.test.ts` (the redirect, the opt-out, a native app).
+  The tutorial build checks that the scaffold's new pages type-check.
+
+## Email verification for sign-ups (TODO A2.1)
+
+User request: an application where somebody signs up with an email address and gets full
+access only after following a link emailed to that address. `users.email_verified` already
+existed (security review #41), but nothing sent a verification link and nothing acted on the
+flag.
+
+- **Settings** on an application's REST API (Applications → the API's settings, off by
+  default): `verify_email`, `unverified_role` (default 100, the public role; the admin role is
+  refused on save), and optional `verify_email_subject` / `verify_email_body` (the body must
+  contain `{{link}}`; `{{email}}` is the address).
+- **Sign-up** with `verify_email` on emails `{origin}/verify-email#token=…` and signs the
+  account in as before. It is refused before an account exists if no mail transport is
+  installed. If the message cannot be sent, the new account is deleted and the caller gets an
+  error, so they can simply try again.
+- **Held back, not demoted.** An account whose address is unproven is *served as*
+  `unverified_role` by that application (`sc_app::cap_role`, next to `max_role`). Its stored
+  role is never changed. So anything that proves the address gives full access with nothing
+  further to do: the new link, a password reset or invitation link, or an identity-provider
+  sign-in. An application that does not require verification serves the account as its role.
+- **New endpoints**, projected only when `verify_email` is on:
+  - `POST /api/verify-email {token, remember?}` (public, a sign-in endpoint): proves the
+    address and signs in. The link works on a device that never signed in, and works once.
+  - `POST /api/resend-verification` (signed in): a fresh link, at most one a minute per
+    account. It does nothing for a proven address.
+
+  The generated client gets `verifyEmail` and `resendVerification`.
+- **`sc_auth`**: a `verify` token purpose (48 hours) in `_fd_password_tokens`, and
+  `redeem_email_verification`. `redeem_password_token` now spends only `invite` and `reset`
+  tokens, so a verification link cannot be used to choose a password.
+- **The user summary** (`login`, `whoami`, `signup`, `set-password`, the admin's
+  `authStatus`, …) gains `email_verified: boolean`. The four committed admin clients were
+  regenerated.
+
+**Upgrading:** nothing changes until an application turns `verify_email` on. When it does,
+accounts that signed up through that application's REST API or a Saltcorn UI form since
+security review #41 have `email_verified = false` and are held back too, until they verify
+(`resend-verification`) or reset their password. `verify-email` and `resend-verification` are now
+reserved as custom query sub-paths, and `verifyEmail` and `resendVerification` as query names.
+This is checked when an application is saved, not when it is mounted, so an existing
+application keeps running either way. Not done yet: the React scaffold's `/verify-email` page
+(A2.2) and Saltcorn UI sign-ups (A2.3).
+
+Test: `crates/sc-server/tests/app_email_verification.rs`, which covers sign-up held back, the
+link on another device, single use, the throttle, a reset link proving the address, an
+application without verification, and a failed send leaving no account. There are also unit
+tests in `sc-api` (`rest/verify.rs`) and `sc-auth`.
+
+## Sign-ins survive closing the browser (TODO A1.1)
+
+Report (P0): users signed in again every time they closed the browser, although Session
+lifetime was 8760 hours and their sessions were still valid on the server. The `sc_session`
+cookie a browser got had no `Max-Age` or `Expires`, so the browser treated it as a session
+cookie and deleted it on exit. Until now only a native app's cookie had a `Max-Age`. That was
+deliberate, so that closing the browser on a shared computer signed people out, but it made the
+lifetime setting useless for browsers.
+
+**Behaviour change on upgrade:** by default, a browser sign-in now lasts the whole session
+lifetime (24 hours unless changed) even if the browser is closed. On a kiosk or shared
+computer, untick the new setting.
+
+- **Keep people signed in when the browser closes** (`persistent_session_cookie`, Settings →
+  Authentication, on by default). When it is on, a sign-in's session cookie gets `Max-Age` and
+  `Expires` set to the lifetime the session was just given. This applies to every sign-in path:
+  password (admin UI and application API), sign-up, set-password and reset links, the Saltcorn
+  UI sign-in form, identity providers, and the admin handoff. Like the lifetime, the setting is
+  read from `_fd_config` at every sign-in (`AppMounts::current_session_policy`), so a change
+  saved by another node applies everywhere. It is also read at boot, applied on save, and
+  reset by Clear all. Nothing is migrated: an unset key means on.
+- **Remember me.** A login, sign-up or set-password body can say `"remember": false`, and that
+  sign-in's cookie then ends when the browser closes (`SessionAction::StartUntilBrowserCloses`).
+  This applies to native apps too, since they asked for it. Leaving it out, or sending `true`,
+  gets the instance setting, and `true` cannot override the setting being off. The generated
+  clients' `LoginRequest` gained `remember?: boolean | null`. The Saltcorn UI sign-in form has
+  a *Remember me* box, ticked to begin with. A hidden `remember_shown` field is sent with it, so
+  an unticked box (which a form does not send) is told apart from a client that has no box.
+  The label and the setting are translated into the five core locales.
+- Unchanged: a native app's cookie always has a `Max-Age`. Cookies already in browsers keep
+  what they were given until the person's next sign-in. Expiry is still fixed at sign-in and
+  does not slide (design §7).
+- Tests: `shared_session_cookie::{a_browser_sign_in_outlives_the_browser_by_default,
+  a_sign_in_that_is_not_remembered_ends_with_the_browser,
+  turned_off_a_browser_sign_in_ends_with_the_browser}`,
+  `saltcorn_ui_render::the_sign_in_forms_remember_me_decides_whether_closing_the_browser_signs_out`,
+  and `Max-Age` checks added to `oauth_sign_in`, `admin_subdomain` (handoff), `app_invite`
+  (set-password) and `router::login_starts_a_session_that_unlocks_admin_routes` (which used to
+  assert the opposite). Unit tests in `sc-config` and `sc-api::auth`.
+## Code quality Q6: argument readers, transaction endings, typed errors in analytics, a test server, condition waits, a length lint, a comment pass
+
+The seventh milestone of `TODO-code-quality.md` (§3.2, §3.4, §3.6–3.8 of the review): Q6.1 to
+Q6.6. Nothing changes on the wire, in stored data or in the schema. The few refusal messages
+that read differently are listed under **Behaviour changes**.
+
+**Argument readers and tagged kinds (Q6.1, still open).** `sc_types::ArgsExt`, on a JSON object (`Map` or
+`Value`), reads one member at a time with the refusals callers already rely on, in two families:
+tool arguments (`optional_string`, `string_or_empty`, `string_arg`, `required_string`,
+`optional_bool`, `required_value`: "`` `k` is required ``", "`` `k` should be a string, got 5 ``")
+and admin-API body fields (`str_field`, `non_empty_str_field`: "missing or non-string field
+`k`", "field `k` must not be empty"). It replaces `sc_api::mcp::optional_string` /
+`optional_bool`, the three `required` / `required_str` copies (sc-check, sc-app's MCP tools and
+libraries), sc-agent-builtins' `string_arg` / `optional_string_arg` / `optional_bool_arg`,
+sc-backup's codec `str_field` / `non_empty_str_field` (and sc-api's copy of them in
+`credentials`), and sc-server's analytics `required` / `text`. Left as they are, because their
+refusals are worded for a different reader: sc-action's `ActionContext::require_str` (a stored
+trigger's setting, a configuration error naming the trigger), the REST password endpoint's
+`required_text` (its public messages), sc-check's step-parameter `text` (which also takes a
+number), and query-parameter readers. The kind dispatches are enums: a v1 agent skill is read as
+`#[serde(tag = "skill_type")] SkillType` (a kind with no counterpart, a missing kind or one that
+is not text is `#[serde(other)] Other`, reported as before), v1's toast kind as `NotifyType`
+(anything else is the plain notice, as before) and `propose_step_change`'s `change` as
+`StepChange` (trimmed first, as before; an unknown one is refused with the same sentence). Not done: parsing
+whole request bodies into structs at the edge; see the TODO note.
+
+**Ending a transaction (Q6.2).** `sc_db::finish(tx, outcome)` commits a success and rolls back a
+failure, `sc_db::abandon(tx)` rolls back where nothing waits on it (after a failure, or reads),
+and `sc_db::with_tx(driver, |tx| Box::pin(async move { … }))` runs work in a transaction and
+ends it by the outcome. `SharedTx::finish` / `SharedTx::abandon` are the same for a shared
+transaction. A failed rollback is logged at verbose level rather than dropped silently. The 26
+`let _ = tx.rollback().await` are gone, with the three local `finish` helpers they had grown
+(sc-model, sc-viewpattern, sc-api's undo). `with_tx` takes a boxed future rather than an async
+closure: an async closure's future is not `Send` for every borrow (rustc's "implementation of
+`Send` is not general enough"), which a handler needs. sc-db and sc-catalog now depend on sc-log
+for that line (TECHNICAL_DESIGN §2's table is updated).
+`Result<_, String>` in sc-dataset and sc-analytics is `sc_error::Result`: the compiler's stage and
+query builders, `Schema::table`, the dataset store's JSON columns, the map, panel, crossfilter,
+selection, layer, card, plot, test-choice and tool functions, including the
+`Result<Result<T>>` "the answer, or the sentence saying why not" ones. The errors are
+`Error::invalid` with the same sentence, and every place that shows one (an operation report,
+a panel's refusal, a layer's `error`, the explorer's answers) shows `Error::message()`, so no
+`invalid: ` prefix reaches a page. Left as they are: the `Schema::spatial` field (a reason sc-db's
+`SpatialSupport` gives), and the statistics routines' `hypothesis::Refusal`, a named `String`
+saying why one test of several could not be computed, which `stats/run.rs` now names instead of
+`String`.
+
+**A test server (Q6.3).** `sc_test_harness::TestServer::builder()` (the harness's new `catalog`
+feature): a fresh database with the template's `users` tables dropped, the SQL a test starts
+with (`.sql(…)`), a catalog read from it, and the catalog's teardown registered on the database,
+so a test cannot forget it. `.on(db)` starts from a database made with `with_postgis` /
+`with_pgvector`; `.build_on(&db)` is for a helper that is handed one. `TestDb::execute` and
+`TestDb::drop_template_users` are the pieces. The 97 copies of the `DROP TABLE … users CASCADE`
+block, each with its driver and `Catalog::init`, are one builder call (79 in sc-server, 13 in
+sc-auth, 4 in sc-api, 1 in sc-action-builtins); the sc-auth and sc-api tests that had no teardown
+now have one. The helpers sc-server's test files repeated are in `tests/support.rs`: `Socket`,
+`send`, `next_frame`, `code_framework` and `blog_app`. Copies that differ for a reason stay: the
+`next_frame` of `app_guest_live` and `tutorial_live` answers `None` on a close, which those tests
+expect; five `blog_app`s are other applications; sc-app's two `code_framework`s are in another
+test binary. The ~90 per-file `Client` structs are not merged (most add their own methods).
+
+**Waiting on a condition (Q6.4).** `sc_test_harness::wait_until(what, within, || …)` polls every
+10 ms. Six sleeps that waited for something to happen now wait for it: a module stream's polls
+(three in `stream_providers`, one in `bundled_rss`), a freed subscriber count (`app_live`) and a
+running stream's elements (`sc-live`'s hub). The others stay: most are already the pause inside
+a polling loop; the rest check that something does *not* happen (no mail, no write, no element),
+let time pass on purpose (session and grant TTLs, credit expiry, heartbeats, timestamps that must
+differ), hold a socket open, or pace the JS fake-socket tests. None of those measures the
+injected `sc_types::clock::Clock`, so `ManualClock` does not apply to them.
+
+**A length lint (Q6.5).** `clippy::too_many_lines` warns (workspace `[lints]`), at 150 lines
+(`clippy.toml`). The functions already over it carry `#[allow(clippy::too_many_lines)]`.
+
+**Comments (Q6.6).** In the files this milestone touched: history narration rewritten as what is
+true now, references to closed TODO items dropped, and the stale "MVP" statements fixed —
+`sc-catalog/src/field.rs` (`DbId` is the primary or a connected database; the kinds a
+`DataField` has; why `unique` is false), the catalog's module and struct docs, `sc-types`'
+`catchall`.
+
+- **Behaviour changes:**
+  - A tool argument of the wrong type to a coding/file tool reads "`` `k` should be a string,
+    got 5 ``" (was "should be text").
+  - The analytics endpoints' `name` / `url` / `tool` / `kind` members refuse a non-string with
+    "`` `k` should be a string, got … ``" (was "`` `k` is required ``").
+  - A dataset row whose `base` / `operations` column is not JSON says "dataset `x`: base should
+    be json, got text" (was "dataset `x`: invalid: base should be …").
+  - A failed rollback is logged at verbose level.
+
+Tests: `sc_types::args::tests`, `sc_db::tx::tests` (commit, rollback, a failed commit),
+`shared_tx::finish_commits_a_success_and_rolls_back_a_failure`, the enum tests in sc-backup's
+`v1::agents` / `v1::actions` and sc-check's `tools`, sc-dataset's
+`a_dataset_over_a_dataset_reads_its_operations_first_and_a_cycle_is_refused` (the report and the
+refusal carry no kind prefix), the harness's `server::tests` and `wait_tests`, and every test
+the builder and the helpers moved into.
+
+## Code quality Q5 (part 2): crate merges and renames, one `Ask`, split files, no alias re-exports, one Value↔JSON module, one clock
+
+The second half of the sixth milestone of `TODO-code-quality.md` (§1, §2, §3 of the review):
+Q5.6 to Q5.11. Nothing changes on the wire, in stored data or in the schema: no crate name,
+module path or type name is serialized anywhere (traits and actions are stored by their own
+names, there are no tracing targets or log filters, and no env or config key names a crate), and
+every JSON spelling a value had is the one it has now.
+
+sc-backup now turns on serde_json's `float_roundtrip` itself. The server binary already had it
+(deno_core enables it), but built on its own the crate parsed some floats one ulp off on restore,
+which `values::tests::every_kind_of_value_survives_the_round_trip` caught.
+
+**Two merges (Q5.6).** `sc-browser` is `sc_agent::browser` and `sc-help` is `sc_docs::help`,
+moved with `git mv`. `sc_agent::BrowserDriver` and the other names `sc_agent::view` re-exported
+are unchanged; sc-check names `sc_agent::browser::…`; `getHelp` calls `sc_docs::help::render`.
+
+**Two renames (Q5.8).** `sc-core-traits` is `sc-agent-builtins` and `sc-core-actions` is
+`sc-action-builtins`, with every reference in the manifests, the code, TECHNICAL_DESIGN §2, the
+security review, the TODO files and the admin UI's one comment. The CHANGELOG's past entries and
+the code-quality review (dated evidence) keep the old names. `coding/` stays inside
+`sc-agent-builtins`: it uses that crate's `files`, `table` and `build_application` modules and
+its configuration constants, so a crate of its own would have meant moving those too.
+
+**One `Ask` (Q5.7).** The six `*Asks` traits of sc-module (`ServiceAsks`, `RoleAsks`,
+`CreditAsks`, `OAuthAsks`, `SystemAsks`, `CheckAsks`), which all had the same
+`ask(plan) -> Result<Json>`, are one `sc_module::Ask`, keyed by `AskSurface`. `CallHosts` carries
+one `Asks` (a slot per surface) instead of six `Option<&dyn …>` fields, and the worker looks a
+surface up by the name the host script sends rather than matching six arms. The wire names and
+the sentence a call without the surface is refused with are unchanged.
+
+**Split files (Q5.9).** `sc-expr/src/code.rs` (13.6k lines) keeps the runtime; the host traits,
+`ModuleFnHosts` (with its tests), `CodeAdapter` and `SchemaSnapshot` are in `code/host.rs` and
+the tests in `code/tests.rs`. `sc-cli/src/main.rs` (3.5k lines) keeps `main`, the dispatch and
+the usage text; each subcommand is a module of `src/commands/`. Both moves are mechanical.
+
+**Alias re-exports removed (Q5.10).** Callers name the crate a thing is defined in:
+`sc_model::CompiledSource` (was `sc_server::CatalogDatasetSource`), `sc_app::app_source_location`
+and `store_dir` (sc-cli's renamed copies), `sc_config::{Mailbox, parse_mailbox, EmailSettings,
+SmtpSecurity}` (re-exported by sc-email), `sc_backup::{Selection, inspect, available, …}` and
+`sc_backup::s3::{Signing, authorization}` (sc-server's renamed block), `sc_api::auth`'s CSRF names,
+`sc_types::{Attrs, BaseField}`, `sc_catalog::Unchecked`, `sc_api::Method`, `sc_expr::CodeAdapter`,
+`sc_module::BUNDLED_IN_CHECKOUT`, `sc_config_file`, and others listed in the TODO note. sc-api and
+sc-action-builtins now depend on sc-config, and sc-cli on sc-backup and sc-expr, for what they
+used to reach through a re-export. Two cross-crate `pub use`s are left on purpose: sc-migrate's
+`Row` / `Result` / `Value`, the documented surface a migration is written with, and
+`tool_names::docs` in sc-agent-builtins' tool-name catalogue.
+
+**One Value↔JSON module (Q5.11).** `sc_types::json` holds every conversion. The four writers
+spelt a value differently on purpose, so they are the four cases of `sc_types::Spelling` in one
+`match`, with a table of the differences in the module docs: `Wire` (the API), `Script`
+(formulas and code bodies; was `sc_expr::value_to_json`), `Analysis` (a dataset's grid; was
+`sc_dataset::value_json`) and `Archive` (a backup; was in sc-backup's `values.rs`). Each produces
+exactly what it did before. `value_from_json` (JSON with no column behind it) moved from sc-expr;
+`json_to_value_as` reads an archive's base64 bytes. `sc_access::convert` is gone. sc-expr now
+depends on sc-types. **One clock:** `sc_types::clock::Clock` replaces sc-ratelimit's (a monotonic
+`Instant`) and sc-workflow's (a wall-clock `DateTime<Utc>`) with one trait that has both readings,
+`now()` and `instant()`; `ManualClock` moves both together and takes a `chrono::TimeDelta`.
+sc-ratelimit now depends on sc-types.
+
+- **Behaviour changes:** none intended. Two error messages are composed differently but read
+  the same: a backup's bad bytes still say "`` `c` ``: the bytes are not valid base64: …".
+
+Also: the pre-existing clippy findings in `sc-types/tests/role_guard.rs` and
+`sc-python/tests/bundled_sklearn.rs` are fixed. TECHNICAL_DESIGN §2's tree, graph and table
+are updated for all of the above.
+
+Tests: `sc_module::host::tests` (every surface named as the host script asks for it; a call
+carries only the asks it was given), `sc_types::json::tests` (the four spellings differ only where
+the table says; an archive reads base64 bytes; the typeless reading, moved from sc-expr),
+`sc_types::clock::tests` (a manual clock moves both readings; the system clock), and the moved
+tests of everything that moved.
+
+## Code quality Q5 (part 1): services, schema snapshots, typed admin host, handler split, sc-backup
+
+The first half of the sixth milestone of `TODO-code-quality.md` (§1, §2, §3.1 of the review):
+Q5.1 to Q5.5. Nothing changes on the wire, in stored data or in the schema. The behaviour changes
+are listed under each part.
+
+**`sc_catalog::Services` (Q5.1).** The ten late-bound host slots of `Catalog` (each its own
+`RwLock<Option<Arc<dyn …>>>`) are one typed `Services` value behind one lock: the table-event
+listeners, schema observer, rename hook, module functions, live, model and admin hosts, formula
+evaluator and table providers. The setters and getters kept their names. `teardown` replaces the
+whole value with an empty one, so a service added to `Services` is cleared with nothing to
+remember; the CLAUDE.md teardown note says so. A builder that required every host at
+construction was not possible: most services hold an `Arc<Catalog>` and are made after it. The two
+`Arc<dyn Any>` slots are gone. sc-llm's host LLM provider and sc-stream's provider registry are
+types sc-catalog cannot name, so they are **typed extensions**: `catalog.set_extension(Some(arc))`
+and `catalog.extension::<T>()`, keyed by `T` itself. No caller downcasts, and nothing of another
+type can be stored under a key. `catalog_teardown.rs` now installs the streams, whose registry is
+an extension, and checks that teardown empties it.
+
+**One schema snapshot (Q5.2).** `reload` used to swap the table cache, field-overlay issues,
+shadowed tables and provided-table issues under four locks and bump the generation separately.
+They are now one immutable `CatalogSchema`, swapped in whole as an `Arc`, with the generation
+inside it (the previous generation plus one, read under the same lock). `Catalog::schema()` hands
+the current one to a caller that needs two parts to agree. `get`, `tables`, `generation`,
+`field_overlay_issues`, `shadowed_tables` and `provided_table_issues` read from it.
+
+**Typed `AdminHost` (Q5.3).** The administrative tools (`sc_app::mcp`, `admin_copilot`'s
+publish) called the server's handlers by endpoint name with JSON in and out (`AdminCall`,
+`call_admin`). That is replaced by one method per operation with typed arguments:
+`backend_operation(BackendOperation)`, `create_file_store(NewFileStore)`, `create_application`,
+`list_applications`, `update_application(id, …)`, `build_application(id)`,
+`translations(TranslationsOf)`, `save_translations`, `save_stream` and `delete_stream(id)`.
+sc-server implements each by calling the handler's own function, so a missing operation is a
+compile error. Moving the handlers below sc-app was the other option; it was not taken because
+most of them need the mount registry, the agents, the view runtime or the stream supervisor. An
+application or a stream is still passed as the admin API's JSON document, since their types are
+above sc-catalog.
+
+**Handlers and endpoints per domain (Q5.4).** `sc-server/src/handlers.rs` (12.9k lines, one
+7.4k-line function) is now `handlers/`, with one module per domain: auth, tables, fields,
+table_rows, connections, file_stores, files, llm, modules, agents, code_libraries, triggers,
+models, streams, settings, backup, applications, views, translations and users. Each module has
+`register(reg, state)` and the helpers only it uses. `sc-api/src/admin.rs` (8.7k lines) is now
+`admin/`, with modules of the same names, each with `register(set)` and its schemas. The split
+was mechanical: handler bodies are unchanged. A domain reaches the catalog and the mount registry
+through `handlers::HandlerState`. `handler::typed` adapts an
+`async fn(HandlerState, HandlerCtx<W>, In) -> Result<Out>`: the body is deserialized into `In`,
+and `Out` is the response (a `HandlerResponse` as it is, anything `Serialize` as a 200). The
+twelve handlers `AdminHost` reaches use it; the others move to it as they are touched.
+- **Behaviour change:** `admin_endpoints()` lists its endpoints grouped by domain, so the order
+  changed, and with it the order in the generated admin client and in the administration MCP
+  server's `tools/list` for the tagged endpoints. Routing matches by path, not by order, and no
+  endpoint was added, removed or changed. The MCP census test lists the tags in the new order,
+  and the four checked-in clients (`ui/{admin,ide,builder,analytics}/src/client.ts`) were
+  regenerated: the same lines, reordered.
+- A typed handler whose body does not deserialize answers an `invalid` error naming what did not
+  fit. None of the twelve converted handlers declares a typed `In` yet (they take the body as
+  JSON), so nothing a client sends is refused that was accepted before.
+
+**`sc-backup` (Q5.5).** The entity JSON codecs moved out of the handlers into
+`sc_backup::codec`: every `*_json` / `*_from_body` a backup writes and reads, the helpers they are
+built from, and the MCP server and Analytics dataset/workspace codecs. The admin handlers import
+them, so the admin API and a backup still have one wire shape. Then `sc-server/src/backup/`
+moved into the new `crates/sc-backup` (files moved, not rewritten). A restore reaches the running
+server through `sc_backup::RestoreHost`, implemented for `AppMounts`: the agent, stream and model
+registries, the trigger dispatcher, module install and reload, a dataset's shape, and build and
+mount. Backup and restore reach the database and the raw stores with sc-backup's own
+`BACKUP_TASKS` token, which was part of sc-server's `ADMIN_TASKS`; the security review's
+inventory is updated. `file_response::chunks` became `sc_files::read_chunks`, shared by the file
+responses and the S3 upload. sc-server re-exports what it exported before. TECHNICAL_DESIGN §2's
+crate tree, graph and dependency table are updated.
+
+Tests: `services::*` (sc-catalog: the extension map, teardown frees a catalog its services hold,
+a schema handed out is not changed by a later reload), `handlers::typed_tests` (sc-server: the
+input read, the output written, a bad body refused, a response's status kept),
+`admin_applications_api::the_admin_host_runs_each_operation_through_its_handler`, and
+`catalog_teardown` extended.
+
+## Code quality Q4: trust-boundary newtypes
+
+The fifth milestone of `TODO-code-quality.md` (§4.6, §3.5 of the review). Each value that crosses
+a trust boundary is a type that only a named constructor makes; the constructors are listed in
+docs/SECURITY_REVIEW_2026-10.md ("Trust-boundary newtypes"). Nothing changes in stored data, in
+backups or in the schema; the behaviour changes are listed under each part.
+
+**`sc_files::StorePath` (Q4.1).** One validator for a store-relative path: `StorePath::parse`
+refuses `..`, `\`, `:`, NUL and a segment of dots and spaces (Windows trims it to `..`), drops
+empty and `.` segments (`"/a//b/"` is `a/b`, `""` is the root), and records whether the path is
+inside a `.git` in any case, with trailing dots or spaces, or as the 8.3 name `git~N`. Every
+`FileStore` method takes a `&StorePath` (`concat` a `&[StorePath]`), so no backend is handed a
+path nobody checked; `CheckedStore`, its `Readable` / `Writable` grants (which hold one),
+`ServeFile` and the access helpers take `impl AsStorePath` and parse a route's text once.
+`LocalFileStore` keeps `beneath_root` and `lands_outside_git` for what is on disk; writes into
+`.git` are still refused by the backend and reads below admin by `check_access`, from the flag.
+A `File` field's value (`validate_file_path`) and the coding trait's paths
+(`FileScope::resolve_path`) use the same validator. The fixed spellings in tests became
+`StorePath::from_static`.
+- **Behaviour change:** a path is refused before any store is asked, so a bad path is an
+  `invalid` error from the route rather than from the backend — same kind, same message.
+  Backup restore skips an archive entry the validator refuses (it was skipped at the write
+  before).
+
+**`TrustedHost` and `PublicBaseUrl` (Q4.2, sc-catalog).** A host this deployment serves:
+`TrustedHost::configured` (base domain, admin host, `PublicOrigin::base_url_for`) or
+`TrustedHost::served` (a `Host` the router matched to a served application or the admin host).
+Both refuse what is not a plain `host[:port]`; `sc_catalog::is_valid_host` is now also the
+router's `Host` check. Every server function that builds an absolute link builds it from a
+`PublicBaseUrl`: password-reset and invitation links (`AppDirectory::own_origin` /
+`app_origin` answer one), OAuth's callback `redirect_uri`, its error redirect and the hand-off to
+`/complete` (a pending flow keeps a `TrustedHost`), an application request's `base_url` and an
+event's `app.url` — what a code body's email or webhook builds its links from — and the
+builder's application address.
+- **Behaviour change:** an application request whose `Host` is not a valid host has an empty
+  `base_url` / `app.url` (it was `http://` followed by whatever was sent); the router already
+  refuses such requests, so none reaches an application.
+
+**`sc-net` (Q4.3).** A new layer-0 crate with the one SSRF rule: `is_public` (moved from
+sc-email), `PublicAddr` (only `PublicAddr::check` and the resolvers make one),
+`resolve_public` (the public addresses among a name's answers), `resolve_every_public` (every
+address public, or refused — an SMTP override's rule), `PublicResolver` and `PublicClient`, an
+HTTP client that resolves names through it and checks an address literal on the request and on
+every redirect it follows. The agent's `http` trait, the `fetch` action with a templated host and
+an MCP server without the private network send with a `PublicClient`; `SmtpMailer::pinned` takes
+a `PublicAddr`. The four copies (`sc-core-traits` `http/guard.rs`, `sc-core-actions` `fetch.rs`,
+`sc-mcp` `guard.rs`, `sc-email` `relay.rs`) are gone; allow-lists and private-network switches
+are unchanged and the refusals read as before. sc-mcp and sc-core-traits depend on sc-net
+instead of sc-email. A test pins a transport to its own listener with
+`PublicAddr::test_listener` (feature `test-listener`, dev-dependencies only). TECHNICAL_DESIGN
+§2's crate tree, graph and table are updated.
+
+**`sc_error::Secret<T>` (Q4.4).** `Debug` prints `Secret([redacted])`, there is no `Serialize`,
+`Deserialize` is the wrapped value's, and the value is read with `expose()` / `expose_str()`.
+In-repo rather than `secrecy`: it is all of it, and the lowest crates holding one
+(sc-config-file, sc-db-postgres) depend on nothing but sc-error. The review's 19 password /
+client secret / private key / API key fields hold one (OAuth and module-consent client secrets,
+the TLS private key, the passwords of email settings, database connections, Postgres connect
+parameters, MQTT, SFTP destinations, backup schedules and uploads and the zip writer, a new user
+and a user update, `feldspar.toml` and the CLI; `feldspar.toml`'s and an LLM endpoint's API key),
+plus the S3 secret key. Storage and backups built their JSON by hand and call `expose()` there,
+so stored settings and backups are byte-for-byte what they were; `secret::expose` /
+`expose_option` are the `serialize_with` functions for a struct that derives `Serialize`.
+- **Behaviour change:** `{:?}` of `PgConnectParams`, `DbConnectionDef`, `OAuthProvider`,
+  `SslSettings`, an SFTP destination, a backup schedule, `NewUser`, `UserUpdate`,
+  `feldspar.toml`'s sections and the CLI's database options no longer shows the secret.
+
+**`SafeHtml` and one escape (Q4.5, `sc_expr::html`).** `escape_html` is the one function,
+`escape` answers a `SafeHtml`, and `SafeHtml::trusted` takes a literal. It replaces five
+escapers — the four the review named and a plugin's asset tags. Three escaped `& < > " '` with
+the same entities; OAuth's hand-off page and the plugin tags left `'` alone, which was safe only
+because their values sat in double-quoted attributes. No context needed a different set, so all
+five share the five-character escape (correct for text and for either quote). JSON inside the
+builder's script keeps its own escape, a different context.
+- **Behaviour change:** the OAuth hand-off page and a plugin's `<script>` / `<link>` tags now
+  write `'` as `&#39;`, which a browser reads the same.
+
+**`sc_query::TrustedSql` (Q4.6).** `Statement::Raw`'s text. Made from a `&'static str`, by
+`TrustedSql::admin_authored` (a custom SQL query, a code body's `db.sql()`) or by
+`TrustedSql::composed` — the program's own SQL around identifiers it quoted, for the change log,
+sync, retention, history, undo, geo import, the analytics demo and migrations. The third
+constructor is a deviation from the item's "only admin-authored and `&'static str`": those
+statements interpolate quoted table names the AST does not express; each was checked to put
+values in binds.
+- **Behaviour change:** a `Raw` statement is never deserialised (`skip_deserializing`); it
+  still serialises as its text. Nothing in the server deserialised one.
+
+**`TableId` deleted (Q4.7).** Decided before starting, against adopting a `TableName` at the
+catalog API: `TableId` held no invariant (a public `String`) and duplicated `Table.name` (every
+table was built with `id == name`), while a `TableName` would have meant about 170 signatures
+across 20 crates and a conversion at every caller for a type that can check nothing a lookup's
+`not_found` does not. `Table.id` is gone (use `name`); `DataFieldKind::Key::target_table`, the
+catalog's table cache and `Application::tables` / `api_tables` are `String`s.
+
+Tests: `store_path::tests` (sc-files), `origin::tests` (sc-catalog), sc-net's unit tests,
+`guard::tests` (sc-mcp), `secret::tests` (sc-error),
+`db_connections::tests::the_target_string_never_carries_the_password` (sc-catalog),
+`html::tests` (sc-expr), `tests::a_raw_statement_renders_verbatim_with_its_binds` (sc-query).
+The traversal, Windows and `.git` tests in sc-files assert the validator; the existing tests
+moved to the new signatures.
+
+## Code quality Q3: `sc-access` and capability handles
+
+The fourth milestone of `TODO-code-quality.md` (§2, §4.4 of the review). Nothing changes on the
+wire, in stored data or in the schema. Two behaviour changes, both in a code body's delegated
+file operations, are listed under the file stores below.
+
+**`sc-access`, the row-access layer (Q3.1, Q3.2).** `rows`, `ownership`, `write_as`, `filter`,
+`convert` and `user_rows` moved out of sc-api into a new crate, with what they need (`calc_read`,
+`search`, `vector`); the files were moved, not rewritten. It sits at layer 6, below `sc-action`,
+and depends on the catalog, sc-auth, sc-files and sc-llm (a vector field's embeddings). sc-api
+keeps the wire formats, the admin endpoint table, the code host, CSV, sync, undo and history, and
+no longer re-exports the row layer: every caller names `sc_access`. `sc-live` and sc-workflow's
+test edge no longer depend on sc-api. The items sc-api's REST, GraphQL and code-host modules used
+across the new boundary became `pub`. TECHNICAL_DESIGN §2's crate graph and table are updated.
+
+**`sc_catalog::Unchecked` (Q3.5).** The row operations that do not apply a table's floors and
+ownership formula take a token instead of an `Authority`: every unchecked function of
+`sc_access::rows`, `Catalog::provider`, `Catalog::driver_for`, `Catalog::driver_named`, and
+`sc_access::vector::embed_rows`. `Catalog::database` is crate-private; `Catalog::driver_info`
+(dialect, capabilities, PostGIS / pgvector support) and `Catalog::is_connected` answer what callers
+used the driver for. A token is made three ways, each greppable and listed in
+docs/SECURITY_REVIEW_2026-10.md's inventory:
+- `Unchecked::system(reason)`: the server's own authority (`Authority::system`'s unchecked form).
+- `Unchecked::admin(principal)`, or `sc_access::admin_access` for an error: only an
+  administrator's principal, who meets every floor, so the check decides nothing.
+- `Unchecked::vouched(principal, by)`: a caller whose access a named check already decided — the
+  ownership functions, the REST write rule (`write_as`), an RLS table's policies (REST `run_rls`)
+  and the REST file routes.
+
+The row layer's no-caller shortcuts that hid a system authority (`create_row(catalog, table,
+body)`, `update_row`, `delete_row`, `list_rows`, `read_field`) are gone, and the `_ctx` forms took
+their names (`create_row_ctx` → `create_row`, … `delete_all_rows_ctx` → `delete_all_rows`).
+`write_document_in` takes the token too. Their callers now write the reason down: backup restore,
+checklist cleanup, OAuth token storage, the sync device rows, a live document's load.
+
+`Catalog::primary`, `SharedTx::run` and `sc_catalog::run_in_context` / `run_in_context_read_only`
+take the token as well, and `SharedTx::batch` (raw SQL) is crate-private (the unused
+`SharedTx::apply_schema` is gone). `Catalog::primary_info` and `primary_dialect` answer the dialect
+and capabilities, which is what most of the ~170 `primary()` callers wanted. A crate's internal
+stores (`_fd_*`) reach the driver with one crate-private `INTERNAL_TABLES` token per crate
+(17 crates), and sc-server's admin tasks (backup and restore, clear all, table rename, the user
+lists, system info) with one `ADMIN_TASKS`, rather than a token per statement. New vouched
+callers: a custom SQL query (`CUSTOM_QUERY_RULE`), a delegated `db.sql()` (`CODE_SQL_RULE`) and a
+sync push's own-device bookkeeping (`OWN_DEVICE`).
+- **Behaviour change:** a CSV import, CSV export, geo import, public dataset install and the
+  admin row endpoints are refused (`auth`) when handed a principal that is not an administrator's.
+  Every caller hands them one today.
+- `LikeRules::of` (sc-live) takes the dialect rather than the driver.
+
+**`sc_access::Scoped` (Q3.3).** A catalog with an `Authority` bound, and its executor and formula
+engine: `read` / `read_values` / `insert` / `update` / `delete`. A caller's operations are the
+ownership rule's (the guarded `*_as` functions, refactored into `_by` forms that take the caller's
+`Principal` and read the user back from it); the system's and an administrator's are the row
+layer's, with the token their authority makes. `Scoped::system(catalog, reason)` is greppable like
+`Authority::system`. `Scoped::unchecked()` hands an admin or system scope's token on for the
+operations it does not wrap.
+
+**`ActionContext::scoped` and `caller` (Q3.4).** sc-action now depends on sc-access. An
+action is handed the trigger's authority — the administrator in the event's user's name, with the
+chain, on the workflow step's transaction — as a `Scoped`, and the event's caller as a `Principal`
+(`ctx.caller()`). The row actions (`insert_row`, `update_rows`, `delete_rows` and their `where`
+read, `embed_rows`) write through `scoped()` instead of building the principal from
+`event.user`; the code-body hosts, `undo` and `run_agent` take the caller from `caller()` instead
+of `event.role` / `event.user`. Same authority as before.
+
+**Agent tools and code-body hosts on `Scoped` (Q3.4).** sc-agent depends on sc-access.
+`TraitContext::principal()` is the run's caller as a principal (the role, the user's fields, the
+tool chain), and `TraitContext::scoped(&principal)` the handle every tool's rows go through
+(`RunCaller::principal` / `scoped` for helpers that take the caller): `query_table`,
+`edit_table_rows`, the `write` matcher, `search_table`, `similar_rows`, `prompt_picker` and the
+preloads no longer call the `*_as` functions with a role and a user. `TableHost` and
+`TriggerRunHost` carry the event's caller as a `Principal` (`for_caller`), and `TableHost`'s reads,
+aggregates and writes run through a `Scoped` built from the plan's actor — admin in the event's
+user's name, or the delegated caller (`asUser()`, `forUser`, public) — on the run's executor and
+engine. `models::write_posterior` takes a `Scoped` in place of `models::Writer`. `Scoped` gained
+`with_user` (decide with the user as its row was loaded, so a formula over a typed field of the
+user sees what it always saw; a user that is not the principal's is refused) and
+`aggregate_grouped`. Same authority on every path.
+
+**`sc_files::CheckedStore` (Q3.6).** A file store with its floor and a `FileCaller` bound.
+`readable(path)` / `writable(path)` check `check_access` / `check_write` and answer a grant whose
+operations (read, stream, stat, metadata, write, append, concat, mkdir, delete, rename within the
+store, record the owner) reach that path only; `read`, `write`, `delete`, `rename`, … are those in
+one call. `deposit(path)` is the drop-box rule: a new file needs nothing beyond the route's own
+rule, and replacing one is a write. `serve(path)` answers a `ServeFile`, whose store and path are
+now private (`path()`, `store_name()`, `stat()`, `open_read()`). `list`, `find_files`,
+`find_by_extension` and `search` filter for the caller; `local_root` answers only an
+administrator's binding. `Catalog::file_store` / `require_file_store` take an `Unchecked`; a route
+opens `Catalog::checked_file_store` or `sc_catalog::open_checked_store` (which reads the floor),
+and `has_file_store` / `file_store_is_git_repo` answer the connection questions. Through it: the
+admin file manager (every endpoint, `downloadFile` and find / search included), the agents' file
+tools, the REST provider's `File` routes and a code response's file, the code-body `fs` host, an
+application's static directories and `/files/serve`, the upload slots (the server's temporary
+folder bound to the administrator, the finished file deposited by the uploader), the IDE's
+language server, `send_email`'s attachments and a module's file surface. The build pipeline,
+backup and restore, translations, Stan programs and the coding trait's internal tools keep the raw
+store, with a token each, listed in docs/SECURITY_REVIEW_2026-10.md's inventory.
+- **Behaviour change:** a code body's delegated (`asUser()`) copy or move into *another* store
+  that sets a rule (`write(file, { minRole })`) is judged against the destination store's floor.
+  It was the source store's, and a source floor tighter than both rules hid a loosening.
+- **Behaviour change:** a delegated move across two stores needs the source readable as well as
+  writable (its bytes are read). Within one store a move still needs only the write.
+
+Tests: `crates/sc-access/tests/scoped.rs` (a caller below the floor is refused and the system is
+not; an ownership formula narrows a caller's read; only the system and an administrator make an
+unchecked token; a scope decides with the loaded user, counts through the rule and refuses another
+user), `action_context::an_action_is_handed_the_triggers_authority_and_the_events_caller`
+(sc-action), `crates/sc-files/tests/checked_store.rs` (grants, the drop box, no rename across
+stores, `local_root`), `code_files::a_delegated_copy_into_another_store_may_not_loosen_its_rule`
+(sc-core-actions). The existing tests moved to the new signatures.
+
+## Code quality Q2: authenticated users and proof-carrying extractors
+
+The third milestone of `TODO-code-quality.md` (§4.3, §4.5 of the review). Nothing changes in
+stored data or the schema; a `User` serializes as it did. One wire-visible change: a session
+started on an application's host has a token starting `app-` (see below).
+
+**`sc_auth::User` is data, not a proof.** Its fields are private (`id()`, `role()`, `extra()`,
+`get()`) and it no longer implements `Deserialize`, so neither a struct literal nor a JSON blob
+can stand in for one read from the table. Nothing in the workspace deserialized one. The field
+writes became `with_field(name, value)` (cannot set `id`, `role` or the password hash) and
+`capped_at(role)` (only lowers: an application's `max_role`, `sc_app::cap_role`). Loading a user
+with their grants uses a crate-private `with_role`.
+
+**`sc_auth::AuthenticatedUser`** wraps a `User` somebody presented a credential for. Only
+`SessionStore::user_for` and API-token verification (`ApiCaller::user`) make one; it derefs to
+the `User` and `into_user()` drops the proof. `capped_at` keeps it, since lowering a role forges
+nothing.
+
+**`AdminSession`** (`sc-server/src/admin_session.rs`), the workspace's second
+`FromRequestParts`: its one constructor checks that the request is on the admin host, carries a
+live session, that the session was issued on the admin host, and that the user is an
+administrator. `/upload`, `/download`, `/backup/create`, `/backup/upload`, the LSP, agent chat,
+stream Observe and fit-progress sockets take one, and the IDE, Analytics UI and builder bundles
+resolve one. `admin_of`, `admin_host_only` and the hand-written `session_user` + `enforce_auth`
+sequences on those routes are gone. Observe and fit progress now also answer `404` on a hidden
+preview's host, as the other admin routes did. On a socket route, an unauthenticated request is
+now refused before its `Origin` is checked (`401`, where it was `403`), and `/backup/create`
+refuses a caller without an admin session before it reads the body (`401`, where an oversized
+body used to be a `413` first).
+
+**Handler gates.** `HandlerCtx<W>` carries who is calling as `who: W` (`ctx.user()` reads the
+user). A handler is registered behind a gate: `register` (open, handed the `Caller`),
+`register_signed_in` (an `AuthenticatedUser`), `register_admin` (an `Admin`) or
+`register_analytics` (an `AnalyticsCaller`: admin on the admin host, the application's visitor on
+an Analytics application's host). The registry narrows the dispatcher's `Caller` before the
+handler runs and refuses one the gate does not admit. `Admin` is an `AdminSession`, or
+`Admin::delegated` for the MCP server's endpoint tools and the catalog's `AdminHost`, which make
+their own admin check (listed in docs/SECURITY_REVIEW_2026-10.md's inventory). At startup the
+router refuses an endpoint set in which an `admin()` endpoint's handler is not behind the admin
+(or Analytics) gate, a `LoggedIn` endpoint's is behind the open gate, or an Analytics
+application's endpoint is not behind the Analytics gate. The 249 admin handlers, 38 Analytics
+handlers and `logout` were moved to their gates; `authStatus`, `login` and `createFirstUser` stay
+open.
+
+**Sessions are bound to the host that issued them** (security review #15's open item). A session
+started on an application's host — its sign-in, OAuth, a checklist's browser, `call_api` — gets a
+token prefixed `app-` (`SessionScope::App`); the admin host, the admin handoff and `feldspar auth
+token` mint the plain 64-hex-digit tokens they always did. The scope is part of the hashed token,
+so no column was added. On the admin host an application's session is no session: admin routes
+answer `401` and `authStatus` shows nobody, so an admin signed in to an application (or sharing
+sign-in) signs in again on the admin host. A token issued before this change reads as an
+admin-host token and lapses with its expiry.
+
+**Admin sockets hold their session.** The chat socket's `ChatSession` became `AdminWatch`, which
+the LSP, Observe and fit-progress sockets now use too: each registers as a session listener and
+re-reads its `AdminSession` every 30 s, and closes when the session ends, the account is disabled
+or deleted, or the user is no longer an admin (security review #42's class; only the chat did
+this before).
+
+Tests: `router::an_application_session_is_no_admin_session_on_the_admin_host`,
+`router::an_admin_endpoint_cannot_be_served_by_an_open_handler` (startup check, and an admin
+handler called without admin authority is refused), `app_serving::admin_file_and_backup_routes_are_nothing_on_an_application_host`
+(extended to the four sockets, and to an application session on the admin host),
+`session::tests::a_session_says_which_host_issued_it`,
+`user::tests::a_user_serializes_as_before_and_its_builders_cannot_raise_it`.
+
+## Code quality Q1: `Role`, `Principal` and `Authority`
+
+The second milestone of `TODO-code-quality.md` (§4.1, §4.2 of the review). Nothing changes on the
+wire, in stored data or in the schema: a role still serializes and is stored as its number.
+
+**`sc_types::Role`** replaces the bare `u8` role everywhere: `User`, `Principal`, `Event`,
+`AuthRequirement::MinRole`, table / file store / trigger / agent / stream / view / application /
+upload-slot / dataset / workflow-form `min_role`s, grants, invitations, module role ceilings, and
+the per-crate callers. Its field is private and only `1..=100` constructs one (`Role::new`,
+`TryFrom<u8 | i64 | u64>`, `Role::of` for literals, serde `try_from`). It has `Role::ADMIN`,
+`Role::PUBLIC`, `meets(floor)`, `outranks`, `is_admin`, `is_public`, `most_privileged`,
+`least_privileged`, and **no `Ord`**. With an ordering, the old `role <= min_role` idiom would
+have kept compiling with whichever meaning the ordering picked. Without one, every hand-written
+comparison failed to compile and was rewritten. `Display` prints the number and honours width
+flags. `Default` is `PUBLIC`, so `Principal::default()` is no longer role 0, which used to pass
+every `role <= floor` check.
+- Range checks that a `Role` makes redundant were deleted (table access, file store rows, history
+  `min_role`, triggers, agents, streams, workflow forms, applications, upload slots, custom
+  queries, dataset sharing, schema edits, the code host's `minRole`). Reading a stored role
+  outside `1..=100` is still a named error.
+- `user.role == 1` checks became `is_admin()` (sc-server onboarding, sc-api MCP `require_admin`,
+  sc-core-traits coding, sc-module permissions). The users-table insert/update rule
+  (`user_rows.rs`) compared a raw `i64` with `i64::from(caller.role)`. It now reads a `Role` and
+  uses `outranks` / `meets`, and an out-of-range role there is a 400 rather than a 403.
+- `User::new` is infallible now that a role cannot be out of range.
+- Deleted: the six `ROLE_ADMIN` / four `ROLE_PUBLIC` constants (sc-auth, sc-files, sc-action,
+  sc-workflow, sc-viewpattern, and the private copies in sc-catalog `history.rs` and
+  `retention.rs`), `sc_auth::role_in_range`, and the four `caller_role` / `role_of` helpers. The
+  one way an optional user becomes a role is `sc_auth::role_of`. sc-auth's role *row* struct was
+  renamed `RoleDef` to free the name.
+- **Guard:** `crates/sc-types/tests/role_guard.rs` scans every crate's source, with comments and
+  strings stripped. It fails on a role-named binding typed `u8`, a role compared with a number
+  literal, a role number unwrapped with `.get()` and ordered by hand, and any new `ROLE_ADMIN` /
+  `ROLE_PUBLIC` constant. Only `sc-types/src/role.rs` is exempt.
+
+**`Principal`** (sc-catalog) replaces `CallerContext`: role, user, trigger chain, calling
+application, guest session and changeset. `sc_api::caller_context(_at)` are now
+`principal_of` / `principal_at`. The user is still the JSON object the `sc.user` GUC carries;
+Q2.2's `AuthenticatedUser` will replace it.
+
+**`Authority<'a> { System(SystemReason), Caller(&'a Principal) }`** replaces the 65
+`Option<&CallerContext>` parameters (`SharedTx::run`, the row layer, CSV and geo import, public
+dataset install, the `TriggerDispatcher` methods, the credits ledger, the users-table guards).
+`None` used to mean "nobody, plus the ambient changeset". The server's own authority is now
+written `Authority::system("reason")`, the only way to make a `SystemReason`, and request paths
+pass `Authority::Caller`. Two request paths that passed `None` now pass their caller: REST file
+downloads, and grouped aggregates decided by an ownership predicate.
+- **Behaviour change:** `System` is the admin role with no user. On a row-level-security table it
+  sets `sc.role` to 1 in `SharedTx` and in the row layer, where `None` used to fail closed. So
+  "is this file still referenced?" (file cleanup and retention), persisting a live document, and
+  the ownership check's read of an existing row now see rows a policy would have hidden from
+  "nobody". A system write to a table that is only change-logged still goes through the provider,
+  so history groups it as before.
+- `Caller::admin()`-style ad-hoc authority was converted where it had no user (the retention
+  job). Every system call site, and the admin principals that remain, are listed in
+  docs/SECURITY_REVIEW_2026-10.md, "System-authority inventory".
+
+**Context across `spawn`.** `sc_catalog::TaskScope` captures the task-locals a caller's work runs
+inside (origin, ambient changeset, run outbox), and `spawn_scoped` re-enters them in the spawned
+task. Exposed-agent turns (`app_agents.rs`), public dataset installs and GraphQL's `DataLoader`
+now spawn with it. Before, a plain `tokio::spawn` dropped the application and guest session, so
+an ownership formula's `session.id` read nothing. Test:
+`caller::tests::a_triggered_chain_and_its_origin_survive_a_spawn` keeps the untrusted-input marker
+in the principal's chain across a spawn and shows a bare spawn losing the origin (security review
+#32).
+
+**Per-crate callers (partly).** `sc_module::RouteCaller` is gone; module routes take a
+`Principal`, built by `sc_api::principal_of`, which removed sc-server's copy of that conversion.
+`Principal::file_caller()` / `user_id()` give the file rule's view (sc-files sits below
+sc-catalog, so `FileCaller` stays a separate type). Still separate, for reasons recorded in
+TODO-code-quality.md Q1.8: `sc_dataset::Caller`, `sc_live::access::Caller`,
+`sc_agent::RunCaller`, and sc-server's `LiveCaller` / `GuestCaller` / `AppCaller`.
+
+## Code quality Q0: quick wins
+
+The first milestone of `TODO-code-quality.md`. Nothing changes on the wire, in stored data or in
+the schema.
+
+**Every admin endpoint is checked to have a handler.** The admin endpoint table
+(`sc_api::admin_endpoints()`, the Analytics UI's endpoints included) and the handler registry are
+joined by name only, so an endpoint whose handler was missing or misspelled answered `501` at
+request time. A test now builds the registry the router serves (`admin_handlers` plus
+`builderStatus`) and fails naming every `HandlerRef::Named` endpoint with no handler. Test:
+`handlers::coverage_tests::every_named_admin_endpoint_has_a_handler`.
+
+**A failed logout is logged.** When a sign-in (or `becomeUser`) replaces the session the request
+came with, or a logout ends it, a failure to end the old session in the store was ignored. It is
+now written to the server log ("… it stays valid until it expires"). The swap itself still
+succeeds: the new session exists and the cookie no longer names the old one, and failing the
+request would leave the caller with both sessions. A public dataset whose import fails no longer
+says "its tables were not kept" when dropping the half-imported tables failed too; the error
+now names both failures and says to drop the tables by hand.
+
+**`Error::message()` and `Error::message_and_causes()`** in sc-error: the error's own text without
+the kind prefix `Display` adds ("invalid: ", "not found: ", …), and the same followed by its
+causes. They replace four local helpers, two of which stripped the prefix off the rendered string
+(`public_datasets::plain`, removed from sc-api's public API; sc-analytics' `plain`; geo import's
+`plain_database_error`; the admin handlers' `plain_sentence`). Errors that were not `invalid`
+lose their kind prefix in those messages too. Test: `tests::message_is_the_text_without_the_kind_prefix`.
+
+**A per-feature commit asks git whether anything is staged** (`git diff --cached --quiet`) instead
+of reading "nothing to commit" off a failed commit's output, which depended on git's wording and
+locale. Test: `coding::commit::tests::staged_changes_are_asked_of_git_not_read_off_a_message`.
+
+**Savepoint names are `&'static str`.** `SharedTx::savepoint`, `release_savepoint` and
+`rollback_to_savepoint` format the name into SQL; they now take a `&'static str`, so request data
+cannot reach them, and refuse a name that is not a plain identifier. Test:
+`tx::tests::a_savepoint_name_is_a_plain_identifier`.
+
+## Code quality review and TODO-code-quality.md
+
+A general review of crate structure, indirection and how the type system could enforce security,
+written up in `docs/CODE_QUALITY_REVIEW_2026-10.md`. The work items are in a new
+`TODO-code-quality.md` (milestones Q0–Q6): quick wins, a `Role` newtype and one `Principal` /
+`Authority`, proof-carrying admin extractors, an `sc-access` crate with scoped capability handles,
+trust-boundary newtypes (`StorePath`, `TrustedHost`, `PublicAddr`, `Secret`, `SafeHtml`), then
+structural cleanup and test hygiene. No code changed.
+
+## Test fix: the expired-grant session test no longer races its own grant
+
+`role_grants::an_expired_grant_ends_access_with_no_write_even_through_a_cached_session` gave its
+grant 1.5s to live, and that time had to cover the grant write, login (session insert, sweep,
+user load) and the first `user_for`. Under a full parallel run against one database this took
+longer than 1.5s now and then, so the grant had already ended and the session showed the base
+role (80, not 60). The window is now 5s, the test sleeps until just past the grant's end rather
+than a fixed 1.7s, and the first assertion's message gives the end time and the current time.
+
+## Deployment: three ways to get the executable, one way to set a host up (TODO D1.5)
+
+Before the general release, the deployment options are cut down to the ones that are needed.
+There are now three ways to get `feldspar`: the curl installer, the release tarball downloaded
+and installed by hand, and a source build that runs on the machine that built it. After any of
+them, `feldspar setup` makes the machine an instance.
+
+- **One release artifact.** The static artifact (no Python) is retired (TODO-portable-release
+  R3.3). `scripts/build-static.sh` builds only the dynamically linked tarball with its own
+  CPython and glibc, as `dist/feldspar-<version>-<target>.tar.gz`. `--release` publishes it as
+  `feldspar-linux-<arch>.tar.gz` and, from x86_64, also as `feldspar.tar.gz`, the name the first
+  releases had, which `~/feldspar-hosted` still downloads. `feldspar-debian13-python.tar.gz` is
+  no longer published, because nothing fetches it. `static-build.Dockerfile` lost its `static`
+  variant; its cargo cache directory is unchanged.
+- **`build-static.sh --deploy` is gone**, with `--deploy-variant`, `--ssh-opt`, `--remote-tmp`
+  and `--variant`. Each one is refused with a sentence that says why. Install the published
+  release on a host, or copy a tarball there and run its `install.sh`.
+- **The curl installer needs no options.** `curl -fsSL …/install.sh | sh` installs or upgrades
+  the one release, whatever `/opt/feldspar/VARIANT` says. A static or `debian13-python` host
+  moves to it at its next upgrade. `--variant` is still accepted and ignored, so an old command
+  line keeps working.
+- **`scripts/setup-host.sh` is removed. `feldspar setup` replaces it.** The two did the same
+  job, and `feldspar setup` is inside the binary, so it works the same after all three ways of
+  getting it. It now knows every family the script knew, by `ID` or `ID_LIKE`:
+  - Fedora and RHEL: dnf, with `postgresql-setup --initdb`, and Chromium from EPEL on RHEL,
+    AlmaLinux and Rocky.
+  - openSUSE: zypper, with Node from `nodejs-default`/`npm-default` on Tumbleweed and
+    `nodejs22`/`npm22` on Leap.
+  - Arch: pacman, with `initdb` set to peer authentication.
+
+  `useradd` creates the service account on these families. The script's certificate check is
+  ported too. When the binary has the release's `python/` beside it, a production setup runs
+  `feldspar python check` as the service account. If the HTTPS request fails without
+  `SSL_CERT_FILE` and passes with the distribution's bundle, setup sets that variable in a
+  systemd drop-in (`feldspar.service.d/ssl-cert-file.conf`), or in `/etc/conf.d/feldspar` under
+  OpenRC. Existing hosts set up by the script keep their unit and configuration, and an upgrade
+  removes the old `/opt/feldspar/setup-host.sh` with the rest of the old tree.
+- **The tarball's `install.sh` links `/usr/local/bin/feldspar`.** Only the curl installer (and
+  `setup-host.sh`) used to create this link, so a hand install now also ends with `feldspar` on
+  `PATH`, ready for `feldspar setup`.
+- **Docs.** docs/OPERATIONS.md §1–§3 are rewritten around the three ways. §3.1 replaces "the
+  prototype does not migrate" with what the migration system does, and why a dump is still
+  needed before an upgrade: an older binary refuses a migrated database. The Docker image moves
+  from README §2.9 to OPERATIONS §12. Building and publishing a release, the CPython pin and the
+  smoke test move to a new §13. README §2 now begins with the three ways, and the by-hand steps
+  after them are runtime-only (the build packages are in §3–§4). README §4.1 points at §13.
+  `docs/tutorial-python.md`, `tutorial-agents.md`, `tutorial-modules.md` and TECHNICAL_DESIGN
+  §15.2 are updated to match.
+- **Tests.** `setup_host.rs` and `build_static_deploy.rs` are removed with what they tested.
+  `setup::each_family_gets_its_own_packages_database_setup_and_account` and
+  `setup::the_bundled_python_has_its_certificates_checked_before_the_service_starts` cover the
+  port. `build_static_release` checks the two published names and the refused options.
+  `install_script` checks that every `--variant` gets the one release. `install_tree` checks
+  the `PATH` link.
+- **shellcheck.** `build-static.sh`, `install.sh`, `scripts/lib/*.sh` and `deploy/alpine-musl/*.sh`
+  pass `shellcheck -x` (0.11) with no findings. The fixes don't change behaviour: assignments
+  split from `readonly`/`local`, the `source` directive made resolvable, the missing-library
+  list printed line by line instead of word-split, `find` instead of `ls | wc -l`, a `shell=sh`
+  directive for the sourced `env.sh`, and the two intentional literal `$ORIGIN`s annotated.
+
+## Portable release R2.4, R2.5, R3.1: the checks that needed docker and VMs, and what they found
+
+The parts of `TODO-portable-release.md` that the machine that wrote R1–R4 could not run: the
+docker build with its distribution smoke test, SELinux on a Fedora VM, and upgrading a real
+`debian13-python` host. All three pass now. They found two bugs in the release and two in the
+tests, and the full test suite found two more test bugs.
+
+- **A `debian13-python` host's venv kept running the host's Python after the upgrade (R1.6).**
+  `python3 -m venv --upgrade` keeps an interpreter link that already exists, so the repoint
+  rewrote `pyvenv.cfg` but left `bin/python3 -> /usr/bin/python3`, and failed in `ensurepip`.
+  After that the server believed the move was done, and removing the host's `python3` would
+  have broken every later module install. `sc-python` now removes the environment's
+  `bin/python*` links before `venv --upgrade`, and also repoints an environment whose
+  `bin/python` links to anything but the bundled interpreter, which heals one that is already
+  half-moved. Found on a Debian 13 VM; checked there end to end (upgrade, repoint, host Python
+  packages purged, module still loads, a further install works).
+- **The bundled CPython shipped without its stdlib bytecode.** python-build-standalone's
+  `install_only_stripped` has almost no `.pyc` files, so a process run as root wrote
+  `__pycache__` into `/opt/feldspar/python` (which an install treats as read-only), and the
+  service account, which cannot, compiled the stdlib again on every start.
+  `scripts/lib/python-bundle.sh` now compiles the whole library at build time. The tarball
+  grows by about 5 MB.
+- **A second `--docker` build failed with "ui/admin/dist was not built".** The UI bundles are
+  built by sc-cli's build script into the source tree, which `.dockerignore` excludes, and the
+  cached build script reran only when UI sources changed. `static-build.Dockerfile` now touches
+  the `package.json` files the build script watches, so each docker build makes its bundles.
+- **`setup-host.sh`'s HTTPS check honoured the caller's `SSL_CERT_FILE`.** The check is meant to
+  ask whether the service, which has no such variable, can make a verified request. It now
+  clears `SSL_CERT_FILE` and `SSL_CERT_DIR` for that check. Cargo sets `SSL_CERT_FILE` for
+  everything it runs, which is how `setup_host::ssl_cert_file_goes_into_the_unit_only_where_https_needs_it`
+  failed.
+- **`setup_host::each_family_gets_its_own_packages_database_setup_and_account` depended on the
+  machine.** On a host with a real `feldspar` account the plan skipped creating one. The test
+  now stubs `id` for account lookups.
+- **The smoke test (R2.4)** passes on all ten images (Debian 12 and 13, Ubuntu 24.04 and latest,
+  Fedora, AlmaLinux 10, Arch, Leap 16, Tumbleweed, Alpine 3); none needs `SSL_CERT_FILE`. Two
+  fixes to `scripts/lib/smoke-linux.sh`: the `--upgrade` scenario installs `ca-certificates`
+  before its older tree (the server will not start with no CA certificates, and a host that
+  is being upgraded has them), and on Alpine it expects the old server to map
+  `${PREFIX}.old/glibc/libc.so.6` after the swap, since it still runs from the renamed tree.
+- **SELinux (R2.5)**: on Fedora 44, enforcing, `setup-host.sh` and a Python trigger work with no
+  denials and no change. `docs/OPERATIONS.md` §1.1 says so, and how far each distribution has
+  been tried; §1.4 describes the repoint as it now works.
+- **Tests.** `sc-python`: `an_environment_whose_interpreter_still_links_to_the_host_is_moved`
+  (a half-moved venv, and one whose host interpreter is gone), and the existing repoint test now
+  checks where `bin/python*` resolve. Its fake interpreter behaves like CPython's venv, keeping
+  links that already exist. Both fail without the fix.
+
+## Portable release R4: the curl installer picks the tarball by platform; `release.sh`
+
+R4 of `TODO-portable-release.md` now holds only the platform work that needs neither an aarch64 nor
+a Mac build machine, so R1–R4 can go to production as one release. The aarch64 Linux and macOS
+builds (CI jobs, 16 KB pages, `build-macos.sh`) move to a new milestone, R5, to be done after that release.
+
+- **R4.1, `scripts/install.sh` (D13, D16).** The platform is checked first, from `uname -s` and
+  `uname -m`, before the installer needs root or reads `/etc/os-release`. Linux on `x86_64`
+  (or `amd64`) fetches `feldspar-linux-x86_64.tar.gz`, as before; the name is now built from the
+  architecture, ready for R5. Every other platform gets a message saying what to do, and the
+  installer exits non-zero without downloading anything: aarch64 Linux and Apple-silicon macOS
+  (no release published yet; how to build one), Intel Macs (build from source), 32-bit ARM
+  (install the 64-bit OS), Windows under Git Bash, MSYS or Cygwin (`wsl --install -d Debian`,
+  then the same one-liner), the BSDs (a Linux VM), and anything else (the supported list).
+  **`--force` no longer gets past an unknown architecture**, only an unknown Linux distribution:
+  on another architecture there is nothing to download.
+- **R4.2, `scripts/lib/release.sh` (D15).** The upload half of `--release` moved out of
+  `build-static.sh` into a library it sources, for the macOS build script (R5) to source too:
+  the bucket and its public URL, the preflight (empty `--bucket`, npx, `scripts/install.sh`),
+  the checksum beside a tarball, the dirty-checkout warning, the upload of a tarball under each
+  of its names with a `.sha256` naming each, and the installer upload. `build-static.sh` keeps
+  which names a variant is published under, the refusal to release the static artifact from
+  aarch64, the "what a new host runs" text and all the post-build checks, which are about ELF
+  and Linux. **No change in behaviour:** every run of the stubbed `build_static_release`
+  fixture printed the same output and made the same `npx wrangler` calls before and after
+  (normalised for time, temp paths and digests). The one difference is precedence: the shared
+  preflight now runs before the static-on-aarch64 refusal, so when both apply, the empty
+  `--bucket` is reported first.
+- **R4.3, documentation.** `docs/OPERATIONS.md` §1.1 has a platform table (what has a release,
+  what is planned, what is not supported and why), and README §2 says what the installer does on a
+  platform with no release.
+- **Tests.** `install_script::the_platform_picks_the_tarball_or_says_what_to_do` runs the installer
+  with `uname` stubbed for Linux x86_64, amd64, aarch64, arm64, armv7l, armv6l and riscv64, Darwin
+  arm64 and x86_64, FreeBSD, OpenBSD, MINGW64, Cygwin and SunOS, and checks the URL or the message.
+  `build_static_release` now expects the published installer's object name to be built from
+  `${ARCH}`.
+  `build_static_release::the_release_library_publishes_for_any_build_script` sources
+  `release.sh` from a bare script, as the macOS build will, and checks the checksum files, the
+  upload order (each tarball name, its `.sha256`, the installer last) and the preflight's
+  refusals. The `build_static_*` fixtures copy `release.sh`, and `docker_image` reads the public
+  URL from it.
+
+## Portable release R3: one Linux artifact, published under its platform's name
+
+Milestone R3 of `TODO-portable-release.md`, apart from what has to wait: R3.3 (stop building
+`static`) comes after one or two releases with both artifacts, and R3.1's by-hand upgrade of a
+`debian13-python` host on a Debian 13 VM has not been done.
+
+**What a release now is.** The `linux` artifact is the one to install. It is the same tarball on
+**Debian 12 and 13, Ubuntu 24.04 and later, Fedora, RHEL 10 and its rebuilds (AlmaLinux, Rocky),
+openSUSE Leap 16 and Tumbleweed, Arch and Alpine**, and what derives from them (Mint, MX,
+CachyOS, Manjaro, EndeavourOS, by `ID_LIKE`), on x86_64. **Python needs nothing from the host**:
+no `python3`, `libpython` or `python3-venv`. The tarball carries a pinned CPython 3.13 that the
+binary embeds and pip runs, and on Alpine (or a glibc older than 2.36) a glibc of its own.
+
+**Upgrade note for `debian13-python` hosts.** Upgrade as usual (`curl … install.sh | sh`, or the
+tarball's `install.sh`). The installer reads `debian13-python` from `/opt/feldspar/VARIANT` and
+installs the Linux artifact, which then says `linux`. The Python environment and its installed
+modules keep working: the environment was made by Debian's `python3.13`, the same minor version
+as the bundled one, and the next module install repoints it at the bundled interpreter
+(`venv --upgrade`, which keeps `site-packages`). After that, Debian's `python3`, `python3-venv`
+and `libpython3.13` are no longer used by feldspar. Take the database dump first, as for every
+upgrade (docs/OPERATIONS.md §3.1).
+
+- **R3.1, `--release` names (D13, D5).** `scripts/build-static.sh --release` publishes the
+  `linux` artifact as `feldspar-linux-<arch>.tar.gz` and, from an x86_64 build, again as
+  `feldspar-debian13-python.tar.gz`, so hosts, the container image (`deploy/docker`) and older
+  curl installers that fetch the old name get it unchanged. The static artifact stays
+  `feldspar.tar.gz`. Each name gets its own `.sha256`, naming that object, so `sha256sum -c`
+  works on either download. `select_variant` now sets `OBJECTS`, every name a tarball is
+  published under, and `publish_to_r2` uploads each one.
+  - A build publishes only its own architecture's names. On aarch64 the default `--variant both`
+    is the linux artifact alone. `--release --variant static` there is refused before the build,
+    because `feldspar.tar.gz` has no architecture in its name and would replace the x86_64
+    tarball.
+  - The tarball's README names its own download URL and the older name it is also published
+    under; the static one's points at `feldspar-linux-<arch>.tar.gz` for Python.
+  - **The curl installer fetches `feldspar-linux-x86_64.tar.gz`** for `--variant linux` (and for
+    a host whose `VARIANT` is `linux` or `debian13-python`). It is published in the same release,
+    after the tarballs, so the name exists when the installer that asks for it does.
+- **R3.2, documentation.** `docs/OPERATIONS.md` §1 is rewritten around the Linux artifact: the
+  artifact table, the published names, **§1.1** the distribution list (and how far each family
+  has been tried), **§1.2** which libc an install uses and why, **§1.3** the bundled CPython, the
+  self-check and how to bump the pin, **§1.4** the upgrade of `debian13-python` hosts. §2.1
+  installs the Linux artifact, with the static one as the alternative. The build options of
+  §2.3 and the publish table of §3.4 describe the current variants. `README.md` §2 (the
+  downloads and the upgrade), §3 (Python needs no host packages with the Linux artifact;
+  `--python-bin`'s default) and §4.1 (both artifacts and the published names),
+  `docs/tutorial-python.md` (the Linux artifact as the easy way, with no Python packages to
+  install), `docs/TECHNICAL_DESIGN.md`'s Python section, and the header comments of
+  `build-static.sh` and `static-build.Dockerfile` follow.
+- **Tests.** `build_static_release` checks the seven uploads of a default release (both names
+  of the linux tarball are byte-identical, each `.sha256` names its own object, the published
+  installer fetches the new name) and a new aarch64 release, with `uname -m` stubbed and the
+  cargo stub honouring `--target`. It publishes `feldspar-linux-aarch64.tar.gz` only, and its
+  `--variant static` is refused before cargo runs. `install_script` expects the new name.
+
+## Portable release R2: installing on every distribution, by swapping trees
+
+Milestone R2 of `TODO-portable-release.md`. The release installs on Fedora, RHEL and its
+rebuilds, openSUSE and Arch as well as Debian, Ubuntu and Alpine. The `linux` artifact picks its
+libc as it installs. An install, and so an upgrade, never writes over the installed tree. R2.5
+(SELinux on a real Fedora/Alma VM) is not done, and the container smoke test (R2.4) is written
+but has never run: this machine has no docker.
+
+- **The tarball's `install.sh` is now a script of its own**, `scripts/lib/install-tree.sh`.
+  `build-static.sh` copies it into every artifact with the prefix and the build's glibc
+  (2.36) filled in, where it used to generate a heredoc. The curl installer and `--deploy` both
+  run it. It:
+  1. copies the tree to `${PREFIX}.new`, beside the prefix, with `cp -p` so the bundled
+     CPython's `.pyc` files stay valid. As root it makes the tree `root:root` and `go-w`.
+     A `.new` left by an interrupted run is removed first.
+  2. chooses the `linux` artifact's libc (R2.1, D6). A musl host is detected by what `ldd`
+     says, then `getconf GNU_LIBC_VERSION`, then `/lib/ld-musl-*`, so Alpine with gcompat
+     still counts as musl. A musl host, or a glibc host where the normal binary does not start,
+     gets the `.glibc` copies moved over `bin/feldspar` and over the file `python/bin/python3`
+     links to. `${PREFIX}/LIBC` records the choice and the reason. `--libc host|bundled`
+     overrides it. **On a glibc host the `.glibc` copies and `glibc/` are kept** (about 5 MB),
+     so the installed tree is the tarball.
+  3. starts the new binary once. A binary on the bundled glibc names its loader under
+     `${PREFIX}`, so it is checked after the swap, and if it fails the install swaps back.
+  4. writes `${PREFIX}/MANIFEST`: every path the install put there, directories included.
+  5. carries over anything under the old prefix that no install put there, copying it with a
+     warning that names it. A foreign directory is named once, not file by file. A prefix
+     without a MANIFEST is read against the old tarball layout (`bin/`, `ui/`, `plugins/`,
+     `python/`, `glibc/`, `VARIANT`, `setup-host.sh`, and R1's `python.old`/`.new`). A path the
+     new release ships wins, with a warning. Caches and build output (`__pycache__`, `*.pyc`,
+     and `node_modules`, `build/` and `*.egg-info` under `plugins/`) are dropped.
+  6. stops running `feldspar.service` and `feldspar@*.service` units (found with `systemctl
+     list-units`), renames `${PREFIX}` to `${PREFIX}.old` and `.new` into its place, and starts
+     them again. `--no-restart` leaves them alone. A unit that will not stop is warned about
+     and not started.
+  7. prints the version before and after, the dump reminder (OPERATIONS §3.1), and the rollback
+     command. `--no-next-steps` drops the setup-host advice, for callers that print their own.
+  It refuses to run from an installed copy. R1's in-place `python/`/`glibc/` swap is gone.
+- **Tarballs are packed `--owner=0 --group=0`**, because `cp -p` keeps ownership and a tree
+  unpacked as root would otherwise belong to the build account's uid.
+- **`scripts/install.sh` (the curl installer)**:
+  - **More families.** Fedora/RHEL/Alma/Rocky (dnf), openSUSE Leap/Tumbleweed (zypper, adding
+    `ca-certificates-mozilla`) and Arch/CachyOS/Manjaro/EndeavourOS (`pacman -Syu --needed`),
+    by `ID`, else by the first family `ID_LIKE` names. It knows each family's CA bundle path,
+    and also installs `findutils`/`gawk` where `find`/`awk` are missing.
+  - **`--variant static|linux`.** The default is what `${PREFIX}/VARIANT` names
+    (`debian13-python` means `linux`), else `static`, so an upgraded host keeps Python.
+  - **`--no-restart`** is passed through. `file://` base URLs are copied, which also works
+    with busybox wget.
+  - **The plan prints a libc forecast**, with `--dry-run` too.
+  - It shows the tree installer's output, no longer sending it to `/dev/null`. Its closing
+    advice no longer says to restart after upgrading.
+  - `FELDSPAR_OS_RELEASE` stands in for `/etc/os-release` in tests.
+- **`scripts/setup-host.sh` (R2.2, D9)**:
+  - **A package table per family.** It covers the certificates and curl, the PostgreSQL server
+    and client, and the source-build toolchain. PostgreSQL's first start: `postgresql-setup
+    --initdb` on Fedora/RHEL, `initdb --auth-local=peer` on Arch (whose default is `trust`),
+    and the openSUSE unit initialises its own. Each step is skipped where `PG_VERSION` already
+    exists.
+  - **The service account comes from `useradd`** off Debian.
+  - **Node comes from the distribution** off Debian: `nodejs npm`, `nodejs-default
+    npm-default` on Tumbleweed, `nodejs22 npm22` on Leap. Its npm is checked afterwards.
+    NodeSource stays Debian-only.
+  - **Chromium from the distribution**, from EPEL on RHEL and its rebuilds.
+  - **Alpine is refused by name** (OpenRC), and an unknown distribution is refused with the
+    supported list.
+  - No Python package anywhere, except Debian's for a host still on the old `debian13-python`
+    artifact.
+- **`SSL_CERT_FILE` where it is needed (R2.3, D10).** On a `linux` install, `setup-host.sh` runs
+  `feldspar python check` as the service account. If the HTTPS request passes only with the
+  host's CA bundle in `SSL_CERT_FILE`, the unit gets `Environment=SSL_CERT_FILE=…`, or is told
+  to add it when the unit is kept. This is decided per host, not by a list of families, since
+  the smoke test that would say which need it has not run.
+- **`feldspar python check`** gains a `libc` line: the `libc.so.6` (or musl loader) in
+  `/proc/self/maps`, i.e. the host's or the bundle's. It also gains `--import MODULE`
+  (repeatable), which imports from the environment's `site-packages` as a run would.
+  `PythonRuntime::self_check` takes the imports, and `SelfCheck` has `libc`.
+- **The smoke test (R2.4)** now runs after packaging. It installs the `linux` tarball in
+  `debian:13-slim`, `debian:12-slim`, `ubuntu:24.04`, `ubuntu:latest`, `fedora:latest`,
+  `almalinux:10`, `archlinux:latest`, `opensuse/leap:16.0`, `opensuse/tumbleweed` and
+  `alpine:3`, through the curl installer from a `file://` release
+  (`scripts/lib/smoke-linux.sh`). Then:
+  - `python check` must pass with its HTTPS request. Where that needs `SSL_CERT_FILE`, it
+    reports `NEEDS SSL_CERT_FILE`.
+  - the process must map the host's libc on glibc images and the bundle's on Alpine.
+  - on Debian 13 and Alpine, a bundled `venv` + `pip install six markupsafe` must import in the
+    embedded interpreter.
+  - on Debian 13 and Alpine, R2.6's upgrade checks run: a server running from an older tree
+    survives, `.old` holds the old tree, an old-only file is gone, `local.conf` is carried with
+    a warning, and a second install changes nothing but `.old`.
+- **`python-bundle.sh`** recompiles the `sysconfig` it rewrites, so no root process writes a
+  `.pyc` into the prefix later.
+- **`deploy/docker/Dockerfile`** accepted only `VARIANT` = `debian13-python`, which R1 changed
+  to `linux`, so the image build would have failed on the first R1 artifact. It now accepts
+  both.
+- Docs: OPERATIONS §3.2 is rewritten as "run the installer again". §2.3 and §3.4 describe
+  `--deploy` through the tree installer, and the ETXTBSY row is updated. New troubleshooting
+  rows cover "carrying over" and `LIBC: bundled`. README's upgrade passages follow. The rest of
+  §1–§2 is R3.2's.
+- Tests:
+  - `tests/install_tree.rs` (new) runs the tree installer for real against fake trees, with
+    `systemctl` always stubbed. It covers a first install and its manifest, an upgrade under a
+    running process (D11's cases), a second install changing nothing but `.old`, a legacy
+    prefix, musl, a glibc too old, a bundled binary that fails and is swapped back, units
+    stopped and started around the swap (`--no-restart`, a failed stop), a broken binary, and
+    refusing the installed copy.
+  - `install_script.rs` covers every family's package command, derivatives by `ID_LIKE`,
+    `--variant linux`, the libc forecast (musl too), `--no-restart`, and a `file://` release
+    with wget alone.
+  - `setup_host.rs` covers each family's packages, PostgreSQL setup, Node, browser and
+    account, the Alpine and unknown refusals, and `SSL_CERT_FILE` in the unit only where HTTPS
+    needs it.
+  - `build_static_release.rs` checks that `install.sh` is the filled-in tree installer and that
+    the tarball is `0/0`, and the deploy tests answer `list-units`.
+  - `sc-python` tests named imports and the mapped libc.
+- **Found, not fixed:** installing a bundled Python module (`markdown`, `sklearn`: setuptools)
+  from a read-only `/opt/feldspar/plugins/<id>` fails, because pip builds in place and
+  setuptools writes `*.egg-info` there ("Getting requirements to build wheel did not run
+  successfully"). That is the case on every tarball install, where the prefix is root's and
+  the unit has `ProtectSystem=strict`. The module installer should copy the directory first.
+
+## Portable release R1: one Linux artifact with its own CPython
+
+The Python-capable release was built on Debian 13 and linked the host's `libpython3.13`, so it
+ran on Debian 13 only. This is milestone R1 of `TODO-portable-release.md`: the artifact itself,
+with CPython bundled. Installing it on every distribution (the libc choice, package tables, the
+tree swap) is R2.
+
+- **`--variant linux`** in `scripts/build-static.sh` replaces `debian13-python` (`python` is
+  still accepted and means `linux`). It builds on Debian 12 (glibc 2.36), not 13, against
+  python-build-standalone CPython **3.13.18** (release `20261026`), pinned by tag and per-arch
+  SHA-256 in the script. The download is checked before anything is built. The binary links
+  `libpython3.13.so.1.0` through a RUNPATH of `$ORIGIN/../python/lib`, so it uses the copy in
+  the tarball, never the host's. The tarball adds `python/` (Tcl/Tk, IDLE and man pages
+  removed) and `glibc/` (the build image's loader, libc and the rest of the binary's library
+  closure, found with `ldd`, plus `libnss_compat`/`libnss_db`). It also adds
+  `bin/feldspar.glibc` and `python/bin/python3.glibc`, patched with `patchelf` to use the
+  bundled loader and a DT_RPATH of `/opt/feldspar/glibc:/opt/feldspar/python/lib`, for musl
+  hosts. `VARIANT` says `linux`. It is still published as `feldspar-debian13-python.tar.gz`
+  (D5), so existing hosts and the container image keep fetching it.
+- **`scripts/lib/python-bundle.sh`** (new) does the bundling for the Dockerfile and for
+  `--native`: `fetch` (download, check the SHA-256, unpack, trim, and rewrite PBS's `/install`
+  placeholder in `sysconfig`, `python3-config`, the Makefile and the `.pc` files to the
+  install path, so pip can build C extensions) and `glibc` (strip, copy the glibc closure,
+  make the `.glibc` copies). `static-build.Dockerfile` unpacks PBS at `${PREFIX}/python` inside
+  the container and builds with `PYO3_PYTHON` set to it. Native builds use a
+  `PYO3_CONFIG_FILE` instead, and need `curl` and `patchelf`.
+- **Checks**: `assert_python_linkage` now requires the RUNPATH and `python/lib/libpython3.13.so.1.0`
+  in the tree. The new `assert_glibc_copies` reads each `.glibc` copy's `PT_INTERP` and
+  `DT_RPATH` with `readelf`, and checks that every `NEEDED` entry of every ELF file in the tree
+  is in `glibc/` or `python/lib`. The smoke run mounts the tree at the prefix and runs
+  `feldspar python check --offline`: the normal binary on `debian:12-slim` and `debian:13-slim`,
+  the `.glibc` one on `alpine:3`. The generated `install.sh` no longer installs `libpython3.13`
+  with apt. Instead it swaps `python/` and `glibc/` in by rename, so a running server's mapped
+  libpython is never overwritten in place.
+- **`sc-python` starts CPython at the bundled home.** When `<exe>/../python` exists (symlinks
+  resolved), the interpreter is started with `PyConfig.home` set to it and `program_name` set to
+  its `bin/python3`, via `Py_InitializeFromConfig`. No signal handlers are installed and the C
+  locale is not coerced. `PYTHONHOME` is never put in the environment, so child processes do
+  not inherit it. Without that directory (developer builds, `cargo test`) it starts exactly as
+  before. This needs the non-limited API, so the workspace `pyo3` dependency drops
+  `abi3-py311`. The binary already linked one versioned `libpython`.
+- **`--python-bin` defaults to the bundled `python/bin/python3`** when it exists, else
+  `python3` as before (`sc_python::default_python_bin`). The `--help` text and
+  `docs/tutorial-python.md` say so.
+- **An existing venv is moved onto the bundled interpreter.** If its `pyvenv.cfg` has the same
+  minor version as the embedded interpreter but a different `home` (Debian's `python3.13` on an
+  upgraded host), the next install or uninstall first runs `<bundled python3> -m venv --upgrade
+  <dir>`. `site-packages` is kept. Nothing is moved for a different minor version (still
+  `abi_refusal`) or when `--python-bin` names another interpreter.
+- **`feldspar python check [--url URL | --offline]`** (new) starts the embedded interpreter
+  with no database. It prints the version, home, `sys.executable` and the interpreter pip runs.
+  It then checks that `ssl`, `sqlite3`, `ctypes` and `zoneinfo` import and that a verified
+  HTTPS request works (default `https://pypi.org/simple/`), and exits non-zero if any check
+  fails (`sc_python::PythonRuntime::self_check`, `crates/sc-python/src/py/selfcheck.py`).
+- Docs: the `abi3` claims in README, OPERATIONS and TECHNICAL_DESIGN are corrected.
+- Tests: `sc-python` unit tests cover finding the home (including through a symlink), that a
+  test binary has none, and moving a venv with a stand-in interpreter (moved once; a 3.12 venv
+  and an operator's own `--python-bin` are left alone). `tests/python_self_check.rs` runs the
+  self-check offline, and `without_python.rs` checks it is refused in a build without Python.
+  `sc-cli` tests cover the command's arguments and output. `build_static_release.rs` builds the
+  `linux` variant natively over a fake PBS tarball with `curl`/`ldd`/`patchelf` stubbed, and
+  checks the URL, RUSTFLAGS, PyO3 config, rewritten `sysconfig`, tree layout, `patchelf`
+  arguments, `install.sh`, README and uploads. A second test checks that a download that does
+  not match the pin stops the build before cargo runs. Checked by hand: a fake release tree
+  (this binary plus `python/` pointing at the system stdlib) starts at that home, and an empty
+  `python/` fails with CPython's own message.
+- **Not run here**: the Docker build and its smoke run. This machine has no docker, so the real
+  bookworm build, `patchelf` on the real binary, and Alpine running `feldspar.glibc` are
+  unverified.
+
+## Change stream over a table with no row API compiles; refused file operations are logged; authority docs
+
+From a report on upgrading 24 apps to apps with no default row API and caller-authority queries.
+
+**A file operation the access rules refuse is logged as a warning.** Cleanup code usually wraps
+file deletes in `try/catch`, so a refused delete or write (another user's file, a floor the
+caller does not clear) failed without anyone seeing it. `FileStoreHost::files`, which every
+JavaScript and Python `fs` operation goes through, now writes one line to the server log for each
+auth refusal, whether or not the body catches it:
+`feldspar: warning: a code body's file `delete` of "p/a.pdf" in store `uploads`, as user `12`
+(role 80), was refused: not permitted to access …`. Other errors (a missing file, a bad
+argument) are not logged. Test: `code_host::files::tests::a_refused_operation_is_a_warning_and_nothing_else_is`.
+
+**A generated client with a change stream over a table that has no row API failed to compile.**
+When the table a `Changes` stream reads was not in `api_tables` (or had no key column), the
+stream's key was typed `LiveTopic`. `client.ts` used that name in `…Envelope` and
+`LiveChangesStream<…>` but only re-exported it, so `tsc` failed with TS2304 "Cannot find name
+'LiveTopic'". `sc_api::typescript` now imports `LiveTopic` whenever a change typing uses it.
+Test: `typescript_typecheck::generated_changes_client_without_row_api_type_checks` checks the
+import line without a compiler and type-checks the client with `tsc` when one is available.
+
+**`code_api_js.md` (`describe_code_api`) says what the upgrade did not:**
+- Each handle has its own authority. `db.asAdmin()` covers `db` only, and `fs(...)`,
+  `trigger(...)` and model handles each need their own `.asAdmin()`. A trigger run as the caller
+  is checked against its `min_role`, which is admin-only when it has none. There is one example
+  per handle, and a warning that a `try/catch` hides a refusal.
+- The file owner rule. An owner may always read a file, but an owner with no `minRole` hides
+  nothing. Only the owner or admin authority may overwrite, delete, move or change the metadata
+  of an owned file. A write or `mkdir` as the caller records the caller as owner when the file
+  has none, so shared files and cleanup code must write and delete with `fs(s).asAdmin()`.
+- A library may rebind its own `db` at its top level. That holds for that import in that run
+  only, and covers `db` only. Test:
+  `sc-expr` `a_body_rebinding_db_does_not_reach_a_library_and_a_library_may_rebind_its_own`.
+- Test for the reference text: `the_reference_says_each_handle_and_each_library_has_its_own_authority`.
+
+## Trigger docs: a trigger that fails raises the `error` event
+
+The `error` event for a failed trigger (below) was only in the design document, so app builders
+had no way to know the event existed or how to use it.
+
+- **`docs/tutorial-triggers.md`**: new section "When a trigger fails: the `error` event", after
+  `send_email`. It says that the write still succeeds and nothing is written to the row
+  automatically. It lists the payload fields and shows an `error` trigger running
+  `update_rows` that marks the row failed. It also covers what raises no event: a trigger
+  run directly (Run button, `POST /actions/{name}`, `trigger("…").run()`), which returns its
+  failure to the caller instead, and a failure inside an `error` trigger. The "Errors are
+  events" bullet under "Things that trip people up" now mentions failed triggers too.
+- The documented `where` is `id === payload.key && payload.method === "TRIGGER"`, so a request's
+  `error` event, which has no `key`, matches no row.
+- Test: `crates/sc-core-actions/tests/trigger_failure_event.rs` now uses that `where`. A new
+  test checks that a request's `error` event runs the trigger without failing and leaves every
+  row alone.
+  
+## A refused read in a code query is a 403 naming it; SIGHUP reloads code libraries; doc fixes
+
+Follow-ups from upgrading apps to caller-authority custom queries.
+
+**An auth refusal a code body lets escape is a 403, not a bare 500.** A JavaScript or Python
+custom query run for somebody below a table's read floor got `500 {"error":"internal
+error"}`, with the reason only in the server log. Now a host refusal the body does not catch (a
+table it may not read or write, a file, a trigger) answers **403** ``{"error": "you may not read
+`t`", "id"}`` to every caller. An admin still gets the full text. A refusal the body catches and
+replaces with its own error is still the 500 any other throw is.
+- The host's reply carries an auth refusal's own message as `refused`
+  (`sc_expr::code::host_refusal`, used for `db`, `fs` and `trigger`). The JS guest marks the
+  `Error` it rejects with (a private symbol). One that ends the run reports through the new
+  `op_sc_refused`, with the same failure text as before and the refusal underneath it. Python
+  does the same with an attribute on the `DbError`/`FileError`/`TriggerError`
+  (`bridge::REFUSED_ATTR`, read in `interp::body_error`).
+- `sc_error::Error::auth_message` finds a `Repr::Auth` through any context.
+  `sc_core_actions::code_body::failure` is now the one place both actions name a failed body.
+  It keeps a refusal underneath, so a failed body is no longer always `Invalid` (a refused one
+  is a context over `Auth`; its text is unchanged). `rest::code_answer` maps it to the 403.
+- Tests: `app_public_endpoints` (an anonymous read of an admin-only table is the 403, the same
+  refusal caught and replaced is the 500), `sc-python`'s `python_refusal` (uncaught, re-raised,
+  replaced, and a non-auth error), and `sc-error`'s unit test.
+
+**SIGHUP reloads the code libraries.** They are held in memory and were reloaded only by a save
+or delete through this server, so a library changed in `_fd_code_libraries` by another process
+was ignored until a restart, even after SIGHUP. `reload_all` now reloads them when this process
+loaded them. A failure is `ReloadReport::code_libraries_error`, and the set already loaded stays.
+Tested in `live_mounting` (a direct SQL edit is not seen before the reload and is seen after it).
+
+**Docs that told coding agents the wrong default.**
+- The `javascript-code` help topic (also served through `read_docs`) said "code runs as the
+  server" without saying that is only true in a trigger. It now says a custom query runs as its
+  caller.
+- `describe_code_api` (`code_api_js.md`) said a server-rendered page runs as the caller. It
+  runs as the admin (`TriggerDispatcher::run_code`). The design document §10.1 said the same and
+  is corrected.
+- `code_api_js.md` also said a row the caller may not see is "simply absent". That holds for
+  rows ownership filters out. A table below the read floor throws, and is now documented as the
+  403.
+- `code_api_js.md` now warns that `db = db.asAdmin()` in a query does not reach the libraries it
+  imports: a library gets the run's handles.
+- `tutorial-rest-queries.md` documents the 403, and the out-of-date comment on `code_response`
+  about which file handles are checked is fixed.
+
+## Settings → System: which version is installed, and Restart
+
+Users could not tell which build of feldspar a server was running. A new **System** tab, last
+in Settings, says so, and gathers the acts on the whole installation.
+
+- **Version card**: the workspace version (`0.1.0`, from `[workspace.package]` in the root
+  `Cargo.toml`, which `sc-cli` inherits), the git commit and the build time in UTC, the platform,
+  and one line to paste into a bug report. A binary not built by the release script shows "Not a
+  release build".
+- **`scripts/build-static.sh`** now captures `SC_BUILD_TIME` (when the script ran, UTC) and
+  `SC_BUILD_COMMIT` (full hash, `-dirty` when the tree had edits) and passes them to `cargo build`,
+  natively and through `static-build.Dockerfile` as build args (the Docker context has no
+  `.git`). `sc-server` reads them with `option_env!`; an empty value counts as none.
+- **Database card**: product and version. New `DatabaseDriver::server_version` (`sc-db`),
+  returning `DbVersion { product, version }`: Postgres answers `SHOW server_version`, SQLite the
+  linked library's version. The default errors, and the tab shows the error.
+- **Process and resources card**: start time and uptime (from `/proc/self/stat`, so a long boot
+  is counted), pid, resident memory, the machine's memory, CPU (process and
+  machine, as a share of every core over a 250 ms sample), load average, and the filesystem
+  holding the data directory. Readings a platform cannot take come back null. Refresh re-reads.
+- **Restart**: `POST /api/system/restart` (`restartServer`, admin only, not an MCP tool) answers,
+  then always exits with code 75 after 500 ms, after stopping the agents' managed processes.
+  systemd's `Restart=on-failure` and Docker's `restart: unless-stopped` start it again. No
+  attempt is made to detect a service manager (there are too many init systems); the dialog says
+  that without one the server stays stopped. The page then polls `getSystemInfo` until a different process
+  answers (pid or start time changed) and reloads.
+- **Clear all** moved here from the Backup tab.
+- **`feldspar --version`** (also `-V` and `version`) prints the same line the tab shows, from
+  `sc_server::version_line()`: `feldspar 0.1.0 · <commit> · built <time>`, or `feldspar 0.1.0 ·
+  not a release build`. `getSystemInfo` returns it as `version_line`, so the format is written
+  once. Test: `crates/sc-cli/tests/version.rs`.
+- `module_routes`' `fs_size` and the new tab share one `statvfs` wrapper
+  (`system::filesystem_size`) and `parse_meminfo`.
+- New strings translated in the five admin locales. Design doc: a paragraph before "Clear all"
+  (whose location now says Settings → System).
+- Tests: `sc-server` unit tests for the `/proc` parsers and a live read of this machine;
+  `admin_api::the_system_tab_names_the_version_and_the_database` (admin only, version, Postgres
+  version, readings); `sc-db-sqlite` `names_itself_and_its_version`;
+  `ui/admin/src/systemInfo.test.ts`; `settingsScreen.test.ts` updated for the System tab.
+
+## A trigger that fails after commit raises the `error` event
+
+When a table trigger's action failed (a `send_email` to an unreachable or refusing SMTP server,
+say), the failure only went to stderr. The write that fired it had already committed, so nothing
+an application could read said the mail was not accepted.
+
+- **`sc-action`**: the fire-and-forget path (`TriggerDispatcher::fire_in`, which table writes,
+  logins, startup and streams use) now raises an `error` event for each trigger that fails, in
+  the same transaction as the failed run. New constructor `Event::trigger_failure`. Its payload
+  is the usual `{kind, message, method, path}`, with `method` `"TRIGGER"` and `path`
+  `/<trigger>`, plus `trigger`, `event` (the failed event's kind), `table` (its channel) and
+  `key` (the row's primary key: the value for a single-column key, an object for a composite
+  one; null when there is no row). The caller and origin are the failed event's. A failure while
+  handling an `error` event raises nothing, as before.
+- So an `error` trigger can write the outcome back to the row, e.g. `update_rows` on the table
+  with `where: id === payload.key` and `error: payload.message`.
+- Test: `crates/sc-core-actions/tests/trigger_failure_event.rs`. An update trigger runs
+  `send_email` with no SMTP settings, and an `error` trigger marks the row failed with the
+  message.
+- §10.2 of the design notes the new event.
+
+## Test suite fixes after the migrations and onboarding commits
+
+- `ui/admin/src/onboarding/effects.ts`: the application the onboarding creates now sends
+  `api_tables: []`, as the application form does. Without it the admin UI failed `tsc`, so
+  `sc-cli`'s build script, and with it `cargo test --workspace`, failed.
+- `docs/TECHNICAL_DESIGN.md`: §2's crate table and diagram now include `sc-migrate` (and the
+  `sc-server` and `sc-cli` edges to it). §9.2's ER diagram now draws `_fd_migrations`. The
+  `repo_hygiene` tests check both.
+- `sc-core-traits/tests/admin_copilot_triggers.rs` inserted its row through the removed
+  `insert_row` trait. It now uses `edit_table_rows` with `allow_insert`.
+- `sc-server/tests/saltcorn_ui_configure.rs`: each setup now gets its own scratch root (a UUID,
+  not the PID). The file's two tests run in parallel and each deletes its root when dropped,
+  so one could delete `module-host.mjs` while the other was still using it.
+- `cargo fmt` over the files that had drifted.
+
+## First-run onboarding: "How do you want to build?" (TODO O1.1)
+
+The first admin to sign in now gets a sequence of modal dialogs that sets up what their answer
+needs. Each dialog that does setup says at the top where the same thing is done without it.
+
+- **A dialog language** (`ui/admin/src/onboarding/flow.ts`). A flow is a record of named steps:
+  `ask` (options, each going to a step), `say` (a message with buttons), `form` (settings
+  rendered with `SettingsFields`, then a `submit`) and `run` (no dialog: a lookup or a create
+  that decides where to go next). `finish({ to, href })` closes the dialogs and opens a route or
+  a new tab. Steps share `vars`, which text and paths name as `{provider}`, and `data`. There is
+  Back, and Skip on every dialog. `checkFlow` reports a step name that does not exist or a step
+  nothing reaches. A `run` or `form` declares its `exits`, and going anywhere else throws. The
+  flow's words are marked with an identity `t()`, so `feldspar i18n extract` collects them, and
+  the renderer translates them.
+- **The script** (`onboarding/script.ts`) goes through effects (`onboarding/effects.ts`):
+  - *Generative AI*: if there is an LLM provider, use it or set up a new one. Otherwise set one up
+    in a form here (backend, its settings, a chat model), which becomes the default. It then
+    reuses an `admin_copilot` agent on that provider or creates `Admin copilot`, and opens its
+    chat.
+  - *Point and click*: creates a Saltcorn UI application (with a free subdomain from its name),
+    selects it in the sidebar, and says to create the first table under Tables.
+  - *Write code*: either the MCP settings (Settings → Development) for an outside coding agent,
+    or a React application (with a new local file store) whose IDE it offers to open.
+- **Server**: an internal config key `onboarding_done`. `authStatus` returns
+  `onboarding_pending`, which is true only for a signed-in admin while that key is unset. The new
+  admin endpoint `finishOnboarding` (`POST /api/onboarding/finish`) sets the key. The shell
+  calls it when the dialogs close.
+- **Tests**: `onboarding/flow.test.ts` covers the engine. `onboarding/script.test.ts` runs every
+  branch with fake effects and checks the requests made and where the admin ends up.
+  `admin_users_api::onboarding_is_pending_for_an_admin_until_it_is_finished` checks the server
+  side. The generated `client.ts` was regenerated, and the analytics, builder and IDE copies
+  updated to match.
+
+## Migrations: database changes the bootstrap cannot make run once, on the first start
+
+A new crate, `sc-migrate`, holds an ordered registry of migrations (`MIGRATIONS`)
+and the runner that applies them (TECHNICAL_DESIGN §5.3, TODO M1).
+
+- **A migration** has a date-prefixed id (`2026-11-02-agent-traits`) and a body that is either
+  SQL, one script per backend (`migrations/<id>/{postgres,sqlite}.sql`, `None` where it has
+  nothing to do), or a Rust function over a `MigrationCtx` (the transaction, the backend and
+  its placeholder, `table_exists`, `column_exists`). Postgres SQL is no longer meant to be
+  translated to SQLite. `check_registry` refuses malformed, repeated or out-of-order ids.
+- **What ran is recorded** in `_fd_migrations` (id, applied_at, version, duration_ms). A start
+  reads it once, so nothing re-runs and a migration need not be idempotent.
+- **`sc_cli::connect_catalog` migrates before `Catalog::init`**, so every command that opens the
+  database does, each migration sees the previous release's schema, and the catalog and the
+  bootstraps see the result. A database without `_fd_config` (new to Feldspar) is recorded as
+  having every migration and runs none. Each pending migration runs in its own transaction
+  together with its record, under a lock (a Postgres advisory lock; SQLite's `BEGIN
+  IMMEDIATE`), so two processes starting together apply it once. A failure rolls it back and
+  stops the start, naming it; a recorded id this binary does not know (a newer release
+  migrated the database) refuses to start. Applied migrations are logged to stderr with their
+  durations.
+- **`feldspar migrate [status]`**: run the pending migrations and say what happened, or list
+  applied, pending and unknown ones without changing anything.
+- **Clear all keeps `_fd_migrations`**: the schema it describes stays.
+- `bootstrap_table`'s refusal to add a `NOT NULL` column to a table with rows no longer says
+  there is no migration framework. `TABLES_RENAME.sql` is frozen: nothing is added to it.
+- Tests: `crates/sc-migrate/tests/migrate.rs` runs each scenario on SQLite and Postgres (a new
+  database recorded, not migrated; an older one running each migration once, including a
+  Postgres-only one and a later one; a failure leaving neither change nor record; the
+  newer-release refusal; two concurrent runners; `run_one`), plus the registry checks.
+  `clear_all_api` checks the record survives a clear.
+
+## Apps serve no generic row API by default; custom queries run as their caller
+
+**Connecting a table is no longer publishing it.** An application's `tables` are what its custom
+queries, views, streams and `schema.sql` may name. The generic row API — REST's
+list/read/create/update/delete routes and GraphQL's type for a table, and the `useX` hooks in the
+generated client — is now served only for the tables in a new opt-in subset,
+`Application::api_tables`. It must be a subset of `tables`, is checked on save, and is **empty for
+every new application**:
+
+- `create_application` (the copilot's and MCP's) always creates an app with no row API and has no
+  argument to ask for one. Its description and its `next` steps say to write a custom query
+  (`save_api_query`) for each read and write the pages make, and to leave row APIs off unless the
+  person explicitly asks for generic row access.
+- `update_application` has a new `api_tables` section (`add` / `remove` / `set`). Removing needs
+  `allow_edit`. Adding also needs `allow_access_changes`, because it widens what the app exposes.
+  Disconnecting a table through `tables` also stops serving its row API. `describe_applications`
+  reports `api_tables`.
+- The admin form has a **Tables with a row API** box under **Tables**, offering only the
+  connected tables and empty by default. The admin API's application record has `api_tables`
+  (all four generated clients regenerated). A body without it means none.
+- `feldspar app api-tables (add|remove|list) --app SUBDOMAIN` is the CLI's equivalent
+  (`sc_app::change_app_api_tables`).
+- `Application::with_table` still connects a table *and* serves its row API (what most tests
+  want). `with_connected_table` connects only. `sc_app::app_api_tables` is what REST and GraphQL
+  project over. A custom query's path and name collide only with tables that serve a row API.
+- The admin copilot's build playbook now writes the queries between connecting the tables and
+  delegating the code. The builder agent is told its data comes through custom queries, and to
+  report a missing *query* rather than reach for a table.
+- `_fd_applications` has a nullable `api_tables` column, added at startup (`NULL` reads as none).
+  The first migration in `sc-migrate`, `2026-10-30-app-api-tables` (a Rust body, both backends),
+  adds it to an existing database and fills it with `tables`, so running systems keep the row APIs
+  they had; a new database is recorded without it running, so its apps start with none. Tested on
+  SQLite and Postgres with `run_one` in `crates/sc-migrate/tests/migrate.rs`.
+
+**JavaScript and Python custom queries act as their caller by default.** A handle the body did
+not narrow or widen now sends `authority: "default"` (`sc_api::code_host::Authority::Default`, also
+what a plan with no `authority` means), and each host resolves it against the run's own default
+(`TableHost`/`FileStoreHost`/`TriggerRunHost::defaulting_to`). A custom query is run through the
+new `TriggerDispatcher::run_query_code`, which sets `ActionContext::as_caller`. Its `db`, `fs`,
+`models` and `trigger(...)` then act as the caller: the table's role floors and ownership formula
+decide every row exactly as on the row API, and a file opened by default is checked against the
+caller when served. `.asAdmin()` is the explicit way to read or write as the server. Triggers,
+agent tools, workflow steps, modules and server-rendered pages keep the admin default (a table's
+read floor defaults to admin-only, so a public site's page would otherwise see nothing). `db.sql()`
+follows the handle, so under the caller only row-level security restricts it, as before. The
+`save_api_query` description, the `describe_code_api` reference and the design document (§10.1,
+§13.2) say which to use: a `javascript` query over `db.<table>` for data users own, plain SQL for
+data anybody allowed to call it may see.
+
+Not compatible with earlier behaviour: a JavaScript or Python query that relied on reading every
+row by default now sees only what its caller may. Add `.asAdmin()` where that was intended.
+
+## A `string` field's `options` can be written without JSON
+
+The `options` attribute (the allowed values) of the `string` rich type now takes three forms:
+
+- a JSON array, as before: `["Red", "Green", "Blue"]`;
+- plain comma-separated text: `Red, Green, Blue`. Each value is trimmed but may have spaces
+  inside (`Dark red, Light blue`), and empty values are dropped;
+- quoted comma-separated text, which is the JSON array without its brackets:
+  `"Red", "Green", "Blue"`. Use this form when a value contains a comma.
+
+`sc_types::parse_string_options` reads all three. Text that starts with `[` or `"` is parsed as
+JSON, so a typo there is an error instead of a list of fragments. `RichType` has a new
+`normalize_attrs` hook (default: do nothing). `save_field_meta_row` calls it before writing, so the
+text forms are stored as the array and every reader of `options` sees one shape. Empty text removes
+the attribute. Text that cannot be read refuses the save, and the error names the field.
+`StringType::validate` also accepts the text forms directly. The admin form already sends text that
+is not valid JSON as a string, and the field now has a sublabel showing the comma-separated form.
+
+## One `edit_table_rows` agent trait replaces `insert_row`, `update_rows` and `delete_rows`
+
+The three write traits are merged into one, `edit_table_rows` (`sc_core_traits::EditTableRows`).
+Its form names the table once and has three checkboxes: **May insert rows** (`allow_insert`),
+**May update rows** (`allow_update`) and **May delete rows** (`allow_delete`). All three are off
+by default. The field allow-list (`fields`, which bounds what an insert or update may set) and the
+row bound (`max_rows`, for updates and deletes) are shared.
+
+- Each ticked box adds one tool. The names have not changed: `insert_into_<table>`,
+  `update_<table>`, `delete_from_<table>`. A tool whose box is off is not offered. If the model
+  calls it by name anyway, the call is refused, and the message names the checkbox.
+- `validate_config` refuses a form with no box ticked, and a checkbox value that is not a boolean.
+  The update check ("no field would be changeable") applies only when updates are allowed.
+- What each write does is unchanged. The code moved to `src/edit_table_rows/{insert,update,delete}.rs`.
+  `DEFAULT_MAX_WRITE_ROWS` now lives in `edit_table_rows`. `tool_names::edit_table_rows(table)`
+  lists all three tool names. `tool_names::insert_row` / `update_rows` / `delete_rows` still name
+  the single tools.
+- The Saltcorn 1 importer maps a table skill's "insert" to `edit_table_rows` with `allow_insert`.
+- `TABLES_RENAME.sql` rewrites stored agents: each old entry becomes an `edit_table_rows` entry
+  over the same table, with its one box ticked (Postgres, idempotent).
+- The `insert_row` / `update_rows` / `delete_rows` *actions* (triggers) are unchanged.
+- Tests: `write_rows.rs` now runs against the one trait. A new test,
+  `each_checkbox_grants_its_own_tool_and_no_other`, covers which tools each checkbox adds, the
+  refusal of a blank form and of a non-boolean, and the refusal of an ungranted tool called by
+  name.
+
+## The first-user token can come from the environment
+
+`FELDSPAR_FIRST_USER_TOKEN` sets a first-user token too (`sc_config::FIRST_USER_TOKEN_ENV`). It is
+the better place for one: it is not in the database, so it survives Clear all and is never backed
+up. When the variable or the `first_user_token` setting is set, creating the first user needs a
+token that matches one of them. When both are set and differ, either is accepted.
+
+- `sc_config::first_user_token` is replaced by `first_user_tokens`, which returns every accepted
+  token (blank ones and duplicates left out). `first_user_tokens_with` takes the environment's
+  value as an argument, so tests do not have to set the process environment.
+- `sc_auth::first_user_token_matches` takes a list of tokens. It compares the supplied token with
+  every one of them in constant time, and does not stop at the first match.
+- `/api/auth/status` reports `first_user_token_required` when either source sets a token.
+- Tests: `first_user_tokens_come_from_the_environment_and_the_table` (sc-config) and
+  `either_of_two_tokens_matches` (sc-auth).
+
+## Saltcorn 1 import: every built-in action is translated or refused with a reason
+
+Before this change, a v1 backup's triggers kept their action names and settings unchanged.
+Of the 31 actions in v1's base plugin, 28 were refused on restore as unknown (`modify_row`, `toast`,
+`navigate` …). The other three restored but did not work. `delete_rows` and `send_email`
+have the same names here with different settings. `run_js_code` bodies relied on v1's scope
+(`table`, fields by bare name), and a `none` trigger here binds no `row` (TODO F10.9).
+
+- **`backup/v1/actions.rs`** (new): one converter for all 31 actions, plus v1's multi-step triggers. Most become a
+  `run_js_code` body that does what v1's `run` did, written against v1's `Table`, with the
+  row's fields in scope by name. The row is read from wherever it comes from: a table
+  event's `row`, a button's `payload`, or a workflow's `context`. `send_email` becomes this
+  system's `send_email`, with templates. Browser actions answer v1's own objects, which
+  Saltcorn UI's `common_done` handles. `emit_event`, `notify_user`,
+  `find_or_create_dm_room`, `convert_session_to_user`, `train_model_instance`,
+  `install_progressive_web_app`, server `sleep` and a view-bodied `send_email` are refused
+  with the reason.
+- **Multi-step triggers** become a body that runs the steps, with v1's `only_if`, goto,
+  halt, clear and `set_fields`. A built-in step becomes its own trigger.
+- **Buttons.** An action column or action segment, at any depth, in a view, a page or a
+  library item (and a multi-step column's step) that names a built-in action directly becomes
+  a `none` trigger, `<view> · <action> <n>`. Container click actions and List's row-click
+  action are not affected, because v1 only lets those name triggers.
+  It gets the view's table, and its role is the stricter of the view's and the button's.
+  The button is rewritten to name it.
+- **Workflows.** A built-in action in a workflow step goes through the same converter, over
+  the context. `webhook`'s `response_var` and `insert_any_row`'s `id_variable` become
+  workflow variables.
+- A refused trigger or button stays declared by the application, so the view that names it
+  still saves. When an action answers the page with JavaScript, the application's CSP gains
+  `'unsafe-eval'`, and the report says so. v1's `Startup` event now maps to `startup`.
+- **Tests:**
+  - unit tests in `actions.rs` and `v1.rs`, including
+    `every_kind_of_button_running_a_built_in_action_becomes_a_trigger`;
+  - `backup_api::v1s_built_in_actions_are_translated_and_run` restores BooksDB with 16
+    extra triggers and a button, and runs each in the real engine: toast, navigate, modify_row, loop_rows,
+    a multi-step trigger, insert/delete/duplicate, v1-style `run_js_code` with `Actions`,
+    `run_js_code_in_field`, `set_user_language`, download, and a made button trigger;
+  - `saltcorn_ui_render::a_v1_button_running_a_built_in_action_answers_as_v1s_did` presses
+    a `toast` button through the view's `run_action` route;
+  - BooksDB's `TrimPages` is now imported, so the render tests no longer write a stand-in.
+    The refused-trigger test makes its trigger a `notify_user` instead.
+- Documented in `docs/tutorial-triggers.md` ("What a Saltcorn 1 backup's actions become").
+
+## Deployment: `feldspar setup` installs Node.js and a headless browser
+
+`feldspar setup` now does what `scripts/setup-host.sh` does for Node.js and the browser,
+so `setup-host.sh` is no longer needed for them (TODO D1.3).
+
+- **Node.js** (`--node` / `--no-node`): on Debian and Ubuntu, Node `NODE_MAJOR`.x (26,
+  the same line as `setup-host.sh` and the Docker image) from NodeSource. The steps are:
+  install `ca-certificates curl`, write the key to `/etc/apt/keyrings/nodesource.asc`,
+  write the source to `sources.list.d/nodesource.list`, pin it in
+  `preferences.d/nodesource`, then install `nodejs`. On Alpine it is `apk add nodejs npm`.
+  `Host` now records what `npm --version` says. An npm of 9.3 or newer is kept, and an
+  older one is replaced, with a note saying why (`npm_new_enough`).
+- **The browser** (`--browser` / `--no-browser`): `Host` records the browser the server
+  would find (`sc_server::detect_browser`, so a snap is skipped), and an existing one is
+  kept. Otherwise setup installs apt's `chromium` on Debian, `apk add chromium` on Alpine,
+  or, on Ubuntu (`ubuntu_like`: `ID` or `ID_LIKE`), `google-chrome-stable` from Google's
+  apt repository. That only works on x86_64. On any other architecture setup prints a note
+  and skips the check.
+- **A new step, `Step::CheckBrowser`**, comes after the account exists and before the
+  service starts. It starts the browser headless (`--dump-dom about:blank`, with a
+  throwaway profile directory that is removed afterwards) as the service account, via
+  `su -s /bin/sh`, which busybox also has. If that fails, it tries again with
+  `--no-sandbox`. If the second try works, setup suggests `browser_sandbox = false` for
+  the environment. If both fail, it prints the last 20 lines of the browser's stderr.
+  The check never fails the setup. A browser installed earlier in the same run is found
+  on `PATH` at check time.
+- **Defaults.** A production setup installs both. A development setup installs neither
+  unless you pass `--node` or `--browser`. At a terminal it asks, but only about what is
+  missing and only where it knows how to install it. So `--dev` still needs no root.
+  The closing notes say what was left out, with `feldspar setup --dev --node` (or
+  `--browser`, or the `--server` form) as the fix.
+- **Tests** (`sc-cli/tests/setup.rs`):
+  - the plan on a bare Debian: order, the NodeSource files, one prerequisite install
+    shared by both repositories, and the check placed between the account and the unit;
+  - Ubuntu on x86_64 and on aarch64, Alpine, a too-old npm, and the opt-out flags;
+  - the development questions;
+  - `NODE_MAJOR` agrees with `setup-host.sh`;
+  - the check run for real against three stand-in browsers: one that starts, one that
+    starts only without its sandbox, and one that does not start.
+  - The check command was also run by hand against this machine's Google Chrome (snap
+    Chromium skipped).
+
+## Deployment: a production Docker image, and `ssl_mode = "proxy"`
+
+`deploy/docker` is a second way to deploy, beside the systemd install (README §2.9).
+
+- **The image** (`deploy/docker/Dockerfile`):
+  - **Base.** Docker Hardened Images' Debian 13, `dhi.io/debian-base:trixie-debian13-dev`.
+    Pulling it needs `docker login dhi.io`. The `-dev` variant is used because the server needs
+    a package manager's worth of things at run time: Chromium, Node from NodeSource (at
+    `setup-host.sh`'s major), git, `libpython3.13`/`python3`/`python3-venv`, and `tini`.
+  - **The binary** is the released `debian13-python` tarball from the bucket, checked against
+    its `.sha256` and unpacked at `/opt/feldspar`. It is not built from source, and there is no
+    build argument to supply another tarball.
+  - **Running.** Uid 10001, an account written straight into `/etc/passwd` and `/etc/group`:
+    the hardened base has no `useradd` and no `nologin`. Plain HTTP on 8080. `/var/lib/feldspar` is the only writable path
+    (a volume, `HOME` and `SC_DATA_DIR`). The image works with `--read-only --cap-drop ALL`.
+    It has a `/health` health check.
+  - **Entrypoint.** `tini -- feldspar serve --bind 0.0.0.0:8080`, so arguments after the
+    image name are serve flags.
+  - **Database.** From `DATABASE_URL` or `PG*`.
+- **`compose.yml` and `env.example`.** The compose file runs the image with `postgres:17`, the
+  seccomp profile, `no-new-privileges`, `cap_drop: ALL`, a read-only root and `shm_size: 512m`.
+  The base domain and database password come from `.env`.
+- **Chromium keeps its sandbox in a container.** Docker's default seccomp profile blocks the
+  user namespace the sandbox needs: tested here, Chromium fails with "No usable sandbox!". The
+  setuid `chromium-sandbox` helper fails too, because the container has no `CAP_SYS_ADMIN`.
+  - **The profile.** `deploy/docker/seccomp.json` is Docker's default profile plus one entry
+    allowing `clone`, `unshare` and `chroot`. `chroot` is needed once capabilities are dropped.
+    Under it Chromium renders a page sandboxed, with `--cap-drop ALL` and `no-new-privileges`.
+  - **`feldspar seccomp-profile`** prints the profile, which is embedded in the binary. Users of
+    plain `docker run` get it from the image itself, and nothing on the host changes.
+  - **A boot check.** The server now starts the browser once at boot
+    (`sc_server::check_browser_sandbox`). A browser that reports "No usable sandbox" makes
+    `view_app` unavailable, with a log line naming the profile. Any other failure is left for
+    `view_app` to report. The browser is never retried without its sandbox.
+- **`ssl_mode = "proxy"`** (`sc-config`): plain HTTP here, HTTPS at a proxy in front.
+  - **Effect.** `TlsSettings::from_ssl` treats it as off, so no ACME traffic happens.
+    `SslSettings::public_https()` is true, so `serve` makes the session cookie `Secure` and the
+    public origin `https://` on `https_port` (443 by default).
+  - **Host-only.** It is not among the settings screen's options. A save cannot store it, and
+    `set_host_config` accepts it as a pin.
+  - **How it is set.** As before in `feldspar.toml`, or with the new **`FELDSPAR_SSL_MODE`**
+    variable. The variable outranks the file's `ssl_mode` (`DbConfig::host_config`), because an
+    image cannot see the file a user mounts.
+  - **The settings screen.** While it is pinned, `GET /api/settings` leaves the TLS section out
+    (`sc_config::hidden_sections`), so the admin UI shows no SSL / TLS tab. The screen posts back
+    only the fields it was sent, so the stored TLS rows stay as they were. There is no UI change.
+  - **Saving pinned values.** A save now compares against the pin before checking the value
+    against its declaration, so a form that sends a pinned `proxy` back is a no-op, not a
+    rejected option. The refusal message now says "feldspar.toml (or its environment)".
+- **Tests.**
+  - `sc-config`: the proxy mode's settings and options, and pinned-but-never-saved against
+    Postgres.
+  - `sc-server`: the TLS plan, the boot sandbox check with fake browsers, and a proxy-pinned
+    settings API with no TLS section.
+  - `sc-cli`: `FELDSPAR_SSL_MODE` over the file.
+  - `sc-cli/tests/docker_image.rs`:
+    - the Dockerfile matches `build-static.sh`'s bucket, object and prefix, and
+      `setup-host.sh`'s Node major;
+    - the compose file matches the image;
+    - the profile is the default plus exactly the one entry;
+    - `feldspar seccomp-profile` prints the file.
+  - An `#[ignore]`d end-to-end test builds the image, runs it against `postgres:17`, checks
+    `/health`, and checks Chromium sandboxed under the profile. It also checks that under the
+    default profile the boot reports `view_app` unavailable with the fix.
+
+## Deployment: a one-line installer, and `feldspar setup`
+
+A new machine now needs two commands: `curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh`,
+then `feldspar setup`. Before this, it needed a tarball, its `install.sh` and `setup-host.sh`
+(TODO D1).
+
+- **`scripts/install.sh`** is a POSIX `sh` script, because Alpine has no bash. It recognises
+  Debian, Ubuntu and Alpine (from `ID` or `ID_LIKE`) on x86_64, and refuses anything else unless
+  given `--force`. It installs only `ca-certificates`, `tar`/`gzip` and `curl` when they are
+  missing (apt or apk). It downloads `feldspar.tar.gz` with curl or busybox `wget`, checks it
+  against its `.sha256`, runs the tarball's own `install.sh` (the tree at `/opt/feldspar`,
+  the same path an upgrade takes) and links `/usr/local/bin/feldspar`. It uses `sudo` or `doas`
+  when not root, and also takes `--dry-run`, `--base-url` and `--no-packages`. It has been run in
+  `debian:12-slim`, `ubuntu:24.04` and `alpine:3.20` (busybox `wget`) against a release served
+  locally.
+- **`build-static.sh --release`** now also uploads `scripts/install.sh` to the bucket as
+  `install.sh`, after the tarballs, and prints the one-line install. It checks that the script
+  exists before the build.
+- **`feldspar setup`** (`sc-cli/src/setup.rs`):
+  - **Choices.** The kind of instance is development or production. The database is SQLite,
+    PostgreSQL on this machine, or PostgreSQL elsewhere (`--database-url`, or `--db-host`,
+    `--db-port`, `--db-user`, `--db-password`, `--db-name`). `--server` (production, local
+    PostgreSQL) and `--dev` (development, SQLite) ask nothing. Otherwise, choices the flags leave
+    open are asked at a terminal, and the plan is shown for confirmation. Off a terminal, a
+    missing choice is an error that names the flags.
+  - **Plan.** The command first builds a list of steps (commands and files). `--dry-run` prints
+    that list, and the same list is what gets executed.
+  - **Development** writes `[environments.development]` into `~/.config/feldspar/feldspar.toml`
+    (mode 0600). For a local PostgreSQL, the user's login becomes the role.
+  - **Production** creates a `feldspar` system account (adduser on Debian and Ubuntu, busybox
+    `addgroup`/`adduser` on Alpine) and `/var/lib/feldspar`. It writes
+    `/etc/feldspar/feldspar.toml` (`root:feldspar` 0640) and either the README §2.6 systemd unit
+    or an OpenRC `supervise-daemon` script with `cap_net_bind_service`. Then it enables and
+    restarts the service.
+  - **Local PostgreSQL** is installed only when nothing is listening on `/var/run/postgresql`.
+    On Alpine that also means `rc-service postgresql setup`. The role and the database are each
+    created only when missing. The role must be the account that connects, because
+    authentication is peer.
+  - **Safe to repeat.** An existing configuration file is merged into, not replaced: other
+    environments and `default_environment` are kept. A section that already says the same thing
+    is left alone. One that says something else is refused, or replaced with its sub-tables
+    under `--force`. The service file follows the same rule. Account creation runs only when the
+    account is missing.
+  - **Refusals.** A production binary in a home directory is refused (`ProtectHome`), and so is
+    a production setup on a distribution or service manager setup doesn't know.
+  - **Not installed.** Node.js and a browser are not installed. The closing notes say how.
+- **`sc-config-file`** exports `user_config_file()` and `system_config_file()`, so `setup` writes
+  where `serve` searches.
+- **Run for real**: `feldspar setup --server` in an Ubuntu 26.04 container with systemd as PID 1
+  installed PostgreSQL 18, created the account, role, database, configuration and unit, and the
+  service answered `/health`. A second run changed nothing and restarted the service.
+- **Tests**: `sc-cli/tests/setup.rs` covers the presets and flag conflicts, the Debian, Alpine
+  and remote-database plans, the refusals, the unit against the README, merging the
+  configuration file, the service-file rule and the questions (answered by a script). It also
+  runs `feldspar setup --dev` through the binary, followed by `get-cfg` against the SQLite
+  database it named. `sc-cli/tests/install_script.rs` covers the installer against a fake
+  release over `file://`, with `sudo` stubbed: the install, a checksum mismatch, `--dry-run`, and
+  POSIX `sh`. `build_static_release.rs` now expects the installer upload.
+
+## Security: a first-user token, so a fresh instance is claimed by whoever was given the link
+
+Before this change, a fresh installation showed the create-first-user screen to whoever reached
+it first, and that person became its admin. An instance created and then forgotten could be taken
+over. An installation can now be given a **first-user token** before it first starts. Then only a
+request that carries the token can create the first user.
+
+- **The setting** (`sc-config`): `first_user_token`, an internal, secret Text key. It is declared
+  in `internal_defs`, so it is not on the settings form. `sc_config::first_user_token` reads it.
+  A blank value counts as unset, and so does a database with no `_fd_config` table, which can't
+  hold a token. `feldspar set-cfg first_user_token …` writes it **before
+  `serve` has ever run**. `set-cfg` connects through the same `connect_catalog` bootstrap as
+  `serve`, so it creates `_fd_config` (and the other tables) on an empty database. Backups do
+  not carry it, because they write only the settings-form sections.
+- **The check** (`sc-server` `createFirstUser`): when a token is set, the request body's `token`
+  must match it, or the answer is `403 {error}` and no user is created.
+  `sc_auth::first_user_token_matches` hashes both values with SHA-256 and compares the digests in
+  constant time. The token is not consumed: once a user exists, the create-first-user route
+  refuses anyway.
+- **`/api/auth/status`** has a new field, `first_user_token_required`, which is true only while
+  there are no users and a token is set.
+- **Clear all** keeps the token, as it keeps the TLS keys, so an emptied installation can still
+  be claimed only with the same token.
+- **The admin UI** (`FirstUser.tsx`) reads `?first_user_token=…` from the address and sends it
+  with the form. When a token is required and the address has none, the screen shows a message
+  asking for the setup link instead of the form (translated in the five admin locales). The
+  regenerated clients (`ui/admin`, `ui/ide`, `ui/builder`, `ui/analytics`) take an optional
+  `token`.
+- **Docs:** `OPERATIONS.md` §2.6 shows generating a token, setting it before `serve` and building
+  the link.
+- **Hosting:** a control panel that creates instances should run `feldspar set-cfg
+  first_user_token …` before it starts the service, and link the owner to
+  `https://<instance>/?first_user_token=…`. A panel script that claims the instance itself with
+  `POST /api/first-user` (as `feldspar-hosted`'s `add-instance.sh` does) must add `"token"` to
+  that body.
+- **Tests:**
+  - `admin_api::a_first_user_token_is_needed_to_create_the_first_user`: the status says a token is
+    required; no token, a wrong one, an empty one and a longer one are each refused `403` without
+    a session or a user; the right one creates the admin; afterwards the status says no token is
+    required.
+  - `admin_api::without_a_first_user_token_anyone_may_create_the_first_user`.
+  - `clear_all_api` checks that the token survives Clear all and still gates the next first user.
+  - `sc-auth`: a unit test of the matcher.
+  - `sc-config`: the key is internal and secret.
+
+## Tests clear the scratch directories earlier runs left in the temp dir
+
+`graphql_scaffold` and `tutorial_app_build` failed with "Disk quota exceeded" (`npm install`:
+errno -122): `/tmp` is a 16G tmpfs here, and three days of test runs had left 13G of scratch
+directories in it. Drop guards do not catch every case. A killed run never drops them; the
+`OnceLock` data dirs in `git_store_api` and `build_from_a_sentence` are never dropped; and an
+`npm install` started by an app's creation in `app_builder_agent` keeps writing `node_modules`
+after the guard removed its directory. New `sc_test_harness::sweep_stale_scratch(prefix)`
+removes `<temp>/<prefix>-<pid>…` entries whose process is gone (once per prefix per process,
+Linux only). The worst leakers call it when they make their scratch dir: `sc-server-builderagent`,
+`sc-server-adminapp`, `sc-build-sentence`, `sc-git-api`, `sc-backup-test`, `sc-module` and
+`sc-app-tutorial`.
+
+## Crate diagram includes `sc-docs`
+
+§2's crate diagram in `docs/TECHNICAL_DESIGN.md` now draws the `sc-docs` crate (`sc-api --> sc-docs
+--> sc-help`). Without it, `repo_hygiene::the_design_crate_diagram_matches_the_workspace_manifests`
+failed with "the crate diagram is missing `sc-docs`".
+
+## Security fix: v1 `{{= }}` re-interpolates names, not code
+
+Security review #36. Saltcorn UI's vendored v1 `interpolate` parsed a `{{= field }}` token's
+value (row data, or a page's query string) as a template again, and evaluated every token in it
+as JavaScript in the view worker's shared `vm` realm. So any user who could write a field could
+place `{{! … }}` markup on the page (stored XSS) or run code that every viewer's render shares.
+The Rust engine got the matching fix for #23. The vendored copy had not.
+
+- **Only names in re-interpolated values** (`ui/saltcorn-ui/vendor/saltcorn-data/utils.ts`). The
+  admin's own template is evaluated as before. A token inside a re-interpolated value must be a
+  name and its static members (`firstName`, `user.name`, `customerⱵemail`), and none of the
+  members may be `constructor`, `__proto__` or `prototype`. It is **looked up** in the row/user
+  context by own properties and never reaches the evaluator, so it cannot fall through to the
+  evaluator's globals either.
+  - Anything else is an error ("a value re-interpolated with {{= }} may only name fields, as in
+    {{ firstName }}"), as is an unknown name. This matches the Rust engine.
+  - `{{! }}` in data is escaped like `{{ }}`.
+  - Nested `{{= }}` still works, up to 5 passes (Rust's `MAX_PASSES`). Before, a value that
+    rendered itself recursed until the stack overflowed.
+- **`escapeHtml` escapes quotes.** `"` and `'` now become `&quot;` and `&#39;`, as in the Rust
+  `escape_html`. This applies to every v1 `{{ }}` output and to file contents shown by
+  `fileviews`.
+- **Still open** (TODO S1): run the view runtime in its own worker, and limit the view call's file
+  and trigger hosts to the viewer's authority.
+- **Tests:** `sc-module` `view_runtime::a_reinterpolated_value_only_names_fields_and_is_escaped`
+  renders a page whose HTML block holds `{{= bio}}`, with `bio` taken from the query string. It
+  checks that:
+  - fields and their static members resolve;
+  - `{{! }}` and the value's own markup are escaped;
+  - calls, operators, computed members, `constructor` and `__proto__` are refused;
+  - a global name (`JSON`) is not found;
+  - a self-rendering value stops after 5 passes;
+  - the admin's own expression still runs, with its quotes escaped.
+
+  The test fails against the previous code.
+
+## `coding` offers `search_docs` and `read_docs`; shared tools
+
+The `coding` trait now offers the documentation tools itself, in every mode (`act`, `plan` and
+`explore`), after its file tools, and its prompt ends with the same "search before guessing"
+line. An application's builder agent therefore no longer carries a separate `docs` trait: it is
+back to `coding`, `http` and `preview_pane`. The `docs` trait stays, for agents without
+`coding`.
+
+- **Shared tools** (`sc-agent`): a new `AgentTrait::shared_tools()` (empty by default) names
+  fixed-name tools whose behaviour depends on no configuration. Two enabled traits that offer one
+  of these, both declaring it shared and with identical specs, now offer **one** tool instead of
+  failing validation as a collision. The model sees it once (`stable_prefix` drops the repeat),
+  and the first such trait answers it. Identical prompt contributions are also included only
+  once. Everything else is still a collision, including one `coding` scope enabled twice.
+  `coding`, `docs` and `admin_copilot` each declare `search_docs` and `read_docs` shared, so an
+  agent with two `coding` traits, or with `coding` and `admin_copilot`, can be saved.
+- **The docs allowlist takes wildcards, and there is no denylist** (`sc-docs`). `build.rs` holds
+  the allowlist (`tutorial-*.md`, `AGG_EXPRS.md`, `CHECKLISTS.md`, `GRAPHQL_API.md`, `I18N.md`,
+  `OPERATIONS.md`, `ROW_HISTORY.md`). It expands the patterns against `docs/` and generates the
+  `include_str!`s into `FILES`, and Cargo reruns it when `docs/` changes. Files no pattern matches
+  are left out. `EXCLUDED`, and the test that every `docs/*.md` file be in one of the two lists,
+  are gone, so adding a document no longer breaks a test. A new tutorial is compiled in without
+  being listed.
+- **Tests:** `coding_prompt::the_documentation_tools_are_one_tool_however_many_traits_offer_them`
+  saves an agent with two `coding` traits, `docs` and `admin_copilot`, and checks that each
+  documentation tool is offered once in every mode and that the same scope twice is still
+  refused. The `coding` tests that pin the exact tools offered now include the two
+  documentation tools.
+
+## Documentation search for agents: `search_docs` and `read_docs`
+
+Agents can now search and read the server's own documentation, so they look up how a feature
+works instead of guessing from APIs they know from elsewhere.
+
+- **New crate `sc-docs`** (layer 0, depends on `sc-error` and `sc-help`). It compiles in the
+  user-facing files of `docs/` (the 30 tutorials plus `AGG_EXPRS`, `CHECKLISTS`, `GRAPHQL_API`,
+  `I18N`, `OPERATIONS`, `ROW_HISTORY`) and the admin UI's help topics. Each is split into
+  sections at its headings, with GitHub-style anchors, ignoring headings inside code fences, and
+  the sections are BM25-indexed on first use. Terms keep code identifiers whole and also split
+  them at `_`, so `allow_triggers` is found by itself and by "allow triggers". A help topic is
+  just another document (`ownership-formula` sits beside `tutorial-ownership`): it is rendered
+  with an empty context and given its title as a heading. `FILES` is the allowlist and
+  `EXCLUDED` the denylist (`TECHNICAL_DESIGN`, `TODO-*`, `SECURITY_REVIEW_*`, `GOALS`, the
+  coding-agent design notes, …). A test fails on any `docs/*.md` file that is in neither list.
+- **The two tools** (`sc_docs::tools`): `search_docs { query, doc?, limit? }` returns up to 10
+  hits, each with `doc`, `section`, `heading_path` and a snippet of about 300 bytes.
+  `read_docs { doc?, section? }` lists the documents when called with no arguments. Given a
+  `doc`, it returns the document whole if it fits in 12 000 bytes, or else its outline. Given a
+  `doc` and `section`, it returns that section. A section too long to read in one go returns the
+  text before its first subsection and the subsections to read next, or is cut at a line and
+  says so. `doc` accepts links as written (`tutorial-mcp.md#step-1--turn-it-on`,
+  `help:ownership-formula`), and `section` accepts heading text as well as anchors.
+- **Where they are offered:** `sc-api`'s administrative `ToolSet` always offers them, beside
+  `describe_code_api`, so the MCP server and `admin_copilot` both have them (and the generated
+  `SKILL.md` lists them). For other agents, the new **`docs`** agent trait has no settings and
+  offers the same two tools under the same names. An application's builder agent is now created
+  with it (`coding`, `http`, `preview_pane`, `docs`). The MCP handshake instructions, the
+  `admin_copilot` prompt and the `docs` trait's prompt each say to search before guessing.
+  `admin_copilot` now has 29 tools. `sc_help::markdown` renders a topic to markdown.
+- **Tests:** `sc-docs` unit tests cover sections and anchors, terms, the include/exclude check,
+  help topics as documents, search by words and by identifier, outlines, long sections and the
+  tools' argument errors. The tool lists pinned in the `sc-api`, `sc-core-traits` and
+  `sc-server` MCP and builder-agent tests are updated, and a new test checks that the builder's
+  `docs` trait is registered and collides with none of `coding`'s tools.
+
+## Agent chat: attach images and text documents
+
+A person can now attach files to a message in an agent chat, in the admin UI and in React
+applications, and ask about them or refer to them in the prompt.
+
+- **The model message** (`sc-llm`): `LlmMessage::User` has `attachments: Vec<Attachment>`
+  (`{ name, media_type, data }`, base64 in JSON, left out when empty). `Attachment::checked` /
+  `check_attachments` accept PNG, JPEG, GIF and WebP images up to 5 MiB and UTF-8 text up to
+  1 MiB, at most 10 per message. A text file with no type or `application/octet-stream` becomes
+  `text/plain`, or `text/markdown` for a `.md`. Anything else is refused with the file's name.
+  The rig bridge sends attachments before the typed text. A document goes to every model as
+  `<attachment name="…" type="…">…</attachment>` text. An image goes as an image part to a model
+  with `vision`, and as a stub naming the file to one without. The token estimate counts both,
+  and LLM logging replaces their bytes with a size, as it does for tool-result images.
+- **The agent loop** (`sc-agent`): `AgentLoop::push_user_attached`, `Runner::new_run_attached`,
+  and an `attachments` argument on `Runner::push_message`. The compaction summary lists the
+  files a user turn carried.
+- **Admin chat socket** (`/admin/agent-chat`): a `message` frame may carry `attachments`, and may
+  have empty text if it does. A refused file is an `error` event followed by `done`, and the
+  socket stays open. A run started by files alone is described by their names.
+- **App chat** (`POST {mount}/_agents/{name}/chat`): the body may carry `attachments`. They are
+  checked before a turn slot is taken (a bad file is a 400). In `runs/{id}` transcripts, each
+  file is an `attachment` part (`name`, `media_type`, `size`, and an image's `data:` `url`),
+  placed before the message's text.
+- **Generated client** (`helper.ts`): `AgentAttachment`, `AgentAttachmentPart`,
+  `agentAttachment(file)` (reads a `File`/`Blob` and checks the same limits client-side),
+  `agentAttachmentPart`, `AgentChatOptions.attachments`, and `userMessage(text, attachments?)`.
+  The scaffold's `useAgentChat` `send(text, controls?, attachments?)` passes them on, and
+  `AGENTS.md` says how. The committed `helper.ts` copies in `ui/*` are regenerated.
+- **Admin UI** (`AgentChat.tsx`, `agentChat.ts`): a **+** button in the lower left of the
+  composer opens a file picker (images and common text formats). Files can also be dropped on
+  the composer or pasted into it. Attached files show as chips above the text (an image as a
+  thumbnail, a document by name and size) and can be removed before sending. A sent message
+  shows them above its bubble, and so does a reopened stored run. New strings are translated
+  in all five locales.
+- **Tests**: `sc-llm` (checking and typing, JSON round trip, how each wire orders and
+  degrades the parts), `sc-server` `agent_chat::a_message_carries_its_attachments_to_the_model`
+  and `app_agents::a_chat_turn_carries_attached_images_and_documents`, the `tsc` check of the
+  generated agents client, and `ui/admin` `agentChat.test.ts` ("attachments").
+
+## Admin UI: table data grid — Key labels and dropdown, date pickers, full height, steadier paging
+
+On `/#/tables/{table}/data` (`ui/admin/src/screens/DataGrid.tsx`):
+
+- **Key columns show the target's summary field.** Every page of rows that arrives is followed by
+  one read per Key column of the target table (`target_field=in.(…)` over that page's keys), and
+  the answers are cached per column, so a key is asked about once. Keys that aren't found are
+  cached too, so they aren't asked about again. A key with no summary field, or one that has no
+  target row, shows the key itself. Copy and paste still carry the stored key, so the
+  copy-and-paste-back round trip is unchanged. The bookkeeping lives in the new
+  `ui/admin/src/grid/gridKeys.ts`.
+- **A Key cell is edited through a dropdown** (`KeyEditor`). It is a search box over the target
+  table (`ilike` on a text summary, `eq` on other types), listing the first 50 matching rows by
+  label, ordered by the summary field, with "— none —" offered on a nullable key. The highlight
+  starts on the row the cell points at. Arrow keys move it, Enter or Tab picks, and Escape or
+  clicking away changes nothing. The list is rendered into `document.body` and positioned under
+  the cell, so the grid's scroller doesn't clip it.
+- **`date`, `time` and `timestamp` cells use the HTML5 pickers** (`date`, `time`,
+  `datetime-local`, to the second). A timestamp is shown in the cell and in the picker as its
+  local wall-clock reading, and is sent back as a UTC instant. The conversions are
+  `pickerType` / `toPicker` / `fromPicker` / `displayTemporal` in `gridValues.ts`. The row form
+  (`TableData.tsx`) uses the same pickers.
+- **The grid runs to the bottom of the screen.** The screen is now a `.data-page`, which claims
+  the viewport the way the entities list does. The grid's scroller takes the height left under
+  the header and toolbar (at least 16rem) instead of `min(70vh, 44rem)`.
+- **Paging over large tables:**
+  - The read order always ends on the primary key (`orderSpec(sorting, pk)`). Without a total
+    order, offset pages may overlap, so a scroll could show one row twice and another never.
+  - A page that arrives after the sort or filter changed is now discarded. The old check compared
+    the query key with itself, so it always passed.
+  - While the viewport is moving, only pages next to already-held pages are requested
+    (`pagesToFetch`). Dragging the scrollbar thumb across 50k rows no longer queues a read for
+    every page it passes; the rest are requested once the scroll settles.
+  - Half a page either side of the viewport is prefetched.
+- Tests: `gridKeys.test.ts` (new), plus picker cases in `gridValues.test.ts` (the timestamp
+  round trip holds in any time zone) and tiebreaker and `pagesToFetch` cases in
+  `gridQuery.test.ts`.
+
+## Fix: editing a user in the admin UI failed with "`email_verified` is not an admin-defined field"
+
+The admin UI's `SYSTEM_USER_COLUMNS` (`ui/admin/src/userForm.ts`) had fallen behind
+`sc_auth::SYSTEM_USER_COLUMNS`: it lacked `email_verified` and `attributes`, so the user form showed
+them as admin-added fields and sent them back in `extra`, which the server rightly refuses. Both are
+now in the list; `userForm.test.ts` checks neither is offered as a field, and a new repo hygiene
+test (`the_admin_ui_knows_every_system_user_column` in `crates/sc-cli/tests/repo_hygiene.rs`) fails
+if the UI's list ever differs from `sc_auth::SYSTEM_USER_COLUMNS` again.
+
+## Admin UI: Development tab — admin subdomain first, labelled verbosity levels, MCP switches hidden when off
+
+- **Admin subdomain** is now the first field of Settings → Development.
+- **Log verbosity**: each option in the dropdown now shows its value and what it prints
+  (`warning: also what is about to fail`); the sentence under the control is just "How much is
+  printed to stderr." The stored value is unchanged. This is a new, generic piece of the settings
+  vocabulary: `FormField::option_labels` (presentation only, in the options' order), set with
+  `FormField::labelled_options([(value, label)])`, translated by `translate_spec`, sent as
+  `option_labels` in every form-field JSON (optional in `form_field_schema`, client regenerated) and
+  rendered by `SettingField`'s select through `optionLabel`. A field without labels shows each value
+  as itself, as before.
+- **MCP from this machine only** has `show_if: mcp_enabled = true`, and the **Administration MCP
+  tokens** card is shown only while Administration MCP server is ticked. Both follow the form as it
+  is being edited, not the stored value. The settings screen now applies `show_if` to its fields
+  (`isShown` over every section's fields).
+- The new option labels are not yet in the translation catalogues, so they show in English until
+  the catalogues are refreshed.
+- Tests: `the_section_declares_the_two_mcp_switches` (field order with the admin subdomain first;
+  the loopback switch applies only while MCP is on), `the_section_declares_a_checkbox_and_the_five_levels`
+  (each level has a label that starts with its value); `settingsScreen.test.ts` (loopback hidden while
+  unticked, `optionLabel` with and without labels).
+
+## Admin UI: data-layer checklists, build hosts and Clear all move within Settings
+
+- The data-only (Data Layer) checklists left the sidebar and are now **Settings → Checklists**, a
+  tab between Modules and Backup. The list renders without its own page header there (Run all and
+  New checklist head the tab). An application's checklists stay under that application.
+  `/settings/<tab>` opens Settings on that tab (`settingsTabFromPath`, `initialTab(sections,
+  requested)`); `checklistsPath(null)` is now `/settings/checklists`, so a checklist's Back and
+  Delete land there. A checklist's own screen (`/checklists/<id>`) and runs (`/checklist-runs/<id>`)
+  keep their routes and light up Settings in the sidebar; the `/checklists` list route is gone.
+- **Build hosts** is no longer a Settings tab: its card (`BuildHostsPanel`) is the last panel of the
+  Development tab. Server and CLI messages now say "Settings → Development → Build hosts".
+- **Clear all** moved from the bottom of Development to the bottom of the Backup tab.
+- Tests: `settingsScreen.test.ts` (tab list and order, opening on a routed tab, no Build hosts tab),
+  `nav.test.ts` (no Checklists entry; checklist routes light up Settings), `checklists.test.ts`.
+
+## Checklists C4: run outbox, `data.expect_sent`, after-build runs, schedules
+
+- **Run outbox** (`sc_catalog::outbox`). While a checklist run is open, what is sent on its
+  behalf is kept on the run instead of sent (`Sent`: kind `email`/`webhook`/`module`, recipients,
+  subject, body, time). The runner opens the outbox around the steps; it travels as a task-local,
+  so it covers `data.*` steps, the triggers they fire and `http.*` requests through the in-process
+  router. The browser context of a run carries the `sc_check_run` cookie, and the router's
+  `request_outbox` middleware puts a request inside the run only while that run is open. Hooks:
+  `sc_email::Withholding` wraps every mailer the `TriggerDispatcher` is given (`with_mailer`); the
+  `fetch` action and `fetch` in a code body (`CodeFetchHost`) record instead of requesting; a
+  module action whose module holds the `net` permission is recorded whole instead of run
+  (`ModuleAction::with_network`). The run row gained a nullable `outbox` column (migration in
+  `TABLES_RENAME.sql`), and the run screen lists the withheld messages.
+- **`data.expect_sent`**: `kind`, `to`, `subject`, `body` (case-insensitive contains) and `count`
+  (exact; at least one when absent). Its value is the matching messages.
+- **After-build runs**: the application attribute `check_after_build` (a switch on the application
+  form, off by default). A full build (not a quick one) then runs the application's enabled
+  checklists, triggered `build`. The build response gained `checks` (id, checklist, name, status)
+  and the log ends with a summary. The admin's build notice turns red when one did not pass.
+- **Scheduled runs**: the `run_checklists` action (`sc_check::RunChecklists`, registered in the
+  server's base action set), put on an `often`/`hourly`/`daily`/`weekly` trigger. Config:
+  application subdomain (blank for data-only checklists) and an optional checklist name. Runs are
+  triggered `schedule`, and one that does not pass fails the action.
+- Tests: `mail_sent_during_a_run_is_kept_on_the_run_and_not_sent` (sc-check: a trigger mails
+  during a run, the recording mailer gets nothing, `data.expect_sent` passes, and outside a run the
+  same trigger sends); `a_build_with_after_build_checks_records_a_run` (sc-server);
+  `a_fetch_inside_a_checklist_run_is_kept_and_not_sent` (sc-core-actions); the outbox unit test in
+  sc-catalog; and the build notice in `appActions.test.ts`.
+- Verified on a machine that can run them: the whole workspace suite, the admin UI's vitest
+  suite and every UI's typecheck pass. Fixes from that run: TECHNICAL_DESIGN.md §2's dependency
+  table now lists `sc-check → sc-viewpattern` and `sc-cli → sc-email, sc-module`
+  (`repo_hygiene` caught the drift), and two clippy 1.97 lints (`sc-app` `build_hosts`,
+  `sc-check` `matches`) are fixed without changing behaviour.
 
 ## CLI: set up a hosted server without the admin UI (modules, routes-only tokens, settings, mail, app tables)
 
@@ -96,6 +2242,366 @@ routes-only token against both authenticators; a refused `set-cfg --json` writin
 `send-email` against `TestSmtp`; and `app tables`. Also
 `modules_api::a_sighup_reload_picks_up_a_module_changed_elsewhere`, plus parser unit tests in
 `sc_cli::{module, email, config, app, mcp_token}`.
+
+## Server tests tear their catalog down
+
+`cargo test --workspace` from a desktop terminal failed `sc-server`'s `it` binary with "Too many
+open files" (220 of 668 tests, wherever the next `open` happened: npm, V8, Postgres). Terminals here
+start at systemd's soft limit of 1024, and the binary climbed steadily to ~1000 descriptors and ~600
+threads because nothing a server test built was ever freed. It now peaks around 120 descriptors and
+passes at 1024 with no limit raised.
+
+- **Cause — reference cycles.** The services a server installs on its `Catalog` hold the catalog
+  back: `ModelServices` in `set_model_host`, the trigger dispatcher in `add_table_events` (its
+  `SettingsMailer` holds the catalog), `AppMounts` as the schema observer, and so on. The dispatcher
+  and the workflow engine also hold each other, and every running stream held its own sink, which
+  held the stream and the trigger bridge (catalog and dispatcher). So each test's catalog outlived it
+  together with its formula evaluator, whose isolate threads (`sc-expr-js-eval`, `sc-code-*`) each
+  anchor that test's tokio runtime handle (an epoll and an eventfd), and its pool's sockets. In
+  production there is one catalog per process, so none of this grew there.
+- **`Catalog::teardown`** empties every slot a layer above fills with a service (table-event
+  listeners, schema observer, rename hook, module/live/model/admin hosts, formula evaluator, table
+  providers, host LLM provider, stream registry, file stores), calling each table-event listener's
+  new **`TableEvents::teardown`** (default: nothing) first. **`TriggerDispatcher::teardown`**
+  (its `TableEvents::teardown`) lets go of the workflow engine and the observer.
+  `Catalog::teardown_hook()` is the same as a closure for a test guard.
+- **`StreamSupervisor` stops its streams on drop** (`Drop` calls `shutdown`), which breaks the
+  running stream / sink cycle. There is one supervisor per server, built at boot.
+- **`sc-test-harness`**: a `Teardown` guard (closures run on drop, latest first, also when a test
+  panics), and `TestDb::on_teardown`, which runs them before the database is dropped. New test
+  `teardowns_run_when_the_test_ends_latest_first`.
+- **Tests**: every `sc-server`/`sc-cli` setup that builds a catalog registers
+  `db.on_teardown(catalog.teardown_hook())` (117 sites). The SQLite ones, which have no `TestDb`, carry
+  a `Teardown` in their scratch-directory struct; `tutorial_code_library`'s `setup` returns one. New
+  `sc-server` test `catalog_teardown`: a full server stack's catalog and evaluator are freed when its
+  runtime ends, and (the control) are not without the teardown.
+
+## Checklists C3: framework and module step types, starter checklists
+
+Frameworks and modules now add their own checklist step types, and a framework can offer a new
+application a starter checklist (docs/CHECKLISTS.md §2, TODO-checklists C3).
+
+- **Framework step types** (C3.1, `sc-check/src/registry.rs`). New `StepType::framework()`,
+  returning a `FrameworkScope`: `Named("react")`, or `ServerRendered` for any framework whose
+  build declares a server entry (an Astro site is a module's framework, named whatever the
+  module calls it). A framework's types are:
+  - offered only for that framework's applications (`StepRegistry::offered`);
+  - refused when saved on any other checklist. `validate_draft` now takes the checklist's
+    loaded application. Changing a checklist's application re-validates its steps;
+  - an error at run time if the application has since changed framework.
+
+  `describe_step_types` and `listChecklistStepTypes` report the `framework`.
+  `StepRegistry::builtin()` now includes the built-in frameworks' types.
+- **`react.*`** (C3.2, `steps/react.rs`):
+  - `react.typecheck` calls the new `sc_app::typecheck_application`. That function regenerates
+    the client and runtime as a build would, installs the dependencies if they are missing, and
+    runs the project's `typecheck` script (`tsc --noEmit`), or `tsc --noEmit` when the project
+    has no such script. Nothing is bundled. A failure lists `file:line: message` for each error.
+  - `react.open_route` opens a route and waits until it has rendered. Rendered means no request
+    in flight and no `[data-feldspar-pending]` element, for half a second. The implicit clean
+    check follows.
+  - `react.no_error_boundary` fails if a `[data-feldspar-error-boundary]` element is showing,
+    and quotes it.
+  - The scaffold's `src/main.tsx` now wraps the app in a `RootBoundary` error boundary and a
+    root `<Suspense>`, whose fallbacks carry those two attributes.
+  - The browser seam reports in-flight requests: `BrowserReport::pending_requests`. The Chromium
+    driver tracks it from `requestWillBeSent` / `loadingFinished` / `loadingFailed`. Event
+    sources and sockets are not counted, since they never finish.
+- **`saltcorn_ui.*`** (C3.3, `steps/saltcorn_ui.rs`; `sc-check` now depends on
+  `sc-viewpattern`):
+  - `open_view` opens a view by name, with state as its query, through `browser.open`. A view
+    the application does not have fails by name.
+  - `fill_field` fills the form control named after a table field (`form [name="…"]`), so the
+    step survives a relabelling.
+  - `views_render` fetches every view `run_as` may see over HTTP. Views above their role are
+    left out, and `skip` lists views to leave out by name. It fails naming each view that
+    answers 4xx/5xx, quoting the error page, **or that names a field its table no longer
+    has**. v1's patterns render a deleted field as an empty cell and answer 200; this was
+    found while writing the test. The new pure function
+    `sc_viewpattern::referenced_fields(configuration)` collects `field_name`, `order_field` and
+    the first hop of `join_field`.
+- **`server_render.page_renders`** (C3.4, `steps/server_render.rs`): for server-rendered
+  sites. A GET of a path must answer 2xx with a non-empty body, optionally containing a given
+  text. A redirect fails, naming its target.
+- **Module step types** (C3.5):
+  - A module exports `checklist_steps: { "ns.name": { description, config_fields, needs,
+    mutates, framework, timeout, run(params, ctx) } }`. The keys are namespaced names, and the
+    export may be a function of the configuration.
+  - The declaration crosses once, when the module loads (`ModuleManifest::check_steps`,
+    `CheckStepManifest`). The server translates it into `sc_check::StepDecl` and installs it
+    whole after every module change (`sc-server/src/check_steps.rs` →
+    `sc_check::install_step_types`). Names that are not namespaced, belong to a built-in or are
+    declared twice are reported and left out. `StepRegistry::installed()` is the built-ins
+    plus the installed types; the admin API (built per request), the MCP server, the copilot,
+    the coding agent and the CLI use it.
+  - `run` is one `check_step_run` call to the module's worker
+    (`ModuleHost::run_check_step`). The call carries **only** the new `check` ask surface
+    (`CallHosts::with_check`, `CheckAsks`): no `db`, no triggers.
+  - `ctx` asks the host for three things, answered in the step's own context (run browser,
+    user, variables, clean-up list) by `sc_check::declared::answer`:
+    - run a core step (`ctx.runStep(type, params)`, and the `ctx.browser.*`, `ctx.http.request`
+      and `ctx.data.insert/update/delete` shorthands), answered `{outcome, message, value}`;
+    - inspect the page (`ctx.browser.inspect(locator)`);
+    - read rows as `run_as` (`ctx.data.rows(table, where, limit)`).
+  - What the declaration did not claim is refused by the same check a core type gets: a
+    browser it does not `need`, or a writing step when it did not declare `mutates`. So
+    `Checklist::mutates` and the production guard stay truthful.
+  - `run` answers `{outcome: "pass"|"fail"|"error", message, value}` or a bare boolean, and a
+    throw is an error. `value` is what the step's `as` captures.
+- **Starter checklists** (C3.6, `sc-check/src/starter.rs`):
+  - `starters(catalog, app)` lists what the application's framework offers and does not
+    already have (by name):
+    - React: `app.builds`, `react.typecheck`, `react.open_route /`, `react.no_error_boundary`;
+    - Saltcorn UI: `views_render`, once for visitors and once per role that has a check user;
+    - server-rendered: `page_renders /` and `browser.open /`;
+    - any other framework with a UI: `app.builds` (when it builds) and `browser.open /`;
+    - `none`: nothing.
+  - `create_starter` creates one through `create_checklist`. Nothing is created automatically.
+  - Admin API `listChecklistStarters` (`GET /api/checklist-starters?application=`) and
+    `createChecklistStarter` (`POST`). The application's Checklists tab shows a **Suggested
+    checklists** card with each offer's steps and a Create button. The admin clients were
+    regenerated.
+- **Tests** (C3.7):
+  - `sc-check` `framework_steps`:
+    - a React step is refused on a `code` app's checklist and on a data-only one, and moving its
+      checklist to a `code` app is refused;
+    - **renaming `tasks.title` breaks `react.typecheck` on a scaffolded React app**, naming
+      `src/pages/Tasks.tsx`. This runs the real `npm install` and `tsc`, and skips without npm;
+    - a starter is offered, created on request, and not offered again.
+  - `sc-server` `checklist_frameworks`:
+    - **`views_render` over the restored BooksDB passes (9 views), and fails after
+      `Books.pages` is dropped**, naming List, Show, Edit and Filter Books. Needs the Saltcorn
+      UI bundle;
+    - **a module step type runs**: the `check-step-module` fixture reads rows, composes
+      `data.expect_rows`, captures its value, and is refused an undeclared write and an
+      undeclared browser. Needs npm.
+  - `sc-server` `checklist_browser::react_steps_wait_for_the_render_and_see_an_error_boundary`
+    runs in Chromium: `react.open_route` waits out a one-second suspense fallback, and
+    `react.no_error_boundary` catches a boundary's fallback.
+  - Unit tests cover offering by framework, installing module types, starters per framework,
+    answer-to-outcome translation, `referenced_fields`, view paths and error-page text.
+  - `module_routes`' setup can be reused by a test that holds the module-registry lock for
+    writing (`setup_unlocked`).
+
+## Checklists C2: browser steps and preview runs
+
+Checklists can now drive the application in the server's headless Chromium, and the coding
+agent runs an application's checklists against its own preview before anything is deployed
+(docs/CHECKLISTS.md §2–§3, TODO-checklists C2).
+
+- **New crate `sc-browser`** (layer 5): the `BrowserDriver` trait, `BrowserAction`,
+  `BrowserRequest` and `BrowserReport`, moved out of `sc-agent/src/view.rs` so the agents and
+  `sc-check` both depend on it. `sc-agent` re-exports it, so `view_app` is unchanged.
+  - A browser context is now keyed by a plain `Uuid` (an agent run's or a checklist run's id),
+    and a request names a `BrowserTarget`: an application's **live** mount (new) or an agent
+    run's **preview** (`PreviewTarget`: label, host and owning run). `PreviewInfo::target` and
+    `PreviewInfo::preview_target` build them.
+  - Stable locators (`Locator`, parsed from one string): `button "Save"` / `link Sign in` (role and
+    accessible name; quoted means the whole name, unquoted a part, case and whitespace ignored),
+    `role=checkbox`, `label=Email`, `text="Order saved"`, `testid=submit` and `css=…`. The role
+    form is the line `view_app`'s snapshot prints, so an agent can copy what it saw.
+  - New actions: `Select`, `Check`, `Upload`, `Press` with an optional element, and `Inspect`
+    (the elements a locator finds and the page's visible text, without a snapshot). `Click` and
+    `Fill` take an `Element`: a snapshot ref (`view_app`) or a locator (checklists).
+- **Chromium driver** (`sc-server/src/browser`):
+  - New `locate` module: finds role/label/text locators in the same accessibility tree
+    `view_app`'s snapshot renders, so hidden text is never "visible". `testid` and `css` are DOM
+    queries (`DOM.querySelectorAll`), described from the tree. It is pure and unit-tested.
+  - An action on a locator waits for its element until the call's deadline. Visible matches are
+    preferred (a hidden file input is used only when nothing visible matches). A locator that
+    matches several elements is refused with their names, so a step never clicks the wrong
+    button.
+  - `select` sets a `<select>` by value or text through the native setter and fires
+    `input`/`change`. `check` clicks only when the state differs, then verifies it changed.
+    `upload` uses `DOM.setFileInputFiles`.
+  - A live target is `<subdomain>.<base-domain>` (or the base domain for the root application)
+    on the loopback listener. A preview pass is allowed only for a preview target.
+- **The in-process requester** (`AppRequests`) can send to a preview: `AppHttpRequest.preview`.
+  It mints a pass the preview's run allows, for that one request, and revokes it afterwards
+  (`AppMounts::revoke_preview_token`).
+- **`browser.*` step types** (`sc-check/src/steps/browser.rs`): `browser.open`, `click`, `fill`,
+  `select`, `check`, `press`, `upload` (a named file with given text content, written to the
+  run's scratch directory and removed with the run), `expect_text`, `expect_no_text`,
+  `expect_element` (`state` visible/hidden/enabled/disabled/checked/unchecked, exact `count`,
+  `value`), `expect_url` (path and query; `equals`/`contains`/`matches`), `expect_clean` and
+  `screenshot`.
+  - Assertions poll the page until they hold or the step's time is nearly up, so no step needs a
+    `core.wait` in front of it. A failure quotes what the page does show.
+  - A locator is checked when the step is saved, unless it is a template (new optional
+    `StepType::check` hook, called from `validate_draft`).
+  - Browser steps are offered (`StepRegistry::offered`, now given the application) and run only
+    for an application whose framework `serves_ui()`. Otherwise the step is an error, not a skip.
+  - None of them counts as mutating (§3: a checklist that only reads and clicks runs anywhere).
+  - Only `browser.open` gets a 30 s floor, for the first launch of the browser. Every other step
+    keeps the checklist's timeout, so a missing element fails as soon as it should.
+- **Implicit clean check** (C2.4): after every `browser.open` the page must have logged no
+  console error, thrown no uncaught exception and had no request fail or answer 4xx/5xx. It
+  waits a moment after load, for errors thrown once data arrives. Off with
+  `attributes.implicit_clean = false`, a switch in the checklist's settings form. Each step's
+  result carries the console errors and failed requests its browser calls saw, whether or not it
+  failed.
+- **Screenshots** (C2.5): a failed or errored browser step is photographed, and so is a
+  `browser.screenshot`. The JPEG goes to an internal file store,
+  `<data dir>/checklist-screenshots/<run id>/<step>.jpg` (`sc_check::screenshots`, a
+  `LocalFileStore`; `CheckEnv::with_screenshots` overrides the directory). The step result's
+  new `screenshot` field holds that path. The new admin endpoint `getChecklistScreenshot`
+  serves it (only paths of that shape), and the run detail shows it under the step, enlarging
+  on a click. A screenshot that cannot be kept is listed with the run's clean-up errors.
+- **The runner**: `CheckEnv` gained `with_browser`, `with_preview` and `with_screenshots`. A run
+  shares one browser context, signed in as `run_as`, closed when the run ends. A run against a
+  preview records the preview's label as its `target`, and its `http.*` steps go to the
+  preview too. The admin API, the MCP checklist tools and the copilot pass the server's browser.
+  The CLI has none, so its browser steps are skipped and the run is `incomplete`.
+- **The coding agent's verification** (C2.6, `sc-core-traits/src/coding/checklists.rs`): after a
+  green build is mounted as the run's preview, `check` runs every enabled checklist of the
+  application against that preview (trigger `agent:<run id>`), each reported as a check
+  `checklist:<name>`.
+  - A checklist gets the same baseline as the other checks. A failing step is a diagnostic keyed
+    by its position, label and type, never by its message, which names this run's values. So a
+    checklist the run breaks turns `check` red, and one that was already red does not.
+  - The report lists each failing step with its message, marked new or pre-existing.
+  - A mutating checklist is skipped on production unless it is allowed there. An incomplete run
+    (no browser) is reported as not green.
+  - The prompt tells the agent to fix what it broke, never weaken a checklist, and name every
+    checklist still failing in its final summary.
+- **Admin UI**: the run detail shows each step's screenshot. The checklist settings have an
+  "every opened page is clean" switch (`implicit_clean`). The generated clients are regenerated.
+- **Tests**:
+  - `sc-browser`: the locator syntax.
+  - `sc-server` `browser::locate`: role, label and text matching; hidden text; element state.
+  - `sc-check`: `browser.*` expectations and save-time checks, and the screenshot store's path
+    confinement. Its integration test `browser_steps_on_a_host_without_chromium_make_the_run_incomplete`
+    also covers a framework without a UI.
+  - `sc-core-traits`: a checklist's failing steps as new or pre-existing diagnostics.
+  - `sc-server` `checklist_browser` (real Chromium, skipped without one):
+    - an order form filled, selected, checked, saved and asserted live, as a member, passes, and
+      its screenshot is kept;
+    - the same checklist against a preview whose button is renamed fails at the click with a
+      screenshot, while the live mount still passes and an `http.*` step reaches the preview;
+    - a page whose script throws fails the implicit clean check, and with `implicit_clean` off
+      it passes with the error still recorded on the step.
+  - `view_app::check_runs_the_applications_checklists_against_its_preview`: `check` reports a
+    passing and a pre-existing failing checklist against the preview, and records both runs with
+    the preview's label and the agent's trigger.
+
+## Checklists C1: entities, runner, data and HTTP steps, agent policy
+
+What "working" means for an application, written down so every change — a person's or an
+agent's — can be checked against it (docs/CHECKLISTS.md, TODO-checklists C1).
+
+- **New crate `sc-check`** (layer 9, between `sc-app`/`sc-agent` and the copilot and server).
+  - Tables `_fd_checklists`, `_fd_checklist_steps`, `_fd_checklist_runs` and
+    `_fd_checklist_proposals`, created at bootstrap and in `TABLES_RENAME.sql`. Steps are never
+    updated in place: an edit writes a new version and sets `superseded_by` on the old one, and a
+    delete supersedes it with a tombstone row (`deleted`), so every check's history is kept. Only
+    `superseded_by` and `accepted` are ever updated. A step's `position` is a float, so
+    inserting before a step never renumbers others. `Checklist::mutates` is recomputed from the
+    current steps' types after every change (a type this server no longer has counts as
+    mutating).
+  - The step-type registry: `StepType` (`name`, `description`, `config_spec`, `needs`,
+    `mutates`, `min_timeout`, `run`), `Needs` (data/http/browser/build), `StepContext`, which
+    hands a step only the capabilities its type declared, and `StepOutcome`
+    (pass/fail/error/skipped, a message, the value an `as` captures). Names must be
+    `namespace.name`, and a duplicate registration is an error. A step's params are checked
+    against its `config_spec` on save, its templates must parse, its `as` must be an identifier
+    other than `run`, and a step that reaches the application is refused on a checklist without
+    one.
+  - Variables: every string anywhere in a step's params is an `sc-expr` template over earlier
+    captures and `run.id`. A string that is exactly one `{{ x }}` keeps the value's JSON type, so
+    `"{{ order.id }}"` is a number when the id is one. To support this, `sc-expr`'s `Template`
+    gained `render_paths` and `sole_path`, which render name and member-chain tokens
+    (`{{ run.id }}`, `{{ order.lines[0].sku }}`) against a JSON scope without an evaluator.
+  - The runner: loads the current steps, runs them in order as `run_as` (`NULL` is an anonymous
+    visitor), stops at the first fail or error unless `stop_on_failure` is false (the steps not
+    reached are still listed), and records the run with its trigger, target, status, per-step
+    results and step versions. A step whose capability the host lacks is `skipped` and makes the
+    run `incomplete`, never `passed`. A `core.manual` step is skipped too, but does not make the
+    run incomplete, because otherwise such a checklist could never pass. Rows written by
+    `data.insert` are deleted at the end, newest first, as the system and best effort. A row a
+    later step already deleted is fine; any other failure is listed in the run's
+    `cleanup_errors`. Each step has a timeout (`attributes.timeout`, default 60 s, at least the
+    type's `min_timeout`: 10 minutes for `app.builds`).
+  - Step types: `core.wait`, `core.manual`; `data.insert`, `data.update`, `data.delete`,
+    `data.expect_rows` (a `where` filter object, an exact `count`, `fields` every row must
+    hold), `data.expect_denied`, `data.run_trigger` (`run_as` must meet the trigger's
+    `min_role`; expect `success`, or `error` with an optional pattern), and
+    `data.expect_calculated`. All of them go through `sc_api::read_rows_as` and its siblings as
+    `run_as`, so they test permissions as well as data. Also `http.request`,
+    `http.expect_status` (it sends its own request when given a `path`, else checks the last
+    response) and `http.expect_json` (`equals`/`contains`/`matches`/`exists` at a path like
+    `items[0].name`), all through the server's `AppRequester` with a session for `run_as`; and
+    `app.builds` (an application with nothing to build passes).
+  - `data.expect_denied` writes nothing. It asks for the access rules' verdict instead of
+    attempting the write, so it is not a mutating step and can run on production. For this,
+    `sc-api` gained `row_insertable_as` and `row_deletable_as` beside `row_updatable_as`, which
+    now shares one implementation with the delete check.
+  - The agent policy (`sc_check::edit`, §4). Every change goes through it, the admin API's as
+    `Editor::Human`. The grant is `checklists: none | append | full`, default `append`. Under
+    `append` an agent may create checklists, append steps, and edit, remove or insert before the
+    unaccepted steps its own run wrote. Every other change (an edit of another step, an insert
+    before one, a reorder, a `run_as` change) is stored as a proposal with its reason, and the
+    old step keeps running until a person accepts it. Accepting writes the new version, recorded
+    as the agent's and marked accepted; rejecting discards the proposal. Deleting a checklist or
+    an accepted step needs `full`. Under every grant, only a person may disable a checklist, set
+    `allow_on_production`, or point `run_as` at a user who is not a check user. Refusals name the
+    missing grant.
+  - The agent tools `describe_step_types`, `describe_checklists`, `save_checklist`,
+    `append_steps`, `propose_step_change` (it applies directly where the rules allow, and stores
+    a proposal otherwise) and `run_checklists`. They are offered by `admin_copilot` under a new
+    `checklists` setting (`none`/`append`/`full`) and by the MCP server under the token's
+    `checklists` grant. `sc_api::mcp::CHECKLISTS_GRANT` names the key, `validate_flags` checks
+    its value, and a token mint writes it explicitly, as `append` unless the mint asked
+    otherwise. `allow_all` does not make it `full`. An MCP token is its own "run": the steps it
+    may still edit are the ones that token wrote.
+- **Check users (C1.5).** The users table gains a nullable `attributes` JSON system column, and
+  `{"check_user": true}` in it marks an account a checklist may run as. `User::is_check_user`
+  reads the flag and `sc_auth::set_check_user` sets it. It is set only through the admin API's
+  `setCheckUser`, and user rows now report `check_user`. The runner needs no password: it signs
+  `run_as` in through the application router's per-request session.
+- **Production guard (C1.6).** An environment in `feldspar.toml` may say `production = true`,
+  and the one named `production` is production unless it says `production = false`. The CLI
+  records the selected environment's answer on the catalog (`Catalog::set_production`).
+  There, a checklist that mutates is refused unless its `attributes.allow_on_production` is set,
+  which only a person can set. The refusal is recorded as a run with status `error` and the
+  reason, so the admin UI shows why it did not run.
+- **Admin API (C1.11):** `listChecklists` (by application, `none`, or all, with the last run
+  and the count waiting for a person), `createChecklist`, `getChecklist` (steps, proposals,
+  recent runs), `updateChecklist`, `deleteChecklist`, `addChecklistStep` (at the end, or
+  `before` a step), `updateChecklistStep`, `deleteChecklistStep`, `acceptChecklistStep`,
+  `reorderChecklistSteps`, `acceptChecklistProposal`, `rejectChecklistProposal`, `runChecklist`,
+  `runChecklists`, `listChecklistRuns`, `getChecklistRun`, `listChecklistStepTypes`,
+  `setCheckUser` and `listChecklistUsers`. These are served by `sc-server/src/checklists.rs`,
+  with the server's application router for the `http.*` steps.
+- **Admin UI (C1.16):** each application has a Checklists link
+  (`/applications/:app/checklists`), and the Data Layer has a Checklists entry for checklists with
+  no application (`/checklists`).
+  - The list shows each checklist's last result and when it ran, how many items wait for a
+    person, and a "Writes data" badge, with Run, Run all and New checklist buttons.
+  - A checklist's page puts what waits for review first: each proposal with its reason, the
+    current and proposed step side by side, and the last run's result for that step;
+    unaccepted agent steps are listed there too. Each has Accept/Reject.
+  - The steps table shows label, type, `as`, author and whether a person accepted it, with
+    move up/down, edit and remove. The step form is drawn from the type's `config_spec`.
+  - The settings cover run-as (check users are marked), enabled, stop at first failure,
+    timeout and allow on production, and the page lists recent runs.
+  - A run's page shows every step's outcome, message, captured value and duration, and any
+    clean-up errors.
+  - The Users screen gets a "Check user" badge and a menu item that sets the flag. The pure
+    logic is in `ui/admin/src/checklists.ts`, with its tests. The admin client and its ide,
+    builder and analytics copies were regenerated.
+- **CLI (C1.12):** `feldspar mcp-token create` takes `--checklists none|append|full`, and
+  `feldspar check run [--app SUB] [--checklist NAME]` brings up the triggers and
+  the mounted applications as `serve` does, without listening, so `http.*` steps run. It prints
+  each step's result and exits non-zero when any checklist fails, errors or is incomplete, or
+  when nothing matched. `feldspar check list` lists the checklists with their last result.
+- Tests: `sc-check`'s `tests/checklists.rs` covers a data checklist that inserts a row, runs a
+  trigger and asserts its effect, and leaves its row gone; `data.expect_denied` going red after
+  the table's role is loosened; the `append` policy (append yes; deleting or directly editing an
+  accepted step no; the edit becomes a proposal while the old step keeps running; accepting
+  it); `run_as` limited to check users for an agent; the production refusal; and an HTTP step
+  on a host without the router making the run `incomplete`. `sc-cli`'s `tests/check.rs` checks
+  that `feldspar check run` exits non-zero on a failing checklist. There are unit tests for the
+  run status, the registry, the variables and the JSON paths.
 
 ## i18n: wrap the strings the lint found, and fill the core, admin and builder catalogues
 

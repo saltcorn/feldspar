@@ -812,6 +812,8 @@ const supportedKeys = new Set([
   // stylesheets a document rendering them wants.
   "viewtemplates",
   "headers",
+  // Checklist step types (TODO-checklists C3.5).
+  "checklist_steps",
 ]);
 
 /** Keys that are metadata rather than an entity type — including `onLoad`,
@@ -1502,6 +1504,140 @@ async function evalWebhooks(plugin, configuration) {
     });
   }
   return { webhooks, set, issues };
+}
+
+/** This system's `checklist_steps` key (TODO-checklists C3.5): step types a
+ * checklist can use, beside the server's own `browser.*`, `http.*` and
+ * `data.*`.
+ *
+ * ```js
+ * checklist_steps: {
+ *   "shop.has_title": {
+ *     description: "The page has a <title>",
+ *     config_fields: [{ name: "path", type: "String", required: true }],
+ *     needs: ["http"],          // any of data, http, browser, build
+ *     mutates: false,           // whether it writes data
+ *     framework: "astro",       // only for that framework's applications
+ *     run: async (params, ctx) => {
+ *       const res = await ctx.http.request({ path: params.path });
+ *       return { outcome: "pass", message: "it has one" };
+ *     },
+ *   },
+ * }
+ * ```
+ *
+ * An object, or a function of the module's configuration returning one. The
+ * manifest carries everything but `run`, which stays here; each run of a step
+ * is one `check_step_run`. What `run` does, it asks the server for through
+ * `ctx` — run a core step in the checklist run's own context, inspect the
+ * page, read rows — and the server holds it to what it declared. */
+async function evalCheckSteps(plugin, configuration) {
+  const exported = plugin.checklist_steps;
+  let raw = {};
+  const issues = [];
+  if (typeof exported === "function") {
+    try {
+      raw = (await exported(configuration || {})) || {};
+    } catch (e) {
+      issues.push(`its checklist steps could not be built: ${e.message}`);
+      raw = {};
+    }
+  } else if (exported && typeof exported === "object") {
+    raw = exported;
+  }
+  const steps = [];
+  const set = {};
+  if (Array.isArray(raw)) {
+    issues.push("its `checklist_steps` is a list; it should be an object of step types by name");
+    return { steps, set, issues };
+  }
+  for (const [name, impl] of Object.entries(raw)) {
+    if (!impl || typeof impl.run !== "function") {
+      issues.push(`the checklist step "${name}" has no run function`);
+      continue;
+    }
+    let configFields = [];
+    try {
+      configFields =
+        typeof impl.config_fields === "function"
+          ? (await impl.config_fields(configuration || {})) || []
+          : impl.config_fields || [];
+    } catch (e) {
+      issues.push(`the parameters of the checklist step "${name}" could not be built: ${e.message}`);
+      continue;
+    }
+    set[name] = impl;
+    steps.push({
+      name,
+      description: typeof impl.description === "string" ? impl.description : "",
+      config_fields: Array.isArray(configFields) ? configFields : [],
+      needs: Array.isArray(impl.needs) ? impl.needs.map(String) : [],
+      mutates: impl.mutates === true,
+      framework: typeof impl.framework === "string" && impl.framework ? impl.framework : null,
+      timeout: typeof impl.timeout === "number" && impl.timeout > 0 ? impl.timeout : null,
+    });
+  }
+  return { steps, set, issues };
+}
+
+/** One run of a module's checklist step: its `run(params, ctx)`, where `ctx`
+ * reaches the checklist run only by asking — the browser page, the requests
+ * and the rows are the server's, in the run's own context. */
+async function runCheckStep({ module: name, step: stepName, params, context }) {
+  const entry = loaded.get(name);
+  if (!entry) throw new Error(`the module ${name} is not loaded in this host`);
+  const impl = entry.checkSteps && entry.checkSteps[stepName];
+  if (!impl) throw new Error(`the module ${name} has no checklist step ${stepName}`);
+  const store = running.getStore();
+  const callId = store && store.call;
+  const check = (plan) => askFor(callId, "check", plan);
+  const step = (type, stepParams) => check({ op: "step", type, params: stepParams || {} });
+  const line = (level) => (...args) => {
+    try {
+      log(level, name, format(...args));
+    } catch (_) {
+      // As `speak`: a log line must not become the step's failure.
+    }
+  };
+  const info = context || {};
+  const ctx = {
+    module: name,
+    step: stepName,
+    configuration: entry.configuration || {},
+    run: info.run || {},
+    user: info.user || null,
+    application: info.application || null,
+    vars: info.vars || {},
+    // A core step, run as if it were in the checklist: `{ outcome, message, value }`.
+    runStep: step,
+    browser: {
+      open: (path) => step("browser.open", { path }),
+      click: (locator) => step("browser.click", { locator }),
+      fill: (locator, text) => step("browser.fill", { locator, text }),
+      select: (locator, option) => step("browser.select", { locator, option }),
+      check: (locator, checked = true) => step("browser.check", { locator, checked }),
+      press: (key, locator) => step("browser.press", locator ? { key, locator } : { key }),
+      expectText: (text) => step("browser.expect_text", { text }),
+      inspect: (locator) => check({ op: "inspect", locator: locator || null }),
+    },
+    http: {
+      request: (req) => step("http.request", req || {}),
+    },
+    data: {
+      rows: (table, where, limit) => check({ op: "rows", table, where: where || null, limit }),
+      insert: (table, row) => step("data.insert", { table, row }),
+      update: (table, id, row) => step("data.update", { table, id, row }),
+      delete: (table, id) => step("data.delete", { table, id }),
+    },
+    log: Object.assign(line("info"), {
+      info: line("info"),
+      warn: line("warning"),
+      error: line("error"),
+      debug: line("verbose"),
+    }),
+  };
+  const answer = await impl.run(params || {}, ctx);
+  return answer === undefined ? null : answer;
 }
 
 /** This system's `csp` key (TODO-payments P1.4): content-security sources the
@@ -2817,6 +2953,13 @@ async function loadModule({ module: name, dir, configuration }) {
   issues.push(...coreTableIssues);
 
   const {
+    steps: checkSteps,
+    set: checkStepSet,
+    issues: checkStepIssues,
+  } = await evalCheckSteps(plugin, configuration);
+  issues.push(...checkStepIssues);
+
+  const {
     frameworks,
     set: frameworkSet,
     issues: frameworkIssues,
@@ -2850,6 +2993,7 @@ async function loadModule({ module: name, dir, configuration }) {
     services: serviceSet,
     webhooks: webhookSet,
     routes: routeSet,
+    checkSteps: checkStepSet,
     configuration: configuration || {},
   });
   // The registry may hold this module's previous patterns: rebuild it on the
@@ -2871,6 +3015,7 @@ async function loadModule({ module: name, dir, configuration }) {
     services: serviceList,
     webhooks: webhookList,
     routes: routeList,
+    check_steps: checkSteps,
     reads,
     csp,
     frameworks,
@@ -5366,6 +5511,11 @@ async function handle(request) {
       const pending = loading.get(request.module);
       if (pending) await pending;
       return await runRoute(request);
+    }
+    case "check_step_run": {
+      const pending = loading.get(request.module);
+      if (pending) await pending;
+      return await runCheckStep(request);
     }
     // Saltcorn UI's view runtime (TODO "Saltcorn UI" §3). No module to wait
     // on: the runtime is not a module in `loaded`, and imports itself.

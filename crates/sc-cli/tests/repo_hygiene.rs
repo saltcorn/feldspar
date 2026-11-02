@@ -637,11 +637,11 @@ fn the_readme_states_the_python_build_line() {
             "the README should state `{fragment}` about Python"
         );
     }
-    // The static artifact and the Python build are mutually exclusive, and §4.1
-    // is where somebody deciding how to deploy will look for it.
+    // The release is the build that needs nothing Python-related on the host,
+    // which is what somebody deciding between it and a source build looks for.
     assert!(
-        readme.contains("why it has no Python"),
-        "§4.1 should say that the packaged static artifact carries no Python"
+        readme.contains("The release (§2) brings its own CPython 3.13"),
+        "§3 should say that the release carries its own CPython"
     );
 }
 
@@ -1872,12 +1872,15 @@ fn readme_section_references_resolve() {
             continue;
         }
         // A sub-section number, or a reference the sentence attributes to the
-        // design document: not ours to resolve.
+        // design document or the operations manual: not ours to resolve.
         if rest[digits.len()..].starts_with('.') {
             continue;
         }
         let context = &readme[idx.saturating_sub(60)..idx];
-        if context.contains("design") || context.contains("TECHNICAL_DESIGN") {
+        if context.contains("design")
+            || context.contains("TECHNICAL_DESIGN")
+            || context.contains("OPERATIONS")
+        {
             continue;
         }
         let number: u32 = digits.parse().expect("digits");
@@ -1908,7 +1911,7 @@ fn readme_quick_start_config_file_parses() {
         .expect("the heredoc should be terminated")
         .0;
 
-    let config = sc_cli::ConfigFile::parse(sample, Path::new("README.md#2.5"))
+    let config = sc_config_file::ConfigFile::parse(sample, Path::new("README.md#2.5"))
         .expect("the quick start's feldspar.toml should parse");
     assert_eq!(config.default_environment.as_deref(), Some("production"));
 
@@ -2003,10 +2006,10 @@ fn the_binary_and_everything_it_owns_are_named_feldspar() {
     // 2. The deployment file and the directory it is searched for in, and 3. the
     //    environment variables that name it — the reader's own constants, not a
     //    doc's spelling of them.
-    assert_eq!(sc_cli::config_file::FILE_NAME, "feldspar.toml");
-    assert_eq!(sc_cli::config_file::APP_DIR, "feldspar");
-    assert_eq!(sc_cli::config_file::CONFIG_PATH_VAR, "FELDSPAR_CONFIG");
-    assert_eq!(sc_cli::config_file::ENVIRONMENT_VAR, "FELDSPAR_ENV");
+    assert_eq!(sc_config_file::FILE_NAME, "feldspar.toml");
+    assert_eq!(sc_config_file::APP_DIR, "feldspar");
+    assert_eq!(sc_config_file::CONFIG_PATH_VAR, "FELDSPAR_CONFIG");
+    assert_eq!(sc_config_file::ENVIRONMENT_VAR, "FELDSPAR_ENV");
 
     // 4. The generated runtime the scaffolder writes into an application's
     //    project, which its README, its AGENTS.md and every emitted import agree on.
@@ -2184,5 +2187,35 @@ fn every_integration_test_file_reaches_a_target() {
     assert!(
         dangling.is_empty(),
         "these tests/it.rs entries name a file that is not there: {dangling:#?}"
+    );
+}
+
+/// The admin UI keeps its own copy of [`sc_auth::SYSTEM_USER_COLUMNS`] to decide
+/// which users-table columns are *not* fields on the user form. A column the
+/// server owns but the UI does not know about is offered as a field, sent back
+/// in `extra`, and refused — so every user edit fails (this happened with
+/// `email_verified`). The two lists must name the same columns in the same order.
+#[test]
+fn the_admin_ui_knows_every_system_user_column() {
+    let root = workspace_root();
+    let source = read(&root, "ui/admin/src/userForm.ts");
+    let decl = "export const SYSTEM_USER_COLUMNS = [";
+    let start = source
+        .find(decl)
+        .expect("ui/admin/src/userForm.ts no longer declares SYSTEM_USER_COLUMNS")
+        + decl.len();
+    let end = start
+        + source[start..]
+            .find("];")
+            .expect("SYSTEM_USER_COLUMNS in userForm.ts is not closed with `];`");
+    let ui: Vec<&str> = source[start..end]
+        .split(',')
+        .map(|item| item.trim().trim_matches('"'))
+        .filter(|item| !item.is_empty())
+        .collect();
+    assert_eq!(
+        ui,
+        sc_auth::SYSTEM_USER_COLUMNS,
+        "SYSTEM_USER_COLUMNS in ui/admin/src/userForm.ts must match sc_auth::SYSTEM_USER_COLUMNS"
     );
 }

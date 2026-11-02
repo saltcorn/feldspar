@@ -14,6 +14,7 @@
 //! does not. Everything else here runs unconditionally.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -22,7 +23,7 @@ use sc_app::{
     app_source_from_config, build_application, emit_app_runtime, save_application, scaffold_app,
     update_app_client,
 };
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_files::LocalFileStore;
@@ -80,7 +81,7 @@ fn todo_app() -> Application {
             .with("store", "apps")
             .with("project", "todo"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"))
 }
@@ -94,7 +95,7 @@ async fn the_server_writes_a_complete_project_against_the_apps_own_tables() -> s
     // invented: the generated documentation names them, because `feldspar auth
     // token --role NAME` takes a name and the project has no other way to know.
     sc_auth::bootstrap(&cat).await?;
-    sc_auth::save_role(&cat, &sc_auth::Role::new(40, "Editor")).await?;
+    sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(40), "Editor")).await?;
     let tmp = TempDir::new("write")?;
     cat.connect_file_store(Arc::new(LocalFileStore::new("apps", tmp.path())?))?;
     // What the boot path does with `--base-domain`: the generated documentation
@@ -120,6 +121,8 @@ async fn the_server_writes_a_complete_project_against_the_apps_own_tables() -> s
         "src/auth.tsx",
         "src/Login.tsx",
         "src/SetPassword.tsx",
+        "src/SecondFactor.tsx",
+        "src/Security.tsx",
         "src/app.css",
         "src/useAgentChat.ts",
         "AGENTS.md",
@@ -137,12 +140,12 @@ async fn the_server_writes_a_complete_project_against_the_apps_own_tables() -> s
     ] {
         assert!(project.join(expected).is_file(), "missing {expected}");
     }
-    // 15 project files (`CLAUDE.md` importing `AGENTS.md`, and the agent chat
-    // hook) + one page for the app's one table + the ten-file
+    // 17 project files (`CLAUDE.md` importing `AGENTS.md`, the agent chat
+    // hook, and the two-factor sign-in step and security page) + one page for the app's one table + the ten-file
     // runtime (the client, its helper, the hooks, the store, the two halves of
     // the message runtime, the live-update hooks, the schema, and the two
     // documents — one for a person, one for a coding agent).
-    assert_eq!(report.files.len(), 26);
+    assert_eq!(report.files.len(), 28);
 
     // What a coding agent opening this project finds: a root file pointing at the
     // generated directory, and in it a README and a `schema.sql` describing the
@@ -392,7 +395,9 @@ async fn the_generated_runtime_is_rewritten_on_build_and_nothing_else_is() -> sc
         .await
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     cat.reload().await?;
-    app.tables.push(TableId("notes".to_owned()));
+    // Connected and serving its row API, which is what gives it hooks.
+    app.tables.push("notes".to_owned());
+    app.api_tables.push("notes".to_owned());
 
     let source = app_source_from_config(&app.framework)?;
     let written = emit_app_runtime(&cat, &app, &source, None).await?;

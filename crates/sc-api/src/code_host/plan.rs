@@ -9,7 +9,7 @@
 //! against the catalog, and anything else is refused naming it.
 //!
 //! Two spellings of a filter (§3), one predicate: the object DSL every other
-//! surface already speaks — lowered by [`crate::filter`], the same walk an agent's
+//! surface already speaks — lowered by [`sc_access::filter`], the same walk an agent's
 //! `where` argument goes through — or a formula string, parsed by
 //! [`Formula::parse`] and translated by the one symbolic translator. A projection
 //! is the same choice: a field name, a Ⱶ-path, or an `{ alias, formula }` object.
@@ -22,6 +22,7 @@
 //! every literal a body wrote becomes an `Expr::Lit` the query layer
 //! parameterises on render.
 
+use sc_types::Role;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
@@ -29,19 +30,20 @@ use sc_catalog::{Catalog, DataFieldKind, Table};
 use sc_error::{Error, Result};
 use sc_expr::{
     AggFunc, CalcFields, Env, Formula, JOIN, Operation, TranslateError, UserEnv, aggregate_expr,
-    join_path_expr, translate, translate_value, value_from_json,
+    join_path_expr, translate, translate_value,
 };
 use sc_query::{
     BinOp, Expr, Nulls, OrderBy, OrderDir, Projection, Statement, UnOp, Value, rewrite_named_params,
 };
+use sc_types::value_from_json;
 use serde::Deserialize;
 use serde_json::Value as Json;
 
-use crate::convert::value_to_json;
-use crate::filter::{self, FilterKey, JoinedColumn};
-use crate::ownership::{self, AggregateGuard, JoinAccess};
-use crate::rows::{self, RowQuery};
-use crate::user_rows;
+use sc_access::filter::{self, FilterKey, JoinedColumn};
+use sc_access::ownership::{self, AggregateGuard, JoinAccess};
+use sc_access::rows::{self, RowQuery};
+use sc_access::user_rows;
+use sc_types::value_to_json;
 
 use super::HostLimits;
 
@@ -195,12 +197,19 @@ pub enum Op {
     Delete,
 }
 
-/// Whose authority a plan runs under (§5): the trigger's own by default,
-/// the event's caller when the body said `asUser()`, and — since v1's `Table`
-/// says whose view of the data it wants with an *argument* — a **named user**.
+/// Whose authority a plan runs under (§5): the run's own default when the body
+/// said nothing, the trigger's when it said `asAdmin()`, the event's caller when
+/// it said `asUser()`, and — since v1's `Table` says whose view of the data it
+/// wants with an *argument* — a **named user**.
+///
+/// **What "said nothing" means is the host's to decide**, not the guest's
+/// ([`Authority::Default`]): a trigger is server-side configuration and runs as
+/// the admin, while a body answering a request — a custom query, a server-
+/// rendered page — runs as the person who asked, so ownership rules are
+/// opt-*out* there (`asAdmin()`) rather than opt-in.
 ///
 /// The three that are not `Admin` are one thing in the end: [`Actor::Caller`],
-/// a role and a user, checked through `sc_api::ownership`'s `*_as` functions.
+/// a role and a user, checked through `sc_access::ownership`'s `*_as` functions.
 /// There is no second implementation of "meets the floor OR the formula grants
 /// it" here and there must never be one; what these forms differ in is only
 /// *which* role and user those functions are handed.
@@ -210,12 +219,18 @@ pub enum Op {
 /// body volunteering to be treated as them (TODO "the v1 `Table` API" §4).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Authority {
-    /// The trigger's: `ROLE_ADMIN`, carrying the event's user. The default,
-    /// because a trigger is server-side configuration and the audit row a caller
-    /// may not insert is the archetype of what a trigger exists to write.
+    /// Whatever the run defaults to, resolved by the host
+    /// ([`resolve`](Authority::resolve)) before anything is looked up: what a
+    /// handle the body did not narrow or widen sends, and what a plan with no
+    /// `authority` at all means.
     #[default]
+    Default,
+    /// The trigger's: `Role::ADMIN`, carrying the event's user. A trigger's
+    /// default, because a trigger is server-side configuration and the audit
+    /// row a caller may not insert is the archetype of what a trigger exists to
+    /// write.
     Admin,
-    /// The event's caller, through `sc_api::ownership`'s `*_as` functions.
+    /// The event's caller, through `sc_access::ownership`'s `*_as` functions.
     User,
     /// The **public** role and nobody — v1's `forPublic: true`, and the honest
     /// reading of "what would an anonymous visitor see".
@@ -229,7 +244,8 @@ pub enum Authority {
 }
 
 impl<'de> Deserialize<'de> for Authority {
-    /// `"admin"`, `"user"`, `"public"` — or `{ "user": <id> }` for a named one.
+    /// `"default"`, `"admin"`, `"user"`, `"public"` — or `{ "user": <id> }` for
+    /// a named one.
     ///
     /// Hand-written rather than untagged, for the reason every other shape on
     /// this seam is `deny_unknown_fields`: an authority this server does not
@@ -240,6 +256,7 @@ impl<'de> Deserialize<'de> for Authority {
         use serde::de::Error as _;
         let json = Json::deserialize(d)?;
         match &json {
+            Json::String(s) if s == "default" => Ok(Authority::Default),
             Json::String(s) if s == "admin" => Ok(Authority::Admin),
             Json::String(s) if s == "user" => Ok(Authority::User),
             Json::String(s) if s == "public" => Ok(Authority::Public),
@@ -247,14 +264,24 @@ impl<'de> Deserialize<'de> for Authority {
                 Ok(Authority::Named(map["user"].clone()))
             }
             _ => Err(D::Error::custom(format!(
-                "`{json}` is not an authority: it is \"admin\", \"user\", \"public\", \
-                 or {{ \"user\": id }} for one particular user"
+                "`{json}` is not an authority: it is \"default\", \"admin\", \"user\", \
+                 \"public\", or {{ \"user\": id }} for one particular user"
             ))),
         }
     }
 }
 
 impl Authority {
+    /// This authority with [`Default`](Authority::Default) replaced by
+    /// `default` — the run's own, which is [`Admin`](Authority::Admin) for a
+    /// trigger and [`User`](Authority::User) for a body answering a request.
+    pub fn resolve(&self, default: &Authority) -> Authority {
+        match self {
+            Authority::Default => default.clone(),
+            other => other.clone(),
+        }
+    }
+
     /// Whether this authority is the admin's — the one form that clears every
     /// rule that can be written, and therefore the one worth asking about by
     /// name rather than by matching three others.
@@ -266,6 +293,7 @@ impl Authority {
     /// two of the four.
     pub fn spelling(&self) -> &'static str {
         match self {
+            Authority::Default => "default",
             Authority::Admin => "admin",
             Authority::User => "user",
             Authority::Public => "public",
@@ -457,7 +485,7 @@ pub(crate) struct Aggregate {
 }
 
 /// Resolve a `select` plan against the catalog.
-pub(crate) fn read(cat: &Catalog, plan: &Plan, limits: &HostLimits, role: u8) -> Result<Read> {
+pub(crate) fn read(cat: &Catalog, plan: &Plan, limits: &HostLimits, role: Role) -> Result<Read> {
     let table = cat.require(&plan.table)?;
     let low = Lowering::new(cat, &table, role)?;
     let mut filter = low.filter(plan.filter.as_ref())?;
@@ -721,7 +749,7 @@ pub(crate) fn aggregate(
     cat: &Catalog,
     plan: &Plan,
     limits: &HostLimits,
-    role: u8,
+    role: Role,
 ) -> Result<Aggregate> {
     let table = cat.require(&plan.table)?;
     let low = Lowering::new(cat, &table, role)?;
@@ -871,7 +899,7 @@ pub(crate) fn insert(cat: &Catalog, plan: &Plan, limits: &HostLimits) -> Result<
 }
 
 /// Resolve an `update` or `delete` plan against the catalog.
-pub(crate) fn write(cat: &Catalog, plan: &Plan, limits: &HostLimits, role: u8) -> Result<Write> {
+pub(crate) fn write(cat: &Catalog, plan: &Plan, limits: &HostLimits, role: Role) -> Result<Write> {
     let op = match plan.op {
         Op::Update => "update",
         _ => "delete",
@@ -1103,7 +1131,7 @@ fn pk_expr(table: &Table, pk: &Json) -> Result<Expr> {
 /// comment separates nothing and that `x::text` is a cast. Its rewritten text is
 /// thrown away: what runs is what the body wrote.
 pub(crate) fn statement(cat: &Catalog, plan: &SqlPlan) -> Result<Statement> {
-    let dialect = cat.primary().dialect();
+    let dialect = cat.primary_dialect();
     let named = rewrite_named_params(dialect, &plan.sql)
         .map_err(|e| Error::invalid(format!("this code body's SQL {e}")))?;
     if named.statements == 0 {
@@ -1127,7 +1155,10 @@ pub(crate) fn statement(cat: &Catalog, plan: &SqlPlan) -> Result<Statement> {
         )));
     }
     let binds = plan.params.iter().map(value_from_json).collect();
-    Ok(Statement::raw(plan.sql.clone(), binds))
+    Ok(Statement::raw(
+        sc_query::TrustedSql::admin_authored(plan.sql.clone()),
+        binds,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1156,14 +1187,14 @@ struct Lowering<'a> {
     calc: CalcFields,
     /// Which calculated fields the database never sees (milestone 31 §4), so
     /// a filter or an ordering naming one is refused saying why.
-    calc_plan: crate::calc_read::CalcPlan,
+    calc_plan: sc_access::calc_read::CalcPlan,
     user_env: UserEnv,
-    role: u8,
+    role: Role,
     in_caller_context: Cell<bool>,
 }
 
 impl<'a> Lowering<'a> {
-    fn new(catalog: &'a Catalog, table: &Table, role: u8) -> Result<Lowering<'a>> {
+    fn new(catalog: &'a Catalog, table: &Table, role: Role) -> Result<Lowering<'a>> {
         Ok(Lowering {
             catalog,
             fields: table
@@ -1174,7 +1205,7 @@ impl<'a> Lowering<'a> {
                 .collect(),
             shape: catalog.schema_shape()?,
             calc: table.calc_formulas(),
-            calc_plan: crate::calc_read::CalcPlan::of(catalog, table)?,
+            calc_plan: sc_access::calc_read::CalcPlan::of(catalog, table)?,
             table: table.clone(),
             // A formula in a plan reads the row and nothing else — see
             // `guard`, which refuses `user` by name rather than inlining a null.
@@ -1490,7 +1521,7 @@ impl<'a> Lowering<'a> {
                     table.name
                 )));
             };
-            let target = self.catalog.require(&target_table.0)?;
+            let target = self.catalog.require(target_table)?;
             match ownership::join_guard(&target, self.role)? {
                 JoinAccess::Unrestricted => {}
                 JoinAccess::InContext => self.in_caller_context.set(true),

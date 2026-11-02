@@ -15,6 +15,9 @@
 //!   syntax error is refused with the line.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,24 +31,25 @@ use sc_api::mcp::ToolContext;
 use sc_api::schema_edit::Grants;
 use sc_api::{CustomQuery, Method, QueryLanguage};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{Role, SessionStore, create_user, save_role};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
 use sc_catalog::{Catalog, CodeLibrary, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_files::{FileMeta, FileStore, LocalFileStore};
 use sc_server::{
-    AppMounts, BackupSelection, CSRF_COOKIE, CSRF_HEADER, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_triggers,
+    AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_triggers,
 };
+use sc_test_harness::Teardown;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const BASE_DOMAIN: &str = "example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 80;
+const ROLE_MEMBER: Role = Role::of(80);
 
 /// A scratch directory removed when the guard drops.
-struct TempDir(PathBuf);
+struct TempDir(PathBuf, Teardown);
 
 impl TempDir {
     fn new(tag: &str) -> TempDir {
@@ -56,7 +60,7 @@ impl TempDir {
         ));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
-        TempDir(dir)
+        TempDir(dir, Teardown::new())
     }
 
     fn path(&self) -> &Path {
@@ -159,7 +163,7 @@ impl Client {
 fn js(name: &str, path: &str, code: &str) -> CustomQuery {
     CustomQuery::new(name, Method::Get, path, code)
         .language(QueryLanguage::Javascript)
-        .min_role(sc_auth::ROLE_PUBLIC)
+        .min_role(Role::PUBLIC)
 }
 
 /// The two applications' queries: the same instance helper from both, a name
@@ -211,6 +215,7 @@ async fn setup(tmp: &TempDir, tag: &str) -> sc_error::Result<Server> {
     std::fs::create_dir_all(&db_dir).map_err(sc_error::Error::from)?;
     let driver = Arc::new(SqliteDriver::open(db_dir.join("libs.db"))?);
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    tmp.1.add(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
@@ -218,7 +223,7 @@ async fn setup(tmp: &TempDir, tag: &str) -> sc_error::Result<Server> {
     sc_catalog::bootstrap_file_stores(&catalog).await?;
     sc_catalog::bootstrap_code_libraries(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
     let mut ids = HashMap::new();
     for who in ["alice", "bob"] {
         let user = create_user(
@@ -228,9 +233,9 @@ async fn setup(tmp: &TempDir, tag: &str) -> sc_error::Result<Server> {
             ROLE_MEMBER,
         )
         .await?;
-        ids.insert(who, user.id);
+        ids.insert(who, user.id());
     }
-    create_user(&catalog, "admin@example.com", PASSWORD, sc_auth::ROLE_ADMIN).await?;
+    create_user(&catalog, "admin@example.com", PASSWORD, Role::ADMIN).await?;
 
     // Alice's own file, readable by her alone (the owner rule, §2.1).
     let files_dir = tmp.path().join(format!("files-{tag}"));
@@ -243,13 +248,16 @@ async fn setup(tmp: &TempDir, tag: &str) -> sc_error::Result<Server> {
     let store = Arc::new(LocalFileStore::new("files", &files_dir)?);
     catalog.connect_file_store(store.clone())?;
     store
-        .write("alice/notes.txt", Bytes::from_static(b"alice's notes"))
+        .write(
+            &sc_files::StorePath::from_static("alice/notes.txt"),
+            Bytes::from_static(b"alice's notes"),
+        )
         .await?;
     store
         .set_meta(
-            "alice/notes.txt",
+            &sc_files::StorePath::from_static("alice/notes.txt"),
             &FileMeta {
-                min_role: Some(sc_auth::ROLE_ADMIN),
+                min_role: Some(Role::ADMIN),
                 owner: Some(ids["alice"].to_string()),
                 ..FileMeta::default()
             },
@@ -419,7 +427,12 @@ async fn a_trigger_sees_the_instances_libraries_and_no_applications() -> sc_erro
     // belongs to no application, gets the instance's.
     let greeting = server
         .dispatcher
-        .run_trigger(&server.catalog, "instanceGreet", Value::Null, None)
+        .run_trigger(
+            &server.catalog,
+            "instanceGreet",
+            Value::Null,
+            Authority::system("test"),
+        )
         .await?;
     assert_eq!(greeting, json!("instance"));
 
@@ -431,7 +444,12 @@ async fn a_trigger_sees_the_instances_libraries_and_no_applications() -> sc_erro
     .await?;
     let err = server
         .dispatcher
-        .run_trigger(&server.catalog, "appOnly", Value::Null, None)
+        .run_trigger(
+            &server.catalog,
+            "appOnly",
+            Value::Null,
+            Authority::system("test"),
+        )
         .await
         .unwrap_err()
         .to_string();
@@ -574,19 +592,19 @@ async fn the_admin_api_manages_libraries_and_says_who_uses_them() -> sc_error::R
 async fn a_backup_carries_the_libraries_to_a_second_installation() -> sc_error::Result<()> {
     let tmp = TempDir::new("backup");
     let first = setup(&tmp, "first").await?;
-    let available = sc_server::backup_available(&first.catalog).await?;
+    let available = sc_backup::available(&first.catalog).await?;
     assert_eq!(available.code_libraries, 6);
-    let mut selection = BackupSelection::everything(&available);
+    let mut selection = sc_backup::Selection::everything(&available);
     selection.code_libraries = true;
     let archive = tmp.path().join("backup.zip");
-    sc_server::write_backup_to(
+    sc_backup::write_backup_to(
         &first.catalog,
         &selection,
         None,
         std::fs::File::create(&archive)?,
     )
     .await?;
-    let (contents, _) = sc_server::inspect_backup(&archive, None)?;
+    let (contents, _) = sc_backup::inspect(&archive, None)?;
     assert_eq!(contents.code_libraries, 6);
 
     // A second installation with its own `auth`: restore adds and keeps.
@@ -608,12 +626,12 @@ async fn a_backup_carries_the_libraries_to_a_second_installation() -> sc_error::
     }
     // Restore just the libraries: `two` has a different id on this installation,
     // so its own `greet` is refused by name; the rest arrive.
-    let only = BackupSelection {
+    let only = sc_backup::Selection {
         code_libraries: true,
-        ..BackupSelection::default()
+        ..sc_backup::Selection::default()
     };
     let report =
-        sc_server::restore_backup(&second.catalog, &second.apps, &archive, None, &only).await?;
+        sc_backup::restore_backup(&second.catalog, &second.apps, &archive, None, &only).await?;
     let text = format!("{report:?}");
     assert!(text.contains("its code was kept"), "{text}");
     let restored = sc_catalog::list_code_libraries(&second.catalog).await?;
@@ -646,7 +664,7 @@ async fn the_mcp_tools_need_their_grants_and_refuse_a_syntax_error() -> sc_error
     let ctx = ToolContext {
         catalog: &server.catalog,
         user: None,
-        role: sc_auth::ROLE_ADMIN,
+        role: Role::ADMIN,
         triggers: Some(&server.dispatcher),
         actor: "test",
     };

@@ -14,7 +14,7 @@
 //! table gets the types, labels, keys and references a person would have given
 //! it — `gapminder.country` is a key to `gapminder_countries`, the Northwind
 //! employees point at their managers — rather than whatever the cells look
-//! like. The rows still go in through the row layer ([`crate::rows`]), so they
+//! like. The rows still go in through the row layer ([`sc_access::rows`]), so they
 //! are held to the rules every write is.
 //!
 //! [`install`] is the whole operation: download every file first (a network
@@ -35,7 +35,7 @@ use sc_error::{Error, Result};
 use sc_types::{BasicType, GeometryKind};
 use serde::{Deserialize, Serialize};
 
-pub use install::{Fetch, Installed, Progress, ProgressStage, install, plain};
+pub use install::{Fetch, Installed, Progress, ProgressStage, install};
 
 /// The catalogue, as written.
 const CATALOGUE: &str = include_str!("catalogue.toml");
@@ -515,7 +515,7 @@ pub struct Listing {
 /// Every catalogue entry, with whether it is here already and whether it can
 /// be got.
 pub async fn list(catalog: &Catalog) -> Result<Vec<Listing>> {
-    let spatial = catalog.primary().spatial();
+    let spatial = catalog.primary_info().spatial();
     let library = sc_dataset::load_library(catalog).await?;
     let mut out = Vec::new();
     for entry in catalogue()? {

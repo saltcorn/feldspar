@@ -9,8 +9,8 @@
 //! of, and that same declaration is what validates a saved agent.
 //!
 //! This crate registers **no traits at all**. The built-in set lives in
-//! `sc-core-traits` at layer 9, above the row layer, for the reason §10.1 gives
-//! for `sc-core-actions`: a trait that writes a row must go through `sc-api`'s
+//! `sc-agent-builtins` at layer 9, above the row layer, for the reason §10.1 gives
+//! for `sc-action-builtins`: a trait that writes a row must go through `sc-api`'s
 //! rows module so the write is coerced, validated and *observed* by triggers,
 //! and that module is above this one.
 //!
@@ -23,6 +23,7 @@
 //! trigger carries the trigger's authority instead, and that difference is set at
 //! exactly one place: where the run is created.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -101,6 +102,20 @@ pub trait AgentTrait: Send + Sync {
     /// silently would turn "this agent names a table that is gone" into "this
     /// agent has no tools", and the second is not a repairable message.
     fn tools(&self, cx: &ToolsContext<'_>, config: &Attrs) -> Vec<ToolSpec>;
+
+    /// The tools of this trait that are **shared**: fixed-name tools whose
+    /// behaviour depends on nothing in any trait's configuration, so that any
+    /// trait offering one answers it the same way — `search_docs` and
+    /// `read_docs`, which `coding`, `docs` and `admin_copilot` all offer.
+    ///
+    /// Two enabled traits offering a tool under one name collide (§11.2),
+    /// *except* when both declare it shared and offer an identical spec: then it
+    /// is one tool, shown to the model once and answered by the first of them.
+    /// Anything else stays a collision, including the same trait enabled twice
+    /// over the same target.
+    fn shared_tools(&self) -> &[&'static str] {
+        &[]
+    }
 
     /// Run one of this trait's tools.
     ///
@@ -502,17 +517,16 @@ pub struct TraitCheck<'a> {
 /// default: [`Run::new`](crate::Run::new) takes one, so a run that never decided
 /// cannot exist.
 ///
-/// The two fields are what a trait hands to the row layer:
-/// `sc_api::caller_context_at(caller.role, caller.user.as_ref())` is the whole
-/// conversion, and it is spelled at the call site rather than here because
-/// `sc-api` is above this crate.
+/// A tool's rows go through [`TraitContext::scoped`]: the run's caller as a
+/// [`Principal`](sc_catalog::Principal) ([`TraitContext::principal`]) bound
+/// to the catalog, with the user as it was loaded (TODO-code-quality Q3.4).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunCaller {
     /// The user every tool runs as, or `None` for a system or anonymous run.
     pub user: Option<User>,
     /// The role every tool's access is checked at — the user's own, admin for
     /// a system run, public for an anonymous one.
-    pub role: u8,
+    pub role: Role,
     /// Whether a trigger started this run ([`RunCaller::triggered`]): it reads
     /// and writes rows with the trigger's authority, but is never offered the
     /// tools that act as the server itself — the shell, module installs, the
@@ -537,7 +551,7 @@ impl RunCaller {
     /// A run on behalf of `user`, at that user's role. This is a chat turn.
     pub fn user(user: User) -> RunCaller {
         RunCaller {
-            role: user.role,
+            role: user.role(),
             user: Some(user),
             triggered: false,
             exposed: false,
@@ -563,7 +577,7 @@ impl RunCaller {
     pub fn system() -> RunCaller {
         RunCaller {
             user: None,
-            role: 1,
+            role: Role::ADMIN,
             triggered: false,
             exposed: false,
             chain: Vec::new(),
@@ -596,7 +610,7 @@ impl RunCaller {
     pub fn anonymous() -> RunCaller {
         RunCaller {
             user: None,
-            role: 100,
+            role: Role::PUBLIC,
             triggered: false,
             exposed: true,
             chain: Vec::new(),
@@ -660,13 +674,36 @@ impl RunCaller {
         }
     }
 
+    /// This caller as a principal (TODO-code-quality Q3.4): the role, the
+    /// user's fields as the ownership rule renders them
+    /// (`sc_access::principal_at`), and the [`tool_chain`](Self::tool_chain)
+    /// a write made by one of the run's tools carries.
+    pub fn principal(&self) -> sc_catalog::Principal {
+        sc_access::principal_at(self.role, self.user.as_ref()).chained(self.tool_chain())
+    }
+
+    /// `catalog` with `principal` — this caller's [`principal`](Self::principal)
+    /// — bound, the user as it was loaded and `evaluator` deciding an
+    /// ownership formula the translator refuses: the handle a tool's rows go
+    /// through. On the pool (see [`TraitContext::scoped`]).
+    pub fn scoped<'p>(
+        &'p self,
+        catalog: &'p Catalog,
+        principal: &'p sc_catalog::Principal,
+        evaluator: Option<&Arc<dyn JsEvaluator>>,
+    ) -> sc_access::Scoped<'p> {
+        sc_access::Scoped::new(catalog, sc_catalog::Authority::Caller(principal))
+            .with_user(self.user.as_ref())
+            .with_evaluator(evaluator.cloned())
+    }
+
     /// Whether this caller meets a role floor — how an agent's `min_role` and a
     /// trigger's are both checked.
     ///
     /// Roles descend: 1 is admin and 100 is public, so *meeting* a floor is
     /// having a number no larger than it.
-    pub fn meets_role(&self, min_role: Option<u8>) -> bool {
-        self.role <= min_role.unwrap_or(1)
+    pub fn meets_role(&self, min_role: Option<Role>) -> bool {
+        self.role.meets(min_role.unwrap_or(Role::ADMIN))
     }
 }
 
@@ -675,9 +712,10 @@ impl RunCaller {
 /// Borrowed rather than owned (hence the lifetime): a call is a single `await` on
 /// the driver's stack.
 pub struct TraitContext<'a> {
-    /// The data layer. A trait that touches rows goes through the row layer
-    /// (`sc-api`, above this crate) with [`caller`](TraitContext::caller), rather
-    /// than reaching the driver directly.
+    /// The data layer: the schema, the configuration, the services. A trait
+    /// that touches rows goes through [`scoped`](TraitContext::scoped), with
+    /// [`caller`](TraitContext::caller) bound; the catalog's own rows need an
+    /// `Unchecked` token.
     pub catalog: &'a Catalog,
     /// Who this tool runs as.
     pub caller: &'a RunCaller,
@@ -866,6 +904,26 @@ impl TraitContext<'_> {
 
     /// The engine, or the configuration error that says the server has none.
     ///
+    /// The run's caller as a principal (TODO-code-quality Q3.4): its role, its
+    /// user's fields as the ownership rule renders them
+    /// (`sc_access::principal_at`), and the [`tool_chain`](RunCaller::tool_chain)
+    /// a write made by a tool carries — depth 0, marked untrusted for a run
+    /// whose prompt came from outside the console.
+    pub fn principal(&self) -> sc_catalog::Principal {
+        self.caller.principal()
+    }
+
+    /// The catalog with `principal` — this context's [`principal`](Self::principal)
+    /// — bound: the handle every tool's row read and write goes through, so a
+    /// tool cannot reach a row its caller may not (§7.3's rule for a caller
+    /// below the floor, the row layer for the system and an administrator). The
+    /// user is the run's own, as it was loaded, and the formula engine is this
+    /// context's. On the pool: an agent run is its own unit of durability, so
+    /// its tools' writes commit as they are made (§10.3, decision 6).
+    pub fn scoped<'p>(&'p self, principal: &'p sc_catalog::Principal) -> sc_access::Scoped<'p> {
+        self.caller.scoped(self.catalog, principal, self.evaluator)
+    }
+
     /// Fail closed and fail loudly: a trait that cannot evaluate an ownership
     /// formula must not fall back to reading the rows anyway.
     pub fn require_evaluator(&self) -> Result<&Arc<dyn JsEvaluator>> {
@@ -1018,7 +1076,7 @@ impl<'a> Turn<'a> {
     /// turn answers — or `None` when there is none (AS7.1's `every_message`).
     pub fn user_message(&self) -> Option<&str> {
         self.messages.iter().rev().find_map(|m| match m {
-            sc_llm::LlmMessage::User { content } if !content.trim().is_empty() => {
+            sc_llm::LlmMessage::User { content, .. } if !content.trim().is_empty() => {
                 Some(content.as_str())
             }
             _ => None,
@@ -1050,21 +1108,21 @@ mod tests {
     #[test]
     fn a_system_run_is_admin_with_no_user() {
         let caller = RunCaller::system();
-        assert_eq!(caller.role, 1);
+        assert_eq!(caller.role, Role::ADMIN);
         assert!(caller.user.is_none());
         // A trigger's authority reaches everything a role floor could ask for.
         assert!(caller.meets_role(None));
-        assert!(caller.meets_role(Some(80)));
+        assert!(caller.meets_role(Some(Role::of(80))));
     }
 
     #[test]
     fn an_anonymous_run_is_public_with_no_user() {
         let caller = RunCaller::anonymous();
-        assert_eq!(caller.role, 100);
+        assert_eq!(caller.role, Role::PUBLIC);
         assert!(caller.user.is_none());
         // Only a floor of public is met: anything signed in is out of reach.
-        assert!(caller.meets_role(Some(100)));
-        assert!(!caller.meets_role(Some(80)));
+        assert!(caller.meets_role(Some(Role::PUBLIC)));
+        assert!(!caller.meets_role(Some(Role::of(80))));
         assert!(!caller.meets_role(None));
         // A visitor is somebody, and not a system run.
         assert!(caller.is_anonymous() && caller.untrusted_origin());
@@ -1075,23 +1133,23 @@ mod tests {
 
     #[test]
     fn an_exposed_run_is_its_user_from_an_untrusted_origin() {
-        let admin = User::new(Uuid::new_v4(), 1).unwrap();
+        let admin = User::new(Uuid::new_v4(), Role::ADMIN);
         let caller = RunCaller::exposed(admin.clone());
-        assert_eq!(caller.role, 1);
+        assert_eq!(caller.role, Role::ADMIN);
         assert!(caller.untrusted_origin() && !caller.is_anonymous());
         assert!(!RunCaller::user(admin).untrusted_origin());
     }
 
     #[test]
     fn a_user_run_carries_that_users_role() {
-        let user = User::new(Uuid::new_v4(), 40).unwrap();
+        let user = User::new(Uuid::new_v4(), Role::of(40));
         let caller = RunCaller::user(user);
-        assert_eq!(caller.role, 40);
+        assert_eq!(caller.role, Role::of(40));
         assert!(caller.user.is_some());
         // 40 meets a floor of 80 (roles descend) but not an admin-only agent's.
-        assert!(caller.meets_role(Some(80)));
-        assert!(caller.meets_role(Some(40)));
-        assert!(!caller.meets_role(Some(10)));
+        assert!(caller.meets_role(Some(Role::of(80))));
+        assert!(caller.meets_role(Some(Role::of(40))));
+        assert!(!caller.meets_role(Some(Role::of(10))));
         assert!(!caller.meets_role(None));
     }
 

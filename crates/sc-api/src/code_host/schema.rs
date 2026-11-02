@@ -115,7 +115,7 @@ fn table_json(by_name: &HashMap<&str, &Table>, table: &Table) -> Json {
     let fields: Vec<Json> = table
         .fields
         .iter()
-        .filter(|f| !crate::user_rows::is_hidden_column(table, &f.base.name))
+        .filter(|f| !sc_access::user_rows::is_hidden_column(table, &f.base.name))
         .map(|f| field_json(by_name, table, f))
         .collect();
     json!({
@@ -210,7 +210,7 @@ fn field_json(by_name: &HashMap<&str, &Table>, table: &Table, field: &DataField)
             target_table,
             target_field,
             ..
-        } => Some((target_table.0.as_str(), target_field.0.as_str())),
+        } => Some((target_table.as_str(), target_field.0.as_str())),
         _ => None,
     };
     out.insert(
@@ -275,7 +275,7 @@ fn v1_attributes(field: &DataField) -> Map<String, Json> {
 fn field_type(field: &DataField) -> (Json, String) {
     match &field.kind {
         DataFieldKind::Key { target_table, .. } => {
-            let name = format!("Key to {}", target_table.0);
+            let name = format!("Key to {}", target_table);
             (json!(name), name)
         }
         DataFieldKind::File { .. } => (json!("File"), "File".to_owned()),
@@ -386,6 +386,7 @@ mod tests {
     use crate::graphql::testing::{catalog_of, id_field, physical, plain_field, table_of};
     use sc_catalog::AccessRules;
     use sc_db::PhysicalTable;
+    use sc_types::Role;
 
     /// `books` with an author key and `authors` behind it — the smallest schema
     /// with a foreign key in it.
@@ -566,8 +567,8 @@ mod tests {
     fn a_table_carries_its_ownership_rule_both_ways_it_can_be_read() {
         let mut table = table_of("notes", vec![id_field(), plain_field("body")]);
         table.access = AccessRules {
-            min_role_read: 40,
-            min_role_write: 20,
+            min_role_read: Role::of(40),
+            min_role_write: Role::of(20),
         };
         table.label = "Notes".to_owned();
         table.description = "what somebody wrote down".to_owned();

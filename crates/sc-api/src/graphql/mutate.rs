@@ -3,7 +3,7 @@
 //! Each is a **thin call** into the row layer's own write path — that is the
 //! whole design. `ownership::insert_row_as` / `update_row_as` / `delete_row_as`
 //! are the same entry points the agent's write tools use (§11.3), and they in
-//! turn go through `rows::create_row_ctx` / `update_row_guarded` /
+//! turn go through `rows::create_row` / `update_row_guarded` /
 //! `delete_row_guarded`, so a rich type's attribute rule, a `File` field's store
 //! and folder checks, §7.3's "granted on the existing row *and* on the row as it
 //! would become", RLS's `WITH CHECK` and the table's triggers all fire for a
@@ -47,9 +47,9 @@ use super::args;
 use super::context::{RequestContext, request_context};
 use super::errors;
 use super::resolve::{self, Resolver, RowValue};
-use crate::convert::value_to_json;
-use crate::ownership;
-use crate::rows;
+use sc_access::ownership;
+use sc_access::rows;
+use sc_types::value_to_json;
 
 /// `insert_X(object: …)` — the row to write.
 pub const ARG_OBJECT: &str = "object";

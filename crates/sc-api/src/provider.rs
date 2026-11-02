@@ -17,7 +17,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use sc_auth::User;
-use sc_catalog::Catalog;
+use sc_catalog::{Catalog, PublicBaseUrl};
 use sc_error::Result;
 use serde_json::Value as Json;
 use std::sync::Arc;
@@ -81,13 +81,15 @@ pub struct ApiRequest {
 /// which applications it serves and under what host. A trait, so `sc-api`
 /// needs neither the router's types nor `sc-app`'s.
 pub trait AppDirectory: Send + Sync {
-    /// The origin (`scheme://host[:port]`) the request arrived at.
-    fn own_origin(&self) -> String;
+    /// The origin (`scheme://host[:port]`) the request arrived at — `None`
+    /// when its host is not one the router matched against the hosts it
+    /// serves (TODO-code-quality Q4.2).
+    fn own_origin(&self) -> Option<PublicBaseUrl>;
 
     /// The origin the application served on `subdomain` has, reached the way
     /// this request reached its own — or `None` when no application is served
     /// there.
-    fn app_origin(&self, subdomain: &str) -> Option<String>;
+    fn app_origin(&self, subdomain: &str) -> Option<PublicBaseUrl>;
 }
 
 /// An [`AppDirectory`] as a request carries it.
@@ -100,7 +102,7 @@ pub struct AppLinks(pub Arc<dyn AppDirectory>);
 impl std::fmt::Debug for AppLinks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("AppLinks")
-            .field(&self.0.own_origin())
+            .field(&self.0.own_origin().map(String::from))
             .finish()
     }
 }
@@ -215,6 +217,23 @@ pub enum SessionAction {
     /// *swap*: the admin session that authorised it does not stay live behind
     /// the one it turned into.
     Start(User),
+    /// [`Start`](SessionAction::Start) a session whose browser cookie ends
+    /// when the browser closes, whatever Settings → Authentication says: a
+    /// sign-in that left "Remember me" unticked (`remember: false`), on a
+    /// computer that is not the person's own. The session itself lasts as
+    /// long as any other.
+    StartUntilBrowserCloses(User),
+    /// [`Start`](SessionAction::Start) a session **past the second factor**
+    /// (design §7.2): one the transport starts as it is, never stopping it to
+    /// ask for a code. For a sign-in that has given its code already, and for
+    /// the few that never ask — an admin becoming a user, the first user of a
+    /// new installation. `remember` is the sign-in's "Remember me".
+    StartVerified {
+        /// The user the session is for.
+        user: User,
+        /// `false`: the browser cookie ends with the browser.
+        remember: bool,
+    },
     /// End the current session (logout): drop the token.
     End,
     /// End **every** session belonging to this user, whoever is asking.
@@ -237,6 +256,28 @@ pub enum SessionAction {
         /// so a basket survives the browser being closed.
         max_age_secs: i64,
     },
+}
+
+impl SessionAction {
+    /// Start a session for `user`, remembered across a browser restart as
+    /// Settings allow (`remember`), or ending with the browser (`!remember`).
+    pub fn start(user: User, remember: bool) -> SessionAction {
+        if remember {
+            SessionAction::Start(user)
+        } else {
+            SessionAction::StartUntilBrowserCloses(user)
+        }
+    }
+
+    /// The user a session would be started for, whichever kind of start it is.
+    pub fn starts(&self) -> Option<&User> {
+        match self {
+            SessionAction::Start(user)
+            | SessionAction::StartUntilBrowserCloses(user)
+            | SessionAction::StartVerified { user, .. } => Some(user),
+            _ => None,
+        }
+    }
 }
 
 /// A raw-bytes response body — a file download — with the content type the
@@ -355,6 +396,15 @@ impl ApiResponse {
             file: None,
             session: SessionAction::Start(user),
             headers: Vec::new(),
+        }
+    }
+
+    /// [`start_session`](ApiResponse::start_session), honouring a sign-in's
+    /// "Remember me" ([`crate::auth::remember`] of its body).
+    pub fn start_session_remembering(user: User, body: Json, remember: bool) -> ApiResponse {
+        ApiResponse {
+            session: SessionAction::start(user, remember),
+            ..ApiResponse::ok(body)
         }
     }
 

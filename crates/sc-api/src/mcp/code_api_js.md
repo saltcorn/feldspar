@@ -92,9 +92,11 @@ return response({ status: 201, headers: { "x-id": id }, body: { id } });
 ```
 
 `httpError` takes 400–599. `response` takes 200–599 and any header except the ones the server
-owns (`set-cookie`, the CSP, framing, `content-type` on a JSON body, …), which it refuses. **Any other throw is
-a 500** `{ "error": "internal error", "id": "…" }` to callers who are not admins — the query
-name and stack go to the server log under that id, and to admin callers. A body stopped by its
+owns (`set-cookie`, the CSP, framing, `content-type` on a JSON body, …), which it refuses. **A refusal the body
+did not catch** — a table, file or trigger the caller may not use — **is a 403**
+``{ "error": "you may not read `t`", "id": "…" }``. **Any other throw is a 500**
+`{ "error": "internal error", "id": "…" }` to callers who are not admins — the query name and
+stack go to the server log under that id, and to admin callers. A body stopped by its
 timeout, its slice or the heap is a 503 `{ "error": "timeout" }`.
 
 **Bytes and files out.** A `Uint8Array` body is served raw under the `content-type` you name.
@@ -119,19 +121,39 @@ decides the rest — on every request, so each Range request of a video re-check
 ```js
 // GET /share, params token (text) and password (text, optional), min_role 100, response_type bytes
 ratelimit.check("share:" + query.token, { max: 5, window: "15m" }); // 6th try in 15 min: 429
-const share = await db.shares.where({ token: query.token }).first();
+// The token and password are the check, so the share and its file are read as the server:
+// whoever holds the link may read neither themselves.
+const share = await db.asAdmin().shares.where({ token: query.token }).first();
 if (!share) throw httpError(404, "no such share");
 if (!(await crypto.password.verify(query.password ?? "", share.password_hash))) {
   throw httpError(403, "wrong password");
 }
-return response({ file: fs("files").open(share.path), filename: share.original_name,
+return response({ file: fs("files").asAdmin().open(share.path), filename: share.original_name,
                   download: true, headers: { "cache-control": "private, no-store" } });
 ```
 
 A password in a URL lands in logs and history; where that matters, POST the password to a query
-that stores a short-lived token in a table and have the GET take the token. A handle opened with
-`fs(s).asUser()` is also checked against the caller when served (a file they may not read is a
-404); one opened as the default admin is not — the query's own code is the check.
+that stores a short-lived token in a table and have the GET take the token. A handle opened as the
+caller — the default in a query, or `fs(s).asUser()` — is also checked against the caller when
+served (a file they may not read is a 404); one opened with `fs(s).asAdmin()` is not — the
+query's own code is the check.
+
+**The owner rule, under the caller's authority.** A file's recorded owner may always read it,
+and so may anyone whose role clears the `minRole` of the store, the file and every folder on its
+path. The owner grants access; it hides nothing. A file with an owner and no `minRole` is
+readable by everyone, so a private upload is `minRole: 1` plus its owner. Writes are stricter:
+a file with an owner can be overwritten, deleted, moved or have its metadata changed **only by
+its owner** or by `asAdmin()` code, whatever its `minRole`. Deleting a folder that holds another
+user's file is refused the same way. A file with no owner follows the `minRole` rule for writes
+too.
+
+A write or `mkdir` as the caller records the caller as the owner when the file has none yet. So
+the first user to write a file through a query owns it from then on: a settings file several
+users update, or a project folder its members upload into, then refuses everyone else's writes
+and deletes (`not permitted to access "<path>" in file store <store>`). Write and delete files
+that several users share with `fs(s).asAdmin()`, after the query has checked who may: a write as
+admin records no owner, so the file stays nobody's. (A file left with no owner is claimed by the
+next caller who writes it, so every write to it must be as admin, not only the first.)
 
 An upload slot's **hook** is a code query too (a POST is best). It runs before an upload is
 accepted, with `body = { filename, size, mime, slot }` and `user` the uploader; throw
@@ -241,9 +263,34 @@ id: { in: [1, 2] } }`, operators `eq ne gt gte lt lte in nin like ilike is_null`
 Joins ride in a read: `"customerⱵemail"` is a column of the row a key field points at, and
 `{ n: "remindersↃinvoice.length" }` in `.select()` counts child rows.
 
-Writes go through the row layer: they are validated, coerced, checked against ownership under
-`.asUser()`, and **fire the table's own triggers**. Reads and writes run as the server by
-default; `.asUser()` (on `db`, a table or one query) runs them as the event's user.
+Writes go through the row layer: they are validated, coerced, checked against ownership when
+they run as a user, and **fire the table's own triggers**.
+
+**Whose authority.** In a **custom query** `db`, `fs`, `models` and `trigger(...)` act **as the
+caller** by default: the table's role rules and ownership formula decide every row exactly as on
+the row API. A row the ownership formula keeps from the caller is simply absent; a table below
+the caller's read floor (admin-only unless its roles say otherwise) is refused outright — the
+call throws ``you may not read `t` ``, and a query that lets that escape answers **403** with that
+message. `.asAdmin()` (on `db`, a table, one query, a store, a model or a trigger) acts as the
+server instead — every row, no rules — so use it only where the query must, and never on a
+value the caller chose without checking it. In a **trigger** (and a server-rendered page) the
+default is the other way round: it acts as the server, and `.asUser()` acts as the event's
+user.
+
+**Each handle has its own authority.** `db.asAdmin()` covers `db` and nothing else: `fs(...)`,
+`models` and `trigger(...)` still act as the caller, so `trigger("notify_admin").run()` after
+`db = db.asAdmin()` is still checked against that trigger's `min_role` (admin-only when it has
+none). Each needs its own `.asAdmin()`. A query whose every access is the server's switches each one:
+
+```js
+db = db.asAdmin();                                         // the whole db handle
+const store = fs("uploads").asAdmin();                     // a store handle
+await trigger("notify_admin").asAdmin().run({ id });       // a trigger handle
+const m = (await models.get("churn")).asAdmin();           // a model handle (its write-backs)
+```
+
+A `try { … } catch {}` around one of these hides a refusal completely, so test a query as a
+non-admin user with the role real users have; as admin every check passes.
 
 For what the chain cannot say, raw SQL with `$1` binds, answering the rows:
 
@@ -298,8 +345,9 @@ On any other model, `draws`, `summary`, `variables` and `writePosterior` are abs
 reaching one throws a sentence saying what the model is. A posterior does not `predict` rows:
 read its draws and compute the prediction.
 
-`writePosterior` writes the way `db` does: as the trigger by default, or as the event's user
-with `r.asUser().writePosterior(…)`. Either way, ownership is checked and the target table's
+`writePosterior` writes the way `db` does: as the run's default authority (the server in a
+trigger, the caller in a query), or explicitly with `r.asUser().writePosterior(…)` /
+`r.asAdmin().writePosterior(…)`. Either way, ownership is checked and the target table's
 triggers fire.
 
 `keys` picks positions of the first axis by key or label. `elements` is the general form:
@@ -364,6 +412,13 @@ const me = requireUser();
   with **the importing run's own** `db`, `fs`, `fetch`, `trigger`, `modfn`, `live`, `console`
   and `user`, so it can do no more than the code that imported it. Nothing carries over from
   one run to the next.
+- That is the run's handle, **not the importing code's variable**: `db = db.asAdmin()` in a
+  query rebinds its own `db` and does not reach a library it imports, whose `db` still acts as
+  the caller. A library that must read as the server says `.asAdmin()` itself — or, clearer,
+  takes the handle as an argument (`ownShare(db.asAdmin(), token)`). A library whose every
+  access is the server's may rebind its own handle at its top level (`db = db.asAdmin();`); that
+  holds for this run's import of it, and for nobody else. As in a query, it covers `db` only:
+  `fs`, `trigger` and the model handles need their own `.asAdmin()`.
 - Names resolve to the application's own library first, then the instance-wide one. A trigger
   belongs to no application and sees instance-wide libraries only.
 - A library may `lib()` another; a cycle throws naming the chain (`a → b → a`).

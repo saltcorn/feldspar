@@ -15,14 +15,11 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, ServerConfig, admin_handlers, build_router,
-};
-use sc_test_harness::TestDb;
+use sc_server::{AppMounts, SESSION_COOKIE, ServerConfig, admin_handlers, build_router};
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -104,40 +101,160 @@ impl Client {
 /// client that drives it. The users table is bootstrapped so auth works. The
 /// returned [`TestDb`] must be kept in scope: dropping it deletes the database.
 async fn setup() -> sc_error::Result<(Client, TestDb)> {
-    let db = TestDb::new().await?;
+    let (client, db, _) = setup_with_catalog().await?;
+    Ok((client, db))
+}
 
-    // The multi-tenant v1 test template carries `users` tables in several
-    // schemas; drop them all so bootstrap creates the clean MVP table. No-op in
-    // clean CI.
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+/// [`setup`], also handing back the catalog, with the configuration table
+/// bootstrapped so a test can store settings before the first request.
+async fn setup_with_catalog() -> sc_error::Result<(Client, TestDb, Arc<Catalog>)> {
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
+    sc_config::bootstrap(&catalog).await?;
 
     let sessions = Arc::new(SessionStore::default());
     let apps = Arc::new(AppMounts::new(catalog.clone()));
     let router = build_router(
         &sc_api::admin_endpoints(),
-        admin_handlers(catalog, apps),
+        admin_handlers(catalog.clone(), apps),
         sessions,
         &ServerConfig::default(),
     )?;
 
-    Ok((Client::new(router), db))
+    Ok((Client::new(router), db, catalog))
+}
+
+/// An installation given a first-user token before it first served (what a
+/// hosting control panel does with `feldspar set-cfg first_user_token …`) is
+/// claimed only with that token: the status says so, a create without it or with
+/// a wrong one is refused `403` and creates nobody, and the right one creates
+/// the admin. Once there is a user the token no longer matters.
+#[tokio::test]
+async fn a_first_user_token_is_needed_to_create_the_first_user() -> sc_error::Result<()> {
+    let (mut client, _db, catalog) = setup_with_catalog().await?;
+    sc_config::set_config(&catalog, sc_config::FIRST_USER_TOKEN, json!("s3cret-setup")).await?;
+
+    let (_, body) = client.send("GET", "/api/auth/status", None).await;
+    assert_eq!(body["any_user_exists"], json!(false));
+    assert_eq!(body["first_user_token_required"], json!(true), "{body}");
+
+    let credentials = |token: Option<&str>| {
+        let mut body = json!({ "email": "admin@example.com", "password": "hunter2pass" });
+        if let Some(token) = token {
+            body["token"] = json!(token);
+        }
+        Some(body)
+    };
+    for token in [None, Some("wrong"), Some(""), Some("s3cret-setup-and-more")] {
+        let (status, body) = client
+            .send("POST", "/api/first-user", credentials(token))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{token:?}: {body}");
+        assert!(
+            body["error"].as_str().unwrap_or("").contains("setup link"),
+            "{body}"
+        );
+        assert!(!client.cookies.contains_key(SESSION_COOKIE));
+    }
+    assert!(!sc_auth::any_user_exists(&catalog).await?);
+
+    let (status, body) = client
+        .send("POST", "/api/first-user", credentials(Some("s3cret-setup")))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["role"], json!(1));
+    assert!(client.cookies.contains_key(SESSION_COOKIE));
+
+    let (_, body) = client.send("GET", "/api/auth/status", None).await;
+    assert_eq!(body["any_user_exists"], json!(true));
+    assert_eq!(body["first_user_token_required"], json!(false), "{body}");
+    Ok(())
+}
+
+/// Without a token, the first user is created as before, and the status says
+/// none is needed.
+#[tokio::test]
+async fn without_a_first_user_token_anyone_may_create_the_first_user() -> sc_error::Result<()> {
+    let (mut client, _db, _catalog) = setup_with_catalog().await?;
+    let (_, body) = client.send("GET", "/api/auth/status", None).await;
+    assert_eq!(body["first_user_token_required"], json!(false), "{body}");
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/first-user",
+            Some(json!({ "email": "admin@example.com", "password": "hunter2pass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    Ok(())
+}
+
+/// Settings → System: the build's version, the database it runs on, and the
+/// process's readings — for an admin only. (`restartServer` is not called: it
+/// would exit this test binary.)
+#[tokio::test]
+async fn the_system_tab_names_the_version_and_the_database() -> sc_error::Result<()> {
+    let (mut client, _db) = setup().await?;
+    let (status, _) = client.send("GET", "/api/system", None).await;
+    assert!(
+        status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
+        "anonymous: {status}"
+    );
+
+    let (status, body) = client
+        .send(
+            "POST",
+            "/api/first-user",
+            Some(json!({ "email": "admin@example.com", "password": "hunter2pass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = client.send("GET", "/api/system", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["version"], json!(env!("CARGO_PKG_VERSION")));
+    // A test build is not stamped by the release script.
+    assert_eq!(body["commit"], Value::Null, "{body}");
+    assert_eq!(body["build_time"], Value::Null, "{body}");
+    assert_eq!(body["version_line"], json!(sc_server::version_line()));
+    assert_eq!(body["database"]["product"], json!("PostgreSQL"), "{body}");
+    let version = body["database"]["version"].as_str().unwrap_or_default();
+    assert!(
+        version.chars().next().is_some_and(|c| c.is_ascii_digit()),
+        "the bare server version: {body}"
+    );
+    assert_eq!(body["pid"], json!(std::process::id()));
+    assert!(
+        body["started_at"].as_str().is_some_and(|t| t.contains('T')),
+        "{body}"
+    );
+    assert!(body["uptime_seconds"].as_u64().is_some(), "{body}");
+    #[cfg(target_os = "linux")]
+    {
+        assert!(
+            body["memory"]["process_bytes"]
+                .as_u64()
+                .is_some_and(|b| b > 0),
+            "{body}"
+        );
+        let cpu = &body["cpu"];
+        assert!(cpu["cores"].as_u64().is_some_and(|c| c >= 1), "{body}");
+        assert!(
+            cpu["system_percent"]
+                .as_f64()
+                .is_some_and(|p| (0.0..=100.0).contains(&p)),
+            "{body}"
+        );
+        assert!(
+            body["disk"]["total_bytes"].as_u64().is_some_and(|b| b > 0),
+            "{body}"
+        );
+    }
+    Ok(())
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn full_admin_api_story() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;
 

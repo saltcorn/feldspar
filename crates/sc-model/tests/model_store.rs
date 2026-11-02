@@ -334,7 +334,9 @@ async fn a_mangled_column_is_reported_and_not_defaulted() -> Result<()> {
         vec![Assignment::new("table_name".to_owned(), Expr::lit("flats"))],
     )
     .filter(Expr::col("id").eq(Expr::Lit(Value::Uuid(model.id.0))));
-    cat.primary().query(&Statement::from(update)).await?;
+    cat.primary(sc_catalog::Unchecked::system("test"))
+        .query(&Statement::from(update))
+        .await?;
 
     let err = list_models(&cat).await.err().unwrap().to_string();
     assert!(err.contains("house prices"), "{err}");
@@ -354,7 +356,9 @@ async fn a_mangled_column_is_reported_and_not_defaulted() -> Result<()> {
         ],
     )
     .filter(Expr::col("id").eq(Expr::Lit(Value::Uuid(model.id.0))));
-    cat.primary().query(&Statement::from(update)).await?;
+    cat.primary(sc_catalog::Unchecked::system("test"))
+        .query(&Statement::from(update))
+        .await?;
 
     let err = list_models(&cat).await.err().unwrap().to_string();
     assert!(
@@ -563,7 +567,9 @@ async fn an_instance_with_an_unreadable_status_is_refused_rather_than_guessed_at
         vec![Assignment::new("status".to_owned(), Expr::lit("done"))],
     )
     .filter(Expr::col("id").eq(Expr::Lit(Value::Uuid(instance.id.0))));
-    cat.primary().query(&Statement::from(update)).await?;
+    cat.primary(sc_catalog::Unchecked::system("test"))
+        .query(&Statement::from(update))
+        .await?;
 
     // "Probably failed" and "probably fitted" differ in whether this row may
     // serve a prediction, so neither is guessed.
@@ -762,7 +768,7 @@ async fn an_existing_models_table_gains_the_related_column_on_boot() -> Result<(
 
     // An installation from before related datasets: the column is not there,
     // and the table has rows.
-    cat.primary()
+    cat.primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::raw(
             r#"ALTER TABLE "_fd_models" DROP COLUMN "related""#,
             Vec::new(),

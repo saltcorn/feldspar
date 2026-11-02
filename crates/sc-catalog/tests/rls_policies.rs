@@ -7,10 +7,11 @@
 //! that `run_in_context` sets the GUCs a policy reads.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_catalog::{
-    CallerContext, Catalog, DataFieldKind, FieldMeta, TableMeta, bootstrap_field_meta,
+    Catalog, DataFieldKind, FieldMeta, Principal, TableMeta, bootstrap_field_meta,
     bootstrap_table_meta, disable_rls, enable_rls, run_in_context, save_field_meta,
     save_table_meta,
 };
@@ -126,23 +127,38 @@ async fn run_in_context_sets_the_caller_gucs_a_policy_reads() -> Result<()> {
     ));
 
     // Alice's context: only her row is visible through the SELECT policy.
-    let alice = CallerContext::new(
-        80,
+    let alice = Principal::new(
+        Role::of(80),
         Some(serde_json::json!({ "email": "alice@example.com" })),
     );
-    let rows = run_in_context(&catalog, &alice, &select).await?;
+    let rows = run_in_context(
+        &catalog,
+        sc_catalog::Unchecked::vouched(&alice, "test"),
+        &select,
+    )
+    .await?;
     assert_eq!(rows.len(), 1);
 
     // An admin context (role 1) clears the role floor and sees both rows even
     // though the table is FORCE'd.
-    let admin = CallerContext::anonymous(1);
-    let rows = run_in_context(&catalog, &admin, &select).await?;
+    let admin = Principal::anonymous(Role::ADMIN);
+    let rows = run_in_context(
+        &catalog,
+        sc_catalog::Unchecked::vouched(&admin, "test"),
+        &select,
+    )
+    .await?;
     assert_eq!(rows.len(), 2);
 
     // An anonymous context (role 100, no user) sees nothing — the policy fails
     // closed when the user GUC is unset.
-    let anon = CallerContext::anonymous(100);
-    let rows = run_in_context(&catalog, &anon, &select).await?;
+    let anon = Principal::anonymous(Role::PUBLIC);
+    let rows = run_in_context(
+        &catalog,
+        sc_catalog::Unchecked::vouched(&anon, "test"),
+        &select,
+    )
+    .await?;
     assert!(rows.is_empty());
     Ok(())
 }

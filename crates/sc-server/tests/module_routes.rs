@@ -15,14 +15,15 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_action::TriggerDispatcher;
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_app::{Application, AssetBundle, CodeFramework, FrameworkRef};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ModuleServices, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_agents, install_triggers,
+    AppMounts, ModuleServices, MountedApp, ServerConfig, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_agents, install_triggers,
 };
 use sc_test_harness::TestDb;
 use serde_json::{Value, json};
@@ -44,28 +45,28 @@ fn have_npm() -> bool {
 }
 
 /// One answer: the status, the headers and the body as text.
-struct Answer {
-    status: StatusCode,
+pub(crate) struct Answer {
+    pub(crate) status: StatusCode,
     headers: axum::http::HeaderMap,
-    text: String,
+    pub(crate) text: String,
 }
 
 impl Answer {
-    fn json(&self) -> Value {
+    pub(crate) fn json(&self) -> Value {
         serde_json::from_str(&self.text).unwrap_or(Value::Null)
     }
 }
 
 /// A caller: a browser that keeps its cookies (and sends their CSRF token), or
 /// one that never has any.
-struct Client {
+pub(crate) struct Client {
     router: Router,
     cookies: HashMap<String, String>,
     keeps_cookies: bool,
 }
 
 impl Client {
-    async fn send(
+    pub(crate) async fn send(
         &mut self,
         method: &str,
         path: &str,
@@ -123,16 +124,16 @@ impl Client {
     }
 }
 
-struct Server {
-    admin: Client,
+pub(crate) struct Server {
+    pub(crate) admin: Client,
     router: Router,
-    catalog: Arc<Catalog>,
+    pub(crate) catalog: Arc<Catalog>,
     dispatcher: Arc<TriggerDispatcher>,
     root: PathBuf,
     apps: Arc<AppMounts>,
     _modules: Arc<ModuleServices>,
     _db: TestDb,
-    _registries: tokio::sync::RwLockReadGuard<'static, ()>,
+    _registries: Option<tokio::sync::RwLockReadGuard<'static, ()>>,
 }
 
 impl Server {
@@ -153,9 +154,19 @@ impl Drop for Server {
 }
 
 async fn setup() -> sc_error::Result<Server> {
+    let registries = crate::module_registries().read().await;
+    let mut server = setup_unlocked().await?;
+    server._registries = Some(registries);
+    Ok(server)
+}
+
+/// [`setup`] for a caller that holds [`crate::module_registries`] itself — for
+/// writing, to keep the registries this server installs.
+pub(crate) async fn setup_unlocked() -> sc_error::Result<Server> {
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
@@ -170,7 +181,6 @@ async fn setup() -> sc_error::Result<Server> {
         std::process::id(),
         uuid::Uuid::new_v4()
     ));
-    let registries = crate::module_registries().read().await;
     let modules = ModuleServices::install(
         &catalog,
         &dispatcher,
@@ -227,13 +237,14 @@ async fn setup() -> sc_error::Result<Server> {
         apps,
         _modules: modules,
         _db: db,
-        _registries: registries,
+        _registries: None,
     })
 }
 
 const BASE: &str = "/_feldspar/routes/routes";
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_modules_routes_are_served_on_the_admin_host_as_whoever_calls() -> sc_error::Result<()> {
     if !have_npm() {
         eprintln!("skipping: npm is not on the PATH");

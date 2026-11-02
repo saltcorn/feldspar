@@ -125,7 +125,7 @@ pub async fn updated_at_by(
     }
     let select = Select::from(Source::table(table));
     let rows: Vec<sc_db::Row> = catalog
-        .primary()
+        .primary_driver()
         .query(&Statement::from(select))
         .await?
         .try_collect()
@@ -148,7 +148,7 @@ pub async fn updated_at_by(
 
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary_driver()
         .query(&statement)
         .await?
         .try_collect()

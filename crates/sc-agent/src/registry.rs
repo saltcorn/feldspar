@@ -35,7 +35,7 @@ pub struct AgentRegistry {
 impl AgentRegistry {
     /// An empty registry.
     ///
-    /// `sc_core_traits::builtin_traits()` fills one with the core set, a plugin
+    /// `sc_agent_builtins::builtin_traits()` fills one with the core set, a plugin
     /// adds its own, and a test starts from one with just the trait it is about.
     /// This crate registers **nothing** itself: it defines what a trait *is*, and
     /// an empty-but-named constructor pretending to be the built-in set is

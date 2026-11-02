@@ -88,7 +88,7 @@ pub enum TlsSettings {
         /// The PEM chain: server certificate first, then intermediates.
         certificate: String,
         /// The PEM private key (PKCS#8, PKCS#1 or SEC1).
-        private_key: String,
+        private_key: sc_error::Secret<String>,
         /// The port TLS is served on.
         port: u16,
         /// Whether the plain-HTTP listener redirects here.
@@ -180,9 +180,11 @@ impl TlsSettings {
     ) -> Result<TlsSettings> {
         settings.check()?;
         match settings.mode {
-            SslMode::Off => Ok(TlsSettings::Off),
+            // The proxy in front holds the certificates; this process speaks
+            // plain HTTP to it.
+            SslMode::Off | SslMode::Proxy => Ok(TlsSettings::Off),
             SslMode::Custom => {
-                check_certificate(&settings.certificate, &settings.private_key)?;
+                check_certificate(&settings.certificate, settings.private_key.expose())?;
                 Ok(TlsSettings::Custom {
                     certificate: settings.certificate.clone(),
                     private_key: settings.private_key.clone(),
@@ -377,7 +379,7 @@ pub async fn serve_https(
             private_key,
             ..
         } => {
-            let config = certificate_config(certificate, private_key)?;
+            let config = certificate_config(certificate, private_key.expose())?;
             let acceptor = RustlsAcceptor::new(RustlsConfig::from_config(Arc::new(config)));
             axum_server::from_tcp(listener)
                 .map_err(|e| Error::msg(format!("serving TLS: {e}")))?
@@ -1090,6 +1092,18 @@ mod tests {
     fn tls_off_is_the_default_and_serves_nothing_extra() {
         let plan =
             TlsSettings::from_ssl(&settings(SslMode::Off), 443, TlsNames::default(), None).unwrap();
+        assert!(!plan.enabled());
+        assert_eq!(plan.port(), None);
+        assert!(!plan.redirect_http());
+    }
+
+    /// Behind a proxy there is nothing to certify and no CA to ask, even with
+    /// domains known and an ACME cache at hand.
+    #[test]
+    fn proxy_mode_serves_plain_http_and_starts_no_acme() {
+        let names = TlsNames::new(Some("example.com".to_owned()), Vec::new(), Vec::new());
+        let plan = TlsSettings::from_ssl(&settings(SslMode::Proxy), 443, names, None).unwrap();
+        assert!(matches!(plan, TlsSettings::Off));
         assert!(!plan.enabled());
         assert_eq!(plan.port(), None);
         assert!(!plan.redirect_http());

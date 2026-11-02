@@ -5,7 +5,7 @@
 //! introspect it from — so its row *is* its definition, as a file store's is.
 //! It lives in `sc-catalog` rather than `sc-app`, although a library may belong
 //! to an application, because the **reader** is here: every code body is run
-//! over a [`Catalog`] (`sc-core-actions`' hosts), and the set it may import is
+//! over a [`Catalog`] (`sc-action-builtins`' hosts), and the set it may import is
 //! the catalog's to hand over ([`Catalog::code_libraries_for`]).
 //!
 //! # The loaded set
@@ -386,7 +386,7 @@ fn bad(column: &str, expected: &str) -> Error {
 
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary_driver()
         .query(&statement)
         .await?
         .try_collect()
@@ -396,7 +396,7 @@ async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
 
 async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary_driver()
         .query(&Statement::from(select))
         .await?
         .try_collect()

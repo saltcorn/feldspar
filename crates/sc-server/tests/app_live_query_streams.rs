@@ -26,6 +26,8 @@
 //! - over HTTP the query is a 400.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::{Socket, next_frame, send};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -36,11 +38,10 @@ use axum::body::Body;
 use axum::http::{HeaderValue, Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use futures::{SinkExt, StreamExt};
 use sc_api::{CustomParam, CustomQuery, Method, QueryLanguage, QueryRateLimit, ResponseType};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, StreamRef};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, Role, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, DataField, FieldMeta, TableId, save_field_meta};
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
+use sc_catalog::{Catalog, DataField, FieldMeta, save_field_meta};
 use sc_db::{ColumnGenerator, DatabaseDriver};
 use sc_db_sqlite::SqliteDriver;
 use sc_error::Result;
@@ -48,9 +49,9 @@ use sc_live::{CollabDoc, DocShape, LiveLimits, RootKind};
 use sc_stream::{
     Document, Internal, Stream, StreamConfig, StreamProvider, StreamRegistry, save_stream,
 };
+use sc_test_harness::Teardown;
 use sc_types::{BasicType, TypeRef};
 use serde_json::{Value, json};
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -60,15 +61,13 @@ const APP_HOST: &str = "notes.example.com";
 const ADMIN: &str = "admin@example.com";
 const ALICE: &str = "alice@example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_MEMBER: u8 = 40;
-
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+const ROLE_MEMBER: Role = Role::of(40);
 
 /// The query a share link is opened with: the token decides the row and the
 /// mode, the page's flags only which of the app's streams it is asked for.
 const OPEN_NOTE: &str = r#"
-const link = await db.share_links.where({ token: body.token }).first();
+// The token is the check: whoever holds it may not read `share_links` themselves.
+const link = await db.asAdmin().share_links.where({ token: body.token }).first();
 if (!link || link.mode === "expired") return null;
 const stream = body.cursor ? "note_cursor" : body.hidden ? "hidden_doc" : "note_body";
 return live.stream(stream, link.note, { write: link.mode === "edit" });
@@ -97,9 +96,9 @@ impl Client {
             builder = builder.header(header::COOKIE, jar);
         }
         if method != "GET"
-            && let Some(csrf) = self.cookies.get(sc_server::CSRF_COOKIE)
+            && let Some(csrf) = self.cookies.get(sc_api::auth::CSRF_COOKIE)
         {
-            builder = builder.header(sc_server::CSRF_HEADER, csrf);
+            builder = builder.header(sc_api::auth::CSRF_HEADER, csrf);
         }
         let request = match body {
             Some(ref b) => builder
@@ -165,7 +164,7 @@ struct Server {
 }
 
 /// A directory removed when the test ends.
-struct Scratch(std::path::PathBuf);
+struct Scratch(std::path::PathBuf, Teardown);
 
 impl Drop for Scratch {
     fn drop(&mut self) {
@@ -220,14 +219,25 @@ impl Server {
         };
         match mode {
             Some(mode) => {
-                sc_api::rows::update_row(&self.catalog, &links, id, &json!({ "mode": mode }))
-                    .await
-                    .unwrap();
+                sc_access::rows::update_row(
+                    &self.catalog,
+                    &links,
+                    id,
+                    &json!({ "mode": mode }),
+                    sc_catalog::Unchecked::system("test"),
+                )
+                .await
+                .unwrap();
             }
             None => {
-                sc_api::rows::delete_row(&self.catalog, &links, id)
-                    .await
-                    .unwrap();
+                sc_access::rows::delete_row(
+                    &self.catalog,
+                    &links,
+                    id,
+                    sc_catalog::Unchecked::system("test"),
+                )
+                .await
+                .unwrap();
             }
         }
     }
@@ -262,7 +272,7 @@ fn queries() -> Vec<CustomQuery> {
             .language(QueryLanguage::Javascript)
             .params([CustomParam::new("token", sc_api::ValueType::Text)])
             .response_type(ResponseType::Stream)
-            .min_role(ROLE_PUBLIC)
+            .min_role(Role::PUBLIC)
             .rate_limit(QueryRateLimit {
                 per_ip: Some("6/min".to_owned()),
                 per_user: None,
@@ -270,7 +280,7 @@ fn queries() -> Vec<CustomQuery> {
         // A JSON query: opening it is the same refusal as a misspelt one.
         CustomQuery::new("hello", Method::Get, "/hello", "return 1;")
             .language(QueryLanguage::Javascript)
-            .min_role(ROLE_PUBLIC),
+            .min_role(Role::PUBLIC),
     ]
 }
 
@@ -279,8 +289,8 @@ fn app() -> Application {
     sc_api::set_custom_queries(&mut api.config, &queries()).unwrap();
     Application::new("Notes", "notes", FrameworkRef::new("code"))
         .with_api(api)
-        .with_table(TableId("notes".to_owned()))
-        .with_table(TableId("share_links".to_owned()))
+        .with_table("notes".to_owned())
+        .with_table("share_links".to_owned())
         .with_stream(StreamRef::new("note_body"))
         .with_stream(StreamRef::new("note_cursor"))
 }
@@ -296,11 +306,16 @@ fn limits() -> LiveLimits {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn setup() -> Result<Server> {
-    let dir = Scratch(std::env::temp_dir().join(format!("sc-live-query-{}", Uuid::new_v4())));
+    let dir = Scratch(
+        std::env::temp_dir().join(format!("sc-live-query-{}", Uuid::new_v4())),
+        Teardown::new(),
+    );
     std::fs::create_dir_all(&dir.0).unwrap();
     let driver = Arc::new(SqliteDriver::open(dir.0.join("notes.db"))?);
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    dir.1.add(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;
@@ -340,8 +355,8 @@ async fn setup() -> Result<Server> {
         &FieldMeta::new("notes", "body").rich_type(sc_types::COLLAB_DOC),
     )
     .await?;
-    save_role(&catalog, &Role::new(ROLE_MEMBER, "Member")).await?;
-    create_user(&catalog, ADMIN, PASSWORD, ROLE_ADMIN).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
+    create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
     let alice = create_user(&catalog, ALICE, PASSWORD, ROLE_MEMBER).await?;
 
     let evaluator = sc_server::default_js_evaluator();
@@ -410,12 +425,13 @@ async fn setup() -> Result<Server> {
         addr,
         _dir: dir,
     };
-    let owner = alice.id.hyphenated().to_string();
+    let owner = alice.id().hyphenated().to_string();
     let notes = catalog.require("notes")?;
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         &catalog,
         &notes,
         &json!({ "id": 1, "title": "Plans", "owner": owner }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     let links = catalog.require("share_links")?;
@@ -424,10 +440,11 @@ async fn setup() -> Result<Server> {
         (2, "read-token", "read"),
         (3, "stale-token", "expired"),
     ] {
-        sc_api::rows::create_row(
+        sc_access::rows::create_row(
             &catalog,
             &links,
             &json!({ "id": id, "note": 1, "token": token, "mode": mode }),
+            sc_catalog::Unchecked::system("test"),
         )
         .await?;
     }
@@ -440,7 +457,7 @@ async fn setup() -> Result<Server> {
             "/api/tables/notes",
             Some(json!({
                 "label": "", "description": "",
-                "min_role_read": ROLE_ADMIN, "min_role_write": ROLE_ADMIN,
+                "min_role_read": Role::ADMIN, "min_role_write": Role::ADMIN,
                 "ownership_formula": "owner === user.id", "rls_enabled": false, "sync_enabled": false,
             })),
         )
@@ -461,28 +478,6 @@ async fn setup() -> Result<Server> {
 }
 
 // --- frames -------------------------------------------------------------------
-
-async fn send(socket: &mut Socket, frame: Value) {
-    socket
-        .send(Message::text(frame.to_string()))
-        .await
-        .expect("the socket takes a frame");
-}
-
-async fn next_frame(socket: &mut Socket) -> Value {
-    loop {
-        let message = tokio::time::timeout(Duration::from_secs(20), socket.next())
-            .await
-            .expect("a frame arrives within the timeout")
-            .expect("the socket is still open")
-            .expect("the frame is readable");
-        match message {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
-            Message::Ping(_) | Message::Pong(_) => continue,
-            other => panic!("expected a text frame, got {other:?}"),
-        }
-    }
-}
 
 /// Send `frame` and wait for its `ready` or `error`.
 async fn answer(socket: &mut Socket, frame: Value) -> Value {

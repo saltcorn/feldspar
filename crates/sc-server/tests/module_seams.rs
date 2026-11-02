@@ -21,14 +21,15 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_app::{Application, AssetBundle, CodeFramework, FrameworkRef};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ModuleServices, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_agents, install_triggers,
+    AppMounts, ModuleServices, MountedApp, ServerConfig, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_agents, install_triggers,
 };
 use sc_test_harness::TestDb;
 use serde_json::{Value, json};
@@ -153,6 +154,7 @@ async fn setup(tag: &str) -> sc_error::Result<Server> {
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
@@ -225,13 +227,16 @@ async fn deliveries(catalog: &Catalog) -> Vec<Value> {
         .get("hook_deliveries")
         .unwrap()
         .expect("declared table");
-    let rows = sc_api::rows::list_rows(catalog, &table).await.unwrap();
+    let rows = sc_access::rows::list_rows(catalog, &table, sc_catalog::Unchecked::system("test"))
+        .await
+        .unwrap();
     let mut rows = rows.as_array().cloned().unwrap_or_default();
     rows.sort_by_key(|r| r["id"].as_i64());
     rows
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_webhook_receives_the_bytes_writes_its_own_table_and_answers() -> sc_error::Result<()> {
     if !have_npm() {
         eprintln!("skipping: npm is not on the PATH");
@@ -326,7 +331,12 @@ async fn a_webhook_receives_the_bytes_writes_its_own_table_and_answers() -> sc_e
     assert!(trespass.contains("cannot run its own SQL"), "{trespass}");
     assert_eq!(rows[1]["rest"], json!(""));
     let users = server.catalog.get("users").unwrap().unwrap();
-    let all = sc_api::rows::list_rows(&server.catalog, &users).await?;
+    let all = sc_access::rows::list_rows(
+        &server.catalog,
+        &users,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert!(
         !all.to_string().contains("intruder@example.com"),
         "the module wrote a table it did not declare"
@@ -409,7 +419,13 @@ async fn a_webhook_receives_the_bytes_writes_its_own_table_and_answers() -> sc_e
     )
     .await?;
     let notes = server.catalog.require("notes")?;
-    sc_api::rows::create_row(&server.catalog, &notes, &json!({ "note": "kept" })).await?;
+    sc_access::rows::create_row(
+        &server.catalog,
+        &notes,
+        &json!({ "note": "kept" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let id = installed["id"].as_str().unwrap().to_owned();
     let (status, configured) = server
         .admin
@@ -439,10 +455,14 @@ async fn a_webhook_receives_the_bytes_writes_its_own_table_and_answers() -> sc_e
     let users = looked["users"]["refused"].as_str().unwrap_or_default();
     assert!(users.contains("may reach only the tables"), "{looked}");
     assert_eq!(
-        sc_api::rows::list_rows(&server.catalog, &notes)
-            .await?
-            .as_array()
-            .map(Vec::len),
+        sc_access::rows::list_rows(
+            &server.catalog,
+            &notes,
+            sc_catalog::Unchecked::system("test")
+        )
+        .await?
+        .as_array()
+        .map(Vec::len),
         Some(1),
         "the webhook wrote a table it may only read"
     );

@@ -72,21 +72,19 @@ pub const COL_LANGUAGE: &str = "language";
 /// sessions go before the provider's user is signed in to it.
 pub const COL_EMAIL_VERIFIED: &str = "email_verified";
 
-/// The most-privileged role: full access.
-pub const ROLE_ADMIN: u8 = 1;
-/// The least-privileged role: public / not logged in.
-pub const ROLE_PUBLIC: u8 = 100;
-
-/// Whether `role` is within the valid 1–100 range (technical design §7.1).
-pub fn role_in_range(role: u8) -> bool {
-    (ROLE_ADMIN..=ROLE_PUBLIC).contains(&role)
-}
+/// Sparse per-user settings the **system** keeps — a JSON object, or `NULL`.
+///
+/// Its one key so far is [`ATTR_CHECK_USER`](crate::ATTR_CHECK_USER): the
+/// account a checklist runs as (TODO-checklists C1.5). A system column, so no
+/// user form edits it as a field and no API returns it; only an admin sets
+/// what is in it, through [`set_check_user`](crate::set_check_user).
+pub const COL_ATTRIBUTES: &str = "attributes";
 
 /// The fields of the users table, in declaration order.
 ///
 /// `role` is a foreign key onto [`_fd_roles`](crate::ROLES_TABLE) (see
 /// [`user_role_field`](crate::roles::user_role_field)); the 1–100 bound is
-/// enforced in application code (see [`role_in_range`]) rather than as a
+/// enforced in application code (by [`Role`](sc_types::Role)) rather than as a
 /// database `CHECK`, which the MVP schema layer does not yet render — but the
 /// *existence* of the role is enforced by the database, because that is the
 /// part concurrency can break.
@@ -102,6 +100,7 @@ fn users_fields() -> Vec<DataField> {
         DataField::plain(COL_DISABLED, bool_()),
         DataField::plain(COL_LANGUAGE, text()),
         DataField::plain(COL_EMAIL_VERIFIED, bool_()),
+        DataField::plain(COL_ATTRIBUTES, TypeRef::Basic(BasicType::Json)),
     ]
 }
 
@@ -113,7 +112,7 @@ fn users_fields() -> Vec<DataField> {
 /// know which of them are not theirs to type into: the generated id, the role
 /// (its own select), the identifier, the hash (never shown), and the disabled
 /// flag (an action on the users screen, not a text box).
-pub const SYSTEM_USER_COLUMNS: [&str; 7] = [
+pub const SYSTEM_USER_COLUMNS: [&str; 8] = [
     COL_ID,
     COL_ROLE,
     COL_EMAIL,
@@ -121,6 +120,7 @@ pub const SYSTEM_USER_COLUMNS: [&str; 7] = [
     COL_DISABLED,
     COL_LANGUAGE,
     COL_EMAIL_VERIFIED,
+    COL_ATTRIBUTES,
 ];
 
 /// Whether `column` is one of the columns the system owns
@@ -171,6 +171,7 @@ pub async fn bootstrap(catalog: &Catalog) -> Result<Table> {
     crate::tokens::bootstrap_api_tokens(catalog).await?;
     crate::password_tokens::bootstrap_password_tokens(catalog).await?;
     crate::guest::bootstrap_guest_sessions(catalog).await?;
+    crate::second_factor::bootstrap_second_factor(catalog).await?;
     Ok(users)
 }
 
@@ -191,7 +192,8 @@ mod tests {
                 COL_PASSWORD_HASH,
                 COL_DISABLED,
                 COL_LANGUAGE,
-                COL_EMAIL_VERIFIED
+                COL_EMAIL_VERIFIED,
+                COL_ATTRIBUTES
             ]
         );
 
@@ -217,15 +219,5 @@ mod tests {
             .find(|f| f.base.name == COL_PASSWORD_HASH)
             .unwrap();
         assert!(!pw.required); // nullable
-    }
-
-    #[test]
-    fn role_range_bounds() {
-        assert!(!role_in_range(0));
-        assert!(role_in_range(ROLE_ADMIN));
-        assert!(role_in_range(50));
-        assert!(role_in_range(ROLE_PUBLIC));
-        // 101 is unrepresentable in u8-space only up to 255; 101 is out of range.
-        assert!(!role_in_range(101));
     }
 }

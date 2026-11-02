@@ -112,6 +112,17 @@ pub trait DatabaseDriver: Send + Sync {
     /// through this.
     fn dialect(&self) -> &dyn SqlDialect;
 
+    /// Which database server this is, and which version of it: what Settings →
+    /// System shows an operator asking "what is this installation running on".
+    ///
+    /// The default errors rather than guessing: a backend that does not say
+    /// cannot be named from the outside.
+    async fn server_version(&self) -> Result<DbVersion> {
+        Err(Error::database(
+            "this database backend does not report which server or version it is",
+        ))
+    }
+
     /// Whether this database can hold geometry, as last found out by
     /// [`detect_spatial`](DatabaseDriver::detect_spatial) or
     /// [`enable_spatial`](DatabaseDriver::enable_spatial) (analytics TODO A5.1).
@@ -154,6 +165,16 @@ pub trait DatabaseDriver: Send + Sync {
     async fn enable_vector(&self) -> Result<VectorSupport> {
         self.detect_vector().await
     }
+}
+
+/// What [`DatabaseDriver::server_version`] answers: the product's name, as an
+/// operator would search for it, and the version the server itself reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DbVersion {
+    /// `PostgreSQL` or `SQLite`.
+    pub product: &'static str,
+    /// The server's own version string, e.g. `16.4` or `3.46.0`.
+    pub version: String,
 }
 
 /// An in-progress transaction on a [`DatabaseDriver`].

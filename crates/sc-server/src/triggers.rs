@@ -3,7 +3,7 @@
 //! Everything the row layer needs to raise an event lives below here — the
 //! [seam](sc_catalog::TableEvents) in the catalog, the
 //! [dispatcher](sc_action::TriggerDispatcher) in `sc-action`, the actions in
-//! `sc-core-actions` — and none of them knows about the others. This is where
+//! `sc-action-builtins` — and none of them knows about the others. This is where
 //! they are put together, once, by the process that is going to serve requests:
 //! the built-in actions are registered, the stored triggers are loaded and
 //! validated against them, and the dispatcher is installed into the catalog.
@@ -21,8 +21,8 @@
 use std::sync::Arc;
 
 use sc_action::{Scheduler, TriggerDispatcher, bootstrap_triggers};
+use sc_action_builtins::builtin_actions;
 use sc_catalog::Catalog;
-use sc_core_actions::builtin_actions;
 use sc_error::{Context, Result};
 use sc_expr::JsEvaluator;
 use sc_workflow::WorkflowEngineTask;
@@ -150,7 +150,7 @@ pub fn base_action_registry(
     models: &crate::ModelServices,
 ) -> Result<sc_action::ActionRegistry> {
     let mut registry = builtin_actions().context("registering the built-in actions")?;
-    sc_core_traits::register_agent_actions(
+    sc_agent_builtins::register_agent_actions(
         &mut registry,
         Arc::clone(agents.registry()),
         Arc::clone(agents.providers()),
@@ -162,12 +162,21 @@ pub fn base_action_registry(
     // Rebuilding the base set on a module change is therefore what gives the
     // action the *new* registry — which is how a model over a module's
     // provider can still be refitted after that module is reinstalled.
-    sc_core_actions::register_model_actions(
+    sc_action_builtins::register_model_actions(
         &mut registry,
         models.registry(),
         Arc::new(models.clone()),
     )
     .context("registering the model action")?;
+    // And `run_checklists` (TODO-checklists C4.4): a scheduled trigger with it
+    // is a scheduled checklist run. It reaches the application router and the
+    // headless browser through the agents' view services, as the admin's Run
+    // button does.
+    registry
+        .register(Arc::new(sc_check::RunChecklists::new(Arc::clone(
+            agents.registry().view_services(),
+        ))))
+        .context("registering the checklists action")?;
     Ok(registry)
 }
 

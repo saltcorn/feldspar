@@ -27,6 +27,7 @@ function application(
     framework: { name: "react", config: {} },
     extra_frameworks: [],
     tables: [],
+    api_tables: [],
     file_stores: [],
     triggers: [],
     streams: [],

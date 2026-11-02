@@ -23,6 +23,13 @@
 //! - [`Snapshot`] — what a model fit records: the resolved definitions and a
 //!   hash of what they mean.
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
+    sc_catalog::Unchecked::system("sc-dataset: the dataset store");
+
 mod access;
 mod compile;
 mod def;
@@ -47,7 +54,7 @@ pub use def::{
 };
 pub use read::{
     MAX_PAGE, Page, Rows, StagePage, column_values, count, count_with, last_stage, read_page,
-    read_rows, read_rows_with, read_stage, value_json,
+    read_rows, read_rows_with, read_stage,
 };
 pub use shape::{ColType, ForeignKey, Grain, Schema, StageColumn, StageShape, TableInfo};
 pub use snapshot::Snapshot;

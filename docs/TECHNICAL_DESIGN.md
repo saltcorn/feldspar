@@ -66,22 +66,30 @@ feldspar/
 │  │                              #    `test` environment, by the integration-test harness
 │  ├─ sc-dns/                     # 0. the process's resolver: a hickory-backed getaddrinfo
 │  │                              #    linked in front of glibc's, so no NSS module is
-│  │                              #    dlopened into the static binary (§13.5)
-│  ├─ sc-ratelimit/               # 0. in-memory token-bucket rate limiter keyed by string,
+│  │                              #    dlopened into the process (§13.5)
+│  ├─ sc-net/                     # 0. outbound connections to the public internet only:
+│  │                              #    `is_public`, `PublicAddr`, the SSRF resolver and the
+│  │                              #    `PublicClient` the agent's http trait, `fetch` and MCP
+│  │                              #    send with; an SMTP override's pinned address
+│  ├─ sc-ratelimit/               # 3. in-memory token-bucket rate limiter keyed by string,
 │  │                              #    and the client-IP rule (queries, logins, code bodies)
 │  ├─ sc-i18n/                    # 0. Locale, negotiation, the Catalog, the message format,
 │  │                              #    CLDR plurals, `t!`/`tc!`, the `Translator` seam, and the
 │  │                              #    `core` catalogues. Layer 0 because sc-auth and sc-types
 │  │                              #    must be able to translate a sentence (§16.1); the
 │  │                              #    tree-sitter extractor is behind an `extract` feature
-│  ├─ sc-help/                    # 0. admin UI help topics: markdown templates filled in with
-│  │                              #    the screen's context, rendered to HTML
+│  ├─ sc-docs/                    # 0. the documentation agents read: docs/'s tutorials and
+│  │                              #    references and the help topics, compiled in, split into
+│  │                              #    sections, BM25-indexed; the search_docs/read_docs tools.
+│  │                              #    `help`: the admin UI's help topics, markdown templates
+│  │                              #    filled in with the screen's context, rendered to HTML
 │  ├─ sc-query/                   # 1. universal query language (enum AST) + SQL rendering trait
 │  ├─ sc-repomap/                 # 1. the coding agent's repo map: tree-sitter tags, personalised
 │  │                              #    PageRank, rendering to a token budget. No store, no deps
 │  │                              #    in the tree; its C grammars behind the `grammars` feature
 │  ├─ sc-bus/                     # 1. message bus trait + drivers (pg NOTIFY, in-proc, redis…)
-│  ├─ sc-db/                      # 2. DatabaseDriver trait, connection, migrations, tx
+│  ├─ sc-db/                      # 2. DatabaseDriver trait, connection, tx
+│  ├─ sc-migrate/                 # 2. migrations of the primary database: registry, runner (§5.3)
 │  │   ├─ sc-db-postgres/         #    Postgres driver (MVP)
 │  │   └─ sc-db-sqlite/           #    SQLite driver (primary database, or a file in a store)
 │  ├─ sc-types/                   # 3. type system: RichType, BasicType, attributes, validation
@@ -101,11 +109,24 @@ feldspar/
 │  ├─ sc-llm/                     # 6. object-safe LlmProvider seam over a provider crate
 │  │                              #    (OpenAI Responses + Anthropic), `_fd_llm_providers` (§11.1)
 │  ├─ sc-email/                   # 6. Email, the Mailer transport seam, SMTP over lettre (§18.2)
+│  ├─ sc-access/                  # 6. the row-access layer: table row CRUD (`rows`), the
+│  │                              #    ownership rule (`ownership`, `write_as`), the filter,
+│  │                              #    search and vector vocabulary, and `Scoped` — a catalog
+│  │                              #    with an `Authority` bound, the handle actions, agents
+│  │                              #    and code bodies read and write rows through. The
+│  │                              #    unchecked row operations take an `Unchecked` token
+│  │                              #    (sc-catalog) that only the system, an administrator or a
+│  │                              #    named check can make (code-quality review §2, §4.4)
 │  ├─ sc-workflow/                # 7. durable workflows: the program a trigger body can be,
 │  │                              #    `_fd_workflow_versions`, `_fd_run_traces`, the engine
 │  │                              #    that advances a run of it (§10.3)
 │  ├─ sc-agent/                   # 7. Agent record + AgentTrait trait + registry + inference
-│  │                              #    loop + `_fd_agents`/`_fd_runs` storage (§11.2)
+│  │                              #    loop + `_fd_agents`/`_fd_runs` storage (§11.2). `browser`:
+│  │                              #    the headless-browser seam, the `BrowserDriver` trait, its
+│  │                              #    actions and stable locators (`button "Save"`,
+│  │                              #    `label=Email`, `testid=…`), driven by the agents'
+│  │                              #    `view_app` and the checklists' `browser.*` steps alike;
+│  │                              #    `sc-server` implements it over Chromium
 │  ├─ sc-model/                   # 6. Predictive models: a named dataset (sc-dataset) resolved,
 │  │                              #    the columnar Frame, the row-identity-hash split, the
 │  │                              #    DatasetSource + ModelProvider seams, `_fd_models` /
@@ -146,11 +167,11 @@ feldspar/
 │  │                              #    `table_changes` streams (sc-catalog's `TableEvents`),
 │  │                              #    deciding per element and per subscriber what each is sent,
 │  │                              #    and the collaborative documents' rooms (`yrs`, Yjs's CRDT).
-│  │                              #    Above sc-stream, sc-auth and sc-api (whose row layer is the
+│  │                              #    Above sc-stream, sc-auth and sc-access (whose row layer is the
 │  │                              #    projection, the filter vocabulary and the read rule a
 │  │                              #    change is decided by); below sc-server, which mounts
 │  │                              #    `{mount}/live`
-│  ├─ sc-core-actions/            # 8. the built-in action set (insert_row, update_rows,
+│  ├─ sc-action-builtins/         # 8. the built-in action set (insert_row, update_rows,
 │  │                              #    delete_rows, fetch, run_js_code, run_python_code,
 │  │                              #    send_email, and fit_model) — above the row layer,
 │  │                              #    because a trigger's write goes *through* it (§10.1)
@@ -162,10 +183,20 @@ feldspar/
 │  ├─ sc-module/                  # 9. v1 plugins on a Deno worker in this process (§15.1),
 │  │                              #    and the view runtime: v1's vendored patterns run there
 │  ├─ sc-python/                  # 9. the Python code adapter (§15.2), over sc-module's seams
-│  ├─ sc-core-traits/             # 9. the built-in agent traits (table, trigger and coding
+│  ├─ sc-agent-builtins/          # 9. the built-in agent traits (table, trigger and coding
 │  │                              #    traits) + the `run_agent` action — same layer, same
 │  │                              #    reason: their writes go through the row layer (§11.3)
+│  ├─ sc-check/                   # 9. checklists (docs/CHECKLISTS.md): `_fd_checklist*`, the
+│  │                              #    step-type registry, the core step types (`browser.*`
+│  │                              #    among them), the runner (live or against an agent's
+│  │                              #    preview), the failed-step screenshot store, the agent
+│  │                              #    policy and the agent tools the copilot and the MCP
+│  │                              #    server share
 │  ├─ sc-copilot/                 # 9. copilot agent + AppConstructor stages
+│  ├─ sc-backup/                  # 9. backup and restore (the zip, automated backups, S3 and
+│  │                              #    SFTP destinations, Saltcorn 1 import) and the entity JSON
+│  │                              #    codecs the admin API and a backup share; a restore writes
+│  │                              #    into the server's services through `RestoreHost`
 │  ├─ sc-server/                  # 9. HTTP server: admin routes, user routes, auth, CSP, sockets
 │  └─ sc-cli/                     # 10. `feldspar` binary (serve, user/app mgmt, backup/restore)
 ├─ ui/
@@ -191,7 +222,7 @@ The dependency graph of the crates that exist today. **An arrow points from a cr
 crate it depends on**, so every arrow runs from a higher layer to a lower one and the graph is
 acyclic by construction. Arrows implied by transitivity are omitted — the picture is the
 *transitive reduction*, so `sc-server → sc-catalog` is real but not drawn; it is reached through
-`sc-core-actions → sc-api → sc-auth → sc-catalog`. That is worth remembering when a box looks
+`sc-action-builtins → sc-api → sc-action → sc-access → sc-auth → sc-catalog`. That is worth remembering when a box looks
 sparser than it is — `sc-action` also depends directly on `sc-catalog`, `sc-db`, `sc-expr` and
 `sc-types`, all of which the one drawn arrow to `sc-email` already implies. The full
 direct-dependency lists follow the diagram.
@@ -201,21 +232,26 @@ graph TD
   cli["sc-cli"] --> server["sc-server"]
   cli --> cfgfile["sc-config-file"]
   cli --> dns["sc-dns"]
-  server --> coreact["sc-core-actions"]
-  server --> coretraits["sc-core-traits"]
+  server --> coreact["sc-action-builtins"]
+  server --> backup["sc-backup"]
+  backup --> coretraits["sc-agent-builtins"]
   server --> pg["sc-db-postgres"]
-  server --> help["sc-help"]
-  help --> error
+  server --> migrate["sc-migrate"]
+  migrate --> db
   coretraits --> agent["sc-agent"]
   coretraits --> app["sc-app"]
   coretraits --> repomap["sc-repomap"]
   coretraits --> mcp["sc-mcp"]
-  mcp --> email
+  coretraits --> check["sc-check"]
+  check --> agent
+  check --> app
+  mcp --> net["sc-net"]
+  mcp --> catalog
   coreact --> api["sc-api"]
-  server --> module["sc-module"]
+  backup --> module["sc-module"]
   viewpattern["sc-viewpattern"] --> app
   server --> model["sc-model"]
-  server --> analytics["sc-analytics"]
+  backup --> analytics["sc-analytics"]
   cli --> analytics
   analytics --> catalog
   model --> dataset["sc-dataset"]
@@ -230,7 +266,7 @@ graph TD
   server --> stream["sc-stream"]
   server --> live["sc-live"]
   live --> stream
-  live --> api
+  live --> access["sc-access"]
   stream --> auth
   app --> stream
   module --> stream
@@ -239,18 +275,18 @@ graph TD
   python --> coreact
   module --> coreact
   module --> viewpattern
-  server --> workflow["sc-workflow"]
+  backup --> workflow["sc-workflow"]
   workflow --> agent
   module --> action["sc-action"]
   app --> api
   agent --> action
-  agent --> auth["sc-auth"]
-  agent --> llm["sc-llm"]
   api --> action
-  api --> auth
-  api --> llm
+  action --> access
+  access --> auth["sc-auth"]
+  access --> llm["sc-llm"]
   action --> email["sc-email"]
   email --> config["sc-config"]
+  email --> net
   config --> catalog["sc-catalog"]
   auth --> catalog
   llm --> config
@@ -266,7 +302,10 @@ graph TD
   db --> query["sc-query"]
   expr --> query
   expr --> ratelimit["sc-ratelimit"]
+  ratelimit --> types
   api --> ratelimit
+  api --> docs["sc-docs"]
+  docs --> error
   server --> ratelimit
   python --> expr
   files --> types["sc-types"]
@@ -286,41 +325,46 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-log` | `sc-error` |
 | `sc-config-file` | `sc-error` |
 | `sc-dns` | `sc-error` |
-| `sc-ratelimit` | — (nothing in the workspace) |
+| `sc-net` | `sc-error` |
+| `sc-ratelimit` | `sc-types` |
 | `sc-query` | `sc-error` |
 | `sc-repomap` | — (nothing in the workspace) |
 | `sc-i18n` | `sc-error` |
-| `sc-help` | `sc-error` |
+| `sc-docs` | `sc-error` |
 | `sc-types` | `sc-error` `sc-i18n` `sc-query` |
-| `sc-db` | `sc-error` `sc-query` |
+| `sc-db` | `sc-error` `sc-log` `sc-query` |
 | `sc-db-postgres` | `sc-db` `sc-error` `sc-log` `sc-query` |
 | `sc-db-sqlite` | `sc-db` `sc-error` `sc-log` `sc-query` |
-| `sc-expr` | `sc-error` `sc-query` `sc-ratelimit` |
+| `sc-migrate` | `sc-db` `sc-error` `sc-query` |
+| `sc-expr` | `sc-error` `sc-query` `sc-ratelimit` `sc-types` |
 | `sc-files` | `sc-error` `sc-types` |
-| `sc-catalog` | `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-error` `sc-expr` `sc-files` `sc-query` `sc-types` |
+| `sc-catalog` | `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-query` `sc-types` |
 | `sc-config` | `sc-catalog` `sc-db` `sc-error` `sc-i18n` `sc-log` `sc-query` `sc-types` |
-| `sc-email` | `sc-catalog` `sc-config` `sc-error` |
+| `sc-email` | `sc-catalog` `sc-config` `sc-error` `sc-net` |
 | `sc-auth` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
 | `sc-llm` | `sc-catalog` `sc-config` `sc-db` `sc-error` `sc-log` `sc-query` `sc-types` |
-| `sc-mcp` | `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-query` `sc-types` |
-| `sc-action` | `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-query` `sc-types` |
+| `sc-access` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-query` `sc-types` |
+| `sc-mcp` | `sc-catalog` `sc-db` `sc-error` `sc-net` `sc-query` `sc-types` |
+| `sc-action` | `sc-access` `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-dataset` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-model` | `sc-catalog` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-analytics` | `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-db-sqlite` `sc-error` `sc-model` `sc-query` `sc-types` |
 | `sc-stream` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
 | `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-types` |
-| `sc-agent` | `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
+| `sc-agent` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
-| `sc-api` | `sc-action` `sc-auth` `sc-catalog` `sc-dataset` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
-| `sc-app` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-stream` `sc-types` |
-| `sc-live` | `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-stream` `sc-types` |
-| `sc-core-actions` | `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-query` `sc-types` |
-| `sc-viewpattern` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-types` |
-| `sc-module` | `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-core-actions` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
-| `sc-python` | `sc-action` `sc-catalog` `sc-core-actions` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
-| `sc-core-traits` | `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-repomap` `sc-types` |
-| `sc-server` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-core-actions` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-help` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-cli` | `sc-action` `sc-agent` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-config-file` `sc-core-traits` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-error` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
+| `sc-api` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
+| `sc-app` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-stream` `sc-types` |
+| `sc-live` | `sc-access` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-stream` `sc-types` |
+| `sc-action-builtins` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-config` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-net` `sc-query` `sc-types` |
+| `sc-viewpattern` | `sc-access` `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-types` |
+| `sc-module` | `sc-access` `sc-action` `sc-action-builtins` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
+| `sc-python` | `sc-action` `sc-action-builtins` `sc-catalog` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
+| `sc-check` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
+| `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-query` `sc-repomap` `sc-types` |
+| `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:
 
@@ -331,7 +375,7 @@ Four things the graph is worth reading for:
   `DatabaseDriver` trait in `sc-db` — which is what made adding `sc-db-sqlite` a matter of adding
   a crate rather than editing the middle of the stack, and is now demonstrated rather than
   claimed.
-- **`sc-core-actions` and `sc-core-traits` sit above `sc-api`/`sc-app`, not beside `sc-action`
+- **`sc-action-builtins` and `sc-agent-builtins` sit above `sc-api`/`sc-app`, not beside `sc-action`
   and `sc-agent`.** The built-in action set and the built-in agent traits are *users* of the row
   layer, not part of it — a trigger's write goes through the same path an HTTP request does
   (§10.1, §11.3), so they must be above everything that path touches.
@@ -572,9 +616,8 @@ Design rules from GOALS:
   identity key would look like a key somebody has to type). The third is what makes the
   first two honest — the admin UI tells the admin what a key *does*, not what creating it
   was supposed to do, which differ for every table Saltcorn picks up as it finds it.
-- **Migrations are arrays of Postgres SQL values** translated per-dialect by `dialect()`.
-  Per GOALS, we **do not** run schema-changing migrations during early development — we
-  evolve the initial setup instead until the metadata schema is stable.
+- **Migrations are not translated between dialects.** A migration carries its own SQL per
+  backend, or is Rust (§5.3); `dialect()` renders `sc-query` statements and nothing else.
 
 ### 5.0 Secondary databases (Connections)
 
@@ -748,6 +791,115 @@ and `rls_available` is false), no `listen_notify` (§16's bus does not use the d
 `unlogged_tables`. Row constraints, which are generated as PL/pgSQL triggers, and full-text
 indexes, which are `to_tsvector` expressions, are Postgres-only for now: they fail at the
 database with the database's own message rather than being silently skipped.
+
+### 5.3 Migrations (`sc-migrate`)
+
+A release that needs the primary database in a different shape brings it there itself, on its
+first start. Two mechanisms share that work, and the line between them is what each can do
+without being told what the database held before:
+
+- **The bootstrap** (`Catalog::bootstrap_table` and the `bootstrap_*` functions every crate
+  has) creates a table that is missing and adds a column that is missing — nullable, or
+  `NOT NULL` on an empty table. It reads the introspection the catalog does anyway, so it costs
+  nothing on a boot where nothing is missing, and it is what a fresh database is built by.
+- **A migration** does everything else: renames, a type or nullability change, rewriting stored
+  JSON, backfilling a column from another, deleting rows a release no longer reads, replacing a
+  trigger or function. It runs **once** per database and is recorded, so a boot never re-runs
+  it and a migration need not be idempotent.
+
+Migrations start empty: the framework's first release has none. What `TABLES_RENAME.sql` holds
+is frozen, for bringing a database from before the framework up to date by hand; nothing is
+added to it again.
+
+**A migration is a Rust value in one ordered registry**, `sc_migrate::MIGRATIONS`:
+
+```rust
+pub struct Migration {
+    /// Date-prefixed, lowercase, `-`-separated: `2026-11-02-agent-traits`. Sorting the ids is
+    /// the order they run in; two branches each adding one do not collide.
+    pub id: &'static str,
+    /// One sentence, for the log and `feldspar migrate status`.
+    pub description: &'static str,
+    pub body: Body,
+}
+
+pub enum Body {
+    /// One script per backend, `include_str!`ed from `migrations/<id>/postgres.sql` and
+    /// `migrations/<id>/sqlite.sql`. `None`: the migration has nothing to do on that backend
+    /// (and is still recorded there).
+    Sql { postgres: Option<&'static str>, sqlite: Option<&'static str> },
+    /// For what SQL says badly — reshaping stored JSON, a step that depends on what is there.
+    Rust(fn(&mut MigrationCtx<'_>) -> BoxFuture<'_, Result<()>>),
+}
+```
+
+- **SQL is the default**: DDL and set-based updates, reviewed as they will run. There is no
+  Postgres-to-SQLite translation; the two backends differ too much (no `DO` blocks, no
+  `ADD COLUMN IF NOT EXISTS`, a table rebuild for any column change, different JSON functions)
+  for one to be derived from the other.
+- **Rust is for JSON and for conditions**: read the rows, change each as a
+  `serde_json::Value`, write it back. One implementation serves both backends.
+- **A migration is frozen.** It is written against the schema of the release before it, so it
+  must not use anything that describes the current one: no `Catalog`, `Table`, field metadata,
+  or a crate's row structs, which a later release will change under it. `MigrationCtx` gives
+  it the transaction (`batch`, `query` and `execute` with binds), the backend and its
+  placeholder spelling, and `table_exists` / `column_exists` — nothing more.
+- They live in one crate, `sc-migrate`, which depends on `sc-db` only, so that the order is one
+  list read top to bottom rather than something assembled from every crate.
+
+**What has run** is recorded in the primary database:
+
+```sql
+CREATE TABLE "_fd_migrations" (
+  "id"          text PRIMARY KEY,
+  "applied_at"  timestamptz NOT NULL,
+  "version"     text NOT NULL,     -- the CARGO_PKG_VERSION that applied it
+  "duration_ms" bigint NOT NULL
+);
+```
+
+(v1 records its own in `_sc_migrations`, so the two do not meet in a shared schema.)
+
+**When it runs.** `sc_cli::connect_catalog` runs `sc_migrate::run(&driver)` after connecting
+and **before** `Catalog::init` and every bootstrap — so every command that opens the database
+migrates it, a migration sees the previous release's schema, and the catalog introspects the
+result. A migration that needs a column the bootstrap would add therefore adds it itself.
+
+1. One query: `SELECT id FROM "_fd_migrations"`. Every id known: done.
+2. **No `_fd_migrations` and no `_fd_config`** — a new database, or an existing one Feldspar is
+   being pointed at for the first time (`_fd_config` is bootstrapped on every start, so every
+   database Feldspar has started against has it): create `_fd_migrations` and record **every**
+   migration as applied without running it. The bootstrap then builds the current shape.
+3. **No `_fd_migrations`, but `_fd_config`** — a database from before the framework: create
+   it empty, and continue as below (every migration is newer than such a database).
+4. Each pending id, in order, in **its own transaction**: take the lock (a transaction-scoped
+   advisory lock on Postgres, which also covers creating the table; SQLite's transactions
+   begin `IMMEDIATE`), check again that the id is not recorded, run the body, insert the
+   record, commit. The change
+   and its record commit together, so a crash cannot leave one without the other; the lock
+   means two processes starting together (a deploy, a CLI command beside the server) apply it
+   once.
+5. **A failure** rolls that migration back and stops the start with its id and the database's
+   message. Those before it stay applied, and the next start resumes from it.
+6. **An id in `_fd_migrations` this binary does not know** means a newer release has migrated
+   the database. The start is refused rather than running older code against it.
+
+Each applied migration is logged to stderr with its duration. Nothing is backed up first: that
+is the deployment's job. Clear all leaves `_fd_migrations` alone — it describes the schema,
+which stays — or the next start would re-run every migration against tables that have them. `feldspar migrate status` lists applied and pending ids; `feldspar migrate`
+runs the pending ones and reports each.
+
+**Scope.** The primary database only. A connected database holds application tables and
+nothing of Feldspar's (a SQLite one's `_fd_object_comments` excepted, which no migration
+touches). Backups are unaffected: they are JSON with their own `FORMAT_VERSION`,
+restored through current code.
+
+**Tests.** The framework is tested on both backends: a new database is stamped and runs
+nothing; a database with `_fd_*` tables but no record runs everything; a second start runs
+nothing; a failing migration leaves neither its change nor its record; an unknown id refuses;
+two concurrent runners apply a migration once. Every migration has a test of its own: a fixture
+builds the shape it migrates from, `sc_migrate::run_one(id)` runs it alone, and the result is
+checked — on each backend it has a body for.
 
 ---
 
@@ -1076,9 +1228,26 @@ pub struct User {
   Live: every sign-in reads it from `_fd_config` (`AppMounts::current_session_ttl`) where
   the router starts a session (`SessionStore::login_for`). So the next sign-in after a save
   gets it on every node, including after a save made by another node, `feldspar config set` or
-  a restore. That covers a password's, an identity provider's and an admin handoff's, and a
-  native client's cookie `Max-Age` matches it. A session already started keeps the expiry it
-  was given.
+  a restore. That covers a password's, an identity provider's and an admin handoff's. A session
+  already started keeps the expiry it was given.
+- **The session cookie outlives the browser** (`persistent_session_cookie`, Settings →
+  Authentication, *Keep people signed in when the browser closes*, **on** by default). A
+  sign-in's `sc_session` gets `Max-Age` (and `Expires`) equal to the lifetime the session was
+  just given, so the browser keeps it exactly as long as the server honours it. Read from
+  `_fd_config` with the lifetime at every sign-in (`AppMounts::current_session_policy`), and
+  applied in `apply_session` and the admin handoff, so every path — a password, a rendered
+  form, an identity provider, a set-password link, sign-up — gets it. A native client's cookie
+  always has the `Max-Age`, because an app's cookie store may drop a session cookie whenever the
+  app closes. Two ways to get a cookie that ends with the browser: the admin unticks the setting
+  (a kiosk or shared machine, where closing the browser is how people sign out), or one sign-in
+  says `remember: false` — the login, sign-up and set-password bodies take it, and the Saltcorn
+  UI sign-in form has a *Remember me* box, ticked to begin with, sent beside a hidden
+  `remember_shown` so an unticked box is told apart from a client that offers none
+  (`SessionAction::StartUntilBrowserCloses`). `remember: true` cannot override the setting
+  being off. Until this was added (TODO A1.1) only a native client's cookie had a `Max-Age`, so
+  every browser user signed in again after each restart however long the lifetime was.
+  **Expiry still does not slide**: renewing it on use would write per request, which the
+  session store is built to avoid (above); a lifetime of up to a year makes it unnecessary.
 - **External identity providers (OAuth 2.0 clients)**, Settings → Authentication. A list of
   records under the internal key `oauth_providers`, each declared field by field
   (`sc_config::oauth_provider_spec`) so the tab's form is generic, its `client_secret`
@@ -1109,6 +1278,72 @@ pub struct User {
   An application's generated client has `oauthProviders()` and
   `oauthSignInUrl(provider, returnTo)` whenever it has `login`, and the scaffold's
   `Login.tsx` renders a button per provider.
+- **Two-factor authentication** (`sc_auth::second_factor`, `sc-server/src/second_factor.rs`).
+  Codes from an authenticator app (TOTP, RFC 6238: HMAC-SHA-1, 6 digits, 30 seconds, one step
+  of drift either way), and 10 single-use recovery codes. It belongs to the **account**, not
+  to an application, so the routes are the server's own, under `/_feldspar/second-factor`,
+  answering on every host as the OAuth routes do:
+
+  - `GET` (signed in): `{enabled, required, recovery_codes_left}`.
+  - `POST setup {token?}`: a new secret, as `{secret, otpauth_url, qr_svg, account}`. The QR
+    code is an SVG drawn on the server. Refused while one is on.
+  - `POST enable {code, token?}`: turn it on with the app's first code. Answers
+    `{recovery_codes}`, shown once.
+  - `POST verify {token, code}`: answer a sign-in's challenge (see below).
+  - `POST disable {code}` and `POST recovery-codes {code}` (signed in): turn it off, or
+    replace the recovery codes. Both need a current code. A role that requires it cannot turn
+    it off.
+  - `GET sign-in?return_to=`: a server-rendered page that does the same with forms, for a
+    sign-in that a page made (below).
+
+  **Storage.** `_fd_second_factor` (`user_id` PK, the secret **sealed** with the instance key
+  as a Secret field is, `enabled_at` (`NULL` while a setup waits for its first code),
+  `last_step`) and `_fd_recovery_codes` (SHA-256 of the account and the code). Both are made by
+  the users bootstrap, are not foreign keys, and are deleted with the account. A code is
+  accepted only for a time-step after `last_step`, in one conditional `UPDATE`, so a code
+  cannot be used twice. A recovery code is spent by `DELETE … RETURNING`.
+
+  **The challenge.** `apply_session` is where every session starts. For a
+  `SessionAction::Start` by an account that has a second factor on, or whose role has
+  `require_second_factor: true` in `_fd_roles.attributes` (the first role-specific setting),
+  it starts **no session**. Instead it issues a challenge: a `second_factor` token in
+  `_fd_password_tokens` (10 minutes, single use, remembering "Remember me"), so whichever node
+  gets the answer can read it. The token goes in an `HttpOnly`, `SameSite=Lax` cookie `sc_2fa`
+  scoped to the routes, and also:
+  - for a client's code, in the JSON answer: the user summary plus
+    `second_factor: {token, setup}`. `setup: true` means a role requires one that the account
+    has not set up, and the token then allows `setup` and `enable` for that account only.
+  - for a sign-in made by a page (`SessionClient::returning_to`), as a redirect to the
+    `sign-in` page instead. This covers a Saltcorn UI application's login form, where the page
+    returns to the form's redirect, and an identity provider's `complete`, where it returns to
+    `return_to`.
+
+  The answer starts the session through `apply_session` with `SessionAction::StartVerified`,
+  which is never challenged. That variant is also what `becomeUser` and the first user's
+  creation use. An identity-provider sign-in uses it too, unless Settings → Authentication
+  *Ask for a two-factor code after an identity provider* is on. Every password path is covered
+  this way without knowing about the second factor: the admin and REST logins, set-password,
+  verify-email, sign-up, and a rendered login form. Wrong codes count against the account (5 in
+  15 minutes, then `429`) as well as the login budget per IP. If the database cannot say
+  whether an account has a second factor, no session is started.
+
+  **Applications made before it.** A build regenerates only an application's `src/feldspar/`
+  runtime, never its own `Login.tsx`, so the generated client covers pages that know nothing of
+  a challenge. A password sign-in method (`rest::PASSWORD_SIGN_INS`: `login`, `signup`,
+  `setPassword`, `verifyEmail`) returns through the helper's `signInAnswered`. When the answer
+  carries `second_factor` in a browser, it goes to the `sign-in` page with `return_to` set to
+  the current page, and its promise never settles. Pages that answer the challenge themselves
+  call `handleSecondFactorInApp()` once: the scaffold's `auth.tsx` and the admin UI's `api.ts`
+  do. Outside a browser the challenge is always returned.
+
+  **Where it is set.** Each account: the admin UI's shield button beside "Log out"
+  (`#/account/security`), and in a React application the scaffold's `src/Security.tsx`
+  (`/security`) through the generated client's `secondFactor*` methods. Each role: a switch on
+  Users → Roles (`setRoleSecondFactor`). Instance-wide: Settings → Authentication, which has the
+  identity-provider switch above and *Name in authenticator apps* (blank means the base
+  domain). An admin can reset an account (`resetUserSecondFactor`, Users → ⋯, which also ends
+  its sessions), and so can the CLI (`feldspar modify-user EMAIL --reset-second-factor`), for a
+  sole admin who is locked out.
 - Further providers (SAML, SSO) via an `AuthMethod` extension.
 
 ### 7.3 Authorization
@@ -1423,7 +1658,7 @@ URL as this request reached it, and its native apps' URL scheme from the `url_sc
 and the caller's **guest session**. They travel as one `sc_catalog::Origin`. The router runs an
 application request inside it (`with_origin`, a task-local), and whatever builds a caller context
 reads it there — `ownership::caller_context_at`, a code body's table host, the row actions'
-authority — so `CallerContext` carries `app` and `session` explicitly from then on, onto the write,
+authority — so `Principal` carries `app` and `session` explicitly from then on, onto the write,
 onto the event the write raises (`Event::caused_by`), and back into scope by the dispatcher while
 the trigger's action runs. A scheduled trigger, a service and a webhook run in no origin, and see
 none. A code body binds `app` (`{ id, url, scheme }` or null) and `session` (`{ id }` or null)
@@ -1762,6 +1997,7 @@ erDiagram
     text email UK
     text password_hash "argon2; nullable"
     bool disabled
+    json attributes "system: check_user marks one a checklist may run as"
   }
   SESSIONS["_fd_sessions"] {
     text token_hash PK "SHA-256 of the cookie token"
@@ -1788,9 +2024,21 @@ erDiagram
   PASSWORDTOKENS["_fd_password_tokens"] {
     text token_hash PK "SHA-256 of the emailed token"
     uuid user_id "deliberately NOT a foreign key"
-    text purpose "invite | reset"
+    text purpose "invite | reset | verify | second_factor | second_factor_session"
     timestamp created_at
     timestamp expires_at "7 days for an invitation, 1 hour for a reset"
+  }
+  SECONDFACTOR["_fd_second_factor"] {
+    uuid user_id PK "deliberately NOT a foreign key"
+    text secret "TOTP secret, sealed with the instance key"
+    timestamp enabled_at "null while setup waits for its first code"
+    int last_step "the last time step used: a code works once"
+    timestamp created_at
+  }
+  RECOVERYCODES["_fd_recovery_codes"] {
+    text code_hash PK "a recovery code, hashed"
+    uuid user_id "deliberately NOT a foreign key"
+    timestamp created_at
   }
   TABLES["_fd_tables"] {
     uuid id PK
@@ -1850,6 +2098,48 @@ erDiagram
     bool personal "only its own user may read it back"
     text topic "full-text indexed with contents"
     text contents
+  }
+  CHECKLISTS["_fd_checklists"] {
+    uuid id PK
+    text name UK "what the CLI and the agent tools name it by"
+    text description
+    uuid application "nullable: a data-only checklist checks no application"
+    uuid run_as "nullable, by value: null runs as an anonymous visitor"
+    bool enabled "only a person changes it"
+    bool mutates "derived from the current steps' types"
+    json attributes "stop_on_failure, timeout, allow_on_production, tags"
+  }
+  CHECKLISTSTEPS["_fd_checklist_steps"] {
+    uuid id PK "one version of one step"
+    uuid checklist "-> _fd_checklists.id"
+    float position "a float, so an insert renumbers nothing"
+    text type "a registered step type: data.insert, http.expect_status"
+    json params "validated against the type's config_spec"
+    text label
+    text capture "the step's as"
+    text author "human:<user id> | agent:<run id>"
+    bool accepted
+    uuid superseded_by "the version that replaced it; never updated otherwise"
+    bool deleted "a tombstone"
+  }
+  CHECKLISTRUNS["_fd_checklist_runs"] {
+    uuid id PK "also run.id inside the run"
+    uuid checklist "-> _fd_checklists.id; kept when it is deleted"
+    text trigger "manual | cli | agent:<run id> | build | schedule"
+    text target "live | a preview label"
+    text status "passed | failed | error | incomplete"
+    json step_versions
+    json steps "each step's result"
+    json cleanup_errors
+  }
+  CHECKLISTPROPOSALS["_fd_checklist_proposals"] {
+    uuid id PK
+    uuid checklist "-> _fd_checklists.id"
+    text kind "edit | insert_before | reorder | run_as"
+    uuid step "the step it would change"
+    json change
+    text reason
+    text author "agent:<run id>"
   }
   MODELS["_fd_models"] {
     uuid id PK
@@ -1951,6 +2241,12 @@ erDiagram
     text table PK "empty for an index, which is named on its own"
     text name PK
     text comment "what COMMENT ON would have held"
+  }
+  MIGRATIONS["_fd_migrations"] {
+    text id PK "the migration's id; its row means it has run (5.3)"
+    timestamp applied_at
+    text version "the feldspar release that ran it"
+    int duration_ms
   }
   STORES["_fd_file_stores"] {
     uuid id PK
@@ -2206,6 +2502,8 @@ erDiagram
   USERS ||--o{ SESSIONS : "user_id -- by value"
   USERS ||--o{ APITOKENS : "user_id -- by value"
   USERS ||--o{ PASSWORDTOKENS : "user_id -- by value"
+  USERS ||--o| SECONDFACTOR : "user_id -- by value"
+  USERS ||--o{ RECOVERYCODES : "user_id -- by value"
   USERS |o--o{ RUNS : "user_id -- by value, nullable"
   TABLES ||--o{ FIELDS : "table_name -- same subject, joined by name"
   TABLES ||--o| TABLEEDITS : "name -- by name, bookkeeping"
@@ -2216,6 +2514,10 @@ erDiagram
   LLMMODELS }o--o{ AGENTS : "attributes.strong/cheap -- a role's model, by name"
   AGENTS ||--o{ RUNS : "subject -- by name, when kind = agent"
   AGENTS ||--o{ AGENTMEMORY : "agent -- by name"
+  CHECKLISTS ||--o{ CHECKLISTSTEPS : "checklist"
+  CHECKLISTS ||--o{ CHECKLISTRUNS : "checklist -- by value"
+  CHECKLISTS ||--o{ CHECKLISTPROPOSALS : "checklist"
+  USERS |o--o{ CHECKLISTS : "run_as -- by value, nullable"
   USERS |o--o{ AGENTMEMORY : "user_id -- by value, nullable"
   RUNS |o--o{ AGENTMEMORY : "run_id -- by value, nullable"
   RUNS ||--o{ RUNPARTS : "run_id -- by value, deleted with the run"
@@ -2353,7 +2655,7 @@ The ten built-ins are `insert_row`, `update_rows`, `delete_rows`, `fetch`, `run_
 (§7.4a: a user formula, a role, a duration or an `expires_at` formula, a key formula that is per
 user, and `once`, which grants nothing if a grant with that key ever existed for the user — the
 card-less trial; never the admin role), and they live in
-**`sc-core-actions`, above the row layer**. That placement is the design's one real constraint on where an action may live: a
+**`sc-action-builtins`, above the row layer**. That placement is the design's one real constraint on where an action may live: a
 trigger's write goes through `sc-api`'s `rows` module, so it is coerced, validated,
 `File`-field-checked and *observed* exactly like an API caller's write. A second write path would
 quietly skip all of it. Two more are registered apart from the set, because each holds a seam a
@@ -2558,16 +2860,27 @@ body is an event like any other, carrying this trigger's chain, so the cascade b
 it exactly as it does to `insert_row`. A bulk update or delete resolves its matched rows first
 and then writes them one at a time, as `update_rows` does; the events are the point.
 
-**Authority: admin by default, `asUser()` to delegate.** A code body's reads and writes are the
-admin's, carrying the event's user (so an RLS policy that reads `user` still sees who caused
-it). `asUser()` is available on the handle, on a table and on a query, and sets one field of
-the plan — so where it appears in the chain does not matter:
+**Authority: the run's default, `asUser()` / `asAdmin()` to choose.** A handle the body did not
+narrow or widen sends `authority: "default"`, and the **host** resolves it per run:
+
+- a **trigger's** body (and a workflow step, a module, an agent tool, a server-rendered
+  page's entry) runs as the **admin**, carrying the event's user (so an RLS policy that reads
+  `user` still sees who caused it) — a trigger is server-side configuration, and a table's
+  read floor defaults to admin-only, so a public site's page would otherwise see nothing;
+- a JavaScript or Python **custom query** (§13.4) runs as the **caller**, so the table's role
+  rules and ownership formulas hold exactly as they do on the row API. Ownership checks are *opt-out*
+  there (`asAdmin()`), not opt-in: an app's endpoints are what coding agents write, and the
+  safe one must be the one written by saying nothing.
+
+The same rule covers `fs`, `trigger(...)` and `models` handles. `asUser()` and `asAdmin()` are
+available on the handle, on a table and on a query, and set one field of the plan — so where
+they appear in the chain does not matter:
 
 ```js
 await db.asUser().invoices.where({ paid: false }).rows();   // the whole handle
 await db.invoices.asUser().where({ paid: false }).rows();   // one table
 await db.invoices.where({ paid: false }).asUser().rows();   // one query
-await db.invoices.asAdmin().insert({ … });                  // the default, said out loud
+await db.invoices.asAdmin().insert({ … });                  // the admin, said out loud
 ```
 
 Delegated, every operation goes through `sc_api::ownership`'s `read_rows_as` /
@@ -2707,7 +3020,7 @@ everything else, so `Promise.all([fetch(a), fetch(b)])` really does issue both a
 body suspended on an endpoint costs a pending promise rather than an isolate.
 
 The seam is JSON here too — one request object in, one response object out
-(`sc_expr::FetchHost`, implemented in `sc-core-actions` over the same HTTP client the `fetch`
+(`sc_expr::FetchHost`, implemented in `sc-action-builtins` over the same HTTP client the `fetch`
 action uses) — so §15's other guest languages inherit `fetch` the way they inherit `db`.
 
 **The plan is the seam.** The fluent surface is JavaScript; what crosses into Rust is one plain
@@ -2790,8 +3103,8 @@ error only to something that was told to read it — `exists` is a question, not
 | `list()` | the direct children — as the same file and directory objects, so a listing is walked and acted on rather than re-opened by name. A listed entry also carries what the listing said: `size` and `modified` beside `name` and `isDirectory`, as properties and in `toJSON` (`{store, path, name, isDirectory, size, modified}`), so `JSON.stringify(await dir.list())` is a usable listing. A file that was *opened* rather than listed has `size`/`modified` `undefined` — nothing has looked at the store for it — and `stat()` works on either kind of entry |
 | `exists()`, `stat()`, `create()`, `delete()` | `create()` is `mkdir -p` and idempotent; `delete()` takes everything in it |
 
-**Authority** is `db`'s: the admin's by default, because a trigger is server-side configuration,
-and `fs(name).asUser()` delegates to the event's caller — at which point §14.1's
+**Authority** is `db`'s: the run's default (the admin's in a trigger, because a trigger is
+server-side configuration; the caller's in a custom query), and `fs(name).asUser()` delegates to the event's caller — at which point §14.1's
 **path-cumulative** `min_role` rule decides every operation (the store's floor, then every
 directory on the path, then the entry itself, most restrictive winning), and a listing is
 *filtered* rather than refused. One asymmetry is stated rather than inherited: a delegated body
@@ -3223,7 +3536,10 @@ One dispatch, for each matching trigger in name order:
 **One trigger's failure is one trigger's failure**: every run is independent, and none of it
 reaches the write that caused it — which has already committed. A request that inserted a row
 gets its row back even when the audit trigger it fired is misconfigured, and the reason is
-reported rather than lost.
+reported rather than lost: logged, and raised as an **`error` event** (`method` `"TRIGGER"`,
+`path` `/<trigger>`, plus `trigger`, `event`, `table` and the row's primary `key` in the
+payload). That event is how an application learns that a mail its update trigger sent was never
+accepted: an `error` trigger can write the outcome back to the row the payload names.
 
 The `error` event is guarded against re-entrancy at exactly one place (the fire-and-forget
 path), so an error raised while handling an error cannot become an infinite loop at the worst
@@ -3565,7 +3881,7 @@ step, parallel steps, and the copilot that *writes* workflows (§11.6).
 
 ---
 
-## 11. Agents (`sc-llm`, `sc-agent`, `sc-core-traits`) and copilot (`sc-copilot`)
+## 11. Agents (`sc-llm`, `sc-agent`, `sc-agent-builtins`) and copilot (`sc-copilot`)
 
 *Designed for the sixth post-MVP milestone; §11.1–§11.5 are written for it, §11.6 is not.*
 
@@ -3583,9 +3899,9 @@ Three separations are load-bearing, and they are why this is three crates rather
   streaming, and nothing about Saltcorn. `sc-agent` knows agents, traits and the loop, and
   nothing about which vendor is on the other end.
 - **A trait that touches rows must sit above the row layer**, for the reason §10.1 gives for
-  `sc-core-actions`: a write goes through `sc-api`'s `rows` module so it is coerced, validated
+  `sc-action-builtins`: a write goes through `sc-api`'s `rows` module so it is coerced, validated
   and *observed*. So `sc-agent` (layer 7) owns the trait, the loop and the storage, and the
-  built-in traits live in `sc-core-traits` (layer 9), beside the built-in actions.
+  built-in traits live in `sc-agent-builtins` (layer 9), beside the built-in actions.
 - **An agent is a kind of `Action`** (GOALS, §10.2), but it is *not* stored as one. Its
   definition is its own record; `run_agent` is the one registered action that runs it. A trigger
   therefore fires an agent through machinery that already exists, and the agent stays editable
@@ -4097,7 +4413,7 @@ milestone, Phase 3, `sc_agent::control`):
   mode, so a scripted expectation about a mode is written as `Match::Offers` over the tools the
   request declares.
 
-### 11.3 The built-in traits (`sc-core-traits`)
+### 11.3 The built-in traits (`sc-agent-builtins`)
 
 Deliberately few, and split by what they touch. Each names its target in its configuration —
 there is no trait that can reach *any* table or *any* store, because "which tables may this
@@ -4106,9 +4422,14 @@ the single exception**, and the reason is structural rather than an oversight: s
 schema-and-triggers paragraphs at the end of this section.
 
 **Tables.** `query_table` (one configured table; tool arguments are a `where` object, an
-optional field list, an ordering and a bounded `limit`), `insert_row` and `update_rows` /
-`delete_rows` as separate opt-in traits, so read-only is the default shape of an agent and
-granting writes is a decision with a form field attached. All of them go through `sc-api::rows`
+optional field list, an ordering and a bounded `limit`) and `edit_table_rows`, whose insert,
+update and delete are three separate opt-in checkboxes (`allow_insert`, `allow_update`,
+`allow_delete`, all off by default; a form with none ticked is refused), so read-only is the
+default shape of an agent and granting writes is a decision with a form field attached. Each
+ticked box adds one tool (`insert_into_books`, `update_books`, `delete_from_books`); the table,
+the field allow-list (insert and update) and the row bound (update and delete) are shared.
+These were three traits (`insert_row`, `update_rows`, `delete_rows`) until they were merged, as
+`admin_copilot`'s grants already were. All of them go through `sc-api::rows`
 with the run's caller.
 
 **What was built, where it deviates** (Phase 3, `query_table`):
@@ -4146,7 +4467,7 @@ with the run's caller.
   fields validated and the table's own triggers fired. The REST provider keeps its own
   orchestration because it turns each denial into an HTTP status; the *rule* is the shared
   part, which is the half that must not be able to differ.
-- **`update_rows` requires a `where` as well as `delete_rows` does.** The TODO asks it of the
+- **An update requires a `where` as well as a delete does.** The TODO asks it of the
   delete alone, but a whole table rewritten by an omitted argument is the same accident as one
   emptied by it, and §10.1 already refuses both on the *actions*. A model that means every row
   writes a condition that matches every row.
@@ -4160,7 +4481,7 @@ with the run's caller.
   "The row whose title is Dune" is how a model addresses a row it may not rename, and the rows a
   filter can reach are already bounded by the caller's access. A read trait's allow-list is the
   other way round, because there a hidden field could be read back one comparison at a time.
-- **`insert_row`'s arguments are the row itself**, flat, and its schema has **no `required`
+- **An insert's arguments are the row itself**, flat, and its schema has **no `required`
   list**: a `NOT NULL` column may have a database default and the catalog does not record
   defaults, so demanding every required column would make the model invent values the database
   was going to supply. The prose says which fields are required; a genuinely missing value comes
@@ -4338,7 +4659,7 @@ scope, so what it changed enters the change ledger and the model's reads of it g
   between two calls is not attributed to the shell.
 - **The repo map is its own crate.** `sc-repomap` has **no workspace dependencies** — the caller
   passes paths and bytes — which keeps tree-sitter's C builds out of everything that depends on
-  `sc-core-traits`, and the grammars sit behind a default `grammars` feature. Tags come from the
+  `sc-agent-builtins`, and the grammars sit behind a default `grammars` feature. Tags come from the
   grammars' own `tags.scm` with the references a code agent needs added (JSX components, exported
   constants, TS type aliases, enums and type references, Python `from` imports); ranking is
   personalised PageRank on Aider's weights, hand-rolled rather than adding a graph dependency.
@@ -4468,7 +4789,7 @@ and one refusal.
 
 - **The rule moved out of the handlers first.** Creating a table and creating a field existed only
   as closures inside `sc-server`'s admin handlers, which was fine while an HTTP request was the
-  only way to change a schema. `sc-core-traits` is layer 9 and cannot name `sc-server`, so the
+  only way to change a schema. `sc-agent-builtins` is layer 9 and cannot name `sc-server`, so the
   whole of it — the `type` → storage-type resolution, how a primary-key field is stored, the
   DDL-then-overlay sequence, the calculated-field check, `validate_ownership_settings` and
   `sync_table_rls` — is now `sc_api::schema_edit`, beside `rows` and for the same reason. The
@@ -4845,7 +5166,9 @@ history for that agent.
 
 - **The socket protocol, as it settled.** Client → server: `{"type":"start","agent":…,"run":…?}`
   binds the socket to an agent and optionally continues a run; `{"type":"message","text":…}` is
-  one user turn; `{"type":"abort"}` stops the turn that is running. Server → client: `text`,
+  one user turn, which may carry `attachments` (`[{name, media_type, data}]`, base64: images
+  the model looks at and text documents it reads, stored on the run's user message as
+  `sc_llm::Attachment`); `{"type":"abort"}` stops the turn that is running. Server → client: `text`,
   `reasoning`, `tool_call`, `tool_result`, `done` and `error`. `done` carries the run id and the
   run's state (`done` | `failed` | `aborted`), which is what the client needs and the delta
   stream alone cannot say. A successful `start` is answered with **silence** — the composer is
@@ -4909,7 +5232,7 @@ history for that agent.
 
 ### 11.5 The agent as an action
 
-`run_agent` is a registered `Action` (in `sc-core-traits`, since it runs a loop whose tools
+`run_agent` is a registered `Action` (in `sc-agent-builtins`, since it runs a loop whose tools
 reach the row layer) taking an agent name and a prompt formula evaluated in the event's scope
 (§10.1). It makes an agent a trigger body without touching the trigger model: a row insert can
 start an agent with a prompt derived from the row, an application can expose it as
@@ -4925,7 +5248,7 @@ action returns a value (§10.1), and a caller who wants the deltas is a chat cli
   `run_agent` needs it for the same reason (decision 7: no test may need a key) and lives below
   the server. `sc-server` re-exports it and `AgentServices` carries it unchanged.
 - **`run_agent` is registered apart from the built-in action set**, through
-  `sc_core_traits::register_agent_actions`, because it needs two things assembled first that no
+  `sc_agent_builtins::register_agent_actions`, because it needs two things assembled first that no
   other action does: the trait registry the agents were validated against — one registry, or an
   agent would be accepted by the admin API and refused by the trigger — and this deployment's
   provider connector. The visible consequence is a **boot order**: `install_agents` runs before
@@ -4993,7 +5316,7 @@ mount, as the live socket and the upload slots do (`sc_app::agent_route`):
 
 | Route | |
 |---|---|
-| `POST {mount}/_agents/{name}/chat` | `{ message, run? }` → one turn, as `text/event-stream` |
+| `POST {mount}/_agents/{name}/chat` | `{ message, run?, attachments? }` → one turn, as `text/event-stream`; attachments are images (PNG/JPEG/GIF/WebP ≤ 5 MiB) and UTF-8 text documents (≤ 1 MiB), at most 10 |
 | `POST …/prompt` | `{ prompt }` or `{ input }` → `{ run, state, answer, conclusion, tools }`; `?stream=1` streams it |
 | `GET …/runs` | the caller's own conversations with it, without transcripts |
 | `GET / PATCH / DELETE …/runs/{id}` | one of them with its transcript; rename (`{ title }`); delete |
@@ -5862,6 +6185,7 @@ pub struct Application {
     pub framework: FrameworkRef,         // one primary UI framework
     pub extra_frameworks: Vec<FrameworkRef>, // may bring in others (see Open Questions)
     pub tables: Vec<TableId>,            // the subset of the data layer it can access
+    pub api_tables: Vec<TableId>,        // of those, the ones with a generic row API (default: none)
     pub file_stores: Vec<FileStoreId>,
     pub triggers: Vec<TriggerRef>,       // the triggers it exposes, by name
     pub streams: Vec<StreamRef>,         // the streams it may observe, by name (§14.3)
@@ -5891,6 +6215,17 @@ pub struct StaticDir {
 **Multiple applications share one data layer**; each sees only its declared subset of
 tables and file stores. This is v2's replacement for v1 schema-per-tenant multi-tenancy —
 lighter-weight and driven by access subsets rather than separate schemas.
+
+**Connecting a table is not publishing it.** `tables` is what the app's custom queries,
+views, streams and generated `schema.sql` may name. The generic **row API** — REST's
+list/read/create/update/delete routes and GraphQL's type for a table — is served only for the
+tables in `api_tables`, a second opt-in subset that is **empty for every new application**,
+whether the admin's form, the CLI or a coding agent's `create_application` made it (the tool
+has no argument for it at all). An app reaches its data through custom queries (§13.4), one
+endpoint per thing a page does, which in JavaScript or Python run **as the caller** by default
+(§10.1, "Authority"); a row API is turned on per table, afterwards, only when somebody wants
+generic row access — `update_application`'s `api_tables` (which also needs
+`allow_access_changes`), `feldspar app api-tables`, or the form's checkbox.
 
 **An application is created and configured in the admin UI — never in Rust code and never
 by a CLI flag.** The admin picks the framework, fills in that framework's settings (a React
@@ -7202,7 +7537,7 @@ break on its first edit gets stated — for `react`, that `src/feldspar/` is gen
 on every build.
 
 What the framework declares is *data*: trait names and their configuration (`BuilderAgentSpec`),
-because the traits live in `sc-core-traits` two layers above `sc-app` and a framework can only name
+because the traits live in `sc-agent-builtins` two layers above `sc-app` and a framework can only name
 them, exactly as an application names its API providers. Assembling that into an `Agent` and storing
 it is the server's, on `createApplication`, after the scaffold — the agent is pointed at the project
 the scaffold has just written. It is **not** fatal to the creation and is reported beside it
@@ -7540,6 +7875,37 @@ it works exactly once, and spending it ends the user's other tokens and sessions
 have accounts; it sends at most one link a minute per account, sends it off the request, and
 uses the system's sender and wording. The scaffold's `src/SetPassword.tsx` is the page at that
 path.
+
+**Email verification** (TODO A2) is the third use of these links. `users.email_verified` is
+`false` for an account made by self-service sign-up (security review #41), and set to `true` by
+anything that proves the holder reads that address: a set-password link, an identity provider
+sign-in that claims the account, or the verification link. `NULL` (every other account) counts
+as proven. An application whose REST API has `verify_email` on (off by default) works as
+follows:
+
+- `signup` also emails a link `{origin}/verify-email#token=…` (a `verify` token in
+  `_fd_password_tokens`, lasting 48 hours). The subject and text can be changed with
+  `verify_email_subject` / `verify_email_body`, and the text must contain `{{link}}`. A sign-up
+  is refused before an account exists when there is no mail transport, and if the message
+  cannot be sent the account is deleted again.
+- An account whose address is unproven is **served as `unverified_role`** (default 100, the
+  public role; a save refuses the admin role). `sc_app::cap_role` does this in the same place as
+  `max_role` (F9), so every application surface sees the lower role. The account's own role is
+  never changed. So proving the address by any route gives full access from the next request,
+  and an application that does not require verification serves the same account as its role.
+  The user summary (`login`, `whoami`, …) has `email_verified`, so a page can say "check your
+  email".
+- `POST /api/verify-email {token}` is public and is one of the sign-in endpoints that F9 lets a
+  refused caller reach. It spends the token, proves the address and starts a session. Password
+  links refuse a `verify` token, and `verify-email` refuses a password token. Following the link
+  does not end the account's other sessions. Those pick up the change when their cache entry
+  expires, within the 60-second freshness TTL.
+- `POST /api/resend-verification` (signed in) sends a fresh link to the caller's own address,
+  at most one a minute. It answers `{ok: true}`, and does nothing for a proven address.
+
+Turning `verify_email` on also holds back accounts that signed up before it was on, until they
+verify. Their owners can ask for a link with `resend-verification`. Turning it off serves every
+account as its role again. Saltcorn UI applications do not send the link yet (TODO A2.3).
 
 **`users` behind an application's API.** The users table can be declared by an application like
 any other table (for example, a therapist listing their patients' accounts), so the row layer
@@ -8274,6 +8640,17 @@ of those endpoints are the SPA's own plumbing.
   list because a schema is a set of connected tables and a per-operation tool turns a
   twelve-table domain into forty round trips; `describe_action` is progressive disclosure
   because no fixed schema can carry every action's settings.
+  Beside them, always offered because a reference grants nothing: `describe_code_api`, and
+  **`search_docs` / `read_docs`** (`sc-docs`) — BM25 search over the sections of `docs/`'s
+  tutorials and references and the admin UI's help topics, all compiled in, and reading a
+  document whole, as its outline, or one section at a time (capped at 12 000 bytes). A help
+  topic is one more document, rendered with an empty context. Which files of `docs/` are in is
+  an allowlist of patterns in `sc-docs`' `build.rs` (`tutorial-*.md`, `GRAPHQL_API.md`, …),
+  expanded at build time; anything it does not match (planning notes, this document, the
+  security review) is simply not compiled in. `coding` offers the same two tools in every mode, and
+  any other agent gets them from the settings-less `docs` trait. The three traits declare them
+  **shared** (`AgentTrait::shared_tools`): identical shared tools from two enabled traits are
+  one tool rather than a §11.2 collision, offered once and answered by the first.
 - **Tier 2 — generated from tagged endpoints.** An `Endpoint` gains an opt-in MCP tag carrying
   the prose a model reads. Everything else is already in the value: the name, the typed path and
   query parameters, and both `TypeSchema`s. `TypeSchema` → JSON Schema is the one new function,
@@ -8305,8 +8682,8 @@ rather than accumulated.
 `sc_llm::ToolSpec` is `{ name, description, parameters }` and an MCP tool is `{ name,
 description, inputSchema }` — the same value with two spellings. So tier 1 is a rename.
 
-But `admin_copilot` lives in `sc-core-traits` (layer 9) and the projection belongs in `sc-api`
-(layer 8), so the **tool bodies move down**. `sc-core-traits::admin_copilot` becomes a thin
+But `admin_copilot` lives in `sc-agent-builtins` (layer 9) and the projection belongs in `sc-api`
+(layer 8), so the **tool bodies move down**. `sc-agent-builtins::admin_copilot` becomes a thin
 `AgentTrait` over them — the name, the six-checkbox form, its validation, and the translation
 from a run's `TraitContext` to a `ToolContext` — and the chat copilot and the MCP server become
 two callers of one implementation.
@@ -8331,7 +8708,7 @@ than that type itself: an agent's context carries a run id, a delegator and a Ja
 evaluator, none of which an administrative tool touches, and naming it would put `sc-api`
 below the agent loop for nothing.
 
-**There is no new crate.** One would need `sc-core-traits` to reach the copilot's tools and
+**There is no new crate.** One would need `sc-agent-builtins` to reach the copilot's tools and
 `sc-server` to reach the mount registry, inverting the layering in two directions at once.
 
 #### Reloading the catalog and rebuilding an application
@@ -8647,7 +9024,7 @@ a prediction.
 
 | Seam | Declared in | Implemented in | Installed by | What reaches it |
 |---|---|---|---|---|
-| `DatasetSource` | `sc-model` | `sc-model` (`CompiledSource`, over `sc-dataset`; re-exported by `sc-server` as `CatalogDatasetSource`) | `ModelServices` | every fit and prediction |
+| `DatasetSource` | `sc-model` | `sc-model` (`CompiledSource`, over `sc-dataset`) | `ModelServices` | every fit and prediction |
 | `ModelProviderHost` | `sc-model` | `sc-module`, `sc-python` | the module rebuild | the registry, for a module's provider |
 | `FitStarter` | `sc-model` | `sc-server` (`ModelServices`) | `register_model_actions` | the `fit_model` action |
 | `ModelHost` | `sc-catalog` | `sc-server` (`ModelServices`, over `sc_api::models`) | `Catalog::set_model_host`, at startup and on every module rebuild | `predict("…")` in a formula, and the code host's model handle |
@@ -11346,7 +11723,7 @@ synchronous because a publish is a send that never waits — and `LiveHub` imple
 installed on the catalog (`Catalog::set_live_host`) by the router, beside its session listener.
 Three publishers reach it without naming `sc-live`:
 
-- **The `publish` action** (`sc-core-actions`): `stream` (a picker the server fills with the
+- **The `publish` action** (`sc-action-builtins`): `stream` (a picker the server fills with the
   internal streams, `INTERNAL_STREAMS_QUERY`), `topic` (a formula; blank is `user.id` on a `user`
   stream and none on a `single` one; required on a `row` one) and `value` (a formula per key). As a
   workflow `Action` step it reads the run's event, so `user.id` is the user who started the run.
@@ -11678,7 +12055,7 @@ helper's transport. The scaffold's `AGENTS.md` (L5.7) has the TipTap and CodeMir
 
 **Tests.** `sc-types`: the type validates bytes. `sc-api` `tests/collab_doc.rs` (SQLite): absent
 from every read and the generated row type, refused by every write path with its sentence,
-written by the persister, refused by a filter and by a formula. `sc-core-actions`: an action's
+written by the persister, refused by a filter and by a formula. `sc-action-builtins`: an action's
 configuration may not name one. `sc-query`/`sc-db-sqlite`: `FOR UPDATE` rendered, or not.
 `sc-live`: the CRDT units; `doc_format.rs` (the JS fixture); `documents.rs` (SQLite) — relay to
 the others and not back, close with the last member, two rooms (two processes) persisting
@@ -12011,7 +12388,7 @@ entries in `seq` order, computed when read.
 
 A changeset is **not a transaction**. A trigger's action commits *after* the write that fired
 it, in its own transaction (§10.2), so grouping by `txid` would separate the user's edit from
-the denormalising write its trigger made. Instead, `CallerContext` carries `changeset` next to
+the denormalising write its trigger made. Instead, `Principal` carries `changeset` next to
 the trigger `chain` it already carries, and `set_caller_context` sets it as the
 transaction-local `sc.changeset`, beside `sc.role` and `sc.user`. `Event` carries it too, so a
 trigger's action passes it to the writes it makes.
@@ -12020,7 +12397,7 @@ trigger's action passes it to the writes it makes.
 the rest of its row, and the writer's `user_id` (with `session` only when there is a user). The
 trigger needs all of it, because it writes the `_fd_changesets` row. Most code never handles a
 changeset: one is **ambient** for the task that runs the action (`sc_catalog::changeset::scope`),
-and `CallerContext::new` picks it up. The server's request middleware sets one for each request,
+and `Principal::new` picks it up. The server's request middleware sets one for each request,
 and so do a CSV import, an MCP tool call, a workflow step (from the run) and a trigger's action
 (from the event). A write to a change-logged table always runs in a caller-context transaction,
 so the GUCs reach the trigger.
@@ -12172,7 +12549,7 @@ Details the text above leaves open:
 
 #### The Undo action
 
-`undo` is a core action (`sc-core-actions`), so an application's button, a view's action or a
+`undo` is a core action (`sc-action-builtins`), so an application's button, a view's action or a
 trigger can call it. It steps back through **the caller's own session**:
 
 - **No `table` configured**: undo the most recent changeset of this session that still has
@@ -12189,7 +12566,7 @@ session (anonymous callers have none), or when the conflict check fails. It does
 picked. Redo is not a separate mechanism: it would be an undo of the session's last undo, and
 is left for later.
 
-**As built (H4).** `sc_core_actions::Undo` finds its changeset with
+**As built (H4).** `sc_action_builtins::Undo` finds its changeset with
 `sc_catalog::history::session_undo_target` (the event's changeset gives the session and the id
 of the running request, which is skipped), then calls H3's `Reverser::undo_changeset` as the
 event's caller, without `force`. The undo changeset inherits the session from the ambient
@@ -12483,7 +12860,7 @@ every configurable thing here already speaks (§6.2). So a module's action is re
 trigger form, validated on save and run by the dispatcher with no code anywhere that knows what
 a module is: `ModuleAction` is an ordinary `Action` whose `run` marshals the `ActionContext`
 into v1's argument object — and builds the same five host surfaces `run_js_code` builds, from
-the same `sc_core_actions::CodeSurfaces`, so a v1 plugin's `insertRow` carries the event's
+the same `sc_action_builtins::CodeSurfaces`, so a v1 plugin's `insertRow` carries the event's
 caller and this trigger's chain and is observed by triggers exactly as a `db.books.insert(…)`
 is. v1's `onLoad(configuration)` hook is called at load, because a plugin
 builds there the state its actions close over — `@saltcorn/mqtt`'s one action publishes through
@@ -12651,7 +13028,7 @@ The rules, each chosen so that "on every load" is safe:
   the code that wrote it, and an admin's own field on a module table (`mail_messages.handled`) is
   theirs. A declared field whose type or reference the database disagrees with is reported as an
   issue on the module's card and left alone: retyping a column with rows in it is a migration, and
-  there is no migration framework (§3.3).
+  migrations (§5.3) are Feldspar's own, not a module's.
 - **A field an upgrade adds is nullable**, whatever it declares, with no default: the table has
   rows, and `NOT NULL` on them needs a value nobody declared.
 - **Table settings belong to the creation.** `label`, `ownership` and the minimum roles go into
@@ -13101,7 +13478,7 @@ call answers once `res` is ended, not once the callback returns, because a callb
 from a promise it did not return. Calls are bounded like a webhook's: 1 MiB body, 600 requests a
 minute per address, and the action wall clock. A throw is a 500 and the `error` event.
 
-**What a route reads of the installation** (the `system` ask surface, `SystemAsks`, carried only
+**What a route reads of the installation** (the `system` ask surface, `AskSurface::System`, carried only
 by a route's call). This is what `heartbeat-monitor` needs:
 - `require("systeminformation")` is answered by the host, not the npm package, which reads `/proc`
   and runs `df` outside a module's sandbox. Only `fsSize` (one entry: the filesystem holding the
@@ -13337,7 +13714,7 @@ the Python plugin API is better than the JavaScript one rather than merely diffe
 free — Python has `inspect.signature` and JavaScript does not.
 
 **Module code gets the real `db`.** `sc.db`, `sc.fetch`, `sc.fs`, `sc.trigger` and `sc.live` are
-the same surfaces a code body has, built by the same `sc_core_actions::CodeSurfaces`, so a plugin's
+the same surfaces a code body has, built by the same `sc_action_builtins::CodeSurfaces`, so a plugin's
 write carries the event's caller and this trigger's chain and its `fetch` is counted on the run's
 budget. §15.1's `File`/`User`/`getState` stubs, and the v1 `Table` and `Field` beside them, exist
 because v1's API is v1's; a Python plugin has no v1 to be compatible with, so it is handed the
@@ -13455,22 +13832,21 @@ still **registers `run_python_code`** and fails at fire time saying the server w
 Python support, because registering it either way is what keeps a trigger's configuration
 meaningful across deployments.
 
-**Why the feature is off by default**, which is a statement about artifacts rather than a retreat
+**Why the feature is off by default**, which is a statement about builds rather than a retreat
 from in-process: a binary linked against `libpython3.x.so` fails at the **dynamic linker**, before
-`main`, on a host that has no such library — and, decisively, this project's shipped artifact is a
-`+crt-static` static-PIE binary, under which the Python link does not succeed at all (rustc
-selects a static `libpython` archive that is not PIC, and a `+crt-static` binary could not
-`dlopen` the `lib-dynload` extensions or any C-extension wheel even if it linked). Default-on
-would not degrade the release build, it would break it. **So the static tarball has no Python,
-and a Python-capable server is a separate dynamically-linked build.** `scripts/build-static.sh`
-ships one such build beside the static artifact: `--variant python` (built by default along with
-the static one) produces `feldspar-debian13-python.tar.gz`. It is built on Debian 13 with no
-`+crt-static`, links `libpython3.13.so.1.0`, and runs on Debian 13 only. Its `install.sh` installs
-`libpython3.13`, and `setup-host.sh` adds `python3` and `python3-venv` when `/opt/feldspar/VARIANT`
-says `debian13-python` (docs/OPERATIONS.md §2.1). The floor is CPython
-**3.11**, `abi3`, and `abi3` delivers what it promises: one build serves every CPython from 3.11
-up, the only obstacle being the version-specific soname in `DT_NEEDED`, which an operator
-satisfies by having the matching `libpython` present. The cost of the dependency is small — 7
+`main`, on a host that has no such library, so a plain `cargo build` should not demand one. (The
+first releases were also a `+crt-static` static-PIE binary, under which the Python link does not
+succeed at all; that artifact has been retired.) **The release is built with the feature.**
+`scripts/build-static.sh` produces it, published as `feldspar-linux-<arch>.tar.gz` (and, for
+x86_64, also as `feldspar.tar.gz`, the name the first releases had). It is built on Debian 12
+(glibc 2.36), dynamically linked, against a **bundled** CPython 3.13 (python-build-standalone, pinned by tag and SHA-256) that ships
+in the tarball as `python/` and is linked through `$ORIGIN/../python/lib`. The host needs nothing
+Python-related; for musl hosts (Alpine) the tarball also carries Debian 12's glibc and `.glibc`
+copies of the executables, chosen by its `install.sh` (TODO-portable-release.md §2, D3;
+docs/OPERATIONS.md §1.2). A source build's floor is CPython **3.11**. The build is
+not `abi3`: an embedding binary links one versioned `libpython` (`DT_NEEDED`) whatever API it
+compiles against, and the limited API has no `PyConfig`, which is how a binary that bundles its
+CPython names the interpreter's home (TODO-portable-release R1.4). The cost of the dependency is small — 7
 crates, 3 seconds of build, half a megabyte of binary, and ~10 ms to initialise an interpreter
 that is never initialised unless something asks for it.
 
@@ -13674,7 +14050,23 @@ archives are left out too. Already-encoded and range responses are skipped, and
 suits dynamic JSON. About BREACH: the secrets a cross-site attacker wants, the CSRF token and
 the session, travel in cookies, and headers are not compressed.
 
-**Clear all** (Settings → Development, `sc-server`'s `clear_all.rs`) resets a running
+**Settings → System** (`sc-server`'s `system.rs`, `getSystemInfo` and `restartServer`) answers
+"which feldspar is this?": the workspace version (`[workspace.package] version`, which every
+crate inherits and the release tarball is named after), plus the build time (UTC) and full git
+commit (`-dirty` for a checkout with edits) that `scripts/build-static.sh` compiles in as
+`SC_BUILD_TIME` and `SC_BUILD_COMMIT` (`option_env!`; a binary built any other way shows "not a
+release build"). Beside it: the primary database's product and version
+(`DatabaseDriver::server_version`), when the process started (the kernel's record in `/proc`, so
+the boot is counted), its pid, and readings taken when the tab is opened — resident memory and
+the machine's, CPU over a quarter-second sample, load average, and the filesystem holding the data
+directory. **Restart** answers, then always exits with code 75 after half a second: the server
+does not restart itself, whatever manages it does (`Restart=on-failure` in the unit `feldspar
+setup` writes, `restart: unless-stopped` in the compose file). It does not try to detect a
+manager — there are too many init systems to recognise, and seeing one does not say whether it
+restarts — so the dialog says that without one the server stays stopped. The admin UI then polls until a different process answers and reloads; sessions are rows, so
+the admin stays signed in.
+
+**Clear all** (Settings → System, `sc-server`'s `clear_all.rs`) resets a running
 installation to the empty state, as Saltcorn 1's button of the same name did. Every table the
 admin made in the primary database, and every column an admin added to `users`, is dropped
 through one schema-editor batch, ordered so a table goes after everything referencing it (keys

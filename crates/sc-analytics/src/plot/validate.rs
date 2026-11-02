@@ -1,4 +1,4 @@
-//! Checking a spec against a dataset (analytics TODO A2.1): the columns exist,
+//! Checking a spec against a dataset: the columns exist,
 //! their types suit their channels and the layer's stat, and the marks suit the
 //! stats — each refusal a sentence, all of them at once, so the explorer can
 //! say everything that is wrong with what was dropped.
@@ -310,13 +310,14 @@ fn facet_problems(facet: &Facet, shape: &StageShape) -> Vec<String> {
     }
     for (channel, f) in facet.iter() {
         if let Err(e) = field_check(channel, f, shape, true) {
-            problems.push(e);
+            problems.push(e.message().to_owned());
         }
     }
     problems
 }
 
 /// The plan of one layer, or every reason it cannot be drawn.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn plan(
     layer: &Layer,
     facet: &Facet,
@@ -330,7 +331,7 @@ pub(crate) fn plan(
     for (channel, f) in enc.iter() {
         match field_check(channel, f, shape, grouping) {
             Ok(ty) => typed.push((channel, f, ty)),
-            Err(e) => problems.push(e),
+            Err(e) => problems.push(e.message().to_owned()),
         }
     }
     let ty_of = |c: Channel| typed.iter().find(|(ch, _, _)| *ch == c).map(|(_, _, t)| *t);
@@ -675,7 +676,7 @@ pub fn validate_table(spec: &TableSpec, shape: &StageShape) -> Vec<String> {
             continue;
         }
         match field_check(Channel::X, f, &shape, true) {
-            Err(e) => problems.push(e.trim_start_matches("X: ").to_owned()),
+            Err(e) => problems.push(e.message().trim_start_matches("X: ").to_owned()),
             Ok(ty) => {
                 if matches!(ty, ColType::Float | ColType::Decimal) && f.bin.is_none() {
                     problems.push(format!(
@@ -745,58 +746,66 @@ pub(crate) fn field_check(
     f: &FieldDef,
     shape: &StageShape,
     grouping: bool,
-) -> Result<ColType, String> {
+) -> sc_error::Result<ColType> {
     let Some(column) = shape.column(&f.field) else {
-        return Err(format!(
+        return Err(sc_error::Error::invalid(format!(
             "{}: {}",
             channel.describe(),
             missing(shape, &f.field)
-        ));
+        )));
     };
     let ty = column.ty;
     let name = &f.field;
     if matches!(ty, ColType::Json | ColType::Bytes) {
-        return Err(format!(
+        return Err(sc_error::Error::invalid(format!(
             "`{name}` is {}, which cannot be plotted",
             article(ty)
-        ));
+        )));
     }
     if ty == ColType::Geometry {
-        return Err(format!(
+        return Err(sc_error::Error::invalid(format!(
             "`{name}` is a geometry, which is drawn on a map rather than plotted"
-        ));
+        )));
     }
     if let Some(bin) = &f.bin {
         if !ty.is_numeric() && ty != ColType::Unknown {
-            return Err(format!(
+            return Err(sc_error::Error::invalid(format!(
                 "`{name}` is {}, and only numbers can be binned",
                 article(ty)
-            ));
+            )));
         }
         if bin.width.is_some_and(|w| w <= 0.0) {
-            return Err(format!("the bins of `{name}` need a width of more than 0"));
+            return Err(sc_error::Error::invalid(format!(
+                "the bins of `{name}` need a width of more than 0"
+            )));
         }
         if bin.bins == Some(0) {
-            return Err(format!("`{name}` needs at least one bin"));
+            return Err(sc_error::Error::invalid(format!(
+                "`{name}` needs at least one bin"
+            )));
         }
     }
     let continuous = matches!(ty, ColType::Float | ColType::Decimal) && f.bin.is_none();
     match channel {
-        Channel::Size if !ty.is_numeric() && ty != ColType::Unknown => Err(format!(
-            "Size shows an amount, and `{name}` is {}; put it on Color or Shape",
-            article(ty)
-        )),
-        Channel::Shape if continuous => Err(format!(
+        Channel::Size if !ty.is_numeric() && ty != ColType::Unknown => {
+            Err(sc_error::Error::invalid(format!(
+                "Size shows an amount, and `{name}` is {}; put it on Color or Shape",
+                article(ty)
+            )))
+        }
+        Channel::Shape if continuous => Err(sc_error::Error::invalid(format!(
             "Shape needs a column with a few values, and `{name}` is a number with many; bin it, or put it on Color"
-        )),
-        c if c.is_facet() && continuous => Err(format!(
+        ))),
+        c if c.is_facet() && continuous => Err(sc_error::Error::invalid(format!(
             "{} makes one plot per value, and `{name}` is a number with many values; bin it",
             c.describe()
-        )),
-        c if grouping && continuous && !c.is_positional() && !c.is_facet() => Err(format!(
-            "{} groups the rows here, and `{name}` is a number with many values; bin it",
-            c.describe()
-        )),
+        ))),
+        c if grouping && continuous && !c.is_positional() && !c.is_facet() => {
+            Err(sc_error::Error::invalid(format!(
+                "{} groups the rows here, and `{name}` is a number with many values; bin it",
+                c.describe()
+            )))
+        }
         _ => Ok(ty),
     }
 }

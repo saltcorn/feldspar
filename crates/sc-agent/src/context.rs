@@ -441,8 +441,16 @@ impl ContextState {
         }
         for (index, message) in transcript.iter().enumerate().take(cut).skip(self.start()) {
             match message {
-                LlmMessage::User { content } => {
+                LlmMessage::User {
+                    content,
+                    attachments,
+                } => {
                     out.push_str("## User\n\n");
+                    if !attachments.is_empty() {
+                        let names: Vec<&str> =
+                            attachments.iter().map(|a| a.name.as_str()).collect();
+                        out.push_str(&format!("(attached: {})\n\n", names.join(", ")));
+                    }
                     out.push_str(&clip(content));
                 }
                 LlmMessage::Assistant {
@@ -671,7 +679,7 @@ mod tests {
         });
         let (messages, plan) = cx.request_messages(&t, None);
         assert_eq!(messages[0], LlmMessage::user("header"));
-        let LlmMessage::User { content } = &messages[1] else {
+        let LlmMessage::User { content, .. } = &messages[1] else {
             panic!("the summary is a user message");
         };
         assert!(content.starts_with(SUMMARY_HEADING) && content.ends_with("fix the bug"));

@@ -12,17 +12,15 @@
 use chrono::{DateTime, Utc};
 use sc_error::{Error, Result};
 use sc_query::{Statement, Value};
+use sc_types::Role;
 use serde_json::{Map, Value as Json};
 use uuid::Uuid;
 
 use crate::catalog::Catalog;
 use crate::change_log::{ATTR_HISTORY, CHANGES_TABLE};
 use crate::changeset::CHANGESETS_TABLE;
-use crate::field::Attrs;
 use crate::table::Table;
-
-/// The administrator's role, who may always read history.
-const ROLE_ADMIN: u8 = 1;
+use sc_types::Attrs;
 
 /// A changeset as the log keeps it, without the session key, which is for
 /// finding a session's changesets (the Undo action) and is never shown.
@@ -145,22 +143,22 @@ pub struct RowAsOf {
 
 /// The role a table's history is open to (`attributes.history.min_role`): the
 /// admin unless it says otherwise.
-pub fn history_min_role(attributes: &Attrs) -> u8 {
+pub fn history_min_role(attributes: &Attrs) -> Role {
     attributes
         .get(ATTR_HISTORY)
         .and_then(|h| h.get("min_role"))
         .and_then(Json::as_u64)
-        .and_then(|r| u8::try_from(r).ok())
-        .unwrap_or(ROLE_ADMIN)
+        .and_then(|r| Role::try_from(r).ok())
+        .unwrap_or(Role::ADMIN)
 }
 
 /// Set who may read a table's history. Only while history is on (switching it
 /// off forgets this too); the admin's role removes the key.
-pub fn set_history_min_role(attributes: &mut Attrs, role: u8) {
+pub fn set_history_min_role(attributes: &mut Attrs, role: Role) {
     let Some(Json::Object(settings)) = attributes.get_mut(ATTR_HISTORY) else {
         return;
     };
-    if role == ROLE_ADMIN {
+    if role.is_admin() {
         settings.remove("min_role");
     } else {
         settings.insert("min_role".into(), Json::from(role));
@@ -180,24 +178,24 @@ const CHANGESET_COLUMNS: &str = "s.id, s.at AS cs_at, s.user_id, s.source, s.app
 const HAS_VALUES: &str = "(c.old_values IS NOT NULL OR c.new_values IS NOT NULL)";
 
 fn quote(catalog: &Catalog, ident: &str) -> String {
-    catalog.primary().dialect().quote_ident(ident)
+    catalog.primary_driver().dialect().quote_ident(ident)
 }
 
 /// The `n`th bind's placeholder: `$n` on Postgres, `?n` on SQLite, which numbers
 /// a `$n` by where it first appears rather than by `n`.
 fn ph(catalog: &Catalog, n: usize) -> String {
-    catalog.primary().dialect().placeholder(n)
+    catalog.primary_driver().dialect().placeholder(n)
 }
 
 /// The tables named by the JSON array bound at `n`, as a subquery for `IN`.
 fn in_tables(catalog: &Catalog, n: usize) -> String {
-    crate::change_log::json_texts_sql(catalog.primary().dialect(), &ph(catalog, n))
+    crate::change_log::json_texts_sql(catalog.primary_driver().dialect(), &ph(catalog, n))
 }
 
 async fn query(catalog: &Catalog, sql: String, binds: Vec<Value>) -> Result<Vec<sc_db::Row>> {
     catalog
-        .primary()
-        .query(&Statement::raw(sql, binds))
+        .primary_driver()
+        .query(&Statement::raw(sc_query::TrustedSql::composed(sql), binds))
         .await?
         .try_collect()
         .await
@@ -363,7 +361,7 @@ async fn current_row(
     table: &Table,
     key: &str,
 ) -> Result<Option<Map<String, Json>>> {
-    let dialect = catalog.primary().dialect();
+    let dialect = catalog.primary_driver().dialect();
     let sql = format!(
         "SELECT {row} AS row FROM {table} t WHERE {key} = {p1}",
         row = crate::change_log::row_json_sql(dialect, table, "t"),
@@ -498,8 +496,10 @@ pub async fn list_changesets(
           ORDER BY s.at DESC, s.id LIMIT {limit} OFFSET {offset}",
         log = quote(catalog, CHANGES_TABLE),
         sets = quote(catalog, CHANGESETS_TABLE),
-        tables =
-            crate::change_log::json_distinct_array_sql(catalog.primary().dialect(), "c.table_name"),
+        tables = crate::change_log::json_distinct_array_sql(
+            catalog.primary_driver().dialect(),
+            "c.table_name"
+        ),
         in_tables = in_tables(catalog, 1),
         limit = filter.limit,
         offset = filter.offset,
@@ -664,17 +664,17 @@ mod tests {
     #[test]
     fn history_is_the_admins_unless_opened_and_switching_off_forgets() {
         let mut attrs = Attrs::new();
-        assert_eq!(history_min_role(&attrs), 1);
+        assert_eq!(history_min_role(&attrs), Role::ADMIN);
         // Nothing to open while history is off.
-        set_history_min_role(&mut attrs, 40);
+        set_history_min_role(&mut attrs, Role::of(40));
         assert!(attrs.is_empty());
         set_history_enabled(&mut attrs, true);
-        set_history_min_role(&mut attrs, 40);
-        assert_eq!(history_min_role(&attrs), 40);
-        set_history_min_role(&mut attrs, 1);
+        set_history_min_role(&mut attrs, Role::of(40));
+        assert_eq!(history_min_role(&attrs), Role::of(40));
+        set_history_min_role(&mut attrs, Role::ADMIN);
         assert_eq!(attrs[ATTR_HISTORY], serde_json::json!({ "enabled": true }));
-        set_history_min_role(&mut attrs, 40);
+        set_history_min_role(&mut attrs, Role::of(40));
         set_history_enabled(&mut attrs, false);
-        assert_eq!(history_min_role(&attrs), 1);
+        assert_eq!(history_min_role(&attrs), Role::ADMIN);
     }
 }

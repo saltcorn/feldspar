@@ -27,9 +27,9 @@ fn settings(port: u16, username: &str) -> EmailSettings {
         security: SmtpSecurity::None,
         username: username.to_owned(),
         password: if username.is_empty() {
-            String::new()
+            String::new().into()
         } else {
-            "hunter2".to_owned()
+            "hunter2".into()
         },
         from: parse_mailbox("Saltcorn <saltcorn@example.com>").unwrap(),
         certificate_name: None,
@@ -167,11 +167,14 @@ async fn a_pinned_transport_connects_to_the_checked_address_not_the_name() -> sc
     let settings = EmailSettings {
         host: "smtp.example.invalid".to_owned(),
         username: "orders@example.com".to_owned(),
-        password: "Grüße-€-pässwort".to_owned(),
+        password: "Grüße-€-pässwort".into(),
         from: parse_mailbox("Orders <orders@example.com>").unwrap(),
         ..settings(server.port(), "")
     };
-    let mailer = SmtpMailer::pinned(&settings, "127.0.0.1".parse().unwrap())?;
+    let mailer = SmtpMailer::pinned(
+        &settings,
+        sc_net::PublicAddr::test_listener("127.0.0.1".parse().unwrap()),
+    )?;
     let mut email = Email::new(settings.from.clone());
     email.to = vec![parse_mailbox("ada@example.com")?];
     email.subject = "Your order has shipped".to_owned();
@@ -201,7 +204,7 @@ async fn an_override_through_a_loopback_server_is_refused() -> sc_error::Result<
         port: 587,
         security: SmtpSecurity::StartTls,
         username: "orders@example.com".to_owned(),
-        password: "Grüße-€-pässwort".to_owned(),
+        password: "Grüße-€-pässwort".into(),
         from: parse_mailbox("orders@example.com").unwrap(),
         certificate_name: None,
         accept_any_certificate: false,

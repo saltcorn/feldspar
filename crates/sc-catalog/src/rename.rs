@@ -1,7 +1,7 @@
 //! Renaming a table: the overlay half.
 //!
-//! A table is known by its name everywhere (§3.2: its [`TableId`](crate::TableId)
-//! *is* the name), so the DDL that renames it in its database leaves every
+//! A table is known by its name everywhere (§3.2: its identity *is* the
+//! name), so the DDL that renames it in its database leaves every
 //! `_fd_*` row that names it pointing at a table that is no longer there. This
 //! moves the rows the catalog owns — the table's settings, its fields' settings,
 //! the other tables' keys onto it and the formulas that aggregate over it — and
@@ -11,7 +11,7 @@
 use sc_error::Result;
 
 use crate::catalog::Catalog;
-use crate::field::{DataFieldKind, TableId};
+use crate::field::DataFieldKind;
 use crate::field_meta::{FIELD_META_TABLE, list_field_meta, save_field_meta_row};
 use crate::table_meta::{
     TABLE_META_TABLE, list_table_meta, load_table_meta_by_name, save_table_meta_row,
@@ -51,8 +51,8 @@ pub async fn rename_table_meta(catalog: &Catalog, from: &str, to: &str) -> Resul
                 changed = true;
             }
             match &mut meta.kind {
-                DataFieldKind::Key { target_table, .. } if target_table.0 == from => {
-                    *target_table = TableId(to.to_owned());
+                DataFieldKind::Key { target_table, .. } if target_table == from => {
+                    *target_table = to.to_owned();
                     changed = true;
                 }
                 DataFieldKind::Calc { expression } => {

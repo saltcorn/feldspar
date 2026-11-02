@@ -13,6 +13,7 @@
 //! Needs `npm`, which installs the module, and skips without it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,10 +24,11 @@ use sc_action::{EventKind, Trigger, TriggerDispatcher, save_trigger};
 use sc_api::schema_edit::{self, ApplyOptions, FieldSpec, Operation, TableSettings};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, TriggerRef};
 use sc_auth::{SessionStore, create_user};
-use sc_catalog::{Catalog, DataFieldKind, FieldId, FileStoreId, TableId};
+use sc_catalog::{Catalog, DataFieldKind, FieldId, FileStoreId};
+use sc_config::parse_mailbox;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
-use sc_email::{Mailer, RecordingMailer, parse_mailbox};
+use sc_email::{Mailer, RecordingMailer};
 use sc_server::{
     AppMounts, GUEST_COOKIE, ModuleServices, MountedApp, ServerConfig, admin_handlers,
     base_action_registry, build_router_with_apps, default_js_evaluator, install_agents,
@@ -126,7 +128,7 @@ fn field(name: &str, type_name: &str) -> FieldSpec {
 fn key(name: &str, target: &str) -> FieldSpec {
     FieldSpec {
         kind: DataFieldKind::Key {
-            target_table: TableId(target.to_owned()),
+            target_table: target.to_owned(),
             target_field: FieldId(String::new()),
             summary_field: None,
         },
@@ -170,10 +172,10 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
         primary_key: true,
         ..field("id", "int")
     };
-    let tables: Vec<(&str, u8, Option<String>, Vec<FieldSpec>)> = vec![
+    let tables: Vec<(&str, Role, Option<String>, Vec<FieldSpec>)> = vec![
         (
             "products",
-            100,
+            Role::PUBLIC,
             None,
             vec![
                 id(),
@@ -184,13 +186,13 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
         ),
         (
             "product_files",
-            1,
+            Role::ADMIN,
             None,
             vec![id(), required(key("product", "products")), file("file")],
         ),
         (
             "orders",
-            1,
+            Role::ADMIN,
             Some(format!("({MINE}) && (_read || status === \"open\")")),
             vec![
                 id(),
@@ -202,7 +204,7 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
         ),
         (
             "order_lines",
-            1,
+            Role::ADMIN,
             Some(
                 "(user ? orderⱵuser_id === user.id : orderⱵsession_id === session.id) \
                  && (_read || orderⱵstatus === \"open\")"
@@ -217,7 +219,7 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
         ),
         (
             "downloads",
-            1,
+            Role::ADMIN,
             Some(
                 "_read && (user ? orderⱵuser_id === user.id : orderⱵsession_id === session.id)"
                     .to_owned(),
@@ -238,7 +240,7 @@ async fn create_tables(catalog: &Catalog) -> sc_error::Result<()> {
                 database: String::new(),
                 settings: TableSettings {
                     min_role_read: Some(read),
-                    min_role_write: Some(1),
+                    min_role_write: Some(Role::ADMIN),
                     ownership_formula: ownership,
                     ..TableSettings::default()
                 },
@@ -279,7 +281,7 @@ fn triggers() -> Vec<Trigger> {
     ]
     .into_iter()
     .fold(
-        Trigger::new("checkout", EventKind::None, "pay_checkout").min_role(100),
+        Trigger::new("checkout", EventKind::None, "pay_checkout").min_role(Role::PUBLIC),
         |t, (k, v)| t.config(k, v),
     );
     vec![
@@ -410,6 +412,7 @@ pub(crate) async fn boot(tag: &str) -> sc_error::Result<Booted> {
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
@@ -554,18 +557,19 @@ async fn setup(tag: &str) -> sc_error::Result<Shop> {
         registries,
         ..
     } = boot(tag).await?;
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         &catalog,
         &catalog.require("pay_accounts")?,
         &json!({ "name": "shop", "adapter": "fake", "mode": "test",
                  "webhook_secret": "any random text",
                  "settings": { "grants_in_test_mode": true } }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
 
     // Steps 2–6.
     create_tables(&catalog).await?;
-    sc_auth::save_role(&catalog, &sc_auth::Role::new(80, "User")).await?;
+    sc_auth::save_role(&catalog, &sc_auth::RoleDef::new(Role::of(80), "User")).await?;
     for trigger in triggers() {
         save_trigger(&catalog, &dispatcher.registry(), &trigger).await?;
     }
@@ -582,7 +586,7 @@ async fn setup(tag: &str) -> sc_error::Result<Shop> {
         .with_trigger(TriggerRef::new("checkout"))
         .attribute(sc_app::GUEST_SESSIONS_ATTRIBUTE, true);
     for table in ["products", "orders", "order_lines", "downloads"] {
-        app = app.with_table(TableId(table.to_owned()));
+        app = app.with_table(table.to_owned());
     }
     apps.mount(MountedApp::new_with(
         app,
@@ -602,12 +606,19 @@ async fn setup(tag: &str) -> sc_error::Result<Shop> {
         json!({ "id": 2, "name": "Teapot", "price": 2500, "stock": 3 }),
         json!({ "id": 3, "name": "The tea guide", "price": 900 }),
     ] {
-        sc_api::rows::create_row(&catalog, &products, &product).await?;
+        sc_access::rows::create_row(
+            &catalog,
+            &products,
+            &product,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
-    sc_api::rows::create_row(
+    sc_access::rows::create_row(
         &catalog,
         &catalog.require("product_files")?,
         &json!({ "product": 3, "file": "tea-guide.pdf" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
 
@@ -623,6 +634,7 @@ async fn setup(tag: &str) -> sc_error::Result<Shop> {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_tutorials_shop_takes_a_guests_order_to_paid_and_delivers_it() -> sc_error::Result<()> {
     if !have_npm() {
         eprintln!("skipping: npm is not on the PATH");
@@ -763,10 +775,21 @@ async fn the_tutorials_shop_takes_a_guests_order_to_paid_and_delivers_it() -> sc
 
     // Step 6: Ann signs up from the same browser, and her order is now her account's. Ada,
     // signing in with no guest session, moves nothing.
-    let ann_id = create_user(&shop.catalog, "ann@example.com", "ann-password", 80)
-        .await?
-        .id;
-    create_user(&shop.catalog, "ada@example.com", "ada-password", 80).await?;
+    let ann_id = create_user(
+        &shop.catalog,
+        "ann@example.com",
+        "ann-password",
+        Role::of(80),
+    )
+    .await?
+    .id();
+    create_user(
+        &shop.catalog,
+        "ada@example.com",
+        "ada-password",
+        Role::of(80),
+    )
+    .await?;
     let mut ada = Browser::new(&shop.router);
     ada.send("GET", "/", None).await;
     ada.ok(

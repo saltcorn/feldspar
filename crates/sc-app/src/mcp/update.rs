@@ -5,9 +5,15 @@
 //! chooses between on every turn, and these all have the same shape — name the
 //! application, say what changes, save. The sections are:
 //!
-//! - **`tables`**, the connected tables: an application reaches only those, and
-//!   its generated client is typed for them alone, so this is the step between
-//!   `edit_schema` and writing code.
+//! - **`tables`**, the connected tables: an application's custom queries, views
+//!   and streams reach only those, and its `schema.sql` describes them, so this
+//!   is the step between `edit_schema` and writing code.
+//! - **`api_tables`**, the connected tables whose **generic row API** it serves
+//!   (list/read/create/update/delete over REST, a GraphQL type). None by
+//!   default, and discouraged: an app should read and write through custom
+//!   queries, which say exactly what each endpoint does and run as the caller.
+//!   Adding one widens what the app exposes, so it also needs
+//!   `allow_access_changes`; removing one is an edit.
 //! - **`static_dirs`**: a file store's folder served on a URL path of the app.
 //! - **`uploads`**: upload slots, where a client uploads a large file to,
 //!   resumably (TODO F2, §2.3).
@@ -51,15 +57,17 @@
 //! form. A context with no server (a CLI command) saves the record and rewrites
 //! the client itself, and says the change is served from the next start.
 
+use sc_types::ArgsExt;
+use sc_types::Role;
 use std::sync::Arc;
 
-use sc_api::mcp::{AdminTool, Area, ToolContext, arguments, optional_string, require_grant};
+use sc_api::mcp::{AdminTool, Area, ToolContext, arguments, require_grant};
 use sc_api::schema_edit::{GRANT_ACCESS_CHANGES, GRANT_EDIT, Grants};
-use sc_catalog::{AdminCall, Catalog, FileStoreId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
 
-use super::{TOOL_DESCRIBE_APPS, TOOL_EDIT_STREAMS, load_app, required_str};
+use super::{TOOL_DESCRIBE_APPS, TOOL_EDIT_STREAMS, load_app};
 use crate::{
     AgentExposure, Application, CspPolicy, StaticDir, StreamRef, TriggerChange, UploadSlot,
     app_default_locale, app_locales, set_app_locales,
@@ -75,6 +83,7 @@ pub fn update_tools() -> Vec<Arc<dyn AdminTool>> {
 
 const ARG_APPLICATION: &str = "application";
 const ARG_TABLES: &str = "tables";
+const ARG_API_TABLES: &str = "api_tables";
 const ARG_STATIC_DIRS: &str = "static_dirs";
 const ARG_UPLOADS: &str = "uploads";
 const ARG_CSP: &str = "csp";
@@ -123,8 +132,8 @@ fn update_description(grants: &Grants) -> String {
     let edit = match grants.edit {
         true => "",
         false => {
-            " You may **not** change `tables`, `static_dirs`, `uploads`, `locales`, \
-             `streams`, `triggers` or `agents`: they need `allow_edit`."
+            " You may **not** change `tables`, `api_tables`, `static_dirs`, `uploads`, \
+             `locales`, `streams`, `triggers` or `agents`: they need `allow_edit`."
         }
     };
     let csp = match grants.access_changes {
@@ -133,8 +142,8 @@ fn update_description(grants: &Grants) -> String {
                  widen, and why, before you do it."
         }
         false => {
-            " You may **not** change `csp` or `access`, or expose a public trigger or an \
-                  agent to people who are not signed in: \
+            " You may **not** change `csp` or `access`, serve a table's row API, or expose \
+                  a public trigger or an agent to people who are not signed in: \
                   they need `allow_access_changes`. Tell the person what the app needs \
                   instead."
         }
@@ -147,12 +156,20 @@ fn update_description(grants: &Grants) -> String {
          Give only the sections you are \
          changing; one call may change several, and is saved as one, so a refused \
          section changes nothing.\n\n\
-         - `{ARG_TABLES}` — its **connected tables**. An application reaches only \
-         these, and its typed client (`src/feldspar/`) is regenerated for them, so \
-         connect a table created with `edit_schema` **before** writing code that \
-         uses it. `{ARG_ADD}` and `{ARG_REMOVE}` change the list; `{ARG_SET}` \
-         replaces it. Connecting a table does not make its rows public: its own \
-         role rules still decide who reads and writes.\n\
+         - `{ARG_TABLES}` — its **connected tables**: what its custom queries may \
+         read and write, described in the project's `schema.sql`, so connect a table \
+         created with `edit_schema` **before** writing code that uses it. \
+         `{ARG_ADD}` and `{ARG_REMOVE}` change the list; `{ARG_SET}` replaces it. \
+         Connecting a table publishes no endpoint for it: the app reaches its rows \
+         through the custom queries you write (`save_api_query`).\n\
+         - `{ARG_API_TABLES}` — the connected tables whose **generic row API** it \
+         serves: list, read, create, update and delete routes for any row the \
+         caller's role and ownership rules allow, and `useX` hooks in the \
+         generated client. **None by default, and leave it that way** unless the \
+         person explicitly asks for generic row access to a table: a custom query \
+         per thing a page does is a smaller, more deliberate surface. `{ARG_ADD}`, \
+         `{ARG_REMOVE}` and `{ARG_SET}` as for tables; a table must be connected \
+         first. Adding one needs `allow_access_changes`.\n\
          - `{ARG_STATIC_DIRS}` — a store folder served at a URL path: a request for \
          `<mount>/a/b.png` is answered with `<path>/a/b.png` from the store, and a \
          folder with its `index.html`. `{ARG_ADD}` lists `{{ {ARG_MOUNT}, {ARG_STORE}, \
@@ -232,6 +249,7 @@ fn update_description(grants: &Grants) -> String {
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn update_parameters() -> Json {
     let names = json!({ "type": "array", "items": { "type": "string" } });
     json!({
@@ -244,6 +262,18 @@ fn update_parameters() -> Json {
             ARG_TABLES: {
                 "type": "object",
                 "description": "Change the connected tables.",
+                "properties": {
+                    ARG_ADD: names.clone(),
+                    ARG_REMOVE: names.clone(),
+                    ARG_SET: names.clone(),
+                },
+                "additionalProperties": false,
+            },
+            ARG_API_TABLES: {
+                "type": "object",
+                "description":
+                    "Change which connected tables serve a generic row API. \
+                     Only when the person asked for one.",
                 "properties": {
                     ARG_ADD: names.clone(),
                     ARG_REMOVE: names.clone(),
@@ -439,12 +469,14 @@ fn update_parameters() -> Json {
     })
 }
 
+#[allow(clippy::too_many_lines)]
 async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Json> {
     let args = arguments(
         args,
         &[
             ARG_APPLICATION,
             ARG_TABLES,
+            ARG_API_TABLES,
             ARG_STATIC_DIRS,
             ARG_UPLOADS,
             ARG_CSP,
@@ -476,6 +508,7 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
     let uploads = section(&args, ARG_UPLOADS, &[ARG_ADD, ARG_REMOVE])?;
     let agents = section(&args, ARG_AGENTS, &[ARG_ADD, ARG_REMOVE])?;
     let tables = section(&args, ARG_TABLES, &[ARG_ADD, ARG_REMOVE, ARG_SET])?;
+    let api_tables = section(&args, ARG_API_TABLES, &[ARG_ADD, ARG_REMOVE, ARG_SET])?;
     let static_dirs = section(&args, ARG_STATIC_DIRS, &[ARG_ADD, ARG_REMOVE])?;
     let locales = section(
         &args,
@@ -487,6 +520,7 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
         Some(directives) => Some(directives),
     };
     if tables.is_none()
+        && api_tables.is_none()
         && static_dirs.is_none()
         && uploads.is_none()
         && csp.is_none()
@@ -497,7 +531,8 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
         && agents.is_none()
     {
         return Err(Error::invalid(format!(
-            "name at least one of `{ARG_TABLES}`, `{ARG_STATIC_DIRS}`, `{ARG_UPLOADS}`, \
+            "name at least one of `{ARG_TABLES}`, `{ARG_API_TABLES}`, `{ARG_STATIC_DIRS}`, \
+             `{ARG_UPLOADS}`, \
              `{ARG_CSP}`, `{ARG_LOCALES}`, `{ARG_STREAMS}`, `{ARG_ACCESS}`, \
              `{ARG_TRIGGERS}` and `{ARG_AGENTS}`; nothing was changed"
         )));
@@ -507,6 +542,13 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
         require_grant(
             grants.edit,
             "change which tables an application serves",
+            GRANT_EDIT,
+        )?;
+    }
+    if api_tables.is_some() {
+        require_grant(
+            grants.edit,
+            "change which tables an application serves a row API for",
             GRANT_EDIT,
         )?;
     }
@@ -573,6 +615,25 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
     if let Some(tables) = &tables {
         was.insert(ARG_TABLES.to_owned(), tables_json(&app));
         change_tables(ctx.catalog, &mut app, tables)?;
+    }
+    if let Some(section) = &api_tables {
+        was.insert(ARG_API_TABLES.to_owned(), api_tables_json(&app));
+        let before = app.api_tables.clone();
+        change_api_tables(&mut app, section)?;
+        // Opening a row API widens what the app exposes; closing one does not.
+        let opened: Vec<String> = app
+            .api_tables
+            .iter()
+            .filter(|t| !before.contains(t))
+            .cloned()
+            .collect();
+        if !opened.is_empty() {
+            require_grant(
+                grants.access_changes,
+                &format!("serve the row API of {}", quoted(&opened)),
+                GRANT_ACCESS_CHANGES,
+            )?;
+        }
     }
     if let Some(dirs) = &static_dirs {
         was.insert(
@@ -659,6 +720,10 @@ async fn update_app(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Resu
     let saved = save(ctx, &app, &mut out).await?;
     if tables.is_some() {
         out[ARG_TABLES] = tables_json(&saved);
+    }
+    // Disconnecting a table stops its row API too, so `tables` reports it.
+    if tables.is_some() || api_tables.is_some() {
+        out[ARG_API_TABLES] = api_tables_json(&saved);
     }
     if static_dirs.is_some() {
         out[ARG_STATIC_DIRS] = static_dirs_json(&saved.static_dirs);
@@ -770,12 +835,12 @@ fn locales_json(app: &Application) -> Result<Json> {
 /// Set the keys of the `access` section that were given; the rest are kept.
 /// The ranges and the formula are checked by the save.
 fn change_access(app: &mut Application, section: &Map<String, Json>) -> Result<()> {
-    let role = |key: &str| -> Result<Option<u8>> {
+    let role = |key: &str| -> Result<Option<Role>> {
         match section.get(key) {
             None | Some(Json::Null) => Ok(None),
             Some(value) => value
                 .as_u64()
-                .and_then(|r| u8::try_from(r).ok())
+                .and_then(|r| Role::try_from(r).ok())
                 .map(Some)
                 .ok_or_else(|| {
                     Error::invalid(format!(
@@ -831,7 +896,24 @@ fn change_tables(
 }
 
 fn tables_json(app: &Application) -> Json {
-    json!(app.tables.iter().map(|t| t.0.clone()).collect::<Vec<_>>())
+    json!(app.tables.to_vec())
+}
+
+fn change_api_tables(app: &mut Application, section: &Map<String, Json>) -> Result<()> {
+    let change = crate::TableChange {
+        add: names(section, ARG_ADD)?,
+        remove: names(section, ARG_REMOVE)?,
+        set: match section.contains_key(ARG_SET) {
+            true => Some(names(section, ARG_SET)?),
+            false => None,
+        },
+    };
+    crate::change_app_api_tables(app, &change)?;
+    Ok(())
+}
+
+pub(super) fn api_tables_json(app: &Application) -> Json {
+    json!(app.api_tables.to_vec())
 }
 
 // --- streams ------------------------------------------------------------------
@@ -906,7 +988,7 @@ fn change_static_dirs(
 
     let mut connected = Vec::new();
     for dir in additions(section)? {
-        if catalog.file_store(&dir.store.0)?.is_none() {
+        if !catalog.has_file_store(&dir.store.0)? {
             return Err(Error::invalid(format!(
                 "there is no file store `{}`; the file stores are {}. Nothing was changed.",
                 dir.store.0,
@@ -945,12 +1027,13 @@ fn additions(section: &Map<String, Json>) -> Result<Vec<StaticDir>> {
                 )));
             }
             let obj = arguments(item, &[ARG_MOUNT, ARG_STORE, ARG_PATH])?;
-            let path = optional_string(&obj, ARG_PATH)?
+            let path = obj
+                .optional_string(ARG_PATH)?
                 .map(|p| p.trim().trim_matches('/').to_owned())
                 .unwrap_or_default();
             Ok(StaticDir::new(
-                required_str(&obj, ARG_MOUNT)?,
-                FileStoreId(required_str(&obj, ARG_STORE)?),
+                obj.required_string(ARG_MOUNT)?,
+                FileStoreId(obj.required_string(ARG_STORE)?),
                 path,
             ))
         })
@@ -1017,7 +1100,7 @@ fn change_uploads(
     };
     let mut connected = Vec::new();
     for slot in added {
-        if catalog.file_store(&slot.store)?.is_none() {
+        if !catalog.has_file_store(&slot.store)? {
             return Err(Error::invalid(format!(
                 "there is no file store `{}`; the file stores are {}. Nothing was changed.",
                 slot.store,
@@ -1195,15 +1278,12 @@ async fn save(ctx: &ToolContext<'_>, app: &Application, out: &mut Json) -> Resul
         out["notes"] = json!(notes);
         return Ok(saved);
     };
-    let user = ctx.user.map(|u| u.id);
-    let listed = host
-        .call_admin(AdminCall::new("listApplications", Json::Null).user(user))
-        .await?;
+    let user = ctx.user.map(|u| u.id());
+    let listed = host.list_applications(user).await?;
     let id = app.id.to_string();
     let mut body = listed
-        .as_array()
-        .and_then(|apps| apps.iter().find(|a| a["id"] == json!(id)))
-        .cloned()
+        .into_iter()
+        .find(|a| a["id"] == json!(id))
         .ok_or_else(|| {
             Error::msg(format!(
                 "application `{}` is stored but the server did not list it",
@@ -1214,6 +1294,7 @@ async fn save(ctx: &ToolContext<'_>, app: &Application, out: &mut Json) -> Resul
     // it: `app` was loaded fresh, so an unchanged key is written as it was.
     // The admin API names a static directory's store `store`.
     body["tables"] = tables_json(app);
+    body["api_tables"] = api_tables_json(app);
     body["file_stores"] = json!(
         app.file_stores
             .iter()
@@ -1236,13 +1317,7 @@ async fn save(ctx: &ToolContext<'_>, app: &Application, out: &mut Json) -> Resul
     body["access_if"] = json!(app.access_if);
     // Where the locales live (§9's column-vs-attributes rule).
     body["attributes"] = Json::Object(app.attributes.clone());
-    let updated = host
-        .call_admin(
-            AdminCall::new("updateApplication", body)
-                .param("id", id)
-                .user(user),
-        )
-        .await?;
+    let updated = host.update_application(user, app.id.0, body).await?;
     for key in ["mounted", "mount_error"] {
         if let Some(value) = updated.get(key) {
             out[key] = value.clone();
@@ -1358,15 +1433,16 @@ mod tests {
         let none = update_description(&Grants::none());
         assert!(
             none.contains(
-                "**not** change `tables`, `static_dirs`, `uploads`, `locales`, \
-                 `streams`, `triggers` or `agents`: they need `allow_edit`"
+                "**not** change `tables`, `api_tables`, `static_dirs`, `uploads`, \
+                 `locales`, `streams`, `triggers` or `agents`: they need `allow_edit`"
             ),
             "{none}"
         );
         assert!(
             none.contains(
-                "**not** change `csp` or `access`, or expose a public trigger or an \
-                 agent to people who are not signed in: they need `allow_access_changes`"
+                "**not** change `csp` or `access`, serve a table's row API, or expose \
+                 a public trigger or an agent to people who are not signed in: they need \
+                 `allow_access_changes`"
             ),
             "{none}"
         );
@@ -1428,10 +1504,10 @@ mod tests {
                 config: Default::default(),
             },
         )
-        .min_role(40)
+        .min_role(Role::of(40))
         .access_if("user.department === \"Finance\"");
         change_access(&mut app, &section(json!({ "max_role": 20 }))).unwrap();
-        assert_eq!((app.min_role, app.max_role), (40, 20));
+        assert_eq!((app.min_role, app.max_role), (Role::of(40), Role::of(20)));
         assert_eq!(app.access_if, "user.department === \"Finance\"");
         change_access(&mut app, &section(json!({ "access_if": "" }))).unwrap();
         assert!(app.access_if.is_empty());

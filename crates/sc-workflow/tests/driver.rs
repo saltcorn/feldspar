@@ -15,6 +15,8 @@
 //! registry — that is the point of the seam — and the **clock**, which is moved
 //! rather than waited on. No test here sleeps.
 
+use sc_catalog::Authority;
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -24,20 +26,20 @@ use sc_action::{
     TriggerDispatcher, TriggerId,
 };
 use sc_agent::{Run, RunState, bootstrap_runs, load_run, require_run, save_run};
-use sc_catalog::{CallerContext, Catalog, DataField};
+use sc_catalog::{Catalog, DataField, Principal};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::{Error, Result};
 use sc_expr::{DenoEvaluator, JsEvaluator};
 use sc_test_harness::TestDb;
+use sc_types::clock::{Clock, ManualClock};
 use sc_types::{Attrs, BasicType, FormField, TypeRef};
 use sc_workflow::machine::WorkflowRun;
 use sc_workflow::queue::WorkQueue;
 use sc_workflow::{
-    Advanced, Assignment, Backoff, BranchArm, DatabaseQueue, Driver, ErrorPolicy, ManualClock,
-    Next, RunTrace, Step, StepKind, TraceOutcome, Workflow, WorkflowEngineTask,
-    bootstrap_run_traces, bootstrap_workflow_versions, list_run_traces, run_state, save_workflow,
-    start_run,
+    Advanced, Assignment, Backoff, BranchArm, DatabaseQueue, Driver, ErrorPolicy, Next, RunTrace,
+    Step, StepKind, TraceOutcome, Workflow, WorkflowEngineTask, bootstrap_run_traces,
+    bootstrap_workflow_versions, list_run_traces, run_state, save_workflow, start_run,
 };
 use serde_json::{Value as Json, json};
 
@@ -196,9 +198,14 @@ impl Action for Firer {
         let dispatcher = ctx
             .triggers()
             .ok_or_else(|| Error::config("no dispatcher in this context"))?;
-        let caller = CallerContext::new(1, None).chained(ctx.chain.clone());
+        let caller = Principal::new(Role::ADMIN, None).chained(ctx.chain.clone());
         dispatcher
-            .run_trigger(ctx.catalog, &self.trigger, Json::Null, Some(&caller))
+            .run_trigger(
+                ctx.catalog,
+                &self.trigger,
+                Json::Null,
+                Authority::Caller(&caller),
+            )
             .await
     }
 }
@@ -850,7 +857,7 @@ async fn the_engine_task_advances_a_run_whose_timer_has_come_round() -> Result<(
         Arc::clone(&catalog),
         Arc::clone(&dispatcher),
         queue,
-        Arc::clone(&clock) as Arc<dyn sc_workflow::Clock>,
+        Arc::clone(&clock) as Arc<dyn Clock>,
     ));
     // Installed on the dispatcher: from here a workflow trigger starts a run.
     dispatcher.set_workflow_engine(Arc::clone(&engine) as Arc<dyn sc_action::WorkflowEngine>);
@@ -1363,7 +1370,7 @@ async fn a_workflow_that_starts_a_workflow_carries_the_chain_and_is_bounded_by_i
         Arc::clone(&catalog),
         Arc::clone(&dispatcher),
         queue,
-        Arc::clone(&clock) as Arc<dyn sc_workflow::Clock>,
+        Arc::clone(&clock) as Arc<dyn Clock>,
     ));
     dispatcher.set_workflow_engine(Arc::clone(&engine) as Arc<dyn sc_action::WorkflowEngine>);
 

@@ -9,6 +9,8 @@
 //! at a fresh temp directory, connected to the catalog by name.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,12 +21,9 @@ use axum::http::{Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use sc_auth::SessionStore;
-use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_files::{FileMeta, FileStore, LocalFileStore};
-use sc_server::{AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router};
-use sc_test_harness::TestDb;
+use sc_server::{AppMounts, ServerConfig, admin_handlers, build_router};
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -111,21 +110,7 @@ fn temp_dir() -> PathBuf {
 /// fresh temp directory, log in an admin, and return the client, the store handle,
 /// and the `TestDb` (kept in scope: dropping it deletes the database).
 async fn setup() -> sc_error::Result<(Client, Arc<dyn FileStore>, TestDb)> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     // `listFileStores` reads the stored definitions as well as the connected
     // registry (§1.4), so the table has to exist — the real boot path bootstraps
@@ -188,7 +173,12 @@ async fn file_manager_browse_read_write() -> sc_error::Result<()> {
     assert_eq!(entry["size"], json!(8));
 
     // The bytes really landed in the store.
-    assert_eq!(&store.read("notes/readme.md").await?[..], b"# Hello\n");
+    assert_eq!(
+        &store
+            .read(&sc_files::StorePath::from_static("notes/readme.md"))
+            .await?[..],
+        b"# Hello\n"
+    );
 
     // --- browse the root, then the sub-directory -------------------------
     let (_, body) = client
@@ -298,19 +288,28 @@ async fn xattr_metadata_round_trips_through_the_connected_store() -> sc_error::R
     // No metadata set yet → defaults, except the owner the write recorded: the
     // request that created the file knew who made it, which is the one fact
     // nothing could recover afterwards.
-    let created = store.get_meta("doc.md").await?;
+    let created = store
+        .get_meta(&sc_files::StorePath::from_static("doc.md"))
+        .await?;
     assert_eq!(created.min_role, None);
     assert!(created.attributes.is_empty());
     assert!(created.owner.is_some());
 
     let mut meta = FileMeta {
-        min_role: Some(30),
+        min_role: Some(Role::of(30)),
         ..Default::default()
     };
     meta.attributes
         .insert("mime".into(), "text/markdown".into());
-    store.set_meta("doc.md", &meta).await?;
-    assert_eq!(store.get_meta("doc.md").await?, meta);
+    store
+        .set_meta(&sc_files::StorePath::from_static("doc.md"), &meta)
+        .await?;
+    assert_eq!(
+        store
+            .get_meta(&sc_files::StorePath::from_static("doc.md"))
+            .await?,
+        meta
+    );
 
     // The metadata lives beside the bytes, so it never appears as a file in a
     // browse listing.
@@ -330,7 +329,12 @@ async fn xattr_metadata_round_trips_through_the_connected_store() -> sc_error::R
     assert_eq!(names, ["doc.md"]);
 
     // And the file's bytes are unchanged by the metadata write.
-    assert_eq!(&store.read("doc.md").await?[..], b"# hi");
+    assert_eq!(
+        &store
+            .read(&sc_files::StorePath::from_static("doc.md"))
+            .await?[..],
+        b"# hi"
+    );
 
     Ok(())
 }
@@ -354,7 +358,10 @@ async fn find_in_files_searches_the_store_server_side() -> sc_error::Result<()> 
         ("node_modules/pkg/index.js", "todo\n"),
     ] {
         store
-            .write(path, bytes::Bytes::from(text.as_bytes().to_vec()))
+            .write(
+                &sc_files::StorePath::parse(path).unwrap(),
+                bytes::Bytes::from(text.as_bytes().to_vec()),
+            )
             .await?;
     }
 
@@ -479,7 +486,10 @@ async fn a_listing_carries_the_columns_a_file_browser_shows() -> sc_error::Resul
     // scaffold, a hand on the disk): nobody to record, and the column says so
     // rather than inventing an owner.
     store
-        .write("notes/stray.txt", bytes::Bytes::from_static(b"x"))
+        .write(
+            &sc_files::StorePath::from_static("notes/stray.txt"),
+            bytes::Bytes::from_static(b"x"),
+        )
         .await?;
     // Admin-only on the folder, which every entry under it inherits.
     let (status, _) = client
@@ -521,7 +531,10 @@ async fn a_listing_carries_the_columns_a_file_browser_shows() -> sc_error::Resul
     assert_eq!(readme["effective_min_role"], Value::Null);
     // What is stored underneath is the id, so renaming the account does not
     // orphan the file.
-    let owner = store.get_meta("notes/readme.md").await?.owner;
+    let owner = store
+        .get_meta(&sc_files::StorePath::from_static("notes/readme.md"))
+        .await?
+        .owner;
     assert!(owner.is_some_and(|id| uuid::Uuid::parse_str(&id).is_ok()));
 
     // A directory has no size; the rule set on it is reported as its own.
@@ -618,7 +631,12 @@ async fn list_store_files_skips_dependencies_and_native_projects() -> sc_error::
         "todo/android/app/debug.keystore",
         "keys/release.jks",
     ] {
-        store.write(path, bytes::Bytes::from_static(b"x")).await?;
+        store
+            .write(
+                &sc_files::StorePath::parse(path).unwrap(),
+                bytes::Bytes::from_static(b"x"),
+            )
+            .await?;
     }
     let (status, body) = client
         .send(
@@ -663,7 +681,12 @@ async fn find_files_searches_names_across_the_tree() -> sc_error::Result<()> {
         "readme.md",
         "node_modules/pkg/index.js",
     ] {
-        store.write(path, bytes::Bytes::from_static(b"x")).await?;
+        store
+            .write(
+                &sc_files::StorePath::parse(path).unwrap(),
+                bytes::Bytes::from_static(b"x"),
+            )
+            .await?;
     }
 
     let (status, body) = client

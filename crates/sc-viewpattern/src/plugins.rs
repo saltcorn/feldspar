@@ -20,6 +20,8 @@
 //! The set is installed **whole** on every module change, beside the pattern
 //! registry, by whoever loads the modules; this layer knows nothing about npm.
 
+// A value for a double-quoted attribute: the one escape (Q4.5).
+use sc_expr::html::escape;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
@@ -89,8 +91,8 @@ pub fn plugin_header_tags(assets: &[PluginAssets], patterns: &[String]) -> Strin
             continue;
         }
         let tag = match (&header.script, &header.css) {
-            (Some(src), _) => format!("<script src=\"{}\"></script>", attribute(src)),
-            (None, Some(href)) => format!("<link rel=\"stylesheet\" href=\"{}\">", attribute(href)),
+            (Some(src), _) => format!("<script src=\"{}\"></script>", escape(src)),
+            (None, Some(href)) => format!("<link rel=\"stylesheet\" href=\"{}\">", escape(href)),
             (None, None) => continue,
         };
         if !tags.contains(&tag) {
@@ -129,15 +131,6 @@ pub fn plugin_public_file(
         .ok()?;
     (file.starts_with(&root) && file.is_file())
         .then(|| (file, version == Some(asset.version.as_str())))
-}
-
-/// A value for a double-quoted attribute.
-fn attribute(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 #[cfg(test)]

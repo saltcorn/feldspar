@@ -83,7 +83,7 @@ pub async fn forward(
     }
 
     client
-        .request(method, url)
+        .request(method, url)?
         .headers(outgoing)
         .timeout(def.timeout())
         .body(body)

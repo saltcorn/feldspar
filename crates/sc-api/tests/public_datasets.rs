@@ -185,8 +185,14 @@ async fn northwind_is_installed_with_its_references_and_a_dataset() -> Result<()
     let catalog = setup(&db).await?;
     let (seen, progress) = recorder();
 
-    let installed =
-        public_datasets::install(&catalog, "northwind", &northwind(), &progress, None).await?;
+    let installed = public_datasets::install(
+        &catalog,
+        "northwind",
+        &northwind(),
+        &progress,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert_eq!(installed.tables.len(), 11);
     assert_eq!(installed.dataset_name, "Northwind Traders");
     assert_eq!(installed.rows, 2 + 1 + 2 + 2 + 1 + 2 + 3 + 2 + 2 + 2 + 3);
@@ -243,7 +249,7 @@ async fn northwind_is_installed_with_its_references_and_a_dataset() -> Result<()
             summary_field,
             ..
         } => {
-            assert_eq!(target_table.0, "northwind_products");
+            assert_eq!(target_table, "northwind_products");
             assert_eq!(summary_field.as_ref().map(|f| f.0.as_str()), Some("name"));
         }
         other => panic!("product_id is not a key: {other:?}"),
@@ -304,7 +310,7 @@ async fn northwind_is_installed_with_its_references_and_a_dataset() -> Result<()
         "northwind",
         &Fixtures(HashMap::new()),
         &progress,
-        None,
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     assert_eq!(again.dataset_id, installed.dataset_id);
@@ -321,7 +327,14 @@ async fn a_missing_plane_or_airport_is_no_reference_and_a_point_is_kept_with_pos
     };
     let catalog = setup(&db).await?;
     let (_, progress) = recorder();
-    public_datasets::install(&catalog, "nycflights13", &nycflights(), &progress, None).await?;
+    public_datasets::install(
+        &catalog,
+        "nycflights13",
+        &nycflights(),
+        &progress,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
 
     let flights = rows(
         &db,
@@ -370,10 +383,16 @@ async fn a_row_that_will_not_go_in_leaves_no_table_and_says_where_it_was() -> Re
         GAPMINDER.to_owned(),
         "country\tcontinent\tyear\tlifeExp\tpop\tgdpPercap\nA\tAsia\t1952\t28.8\t8425333\t779.4\nA\tAsia\t1957\t30.3\tlots\t820.8\n",
     )]);
-    let e = public_datasets::install(&catalog, "gapminder", &bad, &progress, None)
-        .await
-        .unwrap_err()
-        .to_string();
+    let e = public_datasets::install(
+        &catalog,
+        "gapminder",
+        &bad,
+        &progress,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
     assert!(
         e.contains("`gapminder`")
             && e.contains("row 2")
@@ -397,7 +416,7 @@ async fn a_row_that_will_not_go_in_leaves_no_table_and_says_where_it_was() -> Re
         "gapminder",
         &Fixtures(HashMap::new()),
         &progress,
-        None,
+        sc_catalog::Unchecked::system("test"),
     )
     .await
     .unwrap_err()
@@ -410,7 +429,14 @@ async fn a_row_that_will_not_go_in_leaves_no_table_and_says_where_it_was() -> Re
         GAPMINDER.to_owned(),
         "country\tcontinent\tyear\tlifeExp\tpop\tgdpPercap\nA\tAsia\t1952\t28.8\t8425333\t779.4\nA\tAsia\t1957\t30.3\t9240934\t820.8\nB\tEurope\t1952\t55.2\t1282697\t1601.1\n",
     )]);
-    public_datasets::install(&catalog, "gapminder", &good, &progress, None).await?;
+    public_datasets::install(
+        &catalog,
+        "gapminder",
+        &good,
+        &progress,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let countries = rows(
         &db,
         "SELECT country, continent FROM gapminder_countries ORDER BY country",
@@ -463,10 +489,16 @@ async fn a_spatial_dataset_needs_postgis() -> Result<()> {
             .unavailable
             .is_none()
     );
-    let e = public_datasets::install(&catalog, "eu_nuts_regions", &nuts(), &progress, None)
-        .await
-        .unwrap_err()
-        .to_string();
+    let e = public_datasets::install(
+        &catalog,
+        "eu_nuts_regions",
+        &nuts(),
+        &progress,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
     assert!(e.contains("PostGIS"), "{e}");
     assert!(catalog.get("eu_nuts_regions")?.is_none());
     Ok(())
@@ -479,7 +511,14 @@ async fn the_nuts_hierarchy_is_written_parents_first_with_multipolygons() -> Res
     };
     let catalog = setup(&db).await?;
     let (_, progress) = recorder();
-    public_datasets::install(&catalog, "eu_nuts_regions", &nuts(), &progress, None).await?;
+    public_datasets::install(
+        &catalog,
+        "eu_nuts_regions",
+        &nuts(),
+        &progress,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let regions = rows(
         &db,
         "SELECT nuts_id, parent, level, GeometryType(geom) FROM eu_nuts_regions ORDER BY nuts_id",
@@ -577,7 +616,15 @@ async fn every_public_dataset_installs_from_its_source() -> Result<()> {
             continue;
         }
         let started = std::time::Instant::now();
-        match public_datasets::install(&catalog, &entry.key, &fetch, &progress, None).await {
+        match public_datasets::install(
+            &catalog,
+            &entry.key,
+            &fetch,
+            &progress,
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await
+        {
             Ok(done) => {
                 let elapsed = started.elapsed();
                 eprintln!(

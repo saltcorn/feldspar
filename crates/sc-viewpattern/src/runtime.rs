@@ -15,6 +15,7 @@
 //! snapshot, so every read a pattern makes is a read under the viewer's
 //! authority (§11). The seam does not decide that authority; its caller does.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
@@ -69,7 +70,7 @@ pub struct ViewUser {
     /// The user's email.
     pub email: String,
     /// The user's role on the `1..=100` scale (v1's `role_id`).
-    pub role_id: u8,
+    pub role_id: Role,
 }
 
 /// The request a view is rendered for: v1's `req`, as data.

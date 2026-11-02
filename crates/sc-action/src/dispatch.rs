@@ -49,24 +49,23 @@
 //! not this milestone; for now it is stderr, like every other server-side
 //! diagnostic.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use sc_catalog::{
-    CallerContext, Catalog, SharedTx, TableEvents, TableWrite, WriteOp, prefetch_bindings,
+    Authority, Catalog, SharedTx, TableEvents, TableWrite, WriteOp, prefetch_bindings,
 };
 use sc_email::Mailer;
 use sc_error::{Error, Result};
-use sc_expr::{
-    Ambient, CodeAdapter, ConsoleLine, ConsoleSink, Formula, JsEvaluator, Operation,
-    value_from_json,
-};
+use sc_expr::{Ambient, CodeAdapter, ConsoleLine, ConsoleSink, Formula, JsEvaluator, Operation};
 use sc_query::Value;
 use sc_types::Attrs;
+use sc_types::value_from_json;
 use serde_json::Value as Json;
 
 use crate::action::ActionContext;
-use crate::event::{Event, EventKind, ROLE_PUBLIC};
+use crate::event::{Event, EventKind};
 use crate::registry::ActionRegistry;
 use crate::scope::typed_value;
 use crate::trigger::Trigger;
@@ -206,8 +205,11 @@ impl TriggerDispatcher {
     /// mailer runs every other action normally, and a trigger that sends mail
     /// fails there with a message saying so rather than at a half-written
     /// `Option` somewhere further in.
+    ///
+    /// Installed [withholding](sc_email::Withholding): what a checklist run
+    /// sends goes to the run's outbox (TODO-checklists C4.1).
     pub fn with_mailer(mut self, mailer: Arc<dyn Mailer>) -> TriggerDispatcher {
-        self.services.mailer = Some(mailer);
+        self.services.mailer = Some(sc_email::Withholding::wrap(mailer));
         self
     }
 
@@ -299,6 +301,21 @@ impl TriggerDispatcher {
         if let Ok(mut guard) = self.engine.write() {
             *guard = Some(engine);
         }
+    }
+
+    /// Let go of the workflow engine and the observer, both of which hold this
+    /// dispatcher (or its catalog) back — what a test's `Catalog::teardown`
+    /// reaches through [`TableEvents::teardown`].
+    pub fn teardown(&self) {
+        let engine = match self.engine.write() {
+            Ok(mut guard) => guard.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        let observer = match self.observer.write() {
+            Ok(mut guard) => guard.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        drop((engine, observer));
     }
 
     /// The workflow engine, if this process has one.
@@ -416,8 +433,21 @@ impl TriggerDispatcher {
     /// [`fire`](TriggerDispatcher::fire) **inside a transaction** — see
     /// [`dispatch_in`](TriggerDispatcher::dispatch_in).
     pub async fn fire_in(&self, catalog: &Catalog, event: &Event, tx: Option<&SharedTx>) {
+        self.fire_keyed(catalog, event, tx, None).await;
+    }
+
+    /// [`fire_in`](TriggerDispatcher::fire_in), with the primary key of the
+    /// event's row — what a failure's `error` event names the row by
+    /// ([`Event::trigger_failure`]). Only the row layer knows the key.
+    async fn fire_keyed(
+        &self,
+        catalog: &Catalog,
+        event: &Event,
+        tx: Option<&SharedTx>,
+        key: Option<Json>,
+    ) {
         if event.kind != EventKind::Error {
-            self.report(catalog, event, tx).await;
+            self.report(catalog, event, tx, key).await;
             return;
         }
         if HANDLING_ERROR.try_with(|()| ()).is_ok() {
@@ -426,12 +456,28 @@ impl TriggerDispatcher {
             return;
         }
         HANDLING_ERROR
-            .scope((), async { self.report(catalog, event, tx).await })
+            .scope((), async { self.report(catalog, event, tx, None).await })
             .await;
     }
 
-    /// [`dispatch`](TriggerDispatcher::dispatch), logging what failed.
-    async fn report(&self, catalog: &Catalog, event: &Event, tx: Option<&SharedTx>) {
+    /// [`dispatch`](TriggerDispatcher::dispatch), logging what failed — and
+    /// raising each failure as an `error` event (§16), so an application can
+    /// observe a trigger that failed where nobody was waiting for it: a mail
+    /// that was never accepted is otherwise invisible to everything but stderr.
+    ///
+    /// Not for a failure *while handling* an error event, which is what the
+    /// re-entrancy guard in [`fire_in`](TriggerDispatcher::fire_in) is for; it
+    /// is skipped here rather than left for the guard to drop, so the rule
+    /// reads where it applies. In `tx`, like the failed run: the alert's writes
+    /// land where the event's did, and a transaction that holds the write lock
+    /// is never waited on by a write outside it.
+    async fn report(
+        &self,
+        catalog: &Catalog,
+        event: &Event,
+        tx: Option<&SharedTx>,
+        key: Option<Json>,
+    ) {
         for run in self.dispatch_in(catalog, event, tx).await {
             if let Err(e) = run.outcome {
                 eprintln!(
@@ -440,6 +486,10 @@ impl TriggerDispatcher {
                     event.kind,
                     sc_error::format_chain(&e)
                 );
+                if event.kind != EventKind::Error {
+                    let failure = Event::trigger_failure(event, &run.trigger, &e, key.clone());
+                    Box::pin(self.fire_in(catalog, &failure, tx)).await;
+                }
             }
         }
     }
@@ -463,7 +513,7 @@ impl TriggerDispatcher {
         catalog: &Catalog,
         name: &str,
         payload: Json,
-        caller: Option<&CallerContext>,
+        caller: Authority<'_>,
     ) -> Result<Json> {
         self.run_trigger_in(catalog, name, payload, caller, None)
             .await
@@ -480,7 +530,7 @@ impl TriggerDispatcher {
         catalog: &Catalog,
         name: &str,
         payload: Json,
-        caller: Option<&CallerContext>,
+        caller: Authority<'_>,
         tx: Option<&SharedTx>,
     ) -> Result<Json> {
         let triggers = self.triggers()?;
@@ -497,16 +547,53 @@ impl TriggerDispatcher {
         if let Some(channel) = &trigger.channel {
             event = event.on(channel.clone());
         }
-        if let Some(caller) = caller {
+        if let Some(caller) = caller.principal() {
             event = event.caused_by(caller);
         }
         let result = fire_trigger_in(self, catalog, trigger, &event, tx).await?;
         Ok(result.unwrap_or(Json::Null))
     }
 
-    /// Run a **code body that is not a trigger's** — an application's
-    /// JavaScript or Python custom query (§13.4) — on `action`
-    /// (`run_js_code` / `run_python_code`).
+    /// Run an application's JavaScript or Python **custom query** (§13.4) on
+    /// `action` (`run_js_code` / `run_python_code`), as
+    /// [`run_code`](TriggerDispatcher::run_code) does — except whose authority
+    /// its handles default to.
+    ///
+    /// A custom query answers an outside request, so its `db`, `fs`, `models`
+    /// and `trigger(...)` act **as the caller** unless the body says
+    /// `asAdmin()`: the table's role rules and ownership formula decide every
+    /// row exactly as they would on the row API, and the endpoint an agent
+    /// writes without thinking about authority is the narrow one.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_query_code(
+        &self,
+        catalog: &Catalog,
+        action: &str,
+        name: &str,
+        code: &str,
+        request: Attrs,
+        caller: Authority<'_>,
+        application: Option<uuid::Uuid>,
+        file_urls: Option<Arc<dyn crate::FileUrls>>,
+    ) -> Result<Json> {
+        self.run_code_as(
+            catalog,
+            action,
+            name,
+            code,
+            request,
+            caller,
+            application,
+            file_urls,
+            None,
+            true,
+        )
+        .await
+    }
+
+    /// Run a **code body that is not a trigger's** — a server-rendered page's
+    /// entry, or a body run by hand — on `action` (`run_js_code` /
+    /// `run_python_code`).
     ///
     /// The same action, with the same host surfaces, bounds and authority, that
     /// an exposed trigger's body would have: the event is a `none` event carrying
@@ -514,7 +601,8 @@ impl TriggerDispatcher {
     /// cascade chain and in an error message. What differs is scope: the body
     /// sees `request`'s names (`body`, `query`) and `user`, and no `payload`,
     /// and its `lib()` imports `application`'s code libraries over the
-    /// instance's.
+    /// instance's. A custom query runs through
+    /// [`run_query_code`](TriggerDispatcher::run_query_code) instead.
     #[allow(clippy::too_many_arguments)]
     pub async fn run_code(
         &self,
@@ -523,7 +611,7 @@ impl TriggerDispatcher {
         name: &str,
         code: &str,
         request: Attrs,
-        caller: Option<&CallerContext>,
+        caller: Authority<'_>,
         application: Option<uuid::Uuid>,
         file_urls: Option<Arc<dyn crate::FileUrls>>,
     ) -> Result<Json> {
@@ -553,13 +641,44 @@ impl TriggerDispatcher {
         name: &str,
         code: &str,
         request: Attrs,
-        caller: Option<&CallerContext>,
+        caller: Authority<'_>,
         application: Option<uuid::Uuid>,
         file_urls: Option<Arc<dyn crate::FileUrls>>,
         trace: Option<sc_expr::TraceSink>,
     ) -> Result<Json> {
+        self.run_code_as(
+            catalog,
+            action,
+            name,
+            code,
+            request,
+            caller,
+            application,
+            file_urls,
+            trace,
+            false,
+        )
+        .await
+    }
+
+    /// The one implementation of the two above: `as_caller` is whose authority
+    /// the body's handles default to.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_code_as(
+        &self,
+        catalog: &Catalog,
+        action: &str,
+        name: &str,
+        code: &str,
+        request: Attrs,
+        caller: Authority<'_>,
+        application: Option<uuid::Uuid>,
+        file_urls: Option<Arc<dyn crate::FileUrls>>,
+        trace: Option<sc_expr::TraceSink>,
+        as_caller: bool,
+    ) -> Result<Json> {
         let mut event = Event::new(EventKind::None);
-        if let Some(caller) = caller {
+        if let Some(caller) = caller.principal() {
             event = event.caused_by(caller);
         }
         let chain = event.firing(name)?;
@@ -572,7 +691,8 @@ impl TriggerDispatcher {
             .with_chain(chain)
             .with_request(request)
             .with_application(application)
-            .with_file_urls(file_urls);
+            .with_file_urls(file_urls)
+            .as_caller(as_caller);
         if let Some(trace) = trace {
             ctx = ctx.with_trace(trace);
         }
@@ -606,7 +726,7 @@ impl TriggerDispatcher {
         name: &str,
         payload: Json,
         row: Option<Json>,
-        caller: Option<&CallerContext>,
+        caller: Authority<'_>,
     ) -> TestRun {
         let console = sc_expr::console_sink();
         let result = self
@@ -626,7 +746,7 @@ impl TriggerDispatcher {
         name: &str,
         payload: Json,
         row: Option<Json>,
-        caller: Option<&CallerContext>,
+        caller: Authority<'_>,
         console: &ConsoleSink,
     ) -> Result<Json> {
         let triggers = self.triggers()?;
@@ -656,7 +776,7 @@ impl TriggerDispatcher {
             }
             event = event.row(row);
         }
-        if let Some(caller) = caller {
+        if let Some(caller) = caller.principal() {
             event = event.caused_by(caller);
         }
         let result = fire_trigger_with(self, catalog, trigger, &event, None, Some(console)).await?;
@@ -713,14 +833,20 @@ impl TableEvents for TriggerDispatcher {
         // (§10.3, decision 6).
         let mut event = table_event(&write);
         reveal_secrets(catalog, write.table, &mut event);
-        self.fire_in(catalog, &event, write.tx.as_ref()).await;
+        let key = row_key(write.table, &write.row);
+        self.fire_keyed(catalog, &event, write.tx.as_ref(), key)
+            .await;
         Ok(())
+    }
+
+    fn teardown(&self) {
+        TriggerDispatcher::teardown(self);
     }
 }
 
 /// The event a committed write raises.
 ///
-/// The caller travels with the write ([`CallerContext`](sc_catalog::CallerContext)),
+/// The caller travels with the write ([`Principal`](sc_catalog::Principal)),
 /// which is where the role, the user and the **chain** come from: a write made by
 /// a request carries an empty chain (depth 0), and one made by a trigger's action
 /// carries what `Event::firing` handed that action.
@@ -734,8 +860,24 @@ fn table_event(write: &TableWrite<'_>) -> Event {
     match write.caller {
         Some(caller) => event.caused_by(caller),
         None => event
-            .caller(ROLE_PUBLIC, None)
+            .caller(Role::PUBLIC, None)
             .in_changeset(sc_catalog::changeset::current()),
+    }
+}
+
+/// The primary key of a written row, as a trigger failure's `error` event names
+/// it: the value for a single-column key, an object of the key's columns for a
+/// composite one, and `None` for a table with no key.
+fn row_key(table: &sc_catalog::Table, row: &Json) -> Option<Json> {
+    match table.primary_key.as_slice() {
+        [] => None,
+        [column] => row.get(column).cloned(),
+        columns => Some(Json::Object(
+            columns
+                .iter()
+                .map(|c| (c.clone(), row.get(c).cloned().unwrap_or(Json::Null)))
+                .collect(),
+        )),
     }
 }
 
@@ -1000,7 +1142,7 @@ fn operation(kind: EventKind) -> Operation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sc_catalog::CallerContext;
+    use sc_catalog::Principal;
     use serde_json::json;
 
     /// A `TableWrite` needs a `Table`, and a `Table` needs no database to be
@@ -1028,8 +1170,8 @@ mod tests {
     #[test]
     fn a_write_becomes_the_event_its_caller_describes() {
         let books = table("books");
-        let caller =
-            CallerContext::new(1, Some(json!({ "email": "a@b.c" }))).chained(vec!["audit".into()]);
+        let caller = Principal::new(Role::ADMIN, Some(json!({ "email": "a@b.c" })))
+            .chained(vec!["audit".into()]);
         let event = table_event(&TableWrite {
             table: &books,
             op: WriteOp::Update,
@@ -1041,7 +1183,7 @@ mod tests {
         assert_eq!(event.kind, EventKind::Update);
         assert_eq!(event.channel.as_deref(), Some("books"));
         assert_eq!(event.old_row.as_ref().unwrap()["title"], json!("was"));
-        assert_eq!(event.role, 1);
+        assert_eq!(event.role, Role::ADMIN);
         assert_eq!(event.user.as_ref().unwrap()["email"], json!("a@b.c"));
         // The chain travels with the caller, which is what bounds a cascade: this
         // event is already one deep.
@@ -1058,7 +1200,7 @@ mod tests {
             tx: None,
         });
         assert_eq!(event.kind, EventKind::Insert);
-        assert_eq!(event.role, ROLE_PUBLIC);
+        assert_eq!(event.role, Role::PUBLIC);
         assert!(event.old_row.is_none());
         assert_eq!(event.depth(), 0);
     }

@@ -1,5 +1,5 @@
 //! What a stage looks like: its columns, their types, and its **grain**
-//! (analytics TODO A1.2) — and the schema a compile reads its tables from.
+//! — and the schema a compile reads its tables from.
 //!
 //! The grain says what one row represents. It decides which relations a
 //! formula may follow: `Ⱶ` from any foreign-key column always, because a key
@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use sc_catalog::{Catalog, DataFieldKind, Table};
-use sc_error::Result;
+use sc_error::{Error, Result};
 use sc_expr::{CalcFields, Formula, SchemaShape};
 use sc_types::{BasicType, TypeRef};
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,7 @@ pub enum ColType {
     Uuid,
     /// Raw bytes.
     Bytes,
-    /// A geometry in WGS84, read as a GeoJSON object (analytics TODO A5.1).
+    /// A geometry in WGS84, read as a GeoJSON object.
     Geometry,
     /// Not known until the data is read.
     Unknown,
@@ -294,7 +294,7 @@ pub struct Schema {
     pub native_temporal_types: bool,
     /// Whether the database computes geometry (it has PostGIS), or the
     /// sentence saying why not: a formula calling a `Geo` function is refused
-    /// with it (analytics TODO A5.3).
+    /// with it.
     pub spatial: std::result::Result<(), String>,
 }
 
@@ -322,8 +322,8 @@ impl Schema {
         Ok(Schema {
             shape,
             tables,
-            native_temporal_types: catalog.primary().capabilities().native_temporal_types,
-            spatial: catalog.primary().spatial().require(),
+            native_temporal_types: catalog.primary_info().capabilities().native_temporal_types,
+            spatial: catalog.primary_info().spatial().require(),
         })
     }
 
@@ -338,15 +338,15 @@ impl Schema {
     }
 
     /// The table called `name`, or the sentence saying there is none.
-    pub fn table(&self, name: &str) -> std::result::Result<&TableInfo, String> {
+    pub fn table(&self, name: &str) -> Result<&TableInfo> {
         if name.starts_with("_fd_") {
-            return Err(format!(
+            return Err(Error::invalid(format!(
                 "`{name}` is one of the server's own tables, and a dataset cannot be built on it"
-            ));
+            )));
         }
         self.tables
             .get(name)
-            .ok_or_else(|| format!("there is no table called `{name}`"))
+            .ok_or_else(|| Error::invalid(format!("there is no table called `{name}`")))
     }
 }
 
@@ -374,7 +374,7 @@ fn table_info(table: &Table, all: &BTreeMap<String, Table>) -> TableInfo {
                 // A key has its target's type: a key to an integer id holds
                 // integers.
                 let ty = all
-                    .get(&target_table.0)
+                    .get(target_table)
                     .and_then(|t| t.field(&target_field.0))
                     .map_or(ColType::of_type(&field.base.type_), |f| {
                         ColType::of_type(&f.base.type_)
@@ -383,7 +383,7 @@ fn table_info(table: &Table, all: &BTreeMap<String, Table>) -> TableInfo {
                     name: field.base.name.clone(),
                     ty,
                     key: Some(ForeignKey {
-                        table: target_table.0.clone(),
+                        table: target_table.clone(),
                         field: target_field.0.clone(),
                     }),
                 });

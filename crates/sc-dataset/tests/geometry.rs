@@ -68,7 +68,7 @@ pub(crate) async fn insert(
             .collect(),
         returning: Vec::new(),
     };
-    cat.primary()
+    cat.primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(insert))
         .await?
         .try_collect()
@@ -144,7 +144,7 @@ pub(crate) async fn rows(cat: &Catalog, def: &DatasetDef) -> Result<(Vec<String>
         page.columns.iter().map(|c| c.name.clone()).collect(),
         page.rows
             .iter()
-            .map(|r| r.iter().map(sc_dataset::value_json).collect())
+            .map(|r| r.iter().map(sc_types::value_to_analysis_json).collect())
             .collect(),
     ))
 }
@@ -257,7 +257,7 @@ async fn geo_functions_compute_metres_cells_and_conditions() -> Result<()> {
 #[tokio::test]
 async fn a_geo_function_is_refused_where_the_database_cannot_compute_it() -> Result<()> {
     for fx in both().await? {
-        if fx.cat.primary().spatial().is_available() {
+        if fx.cat.primary_info().spatial().is_available() {
             continue;
         }
         let schema = Schema::of_catalog(&fx.cat)?;

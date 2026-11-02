@@ -9,9 +9,9 @@
 //! precisely the point: a plan that reaches SQL wrongly is a bug that must be
 //! visible before a database is involved.
 
+use sc_types::Role;
 use std::sync::Arc;
 
-use sc_auth::ROLE_ADMIN;
 use sc_catalog::Catalog;
 use sc_db::PhysicalTable;
 use sc_error::Result;
@@ -81,7 +81,7 @@ fn caller() -> Json {
 async fn read_of(plan: Json) -> Result<Read> {
     let cat = library().await;
     let plan: Plan = serde_json::from_value(plan).expect("a well-formed plan");
-    plan::read(&cat, &plan, &HostLimits::default(), ROLE_ADMIN)
+    plan::read(&cat, &plan, &HostLimits::default(), Role::ADMIN)
 }
 
 /// The message a plan is refused with.
@@ -94,7 +94,7 @@ async fn refusal(plan: Json) -> String {
         Err(e) => format!("{e}"),
         Ok(plan) => match plan.op {
             super::Op::Aggregate => {
-                plan::aggregate(&cat, &plan, &HostLimits::default(), ROLE_ADMIN)
+                plan::aggregate(&cat, &plan, &HostLimits::default(), Role::ADMIN)
                     .err()
                     .expect("this plan is refused")
                     .to_string()
@@ -104,12 +104,12 @@ async fn refusal(plan: Json) -> String {
                 .expect("this plan is refused")
                 .to_string(),
             super::Op::Update | super::Op::Delete => {
-                plan::write(&cat, &plan, &HostLimits::default(), ROLE_ADMIN)
+                plan::write(&cat, &plan, &HostLimits::default(), Role::ADMIN)
                     .err()
                     .expect("this plan is refused")
                     .to_string()
             }
-            _ => plan::read(&cat, &plan, &HostLimits::default(), ROLE_ADMIN)
+            _ => plan::read(&cat, &plan, &HostLimits::default(), Role::ADMIN)
                 .err()
                 .expect("this plan is refused")
                 .to_string(),
@@ -374,7 +374,7 @@ async fn an_aggregate_plan_is_one_projection_per_value_over_the_filtered_rows() 
         ],
     }))
     .expect("a plan");
-    let agg = plan::aggregate(&cat, &plan, &HostLimits::default(), ROLE_ADMIN).expect("resolves");
+    let agg = plan::aggregate(&cat, &plan, &HostLimits::default(), Role::ADMIN).expect("resolves");
     assert!(!agg.grouped, "nothing to group by is one row");
     let (sql, _) = rendered_aggregate(&agg);
     assert!(
@@ -406,7 +406,7 @@ async fn a_grouped_aggregate_projects_its_keys_beside_its_values_and_bounds_the_
         "limit": 5,
     }))
     .expect("a plan");
-    let agg = plan::aggregate(&cat, &plan, &HostLimits::default(), ROLE_ADMIN).expect("resolves");
+    let agg = plan::aggregate(&cat, &plan, &HostLimits::default(), Role::ADMIN).expect("resolves");
     assert!(agg.grouped);
     assert_eq!(agg.keys, vec!["authorⱵname", "n", "pages"], "keys in order");
     let (sql, binds) = rendered_aggregate(&agg);
@@ -444,7 +444,7 @@ async fn a_grouped_read_is_bounded_and_its_having_names_only_its_own_values() {
         "aggregate": [ { "alias": "n", "fn": "count" } ],
     }))
     .expect("a plan");
-    let agg = plan::aggregate(&cat, &plan, &HostLimits::default(), ROLE_ADMIN).expect("resolves");
+    let agg = plan::aggregate(&cat, &plan, &HostLimits::default(), Role::ADMIN).expect("resolves");
     assert_eq!(agg.query.limit, Some(super::DEFAULT_MAX_ROWS + 1));
 
     // A `having` on a column is a condition on the rows, which `.where()` says
@@ -572,7 +572,7 @@ async fn an_update_resolves_its_rows_by_key_before_it_writes_any_of_them() {
         "values": { "title": "Orlando" },
     }))
     .expect("a plan");
-    let write = plan::write(&cat, &plan, &HostLimits::default(), ROLE_ADMIN).expect("resolves");
+    let write = plan::write(&cat, &plan, &HostLimits::default(), Role::ADMIN).expect("resolves");
     assert_eq!(write.pk, "id", "each matched row is addressed by its key");
     assert_eq!(write.values, Some(json!({ "title": "Orlando" })));
     // The matched read is the whole row (no `select` to narrow it) under the
@@ -677,14 +677,14 @@ async fn a_delegated_plan_resolves_its_names_at_the_callers_own_role() {
     let cat = library().await;
     let mut admin = plan.clone();
     admin["authority"] = json!("admin");
-    plan::read(&cat, &parsed(&admin), &HostLimits::default(), ROLE_ADMIN)
+    plan::read(&cat, &parsed(&admin), &HostLimits::default(), Role::ADMIN)
         .expect("the admin reads through a key");
 
     // Delegated, the same plan is resolved at the *event's* role — so the join
     // goes through `ownership::join_guard` as a caller, and a role-40 reader who
     // may not read `authors` is refused by name rather than handed its columns
     // one at a time through a key.
-    let host = super::TableHost::new(&cat).caused_by(40, Some(caller()));
+    let host = super::TableHost::new(&cat).caused_by(Role::of(40), Some(caller()));
     let refused = host
         .run(&parsed(&plan))
         .await
@@ -703,7 +703,7 @@ async fn delegation_needs_a_caller_it_can_name_and_public_is_a_valid_answer() {
     // An event whose caller object is not a user is refused **before** any
     // statement: acting as somebody requires knowing who, and the admin's rows
     // are the one answer that must never be the fallback.
-    let host = super::TableHost::new(&cat).caused_by(40, Some(json!({ "id": 7 })));
+    let host = super::TableHost::new(&cat).caused_by(Role::of(40), Some(json!({ "id": 7 })));
     let refused = host.run(&plan).await.expect_err("not a caller");
     assert!(refused.to_string().contains("uuid"), "{refused}");
 
@@ -771,7 +771,7 @@ async fn a_named_user_is_loaded_where_users_live_and_a_bad_name_is_refused() {
     }))
     .expect("a plan");
     let refused = super::TableHost::new(&cat)
-        .caused_by(ROLE_ADMIN, Some(caller()))
+        .caused_by(Role::ADMIN, Some(caller()))
         .run(&plan)
         .await
         .expect_err("public may not read books")
@@ -800,7 +800,7 @@ async fn a_viewers_host_runs_every_plan_as_the_viewer() {
     // floor and gets as far as the statement (this catalog has no database to
     // run it on)…
     let admin = super::TableHost::new(&cat)
-        .caused_by(40, Some(caller()))
+        .caused_by(Role::of(40), Some(caller()))
         .run(&plan(None))
         .await
         .expect_err("no database here")
@@ -811,7 +811,7 @@ async fn a_viewers_host_runs_every_plan_as_the_viewer() {
     );
     // …and the viewer's in a view, where role 40 may not read `books`.
     let viewer = super::TableHost::new(&cat)
-        .caused_by(40, Some(caller()))
+        .caused_by(Role::of(40), Some(caller()))
         .viewer_only();
     for authority in [None, Some(json!("admin")), Some(json!("user"))] {
         let refused = viewer
@@ -1269,7 +1269,7 @@ async fn a_table_with_no_primary_key_cannot_be_streamed() {
         "op": "select", "table": "logs", "cursor": true,
     }))
     .expect("a well-formed plan");
-    let refused = plan::read(&cat, &plan, &HostLimits::default(), ROLE_ADMIN)
+    let refused = plan::read(&cat, &plan, &HostLimits::default(), Role::ADMIN)
         .err()
         .expect("no primary key")
         .to_string();

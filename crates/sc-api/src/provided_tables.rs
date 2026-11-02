@@ -14,10 +14,10 @@
 //! rule.
 
 use sc_catalog::{
-    Attrs, Catalog, ProvidedTableDef, Table, TableMeta, load_table_meta_by_name,
-    save_table_meta_row,
+    Catalog, ProvidedTableDef, Table, TableMeta, load_table_meta_by_name, save_table_meta_row,
 };
 use sc_error::{Error, Result};
+use sc_types::Attrs;
 
 /// Create a provided table: write its definition row and reload.
 ///

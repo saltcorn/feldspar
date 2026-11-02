@@ -26,13 +26,19 @@
 //!   keeps the pair in `_fd_sync_keys`: later changes naming `-17`, as their key
 //!   or in a foreign key, are translated, in this upload or any later one.
 
+/// What stands behind the sync bookkeeping statements a push runs as its
+/// caller (`_fd_sync_devices`, `_fd_sync_keys`): each names only the caller's
+/// own device, which was looked up by the caller's id, and runs in the caller's
+/// context so the change log attributes it.
+const OWN_DEVICE: &str = "sync: the statement names only the caller's own device";
+
+use sc_catalog::Unchecked;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use sc_auth::User;
 use sc_catalog::{
-    CallerContext, Catalog, Changeset, ChangesetSource, DataFieldKind, SYNC_KEYS_TABLE, SharedTx,
-    Table,
+    Catalog, Changeset, ChangesetSource, DataFieldKind, Principal, SYNC_KEYS_TABLE, SharedTx, Table,
 };
 use sc_error::{Error, Repr, Result};
 use sc_expr::JsEvaluator;
@@ -43,10 +49,10 @@ use uuid::Uuid;
 
 use super::device::{check_device, devices_table};
 use super::pull::key_text;
-use crate::ownership;
-use crate::rows::{self, Executor};
 use crate::schema::{StructField, TypeSchema};
-use crate::write_as;
+use sc_access::ownership;
+use sc_access::rows::{self, Executor};
+use sc_access::write_as;
 
 /// The savepoint each change is written inside. Structural, never user data.
 const CHANGE_SAVEPOINT: &str = "sc_sync_change";
@@ -105,7 +111,7 @@ pub(crate) async fn push(
     let request = PushRequest::parse(body)?;
     let devices = devices_table(cat)?;
     check_device(cat, &devices, request.client_id, application, user).await?;
-    let context = ownership::caller_context(Some(user));
+    let context = ownership::principal_of(Some(user));
     let device = Device {
         id: request.client_id,
         application,
@@ -270,7 +276,7 @@ struct Device<'a> {
     table: &'a Table,
     user: &'a User,
     evaluator: Option<&'a Arc<dyn JsEvaluator>>,
-    context: &'a CallerContext,
+    context: &'a Principal,
     exposed: &'a [String],
 }
 
@@ -285,7 +291,7 @@ impl Device<'_> {
             } else {
                 None
             };
-            let _ = tx.rollback().await;
+            tx.abandon().await;
             return Ok(Outcome::Skipped(key));
         }
         tx.savepoint(CHANGE_SAVEPOINT).await?;
@@ -306,7 +312,7 @@ impl Device<'_> {
                 // Not this change's fault (the database is gone, a bug): stop
                 // here. What is committed stays, and the device retries the rest.
                 None => {
-                    let _ = tx.rollback().await;
+                    tx.abandon().await;
                     return Err(e);
                 }
             },
@@ -320,12 +326,15 @@ impl Device<'_> {
         let sql = format!(
             "UPDATE {devices} SET last_mutation = $1 \
              WHERE id = $2 AND coalesce(last_mutation, 0) < $1 RETURNING id",
-            devices = cat.primary().dialect().quote_ident(&self.table.name),
+            devices = cat.primary_dialect().quote_ident(&self.table.name),
         );
         let claimed = tx
             .run(
-                Some(self.context),
-                &Statement::raw(sql, vec![Value::Int(mutation), Value::Uuid(self.id)]),
+                Unchecked::vouched(self.context, OWN_DEVICE),
+                &Statement::raw(
+                    sc_query::TrustedSql::composed(sql),
+                    vec![Value::Int(mutation), Value::Uuid(self.id)],
+                ),
             )
             .await?;
         Ok(!claimed.is_empty())
@@ -390,7 +399,7 @@ impl Device<'_> {
             let Some(offline_key) = row.get(&field.base.name).and_then(temp_key) else {
                 continue;
             };
-            let target = cat.require(&target_table.0)?;
+            let target = cat.require(target_table)?;
             let target_pk = rows::single_pk(&target)?;
             if !issues_keys(&target, &target_pk) {
                 continue;
@@ -497,12 +506,12 @@ impl Device<'_> {
     async fn made_key(&self, tx: &SharedTx, mutation: i64, table: &str) -> Result<Option<String>> {
         let rows = tx
             .run(
-                Some(self.context),
+                Unchecked::vouched(self.context, OWN_DEVICE),
                 &Statement::raw(
-                    format!(
+                    sc_query::TrustedSql::composed(format!(
                         "SELECT row_key FROM \"{SYNC_KEYS_TABLE}\" \
                          WHERE client_id = $1 AND mutation = $2 AND table_name = $3"
-                    ),
+                    )),
                     vec![
                         Value::Uuid(self.id),
                         Value::Int(mutation),
@@ -529,12 +538,12 @@ impl Device<'_> {
     ) -> Result<()> {
         let sql = format!(
             "INSERT INTO {keys} (client_id, mutation, table_name, row_key) VALUES ($1, $2, $3, $4)",
-            keys = cat.primary().dialect().quote_ident(SYNC_KEYS_TABLE),
+            keys = cat.primary_dialect().quote_ident(SYNC_KEYS_TABLE),
         );
         tx.run(
-            Some(self.context),
+            Unchecked::vouched(self.context, OWN_DEVICE),
             &Statement::raw(
-                sql,
+                sc_query::TrustedSql::composed(sql),
                 vec![
                     Value::Uuid(self.id),
                     Value::Int(change.mutation),

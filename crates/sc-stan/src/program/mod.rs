@@ -120,8 +120,9 @@ impl Program {
                      store `{store_name}`"
                 )),
             };
+            let at = sc_files::StorePath::parse(&path)?;
             let stat = store
-                .stat(&path)
+                .stat(&at)
                 .await
                 .with_context(|| format!("reading `{path}` from the file store `{store_name}`"))?;
             let Some(stat) = stat else {
@@ -139,7 +140,7 @@ impl Program {
                 )));
             }
             let bytes = store
-                .read(&path)
+                .read(&at)
                 .await
                 .with_context(|| format!("reading `{path}` from the file store `{store_name}`"))?;
             let text = String::from_utf8(bytes.to_vec())

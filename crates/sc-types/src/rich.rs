@@ -65,6 +65,17 @@ pub trait RichType: Send + Sync {
     /// per-column configuration lives; a type with no attributes ignores it.
     fn validate(&self, value: &Value, attrs: &Attrs) -> Result<()>;
 
+    /// Bring a field's attributes into the shape they are stored in, before
+    /// they are saved — so an attribute an admin may write in a friendlier form
+    /// (`String`'s `options` as `Red, Green, Blue`) is stored, and read by
+    /// everything downstream, in one canonical form. An attribute that cannot
+    /// be read is an error, rejecting the save.
+    ///
+    /// The default leaves the attributes as they are.
+    fn normalize_attrs(&self, _attrs: &mut Attrs) -> Result<()> {
+        Ok(())
+    }
+
     /// The backend SQL types this rich type can sit on. The first is canonical —
     /// the one [`RichTypeRef::sql_type`] emits for DDL. Must be non-empty (see
     /// the trait invariant).
@@ -183,6 +194,12 @@ impl RichTypeRef {
     /// Validate a value against the type and a field's attributes.
     pub fn validate(&self, value: &Value, attrs: &Attrs) -> Result<()> {
         self.0.validate(value, attrs)
+    }
+
+    /// Bring a field's attributes into their stored shape (see
+    /// [`RichType::normalize_attrs`]).
+    pub fn normalize_attrs(&self, attrs: &mut Attrs) -> Result<()> {
+        self.0.normalize_attrs(attrs)
     }
 
     /// Borrow the underlying [`RichType`].

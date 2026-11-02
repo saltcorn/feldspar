@@ -23,6 +23,8 @@
 //!   first user is created with one.
 //! - **File stores' directories**, only for the stores the admin ticked.
 //!
+//! The migration record (`_fd_migrations`) stays: the schema it describes does.
+//!
 //! Settings go back to their defaults at once where this process applies them
 //! from the database (localisation, development logging). **The TLS settings
 //! stay**, with the ACME cache: they say how this host serves, a backup leaves
@@ -179,6 +181,7 @@ pub async fn clear_all(
     // end, and the response clears this admin's cookie in both scopes.
     apps.set_shared_session_cookie(false);
     apps.set_session_ttl_hours(sc_config::DEFAULT_SESSION_TTL_HOURS);
+    apps.set_persistent_session_cookie(true);
 
     for def in stores.iter().filter(|d| delete_from_disk.contains(&d.name)) {
         match sc_files::remove_store_from_disk(def) {
@@ -277,7 +280,7 @@ async fn drop_user_tables(catalog: &Catalog) -> Result<usize> {
 /// The table a `Key` field points at.
 fn key_target(field: &DataField) -> Option<&str> {
     match &field.kind {
-        DataFieldKind::Key { target_table, .. } => Some(target_table.0.as_str()),
+        DataFieldKind::Key { target_table, .. } => Some(target_table.as_str()),
         _ => None,
     }
 }
@@ -388,13 +391,18 @@ async fn clear_system_rows(catalog: &Catalog, report: &mut ClearReport) {
 /// The ACME cache goes with them because a cleared account and certificate is
 /// a fresh order against the CA's rate limits for names it already certified.
 async fn delete_rows(catalog: &Catalog, table: &str) -> Result<()> {
-    if table == sc_config::ACME_CACHE_TABLE {
+    // The migration record describes the schema, which stays; emptied, the next
+    // start would re-run every migration against tables that already have them.
+    if table == sc_config::ACME_CACHE_TABLE || table == sc_migrate::MIGRATIONS_TABLE {
         return Ok(());
     }
     let mut delete = Delete::from(table);
     if table == sc_config::CONFIG_TABLE {
+        // The first-user token too: an installation that may only be claimed
+        // through its setup link stays that way once it is emptied.
         let kept = sc_config::host_serving_keys()
             .into_iter()
+            .chain([sc_config::FIRST_USER_TOKEN])
             .map(|key| Expr::binary(BinOp::Ne, Expr::col("key"), Expr::lit(key)))
             .reduce(Expr::and);
         if let Some(kept) = kept {
@@ -402,7 +410,7 @@ async fn delete_rows(catalog: &Catalog, table: &str) -> Result<()> {
         }
     }
     catalog
-        .primary()
+        .primary(crate::ADMIN_TASKS)
         .query(&Statement::from(delete))
         .await?
         .try_collect()

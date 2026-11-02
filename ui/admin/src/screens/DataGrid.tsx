@@ -49,6 +49,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import Alert from "react-bootstrap/Alert";
 import Button from "react-bootstrap/Button";
 import Dropdown from "react-bootstrap/Dropdown";
@@ -72,11 +73,12 @@ import {
   ROW_CEILING,
   activeFilterCount,
   filterQuery,
-  missingPages,
+  filterSpec,
   orderSpec,
   pageBounds,
   pageOf,
   pagesCovering,
+  pagesToFetch,
   toggleSort,
   type Sort,
 } from "../grid/gridQuery";
@@ -93,12 +95,24 @@ import {
 } from "../grid/gridColumns";
 import {
   display,
+  displayTemporal,
+  fromPicker,
   isBoolType,
   isNumericType,
   parseCell,
+  pickerType,
   sameValue,
+  toPicker,
   type RowRecord,
 } from "../grid/gridValues";
+import {
+  inFilter,
+  keyLabel,
+  keyTargetOf,
+  labelsFrom,
+  unresolvedKeys,
+  type KeyTarget,
+} from "../grid/gridKeys";
 import {
   IconArrowUp,
   IconChevronDown,
@@ -203,6 +217,15 @@ export function DataGrid({
   const byName = useMemo(() => new Map(fields.map((f) => [f.name, f])), [fields]);
   const types = useMemo(() => Object.fromEntries(fields.map((f) => [f.name, f.type])), [fields]);
   const secrets = useMemo(() => new Set(fields.filter(isSecret).map((f) => f.name)), [fields]);
+  /** Each Key column's target: what its cells are labelled from and its dropdown lists. */
+  const keyTargets = useMemo(() => {
+    const out = new Map<string, KeyTarget>();
+    for (const f of fields) {
+      const target = keyTargetOf(f.kind);
+      if (target !== null) out.set(f.name, target);
+    }
+    return out;
+  }, [fields]);
 
   // The column a row is addressed by. A composite key has no single value to put
   // in a URL, so it is "not addressable" here for the same reason no key is — the
@@ -239,7 +262,7 @@ export function DataGrid({
   );
 
   const filters = useMemo(() => filterQuery(types, drafts), [types, drafts]);
-  const order = useMemo(() => orderSpec(sorting), [sorting]);
+  const order = useMemo(() => orderSpec(sorting, pk), [sorting, pk]);
   // One string that changes exactly when the population or its order does. It is
   // what resets the cache: a page of the old query is not a page of the new one.
   const queryKey = useMemo(
@@ -253,6 +276,50 @@ export function DataGrid({
   const [version, setVersion] = useState(0);
   const [total, setTotal] = useState<number | null>(null);
   const bump = useCallback(() => setVersion((v) => v + 1), []);
+  // The question on screen now, read by a page when it arrives: the `queryKey`
+  // a fetch closed over is the one it was asked under, which is always itself.
+  const currentKey = useRef(queryKey);
+  currentKey.current = queryKey;
+
+  // Key labels, per Key column: a stored key, as text, to its target's summary —
+  // or `null` for one asked about and not (yet) answered. They outlive a change
+  // of sort or filter, which reorders the rows but not what they point at.
+  const labels = useRef(new Map<string, Map<string, string | null>>());
+  useEffect(() => {
+    labels.current = new Map();
+  }, [table, keyTargets, reloadToken]);
+
+  /** Ask each Key column's target for the labels of the keys on these rows. */
+  const resolveLabels = useCallback(
+    (rows: RowRecord[]) => {
+      for (const [column, target] of keyTargets) {
+        let known = labels.current.get(column);
+        if (known === undefined) {
+          known = new Map();
+          labels.current.set(column, known);
+        }
+        const asked = unresolvedKeys(rows, column, known);
+        if (asked.length === 0) continue;
+        // Marked as asked before the answer, so the next page with the same
+        // keys on it does not ask again while this read is out.
+        for (const value of asked) known.set(value, null);
+        const into = known;
+        api
+          .listRows(target.table, {
+            limit: asked.length,
+            filter: { [target.field]: inFilter(asked) },
+          })
+          .then((found) => {
+            for (const [k, v] of labelsFrom(target, asked, found as RowRecord[])) into.set(k, v);
+            bump();
+          })
+          // A target the admin cannot read, or one that has gone: the cells
+          // show their keys, which is what they would show with no summary.
+          .catch(() => undefined);
+      }
+    },
+    [keyTargets, bump],
+  );
 
   const rowAt = useCallback((index: number): RowRecord | undefined => {
     return pages.current.get(pageOf(index))?.[index % PAGE_SIZE];
@@ -283,25 +350,29 @@ export function DataGrid({
   }, [queryKey]);
 
   const fetchPages = useCallback(
-    (wanted: number[]) => {
+    (wanted: number[], scrolling = false) => {
       const held = [...pages.current.keys(), ...inFlight.current];
       const key = queryKey;
-      for (const page of missingPages(wanted, held)) {
-        inFlight.current.add(page);
+      const flying = inFlight.current;
+      for (const page of pagesToFetch(wanted, held, scrolling)) {
+        flying.add(page);
         api
           .listRows(table, { ...pageBounds(page), order, filter: filters })
           .then((rows) => {
             // A page of the question that has since been replaced is not an
             // answer to the one on screen.
-            if (key !== queryKey) return;
+            if (key !== currentKey.current) return;
             pages.current.set(page, rows as RowRecord[]);
+            resolveLabels(rows as RowRecord[]);
             bump();
           })
-          .catch((e: unknown) => setError(errorMessage(e, "Could not load the rows.")))
-          .finally(() => inFlight.current.delete(page));
+          .catch((e: unknown) => {
+            if (key === currentKey.current) setError(errorMessage(e, "Could not load the rows."));
+          })
+          .finally(() => flying.delete(page));
       }
     },
-    [table, order, filters, queryKey, bump],
+    [table, order, filters, queryKey, bump, resolveLabels],
   );
 
   /** Re-read the pages holding these rows — after a write, so the cell shows what
@@ -365,19 +436,28 @@ export function DataGrid({
         id: name,
         header: name,
         size: DEFAULT_WIDTH,
-        cell: ({ row, column }) => (
-          <GridCell
-            value={rowAt(row.original.index)?.[column.id]}
-            type={types[column.id] ?? "text"}
-            loaded={rowAt(row.original.index) !== undefined}
-          />
-        ),
+        cell: ({ row, column }) => {
+          const value = rowAt(row.original.index)?.[column.id];
+          const type = types[column.id] ?? "text";
+          return (
+            <GridCell
+              value={value}
+              type={type}
+              text={
+                keyTargets.has(column.id)
+                  ? keyLabel(value, labels.current.get(column.id))
+                  : displayTemporal(type, value)
+              }
+              loaded={rowAt(row.original.index) !== undefined}
+            />
+          );
+        },
       })),
     ];
     // `version` is in here on purpose: a page arriving changes what these cells
     // read, and the column definitions are what close over the reader.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shown, types, rowAt, onOpenRow, version]);
+  }, [shown, types, keyTargets, rowAt, onOpenRow, version]);
 
   const tableApi = useTable<typeof features, Placeholder>({
     features,
@@ -410,14 +490,23 @@ export function DataGrid({
   });
   const items = virtualizer.getVirtualItems();
 
-  // What is on screen decides what is fetched. `useLayoutEffect` so the request
-  // goes out in the same frame the scroll landed in rather than one after it.
+  // What is on screen decides what is fetched — and half a page either side of
+  // it, so a scroll reaches the next page after it has arrived rather than as it
+  // is asked for. `useLayoutEffect` so the request goes out in the same frame
+  // the scroll landed in rather than one after it. While the viewport is moving
+  // only the pages next to held ones are asked for (`pagesToFetch`); the scroll
+  // settling re-renders with `isScrolling` false, and that asks for the rest.
+  const scrolling = virtualizer.isScrolling;
   useLayoutEffect(() => {
     if (total === null || rowCount === 0) return;
     const first = items[0]?.index ?? 0;
     const last = items[items.length - 1]?.index ?? Math.min(rowCount - 1, PAGE_SIZE);
-    fetchPages(pagesCovering(first, last));
-  }, [items, total, rowCount, fetchPages]);
+    const ahead = PAGE_SIZE / 2;
+    fetchPages(
+      pagesCovering(Math.max(0, first - ahead), Math.min(rowCount - 1, last + ahead)),
+      scrolling,
+    );
+  }, [items, total, rowCount, fetchPages, scrolling]);
 
   // --- editing ---------------------------------------------------------------
 
@@ -467,14 +556,26 @@ export function DataGrid({
     [pk, writes.update, rowAt, readOnly, table, refetch],
   );
 
+  /** Open a cell's editor — on what it holds, or on `typed`, the key that was
+   * pressed to start it, which a spreadsheet replaces the value with. */
   const beginEdit = useCallback(
-    (row: number, column: string, text: string) => {
+    (row: number, column: string, typed: string | null) => {
       if (readOnly(column)) return;
+      const value = rowAt(row)?.[column];
+      const type = types[column] ?? "text";
+      let text: string;
       // A secret's cell shows its sentinel, which is not the value: its editor
       // opens empty, for a new one.
-      setEditing({ row, column, text: secrets.has(column) ? "" : text });
+      if (secrets.has(column)) text = "";
+      // A date picker has no "type a character into it": it opens on the date.
+      else if (pickerType(type) !== null) text = toPicker(type, value);
+      // A Key's editor is a search of its target, so what is typed is the search
+      // and with nothing typed it opens on every row.
+      else if (typed !== null || keyTargets.has(column)) text = typed ?? "";
+      else text = display(value);
+      setEditing({ row, column, text });
     },
-    [readOnly, secrets],
+    [readOnly, rowAt, types, secrets, keyTargets],
   );
 
   const commitEdit = useCallback(
@@ -488,12 +589,34 @@ export function DataGrid({
         return;
       }
       const type = types[current.column] ?? "text";
-      void applyEdits([
-        { row: current.row, column: current.column, value: parseCell(type, current.text) },
-      ]);
+      const value =
+        pickerType(type) !== null ? fromPicker(type, current.text) : parseCell(type, current.text);
+      void applyEdits([{ row: current.row, column: current.column, value }]);
       if (move !== null) tableApi.moveCellSelection(move);
     },
     [applyEdits, types, secrets, tableApi],
+  );
+
+  /** A Key cell's choice from its dropdown: the target row's key, which is
+   * written, and its label, which the cell can show at once rather than after
+   * asking the target for it. */
+  const commitKey = useCallback(
+    (value: unknown, label: string | null, move: "down" | "right" | null) => {
+      const current = editingRef.current;
+      setEditing(null);
+      if (current === null) return;
+      if (value !== null && label !== null) {
+        let known = labels.current.get(current.column);
+        if (known === undefined) {
+          known = new Map();
+          labels.current.set(current.column, known);
+        }
+        known.set(display(value), label);
+      }
+      void applyEdits([{ row: current.row, column: current.column, value }]);
+      if (move !== null) tableApi.moveCellSelection(move);
+    },
+    [applyEdits, tableApi],
   );
 
   // --- the selection, as rows and columns ------------------------------------
@@ -615,12 +738,12 @@ export function DataGrid({
         // Enter opens the cell for editing where a spreadsheet would, and moves
         // down where there is nothing to open.
         if (readOnly(focused.column.id)) tableApi.moveCellSelection("down");
-        else beginEdit(rowIndexOf(focused), focused.column.id, cellText(focused, rowAt));
+        else beginEdit(rowIndexOf(focused), focused.column.id, null);
         return;
       case "F2":
         if (focused === undefined) return;
         event.preventDefault();
-        beginEdit(rowIndexOf(focused), focused.column.id, cellText(focused, rowAt));
+        beginEdit(rowIndexOf(focused), focused.column.id, null);
         return;
       case "Escape":
         tableApi.resetCellSelection(true);
@@ -849,17 +972,22 @@ export function DataGrid({
                         style={{ width: cell.column.getSize() }}
                         onMouseDown={cell.getSelectionStartHandler()}
                         onMouseEnter={cell.getSelectionExtendHandler()}
-                        onDoubleClick={() =>
-                          beginEdit(
-                            row.original.index,
-                            cell.column.id,
-                            display(rowAt(row.original.index)?.[cell.column.id]),
-                          )
-                        }
+                        onDoubleClick={() => beginEdit(row.original.index, cell.column.id, null)}
                       >
-                        {isEditing ? (
+                        {isEditing && keyTargets.has(cell.column.id) ? (
+                          <KeyEditor
+                            target={keyTargets.get(cell.column.id)!}
+                            search={editing.text}
+                            current={rowAt(row.original.index)?.[cell.column.id]}
+                            nullable={byName.get(cell.column.id)?.nullable !== false}
+                            onSearch={(text) => setEditing((e) => (e === null ? e : { ...e, text }))}
+                            onPick={commitKey}
+                            onCancel={() => setEditing(null)}
+                          />
+                        ) : isEditing ? (
                           <CellEditor
                             text={editing.text}
+                            inputType={pickerType(types[cell.column.id] ?? "text") ?? undefined}
                             secret={secrets.has(cell.column.id)}
                             onChange={(text) => setEditing((e) => (e === null ? e : { ...e, text }))}
                             onCommit={commitEdit}
@@ -886,9 +1014,20 @@ export function DataGrid({
   );
 }
 
-/** One cell's contents: a tick for a `bool` column, text for everything else, and
- * nothing at all while the page it is on is still on its way. */
-function GridCell({ value, type, loaded }: { value: unknown; type: string; loaded: boolean }) {
+/** One cell's contents: a tick for a `bool` column, `text` for everything else —
+ * a Key's label, a timestamp's local reading — and nothing at all while the page
+ * it is on is still on its way. */
+function GridCell({
+  value,
+  type,
+  text,
+  loaded,
+}: {
+  value: unknown;
+  type: string;
+  text: string;
+  loaded: boolean;
+}) {
   if (!loaded) return <span className="grid-pending" />;
   if (isBoolType(type)) {
     return value === null || value === undefined ? null : (
@@ -896,9 +1035,7 @@ function GridCell({ value, type, loaded }: { value: unknown; type: string; loade
     );
   }
   return (
-    <span className={`text-truncate${isNumericType(type) ? " ms-auto" : ""}`}>
-      {display(value)}
-    </span>
+    <span className={`text-truncate${isNumericType(type) ? " ms-auto" : ""}`}>{text}</span>
   );
 }
 
@@ -906,12 +1043,15 @@ function GridCell({ value, type, loaded }: { value: unknown; type: string; loade
  * end, and every way out of it says what to do next. */
 function CellEditor({
   text,
+  inputType,
   secret = false,
   onChange,
   onCommit,
   onCancel,
 }: {
   text: string;
+  /** The browser picker a `date`, `time` or `timestamp` cell is edited through. */
+  inputType?: "date" | "time" | "datetime-local";
   secret?: boolean;
   onChange: (text: string) => void;
   onCommit: (move: "down" | "right" | null) => void;
@@ -919,8 +1059,21 @@ function CellEditor({
 }) {
   const input = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
-    input.current?.focus();
-    input.current?.setSelectionRange(text.length, text.length);
+    const el = input.current;
+    if (el === null) return;
+    el.focus();
+    if (inputType === undefined) {
+      el.setSelectionRange(text.length, text.length);
+    } else {
+      // A picker has no caret to place (asking throws), and opening it is what
+      // the double-click or the Enter meant. Not every browser will open one
+      // from here, and the input is still typed into where it will not.
+      try {
+        el.showPicker();
+      } catch {
+        // Fine: the input itself is focused.
+      }
+    }
     // Only on open: moving the caret on every keystroke would fight the typist.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -928,7 +1081,10 @@ function CellEditor({
     <input
       ref={input}
       className="grid-editor"
-      type={secret ? "password" : "text"}
+      type={inputType ?? (secret ? "password" : "text")}
+      // To the second, which is what the column holds: the default step of a
+      // minute would round every edit to one.
+      step={inputType === "time" || inputType === "datetime-local" ? 1 : undefined}
       autoComplete={secret ? "new-password" : undefined}
       value={text}
       onChange={(e) => onChange(e.target.value)}
@@ -949,6 +1105,227 @@ function CellEditor({
         e.stopPropagation();
       }}
     />
+  );
+}
+
+/** How many target rows a Key's dropdown lists at once. Typing narrows them. */
+const KEY_OPTIONS = 50;
+
+/** One row of a Key's dropdown: the key written, and the label shown for it. */
+type KeyOption = { value: unknown; label: string };
+
+/**
+ * A Key cell's editor: a search box over the target table, and under it the
+ * rows that match, each by its summary field.
+ *
+ * What is typed is a search, never a value — `17` in the box finds the rows
+ * whose summary has a 17 in it, it does not point the key at row 17 — so leaving
+ * the box without choosing changes nothing. The list is the target's own rows,
+ * read as the admin types (`ilike` on a text summary, `eq` on any other), and is
+ * drawn into `document.body` beside the cell: the cell is a 33-pixel row inside
+ * a scroller that clips, and a dropdown that fits in neither is no dropdown.
+ */
+function KeyEditor({
+  target,
+  search,
+  current,
+  nullable,
+  onSearch,
+  onPick,
+  onCancel,
+}: {
+  target: KeyTarget;
+  search: string;
+  /** The key the cell holds now, which its option is marked with. */
+  current: unknown;
+  /** Whether "none" is a choice: a required key cannot be cleared. */
+  nullable: boolean;
+  onSearch: (text: string) => void;
+  onPick: (value: unknown, label: string | null, move: "down" | "right" | null) => void;
+  onCancel: () => void;
+}) {
+  const { t } = useT();
+  const input = useRef<HTMLInputElement | null>(null);
+  const currentText = display(current);
+  const [options, setOptions] = useState<KeyOption[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [active, setActive] = useState(0);
+  const [place, setPlace] = useState<{ left: number; top: number; width: number } | null>(null);
+  // The summary's type, which decides what a search of it means.
+  const [summaryType, setSummaryType] = useState<string | null>(null);
+  const labelColumn = target.summary ?? target.field;
+
+  useEffect(() => {
+    input.current?.focus();
+    const len = input.current?.value.length ?? 0;
+    input.current?.setSelectionRange(len, len);
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    api
+      .listFields(target.table)
+      .then((fs) => {
+        if (live) setSummaryType(fs.find((f) => f.name === labelColumn)?.type ?? "text");
+      })
+      .catch(() => {
+        if (live) setSummaryType("text");
+      });
+    return () => {
+      live = false;
+    };
+  }, [target.table, labelColumn]);
+
+  // Read as the admin types, a beat after they stop rather than per keystroke.
+  useEffect(() => {
+    if (summaryType === null) return;
+    let live = true;
+    const timer = window.setTimeout(() => {
+      const spec = filterSpec(summaryType, search);
+      api
+        .listRows(target.table, {
+          limit: KEY_OPTIONS,
+          order: `${labelColumn}.asc`,
+          filter: spec === null ? {} : { [labelColumn]: spec },
+        })
+        .then((rows) => {
+          if (!live) return;
+          const found = (rows as RowRecord[]).map((r) => ({
+            value: r[target.field],
+            label: display(r[labelColumn]) || display(r[target.field]),
+          }));
+          setFailed(false);
+          setOptions(found);
+          // The highlight starts on the row the cell points at, else on the
+          // first row — never on "none", or Enter on an opened editor would
+          // clear the key.
+          const at = found.findIndex((o) => display(o.value) === currentText);
+          setActive(found.length === 0 ? 0 : (nullable ? 1 : 0) + Math.max(at, 0));
+        })
+        .catch(() => {
+          if (live) {
+            setFailed(true);
+            setOptions([]);
+          }
+        });
+    }, 150);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+    // `currentText` and `nullable` only place the highlight, and are fixed for
+    // the editor's life.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, summaryType, target.table, target.field, labelColumn]);
+
+  // Where the list goes: under the cell, kept there while anything scrolls.
+  useLayoutEffect(() => {
+    const measure = () => {
+      const cell = input.current?.parentElement;
+      if (!cell) return;
+      const r = cell.getBoundingClientRect();
+      setPlace({ left: r.left, top: r.bottom, width: Math.max(r.width, 260) });
+    };
+    measure();
+    window.addEventListener("scroll", measure, true);
+    window.addEventListener("resize", measure);
+    return () => {
+      window.removeEventListener("scroll", measure, true);
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+
+  const choices: Array<KeyOption | null> = [
+    ...(nullable ? [null] : []),
+    ...(options ?? []),
+  ];
+
+  const pick = (choice: KeyOption | null | undefined, move: "down" | "right" | null) => {
+    if (choice === undefined) onCancel();
+    else if (choice === null) onPick(null, null, move);
+    else onPick(choice.value, choice.label, move);
+  };
+
+  return (
+    <>
+      <input
+        ref={input}
+        className="grid-editor"
+        value={search}
+        placeholder={t("Search…")}
+        onChange={(e) => onSearch(e.target.value)}
+        // Leaving without a choice is leaving: the box holds a search.
+        onBlur={onCancel}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setActive((a) => Math.min(a + 1, choices.length - 1));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setActive((a) => Math.max(a - 1, 0));
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            pick(choices[active], "down");
+          } else if (e.key === "Tab") {
+            e.preventDefault();
+            pick(choices[active], "right");
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            onCancel();
+          }
+          e.stopPropagation();
+        }}
+      />
+      {place !== null &&
+        createPortal(
+          <div
+            className="grid-key-menu dropdown-menu show"
+            style={{ left: place.left, top: place.top, width: place.width }}
+            // A click on an option must not blur the box first, which would
+            // cancel the edit before the click lands.
+            onMouseDown={(e) => e.preventDefault()}
+          >
+            {options === null && (
+              <div className="dropdown-item-text text-muted">{t("Loading…")}</div>
+            )}
+            {failed && (
+              <div className="dropdown-item-text text-danger">
+                {t("Could not read {table}.", { table: target.table })}
+              </div>
+            )}
+            {options !== null && !failed && options.length === 0 && (
+              <div className="dropdown-item-text text-muted">{t("No matching rows.")}</div>
+            )}
+            {choices.map((choice, at) => (
+              <button
+                key={choice === null ? "\u0000none" : display(choice.value)}
+                type="button"
+                className={`dropdown-item${at === active ? " active" : ""}`}
+                onMouseEnter={() => setActive(at)}
+                onClick={() => pick(choice, null)}
+              >
+                {choice === null ? (
+                  <span className="text-muted">{t("— none —")}</span>
+                ) : (
+                  <>
+                    {choice.label}
+                    {display(choice.value) === currentText && " ✓"}
+                    {target.summary !== null && (
+                      <span className="text-muted small ms-2">{display(choice.value)}</span>
+                    )}
+                  </>
+                )}
+              </button>
+            ))}
+            {options !== null && options.length === KEY_OPTIONS && (
+              <div className="dropdown-item-text text-muted small">
+                {t("Showing the first {count} — type to narrow.", { count: KEY_OPTIONS })}
+              </div>
+            )}
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 
@@ -1043,14 +1420,6 @@ function filterHint(type: string): string {
 /** A cell's row number — its position in the table, which is its id. */
 function rowIndexOf(cell: Cell<typeof features, Placeholder, unknown>): number {
   return cell.row.original.index;
-}
-
-/** A cell's current text, for an editor opening on it. */
-function cellText(
-  cell: Cell<typeof features, Placeholder, unknown>,
-  rowAt: (index: number) => RowRecord | undefined,
-): string {
-  return display(rowAt(rowIndexOf(cell))?.[cell.column.id]);
 }
 
 /** A cell's classes: selected, focused, whether it can be typed into, and which

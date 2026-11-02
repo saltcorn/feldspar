@@ -25,6 +25,8 @@
 //!   the real host, and the Analytics workspace reports on the two tables.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::CSRF_COOKIE;
+use sc_catalog::Authority;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -38,9 +40,10 @@ use sc_catalog::{Catalog, DataField};
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, MountedApp, ServerConfig, VISITOR_COOKIE, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_triggers,
+    AppMounts, MountedApp, ServerConfig, VISITOR_COOKIE, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_triggers,
 };
+use sc_test_harness::Teardown;
 use sc_types::{Attrs, BasicType, TypeRef};
 use tower::ServiceExt;
 
@@ -101,7 +104,7 @@ return html("<h1>not found</h1>", 404);
 "#;
 
 /// A scratch directory removed when the guard drops.
-struct TempDir(PathBuf);
+struct TempDir(PathBuf, Teardown);
 
 impl TempDir {
     fn new(tag: &str) -> TempDir {
@@ -112,7 +115,7 @@ impl TempDir {
         ));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
-        TempDir(dir)
+        TempDir(dir, Teardown::new())
     }
 
     fn path(&self) -> &Path {
@@ -162,6 +165,7 @@ struct Server {
 async fn setup(tmp: &TempDir) -> sc_error::Result<Server> {
     let driver = Arc::new(SqliteDriver::open(tmp.path().join("site.db"))?);
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    tmp.1.add(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
@@ -210,7 +214,7 @@ async fn setup(tmp: &TempDir) -> sc_error::Result<Server> {
             r#"await db.posts.insert({ id: 1, title: "Hello" });
                await db.posts.insert({ id: 2, title: "World" });"#,
             Attrs::new(),
-            None,
+            Authority::system("test"),
             None,
             None,
         )
@@ -262,7 +266,7 @@ impl Server {
                 "test",
                 code,
                 Attrs::new(),
-                None,
+                Authority::system("test"),
                 None,
                 None,
             )
@@ -507,6 +511,7 @@ async fn prerendering_writes_the_listed_pages_through_the_same_body() -> sc_erro
 /// `URL`, the sandbox's own `Headers`). Opt-in, as the Vue build is: it needs
 /// Node, npm and the registry.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn the_bundled_astro_module_builds_a_site_this_server_renders() -> sc_error::Result<()> {
     if std::env::var("SC_TEST_NPM").as_deref() != Ok("1") {
         eprintln!("skipping: set SC_TEST_NPM=1 to run the real npm build");

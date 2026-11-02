@@ -22,6 +22,7 @@
 use chrono::{DateTime, Utc};
 use sc_error::{Error, Result};
 use sc_types::Attrs;
+use sc_types::Role;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use uuid::Uuid;
@@ -180,7 +181,7 @@ pub struct Trigger {
     /// The role floor for running this trigger through an API. `None` is
     /// **admin-only** (the safe reading: a trigger nobody has thought about the
     /// access of is not public), which Phase 7's endpoint projection applies.
-    pub min_role: Option<u8>,
+    pub min_role: Option<Role>,
     /// Sparse per-trigger values (§9): [`ATTR_ENABLED`] and the periodic timing
     /// ([`Schedule`](crate::Schedule)).
     pub attributes: Attrs,
@@ -356,7 +357,7 @@ impl Trigger {
     }
 
     /// Set the role floor for running this trigger through an API.
-    pub fn min_role(mut self, role: u8) -> Trigger {
+    pub fn min_role(mut self, role: Role) -> Trigger {
         self.min_role = Some(role);
         self
     }
@@ -403,7 +404,7 @@ mod tests {
             .on("books")
             .only_if("pages > 100")
             .config("table", "audit")
-            .min_role(1);
+            .min_role(Role::ADMIN);
         assert_eq!(t.name, "audit");
         assert_eq!(t.when, EventKind::Insert);
         assert_eq!(t.channel.as_deref(), Some("books"));
@@ -411,7 +412,7 @@ mod tests {
         assert_eq!(t.configuration().unwrap()["table"], json!("audit"));
         assert_eq!(t.action(), Some("insert_row"));
         assert!(!t.is_workflow());
-        assert_eq!(t.min_role, Some(1));
+        assert_eq!(t.min_role, Some(Role::ADMIN));
         // Nothing was set for these, and they read as their defaults.
         assert!(t.attributes.is_empty());
         assert!(t.is_enabled());

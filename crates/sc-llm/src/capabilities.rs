@@ -477,6 +477,7 @@ mod tests {
     );
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn built_in_rules_by_backend_and_name() {
         let table: &[Row] = &[
             (

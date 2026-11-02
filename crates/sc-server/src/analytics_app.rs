@@ -29,9 +29,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use sc_analytics::app::{ANALYTICS_FRAMEWORK, AnalyticsConfig, analytics_config_spec};
+use sc_api::Method;
 use sc_app::{
     AppRequest, AppResponse, Application, BuildSpec, CspPolicy, Framework, FrameworkFactory,
-    FrameworkInfo, Method, MountContext,
+    FrameworkInfo, MountContext,
 };
 use sc_catalog::Catalog;
 use sc_error::Result;
@@ -94,6 +95,33 @@ pub const APP_ENDPOINTS: &[&str] = &[
 /// visitor must be able to see who they are and sign in before the role floor
 /// can admit them.
 pub const APP_AUTH_ENDPOINTS: &[&str] = &["authStatus", "login", "logout"];
+
+/// Every handler of [`APP_ENDPOINTS`] past the sign-in ones is registered
+/// behind the Analytics gate ([`Gate::Analytics`](crate::handler::Gate)): it
+/// is called with an application's visitor on its own host, which an admin
+/// handler would refuse and an open one would serve without knowing which
+/// application it is. Run by the router before it serves anything.
+pub(crate) fn check_app_gates(handlers: &crate::handler::HandlerRegistry) -> Result<()> {
+    let wrong: Vec<&str> = APP_ENDPOINTS
+        .iter()
+        .filter(|name| !APP_AUTH_ENDPOINTS.contains(name))
+        .filter(|name| {
+            handlers
+                .gate(name)
+                .is_some_and(|gate| gate != crate::handler::Gate::Analytics)
+        })
+        .copied()
+        .collect();
+    if wrong.is_empty() {
+        Ok(())
+    } else {
+        Err(sc_error::Error::config(format!(
+            "an Analytics application's endpoints must be registered behind the Analytics \
+             gate: {}",
+            wrong.join(", ")
+        )))
+    }
+}
 
 /// Install the Analytics framework into `sc-app`'s registry. Idempotent.
 pub fn install_analytics_framework() -> Result<()> {

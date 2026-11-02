@@ -40,7 +40,7 @@ use crate::permissions::ModulePermissions;
 ///
 /// The five host surfaces a code body reaches, plus the schema snapshot — the
 /// same pair a [`sc_expr::CodeCall`] carries, and built in the same place: a
-/// module's action gets them from `sc_core_actions::CodeSurfaces`, so its write
+/// module's action gets them from `sc_action_builtins::CodeSurfaces`, so its write
 /// carries the event's caller and this trigger's chain exactly as `run_js_code`'s
 /// does.
 ///
@@ -62,97 +62,151 @@ pub struct CallHosts<'a> {
     /// what v1's synchronous `View.findOne` is answered from (TODO "Saltcorn
     /// UI" §4). Sent to a worker once per generation, like the schema.
     pub views: Option<&'a ViewSnapshot>,
-    /// What a module's **service** asks of its supervisor (TODO-imap M5): the
-    /// `service` surface, which only a service's own call carries.
-    pub service: Option<&'a dyn ServiceAsks>,
     /// The module's own file areas (TODO-imap M6): the `module_files` surface,
     /// which `ctx.files` in a service and `files` in an action speak — a
     /// [`crate::files::ModuleFiles`], confined to the stores and folders its
     /// declared file fields name.
     pub module_files: Option<&'a dyn sc_expr::FileHost>,
-    /// The role grants the module may make (TODO-payments P3.3, design C4): the
-    /// `roles` surface, which `ctx.roles` in a service or a webhook and `roles`
-    /// in an action speak — a [`crate::roles::ModuleRoles`], held to the role
-    /// ceiling an admin granted the module.
-    pub roles: Option<&'a dyn RoleAsks>,
-    /// The LLM credits the module may grant and read (TODO-payments P6.4,
-    /// design C4): the `credits` surface, which `ctx.credits` in a service or a
-    /// webhook and `credits` in an action speak — a
+    /// The ask surfaces this call carries: what a service asks of its
+    /// supervisor, the role and credit grants, an action's consent flow, a
+    /// route's facts and a checklist step's run ([`AskSurface`]).
+    pub asks: Asks<'a>,
+}
+
+/// What a module asks of the server, beyond the code-body surfaces: one JSON
+/// plan in, one JSON value out. Every [`AskSurface`] is answered through this
+/// one trait; which surface a plan is for is the [`Asks`] slot it is in.
+#[async_trait::async_trait]
+pub trait Ask: Send + Sync {
+    /// Answer one ask.
+    async fn ask(&self, plan: Json) -> Result<Json>;
+}
+
+/// The ask surfaces, by the name the host script sends (`surface`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskSurface {
+    /// `service`: what a running service asks of the supervisor that started
+    /// it — today `{ "subscribe": "<table>" }`, which is `ctx.onTableChange`
+    /// (TODO-imap M5, §5.5). Answered by [`crate::services`].
+    Service,
+    /// `roles`: `{ op: "grant" | "revoke" | "get", … }`, the role grants the
+    /// module may make (TODO-payments P3.3, design C4) — a
+    /// [`crate::roles::ModuleRoles`], held to the role ceiling an admin granted.
+    Roles,
+    /// `credits`: `{ op: "grant" | "balance" | "threshold", … }`, the LLM
+    /// credits the module may grant and read (TODO-payments P6.4) — a
     /// [`crate::credits::ModuleCredits`]. There is no debit.
-    pub credits: Option<&'a dyn CreditAsks>,
-    /// An action's `oauth.begin(…)` (TODO-imap M10.3): the `oauth` surface, a
-    /// [`crate::consent::ConsentAsks`] for the action's module and caller.
-    pub oauth: Option<&'a dyn OAuthAsks>,
-    /// What a module's **route** reads of the installation and the machine it
-    /// runs on — the `system` surface ([`SystemAsks`]), which only a route's
-    /// call carries.
-    pub system: Option<&'a dyn SystemAsks>,
+    Credits,
+    /// `oauth`: an action asking for its caller's consent at an OAuth 2.0
+    /// provider (TODO-imap M10.3) — a [`crate::consent::ConsentAsks`].
+    OAuth,
+    /// `system`: `{ op }` for one fact about the installation or the machine —
+    /// `fs_size`, `mem` and `current_load` in the `systeminformation` package's
+    /// shapes, `events` (v1's `EventLog` rows) and `metadata` (v1's `MetaData`
+    /// rows). Only a route's call carries it; the server answers it.
+    System,
+    /// `check`: `{ op: "step" | "inspect" | "rows", … }`, what a checklist step
+    /// a module declares asks of the run it is a step of (TODO-checklists C3.5).
+    /// The server answers it in the step's own context (`sc_check::declared`).
+    Check,
 }
 
-/// The `roles` ask surface: `{ op: "grant" | "revoke" | "get", … }`, answered
-/// by [`crate::roles::ModuleRoles`]. Declared here beside [`ServiceAsks`] for
-/// that trait's reason.
-#[async_trait::async_trait]
-pub trait RoleAsks: Send + Sync {
-    /// Answer one ask.
-    async fn ask(&self, plan: Json) -> Result<Json>;
+impl AskSurface {
+    /// Every surface, in [`Asks`]' slot order.
+    pub const ALL: [AskSurface; 6] = [
+        AskSurface::Service,
+        AskSurface::Roles,
+        AskSurface::Credits,
+        AskSurface::OAuth,
+        AskSurface::System,
+        AskSurface::Check,
+    ];
+
+    /// The name the host script asks it by.
+    pub fn name(self) -> &'static str {
+        match self {
+            AskSurface::Service => "service",
+            AskSurface::Roles => "roles",
+            AskSurface::Credits => "credits",
+            AskSurface::OAuth => "oauth",
+            AskSurface::System => "system",
+            AskSurface::Check => "check",
+        }
+    }
+
+    /// The surface the host script names `name`, if it is one of these.
+    pub fn from_name(name: &str) -> Option<AskSurface> {
+        AskSurface::ALL.into_iter().find(|s| s.name() == name)
+    }
+
+    /// Why a call that does not carry this surface cannot ask it.
+    pub fn refusal(self) -> &'static str {
+        match self {
+            AskSurface::Service => {
+                "only a module's running service can ask for this (`ctx.onTableChange`)"
+            }
+            AskSurface::Roles => {
+                "this module call cannot grant roles: `roles` is there in an action, a \
+                 service and a webhook (TODO-payments P3.3)"
+            }
+            AskSurface::Credits => {
+                "this module call cannot grant credits: `credits` is there in an action, a \
+                 service and a webhook (TODO-payments P6.4)"
+            }
+            AskSurface::OAuth => {
+                "only an action called by a user can ask for their consent (`oauth.begin`)"
+            }
+            AskSurface::System => {
+                "only a module's route can read the installation's state and the machine's \
+                 resources (`systeminformation`, `EventLog`, `MetaData`)"
+            }
+            AskSurface::Check => {
+                "only a module's checklist step can ask for this (`ctx.browser`, `ctx.http`, \
+                 `ctx.data`, `ctx.runStep`)"
+            }
+        }
+    }
+
+    fn slot(self) -> usize {
+        self as usize
+    }
 }
 
-/// The `credits` ask surface: `{ op: "grant" | "balance" | "threshold", … }`,
-/// answered by [`crate::credits::ModuleCredits`].
-#[async_trait::async_trait]
-pub trait CreditAsks: Send + Sync {
-    /// Answer one ask.
-    async fn ask(&self, plan: Json) -> Result<Json>;
-}
+/// The ask surfaces one call carries, one slot per [`AskSurface`]. Empty by
+/// default: a call carries only what it was given.
+#[derive(Clone, Copy, Default)]
+pub struct Asks<'a>([Option<&'a dyn Ask>; 6]);
 
-/// The `service` ask surface: what a running service asks of the supervisor
-/// that started it, rather than of the database — today one thing,
-/// `{ "subscribe": "<table>" }`, which is `ctx.onTableChange` (TODO-imap M5,
-/// §5.5).
-///
-/// A trait declared here, beside [`CallHosts`], and implemented in
-/// [`crate::services`]: the worker serves it the way it serves `db`, by handing
-/// the plan to whatever the call carried.
-#[async_trait::async_trait]
-pub trait ServiceAsks: Send + Sync {
-    /// Answer one ask.
-    async fn ask(&self, plan: Json) -> Result<Json>;
-}
+impl<'a> Asks<'a> {
+    /// The same, answering `surface` with `ask`.
+    #[must_use]
+    pub fn with(mut self, surface: AskSurface, ask: &'a dyn Ask) -> Asks<'a> {
+        self.0[surface.slot()] = Some(ask);
+        self
+    }
 
-/// The `oauth` ask surface: an action asking for its caller's consent at an
-/// OAuth 2.0 provider ([`crate::consent`]).
-#[async_trait::async_trait]
-pub trait OAuthAsks: Send + Sync {
-    /// Answer one ask.
-    async fn ask(&self, plan: Json) -> Result<Json>;
-}
+    /// What answers `surface` on this call, if anything does.
+    pub fn get(&self, surface: AskSurface) -> Option<&'a dyn Ask> {
+        self.0[surface.slot()]
+    }
 
-/// The `system` ask surface: `{ op }` for one fact about the installation or
-/// the machine — `fs_size`, `mem` and `current_load` in the `systeminformation`
-/// package's shapes, `events` (v1's `EventLog` rows) and `metadata` (v1's
-/// `MetaData` rows). Implemented by the server, which knows where each is kept.
-#[async_trait::async_trait]
-pub trait SystemAsks: Send + Sync {
-    /// Answer one ask.
-    async fn ask(&self, plan: Json) -> Result<Json>;
+    /// Whether the call carries any ask surface at all.
+    pub fn any(&self) -> bool {
+        self.0.iter().any(Option::is_some)
+    }
 }
 
 impl<'a> CallHosts<'a> {
     /// The surfaces and the schema of one run, as
-    /// `sc_core_actions::code_body::Hosts` supplies them.
+    /// `sc_action_builtins::code_body::Hosts` supplies them.
     #[must_use]
     pub fn new(hosts: CodeHosts<'a>, schema: Option<&'a SchemaSnapshot>) -> CallHosts<'a> {
         CallHosts {
             hosts,
             schema,
             views: None,
-            service: None,
             module_files: None,
-            roles: None,
-            credits: None,
-            oauth: None,
-            system: None,
+            asks: Asks::default(),
         }
     }
 
@@ -163,24 +217,10 @@ impl<'a> CallHosts<'a> {
         self
     }
 
-    /// The same, with the module's role grants.
+    /// The same, answering `surface` with `ask`.
     #[must_use]
-    pub fn with_roles(mut self, roles: &'a dyn RoleAsks) -> CallHosts<'a> {
-        self.roles = Some(roles);
-        self
-    }
-
-    /// The same, with the module's credit grants.
-    #[must_use]
-    pub fn with_credits(mut self, credits: &'a dyn CreditAsks) -> CallHosts<'a> {
-        self.credits = Some(credits);
-        self
-    }
-
-    /// The same, with the `oauth` surface.
-    #[must_use]
-    pub fn with_oauth(mut self, oauth: &'a dyn OAuthAsks) -> CallHosts<'a> {
-        self.oauth = Some(oauth);
+    pub fn with_ask(mut self, surface: AskSurface, ask: &'a dyn Ask) -> CallHosts<'a> {
+        self.asks = self.asks.with(surface, ask);
         self
     }
 
@@ -518,6 +558,46 @@ pub struct FrameworkManifest {
     pub targets: Json,
 }
 
+/// One **checklist step type** a module declares (TODO-checklists C3.5).
+///
+/// ```js
+/// checklist_steps: {
+///   "shop.has_title": {
+///     description: "The page has a <title>",
+///     config_fields: [{ name: "path", type: "String", required: true }],
+///     needs: ["http"],
+///     run: async (params, ctx) => ({ outcome: "pass", message: "…" }),
+///   },
+/// }
+/// ```
+///
+/// What crosses is the declaration; `run` stays in the worker and is reached
+/// through [`ModuleHost::run_check_step`], asking the server for everything it
+/// does over the `check` surface.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct CheckStepManifest {
+    /// The namespaced name a step stores: `shop.has_title`.
+    pub name: String,
+    /// What it checks.
+    #[serde(default)]
+    pub description: String,
+    /// Its parameters, as v1 `configFields` — translated by [`crate::spec`].
+    #[serde(default)]
+    pub config_fields: Vec<Json>,
+    /// What it needs from the host: any of `data`, `http`, `browser`, `build`.
+    #[serde(default)]
+    pub needs: Vec<String>,
+    /// Whether it writes data.
+    #[serde(default)]
+    pub mutates: bool,
+    /// The framework whose applications alone it checks, if any.
+    #[serde(default)]
+    pub framework: Option<String>,
+    /// The least time, in seconds, a step of it is given.
+    #[serde(default)]
+    pub timeout: Option<f64>,
+}
+
 /// One **service** a module runs in the background (TODO-imap M5).
 ///
 /// A module exports `services` beside its `actions` and `tables`:
@@ -677,6 +757,9 @@ pub struct ModuleManifest {
     /// `/_feldspar/routes/<module>` ([`crate::routes`]).
     #[serde(default)]
     pub routes: Vec<RouteManifest>,
+    /// The checklist step types it declares (TODO-checklists C3.5).
+    #[serde(default)]
+    pub check_steps: Vec<CheckStepManifest>,
     /// The application tables it asks to read (TODO-payments P4.1) — admitted
     /// only where its stored configuration names them ([`crate::reads`]).
     #[serde(default)]
@@ -993,6 +1076,28 @@ impl ModuleHost {
         #[cfg(not(feature = "deno-host"))]
         {
             let _ = (module, request, call);
+            Err(no_runtime())
+        }
+    }
+
+    /// Run one **checklist step** of one module (TODO-checklists C3.5): call
+    /// its `run(params, ctx)` with `request` — `{ params, context }` — and
+    /// answer what it returned. Every `ctx` call is an ask on the `check`
+    /// surface, served from `call`. Bounded like an action.
+    pub async fn run_check_step(
+        &self,
+        module: &str,
+        step: &str,
+        request: Json,
+        call: CallHosts<'_>,
+    ) -> Result<Json> {
+        #[cfg(feature = "deno-host")]
+        {
+            self.pool.run_check_step(module, step, request, call).await
+        }
+        #[cfg(not(feature = "deno-host"))]
+        {
+            let _ = (module, step, request, call);
             Err(no_runtime())
         }
     }
@@ -1494,5 +1599,59 @@ mod tests {
             !HOST_SCRIPT.contains("process.stdout"),
             "the host script still writes to stdout"
         );
+    }
+
+    /// An ask that answers with the name it was given, so a test can tell which
+    /// slot answered.
+    struct Named(&'static str);
+
+    #[async_trait::async_trait]
+    impl Ask for Named {
+        async fn ask(&self, _plan: Json) -> Result<Json> {
+            Ok(Json::from(self.0))
+        }
+    }
+
+    #[test]
+    fn every_ask_surface_is_named_as_the_host_script_asks_for_it() {
+        let names: Vec<&str> = AskSurface::ALL.iter().map(|s| s.name()).collect();
+        assert_eq!(
+            names,
+            ["service", "roles", "credits", "oauth", "system", "check"]
+        );
+        for surface in AskSurface::ALL {
+            assert_eq!(AskSurface::from_name(surface.name()), Some(surface));
+            assert!(!surface.refusal().is_empty());
+            // Each surface is a distinct slot.
+            assert_eq!(AskSurface::ALL[surface.slot()], surface);
+        }
+        assert_eq!(AskSurface::from_name("db"), None);
+    }
+
+    #[tokio::test]
+    async fn a_call_carries_only_the_asks_it_was_given() {
+        let roles = Named("roles");
+        let check = Named("check");
+        let call = CallHosts::default()
+            .with_ask(AskSurface::Roles, &roles)
+            .with_ask(AskSurface::Check, &check);
+        assert!(call.asks.any());
+        let answer = |s| async move {
+            match call.asks.get(s) {
+                Some(ask) => Some(ask.ask(Json::Null).await.unwrap()),
+                None => None,
+            }
+        };
+        assert_eq!(answer(AskSurface::Roles).await, Some(Json::from("roles")));
+        assert_eq!(answer(AskSurface::Check).await, Some(Json::from("check")));
+        for absent in [
+            AskSurface::Service,
+            AskSurface::Credits,
+            AskSurface::OAuth,
+            AskSurface::System,
+        ] {
+            assert!(call.asks.get(absent).is_none(), "{absent:?}");
+        }
+        assert!(!CallHosts::default().asks.any());
     }
 }

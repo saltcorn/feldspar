@@ -10,13 +10,14 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-    default_js_evaluator, install_triggers,
+    AppMounts, ServerConfig, admin_handlers, build_router_with_apps, default_js_evaluator,
+    install_triggers,
 };
 use sc_test_harness::TestDb;
 use serde_json::{Value, json};
@@ -141,6 +142,7 @@ async fn setup() -> sc_error::Result<(Client, TestDb)> {
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     let agents = sc_server::install_agents(&catalog).await?;
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
@@ -190,6 +192,7 @@ fn prices(name: &str) -> Value {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn datasets_are_created_read_edited_and_deleted_through_the_api() -> sc_error::Result<()> {
     let (mut client, _db) = setup().await?;
 
@@ -903,6 +906,7 @@ async fn a_dashboards_panels_are_drawn_with_its_selections_and_filters() -> sc_e
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn panels_render_live_and_the_usage_index_finds_what_they_read() -> sc_error::Result<()> {
     let (mut client, db) = setup().await?;
     let dataset = client

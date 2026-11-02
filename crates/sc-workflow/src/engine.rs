@@ -40,8 +40,9 @@ use sc_agent::{Run, RunId};
 use sc_catalog::Catalog;
 use sc_error::Result;
 
-use crate::driver::{Advanced, Clock, Driver, SystemClock, node_id, start_run};
+use crate::driver::{Advanced, Driver, node_id, start_run};
 use crate::queue::{DEFAULT_BATCH, DatabaseQueue, WorkQueue};
+use sc_types::clock::{Clock, SystemClock};
 
 /// How long a claim holds a run before another node may take it.
 ///

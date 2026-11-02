@@ -18,26 +18,25 @@
 //! they are there), for a search that looks inside definitions rather than at
 //! their names.
 
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use sc_action::TriggerBody;
-use sc_auth::{ROLE_ADMIN, list_roles};
+use sc_auth::list_roles;
 use sc_catalog::{Catalog, DbId};
 use sc_error::Result;
 use serde_json::{Value as Json, json};
 
 use crate::apps::AppMounts;
 use crate::handler::{HandlerRegistry, HandlerResponse};
-use crate::handlers::{
-    agent_json, agents_of, application_api_json, field_json, file_store_json, stream_json,
-    streams_of, table_json, trigger_json_with, triggers_of,
-};
+use crate::handlers::{agents_of, application_api_json, stream_json, streams_of, triggers_of};
+use sc_backup::codec::{agent_json, field_json, file_store_json, table_json, trigger_json_with};
 
 /// Register `listEntities` on `reg`.
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: Arc<AppMounts>) {
-    reg.register("listEntities", {
+    reg.register_admin("listEntities", {
         move |ctx| {
             let catalog = catalog.clone();
             let apps = apps.clone();
@@ -51,10 +50,10 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
 }
 
 /// Role numbers as the names an admin gave them.
-struct RoleNames(HashMap<u8, String>);
+struct RoleNames(HashMap<Role, String>);
 
 impl RoleNames {
-    fn name(&self, role: u8) -> String {
+    fn name(&self, role: Role) -> String {
         self.0
             .get(&role)
             .cloned()
@@ -62,7 +61,7 @@ impl RoleNames {
     }
 
     /// A floor that may be absent, with what absent means for this kind.
-    fn floor(&self, role: Option<u8>, absent: &str) -> String {
+    fn floor(&self, role: Option<Role>, absent: &str) -> String {
         role.map_or_else(|| absent.to_owned(), |r| self.name(r))
     }
 }
@@ -104,6 +103,7 @@ impl Row {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn list_entities(
     catalog: &Catalog,
     apps: &AppMounts,
@@ -117,12 +117,12 @@ async fn list_entities(
             .map(|r| (r.role, r.name))
             .collect(),
     );
-    let admin = roles.name(ROLE_ADMIN);
+    let admin = roles.name(Role::ADMIN);
     let mut rows: Vec<Row> = Vec::new();
 
     // --- tables
     let edited = sc_catalog::updated_at_by(catalog, sc_catalog::TABLE_EDITS_TABLE, "name").await?;
-    let rls = catalog.primary().capabilities().row_level_security;
+    let rls = catalog.primary_info().capabilities().row_level_security;
     for table in catalog.tables()?.iter().filter(|t| !t.is_hidden()) {
         let mut details = Vec::new();
         if let Some((_, provider)) = table.provider() {
@@ -171,7 +171,7 @@ async fn list_entities(
     };
     for def in stores {
         let mut details = vec![def.backend.clone()];
-        if catalog.file_store(&def.name)?.is_none() {
+        if !catalog.has_file_store(&def.name)? {
             details.push("not connected".to_owned());
         }
         let definition = if deep {

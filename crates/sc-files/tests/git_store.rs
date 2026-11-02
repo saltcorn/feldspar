@@ -17,8 +17,9 @@ use bytes::Bytes;
 use sc_files::{
     ARG_BRANCH, ARG_CREATE, ARG_MESSAGE, ARG_PATHS, ARG_STAGED_ONLY, CFG_BRANCH, CFG_DIR,
     DATA_DIR_ENV, FileStore, FileStoreDef, GIT_BACKEND, GitFileStore, GitRepo, OP_CHECKOUT,
-    OP_COMMIT, OP_DISCARD, OP_STAGE, OP_STATUS, OP_UNSTAGE, clone_path, connect_from_def,
-    generate_deploy_key, record_clone_path, run_backend_operation, validate_file_store_config,
+    OP_COMMIT, OP_DISCARD, OP_STAGE, OP_STATUS, OP_UNSTAGE, StorePath, clone_path,
+    connect_from_def, generate_deploy_key, record_clone_path, run_backend_operation,
+    validate_file_store_config,
 };
 use sc_types::Attrs;
 
@@ -110,7 +111,10 @@ async fn a_git_store_clones_serves_commits_and_pushes() {
     let store = connect_from_def(&def).unwrap();
     assert_eq!(store.name(), "app");
     assert!(store.is_git_repo());
-    let readme = store.read("README.md").await.unwrap();
+    let readme = store
+        .read(&StorePath::from_static("README.md"))
+        .await
+        .unwrap();
     assert_eq!(&readme[..], b"# from the remote\n");
 
     // A second clone is a no-op rather than a re-clone: saving the store must
@@ -126,7 +130,10 @@ async fn a_git_store_clones_serves_commits_and_pushes() {
     // Write through the FileStore API — the admin's file manager or an app's
     // build output — and git sees it.
     store
-        .write("notes/today.md", Bytes::from_static(b"hello\n"))
+        .write(
+            &StorePath::from_static("notes/today.md"),
+            Bytes::from_static(b"hello\n"),
+        )
         .await
         .unwrap();
     let status = repo.status().await.unwrap();
@@ -187,10 +194,18 @@ async fn a_pull_brings_down_what_someone_else_pushed() {
     git(&other, &["push", "origin", "main"]);
 
     // Before the pull the store cannot see it …
-    assert!(store.read("upstream.txt").await.is_err());
+    assert!(
+        store
+            .read(&StorePath::from_static("upstream.txt"))
+            .await
+            .is_err()
+    );
     // … after it, it can, and the file store serves it.
     repo.pull().await.unwrap();
-    let got = store.read("upstream.txt").await.unwrap();
+    let got = store
+        .read(&StorePath::from_static("upstream.txt"))
+        .await
+        .unwrap();
     assert_eq!(&got[..], b"from elsewhere\n");
     assert!(repo.status().await.unwrap().clean());
 }
@@ -220,7 +235,13 @@ async fn a_branch_setting_checks_out_that_branch() {
     let status = repo.status().await.unwrap();
     assert_eq!(status.branch, "release");
     let store = connect_from_def(&def).unwrap();
-    assert_eq!(&store.read("VERSION").await.unwrap()[..], b"1.0\n");
+    assert_eq!(
+        &store
+            .read(&StorePath::from_static("VERSION"))
+            .await
+            .unwrap()[..],
+        b"1.0\n"
+    );
 }
 
 #[tokio::test]
@@ -274,7 +295,10 @@ async fn the_status_operation_carries_the_working_copy_as_data() {
 
     let store = connect_from_def(&def).unwrap();
     store
-        .write("notes/today.md", Bytes::from_static(b"hello\n"))
+        .write(
+            &StorePath::from_static("notes/today.md"),
+            Bytes::from_static(b"hello\n"),
+        )
         .await
         .unwrap();
 
@@ -342,15 +366,24 @@ async fn staging_decides_what_a_commit_takes() {
     // Two new files and one edit: an untracked pair and a modification, which
     // are the three codes the view draws letters from.
     store
-        .write("notes/today.md", Bytes::from_static(b"today\n"))
+        .write(
+            &StorePath::from_static("notes/today.md"),
+            Bytes::from_static(b"today\n"),
+        )
         .await
         .unwrap();
     store
-        .write("notes/later.md", Bytes::from_static(b"later\n"))
+        .write(
+            &StorePath::from_static("notes/later.md"),
+            Bytes::from_static(b"later\n"),
+        )
         .await
         .unwrap();
     store
-        .write("README.md", Bytes::from_static(b"# edited\n"))
+        .write(
+            &StorePath::from_static("README.md"),
+            Bytes::from_static(b"# edited\n"),
+        )
         .await
         .unwrap();
     let codes = |status: &sc_files::GitStatus, path: &str| {
@@ -403,7 +436,10 @@ async fn staging_decides_what_a_commit_takes() {
     assert_eq!(codes(&status, "README.md"), " M");
     assert_eq!(codes(&status, "notes/later.md"), "A ");
     assert_eq!(
-        &store.read("README.md").await.unwrap()[..],
+        &store
+            .read(&StorePath::from_static("README.md"))
+            .await
+            .unwrap()[..],
         b"# edited\n",
         "unstaging must not touch the file"
     );
@@ -680,7 +716,10 @@ async fn a_directory_chosen_on_creation_is_where_the_working_copy_lands() {
     assert!(chosen.join(".git").exists());
     let store = connect_from_def(&def).unwrap();
     assert_eq!(
-        &store.read("README.md").await.unwrap()[..],
+        &store
+            .read(&StorePath::from_static("README.md"))
+            .await
+            .unwrap()[..],
         b"# from the remote\n"
     );
 }
@@ -721,10 +760,19 @@ async fn an_existing_checkout_is_adopted_rather_than_cloned_over() {
     let store = connect_from_def(&def).unwrap();
     assert!(store.is_git_repo());
     assert_eq!(
-        &store.read("README.md").await.unwrap()[..],
+        &store
+            .read(&StorePath::from_static("README.md"))
+            .await
+            .unwrap()[..],
         b"# from the remote\n"
     );
-    assert_eq!(&store.read("scratch.txt").await.unwrap()[..], b"mine\n");
+    assert_eq!(
+        &store
+            .read(&StorePath::from_static("scratch.txt"))
+            .await
+            .unwrap()[..],
+        b"mine\n"
+    );
 
     let status = repo.status().await.unwrap();
     assert!(status.cloned);
@@ -738,7 +786,10 @@ async fn an_existing_checkout_is_adopted_rather_than_cloned_over() {
     // And it is a working store, not merely a readable one: the remote the
     // existing checkout already has is the one it pushes to.
     store
-        .write("adopted.txt", Bytes::from_static(b"from saltcorn\n"))
+        .write(
+            &StorePath::from_static("adopted.txt"),
+            Bytes::from_static(b"from saltcorn\n"),
+        )
         .await
         .unwrap();
     repo.commit("adopted", true).await.unwrap();
@@ -923,28 +974,62 @@ async fn a_git_store_streams_appends_and_joins() {
         .unwrap();
     let store = connect_from_def(&def).unwrap();
 
-    let readme = sc_files::read_to_bytes(store.open_read("README.md", Some(2..6)).await.unwrap())
-        .await
-        .unwrap();
+    let readme = sc_files::read_to_bytes(
+        store
+            .open_read(&StorePath::from_static("README.md"), Some(2..6))
+            .await
+            .unwrap(),
+    )
+    .await
+    .unwrap();
     assert_eq!(&readme[..], b"from");
 
-    let mut out = store.open_append("uploads/a.bin").await.unwrap();
+    let mut out = store
+        .open_append(&StorePath::from_static("uploads/a.bin"))
+        .await
+        .unwrap();
     out.write_all(b"part one, ").await.unwrap();
     out.shutdown().await.unwrap();
-    let mut out = store.open_append("uploads/a.bin").await.unwrap();
+    let mut out = store
+        .open_append(&StorePath::from_static("uploads/a.bin"))
+        .await
+        .unwrap();
     out.write_all(b"part two").await.unwrap();
     out.shutdown().await.unwrap();
     assert_eq!(
-        &store.read("uploads/a.bin").await.unwrap()[..],
+        &store
+            .read(&StorePath::from_static("uploads/a.bin"))
+            .await
+            .unwrap()[..],
         b"part one, part two"
     );
 
-    let parts = ["README.md".to_owned(), "uploads/a.bin".to_owned()];
-    let size = store.concat(&parts, "uploads/joined.txt").await.unwrap();
+    let parts = [
+        StorePath::from_static("README.md"),
+        StorePath::from_static("uploads/a.bin"),
+    ];
+    let size = store
+        .concat(&parts, &StorePath::from_static("uploads/joined.txt"))
+        .await
+        .unwrap();
     assert_eq!(size, 18 + 18);
-    let missing = ["README.md".to_owned(), "nope".to_owned()];
-    assert!(store.concat(&missing, "uploads/never.txt").await.is_err());
-    assert!(store.stat("uploads/never.txt").await.unwrap().is_none());
+    let missing = [
+        StorePath::from_static("README.md"),
+        StorePath::from_static("nope"),
+    ];
+    assert!(
+        store
+            .concat(&missing, &StorePath::from_static("uploads/never.txt"))
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .stat(&StorePath::from_static("uploads/never.txt"))
+            .await
+            .unwrap()
+            .is_none()
+    );
     // The join is a file git sees, like any other write.
     let status = std::process::Command::new("git")
         .current_dir(workspace.join("app"))

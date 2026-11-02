@@ -52,7 +52,7 @@ use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
 
-use crate::host::OAuthAsks;
+use crate::host::Ask;
 
 /// Where a consent flow's browser half starts: `<prefix>/<id>`, on the host the
 /// application is served on.
@@ -99,7 +99,7 @@ pub struct ConsentFlow {
     pub authorization_url: String,
     pub token_url: String,
     pub client_id: String,
-    pub client_secret: String,
+    pub client_secret: sc_error::Secret<String>,
     pub scope: String,
     /// Extra authorization parameters (`login_hint`, `prompt`, …).
     pub params: Vec<(String, String)>,
@@ -158,7 +158,7 @@ pub struct ConsentAsks<'a> {
 }
 
 #[async_trait::async_trait]
-impl OAuthAsks for ConsentAsks<'_> {
+impl Ask for ConsentAsks<'_> {
     async fn ask(&self, plan: Json) -> Result<Json> {
         let flow = consent_flow(self.catalog, self.module, self.user, &plan)?;
         let id = flows().begin(flow);
@@ -237,7 +237,7 @@ pub fn consent_flow(
         authorization_url,
         token_url,
         client_id,
-        client_secret,
+        client_secret: client_secret.into(),
         scope,
         params,
         return_to,

@@ -20,6 +20,7 @@ sc-types.workspace = true
 sc-catalog.workspace = true
 sc-files.workspace = true
 sc-api.workspace = true
+sc-access.workspace = true
 # The roles a scaffolded project's documentation lists: `feldspar auth token
 # --role NAME` needs a name, and a generated document that described roles
 # instead of naming this installation's would send the reader to the admin UI.

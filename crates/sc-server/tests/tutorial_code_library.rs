@@ -10,6 +10,8 @@
 //! both applications answer.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -18,14 +20,15 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::{CustomQuery, Method, QueryLanguage, set_custom_queries};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC, SessionStore, create_user};
+use sc_auth::{SessionStore, create_user};
 use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_sqlite::SqliteDriver;
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_triggers,
+    AppMounts, MountedApp, ServerConfig, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_triggers,
 };
+use sc_test_harness::Teardown;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -138,9 +141,12 @@ fn app(name: &str, subdomain: &str, query: CustomQuery) -> Application {
         .with_api(api)
 }
 
-async fn setup(dir: &std::path::Path) -> sc_error::Result<Router> {
+/// The server, and the guard that tears its catalog down when the test ends.
+async fn setup(dir: &std::path::Path) -> sc_error::Result<(Router, Teardown)> {
     let driver = Arc::new(SqliteDriver::open(dir.join("tutorial.db"))?);
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let teardown = Teardown::new();
+    teardown.add(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
@@ -150,15 +156,15 @@ async fn setup(dir: &std::path::Path) -> sc_error::Result<Router> {
         &sc_files::FileStoreDef::local("files", dir.to_string_lossy()),
     )
     .await?;
-    create_user(&catalog, "admin@example.com", PASSWORD, ROLE_ADMIN).await?;
-    sc_auth::save_role(&catalog, &sc_auth::Role::new(80, "Reader")).await?;
-    create_user(&catalog, "you@example.com", PASSWORD, 80).await?;
+    create_user(&catalog, "admin@example.com", PASSWORD, Role::ADMIN).await?;
+    sc_auth::save_role(&catalog, &sc_auth::RoleDef::new(Role::of(80), "Reader")).await?;
+    create_user(&catalog, "you@example.com", PASSWORD, Role::of(80)).await?;
 
     let step2 = blocks("Step 2");
     let query = |name: &str, method: Method, path: &str, code: &str| {
         CustomQuery::new(name, method, path, code)
             .language(QueryLanguage::Javascript)
-            .min_role(ROLE_PUBLIC)
+            .min_role(Role::PUBLIC)
     };
     let todo = sc_app::save_application(
         &catalog,
@@ -197,7 +203,7 @@ async fn setup(dir: &std::path::Path) -> sc_error::Result<Router> {
             apps.triggers(),
         )?)?;
     }
-    build_router_with_apps(
+    let router = build_router_with_apps(
         &sc_api::admin_endpoints(),
         admin_handlers(catalog.clone(), apps.clone()),
         Arc::new(SessionStore::default()),
@@ -206,7 +212,8 @@ async fn setup(dir: &std::path::Path) -> sc_error::Result<Router> {
             ..ServerConfig::default()
         },
         apps,
-    )
+    )?;
+    Ok((router, teardown))
 }
 
 /// Step 2's call on `host`, signed out.
@@ -229,7 +236,7 @@ async fn the_code_library_tutorial_runs_as_printed() -> sc_error::Result<()> {
     let dir = std::env::temp_dir().join(format!("sc-tutorial-code-library-{}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(&dir).map_err(sc_error::Error::from)?;
-    let router = setup(&dir).await?;
+    let (router, _teardown) = setup(&dir).await?;
 
     // Step 1: the library, saved as the screen saves it.
     let library = blocks("Step 1").remove(0);

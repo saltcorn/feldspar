@@ -8,6 +8,7 @@
 //! exist. Those are only real against a real catalog.
 
 use crate::common;
+use sc_types::Role;
 
 use common::{Counter, catalog, registry};
 use sc_agent::{
@@ -24,7 +25,7 @@ fn librarian() -> Agent {
         .model("claude-opus-5")
         .system_prompt("You answer questions about books.")
         .with_trait(EnabledTrait::new("count").config("collection", "books"))
-        .min_role(40)
+        .min_role(Role::of(40))
         .attribute(sc_agent::ATTR_MAX_STEPS, 5)
 }
 
@@ -52,7 +53,7 @@ async fn an_agent_round_trips_through_its_row() -> Result<()> {
     // The sparse attributes survive, which is what makes the step budget the
     // admin's rather than the code's.
     assert_eq!(loaded.max_steps(), 5);
-    assert_eq!(loaded.min_role, Some(40));
+    assert_eq!(loaded.min_role, Some(Role::of(40)));
     Ok(())
 }
 
@@ -228,19 +229,6 @@ async fn two_traits_whose_tools_would_collide_are_refused_on_save() -> Result<()
     let err = save_agent(&catalog, &registry, &agent).await.unwrap_err();
     assert!(err.to_string().contains("count_books"), "{err}");
     assert!(err.to_string().contains("trait 1"), "{err}");
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_role_outside_the_scale_is_refused() -> Result<()> {
-    let db = TestDb::new().await?;
-    let catalog = catalog(&db).await?;
-    let registry = registry(Counter::new())?;
-
-    let mut agent = Agent::new("a", "main");
-    agent.min_role = Some(200);
-    let err = save_agent(&catalog, &registry, &agent).await.unwrap_err();
-    assert!(err.to_string().contains("200"), "{err}");
     Ok(())
 }
 

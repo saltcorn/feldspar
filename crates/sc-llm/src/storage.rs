@@ -26,7 +26,7 @@
 
 use sc_catalog::{
     Catalog, ConstraintKind, DataField, DataFieldKind, FieldId, SchemaStep, SharedTx, Table,
-    TableConstraint, TableId,
+    TableConstraint,
 };
 use sc_db::{Row, SchemaChange};
 use sc_error::{Error, Result};
@@ -360,7 +360,7 @@ fn bad_column(column: &str, expected: &str, got: Option<&Value>) -> Error {
 /// Run a statement that returns no rows of interest.
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()
@@ -371,7 +371,7 @@ async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
 /// Run a select and collect its rows.
 async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(select))
         .await?
         .try_collect()
@@ -416,7 +416,7 @@ fn model_fields() -> Vec<DataField> {
         DataField::plain(COL_ID, uuid()).required().primary_key(),
         DataField {
             kind: DataFieldKind::Key {
-                target_table: TableId(LLM_PROVIDERS_TABLE.to_owned()),
+                target_table: LLM_PROVIDERS_TABLE.to_owned(),
                 target_field: FieldId(COL_ID.to_owned()),
                 summary_field: Some(FieldId(COL_NAME.to_owned())),
             },
@@ -835,10 +835,14 @@ fn bad_model_column(column: &str, expected: &str, got: Option<&Value>) -> Error 
 async fn in_transaction(catalog: &Catalog, statements: Vec<Statement>) -> Result<()> {
     let tx = SharedTx::begin_primary(catalog)?;
     for statement in &statements {
-        if let Err(e) = tx.run(None, statement).await {
-            // The rollback's own failure would hide the reason; the statement's
-            // error is the one worth reporting.
-            let _ = tx.rollback().await;
+        if let Err(e) = tx
+            .run(
+                sc_catalog::Unchecked::system("LLM usage and conversation storage"),
+                statement,
+            )
+            .await
+        {
+            tx.abandon().await;
             return Err(e);
         }
     }
@@ -879,7 +883,7 @@ mod tests {
         let by_name = |n: &str| fields.iter().find(|f| f.base.name == n).unwrap();
         assert!(matches!(
             &by_name(COL_PROVIDER_ID).kind,
-            DataFieldKind::Key { target_table, .. } if target_table.0 == LLM_PROVIDERS_TABLE
+            DataFieldKind::Key { target_table, .. } if target_table == LLM_PROVIDERS_TABLE
         ));
         assert!(
             !by_name(COL_NAME).unique,

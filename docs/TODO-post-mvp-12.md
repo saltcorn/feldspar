@@ -326,13 +326,13 @@ gained no capability, and this was built afterwards on the seam it left behind.
       differences (no streaming, no `AbortSignal`, `timeout_ms`, an object body is JSON).
       Compiled once per isolate; `fetch` is minted per run by `__scMakeFetch(token)` and handed
       to the body as a parameter, exactly as `db` is.
-- [x] `CodeFetchHost` in `sc-core-actions`, over the same `reqwest` client the `fetch` action
+- [x] `CodeFetchHost` in `sc-action-builtins`, over the same `reqwest` client the `fetch` action
       uses and with the same rules (absolute `http`/`https` only), plus the response cap
       (`MAX_RESPONSE_BYTES`, 8 MB, refused rather than truncated and enforced chunk by chunk).
 - [x] Tests: twelve in `sc-expr` against a fake network (the request a body builds, the response
       it reads, a 404 that does not throw, a `TypeError` it can catch, the budget, a forgotten
       `await`, two requests in flight at once, the clamp, bytes both ways, the refused options,
-      read-once-and-clone) and five in `sc-core-actions` against a **real socket** (a GET and a
+      read-once-and-clone) and five in `sc-action-builtins` against a **real socket** (a GET and a
       POST as written, a body that writes what it fetched, a 503 it retries, a hung endpoint
       that fails inside the body's own limit, and `file://` refused).
 - [x] `ui/admin/src/codeTypes.ts` and its type-check test; `run_js_code`'s doc comment;
@@ -399,7 +399,7 @@ because writing to a reference is one.
       the four write shapes, bytes both ways, a listing walked, a copy and a move, the paths
       refused before they are sent, an unknown store named at once, authority on the handle,
       metadata, the budget, a forgotten `await`, and `fs` absent from a body that was not given
-      it) and nine in `sc-core-actions` against **real directories** (read and write, create vs
+      it) and nine in `sc-action-builtins` against **real directories** (read and write, create vs
       write, a directory made/listed/walked/deleted, a cross-store copy, metadata that is the
       store's own, a delegated body refused by a folder rule and by the store's floor while the
       trigger's own authority is not, an over-large file refused rather than truncated, and an
@@ -440,7 +440,7 @@ dispatcher's trigger — the same call the Run button makes.
       how an action reaches the dispatcher that is running it without an `Arc` cycle.
 - [x] `run_js_code` binds it when the context has a dispatcher, carrying the event's role, its
       user and this trigger's chain.
-- [x] Tests: eight in `sc-expr` against a fake host, six in `sc-core-actions` against a real
+- [x] Tests: eight in `sc-expr` against a fake host, six in `sc-action-builtins` against a real
       dispatcher and database, one in the executed tutorial, and one type-check test.
 - [x] `ui/admin/src/codeTypes.ts` (`triggerDeclarations`, `declare const trigger: ScTriggers`);
       `run_js_code`'s doc comment; `docs/TECHNICAL_DESIGN.md` §10.1 (a `trigger` subsection);

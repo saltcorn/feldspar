@@ -77,7 +77,7 @@ pub(crate) struct Endpoint<'a> {
     provider: &'a LlmProviderDef,
     model: &'a LlmModelDef,
     base_url: String,
-    api_key: String,
+    api_key: sc_error::Secret<String>,
     client: reqwest::Client,
     started: std::time::Instant,
 }
@@ -148,7 +148,8 @@ impl<'a> Endpoint<'a> {
                 .setting(CFG_API_KEY)
                 .unwrap_or_default()
                 .trim()
-                .to_owned(),
+                .to_owned()
+                .into(),
             client,
             started: std::time::Instant::now(),
         })
@@ -182,7 +183,7 @@ impl<'a> Endpoint<'a> {
             .post(format!("{}{path}", self.base_url))
             .json(body);
         if !self.api_key.is_empty() {
-            request = request.bearer_auth(&self.api_key);
+            request = request.bearer_auth(self.api_key.expose());
         }
         let response = request.send().await.map_err(|e| self.failed(doing, &e))?;
         self.read(response, doing).await

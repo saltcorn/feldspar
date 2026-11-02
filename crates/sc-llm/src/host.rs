@@ -168,16 +168,13 @@ pub async fn set_host_llm_provider(
             stored.name, stored.id.0
         )));
     }
-    catalog.set_host_llm_provider(provider.map(|p| Arc::new(p) as _));
+    catalog.set_extension(provider.map(Arc::new));
     Ok(())
 }
 
 /// The LLM provider this host supplies, if it supplies one.
 pub fn host_llm_provider(catalog: &Catalog) -> Option<Arc<HostLlmProvider>> {
-    catalog
-        .host_llm_provider()?
-        .downcast::<HostLlmProvider>()
-        .ok()
+    catalog.extension::<HostLlmProvider>()
 }
 
 /// Whether `id` is the provider this host supplies — the one no write may touch.

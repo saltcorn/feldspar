@@ -125,7 +125,7 @@ fn at_ip(port: u16) -> EmailSettings {
         port,
         security: SmtpSecurity::Tls,
         username: String::new(),
-        password: String::new(),
+        password: String::new().into(),
         from: parse_mailbox("Saltcorn <saltcorn@example.com>").unwrap(),
         certificate_name: None,
         accept_any_certificate: false,

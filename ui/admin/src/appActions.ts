@@ -71,16 +71,24 @@ export function buildStarted(state: AppActionsState, appId: string): AppActionsS
 export function buildFinished(
   state: AppActionsState,
   app: Pick<AppItem, "id" | "name">,
-  result: { ok: true; log: string } | { ok: false; error: string },
+  result:
+    | { ok: true; log: string; checks?: Array<{ status: string }> | null }
+    | { ok: false; error: string },
   action = "Build",
 ): AppActionsState {
+  // The checklists run after the build (TODO-checklists C4.3): one that did
+  // not pass turns the news red, though the build itself is mounted.
+  const unpassed = result.ok ? (result.checks ?? []).filter((c) => c.status !== "passed").length : 0;
   return {
     ...state,
     build: { ...state.build, [app.id]: result.ok ? "built" : "failed" },
     outcome: result.ok
       ? {
-          ok: true,
-          title: `${action} succeeded — ${app.name}`,
+          ok: unpassed === 0,
+          title:
+            unpassed === 0
+              ? `${action} succeeded — ${app.name}`
+              : `${action} succeeded — ${app.name}, but ${unpassed} of ${result.checks?.length} checklists did not pass`,
           text: result.log.trim() || `${action} succeeded.`,
         }
       : { ok: false, title: `${action} failed — ${app.name}`, text: result.error },
@@ -255,7 +263,7 @@ export async function buildApplication(app: AppItem): Promise<void> {
   publish(buildStarted(state, app.id));
   try {
     const report = await api.buildApplication(app.id);
-    publish(buildFinished(state, app, { ok: true, log: report.log }));
+    publish(buildFinished(state, app, { ok: true, log: report.log, checks: report.checks }));
   } catch (err) {
     publish(buildFinished(state, app, { ok: false, error: errorMessage(err, "The build failed.") }));
   }

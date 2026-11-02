@@ -87,7 +87,7 @@ pub async fn scaffold_app(
     let source = app_source_from_config(&app.framework)?;
     let project = source.build.source_dir.clone();
 
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     if !is_empty_dir(store.as_ref(), &project).await? {
         return Err(Error::invalid(format!(
             "cannot scaffold into {} of file store `{}`: it is not empty. \
@@ -104,7 +104,10 @@ pub async fn scaffold_app(
     for file in &generated {
         let path = project_path(&project, &file.path);
         store
-            .write(&path, Bytes::from(file.contents.clone().into_bytes()))
+            .write(
+                &sc_files::StorePath::parse(&path)?,
+                Bytes::from(file.contents.clone().into_bytes()),
+            )
             .await
             .with_context(|| format!("scaffolding {path}"))?;
         written.push(path);
@@ -115,7 +118,13 @@ pub async fn scaffold_app(
         // create a nested one, which is a worse state than the one we are in.
         false
     } else {
-        init_git_repo(&source, store.local_path(&project)?.as_deref()).await?
+        init_git_repo(
+            &source,
+            store
+                .local_path(&sc_files::StorePath::parse(&project)?)?
+                .as_deref(),
+        )
+        .await?
     };
 
     Ok(ScaffoldReport {
@@ -260,7 +269,7 @@ fn project_relative(project: &str, path: &Option<String>) -> Result<Option<Strin
 /// documentation, and failing a build over a sentence would be the wrong trade.
 /// The generator says "the roles are listed in the admin UI" and the project is
 /// still written.
-async fn documented_roles(cat: &Catalog) -> Result<Vec<sc_auth::Role>> {
+async fn documented_roles(cat: &Catalog) -> Result<Vec<sc_auth::RoleDef>> {
     if cat.get(sc_auth::ROLES_TABLE)?.is_none() {
         return Ok(Vec::new());
     }
@@ -363,6 +372,9 @@ async fn require_auth_endpoints_for_source(
     // is a store problem the write that follows will report far better than a
     // check could.
     let auth_path = project_path(project, AUTH_SOURCE);
+    let Ok(auth_path) = sc_files::StorePath::parse(&auth_path) else {
+        return Ok(());
+    };
     let Ok(source) = store.read(&auth_path).await else {
         return Ok(());
     };
@@ -405,7 +417,7 @@ pub async fn emit_app_runtime(
     require_api_provider(app)?;
     let set = installed_frameworks();
     let project = &source.build.source_dir;
-    let store = cat.require_file_store(&source.store.0)?;
+    let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
     let endpoints = app_endpoints_with(app, cat, dispatcher)?;
     require_auth_endpoints_for_source(app, &endpoints, store.as_ref(), project).await?;
 
@@ -413,7 +425,10 @@ pub async fn emit_app_runtime(
     for file in generate(cat, app, &set, source, dispatcher, FilePhase::Runtime).await? {
         let path = project_path(project, &file.path);
         store
-            .write(&path, Bytes::from(file.contents.into_bytes()))
+            .write(
+                &sc_files::StorePath::parse(&path)?,
+                Bytes::from(file.contents.into_bytes()),
+            )
             .await
             .with_context(|| format!("generating {path}"))?;
         written.push(path);
@@ -499,7 +514,7 @@ pub async fn update_app_client(
 ) -> Result<ClientUpdate> {
     if require_scaffoldable(app).is_ok() {
         let source = app_source_from_config(&app.framework)?;
-        let store = cat.require_file_store(&source.store.0)?;
+        let store = cat.require_file_store(&source.store.0, crate::APP_SOURCES)?;
         if is_empty_dir(store.as_ref(), &source.build.source_dir).await? {
             return scaffold_app(cat, app, dispatcher)
                 .await
@@ -528,7 +543,11 @@ const GIT_DIR: &str = ".git";
 /// would refuse to scaffold into exactly the empty repository the feature is for,
 /// while losing nothing the admin wrote.
 async fn is_empty_dir(store: &dyn sc_files::FileStore, dir: &str) -> Result<bool> {
-    match store.list(dir).await {
+    let listed = match sc_files::StorePath::parse(dir) {
+        Ok(dir) => store.list(&dir).await,
+        Err(e) => Err(e),
+    };
+    match listed {
         Ok(entries) => Ok(entries.iter().all(|e| e.name == GIT_DIR)),
         // The store cannot distinguish "no such directory" in its error type; a
         // path that cannot be listed holds nothing this can destroy.

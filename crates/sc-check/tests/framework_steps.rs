@@ -7,12 +7,13 @@
 //! The type check runs the real `npm install` and `tsc`, and **skips when `npm`
 //! is not on `PATH`**, as `sc-app`'s tutorial build does.
 
+use sc_types::Role;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use sc_app::{ApiConfig, Application, FrameworkRef, save_application, scaffold_app};
-use sc_auth::{ROLE_ADMIN, User, create_user};
-use sc_catalog::{Catalog, DataField, FileStoreId, TableId};
+use sc_auth::{User, create_user};
+use sc_catalog::{Catalog, DataField, FileStoreId};
 use sc_check::{
     CheckEnv, ChecklistInput, Editor, Outcome, RunStatus, StepDraft, StepRegistry, edit,
     run_checklist,
@@ -90,7 +91,7 @@ async fn setup(tag: &str) -> Result<Env> {
         .await?;
     let tmp = TempDir::new(tag);
     catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", tmp.path())?))?;
-    let admin = create_user(&catalog, "admin@example.com", "pw-admin", ROLE_ADMIN).await?;
+    let admin = create_user(&catalog, "admin@example.com", "pw-admin", Role::ADMIN).await?;
     Ok(Env {
         catalog,
         registry: StepRegistry::builtin(),
@@ -108,7 +109,7 @@ fn todo_app() -> Application {
             .with("store", "apps")
             .with("project", "todo"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"))
 }
@@ -128,7 +129,7 @@ fn site_app() -> Application {
 
 impl Env {
     fn human(&self) -> Editor {
-        Editor::Human(self.admin.id)
+        Editor::Human(self.admin.id())
     }
 
     async fn checklist(

@@ -1,9 +1,9 @@
 //! The Authentication settings: how a sign-in is shared, how long it lasts,
 //! and the external identity providers (OAuth 2.0) people may sign in with.
 //!
-//! Two of these are ordinary keys on the settings form — whether the session
-//! cookie is scoped to the base domain, and how long a session lasts — and both
-//! apply to every sign-in, a password's or a provider's, because every session
+//! Three of these are ordinary keys on the settings form — whether the session
+//! cookie is scoped to the base domain, how long a session lasts, and whether
+//! its cookie outlives the browser — and all three apply to every sign-in, a password's or a provider's, because every session
 //! starts in the one place the router starts them.
 //!
 //! The providers are **not** fields of the form: they are a list of records,
@@ -16,6 +16,7 @@
 
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
+use sc_types::Role;
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::Value as Json;
 
@@ -26,10 +27,40 @@ use crate::defs::{ConfigDef, ConfigSection};
 pub const SHARED_SESSION_COOKIE: &str = "shared_session_cookie";
 /// How long a session lasts from sign-in, in hours.
 pub const SESSION_TTL_HOURS: &str = "session_ttl_hours";
+/// Whether a browser's session cookie outlives the browser: a `Max-Age` of the
+/// session's lifetime, so closing the browser does not sign anybody out. On
+/// unless stored as `false` (TODO A1.1).
+pub const PERSISTENT_SESSION_COOKIE: &str = "persistent_session_cookie";
+/// Whether a sign-in with an external identity provider is asked for a second
+/// factor too, as a password's is. Off by default: the provider has its own
+/// second factor, and asking for two is how people stop using either.
+pub const SECOND_FACTOR_FOR_IDENTITY_PROVIDERS: &str = "second_factor_for_identity_providers";
+/// The name an authenticator app lists this installation's accounts under.
+/// Blank: the base domain, or the host the setup was on.
+pub const SECOND_FACTOR_ISSUER: &str = "second_factor_issuer";
 /// The external identity providers: a list of provider records (see
 /// [`oauth_provider_spec`]). Internal: the Authentication tab edits it a
 /// provider at a time, not as a form field.
 pub const OAUTH_PROVIDERS: &str = "oauth_providers";
+
+/// The token that creating the **first user** needs, when one is set: what a
+/// hosting control panel stores with `feldspar set-cfg` before the instance
+/// first starts, and puts in the link it gives the instance's owner
+/// (`/?first_user_token=…`). Unset, whoever reaches a fresh installation first
+/// creates its admin.
+///
+/// Internal and secret: nobody types it into the settings form, and nothing
+/// prints it back. It only matters while there are no users, so it is not
+/// consumed. Clear all keeps it, so the installation it empties is still
+/// claimable only through the same link.
+///
+/// [`FIRST_USER_TOKEN_ENV`] sets a token too, and is the better place for one.
+pub const FIRST_USER_TOKEN: &str = "first_user_token";
+
+/// The environment variable that sets a first-user token outside the
+/// database. Unlike [`FIRST_USER_TOKEN`] it survives Clear all and is never
+/// in a backup. When both are set and differ, either one is accepted.
+pub const FIRST_USER_TOKEN_ENV: &str = "FELDSPAR_FIRST_USER_TOKEN";
 
 /// A session's lifetime when nothing is stored: one day.
 pub const DEFAULT_SESSION_TTL_HOURS: i64 = 24;
@@ -67,6 +98,35 @@ pub fn authentication_section() -> ConfigSection {
                 "How long a sign-in lasts, with a password or with an identity provider, before \
                  signing in again is needed. Applies to sessions started after saving.",
             ),
+            // Live as well: read at every sign-in. A cookie already in a
+            // browser keeps what it was given, so nobody is signed out by it.
+            ConfigDef::help(
+                FormField::new(PERSISTENT_SESSION_COOKIE, BasicType::Bool)
+                    .label("Keep people signed in when the browser closes")
+                    .default_value(true),
+                "Give the session cookie an expiry of the session lifetime, so a sign-in \
+                 survives closing and reopening the browser. A sign-in form's \"Remember me\", \
+                 left unticked, still ends that sign-in with the browser. Turn this off where \
+                 people share a computer, such as a kiosk, so closing the browser signs them \
+                 out. Applies to sign-ins after saving.",
+            ),
+            // Read at every identity provider sign-in.
+            ConfigDef::help(
+                FormField::new(SECOND_FACTOR_FOR_IDENTITY_PROVIDERS, BasicType::Bool)
+                    .label("Ask for a two-factor code after an identity provider")
+                    .default_value(false),
+                "An account with two-factor authentication on, or whose role requires it, is \
+                 asked for a code from its authenticator app after its password. Tick this to \
+                 ask after a sign-in with an identity provider too. Left unticked, the \
+                 provider's own sign-in (and its own second factor) is trusted.",
+            ),
+            ConfigDef::help(
+                FormField::new(SECOND_FACTOR_ISSUER, BasicType::Text)
+                    .label("Name in authenticator apps")
+                    .default_value(""),
+                "What an authenticator app lists an account set up here under. Blank, it is \
+                 this server's domain. Applies to accounts set up after saving.",
+            ),
         ],
     }
 }
@@ -85,6 +145,29 @@ pub async fn shared_session_cookie(catalog: &Catalog) -> Result<bool> {
     Ok(shared_session_cookie_from(
         &crate::store::all_config(catalog).await?,
     ))
+}
+
+/// Read whether a browser's session cookie outlives the browser out of a
+/// settings bag: on unless stored as `false`, the declared default.
+pub fn persistent_session_cookie_from(config: &Attrs) -> bool {
+    !matches!(
+        config.get(PERSISTENT_SESSION_COOKIE),
+        Some(Json::Bool(false))
+    )
+}
+
+/// What a sign-in started now is given, read from a settings bag: the
+/// session's lifetime in hours and whether its cookie outlives the browser.
+pub fn session_policy_from(config: &Attrs) -> Result<(i64, bool)> {
+    Ok((
+        session_ttl_hours_from(config)?,
+        persistent_session_cookie_from(config),
+    ))
+}
+
+/// [`session_policy_from`] `_fd_config`, read once.
+pub async fn session_policy(catalog: &Catalog) -> Result<(i64, bool)> {
+    session_policy_from(&crate::store::all_config(catalog).await?)
 }
 
 /// Read the session lifetime, in hours, out of a settings bag.
@@ -109,6 +192,68 @@ pub fn session_ttl_hours_from(config: &Attrs) -> Result<i64> {
 /// Read the session lifetime, in hours, out of `_fd_config`.
 pub async fn session_ttl_hours(catalog: &Catalog) -> Result<i64> {
     session_ttl_hours_from(&crate::store::all_config(catalog).await?)
+}
+
+/// Read whether an identity provider's sign-in is asked for a second factor out
+/// of a settings bag: only when stored as `true`.
+pub fn second_factor_for_identity_providers_from(config: &Attrs) -> bool {
+    matches!(
+        config.get(SECOND_FACTOR_FOR_IDENTITY_PROVIDERS),
+        Some(Json::Bool(true))
+    )
+}
+
+/// [`second_factor_for_identity_providers_from`] `_fd_config`.
+pub async fn second_factor_for_identity_providers(catalog: &Catalog) -> Result<bool> {
+    Ok(second_factor_for_identity_providers_from(
+        &crate::store::all_config(catalog).await?,
+    ))
+}
+
+/// The issuer an authenticator app lists accounts under, when one is set.
+pub async fn second_factor_issuer(catalog: &Catalog) -> Result<Option<String>> {
+    Ok(
+        match crate::store::all_config(catalog)
+            .await?
+            .get(SECOND_FACTOR_ISSUER)
+        {
+            Some(Json::String(issuer)) if !issuer.trim().is_empty() => {
+                Some(issuer.trim().to_owned())
+            }
+            _ => None,
+        },
+    )
+}
+
+/// The tokens that may create the first user: [`FIRST_USER_TOKEN_ENV`]'s and
+/// the stored [`FIRST_USER_TOKEN`]'s, either of which is accepted. Empty
+/// means none is needed.
+pub async fn first_user_tokens(catalog: &Catalog) -> Result<Vec<String>> {
+    first_user_tokens_with(catalog, std::env::var(FIRST_USER_TOKEN_ENV).ok()).await
+}
+
+/// [`first_user_tokens`] with the environment's token given as `env`. Blank
+/// counts as none, for both, so `set-cfg first_user_token ""` cannot leave a
+/// token nobody can type. A database without the configuration table holds
+/// no token: `serve` always creates it, but the create-first-user route also
+/// serves catalogs assembled without it.
+pub async fn first_user_tokens_with(catalog: &Catalog, env: Option<String>) -> Result<Vec<String>> {
+    let stored = if catalog.get(crate::store::CONFIG_TABLE)?.is_none() {
+        None
+    } else {
+        match crate::store::stored_config(catalog, FIRST_USER_TOKEN).await? {
+            Some(Json::String(token)) => Some(token),
+            _ => None,
+        }
+    };
+    let mut tokens = Vec::new();
+    for token in [env, stored].into_iter().flatten() {
+        let token = token.trim();
+        if !token.is_empty() && !tokens.iter().any(|t| t == token) {
+            tokens.push(token.to_owned());
+        }
+    }
+    Ok(tokens)
 }
 
 // --- external identity providers --------------------------------------------
@@ -318,7 +463,7 @@ pub fn oauth_provider_spec() -> Vec<FormField> {
 /// The role an account a provider creates gets unless the admin chose one: the
 /// public role, which can do no more than an anonymous caller until an admin
 /// says otherwise.
-pub const DEFAULT_NEW_USER_ROLE: u8 = 100;
+pub const DEFAULT_NEW_USER_ROLE: Role = Role::PUBLIC;
 
 /// One provider, read and checked: the endpoints resolved from its preset.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,7 +472,7 @@ pub struct OAuthProvider {
     pub label: String,
     pub preset: String,
     pub client_id: String,
-    pub client_secret: String,
+    pub client_secret: sc_error::Secret<String>,
     pub authorization_url: String,
     pub token_url: String,
     pub userinfo_url: String,
@@ -336,7 +481,7 @@ pub struct OAuthProvider {
     pub admin_login: bool,
     pub app_login: bool,
     pub create_users: bool,
-    pub new_user_role: u8,
+    pub new_user_role: Role,
     /// [`PROVIDER_TRUST_EMAILS`].
     pub trust_emails: bool,
 }
@@ -430,10 +575,10 @@ impl OAuthProvider {
             None | Some(Json::Null) => DEFAULT_NEW_USER_ROLE,
             Some(value) => value
                 .as_u64()
-                .and_then(|r| u8::try_from(r).ok())
+                .and_then(|r| Role::try_from(r).ok())
                 // Never the administrator's: an account anybody with an
                 // address at the provider can make must not be one.
-                .filter(|r| (2..=100).contains(r))
+                .filter(|r| !r.is_admin())
                 .ok_or_else(|| {
                     Error::invalid(format!(
                         "identity provider `{name}`: `{PROVIDER_NEW_USER_ROLE}` must be a role \
@@ -444,7 +589,7 @@ impl OAuthProvider {
         Ok(OAuthProvider {
             label: text(PROVIDER_LABEL),
             client_id: text(PROVIDER_CLIENT_ID),
-            client_secret: text(PROVIDER_CLIENT_SECRET),
+            client_secret: text(PROVIDER_CLIENT_SECRET).into(),
             name,
             preset,
             authorization_url,
@@ -520,7 +665,48 @@ mod tests {
         let section = authentication_section();
         assert_eq!(section.name, "authentication");
         let keys: Vec<&str> = section.fields.iter().map(|def| def.key()).collect();
-        assert_eq!(keys, [SHARED_SESSION_COOKIE, SESSION_TTL_HOURS]);
+        assert_eq!(
+            keys,
+            [
+                SHARED_SESSION_COOKIE,
+                SESSION_TTL_HOURS,
+                PERSISTENT_SESSION_COOKIE,
+                SECOND_FACTOR_FOR_IDENTITY_PROVIDERS,
+                SECOND_FACTOR_ISSUER,
+            ]
+        );
+    }
+
+    /// An identity provider's sign-in is asked for a second factor only when
+    /// the setting is stored as `true`.
+    #[test]
+    fn identity_providers_skip_the_second_factor_unless_told_not_to() {
+        assert!(!second_factor_for_identity_providers_from(&Attrs::new()));
+        assert!(!second_factor_for_identity_providers_from(&attrs(
+            json!({ SECOND_FACTOR_FOR_IDENTITY_PROVIDERS: "yes" })
+        )));
+        assert!(second_factor_for_identity_providers_from(&attrs(
+            json!({ SECOND_FACTOR_FOR_IDENTITY_PROVIDERS: true })
+        )));
+    }
+
+    /// On when nothing is stored, and off only for a stored `false`.
+    #[test]
+    fn the_session_cookie_is_persistent_unless_turned_off() {
+        assert!(persistent_session_cookie_from(&Attrs::new()));
+        assert!(persistent_session_cookie_from(&attrs(
+            json!({ PERSISTENT_SESSION_COOKIE: true })
+        )));
+        assert!(!persistent_session_cookie_from(&attrs(
+            json!({ PERSISTENT_SESSION_COOKIE: false })
+        )));
+        assert_eq!(
+            session_policy_from(&attrs(
+                json!({ SESSION_TTL_HOURS: 48, PERSISTENT_SESSION_COOKIE: false })
+            ))
+            .unwrap(),
+            (48, false)
+        );
     }
 
     /// Off unless it is stored as `true`: a value that is not a boolean must

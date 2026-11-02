@@ -34,18 +34,17 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, he
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
 use chrono::{DateTime, Utc};
-use sc_auth::ROLE_PUBLIC;
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
-use sc_module::{RouteCaller, RouteRequest, WEBHOOK_MAX_BODY, WebhookRequest};
+use sc_module::{RouteRequest, WEBHOOK_MAX_BODY, WebhookRequest};
 use serde_json::{Value as Json, json};
 
-use crate::backup::schedule::{Frequency, load_schedules, load_statuses};
 use crate::modules::RouteLookup;
 use crate::router::{
     AppState, Resolved, json_error, parse_query, request_client_ip, resolve_app, session_user,
 };
 use crate::security::AnonymousCaller;
+use sc_backup::schedule::{Frequency, load_schedules, load_statuses};
 
 /// The route.
 pub const ROUTE: &str = "/_feldspar/routes/{module}/{*path}";
@@ -189,11 +188,8 @@ async fn route_caller(
     jar: &CookieJar,
     headers: &HeaderMap,
     anonymous: bool,
-) -> std::result::Result<RouteCaller, Box<Response>> {
-    let nobody = RouteCaller {
-        role: ROLE_PUBLIC,
-        user: None,
-    };
+) -> std::result::Result<sc_catalog::Principal, Box<Response>> {
+    let nobody = sc_access::principal_of(None);
     if anonymous {
         return Ok(nobody);
     }
@@ -205,7 +201,7 @@ async fn route_caller(
             )));
         };
         return match sc_auth::authenticate_route_token(catalog, &token).await {
-            Ok(caller) => Ok(caller_of(&caller.user)),
+            Ok(caller) => Ok(sc_access::principal_of(Some(&caller.user))),
             Err(e) => Err(Box::new(json_error(
                 StatusCode::UNAUTHORIZED,
                 e.to_string(),
@@ -214,23 +210,7 @@ async fn route_caller(
     }
     Ok(session_user(state, jar)
         .await?
-        .map_or(nobody, |user| caller_of(&user)))
-}
-
-/// A signed-in user as a route's caller: the role, and the row a write's
-/// caller carries — its columns, with `id` and `role`.
-fn caller_of(user: &sc_auth::User) -> RouteCaller {
-    let mut fields: serde_json::Map<String, Json> = user
-        .extra
-        .iter()
-        .map(|(k, v)| (k.clone(), sc_types::value_to_json(v)))
-        .collect();
-    fields.insert("id".to_owned(), json!(user.id));
-    fields.insert("role".to_owned(), json!(user.role));
-    RouteCaller {
-        role: user.role,
-        user: Some(Json::Object(fields)),
-    }
+        .map_or(nobody, |user| sc_access::principal_of(Some(&user))))
 }
 
 /// Whether `request` is a `POST` to a module route that declared `noCsrf` —
@@ -309,7 +289,7 @@ pub(crate) struct SystemFacts<'a> {
 }
 
 #[async_trait::async_trait]
-impl sc_module::SystemAsks for SystemFacts<'_> {
+impl sc_module::Ask for SystemFacts<'_> {
     async fn ask(&self, plan: Json) -> Result<Json> {
         match plan.get("op").and_then(Json::as_str).unwrap_or_default() {
             "fs_size" => fs_size(self.data_dir),
@@ -355,34 +335,17 @@ impl sc_module::SystemAsks for SystemFacts<'_> {
 }
 
 /// `systeminformation`'s `fsSize()`: one entry, the filesystem `dir` is on.
-#[cfg(unix)]
 fn fs_size(dir: &Path) -> Result<Json> {
-    use std::os::unix::ffi::OsStrExt;
-    let path = std::ffi::CString::new(dir.as_os_str().as_bytes())
-        .map_err(|_| Error::invalid("the data directory's path has a NUL in it"))?;
-    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: `path` is a NUL-terminated string that outlives the call, and
-    // `stat` is written by `statvfs` before it is read, which only happens when
-    // the call succeeded.
-    let failed = unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } != 0;
-    if failed {
-        return Err(Error::config(format!(
-            "the size of the filesystem holding {} could not be read: {}",
-            dir.display(),
-            std::io::Error::last_os_error()
-        )));
-    }
-    // SAFETY: `statvfs` succeeded, so it filled `stat`.
-    let stat = unsafe { stat.assume_init() };
-    // The field types differ between platforms, hence the casts.
-    #[allow(clippy::unnecessary_cast)]
-    let block = (stat.f_frsize as u64).max(1);
-    #[allow(clippy::unnecessary_cast)]
-    let (blocks, free, available) = (
-        stat.f_blocks as u64 * block,
-        stat.f_bfree as u64 * block,
-        stat.f_bavail as u64 * block,
-    );
+    let crate::system::FsSize {
+        total: blocks,
+        free,
+        available,
+    } = crate::system::filesystem_size(dir).map_err(|e| {
+        Error::config(format!(
+            "the size of the filesystem holding {} could not be read: {e}",
+            dir.display()
+        ))
+    })?;
     let used = blocks.saturating_sub(free);
     // `df`'s `Use%`: used over what a user could have, which excludes the
     // blocks reserved for root.
@@ -404,11 +367,6 @@ fn fs_size(dir: &Path) -> Result<Json> {
     }]))
 }
 
-#[cfg(not(unix))]
-fn fs_size(_dir: &Path) -> Result<Json> {
-    Err(Error::config("filesystem sizes are read on Unix only"))
-}
-
 /// `/proc/meminfo`'s fields, in bytes.
 fn meminfo() -> Result<std::collections::HashMap<String, u64>> {
     let text = std::fs::read_to_string("/proc/meminfo")
@@ -416,7 +374,7 @@ fn meminfo() -> Result<std::collections::HashMap<String, u64>> {
     Ok(parse_meminfo(&text))
 }
 
-fn parse_meminfo(text: &str) -> std::collections::HashMap<String, u64> {
+pub(crate) fn parse_meminfo(text: &str) -> std::collections::HashMap<String, u64> {
     text.lines()
         .filter_map(|line| {
             let (key, rest) = line.split_once(':')?;

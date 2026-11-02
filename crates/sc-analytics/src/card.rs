@@ -1,4 +1,4 @@
-//! Stat cards (analytics TODO A6.2): one number from a dataset, as a
+//! Stat cards: one number from a dataset, as a
 //! dashboard shows it.
 //!
 //! A card is an aggregate of a column — the number of incidents, the mean
@@ -473,7 +473,7 @@ pub async fn render_card(
     render_card_in(catalog, caller, card, &Scope::none()).await
 }
 
-/// [`render_card`] on a dashboard whose conditions apply (A6.4): they narrow
+/// [`render_card`] on a dashboard whose conditions apply: they narrow
 /// the rows as the card's own filter does, and a comparison with the value
 /// **unfiltered** leaves both out — "34% of all" is a share of every row.
 pub async fn render_card_in(
@@ -497,7 +497,7 @@ pub async fn render_card_in(
     filters.extend(scope.operations(card.dataset));
     let all = match card_rows(catalog, caller, &def, &[]).await? {
         Ok(rows) => rows,
-        Err(sentence) => return Ok(RenderedCard::refuse(sentence)),
+        Err(sentence) => return Ok(RenderedCard::refuse(sentence.message())),
     };
     let problems = card.validate(&all.shape);
     if let Some(first) = problems.first() {
@@ -517,8 +517,9 @@ pub async fn render_card_in(
                 let schema = Schema::of_catalog(catalog)?;
                 let library = sc_dataset::load_library(catalog).await?;
                 return Ok(RenderedCard::refuse(
-                    filter_failure(&schema, &library, &def)
-                        .unwrap_or_else(|| format!("the card's filter does not read: {sentence}")),
+                    filter_failure(&schema, &library, &def).unwrap_or_else(|| {
+                        format!("the card's filter does not read: {}", sentence.message())
+                    }),
                 ));
             }
         }
@@ -539,7 +540,7 @@ async fn card_rows(
     caller: &Caller,
     def: &DatasetDef,
     extra: &[Operation],
-) -> Result<std::result::Result<PlotRows, String>> {
+) -> Result<Result<PlotRows>> {
     let schema = Schema::of_catalog(catalog)?;
     let library = sc_dataset::load_library(catalog).await?;
     let mut def = def.clone();

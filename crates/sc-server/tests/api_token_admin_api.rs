@@ -19,12 +19,10 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
-use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
-use sc_server::{AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router};
-use sc_test_harness::TestDb;
+use sc_server::{AppMounts, ServerConfig, admin_handlers, build_router};
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -87,21 +85,7 @@ impl Client {
 
 /// A router over the admin endpoints with the first admin signed in.
 async fn setup() -> sc_error::Result<(Client, TestDb)> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
     sc_catalog::bootstrap_field_meta(&catalog).await?;
@@ -165,8 +149,10 @@ async fn a_token_is_minted_once_listed_without_its_secret_and_revoked_in_place()
     // records what was agreed to; a sparse one would re-read itself against
     // tomorrow's defaults.
     let grants = minted["token"]["grants"].as_object().unwrap();
-    // Eight flags and `allow_all`, which the body did not ask for.
-    assert_eq!(grants.len(), 9, "{grants:?}");
+    // Eight flags, `allow_all`, and the checklists grant, which the body did
+    // not ask for either — written down as `append`, never `full`.
+    assert_eq!(grants.len(), 10, "{grants:?}");
+    assert_eq!(grants["checklists"], json!("append"));
     assert_eq!(grants["allow_all"], json!(false));
     assert_eq!(grants["allow_create"], json!(true)); // the default, written down
     assert_eq!(grants["allow_drop"], json!(false));

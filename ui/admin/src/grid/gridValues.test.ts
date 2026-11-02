@@ -10,7 +10,17 @@
 
 import { describe, expect, it } from "vitest";
 
-import { display, isBoolType, isNumericType, parseCell, sameValue } from "./gridValues";
+import {
+  display,
+  displayTemporal,
+  fromPicker,
+  isBoolType,
+  isNumericType,
+  parseCell,
+  pickerType,
+  sameValue,
+  toPicker,
+} from "./gridValues";
 
 describe("display", () => {
   it("shows an empty cell for a missing value rather than the word for it", () => {
@@ -78,5 +88,50 @@ describe("kinds and sameness", () => {
     expect(sameValue(null, undefined)).toBe(true);
     expect(sameValue(null, "")).toBe(false);
     expect(sameValue({ a: 1 }, { a: 1 })).toBe(true);
+  });
+});
+
+describe("date and time pickers", () => {
+  it("edits each temporal type through its own picker, and nothing else through one", () => {
+    expect(pickerType("date")).toBe("date");
+    expect(pickerType("time")).toBe("time");
+    expect(pickerType("timestamp")).toBe("datetime-local");
+    expect(pickerType("text")).toBeNull();
+    expect(pickerType("int")).toBeNull();
+  });
+
+  it("opens a date and a time on what the wire holds", () => {
+    expect(toPicker("date", "2024-05-01")).toBe("2024-05-01");
+    expect(toPicker("time", "10:30:00")).toBe("10:30:00");
+    expect(toPicker("time", "10:30:15.250")).toBe("10:30:15");
+    expect(toPicker("time", "10:30")).toBe("10:30:00");
+    expect(toPicker("date", null)).toBe("");
+    // A value the picker cannot hold opens it empty rather than on a wrong date.
+    expect(toPicker("date", "soon")).toBe("");
+  });
+
+  it("opens a timestamp on its local reading, and turns that back into the same instant", () => {
+    const stored = "2024-05-01T10:00:00+00:00";
+    const reading = toPicker("timestamp", stored);
+    expect(reading).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    // Whatever zone the test runs in, the reading means the stored instant.
+    expect(new Date(fromPicker("timestamp", reading) as string).getTime()).toBe(
+      new Date(stored).getTime(),
+    );
+    expect(displayTemporal("timestamp", stored)).toBe(reading.replace("T", " "));
+  });
+
+  it("sends a cleared picker as null and a minute-only time with its seconds", () => {
+    expect(fromPicker("date", "")).toBeNull();
+    expect(fromPicker("timestamp", "  ")).toBeNull();
+    expect(fromPicker("date", "2024-05-01")).toBe("2024-05-01");
+    expect(fromPicker("time", "09:15")).toBe("09:15:00");
+    expect(fromPicker("time", "09:15:30")).toBe("09:15:30");
+  });
+
+  it("shows a date and a time as themselves", () => {
+    expect(displayTemporal("date", "2024-05-01")).toBe("2024-05-01");
+    expect(displayTemporal("time", "10:30:00")).toBe("10:30:00");
+    expect(displayTemporal("text", "x")).toBe("x");
   });
 });

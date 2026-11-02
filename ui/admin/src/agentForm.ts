@@ -168,7 +168,7 @@ export function agentAttributes(
 }
 
 /** The `coding` setting that grants the shell, and the first of the group of
- * settings that only matter under it (`sc_core_traits::CFG_MAY_USE_SHELL`). */
+ * settings that only matter under it (`sc_agent_builtins::CFG_MAY_USE_SHELL`). */
 const MAY_USE_SHELL = "may_use_shell";
 /** Where the shell's commands run (`CFG_SHELL_SANDBOX`). */
 const SHELL_SANDBOX = "shell_sandbox";

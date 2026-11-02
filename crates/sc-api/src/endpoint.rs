@@ -15,6 +15,7 @@
 use crate::mcp::{Area, Grant};
 use crate::resource::ResourceModel;
 use crate::schema::{TypeSchema, ValueType};
+use sc_types::Role;
 use serde::{Deserialize, Serialize};
 
 /// An HTTP method. A small self-contained enum so the endpoint model stays free
@@ -173,27 +174,27 @@ pub enum AuthRequirement {
     LoggedIn,
     /// A caller whose role is at least as privileged as `min_role` (i.e. a role
     /// number `<= min_role`). A caller nobody is logged in as holds the public
-    /// role, so `MinRole(100)` admits everybody — see [`admits`](Self::admits).
-    MinRole(u8),
+    /// role, so `MinRole(Role::PUBLIC)` admits everybody — see [`admits`](Self::admits).
+    MinRole(Role),
 }
 
 impl AuthRequirement {
     /// Requires the administrator role (role `1`).
     pub fn admin() -> AuthRequirement {
-        AuthRequirement::MinRole(sc_auth::ROLE_ADMIN)
+        AuthRequirement::MinRole(Role::ADMIN)
     }
 
     /// Whether `user` — `None` for a caller nobody is logged in as — passes.
     ///
     /// The one statement of the rule every surface enforces. An anonymous
     /// caller is not refused a role floor for being anonymous: they hold
-    /// [`ROLE_PUBLIC`](sc_auth::ROLE_PUBLIC), so they pass a floor at the
+    /// [`Role::PUBLIC`](Role::PUBLIC), so they pass a floor at the
     /// public role and fail every other one.
     pub fn admits(&self, user: Option<&sc_auth::User>) -> bool {
         match self {
             AuthRequirement::Public => true,
             AuthRequirement::LoggedIn => user.is_some(),
-            AuthRequirement::MinRole(min) => user.map_or(sc_auth::ROLE_PUBLIC, |u| u.role) <= *min,
+            AuthRequirement::MinRole(min) => (user.map_or(Role::PUBLIC, |u| u.role())).meets(*min),
         }
     }
 
@@ -206,7 +207,7 @@ impl AuthRequirement {
     /// it marks the auth plumbing (`login`, `signup`, …) and the endpoints whose
     /// handler decides for itself who the caller is, and those keep the check.
     pub fn is_public_role(&self) -> bool {
-        matches!(self, AuthRequirement::MinRole(min) if *min >= sc_auth::ROLE_PUBLIC)
+        matches!(self, AuthRequirement::MinRole(min) if min.is_public())
     }
 }
 
@@ -362,7 +363,7 @@ pub struct McpTag {
     /// as a tool result with the tools' output and the file/line/message
     /// diagnostics parsed out of it.
     ///
-    /// The same decision `sc_core_traits::build_application` already made, for
+    /// The same decision `sc_agent_builtins::build_application` already made, for
     /// the same reason — a model told only "the build failed" cannot fix
     /// anything, and a failed build is the most useful answer this tool ever
     /// returns. It is declared here rather than inferred because only a person

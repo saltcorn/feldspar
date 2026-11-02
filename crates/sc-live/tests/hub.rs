@@ -15,10 +15,11 @@
 //! - **a session end closes exactly that session's connections**, through the
 //!   session store's listener hook.
 
+use sc_types::Role;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sc_auth::{ROLE_ADMIN, SessionListener, SessionStore, User};
+use sc_auth::{SessionListener, SessionStore, User};
 use sc_live::{ConnectionInfo, Delivery, ErrorCode, LiveHub, LiveLimits};
 use sc_stream::testing::ScriptedProvider;
 use sc_stream::{
@@ -122,7 +123,10 @@ async fn the_replay_and_the_deliveries_meet_exactly() {
     // while elements are flowing through it.
     let (early, _early_queue) = hub.connect(info("blog", None, None)).unwrap();
     let (_early_sub, _) = early.attach(&running, None).await;
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    sc_test_harness::wait_until("elements to flow", Duration::from_secs(10), || {
+        running.counters().elements >= 4
+    })
+    .await;
 
     let (late, mut queue) = hub.connect(info("blog", None, None)).unwrap();
     let (_sub, replay) = late.attach(&running, None).await;
@@ -204,16 +208,16 @@ async fn a_sign_out_closes_that_sessions_connections_and_no_others() {
     let listener: Arc<dyn SessionListener> = hub.clone();
     store.add_listener(Arc::downgrade(&listener));
 
-    let alice = User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap();
-    let bob = User::new(Uuid::new_v4(), ROLE_ADMIN).unwrap();
+    let alice = User::new(Uuid::new_v4(), Role::ADMIN);
+    let bob = User::new(Uuid::new_v4(), Role::ADMIN);
     let alice_token = store.login(alice.clone()).await.unwrap();
     let bob_token = store.login(bob.clone()).await.unwrap();
 
     let (alice_conn, _) = hub
-        .connect(info("blog", Some(alice.id), Some(&alice_token)))
+        .connect(info("blog", Some(alice.id()), Some(&alice_token)))
         .unwrap();
     let (bob_conn, _) = hub
-        .connect(info("blog", Some(bob.id), Some(&bob_token)))
+        .connect(info("blog", Some(bob.id()), Some(&bob_token)))
         .unwrap();
     let mut alice_closed = alice_conn.close_signal();
     let mut bob_closed = bob_conn.close_signal();
@@ -231,7 +235,7 @@ async fn a_sign_out_closes_that_sessions_connections_and_no_others() {
     );
 
     // A forced sign-out of a user reaches every one of their connections.
-    store.end_user_sessions(bob.id).await.unwrap();
+    store.end_user_sessions(bob.id()).await.unwrap();
     let reason = tokio::time::timeout(Duration::from_secs(5), bob_closed.closed())
         .await
         .expect("bob's connection is closed when his sessions are ended");

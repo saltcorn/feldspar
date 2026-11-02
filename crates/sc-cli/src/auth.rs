@@ -46,10 +46,11 @@
 //! from it would be handed one anyway on its first page load; `curl` would not,
 //! and its first POST would 403.
 
+use sc_types::Role;
 use std::path::{Path, PathBuf};
 
 use chrono::Duration;
-use sc_auth::{DEFAULT_TTL_HOURS, ROLE_ADMIN, Role, User, create_session, list_roles};
+use sc_auth::{DEFAULT_TTL_HOURS, RoleDef, User, create_session, list_roles};
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use serde_json::{Value as Json, json};
@@ -211,8 +212,8 @@ fn new_csrf_token() -> String {
 /// whichever made the session.
 fn user_summary(user: &User) -> Json {
     json!({
-        "id": user.id.to_string(),
-        "role": user.role,
+        "id": user.id().to_string(),
+        "role": user.role(),
         "email": user.get(sc_auth::COL_EMAIL).and_then(|v| match v {
             sc_query::Value::Text(t) => Some(t.clone()),
             _ => None,
@@ -359,7 +360,7 @@ pub async fn resolve_user(catalog: &Catalog, selector: &UserSelector) -> Result<
             .await?
             .ok_or_else(|| Error::not_found(format!("no user with the email `{email}`"))),
         UserSelector::Admin => {
-            let role = role_by_number(catalog, ROLE_ADMIN).await?;
+            let role = role_by_number(catalog, Role::ADMIN).await?;
             first_holder(catalog, &role).await
         }
         UserSelector::Role(name) => {
@@ -371,13 +372,13 @@ pub async fn resolve_user(catalog: &Catalog, selector: &UserSelector) -> Result<
 
 /// The role `spec` names — by number (`1`) or by name (`admin`, any case) — or an
 /// error listing the roles there are.
-pub async fn resolve_role(catalog: &Catalog, spec: &str) -> Result<Role> {
+pub async fn resolve_role(catalog: &Catalog, spec: &str) -> Result<RoleDef> {
     match spec.trim().parse::<u8>() {
         Ok(number) => {
             let roles = list_roles(catalog).await?;
             roles
                 .iter()
-                .find(|r| r.role == number)
+                .find(|r| r.role.get() == number)
                 .cloned()
                 .ok_or_else(|| {
                     Error::not_found(format!(
@@ -391,7 +392,7 @@ pub async fn resolve_role(catalog: &Catalog, spec: &str) -> Result<Role> {
 }
 
 /// The role with this name, or an error listing the roles there are.
-async fn role_by_name(catalog: &Catalog, name: &str) -> Result<Role> {
+async fn role_by_name(catalog: &Catalog, name: &str) -> Result<RoleDef> {
     let roles = list_roles(catalog).await?;
     roles
         .iter()
@@ -407,7 +408,7 @@ async fn role_by_name(catalog: &Catalog, name: &str) -> Result<Role> {
 
 /// The role with this number — used for `--admin`, so its name is the
 /// installation's own even when an admin has renamed it.
-async fn role_by_number(catalog: &Catalog, number: u8) -> Result<Role> {
+async fn role_by_number(catalog: &Catalog, number: Role) -> Result<RoleDef> {
     list_roles(catalog)
         .await?
         .into_iter()
@@ -416,7 +417,7 @@ async fn role_by_number(catalog: &Catalog, number: u8) -> Result<Role> {
 }
 
 /// The first user holding `role`, or an error saying that nobody does.
-async fn first_holder(catalog: &Catalog, role: &Role) -> Result<User> {
+async fn first_holder(catalog: &Catalog, role: &RoleDef) -> Result<User> {
     sc_auth::first_user_with_role(catalog, role.role)
         .await?
         .ok_or_else(|| {
@@ -428,7 +429,7 @@ async fn first_holder(catalog: &Catalog, role: &Role) -> Result<User> {
 }
 
 /// The roles, as an error message lists them: `Admin (1), Public (100)`.
-pub fn role_list(roles: &[Role]) -> String {
+pub fn role_list(roles: &[RoleDef]) -> String {
     roles
         .iter()
         .map(|r| format!("{} ({})", r.name, r.role))
@@ -557,7 +558,7 @@ pub async fn session_for(
     target: &Target,
     user: &User,
 ) -> Result<(Vec<Cookie>, Json)> {
-    let token = create_session(catalog, user.id, Duration::hours(DEFAULT_TTL_HOURS)).await?;
+    let token = create_session(catalog, user.id(), Duration::hours(DEFAULT_TTL_HOURS)).await?;
     Ok((cookies_for(target, token), user_summary(user)))
 }
 
@@ -697,7 +698,10 @@ mod tests {
 
     #[test]
     fn the_roles_are_listed_the_way_an_error_shows_them() {
-        let roles = [Role::new(ROLE_ADMIN, "Admin"), Role::new(100, "Public")];
+        let roles = [
+            RoleDef::new(Role::ADMIN, "Admin"),
+            RoleDef::new(Role::PUBLIC, "Public"),
+        ];
         assert_eq!(role_list(&roles), "Admin (1), Public (100)");
     }
 

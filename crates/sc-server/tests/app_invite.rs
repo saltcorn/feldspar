@@ -20,6 +20,8 @@
 //!   powerful account.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,30 +31,30 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_action::{ActionRegistry, TriggerDispatcher};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef};
-use sc_auth::{Role, SessionStore, User, create_user, load_user_by_email, save_role};
-use sc_catalog::{AccessRules, Catalog, TableId, TableMeta, save_table_meta};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
-use sc_email::{Email, Mailer, RecordingMailer, parse_mailbox};
+use sc_auth::{RoleDef, SessionStore, User, create_user, load_user_by_email, save_role};
+use sc_catalog::{AccessRules, Catalog, TableMeta, save_table_meta};
+use sc_config::parse_mailbox;
+use sc_email::{Email, Mailer, RecordingMailer};
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, ServerConfig, admin_handlers,
-    build_router_with_apps,
+    AppMounts, MountedApp, SESSION_COOKIE, ServerConfig, admin_handlers, build_router_with_apps,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const BASE_DOMAIN: &str = "example.com";
 const THERAPISTS: &str = "therapists.example.com";
 const PATIENTS: &str = "patients.example.com";
-const ROLE_THERAPIST: u8 = 40;
-const ROLE_PATIENT: u8 = 80;
+const ROLE_THERAPIST: Role = Role::of(40);
+const ROLE_PATIENT: Role = Role::of(80);
 
 /// A cookie-carrying client addressing one host, echoing CSRF on mutations.
 struct Client {
     router: Router,
     host: String,
     cookies: HashMap<String, String>,
+    /// The last response's `Set-Cookie` lines, whole.
+    set_cookie: Vec<String>,
 }
 
 impl Client {
@@ -61,6 +63,7 @@ impl Client {
             router: router.clone(),
             host: host.to_owned(),
             cookies: HashMap::new(),
+            set_cookie: Vec::new(),
         };
         // Load the SPA first: that is what hands a browser its CSRF cookie.
         client.send("GET", "/", None).await;
@@ -95,6 +98,12 @@ impl Client {
         };
         let response = self.router.clone().oneshot(request).await.unwrap();
         let status = response.status();
+        self.set_cookie = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|raw| raw.to_str().unwrap_or("").to_owned())
+            .collect();
         for raw in response.headers().get_all(header::SET_COOKIE) {
             let pair = raw.to_str().unwrap_or("").split(';').next().unwrap_or("");
             if let Some((name, value)) = pair.split_once('=') {
@@ -121,7 +130,7 @@ impl Client {
 fn app(name: &str, subdomain: &str, api: ApiConfig, tables: &[&str]) -> Application {
     let mut app = Application::new(name, subdomain, FrameworkRef::new("code")).with_api(api);
     for table in tables {
-        app = app.with_table(TableId((*table).to_owned()));
+        app = app.with_table((*table).to_owned());
     }
     app
 }
@@ -135,26 +144,13 @@ struct Fixture {
 }
 
 async fn setup() -> sc_error::Result<Fixture> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$;",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
-    save_role(&catalog, &Role::new(ROLE_THERAPIST, "Therapist")).await?;
-    save_role(&catalog, &Role::new(ROLE_PATIENT, "Patient")).await?;
-    save_role(&catalog, &Role::new(90, "Former patient")).await?;
-    let admin = create_user(&catalog, "admin@example.com", "admin-pw", 1).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_THERAPIST, "Therapist")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_PATIENT, "Patient")).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(90), "Former patient")).await?;
+    let admin = create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
     create_user(&catalog, "ther@example.com", "ther-pw", ROLE_THERAPIST).await?;
     create_user(
         &catalog,
@@ -287,7 +283,7 @@ async fn a_therapist_invites_a_patient_into_the_patients_app() -> sc_error::Resu
     let pat = load_user_by_email(&fx.catalog, "pat@example.com")
         .await?
         .unwrap();
-    assert_eq!(pat.role, ROLE_PATIENT);
+    assert_eq!(pat.role(), ROLE_PATIENT);
     let mut patient = Client::new(&fx.router, PATIENTS).await;
     assert_eq!(
         patient.login("pat@example.com", "").await,
@@ -313,6 +309,13 @@ async fn a_therapist_invites_a_patient_into_the_patients_app() -> sc_error::Resu
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["email"], json!("pat@example.com"));
+    // A link's sign-in outlives the browser as a password's does (TODO A1.1).
+    let session = patient
+        .set_cookie
+        .iter()
+        .find(|line| line.starts_with(&format!("{SESSION_COOKIE}=")))
+        .expect("a session cookie");
+    assert!(session.contains("Max-Age="), "{session}");
     let (status, me) = patient.send("GET", "/api/whoami", None).await;
     assert_eq!(status, StatusCode::OK, "signed in by the same response");
     assert_eq!(me["email"], json!("pat@example.com"));
@@ -353,12 +356,12 @@ async fn an_invitation_hands_out_no_power_and_links_nowhere_else() -> sc_error::
         ther.login("ther@example.com", "ther-pw").await,
         StatusCode::OK
     );
-    let invite = |email: &str, role: u8, app: &str| {
+    let invite = |email: &str, role: Role, app: &str| {
         Some(json!({ "email": email, "role": role, "app": app }))
     };
 
     // Not the inviter's own role, and not a more powerful one.
-    for role in [ROLE_THERAPIST, 1] {
+    for role in [ROLE_THERAPIST, Role::ADMIN] {
         let (status, body) = ther
             .send(
                 "POST",
@@ -370,7 +373,11 @@ async fn an_invitation_hands_out_no_power_and_links_nowhere_else() -> sc_error::
     }
     // Only to an application this server serves.
     let (status, body) = ther
-        .send("POST", "/api/invite", invite("x@example.com", 80, "evil"))
+        .send(
+            "POST",
+            "/api/invite",
+            invite("x@example.com", Role::of(80), "evil"),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     // A message without the link is refused before any account exists.
@@ -412,7 +419,7 @@ async fn an_invitation_hands_out_no_power_and_links_nowhere_else() -> sc_error::
         .send(
             "POST",
             "/api/invite",
-            invite("z@example.com", 90, "patients"),
+            invite("z@example.com", Role::of(90), "patients"),
         )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -425,7 +432,7 @@ async fn an_invitation_hands_out_no_power_and_links_nowhere_else() -> sc_error::
         .send(
             "POST",
             "/api/invite",
-            invite("z@example.com", 90, "patients"),
+            invite("z@example.com", Role::of(90), "patients"),
         )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -631,8 +638,8 @@ async fn the_users_table_shows_no_hash_and_hands_out_no_power() -> sc_error::Res
     }
 
     // Inserts: never a hash, never a role as powerful as the caller's.
-    let new = |role: u8| json!({ "id": uuid::Uuid::new_v4().to_string(), "email": format!("n{role}@example.com"), "role": role });
-    for role in [1, ROLE_THERAPIST] {
+    let new = |role: Role| json!({ "id": uuid::Uuid::new_v4().to_string(), "email": format!("n{role}@example.com"), "role": role });
+    for role in [Role::ADMIN, ROLE_THERAPIST] {
         let (status, body) = client.send("POST", "/api/users", Some(new(role))).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "role {role}: {body}");
     }
@@ -650,19 +657,19 @@ async fn the_users_table_shows_no_hash_and_hands_out_no_power() -> sc_error::Res
     // caller's, no; a peer's or an admin's account, not at all.
     let path = |id: uuid::Uuid| format!("/api/users/{id}");
     let (status, body) = client
-        .send("PUT", &path(pat.id), Some(json!({ "role": 90 })))
+        .send("PUT", &path(pat.id()), Some(json!({ "role": 90 })))
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body.get("password_hash").is_none());
     let (status, _) = client
         .send(
             "PUT",
-            &path(pat.id),
+            &path(pat.id()),
             Some(json!({ "role": ROLE_THERAPIST })),
         )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    for victim in [other.id, fx.admin.id] {
+    for victim in [other.id(), fx.admin.id()] {
         let (status, _) = client
             .send("PUT", &path(victim), Some(json!({ "language": "fr" })))
             .await;
@@ -673,7 +680,7 @@ async fn the_users_table_shows_no_hash_and_hands_out_no_power() -> sc_error::Res
     // An account's email is an admin's to change, even a weaker one's — else
     // a reset link for it would come to the caller (security review 2026-10
     // #8). Refused whoever the row is, so it says nothing about who exists.
-    for victim in [pat.id, ther.id, other.id] {
+    for victim in [pat.id(), ther.id(), other.id()] {
         let (status, _) = client
             .send(
                 "PUT",
@@ -687,17 +694,21 @@ async fn the_users_table_shows_no_hash_and_hands_out_no_power() -> sc_error::Res
     let (status, _) = client
         .send(
             "PUT",
-            &path(ther.id),
+            &path(ther.id()),
             Some(json!({ "role": ROLE_THERAPIST })),
         )
         .await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = client
-        .send("PUT", &path(ther.id), Some(json!({ "role": 1 })))
+        .send("PUT", &path(ther.id()), Some(json!({ "role": 1 })))
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) = client
-        .send("PUT", &path(pat.id), Some(json!({ "password_hash": "x" })))
+        .send(
+            "PUT",
+            &path(pat.id()),
+            Some(json!({ "password_hash": "x" })),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
@@ -705,9 +716,9 @@ async fn the_users_table_shows_no_hash_and_hands_out_no_power() -> sc_error::Res
     let admin = load_user_by_email(&fx.catalog, "admin@example.com")
         .await?
         .unwrap();
-    assert_eq!(admin.role, 1);
-    let other = sc_auth::load_user(&fx.catalog, other.id).await?.unwrap();
-    assert_eq!(other.role, ROLE_THERAPIST);
+    assert_eq!(admin.role(), Role::ADMIN);
+    let other = sc_auth::load_user(&fx.catalog, other.id()).await?.unwrap();
+    assert_eq!(other.role(), ROLE_THERAPIST);
     assert!(
         load_user_by_email(&fx.catalog, "mine@example.com")
             .await?

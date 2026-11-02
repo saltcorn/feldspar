@@ -504,13 +504,6 @@ pub fn coverage(catalog: &Catalog, keys: &[String]) -> Coverage {
     }
 }
 
-// The translator over a configured LLM provider (decision D9) lives in
-// `sc-server`, because both callers of it are above that crate: this command and
-// the Translations screen's **Translate missing** button must fill a catalogue
-// the same way, and two implementations of one prompt would drift on the first
-// fix to either.
-pub use sc_server::{LlmTranslator, parse_answer};
-
 /// A one-line summary of what a catalogue holds for a key, for `extract --domain`
 /// output and for the Translations screen's future use.
 pub fn preview(message: &Message) -> String {

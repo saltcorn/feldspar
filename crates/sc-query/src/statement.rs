@@ -46,9 +46,14 @@ pub enum Statement {
     /// admin's `:name` into them — so rendering appends the binds without
     /// renumbering. That is also why a `Raw` is a **top-level** statement and
     /// never nested inside another: there is nothing to renumber against.
+    ///
+    /// The text is a [`TrustedSql`], which only an admin-authored definition
+    /// and the program's own text make, and a `Raw` is never deserialised:
+    /// nothing read off a wire or out of a row becomes one.
+    #[serde(skip_deserializing)]
     Raw {
         /// The SQL text, with this dialect's placeholders already in it.
-        sql: String,
+        sql: TrustedSql,
         /// The bind values the placeholders refer to, in placeholder order.
         binds: Vec<Value>,
         /// The backend's own name for the type each placeholder is to be sent
@@ -70,7 +75,7 @@ impl Statement {
     /// A [`Raw`](Statement::Raw) statement whose parameter types the backend
     /// infers. Read that variant's documentation before calling this: `sql` must
     /// be admin-authored, never assembled from caller input.
-    pub fn raw(sql: impl Into<String>, binds: Vec<Value>) -> Statement {
+    pub fn raw(sql: impl Into<TrustedSql>, binds: Vec<Value>) -> Statement {
         Statement::Raw {
             sql: sql.into(),
             binds,
@@ -81,7 +86,7 @@ impl Statement {
     /// [`raw`](Statement::raw) with each placeholder's type stated — see
     /// [`param_types`](Statement::Raw::param_types).
     pub fn raw_typed(
-        sql: impl Into<String>,
+        sql: impl Into<TrustedSql>,
         binds: Vec<Value>,
         param_types: Vec<String>,
     ) -> Statement {
@@ -90,6 +95,48 @@ impl Statement {
             binds,
             param_types,
         }
+    }
+}
+
+/// The text of a [`Raw`](Statement::Raw) statement: SQL that **no caller
+/// wrote** (code-quality review §4.6, TODO-code-quality Q4.6).
+///
+/// Three ways to make one, each a promise the type cannot check and each
+/// greppable:
+///
+/// - a `&'static str` (`From`), the program's own literal;
+/// - [`TrustedSql::admin_authored`]: a custom SQL query (§13.4) or a code
+///   body's `db.sql()` — server-side configuration an administrator typed,
+///   whose caller's values arrive as binds;
+/// - [`TrustedSql::composed`]: SQL this program assembles from its own text
+///   and identifiers it quoted itself (a table's name, the change log's), for
+///   the statements the AST does not express. Never a value: values are binds.
+///
+/// Serialises as the text; never deserialised.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct TrustedSql(String);
+
+impl TrustedSql {
+    /// SQL an administrator authored: a custom query's text, a code body's.
+    pub fn admin_authored(sql: impl Into<String>) -> TrustedSql {
+        TrustedSql(sql.into())
+    }
+
+    /// SQL this program composed from its own text and identifiers it quoted.
+    pub fn composed(sql: impl Into<String>) -> TrustedSql {
+        TrustedSql(sql.into())
+    }
+
+    /// The text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&'static str> for TrustedSql {
+    fn from(sql: &'static str) -> TrustedSql {
+        TrustedSql(sql.to_owned())
     }
 }
 

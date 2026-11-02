@@ -27,13 +27,15 @@ pub fn app_source_location(app: &Application) -> Result<(String, String)> {
 /// The absolute directory `dir` of the connected store `store`.
 pub fn store_dir(catalog: &Catalog, store: &str, dir: &str) -> Result<PathBuf> {
     let connected = catalog
-        .file_store(store)?
+        .file_store(store, crate::APP_SOURCES)?
         .ok_or_else(|| Error::not_found(format!("file store `{store}` is not connected")))?;
-    connected.local_path(dir)?.ok_or_else(|| {
-        Error::invalid(format!(
-            "file store `{store}` is not on this machine's disk, so it has no project directory"
-        ))
-    })
+    connected
+        .local_path(&sc_files::StorePath::parse(dir)?)?
+        .ok_or_else(|| {
+            Error::invalid(format!(
+                "file store `{store}` is not on this machine's disk, so it has no project directory"
+            ))
+        })
 }
 
 /// The absolute project directory of `app`, through its connected store.

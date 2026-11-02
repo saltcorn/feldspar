@@ -20,13 +20,14 @@
 //! reaches them is what each subscriber is sent, `{op, key, row}`, and the
 //! stream's own element — with `old` — is read off its broadcast channel.
 
+use sc_types::Role;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sc_api::rows;
-use sc_auth::{ROLE_ADMIN, User};
+use sc_access::rows;
+use sc_auth::User;
 use sc_catalog::{Catalog, DataField, LIVE_EVENTS, TableEvents, WriteOp};
 use sc_db::{
     DatabaseDriver, DbCapabilities, DescribedColumn, PhysicalTable, RowStream, SchemaChange,
@@ -182,7 +183,7 @@ fn anonymous() -> ConnectionInfo {
 
 /// An admin, who reads every row, and so is sent every change.
 fn admin() -> Option<User> {
-    Some(User::new(Uuid::from_u128(0xad), ROLE_ADMIN).expect("a role in range"))
+    Some(User::new(Uuid::from_u128(0xad), Role::ADMIN))
 }
 
 /// A subscription's filter and row access: every row of `catalog`'s tables.
@@ -242,10 +243,23 @@ async fn only_a_subscription_makes_a_write_observed() -> Result<()> {
 async fn an_unobserved_update_reads_no_pre_image_and_an_observed_one_reads_one() -> Result<()> {
     let f = fixture().await?;
     let cards = f.catalog.require("cards")?;
-    rows::create_row(&f.catalog, &cards, &json!({ "id": 1, "title": "draft" })).await?;
+    rows::create_row(
+        &f.catalog,
+        &cards,
+        &json!({ "id": 1, "title": "draft" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
 
     f.card_reads.store(0, Ordering::SeqCst);
-    rows::update_row(&f.catalog, &cards, "1", &json!({ "title": "unwatched" })).await?;
+    rows::update_row(
+        &f.catalog,
+        &cards,
+        "1",
+        &json!({ "title": "unwatched" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert_eq!(
         f.card_reads.load(Ordering::SeqCst),
         0,
@@ -260,7 +274,14 @@ async fn an_unobserved_update_reads_no_pre_image_and_an_observed_one_reads_one()
     assert!(replay.is_empty(), "a table-changes stream replays nothing");
     let mut raw = f.cards.subscribe_elements().receiver;
     f.card_reads.store(0, Ordering::SeqCst);
-    rows::update_row(&f.catalog, &cards, "1", &json!({ "title": "watched" })).await?;
+    rows::update_row(
+        &f.catalog,
+        &cards,
+        "1",
+        &json!({ "title": "watched" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     assert_eq!(f.card_reads.load(Ordering::SeqCst), 1, "one pre-image read");
 
     // The stream's element carries both images…
@@ -279,13 +300,25 @@ async fn an_unobserved_update_reads_no_pre_image_and_an_observed_one_reads_one()
     assert_eq!(change.envelope.stream, "cards_live");
 
     // An insert carries no `old`; a delete is not a write this stream carries.
-    rows::create_row(&f.catalog, &cards, &json!({ "id": 2, "title": "new" })).await?;
+    rows::create_row(
+        &f.catalog,
+        &cards,
+        &json!({ "id": 2, "title": "new" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
     let element = raw.recv().await.expect("the stream's element");
     assert!(element.value.get("old").is_none(), "{}", element.value);
     let inserted = next(&mut queue).await;
     assert_eq!(inserted.envelope.value["op"], "insert");
     assert_eq!(inserted.envelope.value["row"]["id"], json!(2));
-    rows::delete_row(&f.catalog, &cards, "2").await?;
+    rows::delete_row(
+        &f.catalog,
+        &cards,
+        "2",
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
 
     drop(attached);
     f.card_reads.store(0, Ordering::SeqCst);
@@ -294,6 +327,7 @@ async fn an_unobserved_update_reads_no_pre_image_and_an_observed_one_reads_one()
         &cards,
         "1",
         &json!({ "title": "unwatched again" }),
+        sc_catalog::Unchecked::system("test"),
     )
     .await?;
     assert_eq!(
@@ -329,7 +363,13 @@ async fn the_write_hands_the_change_off_and_the_fan_out_delivers_it() -> Result<
     }
     let before = f.cards.counters().elements;
 
-    rows::create_row(&f.catalog, &cards, &json!({ "id": 9, "title": "hot" })).await?;
+    rows::create_row(
+        &f.catalog,
+        &cards,
+        &json!({ "id": 9, "title": "hot" }),
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?;
 
     assert_eq!(
         f.cards.counters().elements,

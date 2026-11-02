@@ -1,4 +1,4 @@
-//! Choosing the plot from what was dropped (analytics TODO A2.2): the "show
+//! Choosing the plot from what was dropped: the "show
 //! me" rules, which pick a mark and a stat from the types of the columns on the
 //! drop zones, and the gallery's presets, each a function from a dataset's
 //! shape (and what is already dropped) to a spec.
@@ -29,6 +29,7 @@
 //! `variable` goes on Color (or Wrap, when Color is taken).
 
 use sc_dataset::{ColType, Grain, StageShape};
+use sc_error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 use super::render::MAX_SAMPLE;
@@ -87,7 +88,7 @@ pub enum Preset {
     Heatmap,
     /// A line filled to zero.
     Area,
-    /// Every pair of several numbers, a scatter plot each (A2.11).
+    /// Every pair of several numbers, a scatter plot each.
     Splom,
     /// Several numbers, each row a line across one axis per number.
     Parallel,
@@ -95,7 +96,7 @@ pub enum Preset {
     Correlation,
     /// Counts by two categories, as tiles in proportion.
     Mosaic,
-    /// Points or regions on a map (A5.7): not a plot spec but a map spec,
+    /// Points or regions on a map: not a plot spec but a map spec,
     /// which `suggest_map` makes.
     Map,
 }
@@ -163,7 +164,7 @@ impl Preset {
     }
 
     /// The milestone that brings it, when it is not here yet. Every item is
-    /// here since the map arrived (A5.7); an item a later milestone brings is
+    /// here since the map arrived; an item a later milestone brings is
     /// named here until it does.
     pub fn arrives_in(self) -> Option<&'static str> {
         let _ = self;
@@ -228,12 +229,13 @@ fn kind_of(shape: &StageShape, f: &FieldDef) -> Kind {
 /// The spec for what is on the drop zones, drawn as `mark` when the mark
 /// palette chose one, or by the rules above when not. The sentence says what
 /// is missing when nothing can be drawn.
+#[allow(clippy::too_many_lines)]
 pub fn show_me(
     data: DataRef,
     shape: &StageShape,
     assignment: &Assignment,
     mark: Option<Mark>,
-) -> Result<PlotSpec, String> {
+) -> Result<PlotSpec> {
     let a = assignment;
     let mut fold = None;
     let mut color = a.color.clone();
@@ -249,17 +251,17 @@ pub fn show_me(
             } else if wrap.is_none() && a.row.is_none() && a.column.is_none() {
                 wrap = Some(variable);
             } else {
-                return Err(
-                    "several columns on Y are told apart by colour or by Wrap, and both are taken"
-                        .to_owned(),
-                );
+                return Err(Error::invalid(
+                    "several columns on Y are told apart by colour or by Wrap, and both are taken",
+                ));
             }
             let value = FieldDef::of(f.value.clone());
             fold = Some(f);
             Some(value)
         }
     };
-    let shape = &super::validate::folded_shape(shape, fold.as_ref()).map_err(|p| p.join("; "))?;
+    let shape = &super::validate::folded_shape(shape, fold.as_ref())
+        .map_err(|p| Error::invalid(p.join("; ")))?;
     let mut x = a.x.clone();
     let mut y = y;
     let kx = x.as_ref().map(|f| kind_of(shape, f));
@@ -283,7 +285,7 @@ pub fn show_me(
 
     let (mark, stat) = match mark {
         None => match (kx, ky) {
-            (None, None) => return Err("drop a column on X or Y to draw a plot".to_owned()),
+            (None, None) => return Err(Error::invalid("drop a column on X or Y to draw a plot")),
             (Some(C), None) => {
                 x = binned(&x);
                 (Mark::Bar, Stat::Count)
@@ -315,7 +317,7 @@ pub fn show_me(
             match m {
                 Mark::Point | Mark::Line | Mark::Area | Mark::Bar => match (kx, ky) {
                     (None, None) => {
-                        return Err("drop a column on X or Y to draw a plot".to_owned());
+                        return Err(Error::invalid("drop a column on X or Y to draw a plot"));
                     }
                     (Some(C), None) => {
                         x = binned(&x);
@@ -349,14 +351,14 @@ pub fn show_me(
                         if kx == Some(C) && ky != Some(C) {
                             flip(&mut x, &mut y);
                         } else {
-                            return Err(format!(
+                            return Err(Error::invalid(format!(
                                 "{} need a number on Y",
                                 if m == Mark::Box {
                                     "box plots"
                                 } else {
                                     "a mean and its interval"
                                 }
-                            ));
+                            )));
                         }
                     }
                     if x.as_ref().map(|f| kind_of(shape, f)) == Some(C) {
@@ -371,7 +373,7 @@ pub fn show_me(
                 }
                 Mark::Rect => {
                     if x.is_none() || y.is_none() {
-                        return Err("a heatmap needs a column on both X and Y".to_owned());
+                        return Err(Error::invalid("a heatmap needs a column on both X and Y"));
                     }
                     if kx == Some(C) {
                         x = binned(&x);
@@ -391,17 +393,16 @@ pub fn show_me(
                             },
                         )
                     } else if color.is_some() {
-                        return Err(
-                            "a heatmap colours its cells by a number; take the category off Color"
-                                .to_owned(),
-                        );
+                        return Err(Error::invalid(
+                            "a heatmap colours its cells by a number; take the category off Color",
+                        ));
                     } else {
                         (m, Stat::Count)
                     }
                 }
                 Mark::Mosaic => {
                     if x.is_none() || y.is_none() {
-                        return Err("a mosaic needs a column on both X and Y".to_owned());
+                        return Err(Error::invalid("a mosaic needs a column on both X and Y"));
                     }
                     if kx == Some(C) {
                         x = binned(&x);
@@ -414,7 +415,7 @@ pub fn show_me(
                 }
                 Mark::Text => {
                     if x.is_none() && y.is_none() {
-                        return Err("drop a column on X or Y to draw a plot".to_owned());
+                        return Err(Error::invalid("drop a column on X or Y to draw a plot"));
                     }
                     if a.label.is_some() && x.is_some() && y.is_some() {
                         (m, Stat::Identity)
@@ -484,18 +485,17 @@ pub fn preset(
     data: DataRef,
     shape: &StageShape,
     current: &Assignment,
-) -> Result<(PlotSpec, Assignment), String> {
+) -> Result<(PlotSpec, Assignment)> {
     if let Some(m) = preset.arrives_in() {
-        return Err(format!(
+        return Err(Error::invalid(format!(
             "{} arrives with milestone {m}",
             preset.label().to_lowercase()
-        ));
+        )));
     }
     if preset == Preset::Map {
-        return Err(
-            "a map is drawn over a base map rather than as a plot; `suggestMap` makes it"
-                .to_owned(),
-        );
+        return Err(Error::invalid(
+            "a map is drawn over a base map rather than as a plot; `suggestMap` makes it",
+        ));
     }
     let mut a = current.clone();
     let pick = Picker::new(shape);
@@ -504,7 +504,8 @@ pub fn preset(
             .is_some_and(|f| shape.column(&f.field).is_some() && k.contains(&kind_of(shape, f)))
     };
     let first_y = a.y.first().cloned();
-    let need = |what: &str| format!("{} needs {what}", preset.label().to_lowercase());
+    let need =
+        |what: &str| Error::invalid(format!("{} needs {what}", preset.label().to_lowercase()));
     if preset.reshapes() {
         return reshaping(preset, data, shape, a, &pick);
     }
@@ -622,7 +623,7 @@ pub fn preset(
 /// correlation heatmap picks by itself; more can be dropped on Y.
 const PICKED_NUMBERS: usize = 4;
 
-/// The presets that reshape the data (A2.11): each builds its spec itself
+/// The presets that reshape the data: each builds its spec itself
 /// rather than through [`show_me`], over the number columns on Y (or X), or
 /// the first few of the dataset's when fewer than two are dropped.
 fn reshaping(
@@ -631,8 +632,9 @@ fn reshaping(
     shape: &StageShape,
     mut a: Assignment,
     pick: &Picker,
-) -> Result<(PlotSpec, Assignment), String> {
-    let need = |what: &str| format!("{} needs {what}", preset.label().to_lowercase());
+) -> Result<(PlotSpec, Assignment)> {
+    let need =
+        |what: &str| Error::invalid(format!("{} needs {what}", preset.label().to_lowercase()));
     let of_kind =
         |f: &FieldDef, k: Kind| shape.column(&f.field).is_some() && kind_of(shape, f) == k;
     if preset == Preset::Mosaic {
@@ -936,7 +938,9 @@ mod tests {
             "price"
         );
         assert_eq!(
-            show_me(data(), &shape(), &Assignment::default(), None).unwrap_err(),
+            show_me(data(), &shape(), &Assignment::default(), None)
+                .unwrap_err()
+                .message(),
             "drop a column on X or Y to draw a plot"
         );
     }
@@ -964,7 +968,8 @@ mod tests {
                 &on(Some("neighbourhood"), &["sold"]),
                 Some(Mark::Box)
             )
-            .unwrap_err(),
+            .unwrap_err()
+            .message(),
             "box plots need a number on Y"
         );
     }
@@ -1016,7 +1021,7 @@ mod tests {
         for p in Preset::ALL {
             let made = preset(p, data(), &s, &Assignment::default());
             if p == Preset::Map {
-                assert!(made.unwrap_err().contains("suggestMap"));
+                assert!(made.unwrap_err().message().contains("suggestMap"));
                 continue;
             }
             let (spec, _) = made.unwrap_or_else(|e| panic!("{p:?}: {e}"));
@@ -1049,7 +1054,7 @@ mod tests {
         );
         let items = gallery();
         assert_eq!(items.len(), 12);
-        // Every item can be picked since the map arrived (A5.7).
+        // Every item can be picked since the map arrived.
         assert!(items.iter().all(|i| i.available && i.arrives_in.is_none()));
     }
 }

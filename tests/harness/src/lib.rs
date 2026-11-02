@@ -49,8 +49,14 @@
 //! for the same reason: a test of the mail transport that never puts bytes on a
 //! socket is a test of a mock.
 
+pub mod scratch;
+#[cfg(feature = "catalog")]
+mod server;
 pub mod smtp;
 
+pub use scratch::sweep_stale_scratch;
+#[cfg(feature = "catalog")]
+pub use server::{TestServer, TestServerBuilder};
 pub use smtp::{SmtpMessage, TestSmtp};
 
 use std::path::PathBuf;
@@ -138,6 +144,8 @@ pub struct TestDb {
     /// The resolved base connection, kept so [`url`](TestDb::url) can render a
     /// connection string for the code paths that take one.
     base: Config,
+    /// What [`on_teardown`](TestDb::on_teardown) registered, run first on drop.
+    teardown: Teardown,
 }
 
 impl TestDb {
@@ -256,12 +264,28 @@ impl TestDb {
             pool,
             admin_config,
             base,
+            teardown: Teardown::new(),
         })
     }
 
     /// The name of the per-test database.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Run `teardown` when this database is dropped — at the end of the test,
+    /// including one that panicked — before the database itself goes.
+    /// Teardowns run latest-registered first.
+    ///
+    /// What a server test registers here is `Catalog::teardown` — see
+    /// [`Teardown`]:
+    ///
+    /// ```ignore
+    /// let catalog = Arc::new(Catalog::init(driver).await?);
+    /// db.on_teardown(catalog.teardown_hook());
+    /// ```
+    pub fn on_teardown(&self, teardown: impl FnOnce() + Send + 'static) {
+        self.teardown.add(teardown);
     }
 
     /// The connection pool for the per-test database.
@@ -321,6 +345,50 @@ impl TestDb {
             .await
             .map_err(|e| Error::database(format!("checkout connection: {e}")))
     }
+
+    /// Run `sql` (one or more statements) on the per-test database.
+    pub async fn execute(&self, sql: &str) -> Result<()> {
+        self.client()
+            .await?
+            .batch_execute(sql)
+            .await
+            .map_err(|e| Error::database(e.to_string()))
+    }
+
+    /// Drop every `users` table the database was cloned with.
+    ///
+    /// A developer's template can be a copy of a multi-tenant Saltcorn 1
+    /// database, which has a `users` table in several schemas; the auth
+    /// bootstrap then finds one that is not its own. A no-op on a clean
+    /// template, as in CI.
+    pub async fn drop_template_users(&self) -> Result<()> {
+        self.execute(
+            "DO $$ DECLARE r record; BEGIN \
+               FOR r IN SELECT table_schema FROM information_schema.tables \
+               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
+                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
+               END LOOP; END $$",
+        )
+        .await
+    }
+}
+
+/// Wait until `done()` holds, checking every 10 ms, and panic naming `what` if
+/// it does not within `within`.
+///
+/// For a test that waits for something to happen in the background: it goes
+/// on as soon as it has, rather than sleeping for a guess at how long that
+/// takes. A test that checks that something does *not* happen, or that time
+/// passing has an effect, still has to let the time pass.
+pub async fn wait_until(what: &str, within: std::time::Duration, mut done: impl FnMut() -> bool) {
+    let deadline = tokio::time::Instant::now() + within;
+    while !done() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out after {within:?} waiting for {what}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
 
 /// A connection stated as its parts — what [`TestDb::parts`] returns.
@@ -340,6 +408,10 @@ pub struct ConnectionParts {
 
 impl Drop for TestDb {
     fn drop(&mut self) {
+        // The test's own teardowns first, while the database they were built
+        // over still exists.
+        self.teardown.run();
+
         // Close pooled connections so nothing blocks `DROP DATABASE`.
         self.pool.close();
 
@@ -431,7 +503,7 @@ fn section_config(section: &Environment) -> Option<Result<Config>> {
         config.user(user);
     }
     if let Some(password) = &section.password {
-        config.password(password);
+        config.password(password.expose());
     }
     if let Some(database) = &section.database {
         config.dbname(database);
@@ -746,5 +818,77 @@ mod tests {
             DEFAULT_TEST_ENVIRONMENT,
             sc_config_file::DEFAULT_ENVIRONMENT
         );
+    }
+}
+
+/// Closures run when a test ends — when this guard is dropped, including by a
+/// test that panicked — latest added first.
+///
+/// What a server test adds is `Catalog::teardown_hook()`. The services a server
+/// installs on its catalog hold the catalog back, so without it nothing a test
+/// built over the catalog is ever freed, and a binary of a few hundred such tests
+/// accumulates their formula isolates' threads, the runtimes those anchor to and
+/// their pools' sockets until it runs out of file descriptors. A [`TestDb`]
+/// carries one ([`TestDb::on_teardown`]); a test over SQLite, which has no
+/// `TestDb`, holds one of these beside its temporary directory.
+#[derive(Default)]
+pub struct Teardown(std::sync::Mutex<Vec<Box<dyn FnOnce() + Send>>>);
+
+impl Teardown {
+    /// An empty guard.
+    pub fn new() -> Teardown {
+        Teardown::default()
+    }
+
+    /// Run `teardown` when this guard is dropped.
+    pub fn add(&self, teardown: impl FnOnce() + Send + 'static) {
+        match self.0.lock() {
+            Ok(mut teardowns) => teardowns.push(Box::new(teardown)),
+            Err(poisoned) => poisoned.into_inner().push(Box::new(teardown)),
+        }
+    }
+
+    /// Run and forget everything added so far.
+    fn run(&self) {
+        let teardowns = match self.0.lock() {
+            Ok(mut teardowns) => std::mem::take(&mut *teardowns),
+            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+        };
+        for teardown in teardowns.into_iter().rev() {
+            teardown();
+        }
+    }
+}
+
+impl Drop for Teardown {
+    fn drop(&mut self) {
+        self.run();
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn wait_until_returns_once_the_condition_holds() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let bumped = Arc::clone(&count);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            bumped.store(3, Ordering::SeqCst);
+        });
+        super::wait_until("the count", Duration::from_secs(5), || {
+            count.load(Ordering::SeqCst) == 3
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "waiting for nothing")]
+    async fn wait_until_panics_when_it_never_holds() {
+        super::wait_until("nothing", Duration::from_millis(30), || false).await;
     }
 }

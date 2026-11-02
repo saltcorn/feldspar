@@ -8,11 +8,12 @@
 //! - an invitation is to a less powerful role only, is resent to a pending
 //!   account, and never to an active one.
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use chrono::Duration;
 use sc_auth::{
-    InviteOutcome, NewUser, PASSWORD_TOKENS_TABLE, PasswordTokenPurpose, Role, SESSIONS_TABLE,
+    InviteOutcome, NewUser, PASSWORD_TOKENS_TABLE, PasswordTokenPurpose, RoleDef, SESSIONS_TABLE,
     authenticate, bootstrap, claim_unproven_account, create_session, create_user, invite_user,
     issue_password_token, load_user, password_token_issued_within, redeem_password_token,
     save_role, set_user_disabled, sign_up_user, user_has_password,
@@ -22,7 +23,7 @@ use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
 use sc_query::{Assignment, Expr, Select, Source, Statement, Update, Value};
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 
 struct Fixture {
     catalog: Arc<Catalog>,
@@ -30,37 +31,24 @@ struct Fixture {
 }
 
 async fn fixture() -> Result<Fixture> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     bootstrap(&catalog).await?;
-    save_role(&catalog, &Role::new(40, "Therapist")).await?;
-    save_role(&catalog, &Role::new(80, "Patient")).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(40), "Therapist")).await?;
+    save_role(&catalog, &RoleDef::new(Role::of(80), "Patient")).await?;
     Ok(Fixture { catalog, _db: db })
 }
 
 fn patient(email: &str) -> NewUser {
     NewUser {
         email: email.to_owned(),
-        role: 80,
+        role: Role::of(80),
         ..NewUser::default()
     }
 }
 
 async fn count(catalog: &Catalog, table: &str) -> Result<usize> {
     let rows: Vec<sc_db::Row> = catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(Select::from(Source::table(table))))
         .await?
         .try_collect()
@@ -72,12 +60,12 @@ async fn count(catalog: &Catalog, table: &str) -> Result<usize> {
 async fn an_invited_account_chooses_its_password_with_its_token_once() -> Result<()> {
     let f = fixture().await?;
     let InviteOutcome::Created { user, token } =
-        invite_user(&f.catalog, patient(" pat@example.com "), 40).await?
+        invite_user(&f.catalog, patient(" pat@example.com "), Role::of(40)).await?
     else {
         panic!("a new address is a new account");
     };
-    assert_eq!(user.role, 80);
-    assert!(!user_has_password(&f.catalog, user.id).await?);
+    assert_eq!(user.role(), Role::of(80));
+    assert!(!user_has_password(&f.catalog, user.id()).await?);
     assert!(
         authenticate(&f.catalog, "pat@example.com", "")
             .await?
@@ -87,7 +75,7 @@ async fn an_invited_account_chooses_its_password_with_its_token_once() -> Result
     // The token is stored as a hash, never as itself.
     let stored: Vec<sc_db::Row> = f
         .catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(Select::from(Source::table(
             PASSWORD_TOKENS_TABLE,
         ))))
@@ -101,12 +89,12 @@ async fn an_invited_account_chooses_its_password_with_its_token_once() -> Result
     assert!(redeem_password_token(&f.catalog, &token, "").await.is_err());
     // Resending is a second live token; spending either ends both.
     let InviteOutcome::Resent { token: second, .. } =
-        invite_user(&f.catalog, patient("pat@example.com"), 40).await?
+        invite_user(&f.catalog, patient("pat@example.com"), Role::of(40)).await?
     else {
         panic!("a pending account is resent");
     };
     let redeemed = redeem_password_token(&f.catalog, &token, "pat-pw").await?;
-    assert_eq!(redeemed.map(|u| u.id), Some(user.id));
+    assert_eq!(redeemed.map(|u| u.id()), Some(user.id()));
     assert!(
         authenticate(&f.catalog, "pat@example.com", "pat-pw")
             .await?
@@ -126,7 +114,7 @@ async fn an_invited_account_chooses_its_password_with_its_token_once() -> Result
 
     // Now it is active, and an invitation is not a way to reset it.
     assert!(matches!(
-        invite_user(&f.catalog, patient("pat@example.com"), 40).await?,
+        invite_user(&f.catalog, patient("pat@example.com"), Role::of(40)).await?,
         InviteOutcome::AlreadyActive
     ));
     Ok(())
@@ -135,18 +123,18 @@ async fn an_invited_account_chooses_its_password_with_its_token_once() -> Result
 #[tokio::test]
 async fn a_reset_ends_the_users_sessions_and_a_bad_token_is_just_none() -> Result<()> {
     let f = fixture().await?;
-    let user = create_user(&f.catalog, "pat@example.com", "old-pw", 80).await?;
-    create_session(&f.catalog, user.id, Duration::hours(1)).await?;
+    let user = create_user(&f.catalog, "pat@example.com", "old-pw", Role::of(80)).await?;
+    create_session(&f.catalog, user.id(), Duration::hours(1)).await?;
     assert_eq!(count(&f.catalog, SESSIONS_TABLE).await?, 1);
 
-    let token = issue_password_token(&f.catalog, user.id, PasswordTokenPurpose::Reset).await?;
+    let token = issue_password_token(&f.catalog, user.id(), PasswordTokenPurpose::Reset).await?;
     let within = Duration::seconds(60);
     assert!(
-        password_token_issued_within(&f.catalog, user.id, PasswordTokenPurpose::Reset, within)
+        password_token_issued_within(&f.catalog, user.id(), PasswordTokenPurpose::Reset, within)
             .await?
     );
     assert!(
-        !password_token_issued_within(&f.catalog, user.id, PasswordTokenPurpose::Invite, within)
+        !password_token_issued_within(&f.catalog, user.id(), PasswordTokenPurpose::Invite, within)
             .await?
     );
     assert!(
@@ -171,7 +159,7 @@ async fn a_reset_ends_the_users_sessions_and_a_bad_token_is_just_none() -> Resul
     );
 
     // A lapsed token is refused.
-    let lapsed = issue_password_token(&f.catalog, user.id, PasswordTokenPurpose::Reset).await?;
+    let lapsed = issue_password_token(&f.catalog, user.id(), PasswordTokenPurpose::Reset).await?;
     let expire = Update::new(
         PASSWORD_TOKENS_TABLE,
         vec![Assignment::new(
@@ -180,7 +168,7 @@ async fn a_reset_ends_the_users_sessions_and_a_bad_token_is_just_none() -> Resul
         )],
     );
     f.catalog
-        .primary()
+        .primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(expire))
         .await?
         .try_collect()
@@ -192,8 +180,8 @@ async fn a_reset_ends_the_users_sessions_and_a_bad_token_is_just_none() -> Resul
     );
 
     // So is a disabled account's.
-    let token = issue_password_token(&f.catalog, user.id, PasswordTokenPurpose::Reset).await?;
-    set_user_disabled(&f.catalog, user.id, true).await?;
+    let token = issue_password_token(&f.catalog, user.id(), PasswordTokenPurpose::Reset).await?;
+    set_user_disabled(&f.catalog, user.id(), true).await?;
     assert!(
         redeem_password_token(&f.catalog, &token, "x")
             .await?
@@ -207,15 +195,19 @@ async fn an_invitation_is_only_to_less_power() -> Result<()> {
     let f = fixture().await?;
     // Not to the inviter's own role, nor a more powerful one.
     let mut peer = patient("peer@example.com");
-    peer.role = 40;
-    assert!(invite_user(&f.catalog, peer.clone(), 40).await.is_err());
+    peer.role = Role::of(40);
+    assert!(
+        invite_user(&f.catalog, peer.clone(), Role::of(40))
+            .await
+            .is_err()
+    );
     // A pending account at the therapist's level cannot be resent by a
     // therapist, though an admin made it.
-    let InviteOutcome::Created { .. } = invite_user(&f.catalog, peer, 1).await? else {
+    let InviteOutcome::Created { .. } = invite_user(&f.catalog, peer, Role::ADMIN).await? else {
         panic!("an admin may invite a therapist");
     };
     assert!(
-        invite_user(&f.catalog, patient("peer@example.com"), 40)
+        invite_user(&f.catalog, patient("peer@example.com"), Role::of(40))
             .await
             .is_err()
     );
@@ -229,39 +221,39 @@ async fn an_invitation_is_only_to_less_power() -> Result<()> {
 #[tokio::test]
 async fn a_signup_is_unproven_until_a_link_is_redeemed_and_is_claimed_whole() -> Result<()> {
     let f = fixture().await?;
-    let made = create_user(&f.catalog, "made@example.com", "made-pw", 80).await?;
+    let made = create_user(&f.catalog, "made@example.com", "made-pw", Role::of(80)).await?;
     assert!(
         !made.email_unproven(),
         "an account somebody else made is not unproven"
     );
 
-    let signed = sign_up_user(&f.catalog, "signed@example.com", "signed-pw", 80).await?;
+    let signed = sign_up_user(&f.catalog, "signed@example.com", "signed-pw", Role::of(80)).await?;
     assert!(signed.email_unproven());
     assert!(
-        load_user(&f.catalog, signed.id)
+        load_user(&f.catalog, signed.id())
             .await?
             .unwrap()
             .email_unproven()
     );
-    let token = issue_password_token(&f.catalog, signed.id, PasswordTokenPurpose::Reset).await?;
+    let token = issue_password_token(&f.catalog, signed.id(), PasswordTokenPurpose::Reset).await?;
     let redeemed = redeem_password_token(&f.catalog, &token, "new-pw")
         .await?
         .unwrap();
     assert!(!redeemed.email_unproven());
     assert!(
-        !load_user(&f.catalog, signed.id)
+        !load_user(&f.catalog, signed.id())
             .await?
             .unwrap()
             .email_unproven()
     );
 
-    let squat = sign_up_user(&f.catalog, "squat@example.com", "squat-pw", 80).await?;
-    create_session(&f.catalog, squat.id, Duration::hours(1)).await?;
-    issue_password_token(&f.catalog, squat.id, PasswordTokenPurpose::Reset).await?;
+    let squat = sign_up_user(&f.catalog, "squat@example.com", "squat-pw", Role::of(80)).await?;
+    create_session(&f.catalog, squat.id(), Duration::hours(1)).await?;
+    issue_password_token(&f.catalog, squat.id(), PasswordTokenPurpose::Reset).await?;
     let claimed = claim_unproven_account(&f.catalog, squat.clone()).await?;
-    assert_eq!(claimed.id, squat.id);
+    assert_eq!(claimed.id(), squat.id());
     assert!(!claimed.email_unproven());
-    assert!(!user_has_password(&f.catalog, squat.id).await?);
+    assert!(!user_has_password(&f.catalog, squat.id()).await?);
     assert!(
         authenticate(&f.catalog, "squat@example.com", "squat-pw")
             .await?
@@ -271,7 +263,7 @@ async fn a_signup_is_unproven_until_a_link_is_redeemed_and_is_claimed_whole() ->
     assert_eq!(count(&f.catalog, PASSWORD_TOKENS_TABLE).await?, 0);
 
     let kept = claim_unproven_account(&f.catalog, made.clone()).await?;
-    assert!(user_has_password(&f.catalog, kept.id).await?);
+    assert!(user_has_password(&f.catalog, kept.id()).await?);
     Ok(())
 }
 
@@ -285,7 +277,7 @@ async fn a_signup_is_unproven_until_a_link_is_redeemed_and_is_claimed_whole() ->
 async fn a_failed_redemption_leaves_the_token_and_the_password_as_they_were() -> Result<()> {
     let f = fixture().await?;
     let InviteOutcome::Created { user, token } =
-        invite_user(&f.catalog, patient("pat@example.com"), 40).await?
+        invite_user(&f.catalog, patient("pat@example.com"), Role::of(40)).await?
     else {
         panic!("a new address is a new account");
     };
@@ -298,9 +290,13 @@ async fn a_failed_redemption_leaves_the_token_and_the_password_as_they_were() ->
     };
     alter(r#"ALTER TABLE "users" DROP COLUMN "email_verified""#).await?;
 
-    assert!(redeem_password_token(&f.catalog, &token, "pat-pw").await.is_err());
+    assert!(
+        redeem_password_token(&f.catalog, &token, "pat-pw")
+            .await
+            .is_err()
+    );
     assert_eq!(count(&f.catalog, PASSWORD_TOKENS_TABLE).await?, 1);
-    assert!(!user_has_password(&f.catalog, user.id).await?);
+    assert!(!user_has_password(&f.catalog, user.id()).await?);
 
     // A restart puts the column back: bootstrap reconciles `users` additively.
     let driver = Arc::new(PgDriver::from_pool(f._db.pool().clone()));
@@ -309,7 +305,7 @@ async fn a_failed_redemption_leaves_the_token_and_the_password_as_they_were() ->
     assert!(users.field("email_verified").is_some());
 
     let redeemed = redeem_password_token(&catalog, &token, "pat-pw").await?;
-    assert_eq!(redeemed.map(|u| u.id), Some(user.id));
+    assert_eq!(redeemed.map(|u| u.id()), Some(user.id()));
     assert!(
         authenticate(&catalog, "pat@example.com", "pat-pw")
             .await?

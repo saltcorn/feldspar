@@ -13,7 +13,7 @@ use std::sync::Arc;
 use sc_api::mcp::{Area, Areas, Projection};
 use sc_api::schema_edit::Grants;
 use sc_app::{ApiConfig, Application, FrameworkRef, generate_skill};
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -44,7 +44,7 @@ fn blog() -> Application {
             .with("command", "sh build.sh")
             .with("client", "web/src/client.ts"),
     )
-    .with_table(TableId("posts".to_owned()))
+    .with_table("posts".to_owned())
     .with_api(ApiConfig::new("rest", "/api"))
 }
 

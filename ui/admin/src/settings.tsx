@@ -34,6 +34,10 @@ export type FieldSpec = {
   required: boolean;
   default?: unknown | null;
   options: unknown[];
+  /** The label each of {@link options} is shown with, in the same order
+   * (`"warning: also what is about to fail"` for `"warning"`). Absent or empty
+   * shows each value as itself; what is stored is still the value. */
+  option_labels?: string[] | null;
   /** Render as a text area: the value is many lines, not one. A hint the field
    * declares, so no screen has to know that some particular setting happens to
    * hold an SSH key or a certificate. */
@@ -113,6 +117,12 @@ export function isShown(
  * travels in the JSON — and the client's copy having to match is the same
  * arrangement every other field name in this file lives under. */
 export const SECRET_SENTINEL = "••••••••";
+
+/** What the select shows for `field`'s option at `index`: its declared label,
+ * or the value itself when there is none. */
+export function optionLabel(field: Pick<FieldSpec, "options" | "option_labels">, index: number): string {
+  return field.option_labels?.[index] || asString(field.options[index]);
+}
 
 /** Read a config value as a display string (config bags arrive as `unknown`). */
 export function asString(value: unknown): string {
@@ -290,11 +300,11 @@ export function SettingField({
           onChange={(e) => onChange(e.target.value)}
         >
           <option value="">—</option>
-          {field.options.map((opt) => {
+          {field.options.map((opt, i) => {
             const s = asString(opt);
             return (
               <option key={s} value={s}>
-                {s}
+                {optionLabel(field, i)}
               </option>
             );
           })}

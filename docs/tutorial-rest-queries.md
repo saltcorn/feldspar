@@ -422,6 +422,11 @@ feldspar role list
 (`feldspar add-user you@example.com --role Reader` makes an account to try it with;
 `feldspar modify-user you@example.com --disabled` takes it away again without deleting it.)
 
+A code query's `db` acts **as the person calling it**: the table's roles and ownership formula
+decide what it sees, exactly as they do for the row API. Readers may only share a book they may
+read, so give them that: on the **books** table, set **Minimum role for full read access** to
+`Reader (80)`.
+
 Add two queries on the same REST row as `topAuthors`, both with **Language** `JavaScript`.
 
 **`shareBook`** — `POST`, sub-path `/books/share`, minimum role `Reader (80)`, **no
@@ -456,7 +461,9 @@ const key = await crypto.subtle.importKey(
   "raw", new TextEncoder().encode(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
 const ok = await crypto.subtle.verify("HMAC", key, sig, new TextEncoder().encode(id));
 if (!ok) throw httpError(403, "this link is not valid");
-const book = await db.books.get(Number(id));
+// The signature is the check, and whoever holds the link may not read `books`
+// themselves — so this one read is the server's, said out loud.
+const book = await db.asAdmin().books.get(Number(id));
 return { title: book.title };
 ```
 
@@ -493,6 +500,11 @@ name, nothing about your code for an anonymous caller to read. The server log ha
 stack under that id, and so does the same request made by an admin, so you can debug it from the
 browser while you are signed in. A body that spins without awaiting is stopped at its slice and
 answers **503** `{"error":"timeout"}`.
+
+One failure is not hidden: a refusal the body did not catch. If `shareBook` ran for somebody
+below the books table's read floor, `db.books.get` would throw, and the answer would be a
+**403** ``{"error":"you may not read `books`","id":"…"}`` — what they may not do is theirs to
+know, and it is the refusal the row API would have named.
 
 Exposed triggers (`POST /api/actions/<name>`) answer the same way: `httpError`, `response` and
 the 500 without a stack are the contract for every code body somebody calls over HTTP.
@@ -555,7 +567,7 @@ ratelimit.check("unlock:" + query.token, { max: 5, window: "15m" });
 const [id] = query.token.split(".");
 // In a real app the share is a row holding crypto.password.hash(password).
 if (query.password !== "open sesame") throw httpError(403, "wrong password");
-const book = await db.books.get(Number(id));
+const book = await db.asAdmin().books.get(Number(id));
 return { title: book.title };
 ```
 

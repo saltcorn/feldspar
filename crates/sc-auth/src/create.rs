@@ -2,7 +2,7 @@
 //!
 //! This is the admin-driven counterpart to [`create_first_user`](crate::create_first_user):
 //! it mints a user with a caller-supplied [`role`](crate::COL_ROLE) rather than
-//! forcing [admin](crate::ROLE_ADMIN), and it does **not** require the users
+//! forcing [admin](Role::ADMIN), and it does **not** require the users
 //! table to be empty. The UUID id is generated in Rust (not by a database
 //! default) and the password is hashed with argon2id before it is stored.
 //!
@@ -11,6 +11,7 @@
 //! else the table has, and the caller — which has the catalog, and therefore the
 //! column types — hands the values over already coerced.
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 
 use sc_catalog::Catalog;
@@ -32,9 +33,9 @@ pub struct NewUser {
     pub email: String,
     /// The password, or **blank to have one generated** — see
     /// [`CreatedUser::generated_password`].
-    pub password: String,
+    pub password: sc_error::Secret<String>,
     /// The role, `1..=100`, which must already exist in `_fd_roles`.
-    pub role: u8,
+    pub role: Role,
     /// The language this account reads the product in — a BCP-47 tag, or `None`
     /// for "whatever the request negotiates" (§16.1). A system column with its
     /// own field for [`role`](NewUser::role)'s reason: it has a select of its
@@ -75,7 +76,7 @@ pub async fn create_user_with(catalog: &Catalog, new: NewUser) -> Result<Created
             let password = random_password();
             (password.clone(), Some(password))
         }
-        false => (new.password.clone(), None),
+        false => (new.password.expose().clone(), None),
     };
     // Hash before touching the database — argon2id is deliberately slow.
     let password_hash = hash_password(&password)?;
@@ -146,23 +147,21 @@ async fn insert_user_marked(
 
     let insert = Insert::row(USERS_TABLE, columns, values);
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&Statement::from(insert))
         .await?
         .try_collect()
         .await?;
 
-    let mut user = User::new(id, new.role)?;
-    user.extra
-        .insert(COL_EMAIL.to_owned(), Value::Text(email.to_owned()));
+    let mut user = User::new(id, new.role).with_field(COL_EMAIL, Value::Text(email.to_owned()));
     if let Some(language) = language {
-        user.extra
-            .insert(COL_LANGUAGE.to_owned(), Value::Text(language.to_owned()));
+        user = user.with_field(COL_LANGUAGE, Value::Text(language.to_owned()));
     }
-    user.extra.extend(new.extra);
+    for (name, value) in new.extra {
+        user = user.with_field(name, value);
+    }
     if unproven {
-        user.extra
-            .insert(COL_EMAIL_VERIFIED.to_owned(), Value::Bool(false));
+        user = user.with_field(COL_EMAIL_VERIFIED, Value::Bool(false));
     }
     Ok(user)
 }
@@ -178,14 +177,14 @@ pub async fn sign_up_user(
     catalog: &Catalog,
     email: &str,
     password: &str,
-    role: u8,
+    role: Role,
 ) -> Result<User> {
     if password.is_empty() {
         return Err(Error::invalid("password is required"));
     }
     let new = NewUser {
         email: email.to_owned(),
-        password: password.to_owned(),
+        password: password.into(),
         role,
         language: None,
         extra: BTreeMap::new(),
@@ -201,7 +200,12 @@ pub async fn sign_up_user(
 /// keeping: here a blank password is an [`Error::invalid`] rather than a request
 /// to generate one, because a caller passing an empty string to a function that
 /// takes a password has not decided anything.
-pub async fn create_user(catalog: &Catalog, email: &str, password: &str, role: u8) -> Result<User> {
+pub async fn create_user(
+    catalog: &Catalog,
+    email: &str,
+    password: &str,
+    role: Role,
+) -> Result<User> {
     if password.is_empty() {
         return Err(Error::invalid("password is required"));
     }
@@ -209,7 +213,7 @@ pub async fn create_user(catalog: &Catalog, email: &str, password: &str, role: u
         catalog,
         NewUser {
             email: email.to_owned(),
-            password: password.to_owned(),
+            password: password.into(),
             role,
             language: None,
             extra: BTreeMap::new(),

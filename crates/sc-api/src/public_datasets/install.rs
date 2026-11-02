@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
-use sc_catalog::{CallerContext, Catalog, DataFieldKind, FieldId, SharedTx, TableId};
+use sc_catalog::{Catalog, DataFieldKind, FieldId, SharedTx, Unchecked};
 use sc_dataset::{DatasetDef, DatasetId};
 use sc_error::{Error, Result};
 use sc_types::BasicType;
@@ -13,7 +13,8 @@ use serde_json::{Map, Value as Json};
 
 use super::read::{self, Record};
 use super::{FieldDef, PublicDataset, TableDef, find};
-use crate::{rows, schema_edit};
+use crate::schema_edit;
+use sc_access::rows;
 
 /// How the files are downloaded: the server's HTTP client, or a test's
 /// fixtures.
@@ -81,7 +82,7 @@ pub async fn install(
     key: &str,
     fetch: &dyn Fetch,
     progress: &(dyn Fn(Progress) + Send + Sync),
-    context: Option<&CallerContext>,
+    context: Unchecked<'_>,
 ) -> Result<Installed> {
     let entry = find(key)?;
     let present: Vec<&str> = entry
@@ -108,7 +109,7 @@ pub async fn install(
             quoted(&present)
         )));
     }
-    let spatial = catalog.primary().spatial();
+    let spatial = catalog.primary_info().spatial();
     if entry.needs_spatial()
         && let Err(reason) = spatial.require()
     {
@@ -138,10 +139,12 @@ pub async fn install(
             done: i as u64,
             total: urls.len() as u64,
         });
-        let bytes = fetch
-            .fetch(url)
-            .await
-            .map_err(|e| Error::invalid(format!("{url} could not be downloaded: {}", plain(&e))))?;
+        let bytes = fetch.fetch(url).await.map_err(|e| {
+            Error::invalid(format!(
+                "{url} could not be downloaded: {}",
+                e.message_and_causes()
+            ))
+        })?;
         files.insert(url, bytes);
     }
 
@@ -156,12 +159,22 @@ pub async fn install(
     let written = match fill(catalog, &plans, &files, progress, context).await {
         Ok(written) => written,
         Err(e) => {
-            drop_tables(catalog, entry).await;
-            return Err(Error::invalid(format!(
-                "`{}` could not be imported, so its tables were not kept: {}",
-                entry.title,
-                plain(&e)
-            )));
+            // The import failed either way; what the sentence must not do is
+            // say the half-filled tables are gone when the drop failed too.
+            return Err(Error::invalid(match drop_tables(catalog, entry).await {
+                Ok(()) => format!(
+                    "`{}` could not be imported, so its tables were not kept: {}",
+                    entry.title,
+                    e.message_and_causes()
+                ),
+                Err(cleanup) => format!(
+                    "`{}` could not be imported: {}; and its partly imported tables could \
+                     not be dropped, so drop them by hand: {}",
+                    entry.title,
+                    e.message_and_causes(),
+                    cleanup.message_and_causes()
+                ),
+            }));
         }
     };
 
@@ -290,7 +303,7 @@ async fn create_tables(
 fn field_spec(entry: &PublicDataset, field: &FieldDef) -> schema_edit::FieldSpec {
     let kind = match (&field.references, field.is_key()) {
         (Some(target), true) => DataFieldKind::Key {
-            target_table: TableId(target.clone()),
+            target_table: target.clone(),
             target_field: FieldId(String::new()),
             summary_field: entry
                 .table(target)
@@ -331,10 +344,10 @@ async fn fill(
     plans: &[TablePlan<'_>],
     files: &HashMap<&str, Vec<u8>>,
     progress: &(dyn Fn(Progress) + Send + Sync),
-    context: Option<&CallerContext>,
+    context: Unchecked<'_>,
 ) -> Result<u64> {
     let first = catalog.require(&plans[0].table.name)?;
-    let driver = catalog.driver_for(&first)?;
+    let driver = catalog.driver_for(&first, context)?;
     let tx = SharedTx::begin_on(&driver, first.database.clone());
     let executor = rows::Executor::Transaction(tx.clone());
     // The keys written so far of each table some reference may find missing.
@@ -355,11 +368,11 @@ async fn fill(
                 }
             }
             Err(e) => {
-                let _ = tx.rollback().await;
+                tx.abandon().await;
                 return Err(Error::invalid(format!(
                     "`{}`: {}",
                     plan.table.name,
-                    plain(&e)
+                    e.message_and_causes()
                 )));
             }
         }
@@ -375,7 +388,7 @@ async fn fill_table(
     files: &HashMap<&str, Vec<u8>>,
     keys: &HashMap<String, HashSet<String>>,
     progress: &(dyn Fn(Progress) + Send + Sync),
-    context: Option<&CallerContext>,
+    context: Unchecked<'_>,
     executor: &rows::Executor,
 ) -> Result<(u64, HashSet<String>)> {
     let table = catalog.require(&plan.table.name)?;
@@ -542,7 +555,7 @@ async fn dataset_for(catalog: &Catalog, entry: &PublicDataset) -> Result<(Datase
 }
 
 /// Drop whatever of `entry`'s tables exist, those referenced last.
-async fn drop_tables(catalog: &Catalog, entry: &PublicDataset) {
+async fn drop_tables(catalog: &Catalog, entry: &PublicDataset) -> Result<()> {
     let operations: Vec<_> = entry
         .tables
         .iter()
@@ -552,18 +565,15 @@ async fn drop_tables(catalog: &Catalog, entry: &PublicDataset) {
             table: t.name.clone(),
         })
         .collect();
-    let _ = schema_edit::apply(catalog, &operations, &schema_edit::ApplyOptions::default()).await;
-}
-
-/// An error's sentence without the kind it starts with, for nesting in
-/// another: "row 3: `pop`: …" rather than "invalid: row 3: invalid: …".
-pub fn plain(e: &Error) -> String {
-    let text = e.causes();
-    text.strip_prefix("invalid: ").unwrap_or(&text).to_owned()
+    if operations.is_empty() {
+        return Ok(());
+    }
+    schema_edit::apply(catalog, &operations, &schema_edit::ApplyOptions::default()).await?;
+    Ok(())
 }
 
 fn at_row(n: u64, e: Error) -> Error {
-    Error::invalid(format!("row {n}: {}", plain(&e)))
+    Error::invalid(format!("row {n}: {}", e.message_and_causes()))
 }
 
 fn file_name(url: &str) -> &str {

@@ -372,7 +372,7 @@ struct Settings {
     use_tls: bool,
     client_id: String,
     username: Option<String>,
-    password: String,
+    password: sc_error::Secret<String>,
     topic: String,
     qos: QoS,
     clean_session: bool,
@@ -398,7 +398,7 @@ impl Settings {
             use_tls: flag(config, CFG_USE_TLS, false),
             client_id,
             username: text(config, CFG_USERNAME),
-            password: text(config, CFG_PASSWORD).unwrap_or_default(),
+            password: text(config, CFG_PASSWORD).unwrap_or_default().into(),
             topic,
             qos: qos(config)?,
             clean_session: flag(config, CFG_CLEAN_SESSION, true),
@@ -416,7 +416,7 @@ impl Settings {
         options.set_keep_alive(KEEP_ALIVE);
         options.set_clean_session(self.clean_session);
         if let Some(username) = &self.username {
-            options.set_credentials(username, &self.password);
+            options.set_credentials(username, self.password.expose());
         }
         if self.use_tls {
             options.set_transport(tls_transport()?);

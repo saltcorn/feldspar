@@ -71,6 +71,7 @@ use serde_json::json;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
+use crate::admin_session::{AdminSession, AdminWatch};
 use crate::lsp::{fit_close_reason, refuse};
 
 /// The route the IDE opens a terminal on. `{store}` is the store the workbench
@@ -130,8 +131,9 @@ pub(crate) struct SessionTokens(Arc<Mutex<HashMap<String, SessionGrant>>>);
 /// Who a session token speaks for.
 #[derive(Debug, Clone)]
 pub(crate) struct SessionGrant {
-    /// The admin who opened the terminal.
-    pub(crate) user_id: Uuid,
+    /// The admin session the terminal was opened from: the token speaks for
+    /// it only while it is still an administrator's.
+    pub(crate) admin: AdminSession,
     /// The session, which is also what the MCP route's changesets are keyed by.
     pub(crate) session: Uuid,
     /// When the terminal opened.
@@ -139,16 +141,16 @@ pub(crate) struct SessionGrant {
 }
 
 impl SessionTokens {
-    /// A fresh token for a terminal `user_id` opens, valid until the returned
+    /// A fresh token for a terminal `admin` opens, valid until the returned
     /// value is dropped.
-    fn issue(&self, user_id: Uuid) -> SessionToken {
+    fn issue(&self, admin: AdminSession) -> SessionToken {
         let secret = format!(
             "{SESSION_TOKEN_PREFIX}{}{}",
             Uuid::new_v4().simple(),
             Uuid::new_v4().simple()
         );
         let grant = SessionGrant {
-            user_id,
+            admin,
             session: Uuid::new_v4(),
             opened: Utc::now(),
         };
@@ -319,10 +321,12 @@ pub(crate) async fn terminal_dir(
     }
     // Before the application is looked up, so an unknown store is refused as
     // that rather than as "<app>'s source is in …, not <store>".
-    catalog
-        .file_store(store)
+    if !catalog
+        .has_file_store(store)
         .map_err(|e| format!("file store {store}: {e}"))?
-        .ok_or_else(|| format!("the file store {store} is not connected"))?;
+    {
+        return Err(format!("the file store {store} is not connected"));
+    }
     let (dir, app) = match app.map(str::trim).filter(|a| !a.is_empty()) {
         None => (String::new(), None),
         Some(app) => {
@@ -384,15 +388,32 @@ fn not_installed(program: &Path) -> String {
 }
 
 /// The directory `dir` of `store` on this server's disk, or why there is none.
+///
+/// A program in a terminal is over the whole tree, as the language server is,
+/// so the store is opened as the administrator the route admits
+/// ([`crate::lsp::language_server_root`]'s reason).
 fn local_dir(catalog: &Catalog, store: &str, dir: &str) -> Result<PathBuf, String> {
+    let failed = |e: sc_error::Error| format!("file store {store}: {e}");
+    if !catalog.has_file_store(store).map_err(failed)? {
+        return Err(format!("the file store {store} is not connected"));
+    }
     let handle = catalog
-        .file_store(store)
-        .map_err(|e| format!("file store {store}: {e}"))?
-        .ok_or_else(|| format!("the file store {store} is not connected"))?;
-    let root = handle
-        .local_path(dir)
-        .map_err(|e| format!("file store {store}: {e}"))?
+        .checked_file_store(
+            store,
+            None,
+            sc_files::FileCaller::new(sc_types::Role::ADMIN, None),
+        )
+        .map_err(failed)?;
+    let store_root = handle
+        .local_root()
+        .map_err(failed)?
         .ok_or_else(|| format!("{store} is not on this server's disk, so it has no terminal"))?;
+    let path = sc_files::StorePath::parse(dir).map_err(failed)?;
+    let root = if path.is_root() {
+        store_root
+    } else {
+        store_root.join(path.as_str())
+    };
     if !root.is_dir() {
         let shown = if dir.is_empty() {
             store.to_owned()
@@ -471,13 +492,13 @@ pub(crate) struct TerminalHost<'a> {
     pub(crate) program: Arc<PathBuf>,
 }
 
-/// Serve one terminal socket for `store`, opened by the admin `user_id`.
-///
-/// The caller has already established that the request is an admin's.
+/// Serve one terminal socket for `store`, opened from the admin session
+/// `admin` watches. The session is lost, and the terminal with it, when the
+/// admin signs out or stops being one.
 pub(crate) async fn terminal_upgrade(
     ws: WebSocketUpgrade,
     host: TerminalHost<'_>,
-    user_id: Uuid,
+    admin: AdminWatch,
     store: String,
     query: TerminalQuery,
 ) -> axum::response::Response {
@@ -494,7 +515,7 @@ pub(crate) async fn terminal_upgrade(
             None => not_installed(&program),
             Some(exe) => match Arc::clone(slots).try_acquire_owned() {
                 Ok(permit) => {
-                    let token = tokens.issue(user_id);
+                    let token = tokens.issue(admin.session().clone());
                     let wiring = Wiring {
                         origin: origin.clone(),
                         offered: match catalog {
@@ -513,7 +534,7 @@ pub(crate) async fn terminal_upgrade(
                     match Launch::prepare(exe, place.dir, wiring, token) {
                         Ok(launch) => {
                             return ws.on_upgrade(move |socket| {
-                                bridge(socket, launch, store, changes, permit)
+                                bridge(socket, launch, store, changes, admin, permit)
                             });
                         }
                         Err(e) => format!("could not prepare the session: {e}"),
@@ -787,15 +808,16 @@ fn watch(_store: &str, _place: &TerminalPlace) -> Option<Watch> {
 }
 
 /// Run the launch on a pseudo-terminal, bridged to `socket` until either end
-/// stops, and send what `changes` reports. `permit` is held for as long as the
-/// process lives, and the launch's session token and MCP config for as long as
-/// the bridge runs.
+/// stops or `admin`'s session is lost, and send what `changes` reports.
+/// `permit` is held for as long as the process lives, and the launch's session
+/// token and MCP config for as long as the bridge runs.
 #[cfg(unix)]
 async fn bridge(
     mut socket: WebSocket,
     launch: Launch,
     store: String,
     mut changes: Option<Watch>,
+    admin: AdminWatch,
     permit: OwnedSemaphorePermit,
 ) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -885,20 +907,30 @@ async fn bridge(
         }
     };
 
-    let program_ended = tokio::select! {
-        () = to_program => false,
-        ended = to_browser => ended,
+    // A sign-out, a disabled account or a demotion ends the session here, not
+    // by dropping the bridge, so that the kill below still reaches everything
+    // the program started.
+    let end = tokio::select! {
+        () = to_program => End::Browser,
+        exited = to_browser => if exited { End::Program } else { End::Browser },
+        lost = admin.lost() => End::Lost(lost),
     };
 
-    if program_ended {
-        let status = tokio::time::timeout(EXIT_STATUS_WAIT, session.child.wait()).await;
-        let reason = match status {
-            Ok(Ok(status)) => match status.code() {
-                Some(code) => format!("the program exited with status {code}"),
-                None => "the program was stopped by a signal".to_owned(),
-            },
-            _ => "the program closed its terminal".to_owned(),
-        };
+    let reason = match end {
+        End::Browser => None,
+        End::Lost(reason) => Some(reason),
+        End::Program => {
+            let status = tokio::time::timeout(EXIT_STATUS_WAIT, session.child.wait()).await;
+            Some(match status {
+                Ok(Ok(status)) => match status.code() {
+                    Some(code) => format!("the program exited with status {code}"),
+                    None => "the program was stopped by a signal".to_owned(),
+                },
+                _ => "the program closed its terminal".to_owned(),
+            })
+        }
+    };
+    if let Some(reason) = reason {
         let _ = sender
             .send(Message::Close(Some(CloseFrame {
                 code: close_code::NORMAL,
@@ -913,6 +945,18 @@ async fn bridge(
     drop(permit);
     // The token stops opening MCP, and the config file holding it goes.
     drop(launch);
+}
+
+/// Why a bridge stopped.
+#[cfg(unix)]
+enum End {
+    /// The browser closed the socket, or it broke.
+    Browser,
+    /// The program and everything it started closed the terminal.
+    Program,
+    /// The admin session it was opened from is lost, said as a close frame
+    /// says it.
+    Lost(String),
 }
 
 /// The next changes `changes` reports; never, when there is no watch or it
@@ -935,6 +979,7 @@ async fn bridge(
     _launch: Launch,
     _store: String,
     _changes: Option<Watch>,
+    _admin: AdminWatch,
     _permit: OwnedSemaphorePermit,
 ) {
     refuse(socket, "the IDE terminal needs a Unix server".to_owned()).await;
@@ -1162,13 +1207,22 @@ mod tests {
         assert!(url("0.0.0.0:0").is_err(), "an unknown port");
     }
 
-    #[test]
-    fn a_session_token_lasts_as_long_as_its_session() {
+    /// A session in a store of its own, for a test that needs a token.
+    async fn admin() -> AdminSession {
+        AdminSession::signed_in(&sc_auth::SessionStore::memory()).await
+    }
+
+    #[tokio::test]
+    async fn a_session_token_lasts_as_long_as_its_session() {
         let tokens = SessionTokens::default();
-        let user = Uuid::new_v4();
-        let token = tokens.issue(user);
+        let admin = admin().await;
+        let user = admin.user().id();
+        let token = tokens.issue(admin);
         assert!(token.secret.starts_with(SESSION_TOKEN_PREFIX));
-        assert_eq!(tokens.grant(&token.secret).map(|g| g.user_id), Some(user));
+        assert_eq!(
+            tokens.grant(&token.secret).map(|g| g.admin.user().id()),
+            Some(user)
+        );
         assert!(tokens.grant("fdterm_guessed").is_none());
         assert!(tokens.grant("fd_some_table_token").is_none());
         let secret = token.secret.clone();
@@ -1193,14 +1247,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_launch_line_wires_the_session_to_this_server() {
+    #[tokio::test]
+    async fn the_launch_line_wires_the_session_to_this_server() {
         let tokens = SessionTokens::default();
         let launch = Launch::prepare(
             PathBuf::from("/usr/bin/claude"),
             PathBuf::from("/store/shop"),
             wiring(Ok("http://127.0.0.1:3032".to_owned())),
-            tokens.issue(Uuid::new_v4()),
+            tokens.issue(admin().await),
         )
         .unwrap();
         let args: Vec<String> = launch
@@ -1273,12 +1327,13 @@ mod tests {
 
     /// `--continue` only where the CLI has a conversation saved for the
     /// directory: with none, an interactive `--continue` exits.
-    #[test]
-    fn a_session_continues_only_where_there_is_a_conversation() {
+    #[tokio::test]
+    async fn a_session_continues_only_where_there_is_a_conversation() {
         let root = std::env::temp_dir().join(format!("sc-continue-{}", Uuid::new_v4().simple()));
         let config = root.join("claude");
         let dir = root.join("my_store.v2");
         std::fs::create_dir_all(&dir).unwrap();
+        let admin = admin().await;
         let continues = |config_dir: &Path| {
             let mut wiring = wiring(Err("no MCP here".to_owned()));
             wiring.config_dir = Some(config_dir.to_path_buf());
@@ -1286,7 +1341,7 @@ mod tests {
                 PathBuf::from("/usr/bin/claude"),
                 dir.clone(),
                 wiring,
-                SessionTokens::default().issue(Uuid::new_v4()),
+                SessionTokens::default().issue(admin.clone()),
             )
             .unwrap()
             .args
@@ -1311,13 +1366,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    #[test]
-    fn without_a_loopback_route_the_session_says_why_and_has_no_mcp() {
+    #[tokio::test]
+    async fn without_a_loopback_route_the_session_says_why_and_has_no_mcp() {
         let launch = Launch::prepare(
             PathBuf::from("/usr/bin/claude"),
             PathBuf::from("/store"),
             wiring(Err("this server listens on 10.0.0.5 only".to_owned())),
-            SessionTokens::default().issue(Uuid::new_v4()),
+            SessionTokens::default().issue(admin().await),
         )
         .unwrap();
         assert!(!launch.args.iter().any(|a| a == "--mcp-config"));

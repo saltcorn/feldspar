@@ -100,6 +100,7 @@ async fn a_hangup_reloads_the_bundle_a_build_left_on_disk() -> sc_error::Result<
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     bootstrap(&catalog).await?;
     catalog.connect_file_store(Arc::new(LocalFileStore::new("apps", tmp.path())?))?;

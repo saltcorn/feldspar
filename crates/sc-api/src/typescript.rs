@@ -156,6 +156,34 @@ export function trackCsrf(fetchImpl: typeof fetch): typeof fetch {{
   }}) as typeof fetch;
 }}
 
+// --- two-factor authentication ----------------------------------------------
+
+let secondFactorInApp = false;
+
+/** Say that this application's own pages answer a two-factor challenge (they
+ * read `second_factor` off what `login` answers and call
+ * `secondFactorVerify`). Without this, a sign-in that answers with a challenge
+ * in a browser goes to the server's own page for the code, and comes back. */
+export function handleSecondFactorInApp(): void {{
+  secondFactorInApp = true;
+}}
+
+/** What a sign-in answered. A two-factor challenge started no session; unless
+ * the application answers it itself (`handleSecondFactorInApp`), a browser is
+ * sent to the server's page for the code, which comes back to this page signed
+ * in, and the promise never settles, since the page is going away. */
+export function signInAnswered<T>(baseUrl: string, answer: T): Promise<T> {{
+  const challenge = (answer as {{ second_factor?: unknown }} | null)?.second_factor;
+  if (!challenge || secondFactorInApp || typeof window === "undefined") {{
+    return Promise.resolve(answer);
+  }}
+  const here = window.location.pathname + window.location.search + window.location.hash;
+  window.location.assign(
+    `${{baseUrl}}/_feldspar/second-factor/sign-in?return_to=${{encodeURIComponent(here)}}`,
+  );
+  return new Promise<T>(() => {{}});
+}}
+
 /** The headers a request carries: its content type, its CSRF token, and — where
  * there is no `document`, i.e. a native app — that it is not a browser, so the
  * server lets its login outlive the app being closed. */
@@ -415,8 +443,30 @@ export type AgentPart =
       result?: string;
     }
   | AgentDisplayPart
+  | AgentAttachmentPart
   | { type: "request"; request: AgentRequest }
   | { type: "error"; text: string };
+
+/** A file attached to a chat message, as it is sent: an image the model looks
+ * at (PNG, JPEG, GIF or WebP, up to 5 MiB) or a text document it reads, such
+ * as Markdown, plain text, CSV or JSON (up to 1 MiB). At most 10 per message.
+ * `data` is the file's bytes in base64; make one from a `File` with
+ * `agentAttachment(file)`. */
+export interface AgentAttachment {
+  name: string;
+  media_type: string;
+  data: string;
+}
+
+/** An attached file in a person's message. An image's `url` is a `data:` URL
+ * an `<img>` can show; a document has none — the person has the file. */
+export interface AgentAttachmentPart {
+  type: "attachment";
+  name: string;
+  media_type: string;
+  size: number;
+  url?: string;
+}
 
 /** Something a tool showed the person and not the model: rows, an image or
  * audio. Fetch it with `runs.partUrl(run, id)` (an image's `src`) or
@@ -521,11 +571,16 @@ export interface AgentChatOptions {
   signal?: AbortSignal;
   /** The values of the agent's composer controls (`controls()`). */
   controls?: Record<string, unknown>;
+  /** Files sent with the message (`agentAttachment(file)`): images and text
+   * documents the message can ask about. With attachments, the message may be
+   * empty. */
+  attachments?: AgentAttachment[];
 }
 
 /** Chat with an agent, and the history of the conversations. */
 export interface AgentChatApi {
-  /** One turn: send `message`, and iterate over what the agent does in answer. */
+  /** One turn: send `message`, with any `options.attachments`, and iterate
+   * over what the agent does in answer. */
   chat(message: string, options?: AgentChatOptions): AsyncGenerator<AgentEvent>;
   /** Answer the question conversation `options.run` waits on, as the next
    * turn. A question that is no longer waiting is refused. */
@@ -556,9 +611,55 @@ export interface AgentPromptApi<In> {
   promptStream(input: In, options?: { signal?: AbortSignal }): AsyncGenerator<AgentEvent>;
 }
 
-/** A message the person is sending, to show before the agent answers. */
-export function userMessage(text: string): AgentMessage {
-  return { id: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`, role: "user", parts: [{ type: "text", text }] };
+/** A message the person is sending, to show before the agent answers: its
+ * attachments, then its text — as a stored transcript reads it back. */
+export function userMessage(text: string, attachments: AgentAttachment[] = []): AgentMessage {
+  const parts: AgentPart[] = attachments.map(agentAttachmentPart);
+  if (text !== "" || parts.length === 0) parts.push({ type: "text", text });
+  return { id: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`, role: "user", parts };
+}
+
+/** The image types an attachment may be; anything else is sent as text. */
+const AGENT_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/** A file — from an `<input type="file">`, a drop or a paste — as an attachment
+ * to send with `chat(message, { attachments })`. Refused, with the file's name,
+ * when it is an image of another type, too large, or neither an image nor
+ * UTF-8 text; the server checks the same again. */
+export async function agentAttachment(file: Blob & { name?: string }): Promise<AgentAttachment> {
+  const type = file.type.toLowerCase();
+  const image = type.startsWith("image/");
+  const name = file.name || (image ? "image" : "attachment");
+  if (image && !AGENT_IMAGE_TYPES.includes(type === "image/jpg" ? "image/jpeg" : type)) {
+    throw new Error(`${name}: only PNG, JPEG, GIF and WebP images can be attached`);
+  }
+  if (file.size > (image ? 5 : 1) * 1024 * 1024) {
+    throw new Error(`${name}: an attached ${image ? "image may be at most 5" : "document may be at most 1"} MiB`);
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!image) {
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error(`${name}: only images and text documents can be attached`);
+    }
+  }
+  let binary = "";
+  for (let at = 0; at < bytes.length; at += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+  }
+  return { name, media_type: type, data: btoa(binary) };
+}
+
+/** An attachment as the part a transcript shows it as. */
+export function agentAttachmentPart(attachment: AgentAttachment): AgentAttachmentPart {
+  const padding = attachment.data.match(/=*$/)?.[0].length ?? 0;
+  const size = Math.floor((attachment.data.length * 3) / 4) - padding;
+  const part: AgentAttachmentPart = { type: "attachment", name: attachment.name, media_type: attachment.media_type, size };
+  if (AGENT_IMAGE_TYPES.includes(attachment.media_type)) {
+    part.url = `data:${attachment.media_type};base64,${attachment.data}`;
+  }
+  return part;
 }
 
 /** `messages` with `event` folded in: deltas extend the agent's last message
@@ -669,7 +770,12 @@ export function agentApi(doFetch: typeof fetch, url: string): AgentChatApi & Age
   const promptBody = (input: string | Record<string, AgentInputValue>) => (typeof input === "string" ? { prompt: input } : { input });
   return {
     chat(message, options = {}) {
-      return stream("chat", "/chat", { message, run: options.run, controls: options.controls }, options.signal);
+      return stream(
+        "chat",
+        "/chat",
+        { message, run: options.run, controls: options.controls, attachments: options.attachments },
+        options.signal,
+      );
     },
     answer(requestId, value, options) {
       return stream(
@@ -889,6 +995,7 @@ impl AgentExport {
 /// upload slot the application declares (TODO F2.11): a resumable tus upload
 /// resolving to the stored file's `{ path, url }` — and `agents["<name>"]` per
 /// agent it exposes (§11.7).
+#[allow(clippy::too_many_lines)]
 pub fn generate_app_client(
     set: &EndpointSet,
     streams: &[StreamExport],
@@ -933,6 +1040,9 @@ pub fn generate_app_client(
     }
     if !uploads.is_empty() {
         values.push("upload");
+    }
+    if loose.iter().any(|ep| is_sign_in(ep)) {
+        values.push("signInAnswered");
     }
     if !agents.is_empty() {
         values.push("agentApi");
@@ -984,6 +1094,16 @@ pub fn generate_app_client(
     }
     if changes.iter().any(Option::is_some) {
         types.extend(["LiveChange", "LiveChangesStream", "LiveEnvelope"]);
+    }
+    // A stream of changes to a table the client does not read (or one with no
+    // key column) types its key as the topic in general — which the
+    // re-export further down names but does not bring into scope.
+    if changes
+        .iter()
+        .flatten()
+        .any(|typing| typing.key_type == "LiveTopic")
+    {
+        types.push("LiveTopic");
     }
     if loose.iter().any(|ep| ep.stream_output) {
         types.extend(["LiveOpenHandlers", "LiveOpenedSession"]);
@@ -1057,14 +1177,18 @@ pub fn generate_app_client(
     } else {
         out.push_str("export type { ClientOptions } from \"./helper\";\n");
     }
+    if loose.iter().any(|ep| ep.name == crate::rest::LOGIN) {
+        out.push_str("export { handleSecondFactorInApp } from \"./helper\";\n");
+    }
     if !uploads.is_empty() {
         out.push_str("export type { UploadOptions, UploadResult } from \"./helper\";\n");
     }
     if !agents.is_empty() {
         out.push_str(
-            "export { applyAgentEvent, userMessage } from \"./helper\";\n\
-             export type { AgentAnswer, AgentChatApi, AgentChatOptions, AgentControl, \
-             AgentDisplayPart, AgentEvent, AgentInputValue, AgentMessage, AgentOption, AgentPart, \
+            "export { agentAttachment, agentAttachmentPart, applyAgentEvent, userMessage } \
+             from \"./helper\";\n\
+             export type { AgentAnswer, AgentAttachment, AgentAttachmentPart, AgentChatApi, \
+             AgentChatOptions, AgentControl, AgentDisplayPart, AgentEvent, AgentInputValue, AgentMessage, AgentOption, AgentPart, \
              AgentPromptApi, AgentRequest, AgentRun, AgentRunSummary } from \"./helper\";\n",
         );
     }
@@ -1193,10 +1317,12 @@ pub fn generate_app_client(
     let oauth = loose.iter().any(|e| e.name == crate::rest::LOGIN);
     if oauth {
         out.push_str(OAUTH_TYPES);
+        out.push_str(SECOND_FACTOR_TYPES);
     }
     out.push_str("export interface ApiClient {\n");
     if oauth {
         out.push_str(OAUTH_SIGNATURES);
+        out.push_str(SECOND_FACTOR_SIGNATURES);
     }
     for ep in &loose {
         let _ = writeln!(out, "  {};", method_signature(ep));
@@ -1340,6 +1466,7 @@ pub fn generate_app_client(
     out.push_str("  return {\n");
     if oauth {
         out.push_str(OAUTH_METHODS);
+        out.push_str(SECOND_FACTOR_METHODS);
     }
     for ep in &loose {
         if ep.stream_output {
@@ -1422,6 +1549,98 @@ const OAUTH_METHODS: &str = r#"    async oauthProviders() {
     },
     oauthSignInUrl(provider: OAuthProvider, returnTo = "/") {
       return `${baseUrl}${provider.url}?return_to=${encodeURIComponent(returnTo)}`;
+    },
+"#;
+
+/// Two-factor authentication (design §7.2), over the server's own
+/// `/_feldspar/second-factor` routes, which answer on every host.
+const SECOND_FACTOR_TYPES: &str = r#"/** The signed-in account's two-factor authentication. `required`: its role
+ * requires it, so it cannot be turned off. */
+export type SecondFactorStatus = { enabled: boolean; required: boolean; recovery_codes_left: number };
+/** A new authenticator secret: show `qr_svg` (an SVG document) to scan, or
+ * `secret` to type in, then send the code the app shows to
+ * `secondFactorEnable`. */
+export type SecondFactorSetup = { secret: string; otpauth_url: string; qr_svg: string; account: string };
+/** Two-factor authentication turned on: the recovery codes, shown once. With a
+ * sign-in's challenge, `user` is who is now signed in. */
+export type SecondFactorEnabled = {
+  recovery_codes: string[];
+  user?: { id: string; email: string; role: number; email_verified: boolean };
+};
+
+"#;
+
+const SECOND_FACTOR_SIGNATURES: &str = r#"  /** The signed-in account's two-factor authentication. */
+  secondFactorStatus(): Promise<SecondFactorStatus>;
+  /** Start setting up two-factor authentication: for the signed-in account,
+   * or — with the `second_factor.token` a sign-in answered with `setup: true` —
+   * for the account signing in, whose role requires it. */
+  secondFactorSetup(token?: string): Promise<SecondFactorSetup>;
+  /** Turn it on with the first code from the app. With a sign-in's `token`
+   * this also finishes the sign-in. */
+  secondFactorEnable(code: string, token?: string): Promise<SecondFactorEnabled>;
+  /** Finish a sign-in that answered with `second_factor` (no session yet): its
+   * `token` and a code from the app, or a recovery code. A wrong code fails
+   * with 401, and can be tried again. */
+  secondFactorVerify(token: string, code: string): Promise<{ id: string; email: string; role: number; email_verified: boolean }>;
+  /** Turn two-factor authentication off; it takes a current code. */
+  secondFactorDisable(code: string): Promise<{ ok: boolean }>;
+  /** Replace the recovery codes; it takes a current code. */
+  secondFactorRecoveryCodes(code: string): Promise<{ recovery_codes: string[] }>;
+"#;
+
+const SECOND_FACTOR_METHODS: &str = r#"    async secondFactorStatus() {
+      const res = await doFetch(`${baseUrl}/_feldspar/second-factor`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("secondFactorStatus", res);
+      return (await res.json()) as SecondFactorStatus;
+    },
+    async secondFactorSetup(token?: string) {
+      const res = await doFetch(`${baseUrl}/_feldspar/second-factor/setup`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(token ? { token } : {}),
+      });
+      if (!res.ok) throw await clientError("secondFactorSetup", res);
+      return (await res.json()) as SecondFactorSetup;
+    },
+    async secondFactorEnable(code: string, token?: string) {
+      const res = await doFetch(`${baseUrl}/_feldspar/second-factor/enable`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify(token ? { code, token } : { code }),
+      });
+      if (!res.ok) throw await clientError("secondFactorEnable", res);
+      return (await res.json()) as SecondFactorEnabled;
+    },
+    async secondFactorVerify(token: string, code: string) {
+      const res = await doFetch(`${baseUrl}/_feldspar/second-factor/verify`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify({ token, code }),
+      });
+      if (!res.ok) throw await clientError("secondFactorVerify", res);
+      return (await res.json()) as { id: string; email: string; role: number; email_verified: boolean };
+    },
+    async secondFactorDisable(code: string) {
+      const res = await doFetch(`${baseUrl}/_feldspar/second-factor/disable`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify({ code }),
+      });
+      if (!res.ok) throw await clientError("secondFactorDisable", res);
+      return (await res.json()) as { ok: boolean };
+    },
+    async secondFactorRecoveryCodes(code: string) {
+      const res = await doFetch(`${baseUrl}/_feldspar/second-factor/recovery-codes`, {
+        method: "POST",
+        headers: requestHeaders("POST", true),
+        body: JSON.stringify({ code }),
+      });
+      if (!res.ok) throw await clientError("secondFactorRecoveryCodes", res);
+      return (await res.json()) as { recovery_codes: string[] };
     },
 "#;
 
@@ -1561,11 +1780,21 @@ fn emit_method_impl(out: &mut String, ep: &Endpoint) {
         Returns::Blob
     } else if ep.output.is_empty() {
         Returns::Nothing
+    } else if is_sign_in(ep) {
+        Returns::SignIn(format!("{pascal}Response"))
     } else {
         Returns::Json(format!("{pascal}Response"))
     };
     emit_request(out, ep, &Request::new(&result));
     out.push_str("    },\n");
+}
+
+/// Whether `ep` signs somebody in with a password or an emailed link, so its
+/// answer may be a two-factor challenge rather than a session (design §7.2).
+fn is_sign_in(ep: &Endpoint) -> bool {
+    !ep.output.is_empty()
+        && !ep.binary_output
+        && crate::rest::PASSWORD_SIGN_INS.contains(&ep.name.as_str())
 }
 
 /// Emit the factory's implementation of a stream query's method (TODO F7):
@@ -1645,6 +1874,10 @@ fn emit_url_helper_impl(out: &mut String, ep: &Endpoint) {
 enum Returns {
     /// Read it as JSON and assert it is this type.
     Json(String),
+    /// A sign-in's answer, as [`Returns::Json`], which may be a two-factor
+    /// challenge instead of a session: `signInAnswered` sends a browser to the
+    /// server's page for the code, unless the application answers it itself.
+    SignIn(String),
     /// Read it as bytes.
     Blob,
     /// Read nothing.
@@ -1737,6 +1970,12 @@ fn emit_request(out: &mut String, ep: &Endpoint, req: &Request<'_>) {
         }
         Returns::Json(ty) => {
             let _ = writeln!(out, "{pad}return (await res.json()) as {ty};");
+        }
+        Returns::SignIn(ty) => {
+            let _ = writeln!(
+                out,
+                "{pad}return signInAnswered(baseUrl, (await res.json()) as {ty});"
+            );
         }
     }
 }

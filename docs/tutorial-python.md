@@ -32,19 +32,38 @@ Go to **Settings → Development**. There is a **Python** panel, and it says one
 
 **Python is a build-time decision, not a setting.** There is no flag that turns it on: the
 interpreter is *linked* into the binary by the build, so a server without it cannot grow one at
-run time. In particular **the shipped release tarball has no Python** — that artifact is a
-static binary with no shared-library dependencies at all, and a linked `libpython` is exactly a
-shared-library dependency. A Python-capable server is a separate, dynamically-linked build:
+run time.
+
+**The easy way is the release**, which has Python and needs **nothing
+Python-related on the host**: no `python3`, no `libpython`, no `python3-venv`, on any of the
+distributions it supports (Debian, Ubuntu, Fedora, RHEL, openSUSE, Arch, Alpine;
+docs/OPERATIONS.md §1.1):
+
+```bash
+curl -fsSL https://feldspar-latest-static.saltcorn.com/install.sh | sh
+feldspar python check                   # the interpreter starts, imports ssl, reaches PyPI
+```
+
+`python/` in that tarball holds a pinned CPython 3.13 that the binary finds next to itself, and
+`pip` runs that same interpreter, so the two can never disagree on a version. `feldspar python
+check` starts it without a database and says where it found its standard library, which libc the
+process runs on, and whether `ssl`, `sqlite3`, `ctypes` and `zoneinfo` load and PyPI answers
+over HTTPS.
+
+A host still on the static release that came before has no Python; running the installer
+again moves it to the release above (docs/OPERATIONS.md §3.2).
+
+**Building it yourself** is the other way:
 
 ```bash
 sudo apt install python3-dev            # the libpython this links against
 cargo build --release -p sc-cli --features python
 ```
 
-The result runs on any host that has a matching `libpython3.x.so` present — CPython 3.11 or
-newer, one build serving all of them. On a host without one it will not start at all: you get a
-dynamic-linker error before the server prints anything, which is the honest failure and the
-reason the feature is off by default.
+The result runs on any host that has the `libpython3.x.so` it was linked against — the version
+of the `python3` it was built with (`PYO3_PYTHON` picks another). On a host without one it will
+not start at all: you get a dynamic-linker error before the server prints anything, which is the
+honest failure and the reason the feature is off by default.
 
 Once it is running, five flags shape it, all needing a restart:
 
@@ -54,7 +73,7 @@ Once it is running, five flags shape it, all needing a restart:
 | `--python-max-inflight N` | 32 | how many Python runs may be resident at once |
 | `--python-max-stuck N` | 8 | how many runs may fail to come back before Python is refused |
 | `--python-dir PATH` | the data directory | the virtual environment Python modules install into |
-| `--python-bin PATH` | `python3` | the interpreter `pip` runs under |
+| `--python-bin PATH` | the bundled `python/bin/python3` beside `bin/feldspar`, else `python3` | the interpreter `pip` runs under |
 
 The panel reports what each of them is set to — the first as the state itself — plus what is
 installed in the environment and how many runs are in flight. Nothing on it is editable, because
@@ -561,6 +580,10 @@ are different repairs, so they are different sentences.
 > versions — because a compiled extension built for one version and loaded into another does not
 > reliably fail, it reads the wrong memory in silence. Point `--python-bin` at the interpreter
 > matching the one the server was built against, and delete the environment so it is rebuilt.
+> On the release with a bundled CPython the default *is* that interpreter, and an environment an
+> earlier release built with the host's `python3.13` is moved onto the bundled one at the next
+> install (`python3 -m venv --upgrade`, which keeps what is installed in it). An environment of a
+> different minor version is still refused.
 
 ### Configure it, and use it
 

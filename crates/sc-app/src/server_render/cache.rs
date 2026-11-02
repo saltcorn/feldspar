@@ -405,7 +405,7 @@ pub fn watched_tables(cat: &Catalog, read: &BTreeSet<String>) -> BTreeSet<String
                 t.fields
                     .iter()
                     .filter_map(|f| match &f.kind {
-                        DataFieldKind::Key { target_table, .. } => Some(target_table.0.clone()),
+                        DataFieldKind::Key { target_table, .. } => Some(target_table.clone()),
                         _ => None,
                     })
                     .collect()
@@ -425,7 +425,7 @@ pub fn watched_tables(cat: &Catalog, read: &BTreeSet<String>) -> BTreeSet<String
     for table in &tables {
         let refers = table.fields.iter().any(|f| {
             matches!(&f.kind, DataFieldKind::Key { target_table, .. }
-                if direct.contains(&target_table.0))
+                if direct.contains(target_table))
         });
         if refers {
             out.insert(table.name.clone());

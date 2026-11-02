@@ -13,12 +13,16 @@ rust-version.workspace = true
 autotests = false
 
 [dependencies]
+sc-docs.workspace = true
 sc-error.workspace = true
 # A preview's `returns` mismatch is a warning (TODO F4.1).
 sc-log.workspace = true
 # Per-query rate limits and login throttling (TODO F4.3, F4.4).
 sc-ratelimit.workspace = true
 sc-catalog.workspace = true
+# The row-access layer (rows, ownership, filters, `Scoped`): every API surface
+# here reads and writes rows through it (TODO-code-quality Q3.1).
+sc-access.workspace = true
 # Ownership-formula enforcement (§7.3, Phase 5). Without the `eval` feature:
 # this crate translates formulas and holds an `Arc<dyn JsEvaluator>` seam; the
 # V8 engine behind it is constructed by the server and injected.
@@ -35,6 +39,9 @@ sc-action.workspace = true
 # An application's invitation and forgotten-password endpoints send their links
 # by email, through the same `Mailer` a `send_email` action uses (§18.2).
 sc-email.workspace = true
+# The address vocabulary (`Mailbox`, `parse_mailbox`) the from-address setting is
+# declared and parsed with.
+sc-config.workspace = true
 # The row layer (`rows`) executes table CRUD for every API surface, so it speaks
 # the query language and the type system directly.
 sc-db.workspace = true
@@ -92,7 +99,7 @@ rusqlite.workspace = true
 # that is not Postgres — which is what having a `DatabaseDriver` trait is for.
 sc-db-sqlite.workspace = true
 sc-db-postgres.workspace = true
-sc-test-harness.workspace = true
+sc-test-harness = { workspace = true, features = ["catalog"] }
 # The real engines, for the two things a mock would hide: an ownership formula
 # the translator refuses is decided by V8 (`DenoEvaluator`), and a delegated read
 # from a code body must not deadlock against it (`CodeRuntime`) — see

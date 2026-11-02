@@ -61,12 +61,13 @@ than skimming. For BooksDB it says:
 - **restored:** the three tables, their columns and rows, the file store and its file, one
   account, `application booksdb`, `0 library items into application booksdb`, `7 views into
   application booksdb`, `1 page into application booksdb`, and **`application booksdb
-  serving`**.
+  serving`**. The two triggers are there too: `AddBook`, a v1 workflow, with its workflow, and
+  `TrimPages`, a v1 `modify_row`. This server has no `modify_row`, so `TrimPages` is translated
+  into a `run_js_code` body that does the same thing (see "What a Saltcorn 1 backup's actions
+  become" in [tutorial-triggers.md](tutorial-triggers.md)).
 - **not restored**, each with its reason:
   - the account came without its password — v1 hashes with bcrypt, this server with argon2id,
     so set a password on it;
-  - trigger `AddBook` is a v1 workflow, and trigger `TrimPages` runs `modify_row`, which is not
-    an action this server has;
   - the menu's 10 *Admin Page* and 5 *User Page* entries, which point at Saltcorn 1's own
     screens — Saltcorn UI's menu has its own Login and Logout;
   - the tag and the two plugins.
@@ -118,10 +119,9 @@ Authors, with *Show*, *Edit*, a *TrimPages* action and *Delete* on each row.
 - **Edit** renders *Edit Books*, with the author and publisher as selects. Change the page count,
   **Save**, and you are back where you came from with the new value.
 - **Add row** (at `/view/Edit Books` with no id) creates a book; **Delete** on its row deletes it.
-- **TrimPages** answers with an error naming `TrimPages`: the view still names the trigger, and
-  the trigger was not restored. Write it again as this server writes triggers — **Triggers → New**,
-  event *none*, action `run_js_code` — and the column runs it. The application already declares
-  it.
+- **TrimPages** takes 10% off the row's page count, as it did in v1. Open the trigger under
+  **Triggers** to see the body the import wrote. It starts with a comment naming v1's
+  `modify_row`, and it contains v1's `{ pages: Math.round(pages*0.9)}` unchanged.
 
 ### Step A6 — What the browser was sent
 

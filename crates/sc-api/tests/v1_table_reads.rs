@@ -14,6 +14,7 @@
 //! object the trigger author will get.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::code_host::{TableHost, schema_snapshot};
@@ -330,12 +331,16 @@ async fn a_rendered_read_carries_the_readers_own_rule_or_says_it_may_not_have_on
     // `books` is readable by nobody below role 40, and by its owner's country
     // above it — a formula the translator can lower, which is what lets it be
     // carried *inside* a statement at all.
-    let mut books = TableMeta::new("books").access(40, 40);
+    let mut books = TableMeta::new("books").access(Role::of(40), Role::of(40));
     books.set_ownership_formula(Some("authorⱵcountry === user.country"));
     save_table_meta(&catalog, &books).await?;
     // `reviews`, by contrast, is the administrator's alone: no floor a reader
     // meets and no formula to extend it.
-    save_table_meta(&catalog, &TableMeta::new("reviews").access(1, 1)).await?;
+    save_table_meta(
+        &catalog,
+        &TableMeta::new("reviews").access(Role::ADMIN, Role::ADMIN),
+    )
+    .await?;
     catalog.reload().await?;
 
     let reader = |country: &str| {
@@ -351,7 +356,7 @@ async fn a_rendered_read_carries_the_readers_own_rule_or_says_it_may_not_have_on
     // formula in it — the same predicate `ownership::aggregate_guard` hands an
     // aggregate, because a rendered statement decides once for all its rows
     // exactly as an aggregate does.
-    let host = TableHost::new(&catalog).caused_by(80, Some(reader("GB")));
+    let host = TableHost::new(&catalog).caused_by(Role::of(80), Some(reader("GB")));
     let out = host
         .call(json!({
             "op": "select", "table": "books", "authority": "user", "render": true,

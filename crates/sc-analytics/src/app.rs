@@ -28,6 +28,7 @@
 //! application decides what may be asked for, and the table permissions and
 //! ownership formulas decide which rows come back.
 
+use sc_types::Role;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sc_catalog::Catalog;
@@ -124,7 +125,7 @@ pub struct AnalyticsConfig {
     /// What it shows.
     pub mode: Mode,
     /// The least privileged role that may use it.
-    pub min_role: u8,
+    pub min_role: Role,
     /// Fixed mode: the workspaces shown, by name or id, in order.
     pub workspaces: Vec<String>,
     /// Self-serve mode: whether users may create and edit datasets.
@@ -163,8 +164,7 @@ impl AnalyticsConfig {
         let min_role = get(CFG_MIN_ROLE)
             .as_ref()
             .and_then(Json::as_u64)
-            .and_then(|r| u8::try_from(r).ok())
-            .filter(|r| (1..=100).contains(r))
+            .and_then(|r| Role::try_from(r).ok())
             .ok_or_else(|| refuse(format!("`{CFG_MIN_ROLE}` is a role from 1 to 100")))?;
         let strings = |name: &str, what: &str| -> Result<Vec<String>> {
             match get(name) {
@@ -188,10 +188,18 @@ impl AnalyticsConfig {
         let workspaces = strings(CFG_WORKSPACES, "workspace names or ids")?;
         let mut workspace_kinds = Vec::new();
         for name in strings(CFG_WORKSPACE_KINDS, "kinds of workspace")? {
-            let kind = WorkspaceKind::parse(&name)
-                .map_err(|e| refuse(format!("`{CFG_WORKSPACE_KINDS}`: {}", plain(&e))))?;
-            kind.check_available()
-                .map_err(|e| refuse(format!("`{CFG_WORKSPACE_KINDS}`: {}", plain(&e))))?;
+            let kind = WorkspaceKind::parse(&name).map_err(|e| {
+                refuse(format!(
+                    "`{CFG_WORKSPACE_KINDS}`: {}",
+                    e.message_and_causes()
+                ))
+            })?;
+            kind.check_available().map_err(|e| {
+                refuse(format!(
+                    "`{CFG_WORKSPACE_KINDS}`: {}",
+                    e.message_and_causes()
+                ))
+            })?;
             if !workspace_kinds.contains(&kind) {
                 workspace_kinds.push(kind);
             }
@@ -217,14 +225,6 @@ impl AnalyticsConfig {
             }
             _ => Ok(config),
         }
-    }
-}
-
-/// The message of an error, without the kind's prefix.
-fn plain(e: &Error) -> String {
-    match e.repr() {
-        sc_error::Repr::Invalid(m) => m.clone(),
-        _ => e.to_string(),
     }
 }
 
@@ -277,7 +277,9 @@ pub async fn resolve_workspaces(catalog: &Catalog, refs: &[String]) -> Result<Ve
                 ws.name
             )));
         }
-        ws.kind.check_available().map_err(|e| refuse(plain(&e)))?;
+        ws.kind
+            .check_available()
+            .map_err(|e| refuse(e.message_and_causes()))?;
         if !out.iter().any(|w| w.id == ws.id) {
             out.push(ws);
         }
@@ -329,8 +331,8 @@ impl AppScope {
     }
 
     /// Whether a caller of `role` may use the application at all.
-    pub fn admits_role(&self, role: u8) -> bool {
-        role <= self.config.min_role
+    pub fn admits_role(&self, role: Role) -> bool {
+        role.meets(self.config.min_role)
     }
 
     /// The caller a read in this application is guarded as: `caller`, and in
@@ -497,7 +499,7 @@ mod tests {
         })))
         .expect("reads");
         assert_eq!(fixed.mode, Mode::Fixed);
-        assert_eq!(fixed.min_role, 40);
+        assert_eq!(fixed.min_role, Role::of(40));
         assert_eq!(fixed.workspaces, vec!["Incidents".to_owned()]);
         assert!(!fixed.dataset_editor);
 
@@ -512,7 +514,7 @@ mod tests {
 
         // The role floor defaults to the admin's.
         let default = AnalyticsConfig::read(&attrs(json!({ "workspaces": ["A"] }))).expect("reads");
-        assert_eq!((default.mode, default.min_role), (Mode::Fixed, 1));
+        assert_eq!((default.mode, default.min_role), (Mode::Fixed, Role::ADMIN));
 
         let refused = |value: Json, says: &str| {
             let err = AnalyticsConfig::read(&attrs(value)).expect_err("refused");
@@ -598,7 +600,7 @@ mod tests {
         }));
         let user = Uuid::new_v4();
         let caller = Caller {
-            role: 40,
+            role: Role::of(40),
             user: Some(BTreeMap::from([(
                 "id".to_owned(),
                 sc_query::Value::Uuid(user),
@@ -612,7 +614,7 @@ mod tests {
         let mine = Sharing::owned_by(Some(user));
         let admins = Sharing::default();
         let shared = Sharing {
-            share_role: Some(80),
+            share_role: Some(Role::of(80)),
             ..admins
         };
         assert!(app.sees_dataset(&caller, &houses, &mine, &library));
@@ -627,7 +629,7 @@ mod tests {
         // Reads are guarded to the application's tables.
         let narrowed = app.narrow(caller.clone());
         assert!(narrowed.may_name("houses") && !narrowed.may_name("incidents"));
-        assert!(app.admits_role(40) && !app.admits_role(80));
+        assert!(app.admits_role(Role::of(40)) && !app.admits_role(Role::of(80)));
 
         let mut ws = Workspace::new("Mine", WorkspaceKind::DataExplorer, Some(user));
         assert!(!app.sees_workspace(&caller, &ws), "not this application's");
@@ -652,7 +654,7 @@ mod tests {
         app.shown = vec![ws.clone()];
         app.datasets = BTreeSet::from([d.id]);
         let caller = Caller {
-            role: 40,
+            role: Role::of(40),
             user: None,
             tables: None,
         };

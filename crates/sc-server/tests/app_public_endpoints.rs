@@ -22,6 +22,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
+use sc_types::Role;
 use std::sync::Arc;
 
 use axum::Router;
@@ -30,15 +32,13 @@ use axum::http::{Request, StatusCode, header};
 use sc_action::{EventKind, Trigger, save_trigger};
 use sc_api::{CustomParam, CustomQuery, Method, QueryLanguage, ValueType, set_custom_queries};
 use sc_app::{ApiConfig, Application, AssetBundle, CodeFramework, FrameworkRef, TriggerRef};
-use sc_auth::{ROLE_PUBLIC, Role, SessionStore, create_user, save_role};
-use sc_catalog::{Catalog, TableId, TableMeta, bootstrap_table_meta, save_table_meta};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
+use sc_auth::{RoleDef, SessionStore, create_user, save_role};
+use sc_catalog::{TableMeta, bootstrap_table_meta, save_table_meta};
 use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MountedApp, SESSION_COOKIE, ServerConfig, admin_handlers,
-    build_router_with_apps, default_js_evaluator, install_triggers,
+    AppMounts, MountedApp, SESSION_COOKIE, ServerConfig, admin_handlers, build_router_with_apps,
+    default_js_evaluator, install_triggers,
 };
-use sc_test_harness::TestDb;
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -54,7 +54,7 @@ const SCHEMA: &str = "\
 const EDITOR: &str = "editor@example.com";
 const ADMIN: &str = "admin@example.com";
 const PASSWORD: &str = "correct-horse";
-const ROLE_EDITOR: u8 = 80;
+const ROLE_EDITOR: Role = Role::of(80);
 
 /// One request, spelled out: exactly the cookies and the CSRF header given, and
 /// nothing a helper might add behind the test's back.
@@ -113,7 +113,7 @@ fn cookie(set_cookies: &[String], name: &str) -> Option<String> {
 }
 
 /// A trigger writing a guestbook row from the payload and the caller.
-fn sign_trigger(name: &str, min_role: u8) -> Trigger {
+fn sign_trigger(name: &str, min_role: Role) -> Trigger {
     Trigger::new(name, EventKind::None, "insert_row")
         .config("table", "guestbook")
         .config(
@@ -134,7 +134,7 @@ fn guests_app() -> Application {
                 "/stats/count",
                 "SELECT count(*) AS n FROM guestbook",
             )
-            .min_role(ROLE_PUBLIC),
+            .min_role(Role::PUBLIC),
             // A POST, so the CSRF middleware has something to say about it.
             CustomQuery::new(
                 "latestSignature",
@@ -142,7 +142,7 @@ fn guests_app() -> Application {
                 "/stats/latest",
                 "SELECT message FROM guestbook ORDER BY id DESC LIMIT 1",
             )
-            .min_role(ROLE_PUBLIC),
+            .min_role(Role::PUBLIC),
             // JavaScript: a GET reading its query string, the declared
             // parameter arriving as a number…
             CustomQuery::new(
@@ -154,7 +154,7 @@ fn guests_app() -> Application {
             )
             .language(QueryLanguage::Javascript)
             .params([CustomParam::new("n", ValueType::Int)])
-            .min_role(ROLE_PUBLIC),
+            .min_role(Role::PUBLIC),
             // …and a POST writing through the row layer from its body.
             CustomQuery::new(
                 "signJs",
@@ -165,7 +165,7 @@ fn guests_app() -> Application {
                  return { signatures: await db.guestbook.count() };",
             )
             .language(QueryLanguage::Javascript)
-            .min_role(ROLE_PUBLIC),
+            .min_role(Role::PUBLIC),
             // TODO F1.1, F1.2 and F1.4: no params, yet the body arrives; the
             // web codecs; and a status of the body's choosing.
             CustomQuery::new(
@@ -176,7 +176,7 @@ fn guests_app() -> Application {
                    body: { uuid: crypto.randomUUID().length, b: btoa('hi'), echo: body } });",
             )
             .language(QueryLanguage::Javascript)
-            .min_role(ROLE_PUBLIC),
+            .min_role(Role::PUBLIC),
             CustomQuery::new(
                 "deny",
                 Method::Get,
@@ -184,7 +184,7 @@ fn guests_app() -> Application {
                 "throw httpError(401, 'sign in');",
             )
             .language(QueryLanguage::Javascript)
-            .min_role(ROLE_PUBLIC),
+            .min_role(Role::PUBLIC),
             CustomQuery::new(
                 "taken",
                 Method::Post,
@@ -192,7 +192,7 @@ fn guests_app() -> Application {
                 "httpError(409, 'taken', { field: 'email', taken: true });",
             )
             .language(QueryLanguage::Javascript)
-            .min_role(ROLE_PUBLIC),
+            .min_role(Role::PUBLIC),
             CustomQuery::new(
                 "cookie",
                 Method::Get,
@@ -200,16 +200,34 @@ fn guests_app() -> Application {
                 "return response({ headers: { 'set-cookie': 'sid=forged' }, body: {} });",
             )
             .language(QueryLanguage::Javascript)
-            .min_role(ROLE_PUBLIC),
+            .min_role(Role::PUBLIC),
             CustomQuery::new("spin", Method::Get, "/js/spin", "while (true) {}")
                 .language(QueryLanguage::Javascript)
-                .min_role(ROLE_PUBLIC),
+                .min_role(Role::PUBLIC),
+            // A read of the admin-only table, run as an anonymous caller: the
+            // refusal let through, and the same refusal caught and replaced.
+            CustomQuery::new(
+                "peek",
+                Method::Get,
+                "/js/peek",
+                "return await db.secrets.rows();",
+            )
+            .language(QueryLanguage::Javascript)
+            .min_role(Role::PUBLIC),
+            CustomQuery::new(
+                "peekCaught",
+                Method::Get,
+                "/js/peek-caught",
+                "try { await db.secrets.rows(); } catch (e) { throw new Error('no secrets'); }",
+            )
+            .language(QueryLanguage::Javascript)
+            .min_role(Role::PUBLIC),
         ],
     )
     .unwrap();
     Application::new("Guests", "guests", FrameworkRef::new("code"))
-        .with_table(TableId("guestbook".to_owned()))
-        .with_table(TableId("secrets".to_owned()))
+        .with_table("guestbook".to_owned())
+        .with_table("secrets".to_owned())
         .with_api(api)
         .with_trigger(TriggerRef::new("sign"))
         .with_trigger(TriggerRef::new("sign_as_editor"))
@@ -263,33 +281,19 @@ impl Server {
 }
 
 async fn setup() -> sc_error::Result<Server> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(&format!(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$; {SCHEMA}"
-        ))
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().sql(SCHEMA).build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     bootstrap_table_meta(&catalog).await?;
-    save_role(&catalog, &Role::new(ROLE_EDITOR, "Editor")).await?;
+    save_role(&catalog, &RoleDef::new(ROLE_EDITOR, "Editor")).await?;
     create_user(&catalog, EDITOR, PASSWORD, ROLE_EDITOR).await?;
-    create_user(&catalog, ADMIN, PASSWORD, sc_auth::ROLE_ADMIN).await?;
+    create_user(&catalog, ADMIN, PASSWORD, Role::ADMIN).await?;
 
     // The guestbook is open to everybody, both ways; `secrets` keeps the
     // default, admin-only.
     save_table_meta(
         &catalog,
-        &TableMeta::new("guestbook").access(ROLE_PUBLIC, ROLE_PUBLIC),
+        &TableMeta::new("guestbook").access(Role::PUBLIC, Role::PUBLIC),
     )
     .await?;
 
@@ -298,7 +302,7 @@ async fn setup() -> sc_error::Result<Server> {
     let models = sc_server::install_models(&catalog, sc_model::DEFAULT_MAX_ROWS).await?;
     let dispatcher = install_triggers(&catalog, evaluator.clone(), &agents, &models).await?;
     for trigger in [
-        sign_trigger("sign", ROLE_PUBLIC),
+        sign_trigger("sign", Role::PUBLIC),
         sign_trigger("sign_as_editor", ROLE_EDITOR),
     ] {
         save_trigger(&catalog, &dispatcher.registry(), &trigger).await?;
@@ -312,7 +316,7 @@ async fn setup() -> sc_error::Result<Server> {
                 "code",
                 "if (payload.boom) throw new Error('kaboom'); throw httpError(402, 'pay first');",
             )
-            .min_role(ROLE_PUBLIC),
+            .min_role(Role::PUBLIC),
     )
     .await?;
     dispatcher.reload(&catalog).await?;
@@ -538,6 +542,16 @@ async fn a_code_body_chooses_its_status_and_never_shows_its_stack() -> sc_error:
     let (status, body, _) = send(r, "GET", "/api/js/spin", None, &[], None).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert_eq!(body, json!({ "error": "timeout" }));
+
+    // A refusal the body let escape is a 403 naming it, to anybody; the same
+    // refusal caught and replaced is the 500 any other throw is.
+    let (status, body, _) = send(r, "GET", "/api/js/peek", None, &[], None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], json!("you may not read `secrets`"), "{body}");
+    assert!(body["id"].is_string(), "{body}");
+    let (status, body, _) = send(r, "GET", "/api/js/peek-caught", None, &[], None).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["error"], json!("internal error"), "{body}");
 
     // An exposed trigger is the same contract.
     let (status, body, _) =

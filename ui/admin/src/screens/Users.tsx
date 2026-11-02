@@ -148,6 +148,30 @@ export function Users() {
       () => api.setUserDisabled(user.id, { disabled }),
     );
 
+  /** A check user is one a checklist may run as on an agent's say-so
+   * (CHECKLISTS.md §4): an account kept for checking, not a person's. */
+  const setCheckUser = (user: UserRow, on: boolean) =>
+    void act(
+      on ? "Could not make the user a check user." : "Could not unmark the check user.",
+      () => api.setCheckUser(user.id, { check_user: on }),
+    );
+
+  /** For somebody who lost their phone and their recovery codes: their next
+   * sign-in takes the password alone (or, if their role requires a second
+   * factor, sets a new one up). Their sessions end with it. */
+  const resetSecondFactor = (user: UserRow) => {
+    if (
+      !window.confirm(
+        t("Turn off two-factor authentication for {address}?", { address: user.email }),
+      )
+    ) {
+      return;
+    }
+    void act("Could not reset two-factor authentication.", () =>
+      api.resetUserSecondFactor(user.id),
+    );
+  };
+
   const forceLogout = (user: UserRow) =>
     void act("Could not end the sessions.", () => api.forceLogoutUser(user.id));
 
@@ -252,6 +276,24 @@ export function Users() {
                       ) : (
                         <StatusBadge tone="green"><T text="Active" /></StatusBadge>
                       )}
+                      {u.second_factor && (
+                        <StatusBadge
+                          tone="blue"
+                          className="ms-1"
+                          title={t("Signs in with a code from an authenticator app")}
+                        >
+                          <T text="2FA" />
+                        </StatusBadge>
+                      )}
+                      {u.check_user && (
+                        <StatusBadge
+                          tone="blue"
+                          className="ms-1"
+                          title={t("An account checklists may run as")}
+                        >
+                          <T text="Check user" />
+                        </StatusBadge>
+                      )}
                     </td>
                     {columns.map((f) => (
                       <td key={f.name}>{displayValue(bag[f.name])}</td>
@@ -285,6 +327,11 @@ export function Users() {
                             <Dropdown.Item onClick={() => resetPassword(u)}>
                               <T text="Set random password" />
                             </Dropdown.Item>
+                            {u.second_factor && (
+                              <Dropdown.Item onClick={() => resetSecondFactor(u)}>
+                                <T text="Reset two-factor" />
+                              </Dropdown.Item>
+                            )}
                             <Dropdown.Item onClick={() => forceLogout(u)}>
                               <T text="Force logout" />
                             </Dropdown.Item>
@@ -294,6 +341,9 @@ export function Users() {
                             </Dropdown.Item>
                             <Dropdown.Item onClick={() => setCrediting(u)}>
                               <T text="LLM credits" />
+                            </Dropdown.Item>
+                            <Dropdown.Item onClick={() => setCheckUser(u, !u.check_user)}>
+                              {u.check_user ? t("Not a check user") : t("Make check user")}
                             </Dropdown.Item>
                             <Dropdown.Divider />
                             <Dropdown.Item onClick={() => setDisabled(u, !u.disabled)}>

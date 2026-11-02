@@ -1,0 +1,753 @@
+//! The core built-in agent traits (layer 9; technical design §11.3, TODO Phase 3).
+//!
+//! Every trait Saltcorn ships an agent with, in one crate — the counterpart of
+//! `sc-action-builtins` and, deliberately, at the same layer for the same reason.
+//! [`builtin_traits`] is the single constructor that assembles the set.
+//!
+//! ## Why a crate of its own, above the row layer
+//!
+//! A trait that touches rows must go through **`sc-api`**, not around it: a read
+//! is the same read an API caller makes, under the same §7.3 access rule
+//! (`sc_access::read_rows_as`), and a write is the same write, under the same rule's
+//! other half (`sc_access::insert_row_as` and its siblings), with the same coercion,
+//! the same rich-type and `File`-field validation and the same emitted events.
+//! That fixes these *above* layer 8, while `sc-agent` (layer 7) stays what a
+//! plugin needs to write a trait of its own: the
+//! [`AgentTrait`](sc_agent::AgentTrait) seam, and nothing that knows which traits
+//! exist.
+//!
+//! `sc-agent` therefore registers **nothing**, and this crate is the first
+//! consumer of that seam rather than a privileged one.
+//!
+//! ## The set
+//!
+//! Twelve traits over seven things an agent can be given. **Tables**:
+//! [`QueryTable`] reads one, and [`EditTableRows`] changes one under three
+//! separate checkboxes — insert, update, delete — so a read-only agent is the
+//! default shape and each way of changing data is a deliberate act with a form
+//! field attached. **Actions**: [`RunJsCode`] is one JavaScript
+//! body kept in the agent's own configuration, run as a `run_js_code` action
+//! body is; [`RunTrigger`] exposes one configured
+//! trigger, which is what connects an agent to the whole of §10 (and, once §10.3
+//! lands, to workflows unchanged, because a workflow is a trigger). **Code**:
+//! [`Coding`] is the whole loop over one configured file store (optionally
+//! rooted at a sub-directory) — reading, listing and searching always, writing
+//! and editing under one checkbox, and running a script the project's own
+//! `package.json` declares under another, which is the bounded thing that ships
+//! instead of a shell (decision 6) — and [`BuildApplication`] builds the
+//! application whose source that store is and hands back its diagnostics. And
+//! **the chat's own screen**: [`PreviewPane`] contributes no tool at all — it
+//! says that this agent's work can be looked at, and at which URL, and the chat
+//! puts that page beside the conversation. And
+//! **the application itself**: [`AdminCopilot`] describes and edits the catalog
+//! *and* the trigger set — the first *app-building* trait, and the first that
+//! does not name a table in its configuration, because the tables it makes do
+//! not exist when it is configured. It is also where the question "how does a
+//! model configure one of an open-ended set of actions, each with its own
+//! settings?" is answered, by handing it those settings when it asks rather than
+//! by a second, hidden inference call. And **other agents**: [`Subagent`] hands one bounded task to one
+//! configured agent, which does it in a context of its own and reports back —
+//! the trait that makes an agent something an agent can be given, and the reason
+//! `sc-agent` grew a [`Delegator`](sc_agent::Delegator) seam. And **the
+//! web**: [`Http`] fetches pages and calls endpoints — documentation for a
+//! coding agent, an API for anything else — and shows a long document a window
+//! at a time, with its outline and a search, so one page cannot take over the
+//! context. It reaches public addresses only unless told otherwise, and only the
+//! hosts its configuration lists when it lists any.
+//!
+//! ## And one thing that is not a trait
+//!
+//! [`RunAgent`] is an `Action`, not an [`AgentTrait`](sc_agent::AgentTrait): it
+//! is how a **trigger runs an agent** (§11.5), the other direction from
+//! [`RunTrigger`]. It is in this crate for the same reason everything else here
+//! is — it drives a loop whose tools reach the row layer — and it is registered
+//! through [`register_agent_actions`] rather than with `sc-action-builtins`' set,
+//! because it needs two things assembled first that no other action does: the
+//! trait registry the agents were validated against, and how this deployment
+//! connects a provider.
+//!
+//! ## What every trait here has in common
+//!
+//! - **It names its target in its configuration.** There is no trait that can
+//!   reach *any* table, because "which tables may this agent see?" is the first
+//!   question an admin needs to be able to answer off the agent's definition.
+//!   **[`AdminCopilot`] is the one exception**, and a deliberate one: a
+//!   trait that creates tables cannot name them in advance, so it is scoped by
+//!   *what it may do* — four grants — rather than by what it may reach, and it
+//!   refuses any caller who is not an admin (§11.3).
+//! - **Its tool names are derived from that configuration** (`query_books`, not
+//!   `query`), so one trait enabled twice offers two distinguishable tools —
+//!   which is what makes a collision refusable on save (§11.2). See
+//!   [`tool_names`]. `AdminCopilot`'s six names are fixed for the same reason it
+//!   names no table; enabling it twice therefore *collides*, which is the
+//!   intended outcome.
+//! - **A trait may offer several tools, and may withhold some of them.**
+//!   [`Coding`] offers seven over one scope and declares only the ones its grants
+//!   allow, which is how "may this agent change the source?" became a checkbox
+//!   rather than a second trait with the same form on it.
+//! - **Its tool is described by what it is configured against**: the table's own
+//!   fields, with their types, in the description *and* in the JSON schema. A
+//!   model left to guess a column name will guess, and the guess costs a turn.
+//! - **It runs as the run's caller** ([`RunCaller`](sc_agent::RunCaller)), never
+//!   as the server. An agent is not a way around ownership or row-level
+//!   security: the same table read by two callers gives two answers, and a write
+//!   reaches only the rows that caller could have been shown.
+//! - **Everything it refuses, it refuses by name**, listing the alternatives
+//!   where there are any. These errors are read by a model that can only recover
+//!   if it is told, so they are written for that reader.
+//! - **Its `validate_config` checks what the spec cannot** — that the table
+//!   exists, that it is addressable by primary key, that a named field is real
+//!   and writable, that the trigger exists — on save *and* on load, so an agent
+//!   whose world changed underneath it leaves the live set with a reason instead
+//!   of failing mid-conversation.
+
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
+    "sc-agent-builtins: the agents' memory store (`_fd_agent_memory`)",
+);
+
+mod admin_copilot;
+mod ask_user;
+mod build_application;
+mod coding;
+mod docs;
+mod edit_table_rows;
+mod files;
+mod generate_js;
+pub mod http;
+mod library_tools;
+mod mcp_server;
+pub mod media;
+pub mod memory;
+mod plan_approval;
+mod preload;
+mod preview_pane;
+mod prompt_picker;
+mod query_table;
+mod retrieval;
+mod run_agent;
+mod run_js_code;
+mod run_trigger;
+pub mod sandbox;
+mod search_table;
+mod similar_rows;
+mod skill_file;
+mod subagent;
+mod table;
+mod web_search;
+mod write;
+
+use std::sync::Arc;
+
+use sc_action::ActionRegistry;
+use sc_agent::{AgentRegistry, ProviderConnector};
+use sc_error::Result;
+
+pub use table::{CFG_FIELDS, CFG_MAX_ROWS, CFG_TABLE};
+
+pub use files::{CFG_ROOT, CFG_STORE, FileScope, configured_scope, slugify};
+
+pub use admin_copilot::{
+    AdminCopilot, CFG_ALLOW_ACCESS, CFG_ALLOW_APPLICATIONS, CFG_ALLOW_CREATE, CFG_ALLOW_DROP,
+    CFG_ALLOW_EDIT, CFG_ALLOW_TRIGGERS,
+};
+pub use ask_user::{
+    AskUser, CFG_ANSWER_PROMPT, CFG_ASK_PROMPT, CFG_ASK_TOOL_NAME, CFG_DISCUSS_LABEL,
+    CFG_DISCUSS_PROMPT, DEFAULT_ASK_TOOL, DISCUSS_VALUE,
+};
+pub use build_application::{BuildApplication, CFG_APPLICATION};
+pub use coding::{
+    Baseline, CFG_CHECKS, CFG_DIAGNOSE, CFG_EDIT_FORMAT, CFG_MAX_LINES, CFG_MAX_RESULTS,
+    CFG_MAY_CHECK, CFG_MAY_EDIT, CFG_MAY_INSTALL_MODULES, CFG_MAY_RUN_SCRIPTS, CFG_MAY_USE_SHELL,
+    CFG_MAY_VIEW_APP, CFG_REPO_MAP_TOKENS, CFG_SHELL_IMAGE, CFG_SHELL_NETWORK, CFG_SHELL_RUNTIME,
+    CFG_SHELL_SANDBOX, CFG_SHELL_TIMEOUT, CFG_SHELL_TIMEOUT_MAX, CFG_TIMEOUT, CFG_VIEW_APP_TIMEOUT,
+    CFG_VIEW_APP_USER, ChangeStatus, Coding, CodingState, DEFAULT_DIAGNOSE, DEFAULT_MAX_LINES,
+    DEFAULT_REPO_MAP_TOKENS, DEFAULT_SHELL_TIMEOUT, DEFAULT_SHELL_TIMEOUT_MAX,
+    DEFAULT_TIMEOUT_SECONDS, DEFAULT_VIEW_APP_TIMEOUT, EDIT_FORMAT_AUTO, EditStats, FileChange,
+    LONGEST_TOOL_PREFIX, Ledger, MAX_OUTPUT_CHARS, MAX_REPO_MAP_TOKENS, PreImage, RunDiff,
+    SHELL_ENV, ScopeDiff, agent_run_diff, diff_ledger, edit_format, kill_all_processes, matching,
+    run_diff, run_tree, running_count,
+};
+pub use coding::{
+    CFG_COMMIT, CFG_MAX_SESSIONS, CFG_WORKFLOW, DEFAULT_MAX_SESSIONS, FAILURES_TO_FAIL, Feature,
+    FeatureKind, FeatureStatus, Plan, Progress, WORKFLOW_DIRECT, WORKFLOW_PLANNED, checklist,
+    run_plan,
+};
+pub use docs::Docs;
+pub use edit_table_rows::{
+    CFG_ALLOW_DELETE, CFG_ALLOW_INSERT, CFG_ALLOW_UPDATE, DEFAULT_MAX_WRITE_ROWS, EditTableRows,
+};
+pub use generate_js::{
+    ARG_CODE, CFG_ALLOW_FETCH, CFG_ALLOW_LIBRARIES, CFG_CODE_DESCRIPTION, CFG_FETCH_HOSTS,
+    CFG_FOLLOW_UP_PROMPT, CFG_GEN_TIMEOUT, CFG_GEN_TOOL_DESCRIPTION, CFG_GEN_TOOL_NAME,
+    CFG_TABLE_ACCESS, CFG_TABLES, GenerateJs,
+};
+pub use http::Http;
+pub use library_tools::{CFG_LIBRARY, CFG_LIBRARY_TOOLS, LibraryTools, PROPOSAL_KEY};
+pub use mcp_server::{CFG_ALLOWED_TOOLS, CFG_READ_ONLY_TOOLS, CFG_SERVER, McpServer};
+pub use media::{GenerateImage, Speech};
+pub use plan_approval::{
+    CFG_APPROVAL_PROMPT, CFG_APPROVE_LABEL, CFG_DECLINE_PROMPT, CFG_PLAN_PROMPT,
+    CFG_PLAN_TOOL_NAME, DEFAULT_PLAN_TOOL, PlanApproval,
+};
+pub use preview_pane::{
+    CFG_RELOAD_ON_TURN, CFG_URL, DEFAULT_RELOAD_ON_TURN, PreviewPane, configured_url, is_framable,
+    reloads_on_turn,
+};
+pub use prompt_picker::{
+    CFG_LABEL_FIELD, CFG_PICKER_LABEL, CFG_PICKER_NAME, CFG_PROMPT_FIELD, CFG_PROMPT_TABLE,
+    CFG_PROMPT_WHERE, CFG_PROMPTS, CFG_SEND, CFG_SOURCE, MAX_PICKER_ROWS, PromptPicker,
+    SOURCE_PREDEFINED, SOURCE_TABLE,
+};
+pub use query_table::{CFG_RESULTS_VIEW, CFG_SHOW_RESULTS, DEFAULT_MAX_ROWS, QueryTable};
+pub use retrieval::{CFG_DOC_FORMAT, CFG_HIDDEN_FIELDS, CFG_MODE, MODE_EVERY_MESSAGE, MODE_TOOL};
+pub use run_agent::{
+    CFG_AGENT, CFG_PROMPT, CFG_RUN_AS, CFG_TRUSTED_INPUT, RUN_AS_EVENT_USER, RUN_AS_TRIGGER,
+    RunAgent,
+};
+pub use run_js_code::{
+    CFG_ARGUMENTS, CFG_BUTTON_LABEL, CFG_CODE, CFG_JS_MODE, CFG_TOOL_DESCRIPTION, CFG_TOOL_NAME,
+    JS_MODE_BUTTON, JS_MODE_TOOL, RunJsCode, button_control,
+};
+pub use run_trigger::{CFG_TRIGGER, RunTrigger};
+pub use search_table::{ARG_PHRASES, DEFAULT_SEARCH_ROWS, SearchTable};
+pub use similar_rows::{
+    ARG_QUERY, CFG_LIMIT, CFG_RELATION, CFG_VECTOR_FIELD, DEFAULT_SIMILAR_ROWS, SimilarRows,
+};
+pub use web_search::{
+    CFG_API_KEY, CFG_EXCLUDE_DOMAINS, CFG_HEADER, CFG_INCLUDE_DOMAINS, CFG_PROVIDER,
+    CFG_SEARCH_MAX_RESULTS, CFG_SEARCH_NAME, CFG_SEARCH_PRIVATE_NETWORK, CFG_URL_TEMPLATE,
+    PROVIDER_FIRECRAWL, PROVIDER_TAVILY, PROVIDER_URL_TEMPLATE, WebSearch,
+};
+// Context: preloaded rows and code, memory, skill files (TODO-agent-skills AS8).
+pub use memory::{
+    AgentMemory, CFG_MAX_MEMORIES, CFG_MEMORY_MAX_RESULTS, CFG_PERSONAL, CFG_PREFERENCES_IN_HEADER,
+    ConsolidateMemory, MEMORY_TABLE, TOOL_SEARCH_MEMORY, TOOL_STORE_MEMORY, bootstrap_agent_memory,
+};
+pub use preload::{
+    CFG_CONTENTS, CFG_FILTER, CFG_HEADING, CFG_PLACEMENT, CFG_PRELOAD_CODE, DEFAULT_PRELOAD_ROWS,
+    PLACEMENT_HEADER, PLACEMENT_SYSTEM, PreloadCode, PreloadRows,
+};
+pub use skill_file::{
+    CFG_READ_TOOL, CFG_SKILL_FILE, CFG_SKILL_MAX_CHARS, DEFAULT_SKILL_FILE, SkillFile,
+};
+// `subagent`'s own agent-name key is spelled `agent` too, so [`CFG_AGENT`] above
+// is it: one string, exported once, rather than two constants a reader would have
+// to check are equal.
+pub use subagent::{
+    ARG_CONTEXT, ARG_OUTPUT, ARG_TASK, CFG_HANDOFF_PROMPT, CFG_HANDOVER_PROMPT, CFG_MAX_DEPTH,
+    CFG_MAX_STEPS, CFG_WHEN_TO_USE, MAX_CONFIGURABLE_DEPTH, Subagent,
+};
+
+/// What each built-in trait calls the tool it derives from its configuration —
+/// the answer to "what will this be called?" the admin UI wants before an agent
+/// is saved and the collision check (§11.2) wants at the moment of saving.
+pub mod tool_names {
+    pub use crate::admin_copilot::tool_names as admin_copilot;
+    pub use crate::ask_user::tool_name as ask_user;
+    pub use crate::build_application::tool_name as build_application;
+    pub use crate::coding::tool_names as coding;
+    pub use crate::coding::{
+        apply_patch_tool_name as apply_patch, call_api_tool_name as call_api,
+        check_checks_tool_name as check, edit_file_tool_name as edit_file,
+        explore_tool_name as explore, find_files_tool_name as find_files,
+        implement_feature_tool_name as implement_feature,
+        install_module_tool_name as install_module, list_assets_tool_name as list_assets,
+        list_modules_tool_name as list_modules, process_tool_name as process,
+        read_file_tool_name as read_file, repo_map_tool_name as repo_map,
+        run_script_tool_name as run_project_script, save_plan_tool_name as save_plan,
+        search_files_tool_name as search_files, shell_tool_name as shell,
+        view_app_tool_name as view_app, view_image_tool_name as view_image,
+        write_file_tool_name as write_file,
+    };
+    pub use crate::edit_table_rows::tool_names as edit_table_rows;
+    pub use crate::edit_table_rows::{
+        delete_tool_name as delete_rows, insert_tool_name as insert_row,
+        update_tool_name as update_rows,
+    };
+    pub use crate::http::tool_name as http;
+    pub use crate::mcp_server::tool_name as mcp_server;
+    pub use crate::media::generate_image_tool_name as generate_image;
+    pub use crate::memory::tool_names as memory;
+    pub use crate::plan_approval::tool_name as plan_approval;
+    pub use crate::query_table::tool_name as query_table;
+    pub use crate::run_trigger::tool_name as run_trigger;
+    pub use crate::search_table::tool_name as search_table;
+    pub use crate::similar_rows::tool_name as similar_rows;
+    pub use crate::skill_file::tool_name as skill_file;
+    pub use crate::subagent::tool_name as subagent;
+    pub use crate::web_search::tool_name as web_search;
+    pub use sc_docs::tools::TOOL_NAMES as docs;
+}
+
+/// The built-in trait set a server installs.
+///
+/// One constructor, so a deployment cannot end up with half the built-ins
+/// depending on what it remembered to register.
+pub fn builtin_traits() -> Result<AgentRegistry> {
+    let mut registry = AgentRegistry::new();
+    register_builtin_traits(&mut registry)?;
+    Ok(registry)
+}
+
+/// Add the built-in traits to an existing registry — for a deployment (or a
+/// test) that assembles its own set from these plus its plugins'.
+///
+/// Fails if one of the names is already taken, as any duplicate registration
+/// does: which implementation answers to `query_table` must not depend on load
+/// order.
+/// Register the actions that **run** an agent, rather than the traits an agent
+/// runs (§11.5).
+///
+/// There is exactly one — [`RunAgent`] — and it lives in this crate for the
+/// reason the traits do: it drives a loop whose tools reach the row layer. It is
+/// registered separately from `sc-action-builtins`' built-in set because it needs
+/// two things assembled first: the trait registry the agents were validated
+/// against, and how this deployment connects a provider. A server calls
+/// [`builtin_traits`], puts the result in its agent services, and passes both
+/// here while building the action registry the trigger dispatcher will hold.
+pub fn register_agent_actions(
+    registry: &mut ActionRegistry,
+    traits: Arc<AgentRegistry>,
+    providers: Arc<dyn ProviderConnector>,
+) -> Result<()> {
+    registry.register(Arc::new(RunAgent::new(
+        Arc::clone(&traits),
+        Arc::clone(&providers),
+    )))?;
+    // Summarising users' memories into their preferences goes through an
+    // agent's cheap role, so it needs the same two things (AS8.5).
+    registry.register(Arc::new(ConsolidateMemory::new(traits, providers)))
+}
+
+pub fn register_builtin_traits(registry: &mut AgentRegistry) -> Result<()> {
+    registry.register(Arc::new(AdminCopilot))?;
+    registry.register(Arc::new(QueryTable))?;
+    registry.register(Arc::new(EditTableRows))?;
+    registry.register(Arc::new(PreviewPane))?;
+    registry.register(Arc::new(Docs))?;
+    registry.register(Arc::new(RunTrigger))?;
+    registry.register(Arc::new(RunJsCode))?;
+    registry.register(Arc::new(LibraryTools))?;
+    registry.register(Arc::new(AskUser))?;
+    registry.register(Arc::new(PlanApproval))?;
+    registry.register(Arc::new(PromptPicker))?;
+    registry.register(Arc::new(Coding))?;
+    registry.register(Arc::new(BuildApplication))?;
+    registry.register(Arc::new(Subagent))?;
+    registry.register(Arc::new(Http::new()?))?;
+    registry.register(Arc::new(McpServer::new()))?;
+    registry.register(Arc::new(WebSearch::new()?))?;
+    registry.register(Arc::new(GenerateJs))?;
+    registry.register(Arc::new(SearchTable))?;
+    registry.register(Arc::new(SimilarRows::new()))?;
+    registry.register(Arc::new(GenerateImage))?;
+    registry.register(Arc::new(Speech))?;
+    registry.register(Arc::new(PreloadRows))?;
+    registry.register(Arc::new(PreloadCode))?;
+    registry.register(Arc::new(AgentMemory))?;
+    registry.register(Arc::new(SkillFile))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_builtins_are_registered_under_their_stored_names() {
+        let registry = builtin_traits().unwrap();
+        assert_eq!(
+            registry.names(),
+            vec![
+                "admin_copilot",
+                "ask_user",
+                "build_application",
+                "coding",
+                "docs",
+                "edit_table_rows",
+                "generate_image",
+                "generate_js",
+                "http",
+                "library_tools",
+                "mcp_server",
+                "memory",
+                "plan_approval",
+                "preload_code",
+                "preload_rows",
+                "preview_pane",
+                "prompt_picker",
+                "query_table",
+                "run_js_code",
+                "run_trigger",
+                "search_table",
+                "similar_rows",
+                "skill_file",
+                "speech",
+                "subagent",
+                "web_search",
+            ]
+        );
+        // Every one of them describes itself and its configuration as data,
+        // which is what lets the admin UI render a form for a trait it has never
+        // heard of — and every one that names a *target* names it as required, so
+        // a blank form cannot be saved. `coding` names one too (its store); what
+        // its blank checkboxes then decide is what it may *do* there.
+        //
+        // `admin_copilot` is the exception, and the reason is the phase's point:
+        // it names no table, because the tables it makes do not exist when it is
+        // configured. Its form is four grants and two areas, each with a default,
+        // and a blank one is a meaningful (read-only over all three) configuration
+        // rather than an incomplete one. `http` is the other, for the same
+        // reason: the web is not a target it could name, and a blank form is
+        // `fetch_web`, read-only, over public hosts.
+        for trait_ in registry.all() {
+            assert!(!trait_.description().is_empty(), "{}", trait_.name());
+            let spec = trait_.config_spec();
+            // `docs` alone has no form at all: documentation is the same for
+            // every agent, so there is nothing about it to configure.
+            if trait_.name() == "docs" {
+                assert!(spec.is_empty());
+                continue;
+            }
+            assert!(!spec.is_empty(), "{}", trait_.name());
+            // `speech` names no target either: a blank form reads answers
+            // aloud with the default provider's default speech model.
+            // `memory` names none: what it reaches is the agent's own memories.
+            // `ask_user` and `plan_approval` reach only the person in the chat,
+            // and every setting has v1's default. `prompt_picker` takes either
+            // predefined options or a table, so no one field is required; its
+            // `validate_config` asks for one of the two.
+            if !matches!(
+                trait_.name(),
+                "admin_copilot"
+                    | "http"
+                    | "speech"
+                    | "memory"
+                    | "ask_user"
+                    | "plan_approval"
+                    | "prompt_picker"
+            ) {
+                assert!(spec.iter().any(|f| f.required), "{}", trait_.name());
+            }
+        }
+    }
+
+    #[test]
+    fn registering_the_builtins_twice_is_refused() {
+        let mut registry = builtin_traits().unwrap();
+        let err = register_builtin_traits(&mut registry).unwrap_err();
+        assert!(err.to_string().contains("admin_copilot"), "{err}");
+    }
+
+    #[test]
+    fn each_trait_declares_the_settings_its_semantics_need() {
+        let registry = builtin_traits().unwrap();
+        let spec = |name: &str| -> Vec<String> {
+            registry
+                .require(name)
+                .unwrap()
+                .config_spec()
+                .iter()
+                .map(|f| f.name().to_owned())
+                .collect()
+        };
+        assert_eq!(
+            spec("query_table"),
+            vec![
+                CFG_TABLE,
+                CFG_FIELDS,
+                CFG_MAX_ROWS,
+                CFG_SHOW_RESULTS,
+                CFG_RESULTS_VIEW
+            ]
+        );
+        // The two retrieval traits (TODO-agent-skills AS7): what they reach,
+        // how they are used, what the model is shown and in what form.
+        assert_eq!(
+            spec("search_table"),
+            vec![
+                CFG_TABLE,
+                CFG_MODE,
+                CFG_FIELDS,
+                CFG_HIDDEN_FIELDS,
+                CFG_MAX_ROWS,
+                CFG_DOC_FORMAT
+            ]
+        );
+        assert_eq!(
+            spec("similar_rows"),
+            vec![
+                CFG_TABLE,
+                CFG_VECTOR_FIELD,
+                CFG_RELATION,
+                CFG_MODE,
+                CFG_FIELDS,
+                CFG_HIDDEN_FIELDS,
+                CFG_LIMIT,
+                CFG_DOC_FORMAT
+            ]
+        );
+        // One table, then a checkbox per way of changing it, then the two
+        // bounds the grants share: what an insert or update may set, and how
+        // many rows an update or delete may reach.
+        assert_eq!(
+            spec("edit_table_rows"),
+            vec![
+                CFG_TABLE,
+                CFG_ALLOW_INSERT,
+                CFG_ALLOW_UPDATE,
+                CFG_ALLOW_DELETE,
+                CFG_FIELDS,
+                CFG_MAX_ROWS
+            ]
+        );
+        assert_eq!(spec("run_trigger"), vec![CFG_TRIGGER]);
+        assert_eq!(
+            spec("run_js_code"),
+            vec![
+                CFG_JS_MODE,
+                CFG_BUTTON_LABEL,
+                CFG_TOOL_NAME,
+                CFG_TOOL_DESCRIPTION,
+                CFG_CODE,
+                CFG_ARGUMENTS
+            ]
+        );
+        // The sub-agent it delegates to, then the sentence that tells the
+        // *parent* model when to reach for it — the field that decides whether
+        // delegation happens at the right moment — then the two bounds: what one
+        // delegation may spend, and how deep a chain of them may go.
+        assert_eq!(
+            spec("subagent"),
+            vec![
+                CFG_AGENT,
+                CFG_WHEN_TO_USE,
+                CFG_MAX_STEPS,
+                CFG_MAX_DEPTH,
+                CFG_HANDOVER_PROMPT,
+                CFG_HANDOFF_PROMPT,
+            ]
+        );
+
+        // The whole coding loop is **one** form: the scope filled in once — one
+        // store, optionally one directory in it — then what the agent may do
+        // there, what `check` runs, then the bound on each thing that brings something
+        // back. Eight tools, one place to say where they work, so the scope cannot disagree
+        // with itself.
+        assert_eq!(
+            spec("coding"),
+            vec![
+                CFG_STORE,
+                CFG_ROOT,
+                CFG_MAY_EDIT,
+                CFG_MAY_RUN_SCRIPTS,
+                CFG_MAY_CHECK,
+                CFG_CHECKS,
+                CFG_APPLICATION,
+                CFG_DIAGNOSE,
+                // Planning (TODO §5, §8).
+                CFG_WORKFLOW,
+                CFG_MAX_SESSIONS,
+                CFG_COMMIT,
+                CFG_EDIT_FORMAT,
+                CFG_MAX_LINES,
+                CFG_MAX_RESULTS,
+                CFG_REPO_MAP_TOKENS,
+                CFG_TIMEOUT,
+                // Looking at the application (TODO §7b).
+                CFG_MAY_VIEW_APP,
+                CFG_VIEW_APP_USER,
+                CFG_VIEW_APP_TIMEOUT,
+                // Installing modules: admins only, like the shell after it.
+                CFG_MAY_INSTALL_MODULES,
+                // Last: the shell is every grant above at once (TODO §7a).
+                CFG_MAY_USE_SHELL,
+                CFG_SHELL_TIMEOUT,
+                CFG_SHELL_TIMEOUT_MAX,
+                CFG_SHELL_SANDBOX,
+                CFG_SHELL_IMAGE,
+                CFG_SHELL_RUNTIME,
+                CFG_SHELL_NETWORK,
+            ]
+        );
+        // The build names an application rather than a store: which store the
+        // source is in is the application's own configuration (§13.3), and
+        // asking the admin for it twice would be two places to get it wrong.
+        assert_eq!(spec("build_application"), vec![CFG_APPLICATION]);
+        // The trait that names no table: four grants, scoping it by what it may
+        // do rather than by what it may reach (§11.3) — over the schema, the
+        // triggers and an application's custom SQL queries alike, which is why
+        // there are still four of them. Then the two **areas**, which are the
+        // other question and therefore two more checkboxes rather than eight more
+        // grants: not "what may it do?" but "to which of the three?". Last the
+        // checklists grant, which has three values rather than two.
+        assert_eq!(
+            spec("admin_copilot"),
+            vec![
+                CFG_ALLOW_CREATE,
+                CFG_ALLOW_EDIT,
+                CFG_ALLOW_DROP,
+                CFG_ALLOW_ACCESS,
+                CFG_ALLOW_TRIGGERS,
+                CFG_ALLOW_APPLICATIONS,
+                crate::admin_copilot::CFG_CHECKLISTS,
+            ]
+        );
+    }
+
+    /// Every tool name a built-in derives carries **what it does** and **what it
+    /// does it to**, and no two traits over one table collide.
+    ///
+    /// Worth pinning: these are the names the model chooses between, and the
+    /// collision check (§11.2) refuses a save that produces two of the same. If
+    /// `edit_table_rows`' insert and update tools over `books` both derived
+    /// `books_write`, an agent could not have both.
+    #[test]
+    fn the_derived_tool_names_are_distinct_and_say_what_they_do() {
+        let scope = FileScope {
+            store: "app-src".to_owned(),
+            root: "web".to_owned(),
+        };
+        let names = [
+            tool_names::query_table("books"),
+            tool_names::insert_row("books"),
+            tool_names::update_rows("books"),
+            tool_names::delete_rows("books"),
+            tool_names::search_table("books"),
+            tool_names::similar_rows("books"),
+            tool_names::run_trigger("reindex"),
+            tool_names::subagent("researcher"),
+            tool_names::read_file(&scope),
+            tool_names::write_file(&scope),
+            tool_names::find_files(&scope),
+            tool_names::edit_file(&scope),
+            tool_names::apply_patch(&scope),
+            tool_names::search_files(&scope),
+            tool_names::repo_map(&scope),
+            tool_names::list_assets(&scope),
+            tool_names::view_image(&scope),
+            tool_names::run_project_script(&scope),
+            tool_names::check(&scope),
+            tool_names::view_app(&scope),
+            tool_names::call_api(&scope),
+            tool_names::shell(&scope),
+            tool_names::process(&scope),
+            tool_names::save_plan(&scope),
+            tool_names::implement_feature(&scope),
+            tool_names::explore(&scope),
+            tool_names::build_application("todo"),
+        ];
+        assert_eq!(
+            names,
+            [
+                "query_books",
+                "insert_into_books",
+                "update_books",
+                "delete_from_books",
+                "search_books",
+                "search_similar_books",
+                "run_reindex",
+                "delegate_to_researcher",
+                "read_file_app_src_web",
+                "write_file_app_src_web",
+                "find_files_app_src_web",
+                "edit_file_app_src_web",
+                "apply_patch_app_src_web",
+                "search_files_app_src_web",
+                "repo_map_app_src_web",
+                "list_assets_app_src_web",
+                "view_image_app_src_web",
+                "run_script_app_src_web",
+                "check_app_src_web",
+                "view_app_app_src_web",
+                "call_api_app_src_web",
+                "shell_app_src_web",
+                "process_app_src_web",
+                "save_plan_app_src_web",
+                "implement_feature_app_src_web",
+                "explore_app_src_web",
+                "build_todo",
+            ]
+        );
+        let unique: std::collections::BTreeSet<&String> = names.iter().collect();
+        assert_eq!(unique.len(), names.len());
+        // The eighteen file names above are `coding`'s whole set, which is what the
+        // collision check compares when the trait is enabled twice: two
+        // instances over one scope produce these same names and are refused.
+        assert_eq!(
+            tool_names::coding(&scope),
+            [
+                tool_names::read_file(&scope),
+                tool_names::find_files(&scope),
+                tool_names::search_files(&scope),
+                tool_names::repo_map(&scope),
+                tool_names::list_assets(&scope),
+                tool_names::view_image(&scope),
+                tool_names::save_plan(&scope),
+                tool_names::implement_feature(&scope),
+                tool_names::explore(&scope),
+                tool_names::write_file(&scope),
+                tool_names::edit_file(&scope),
+                tool_names::apply_patch(&scope),
+                tool_names::run_project_script(&scope),
+                tool_names::check(&scope),
+                tool_names::view_app(&scope),
+                tool_names::call_api(&scope),
+                tool_names::shell(&scope),
+                tool_names::process(&scope),
+                tool_names::list_modules(&scope),
+                tool_names::install_module(&scope),
+            ]
+        );
+        // `admin_copilot`'s names are fixed rather than derived, and say the
+        // same twenty-nine things every deployment's do — two over the schema,
+        // four over the triggers, one reference for a code body, two over the
+        // documentation, six over
+        // applications (reading, creating one and its store, changing one —
+        // its tables, static directories and CSP — and its custom SQL
+        // queries), one over its streams, two over its translations, three over the code
+        // libraries, its own two: delegating code to a coding agent and
+        // publishing, and the six checklist tools `sc-check` shares with MCP.
+        assert_eq!(
+            tool_names::admin_copilot(),
+            [
+                "describe_schema",
+                "edit_schema",
+                "describe_triggers",
+                "describe_action",
+                "save_trigger",
+                "delete_trigger",
+                "describe_code_api",
+                "search_docs",
+                "read_docs",
+                "describe_applications",
+                "create_file_store",
+                "create_application",
+                "update_application",
+                "edit_streams",
+                "describe_translations",
+                "save_translations",
+                "save_api_query",
+                "delete_api_query",
+                "describe_code_libraries",
+                "save_code_library",
+                "delete_code_library",
+                "delegate_to_coding_agent",
+                "publish_application",
+                "describe_step_types",
+                "describe_checklists",
+                "save_checklist",
+                "append_steps",
+                "propose_step_change",
+                "run_checklists",
+            ]
+        );
+        for name in tool_names::admin_copilot() {
+            assert!(!names.iter().any(|n| n == name));
+        }
+    }
+}

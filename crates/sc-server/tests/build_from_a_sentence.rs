@@ -22,16 +22,12 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode, header};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
 use sc_config::{MCP_ENABLED, set_config};
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, MCP_ROUTE, ServerConfig, admin_handlers,
-    build_router_with_apps,
-};
-use sc_test_harness::TestDb;
+use sc_server::{AppMounts, MCP_ROUTE, ServerConfig, admin_handlers, build_router_with_apps};
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -40,6 +36,8 @@ use tower::ServiceExt;
 fn data_dir() -> &'static Path {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
+        // Never removed (it outlives every test), so a later run clears it.
+        sc_test_harness::sweep_stale_scratch("sc-build-sentence");
         let dir = std::env::temp_dir().join(format!("sc-build-sentence-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
@@ -138,20 +136,7 @@ async fn setup_with(
     grants: Value,
 ) -> sc_error::Result<(Router, Arc<Catalog>, String, TestDb)> {
     data_dir();
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
@@ -259,9 +244,16 @@ async fn an_external_agent_builds_an_application_from_a_sentence() -> sc_error::
         }] }),
     )
     .await;
-    // …then connected, which regenerates the client with them in it.
-    let before = std::fs::read_to_string(&client_ts).unwrap();
-    assert!(!before.contains("todos"), "not connected yet");
+    // …then connected, which publishes no endpoint for them: the application
+    // was created with no row API, and connecting does not add one…
+    assert_eq!(
+        sc_app::load_application_by_subdomain(&catalog, "todo-list")
+            .await?
+            .unwrap()
+            .api_tables
+            .to_vec(),
+        Vec::<String>::new()
+    );
     let connected = call(
         &router,
         &token,
@@ -270,8 +262,26 @@ async fn an_external_agent_builds_an_application_from_a_sentence() -> sc_error::
     )
     .await;
     assert_eq!(connected["tables"], json!(["todos"]), "{connected}");
+    assert_eq!(connected["api_tables"], json!([]), "{connected}");
     let after = std::fs::read_to_string(&client_ts).unwrap();
-    assert!(after.contains("todos"), "the client is typed for the table");
+    assert!(!after.contains("listTodos"), "no row API for the table");
+    // …and the pages' data comes through a query written for them, which runs
+    // as its caller.
+    let saved = call(
+        &router,
+        &token,
+        "save_api_query",
+        json!({
+            "application": "todo-list",
+            "name": "openTodos",
+            "path": "/todos/open",
+            "language": "javascript",
+            "code": "return await db.todos.where({ done: false }).rows();",
+            "returns": { "array": { "object": { "id": "int", "title": "string" } } },
+        }),
+    )
+    .await;
+    assert_eq!(saved["query"]["name"], json!("openTodos"), "{saved}");
     let stored = sc_app::load_application_by_subdomain(&catalog, "todo-list")
         .await?
         .unwrap();
@@ -338,7 +348,11 @@ async fn a_file_store_is_created_and_named_by_the_application() -> sc_error::Res
     assert_eq!(store["created"], json!("notes-code"), "{store}");
     let dir = PathBuf::from(store["directory"].as_str().unwrap());
     assert!(dir.is_dir() && dir.starts_with(data_dir()), "{store}");
-    assert!(catalog.file_store("notes-code")?.is_some());
+    assert!(
+        catalog
+            .file_store("notes-code", sc_catalog::Unchecked::system("test"))?
+            .is_some()
+    );
 
     let created = call(
         &router,

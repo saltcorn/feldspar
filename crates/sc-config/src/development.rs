@@ -54,6 +54,16 @@ pub fn development_section() -> ConfigSection {
         description: "Settings for logging, MCP server availability, the IDE's Claude Code \
                       terminal and where the admin UI is served",
         fields: vec![
+            // First: it decides where this very screen is served.
+            // Live, like the rest of this section: saving it moves the admin UI
+            // (and orders the new name's certificate) without a restart.
+            ConfigDef::help(
+                FormField::new(ADMIN_SUBDOMAIN, BasicType::Text).label("Admin subdomain"),
+                "Serve the admin UI on this subdomain of the base domain (admin gives \
+                 admin.example.com) instead of on the base domain itself. Once it has moved, an \
+                 application can be served on the base domain by giving @ as its subdomain. \
+                 Leave empty to serve the admin UI on the base domain.",
+            ),
             ConfigDef::help(
                 FormField::new(LOG_SQL, BasicType::Bool)
                     .label("Log SQL")
@@ -63,12 +73,11 @@ pub fn development_section() -> ConfigSection {
             ConfigDef::help(
                 FormField::new(LOG_VERBOSITY, BasicType::Text)
                     .label("Log verbosity")
-                    .options(Verbosity::ALL.map(Verbosity::as_str))
+                    .labelled_options(
+                        Verbosity::ALL.map(|level| (level.as_str(), verbosity_label(level))),
+                    )
                     .default_value(sc_log::DEFAULT_VERBOSITY.as_str()),
-                "How much is printed to stderr. error is failures only; warning adds what is \
-                 about to fail; info logs every server request; \
-                 verbose also logs a request and a model call as they starts; trace adds full LLM \
-                 request and response",
+                "How much is printed to stderr.",
             ),
             // §13.6. Off by default, and off means *absent*: the route answers
             // 404 and never reads the token table, so a disabled feature is not
@@ -80,10 +89,12 @@ pub fn development_section() -> ConfigSection {
                 "Serve POST /mcp, so an external coding agent holding an API token can read \
                  and change this installation's schema, triggers and applications. Generate and revoke tokens below.",
             ),
+            // Only a question while the server is on.
             ConfigDef::help(
                 FormField::new(MCP_LOOPBACK_ONLY, BasicType::Bool)
                     .label("MCP from this machine only")
-                    .default_value(true),
+                    .default_value(true)
+                    .show_if(MCP_ENABLED, vec![Json::Bool(true)]),
                 "Refuse an MCP request whose peer is not on this machine.",
             ),
             // §12.1. Off by default for the reason `mcp_enabled` is: a terminal
@@ -98,16 +109,19 @@ pub fn development_section() -> ConfigSection {
                  user, and can run any command that user can. Only stores on this machine's \
                  disk can have one.",
             ),
-            // Live, like the rest of this section: saving it moves the admin UI
-            // (and orders the new name's certificate) without a restart.
-            ConfigDef::help(
-                FormField::new(ADMIN_SUBDOMAIN, BasicType::Text).label("Admin subdomain"),
-                "Serve the admin UI on this subdomain of the base domain (admin gives \
-                 admin.example.com) instead of on the base domain itself. Once it has moved, an \
-                 application can be served on the base domain by giving @ as its subdomain. \
-                 Leave empty to serve the admin UI on the base domain.",
-            ),
         ],
+    }
+}
+
+/// What a verbosity is shown as in the Log verbosity select: the value, and
+/// what it prints.
+fn verbosity_label(level: Verbosity) -> &'static str {
+    match level {
+        Verbosity::Error => "error: failures only",
+        Verbosity::Warning => "warning: also what is about to fail",
+        Verbosity::Info => "info: also every server request",
+        Verbosity::Verbose => "verbose: also a request and a model call as they start",
+        Verbosity::Trace => "trace: also full LLM requests and responses",
     }
 }
 
@@ -386,6 +400,11 @@ mod tests {
         for option in &options {
             Verbosity::parse(option).unwrap();
         }
+        // Each level is offered with what it prints, the value leading.
+        assert_eq!(verbosity.field.option_labels.len(), options.len());
+        for (label, option) in verbosity.field.option_labels.iter().zip(&options) {
+            assert!(label.starts_with(&format!("{option}: ")), "{label}");
+        }
     }
 
     /// The two switches of §13.6, as the settings screen renders them: off, and
@@ -399,12 +418,12 @@ mod tests {
         assert_eq!(
             keys,
             [
+                ADMIN_SUBDOMAIN,
                 LOG_SQL,
                 LOG_VERBOSITY,
                 MCP_ENABLED,
                 MCP_LOOPBACK_ONLY,
                 IDE_TERMINAL_ENABLED,
-                ADMIN_SUBDOMAIN,
             ]
         );
 
@@ -424,6 +443,20 @@ mod tests {
             // a decision about who may administer the installation.
             assert!(!def.help.is_empty(), "{key}");
         }
+
+        // Who may reach the server is only asked while it is served.
+        let loopback = section
+            .fields
+            .iter()
+            .find(|def| def.key() == MCP_LOOPBACK_ONLY)
+            .unwrap();
+        let spec: Vec<FormField> = section.fields.iter().map(|def| def.field.clone()).collect();
+        assert!(!loopback.field.applies(&spec, &Attrs::new()));
+        assert!(
+            loopback
+                .field
+                .applies(&spec, &attrs(&[(MCP_ENABLED, json!(true))]))
+        );
     }
 
     /// An installation nobody has turned it on for serves no MCP — and would

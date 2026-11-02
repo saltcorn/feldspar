@@ -75,6 +75,7 @@ describe("the current application's sidebar links", () => {
       "Edit code",
       "Build with Claude",
       "Build",
+      "Checklists",
       "Settings",
     ]);
     const edit = links[1];
@@ -107,6 +108,7 @@ describe("the current application's sidebar links", () => {
       "Build with Claude",
       "Build",
       "Coding agent",
+      "Checklists",
       "Settings",
     ]);
     expect(appNavLinks(react, "build-todo", admin)[4].href).toBe("#/agents/build-todo/chat");
@@ -124,7 +126,13 @@ describe("the current application's sidebar links", () => {
       claude: claudeOk,
     };
     const links = appNavLinks(none, null, admin);
-    expect(links.map((l) => l.id)).toEqual(["app-link", "edit-code", "claude", "settings"]);
+    expect(links.map((l) => l.id)).toEqual([
+      "app-link",
+      "edit-code",
+      "claude",
+      "checklists",
+      "settings",
+    ]);
     expect(links[1].href).toBe("/ide/?store=site");
   });
 
@@ -158,6 +166,7 @@ describe("the current application's sidebar links", () => {
       "Views",
       "Pages",
       "Library",
+      "Checklists",
       "Settings",
     ]);
   });
@@ -177,6 +186,17 @@ describe("the current application's sidebar links", () => {
     expect(linkActive(settings, "/applications/a2/edit")).toBe(true);
     expect(linkActive(settings, "/applications/a2/app-settings")).toBe(true);
     expect(linkActive(settings, "/applications/a1/edit")).toBe(false);
+  });
+
+  it("gives every application its checklists, just before settings", () => {
+    for (const app of [react, saltcornUi]) {
+      const links = appNavLinks(app, null, admin);
+      const checklists = links[links.length - 2];
+      expect(checklists.id).toBe("checklists");
+      expect(checklists.href).toBe(`#/applications/${app.id}/checklists`);
+      expect(linkActive(checklists, `/applications/${app.id}/checklists`)).toBe(true);
+      expect(linkActive(checklists, `/applications/${app.id}/edit`)).toBe(false);
+    }
   });
 
   it("lights up views for a view's editor, but not pages", () => {

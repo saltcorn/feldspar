@@ -41,7 +41,7 @@
 //!
 //! The price is that this crate cannot read a row, and it does not pretend
 //! otherwise: reading is a **seam** ([`DatasetSource`]) that somebody above the
-//! row layer fills in (`sc_server::models::CatalogDatasetSource`), exactly as
+//! row layer fills in (`CompiledSource`, which `sc-server` installs), exactly as
 //! `sc-agent` declares `ProviderConnector` and `sc-server` supplies it. Going
 //! around the row layer instead would mean a dataset that ignored non-stored
 //! calculated fields, ownership and row-level security, and that could not read
@@ -73,6 +73,13 @@
 //!   column, and a dataset is a `SELECT` an admin wrote that the server has to
 //!   hold in memory — so [`DatasetSource::materialise`] takes a cap and refuses
 //!   by name rather than by the OOM killer. See [`DEFAULT_MAX_ROWS`].
+
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> =
+    sc_catalog::Unchecked::system("sc-model: the model, instance and draw stores");
 
 mod bind;
 mod dataset;

@@ -21,6 +21,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sc_catalog::Authority;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -60,6 +61,7 @@ async fn the_server_serves_a_module_with_node_off_the_path() -> sc_error::Result
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     bootstrap_modules(&catalog).await?;
 
     // Step one, with a working toolchain: npm installs the package. This is the
@@ -158,7 +160,7 @@ async fn the_server_serves_a_module_with_node_off_the_path() -> sc_error::Result
             &catalog,
             "echo it",
             json!({ "id": 1, "title": "Dune" }),
-            None,
+            Authority::system("test"),
         )
         .await?;
     // The trigger's own settings reached v1's `configuration`, and the event

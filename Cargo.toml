@@ -4,9 +4,6 @@ members = [
     # Layer 0 — foundations
     "crates/sc-error",
     "crates/sc-log",
-    # The in-memory token-bucket limiter and the client-IP rule (TODO F4.2):
-    # per-query limits, login throttling and a code body's `ratelimit`.
-    "crates/sc-ratelimit",
     "crates/sc-config-file",
     # Internationalisation (TODO "one catalogue, two runtimes"): the `Locale`,
     # the negotiation, the catalogue, the message format, the `t!` macros and
@@ -18,10 +15,16 @@ members = [
     # Name resolution for the whole process, glibc's NSS taken out of the path
     # (§13.5): layer 0 because it is linked in front of libc rather than called.
     "crates/sc-dns",
-    # The admin UI's help topics (v1's `help/*.tmd`): markdown templates filled
-    # in with what the screen is about and rendered to HTML. Layer 0 because it
-    # is handed plain JSON and knows nothing of the catalog.
-    "crates/sc-help",
+    # Outbound connections to the public internet only (code-quality Q4.3): the
+    # one SSRF rule, `PublicAddr`, and the HTTP client that connects to one.
+    # Layer 0: it knows addresses and `reqwest`, nothing of the catalog.
+    "crates/sc-net",
+    # The documentation agents read (`search_docs`, `read_docs`): `docs/`'s
+    # tutorials and references and the admin UI's help topics (v1's
+    # `help/*.tmd`, markdown templates filled in with what a screen is about),
+    # compiled in and indexed. Layer 0: it is handed plain JSON and knows
+    # nothing of the catalog.
+    "crates/sc-docs",
     # Layer 1 — query language, expression language
     "crates/sc-query",
     "crates/sc-expr",
@@ -39,8 +42,14 @@ members = [
     "crates/sc-db",
     "crates/sc-db-postgres",
     "crates/sc-db-sqlite",
+    "crates/sc-migrate",
     # Layer 3 — types
     "crates/sc-types",
+    # The in-memory token-bucket limiter and the client-IP rule (TODO F4.2):
+    # per-query limits, login throttling and a code body's `ratelimit`. Above
+    # `sc-types` for its clock (`sc_types::clock`), the one the workflow engine
+    # reads too.
+    "crates/sc-ratelimit",
     # Layer 4 — catalog
     "crates/sc-catalog",
     # Layer 5 — users/auth, files, configuration values
@@ -89,6 +98,11 @@ members = [
     # above them, because what a module supplies *is* an `Action` (§15).
     "crates/sc-module",
     "crates/sc-llm",
+    # The row-access layer (TODO-code-quality Q3): table row CRUD, the
+    # ownership rule and the `Scoped` handle every caller reads and writes rows
+    # through. Above `sc-llm` (a vector field's embeddings) and below
+    # `sc-action`, whose `ActionContext` hands an action a `Scoped`.
+    "crates/sc-access",
     # The MCP client (TODO-agent-skills AS4): remote MCP servers an agent's
     # `mcp_server` trait calls. Beside `sc-llm`: stored definitions, HTTP, no
     # agents.
@@ -120,8 +134,14 @@ members = [
     # Layer 9 — the core built-in actions (above the row layer, because three of
     # them write rows through it), the core built-in agent traits (above it for
     # exactly the same reason) and the server
-    "crates/sc-core-actions",
-    "crates/sc-core-traits",
+    "crates/sc-action-builtins",
+    # Checklists (TODO-checklists): what "working" means for an application,
+    # as ordered steps run as one user. Above `sc-app` and `sc-agent` (it
+    # builds an application and sends requests through `AppRequester`), below
+    # the copilot and the server, which both offer its tools.
+    "crates/sc-check",
+    "crates/sc-agent-builtins",
+    "crates/sc-backup",
     "crates/sc-server",
     # Layer 10 — CLI binary
     "crates/sc-cli",
@@ -145,7 +165,7 @@ sc-error = { path = "crates/sc-error" }
 sc-log = { path = "crates/sc-log" }
 sc-ratelimit = { path = "crates/sc-ratelimit" }
 sc-i18n = { path = "crates/sc-i18n" }
-sc-help = { path = "crates/sc-help" }
+sc-docs = { path = "crates/sc-docs" }
 # `feldspar.toml` — the deployment file naming this machine's databases. Layer 0
 # because both ends of the workspace read it: the binary, to know where the
 # primary database is, and the integration-test harness, to know which database
@@ -155,6 +175,7 @@ sc-config-file = { path = "crates/sc-config-file" }
 # pair of C symbols the linker puts in front of glibc's, which is a property of
 # the *link*, not of any caller.
 sc-dns = { path = "crates/sc-dns" }
+sc-net = { path = "crates/sc-net" }
 sc-query = { path = "crates/sc-query" }
 # `default-features = false` at the workspace level so members choose: the
 # catalog takes the parse/validate/translate half only; the server adds
@@ -167,6 +188,7 @@ sc-python = { path = "crates/sc-python", default-features = false }
 sc-db = { path = "crates/sc-db" }
 sc-db-postgres = { path = "crates/sc-db-postgres" }
 sc-db-sqlite = { path = "crates/sc-db-sqlite" }
+sc-migrate = { path = "crates/sc-migrate" }
 sc-types = { path = "crates/sc-types" }
 sc-catalog = { path = "crates/sc-catalog" }
 sc-auth = { path = "crates/sc-auth" }
@@ -181,6 +203,7 @@ sc-stan = { path = "crates/sc-stan" }
 sc-stream = { path = "crates/sc-stream" }
 sc-module = { path = "crates/sc-module" }
 sc-llm = { path = "crates/sc-llm" }
+sc-access = { path = "crates/sc-access" }
 sc-mcp = { path = "crates/sc-mcp" }
 sc-email = { path = "crates/sc-email" }
 sc-agent = { path = "crates/sc-agent" }
@@ -189,8 +212,10 @@ sc-live = { path = "crates/sc-live" }
 sc-api = { path = "crates/sc-api" }
 sc-app = { path = "crates/sc-app" }
 sc-viewpattern = { path = "crates/sc-viewpattern" }
-sc-core-actions = { path = "crates/sc-core-actions" }
-sc-core-traits = { path = "crates/sc-core-traits" }
+sc-check = { path = "crates/sc-check" }
+sc-action-builtins = { path = "crates/sc-action-builtins" }
+sc-agent-builtins = { path = "crates/sc-agent-builtins" }
+sc-backup = { path = "crates/sc-backup" }
 sc-server = { path = "crates/sc-server" }
 sc-test-harness = { path = "tests/harness" }
 
@@ -270,6 +295,12 @@ bcrypt = { version = "0.19", default-features = false, features = ["std"] }
 sha2 = "0.10"
 # HMAC for a code body's `crypto.subtle.sign`/`verify` (TODO F1.3), over `sha2`.
 hmac = "0.12"
+# Two-factor authentication (`sc_auth::second_factor`): an authenticator app's
+# codes are HMAC-SHA-1 (RFC 6238 says SHA-1, and every app defaults to it), its
+# secret is written in base32, and the setup screen shows it as a QR code.
+sha1 = "0.10"
+data-encoding = "2"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 # Line and character diffs for the coding trait (TODO §6): the run's unified
 # diff and diffstat from the change ledger, and the similarity ratio the edit
 # cascade's fuzzy step scores a candidate region by.
@@ -330,13 +361,17 @@ deno_core = "0.408"
 # CPython by *linking* it, so this dependency is what decides whether a build
 # needs `libpython` present to exec at all — which is why it is a feature that
 # is off by default and why `sc-server`'s shipped `+crt-static` artifact cannot
-# carry it (TODO phase 0.5a). `abi3-py311` is the stable-ABI floor: one build
-# runs against every CPython from 3.11 up.
+# carry it (TODO phase 0.5a). Not `abi3`: the limited API has no `PyConfig`,
+# which is how `sc-python` hands the interpreter its home inside the release
+# tree (TODO-portable-release R1.4), and an embedding binary links one versioned
+# `libpython` anyway — so the stable ABI bought nothing. The build is for the
+# CPython it finds (`PYO3_PYTHON`): the release's pinned 3.13, or a developer's
+# own `python3`.
 #
 # Costs, measured in phase 0 against the `deno_core` the workspace already
 # links: +7 crates in the lock file, +3.0 s of clean build, +0.5 MB of stripped
 # binary, and 6.5 MB of resident interpreter once it is initialised.
-pyo3 = { version = "0.29.2", features = ["abi3-py311"] }
+pyo3 = { version = "0.29.2" }
 # **Modules in-process** (TODO "Modules in-process", phase 1), behind
 # `sc-module`'s `deno-host` feature and linked by nothing else: `deno_runtime` is
 # `deno_core` plus Node — a module loader, `require`, `node:*`, and a permission
@@ -758,6 +793,11 @@ nalgebra = { version = "0.35", default-features = false, features = ["std"] }
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
+# A function over the threshold in `clippy.toml` is flagged, so one does not
+# grow past it unnoticed. The functions that were already over it carry an
+# explicit `#[allow(clippy::too_many_lines)]`: split one when it is next
+# changed, and drop its allow.
+too_many_lines = "warn"
 
 # --- Build profiles ----------------------------------------------------------
 #

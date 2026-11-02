@@ -128,14 +128,6 @@ pub fn check_stream(registry: &StreamRegistry, stream: &Stream) -> Result<()> {
     // `_fd_roles` — the check a `Trigger`'s and a file store's `min_role` make,
     // for the same reason. The admin form offers the live role list (task 7.3),
     // which is where "40 is not one of your roles" is answerable.
-    if let Some(role) = stream.min_role
-        && !(1..=100).contains(&role)
-    {
-        return Err(problem(format!(
-            "`min_role` must be a role between 1 and 100, got {role}"
-        )));
-    }
-
     // The provider must exist. The registry's error already names the
     // alternatives, which is what an admin whose module was uninstalled needs.
     let provider = registry
@@ -218,6 +210,7 @@ mod tests {
     use crate::provider::{StreamProvider, StreamSink};
     use crate::stream::StreamId;
     use crate::subscription::Subscription;
+    use sc_types::Role;
 
     /// A provider with settings whose element type is a function of them — the
     /// shape every real one has, small enough to assert against.
@@ -363,18 +356,10 @@ mod tests {
     }
 
     #[test]
-    fn a_role_off_the_scale_is_refused_rather_than_clamped() {
-        let mut stream = stream();
-        stream.min_role = Some(140);
-        let err = refusal(&stream);
-        assert!(
-            err.contains("between 1 and 100") && err.contains("140"),
-            "{err}"
-        );
-
-        // The two ends of the scale are roles, and admin-only (`None`) is not a
-        // role off the scale.
-        for role in [Some(1), Some(100), None] {
+    fn both_ends_of_the_scale_are_roles() {
+        // A role off the scale cannot be constructed (`Role`). The two ends are
+        // roles, and admin-only (`None`) is not a role off the scale.
+        for role in [Some(Role::ADMIN), Some(Role::PUBLIC), None] {
             let mut stream = self::stream();
             stream.min_role = role;
             check_stream(&registry(), &stream).unwrap();

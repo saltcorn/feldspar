@@ -12,7 +12,7 @@ use std::sync::Arc;
 use sc_analytics::layer::{
     GeometrySource, LayerData, LayerRequest, Limits, SOURCE_LAYER, layer_data, layer_tile,
 };
-use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId, TableId};
+use sc_catalog::{Catalog, DataField, DataFieldKind, FieldId};
 use sc_dataset::{DatasetDef, DatasetId, save_dataset};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
@@ -60,7 +60,7 @@ pub(crate) async fn insert(
             .collect(),
         returning: Vec::new(),
     };
-    cat.primary()
+    cat.primary(sc_catalog::Unchecked::system("test"))
         .query(&Statement::from(insert))
         .await?
         .try_collect()
@@ -90,7 +90,7 @@ pub(crate) async fn sites() -> Result<Option<(Catalog, TestDb, DatasetId, Datase
     .await?;
     let mut region = column("region", BasicType::Int);
     region.kind = DataFieldKind::Key {
-        target_table: TableId("regions".into()),
+        target_table: "regions".into(),
         target_field: FieldId("id".into()),
         summary_field: None,
     };
@@ -489,7 +489,7 @@ async fn a_layer_says_why_it_cannot_be_drawn() -> Result<()> {
     let db = TestDb::new().await?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let cat = Catalog::init(driver as Arc<dyn DatabaseDriver>).await?;
-    if !cat.primary().spatial().is_available() {
+    if !cat.primary_info().spatial().is_available() {
         sc_dataset::bootstrap_datasets(&cat).await?;
         let e = refusal(
             layer_data(

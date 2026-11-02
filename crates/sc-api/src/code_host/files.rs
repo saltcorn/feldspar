@@ -7,7 +7,7 @@
 //! JavaScript feature. [`FileStoreHost`] is the implementation of that seam for
 //! *this* server's stores, and it lives here for the reason [`TableHost`] does:
 //! everything it needs is already at this layer — the catalog that resolves a
-//! store name to a connected [`FileStore`], the store definitions that carry the
+//! store name to a connected [`FileStore`](sc_files::FileStore), the store definitions that carry the
 //! store-wide access floor, and `sc-files`'s path-cumulative rule.
 //!
 //! [`TableHost`]: super::TableHost
@@ -41,7 +41,7 @@
 //! consequences of the code:
 //!
 //! - under **admin** authority no rule is consulted at all. Not a shortcut taken
-//!   for speed — `ROLE_ADMIN` clears every rule that can be written, so
+//!   for speed — `Role::ADMIN` clears every rule that can be written, so
 //!   consulting them would be reading metadata up the whole path to reach a
 //!   foregone conclusion — but it does mean the store floor is not read from the
 //!   database on the common path either.
@@ -76,6 +76,7 @@
 //!
 //! [`DEFAULT_MAX_FILE_OPS`]: sc_expr::DEFAULT_MAX_FILE_OPS
 
+use sc_types::Role;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -90,8 +91,8 @@ use sc_catalog::{Catalog, load_file_store_by_name};
 use sc_error::{Error, Result};
 use sc_expr::FileHost;
 use sc_files::{
-    Entry, FILENAME_ATTRIBUTE, FileCaller, FileMeta, FileStat, FileStore, check_access,
-    check_write, effective_min_role, list_visible, mime_for_path, record_owner,
+    CheckedStore, Entry, FILENAME_ATTRIBUTE, FileCaller, FileMeta, FileStat, Readable, Writable,
+    mime_for_path,
 };
 use serde::Deserialize;
 use serde_json::Value as Json;
@@ -157,9 +158,13 @@ pub struct FileStoreHost<'a> {
     /// put a query in front of every file a loop touches. It cannot change under
     /// a run that is measured in milliseconds, and a run that raced an admin
     /// editing the store would be as arbitrary either way.
-    floors: Mutex<BTreeMap<String, Option<u8>>>,
+    floors: Mutex<BTreeMap<String, Option<Role>>>,
     /// Where the run's application serves store files, for `file.url()`.
     urls: Option<Arc<dyn FileUrls>>,
+    /// What an operation that names no authority runs under: the admin's for a
+    /// trigger, the caller's for a body answering a request
+    /// ([`defaulting_to`](FileStoreHost::defaulting_to)).
+    default_authority: Authority,
 }
 
 impl<'a> FileStoreHost<'a> {
@@ -173,7 +178,20 @@ impl<'a> FileStoreHost<'a> {
             max_copy_bytes: COPY_BYTES.load(Ordering::Relaxed),
             floors: Mutex::new(BTreeMap::new()),
             urls: None,
+            default_authority: Authority::Admin,
         }
+    }
+
+    /// Run an operation that names no authority under `authority` rather than
+    /// the admin's — [`TableHost::defaulting_to`]'s rule, so a request-answering
+    /// body's `fs("x")` is checked against the store's file rules unless it says
+    /// `asAdmin()`.
+    ///
+    /// [`TableHost::defaulting_to`]: super::TableHost::defaulting_to
+    #[must_use]
+    pub fn defaulting_to(mut self, authority: Authority) -> FileStoreHost<'a> {
+        self.default_authority = authority.resolve(&Authority::Admin);
+        self
     }
 
     /// Attach the event's caller — the role it was served at, which is what a
@@ -186,7 +204,7 @@ impl<'a> FileStoreHost<'a> {
     ///
     /// [`TableHost::caused_by`]: super::TableHost::caused_by
     #[must_use]
-    pub fn caused_by(mut self, role: u8, user: Option<&Json>) -> FileStoreHost<'a> {
+    pub fn caused_by(mut self, role: Role, user: Option<&Json>) -> FileStoreHost<'a> {
         let user_id = user.and_then(|u| u.get("id")).and_then(|id| match id {
             Json::String(s) => Some(s.clone()),
             Json::Number(n) => Some(n.to_string()),
@@ -194,6 +212,13 @@ impl<'a> FileStoreHost<'a> {
         });
         self.caller = FileCaller::new(role, user_id);
         self
+    }
+
+    /// Attach the event's caller as a principal (`ActionContext::caller`): its
+    /// role, and its user's id — [`caused_by`](FileStoreHost::caused_by)'s pair.
+    #[must_use]
+    pub fn for_caller(self, caller: &sc_catalog::Principal) -> FileStoreHost<'a> {
+        self.caused_by(caller.role, caller.user.as_ref())
     }
 
     /// Attach where the run's application serves store files, which is what
@@ -212,16 +237,40 @@ impl<'a> FileStoreHost<'a> {
         self
     }
 
-    /// The connected store of that name, or an error naming it.
-    fn store(&self, name: &str) -> Result<Arc<dyn FileStore>> {
-        self.catalog.require_file_store(name)
+    /// The store `name` as `authority` reaches it (TODO-code-quality Q3.6):
+    /// every operation below goes through the [`CheckedStore`], whose grants
+    /// are the proof that the path-cumulative rule passed.
+    ///
+    /// Admin authority clears every rule that can be written, so its store is
+    /// bound to the administrator and its floor is not read from the database
+    /// — the whole walk is skipped rather than performed to reach a foregone
+    /// conclusion. A delegated one is bound to the event's caller and the
+    /// store's floor (read once per store per run).
+    async fn checked(&self, name: &str, authority: &Authority) -> Result<CheckedStore> {
+        // Whether it is connected first, so "no such store" is the answer
+        // whatever the floor would have been.
+        let store = self.open(name, authority, None)?;
+        if authority.is_admin() {
+            return Ok(store);
+        }
+        self.open(name, authority, self.floor(name).await?)
+    }
+
+    /// The connected store `name` with `authority`'s caller and `floor` bound,
+    /// or an error naming it.
+    fn open(&self, name: &str, authority: &Authority, floor: Option<Role>) -> Result<CheckedStore> {
+        let caller = match authority.is_admin() {
+            true => FileCaller::new(Role::ADMIN, self.caller.user_id.clone()),
+            false => self.caller.clone(),
+        };
+        self.catalog.checked_file_store(name, floor, caller)
     }
 
     /// The store-wide floor, read once per store per run.
     ///
     /// `None` for a store with no definition row — an ephemeral `--file-store` —
     /// which is the same answer every other file endpoint resolves for one.
-    async fn floor(&self, name: &str) -> Result<Option<u8>> {
+    async fn floor(&self, name: &str) -> Result<Option<Role>> {
         if let Ok(cache) = self.floors.lock()
             && let Some(known) = cache.get(name)
         {
@@ -236,49 +285,12 @@ impl<'a> FileStoreHost<'a> {
         Ok(floor)
     }
 
-    /// Check that this operation may **read** `path` in `store`.
-    ///
-    /// Admin authority clears every rule that can be written, so the whole
-    /// path-cumulative walk — one metadata read per directory, plus the store
-    /// definition — is skipped rather than performed to reach a foregone
-    /// conclusion.
-    async fn permit(
-        &self,
-        store: &dyn FileStore,
-        name: &str,
-        path: &str,
-        authority: &Authority,
-    ) -> Result<()> {
-        if authority.is_admin() {
-            return Ok(());
-        }
-        let floor = self.floor(name).await?;
-        check_access(store, floor, path, &self.caller).await
-    }
-
-    /// Check that this operation may **write** `path` in `store`: create,
-    /// replace, delete, move or re-rule it. Under user authority somebody
-    /// else's file is refused, however low its rule (§2.1).
-    async fn permit_write(
-        &self,
-        store: &dyn FileStore,
-        name: &str,
-        path: &str,
-        authority: &Authority,
-    ) -> Result<()> {
-        if authority.is_admin() {
-            return Ok(());
-        }
-        let floor = self.floor(name).await?;
-        check_write(store, floor, path, &self.caller).await
-    }
-
     /// The metadata a write's options (`write(bytes, { owner, minRole,
     /// filename })`) and its authority ask to be recorded, checked **before**
     /// the bytes land so a refusal writes nothing.
     async fn planned_meta(
         &self,
-        store: &dyn FileStore,
+        store: &CheckedStore,
         req: &FileRequest,
         path: &str,
     ) -> Result<PlannedMeta> {
@@ -307,9 +319,8 @@ impl<'a> FileStoreHost<'a> {
             (_, None) => None,
         };
         if let Some(role) = req.min_role {
-            valid_role(role)?;
             if req.authority == Authority::User {
-                self.only_tightens(store, req, path, Some(role)).await?;
+                self.only_tightens(store, path, Some(role)).await?;
             }
         }
         Ok(PlannedMeta {
@@ -321,18 +332,18 @@ impl<'a> FileStoreHost<'a> {
 
     /// Record what [`planned_meta`](Self::planned_meta) decided, once the
     /// entry exists. Nothing is written when nothing was asked for.
-    async fn apply_meta(&self, store: &dyn FileStore, path: &str, plan: PlannedMeta) -> Result<()> {
+    async fn apply_meta(&self, file: &Writable<'_>, plan: PlannedMeta) -> Result<()> {
         if let Some(OwnerPlan::IfUnset(owner)) = &plan.owner
             && plan.min_role.is_none()
             && plan.filename.is_none()
         {
-            record_owner(store, path, owner).await;
+            file.record_owner(owner).await;
             return Ok(());
         }
         if plan.owner.is_none() && plan.min_role.is_none() && plan.filename.is_none() {
             return Ok(());
         }
-        let mut meta = store.get_meta(path).await.unwrap_or_default();
+        let mut meta = file.get_meta().await.unwrap_or_default();
         match plan.owner {
             Some(OwnerPlan::IfUnset(owner)) => {
                 meta.owner.get_or_insert(owner);
@@ -348,26 +359,25 @@ impl<'a> FileStoreHost<'a> {
             meta.attributes
                 .insert(FILENAME_ATTRIBUTE.to_owned(), filename);
         }
-        store.set_meta(path, &meta).await
+        file.set_meta(&meta).await
     }
 
     /// Refuse a delegated change that would make `path` reachable by anyone it
     /// is not reachable by now — a delegated body may tighten a rule and never
-    /// loosen one.
+    /// loosen one. Decided against `store`'s own floor: the store the entry is
+    /// in, which for a copy or a move is the destination's.
     async fn only_tightens(
         &self,
-        store: &dyn FileStore,
-        req: &FileRequest,
+        store: &CheckedStore,
         path: &str,
-        min_role: Option<u8>,
+        min_role: Option<Role>,
     ) -> Result<()> {
-        let floor = self.floor(&req.store).await?;
-        let before = effective_min_role(store, floor, path).await?;
+        let before = store.effective_min_role(path).await?;
         let parent = match path.rsplit_once('/') {
             Some((parent, _)) => parent,
             None => "",
         };
-        let above = effective_min_role(store, floor, parent).await?;
+        let above = store.effective_min_role(parent).await?;
         let after = tightest(above, min_role);
         if looser(after, before) {
             return Err(Error::auth(format!(
@@ -420,7 +430,7 @@ struct FileRequest {
     to_path: Option<String>,
     /// `setMeta`: the rule to set on this entry, or `null` for none.
     #[serde(default)]
-    min_role: Option<u8>,
+    min_role: Option<Role>,
     /// `setMeta`: the entry's attributes, which replace what was there.
     #[serde(default)]
     attributes: Option<BTreeMap<String, String>>,
@@ -450,7 +460,7 @@ struct FileRequest {
 /// What a write records beside its bytes.
 struct PlannedMeta {
     owner: Option<OwnerPlan>,
-    min_role: Option<u8>,
+    min_role: Option<Role>,
     filename: Option<String>,
 }
 
@@ -483,26 +493,41 @@ fn owner_option(req: &FileRequest) -> Result<Option<Option<String>>> {
     }
 }
 
-/// Refuse a role outside the scale.
-fn valid_role(role: u8) -> Result<()> {
-    if !(1..=sc_auth::ROLE_PUBLIC).contains(&role) {
-        return Err(Error::invalid(format!(
-            "`minRole` is a role from 1 (admin) to {} (public), not {role}",
-            sc_auth::ROLE_PUBLIC
-        )));
-    }
-    Ok(())
+/// The server-log line for a file operation the access rules refused, or `None`
+/// when `err` is not a refusal (a missing file, a bad argument).
+fn refusal_warning(req: &FileRequest, caller: &FileCaller, err: &Error) -> Option<String> {
+    let message = err.auth_message()?;
+    let who = match &caller.user_id {
+        Some(id) => format!("user `{id}` (role {})", caller.role),
+        None if caller.role.is_public() => "the public role".to_owned(),
+        None => format!("role {}", caller.role),
+    };
+    Some(format!(
+        "feldspar: warning: a code body's file `{}` of {:?} in store `{}`, as {who}, was \
+         refused: {message}",
+        req.op, req.path, req.store
+    ))
 }
 
 #[async_trait]
 impl FileHost for FileStoreHost<'_> {
     async fn files(&self, request: Json) -> Result<Json> {
-        let req: FileRequest = serde_json::from_value(request).map_err(|e| {
+        let mut req: FileRequest = serde_json::from_value(request).map_err(|e| {
             Error::invalid(format!(
                 "this file request is not one the server understands: {e}"
             ))
         })?;
-        self.run(&req).await
+        req.authority = req.authority.resolve(&self.default_authority);
+        let answer = self.run(&req).await;
+        // A refusal is the body's to catch, and cleanup code catches it without
+        // a word — a delete that left somebody else's upload behind, a shared
+        // file that stopped updating. The server log says so either way.
+        if let Err(err) = &answer
+            && let Some(warning) = refusal_warning(&req, &self.caller, err)
+        {
+            eprintln!("{warning}");
+        }
+        answer
     }
 
     fn store_names(&self) -> Vec<String> {
@@ -535,36 +560,36 @@ impl FileStoreHost<'_> {
             )));
         }
         let path = clean_path(&req.path)?;
-        let store = self.store(&req.store)?;
+        if req.op == "url" {
+            // Reads nothing from the store, so it reads no floor either; the
+            // store still has to be one this server has.
+            self.open(&req.store, &req.authority, None)?;
+            return Ok(self.url(req, &path));
+        }
+        let store = self.checked(&req.store, &req.authority).await?;
         match req.op.as_str() {
-            "read" => self.read(store.as_ref(), req, &path).await,
-            "write" => self.write(store.as_ref(), req, &path).await,
-            "stat" => self.stat(store.as_ref(), req, &path).await,
-            "list" => self.list(store.as_ref(), req, &path).await,
+            "read" => self.read(&store, req, &path).await,
+            "write" => self.write(&store, req, &path).await,
+            "stat" => self.stat(&store, &path).await,
+            "list" => self.list(&store, &path).await,
             "mkdir" => {
-                self.permit_write(store.as_ref(), &req.store, &path, &req.authority)
-                    .await?;
-                store.mkdir(&path).await?;
+                let dir = store.writable(&path).await?;
+                dir.mkdir().await?;
                 // A delegated body's directory is its caller's, as its files are.
                 if req.authority == Authority::User
                     && let Some(owner) = &self.caller.user_id
                 {
-                    record_owner(store.as_ref(), &path, owner).await;
+                    dir.record_owner(owner).await;
                 }
                 Ok(Json::Null)
             }
-            "delete" => {
-                self.permit_write(store.as_ref(), &req.store, &path, &req.authority)
-                    .await?;
-                Ok(Json::Bool(store.delete(&path).await?))
-            }
-            "copy" | "rename" => self.relocate(store.as_ref(), req, &path).await,
-            "append" => self.append(store.as_ref(), req, &path).await,
-            "concat" => self.concat(store.as_ref(), req, &path).await,
-            "sha256" => self.sha256(store.as_ref(), req, &path).await,
-            "url" => Ok(self.url(req, &path)),
-            "meta" => self.meta(store.as_ref(), req, &path).await,
-            "setMeta" => self.set_meta(store.as_ref(), req, &path).await,
+            "delete" => Ok(Json::Bool(store.writable(&path).await?.delete().await?)),
+            "copy" | "rename" => self.relocate(&store, req, &path).await,
+            "append" => self.append(&store, req, &path).await,
+            "concat" => self.concat(&store, req, &path).await,
+            "sha256" => self.sha256(&store, &path).await,
+            "meta" => self.meta(req, &path).await,
+            "setMeta" => self.set_meta(&store, req, &path).await,
             other => Err(Error::invalid(format!(
                 "`{other}` is not a file operation this server knows"
             ))),
@@ -572,12 +597,12 @@ impl FileStoreHost<'_> {
     }
 
     /// A `read`: the whole file, as text or as bytes.
-    async fn read(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
-        self.permit(store, &req.store, path, &req.authority).await?;
+    async fn read(&self, store: &CheckedStore, req: &FileRequest, path: &str) -> Result<Json> {
+        let file = store.readable(path).await?;
         let name = store.name();
         // Asked before the bytes are read, so a file too large to carry is
         // refused without first being loaded into this process to prove it.
-        match store.stat(path).await? {
+        match file.stat().await? {
             None => {
                 return Err(Error::not_found(format!(
                     "{path:?} does not exist in file store {name}"
@@ -589,11 +614,11 @@ impl FileStoreHost<'_> {
                 )));
             }
             Some(stat) if req.offset.is_some() || req.length.is_some() => {
-                return self.read_part(store, req, path, stat.size).await;
+                return self.read_part(&file, req, stat.size).await;
             }
             Some(stat) => self.within_read_cap(stat.size, path, name)?,
         }
-        let bytes = store.read(path).await?;
+        let bytes = file.read().await?;
         // Again on what actually came back: a store whose `stat` and whose bytes
         // disagree must not be the way past the bound.
         self.within_read_cap(bytes.len() as u64, path, name)?;
@@ -619,13 +644,8 @@ impl FileStoreHost<'_> {
     /// bytes from `offset`, streamed from the store so a file of any size can
     /// be read a piece at a time. Bytes, always: a piece of a UTF-8 file need
     /// not end on a character.
-    async fn read_part(
-        &self,
-        store: &dyn FileStore,
-        req: &FileRequest,
-        path: &str,
-        size: u64,
-    ) -> Result<Json> {
+    async fn read_part(&self, file: &Readable<'_>, req: &FileRequest, size: u64) -> Result<Json> {
+        let path = file.path();
         let start = req.offset.unwrap_or(0).min(size);
         let end = match req.length {
             Some(length) => start.saturating_add(length).min(size),
@@ -634,13 +654,13 @@ impl FileStoreHost<'_> {
         // The cap is on the piece, so asking for more than may cross is a
         // refusal naming the limit rather than a short read the body would
         // mistake for the end of the file.
-        self.within_read_cap(end - start, path, store.name())?;
-        let mut reader = store.open_read(path, Some(start..end)).await?;
+        self.within_read_cap(end - start, path, file.store_name())?;
+        let mut reader = file.open_read(Some(start..end)).await?;
         let mut bytes = Vec::with_capacity(usize::try_from(end - start).unwrap_or(0));
         reader.read_to_end(&mut bytes).await.map_err(|e| {
             Error::file(format!(
                 "reading {path:?} in file store {}: {e}",
-                store.name()
+                file.store_name()
             ))
         })?;
         Ok(serde_json::json!({ "base64": BASE64.encode(&bytes) }))
@@ -649,9 +669,8 @@ impl FileStoreHost<'_> {
     /// An `append`: add bytes to the end of a file, creating it (and its
     /// parents) when it is not there. A new file records its owner and options
     /// as a `write` would; an existing one keeps what it has.
-    async fn append(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
-        self.permit_write(store, &req.store, path, &req.authority)
-            .await?;
+    async fn append(&self, store: &CheckedStore, req: &FileRequest, path: &str) -> Result<Json> {
+        let file = store.writable(path).await?;
         let name = store.name();
         if path.is_empty() {
             return Err(Error::invalid(format!(
@@ -659,7 +678,7 @@ impl FileStoreHost<'_> {
             )));
         }
         let bytes = self.payload(req, path, name)?;
-        let existing = store.stat(path).await?;
+        let existing = file.stat().await?;
         if existing.as_ref().is_some_and(|s| s.is_dir) {
             return Err(Error::invalid(format!(
                 "{path:?} in file store {name} is a directory, not a file to append to"
@@ -669,7 +688,7 @@ impl FileStoreHost<'_> {
             None => Some(self.planned_meta(store, req, path).await?),
             Some(_) => None,
         };
-        let mut writer = store.open_append(path).await?;
+        let mut writer = file.open_append().await?;
         let io = |e: std::io::Error| {
             Error::file(format!("appending to {path:?} in file store {name}: {e}"))
         };
@@ -677,7 +696,7 @@ impl FileStoreHost<'_> {
         writer.shutdown().await.map_err(io)?;
         drop(writer);
         if let Some(plan) = plan {
-            self.apply_meta(store, path, plan).await?;
+            self.apply_meta(&file, plan).await?;
         }
         Ok(serde_json::json!({ "bytes": bytes.len() }))
     }
@@ -685,7 +704,7 @@ impl FileStoreHost<'_> {
     /// A `concat`: join `parts` (files of this store), in order, into this
     /// file, replacing it — host-side, so the result may be as large as one
     /// copy may move however small a read is.
-    async fn concat(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
+    async fn concat(&self, store: &CheckedStore, req: &FileRequest, path: &str) -> Result<Json> {
         let name = store.name();
         let Some(parts) = &req.parts else {
             return Err(Error::invalid("a `concat` names the files it joins"));
@@ -703,9 +722,10 @@ impl FileStoreHost<'_> {
             .map(|p| clean_path(p))
             .collect::<Result<Vec<String>>>()?;
         let mut total = 0u64;
+        let mut readable = Vec::with_capacity(parts.len());
         for part in &parts {
-            self.permit(store, &req.store, part, &req.authority).await?;
-            match store.stat(part).await? {
+            let file = store.readable(part).await?;
+            match file.stat().await? {
                 None => {
                     return Err(Error::not_found(format!(
                         "{part:?} does not exist in file store {name}, so it cannot be joined"
@@ -718,6 +738,7 @@ impl FileStoreHost<'_> {
                 }
                 Some(stat) => total = total.saturating_add(stat.size),
             }
+            readable.push(file);
         }
         if total > self.max_copy_bytes {
             return Err(Error::invalid(format!(
@@ -727,25 +748,24 @@ impl FileStoreHost<'_> {
                 self.max_copy_bytes / (1024 * 1024),
             )));
         }
-        self.permit_write(store, &req.store, path, &req.authority)
-            .await?;
+        let target = store.writable(path).await?;
         if parts.iter().any(|p| p == path) {
             return Err(Error::invalid(format!(
                 "{path:?} cannot be one of the parts joined into it"
             )));
         }
         let plan = self.planned_meta(store, req, path).await?;
-        let size = store.concat(&parts, path).await?;
-        self.apply_meta(store, path, plan).await?;
+        let size = target.concat(&readable).await?;
+        self.apply_meta(&target, plan).await?;
         Ok(serde_json::json!({ "bytes": size }))
     }
 
     /// A `sha256`: the file's SHA-256, as lower-case hex, taken over the
     /// streamed file — no size limit, and nothing in the isolate.
-    async fn sha256(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
-        self.permit(store, &req.store, path, &req.authority).await?;
+    async fn sha256(&self, store: &CheckedStore, path: &str) -> Result<Json> {
+        let file = store.readable(path).await?;
         let name = store.name();
-        match store.stat(path).await? {
+        match file.stat().await? {
             None => {
                 return Err(Error::not_found(format!(
                     "{path:?} does not exist in file store {name}"
@@ -758,7 +778,7 @@ impl FileStoreHost<'_> {
             }
             Some(_) => {}
         }
-        let mut reader = store.open_read(path, None).await?;
+        let mut reader = file.open_read(None).await?;
         let mut hasher = Sha256::new();
         let mut buf = vec![0u8; 64 * 1024];
         loop {
@@ -819,9 +839,8 @@ impl FileStoreHost<'_> {
     }
 
     /// A `write`: create or replace, making the parent directories on the way.
-    async fn write(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
-        self.permit_write(store, &req.store, path, &req.authority)
-            .await?;
+    async fn write(&self, store: &CheckedStore, req: &FileRequest, path: &str) -> Result<Json> {
+        let file = store.writable(path).await?;
         let name = store.name();
         if path.is_empty() {
             return Err(Error::invalid(format!(
@@ -832,18 +851,17 @@ impl FileStoreHost<'_> {
         // The existence check `create()` is: refused here rather than left to the
         // store, so the message says which file and in which store.
         if !req.overwrite {
-            self.refuse_existing(store, path).await?;
+            refuse_existing(&file).await?;
         }
         let plan = self.planned_meta(store, req, path).await?;
         let written = bytes.len();
-        store.write(path, bytes).await?;
-        self.apply_meta(store, path, plan).await?;
+        file.write(bytes).await?;
+        self.apply_meta(&file, plan).await?;
         Ok(serde_json::json!({ "bytes": written }))
     }
 
     /// A `stat`: the entry's own facts, or `null` when nothing is there.
-    async fn stat(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
-        self.permit(store, &req.store, path, &req.authority).await?;
+    async fn stat(&self, store: &CheckedStore, path: &str) -> Result<Json> {
         let Some(stat) = store.stat(path).await? else {
             return Ok(Json::Null);
         };
@@ -851,21 +869,13 @@ impl FileStoreHost<'_> {
     }
 
     /// A `list`: the direct children, filtered to what the authority may see.
-    async fn list(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
+    async fn list(&self, store: &CheckedStore, path: &str) -> Result<Json> {
         // Filtered rather than refused, exactly as the browse endpoint is: naming
         // an entry the caller cannot open leaks what the rule was set to hide.
         // And owner-aware: a delegated listing of a folder the caller may not
-        // read still shows the files they own in it (§2.1).
-        let visible: Vec<Entry> = if req.authority == Authority::User {
-            let floor = self.floor(&req.store).await?;
-            list_visible(store, floor, path, &self.caller)
-                .await?
-                .into_iter()
-                .map(|v| v.entry)
-                .collect()
-        } else {
-            store.list(path).await?
-        };
+        // read still shows the files they own in it (§2.1). The admin's is the
+        // store's own listing.
+        let visible: Vec<Entry> = store.list_entries(path).await?;
         Ok(Json::Array(visible.iter().map(entry_json).collect()))
     }
 
@@ -874,8 +884,10 @@ impl FileStoreHost<'_> {
     /// Both are checked at **both ends** — the source is read and the
     /// destination is written, so both have to be permitted — and both refuse an
     /// existing destination unless the operation said otherwise, since a silent
-    /// replace is a lost file with no undo.
-    async fn relocate(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
+    /// replace is a lost file with no undo. A move takes the source away, which
+    /// is a write; across two stores its bytes are also read, so the source must
+    /// be readable as well.
+    async fn relocate(&self, store: &CheckedStore, req: &FileRequest, path: &str) -> Result<Json> {
         let Some(to_path) = req.to_path.as_deref() else {
             return Err(Error::invalid(format!(
                 "a `{}` names where it is going",
@@ -890,35 +902,38 @@ impl FileStoreHost<'_> {
         }
         let to_name = req.to_store.clone().unwrap_or_else(|| req.store.clone());
         let same_store = to_name == req.store;
-        let dest = if same_store {
-            None
-        } else {
-            Some(self.store(&to_name)?)
+        let other = match same_store {
+            true => None,
+            false => Some(self.checked(&to_name, &req.authority).await?),
         };
-        let dest_store = dest.as_deref().unwrap_or(store);
+        let dest_store = other.as_ref().unwrap_or(store);
         // A copy reads its source; a move takes it away, which is a write.
-        if req.op == "rename" {
-            self.permit_write(store, &req.store, path, &req.authority)
-                .await?;
-        } else {
-            self.permit(store, &req.store, path, &req.authority).await?;
-        }
-        self.permit_write(dest_store, &to_name, &to_path, &req.authority)
-            .await?;
+        let taken = match req.op == "rename" {
+            true => Some(store.writable(path).await?),
+            false => None,
+        };
+        let source = match (&taken, same_store) {
+            // A move within one store never reads the bytes.
+            (Some(_), true) => None,
+            _ => Some(store.readable(path).await?),
+        };
+        let dest = dest_store.writable(&to_path).await?;
         let plan = self.planned_meta(dest_store, req, &to_path).await?;
         if !req.overwrite {
-            self.refuse_existing(dest_store, &to_path).await?;
+            refuse_existing(&dest).await?;
         }
         // A move within one store is the store's own rename: atomic where the
         // backend is, and it does not read the bytes at all.
-        if same_store && req.op == "rename" {
-            store.rename(path, &to_path).await?;
+        let Some(source) = source else {
+            if let Some(taken) = &taken {
+                taken.rename_to(&dest).await?;
+            }
             // A moved file keeps its metadata, owner included: moving somebody's
             // file does not make it the mover's.
             return Ok(Json::Null);
-        }
+        };
         let name = store.name();
-        let size = match store.stat(path).await? {
+        let size = match source.stat().await? {
             None => {
                 return Err(Error::not_found(format!(
                     "{path:?} does not exist in file store {name}"
@@ -940,27 +955,30 @@ impl FileStoreHost<'_> {
         }
         // The bytes stay in this process: a copy is not bounded by what one read
         // may carry into the isolate, because it never goes there.
-        let bytes = store.read(path).await?;
+        let bytes = source.read().await?;
         let moved = bytes.len();
-        dest_store.write(&to_path, bytes).await?;
-        self.apply_meta(dest_store, &to_path, plan).await?;
+        dest.write(bytes).await?;
+        self.apply_meta(&dest, plan).await?;
         // A cross-store move is a copy and then a delete, and it is **not**
         // atomic: two stores are two filesystems, and there is no rename across
         // them to borrow. The delete comes last, so an interrupted move leaves
         // the file where it was rather than nowhere.
-        if req.op == "rename" {
-            store.delete(path).await?;
+        if let Some(taken) = &taken {
+            taken.delete().await?;
         }
         Ok(serde_json::json!({ "bytes": moved }))
     }
 
     /// A `meta`: the rule set on this entry, the rule that applies, and the
     /// attributes.
-    async fn meta(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
-        self.permit(store, &req.store, path, &req.authority).await?;
-        let meta = store.get_meta(path).await?;
+    async fn meta(&self, req: &FileRequest, path: &str) -> Result<Json> {
+        // The rule that applies is reported under either authority, so the
+        // store's floor is read here even for the admin's.
         let floor = self.floor(&req.store).await?;
-        let effective = effective_min_role(store, floor, path).await?;
+        let store = self.open(&req.store, &req.authority, floor)?;
+        let file = store.readable(path).await?;
+        let meta = file.get_meta().await?;
+        let effective = store.effective_min_role(path).await?;
         Ok(serde_json::json!({
             "minRole": meta.min_role,
             // What actually applies, given the store and every directory above:
@@ -976,13 +994,9 @@ impl FileStoreHost<'_> {
     ///
     /// The owner is kept unless an admin-authority body names a new one (or
     /// `null`); under user authority it cannot be changed at all (§2.1).
-    async fn set_meta(&self, store: &dyn FileStore, req: &FileRequest, path: &str) -> Result<Json> {
-        self.permit_write(store, &req.store, path, &req.authority)
-            .await?;
-        if let Some(role) = req.min_role {
-            valid_role(role)?;
-        }
-        let current = store.get_meta(path).await?.owner;
+    async fn set_meta(&self, store: &CheckedStore, req: &FileRequest, path: &str) -> Result<Json> {
+        let file = store.writable(path).await?;
+        let current = file.get_meta().await?.owner;
         let owner = match owner_option(req)? {
             None => current,
             Some(named) if req.authority == Authority::User => {
@@ -1008,22 +1022,10 @@ impl FileStoreHost<'_> {
         // non-admin the author of an access rule — and delegating a trigger to
         // its caller was never meant to grant that.
         if req.authority == Authority::User {
-            self.only_tightens(store, req, path, meta.min_role).await?;
+            self.only_tightens(store, path, meta.min_role).await?;
         }
-        store.set_meta(path, &meta).await?;
+        file.set_meta(&meta).await?;
         Ok(Json::Null)
-    }
-
-    /// Refuse when something is already at `path`, in the words of the operation
-    /// that must not replace it.
-    async fn refuse_existing(&self, store: &dyn FileStore, path: &str) -> Result<()> {
-        if store.stat(path).await?.is_some() {
-            return Err(Error::invalid(format!(
-                "{path:?} already exists in file store {}",
-                store.name()
-            )));
-        }
-        Ok(())
     }
 
     /// Refuse a read larger than what one may carry across the seam, naming both
@@ -1040,6 +1042,19 @@ impl FileStoreHost<'_> {
         }
         Ok(())
     }
+}
+
+/// Refuse when something is already at `file`'s path, in the words of the
+/// operation that must not replace it.
+async fn refuse_existing(file: &Writable<'_>) -> Result<()> {
+    if file.stat().await?.is_some() {
+        return Err(Error::invalid(format!(
+            "{:?} already exists in file store {}",
+            file.path(),
+            file.store_name()
+        )));
+    }
+    Ok(())
 }
 
 /// One [`FileStat`], as the guest reads it.
@@ -1065,22 +1080,22 @@ fn entry_json(entry: &Entry) -> Json {
     })
 }
 
-/// The more restrictive (numerically smaller) of two optional rules, with `None`
+/// The more restrictive (more privileged) of two optional rules, with `None`
 /// meaning "says nothing" rather than "public".
-fn tightest(a: Option<u8>, b: Option<u8>) -> Option<u8> {
+fn tightest(a: Option<Role>, b: Option<Role>) -> Option<Role> {
     match (a, b) {
-        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), Some(b)) => Some(a.most_privileged(b)),
         (Some(a), None) => Some(a),
         (None, b) => b,
     }
 }
 
 /// Whether `after` grants access to anyone `before` did not.
-fn looser(after: Option<u8>, before: Option<u8>) -> bool {
+fn looser(after: Option<Role>, before: Option<Role>) -> bool {
     match (after, before) {
         // Nothing said at all is the loosest there is.
         (None, Some(_)) => true,
-        (Some(after), Some(before)) => after > before,
+        (Some(after), Some(before)) => before.outranks(after),
         _ => false,
     }
 }
@@ -1142,13 +1157,57 @@ mod tests {
     #[test]
     fn a_rule_can_be_tightened_and_not_loosened() {
         // Smaller is more restrictive, and "nothing said" is the loosest of all.
-        assert_eq!(tightest(Some(40), Some(10)), Some(10));
-        assert_eq!(tightest(None, Some(10)), Some(10));
-        assert_eq!(tightest(Some(40), None), Some(40));
-        assert!(looser(Some(100), Some(40)), "public is looser than a floor");
-        assert!(looser(None, Some(40)), "no rule is looser than a rule");
-        assert!(!looser(Some(10), Some(40)), "tightening is allowed");
-        assert!(!looser(Some(40), Some(40)), "unchanged is not looser");
-        assert!(!looser(Some(40), None), "adding a rule is tightening");
+        assert_eq!(
+            tightest(Some(Role::of(40)), Some(Role::of(10))),
+            Some(Role::of(10))
+        );
+        assert_eq!(tightest(None, Some(Role::of(10))), Some(Role::of(10)));
+        assert_eq!(tightest(Some(Role::of(40)), None), Some(Role::of(40)));
+        assert!(
+            looser(Some(Role::PUBLIC), Some(Role::of(40))),
+            "public is looser than a floor"
+        );
+        assert!(
+            looser(None, Some(Role::of(40))),
+            "no rule is looser than a rule"
+        );
+        assert!(
+            !looser(Some(Role::of(10)), Some(Role::of(40))),
+            "tightening is allowed"
+        );
+        assert!(
+            !looser(Some(Role::of(40)), Some(Role::of(40))),
+            "unchanged is not looser"
+        );
+        assert!(
+            !looser(Some(Role::of(40)), None),
+            "adding a rule is tightening"
+        );
+    }
+
+    #[test]
+    fn a_refused_operation_is_a_warning_and_nothing_else_is() {
+        let req: FileRequest = serde_json::from_value(serde_json::json!({
+            "op": "delete", "store": "uploads", "authority": "user", "path": "p/7/a.pdf",
+        }))
+        .unwrap();
+        let refused = Error::auth(r#"not permitted to access "p/7/a.pdf" in file store uploads"#);
+        let warning = refusal_warning(
+            &req,
+            &FileCaller::new(Role::of(80), Some("12".into())),
+            &refused,
+        )
+        .unwrap();
+        assert_eq!(
+            warning,
+            "feldspar: warning: a code body's file `delete` of \"p/7/a.pdf\" in store \
+             `uploads`, as user `12` (role 80), was refused: not permitted to access \
+             \"p/7/a.pdf\" in file store uploads"
+        );
+        let anonymous = refusal_warning(&req, &FileCaller::anonymous(), &refused).unwrap();
+        assert!(anonymous.contains("as the public role"), "{anonymous}");
+        // Not a refusal: nothing to warn about.
+        let missing = Error::not_found("no such file");
+        assert!(refusal_warning(&req, &FileCaller::anonymous(), &missing).is_none());
     }
 }

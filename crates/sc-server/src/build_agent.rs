@@ -325,6 +325,9 @@ pub(crate) async fn failed(
 }
 
 /// The build host the request's bearer token belongs to, or the refusal.
+// `clippy::result_large_err` does not apply: the `Err` is the refusal to send,
+// returned unchanged by the handler (as in `builder.rs`).
+#[allow(clippy::result_large_err)]
 async fn authenticated(
     state: &AppState,
     headers: &HeaderMap,
@@ -339,7 +342,7 @@ async fn authenticated(
         return Err(refusal(
             StatusCode::UNAUTHORIZED,
             "a build agent authenticates by `Authorization: Bearer <token>`: the token \
-             shown when the host was added under Settings → Build hosts",
+             shown when the host was added under Settings → Development → Build hosts",
         ));
     };
     match authenticate_build_host(&catalog, &presented).await {
@@ -350,6 +353,9 @@ async fn authenticated(
 
 /// The running job `id` of the host the request comes from. Another host's job,
 /// a finished one or none at all is a 404: nothing tells one from another.
+// `clippy::result_large_err` does not apply: the `Err` is the refusal to send,
+// returned unchanged by the handler (as in `builder.rs`).
+#[allow(clippy::result_large_err)]
 async fn held_job(
     state: &AppState,
     headers: &HeaderMap,

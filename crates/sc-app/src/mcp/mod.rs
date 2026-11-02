@@ -64,15 +64,15 @@
 //! rewritten here for the same reason the admin API rewrites it: the app's source
 //! tree should never disagree with the app's definition.
 
+use sc_types::ArgsExt;
+use sc_types::Role;
 use std::sync::Arc;
 
 use sc_api::mcp::{
-    AdminTool, Area, Areas, ToolContext, ToolSet, arguments, optional_bool, optional_role,
-    optional_string, require_grant,
+    AdminTool, Area, Areas, ToolContext, ToolSet, arguments, optional_role, require_grant,
 };
 use sc_api::schema_edit::{GRANT_ACCESS_CHANGES, GRANT_CREATE, GRANT_DROP, GRANT_EDIT, Grants};
 use sc_api::{CustomParam, CustomQuery, Method, ValueType};
-use sc_auth::{ROLE_ADMIN, ROLE_PUBLIC};
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json, json};
@@ -332,7 +332,9 @@ fn application_json(app: &Application) -> Result<Json> {
         "name": app.name,
         "description": app.description,
         "framework": app.framework.name,
-        "tables": app.tables.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
+        "tables": app.tables.to_vec(),
+        // The connected tables that also serve a generic row API — usually none.
+        "api_tables": update::api_tables_json(app),
         "triggers": app.triggers.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
         "streams": app.streams.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
         "file_stores": app.file_stores.iter().map(|s| s.0.clone()).collect::<Vec<_>>(),
@@ -386,7 +388,7 @@ fn query_json(query: &CustomQuery) -> Json {
         "min_role": query.min_role,
         // Said, not left to be known: 100 is the public role, and "who can
         // call this?" is the question a reader of this list is asking.
-        "public": query.min_role == ROLE_PUBLIC,
+        "public": query.min_role.is_public(),
         "body_type": query.body_type.as_str(),
         "response_type": query.response_type.as_str(),
         // Server-written, never declared: the shape the database said this
@@ -464,8 +466,16 @@ fn save_description(grants: &Grants) -> String {
            pasted into the text, so never build a filter by concatenating one in. \
            An optional parameter binds SQL NULL when it is omitted, which makes \
            `WHERE (:q IS NULL OR name = :q)` the idiom for an optional filter.\n\
-         - **The path may not be one the app's own tables answer**, and the name \
-           may not be one of their client methods.\n\
+         - **The path may not be one the app's own table routes answer**, and the \
+           name may not be one of their client methods (only tables in its \
+           `api_tables` have either).\n\
+         - **Whose rows it sees.** SQL runs as written and only row-level security \
+           filters it: an ownership formula does not. So for data each user owns \
+           (their orders, their notes), write a `javascript` query over `db.<table>`: \
+           it runs **as the caller**, so the table's role rules and ownership \
+           formula apply exactly as they would on a row API. `db.asAdmin()` reads and \
+           writes every row regardless — use it only where the query must, and say \
+           why in its description.\n\
          - **The statement is prepared against the database.** A query that will \
            not prepare comes back with the database's own message and nothing is \
            saved; one that will is stored with the columns the database says it \
@@ -481,6 +491,7 @@ fn save_description(grants: &Grants) -> String {
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn save_parameters() -> Json {
     json!({
         "type": "object",
@@ -554,9 +565,11 @@ fn save_parameters() -> Json {
                      other throw is a 500 with no stack for non-admin callers. \
                      Its `db`, `fetch`, `fs` and `crypto` are this server's own \
                      API: call `describe_code_api` before writing a `javascript` \
-                     body rather than guessing the methods. Prefer a table with an \
-                     ownership formula, or SQL, to a code body where either can \
-                     express it.",
+                     body rather than guessing the methods. A code body's `db`, \
+                     `fs` and `trigger(...)` act **as the caller** — ownership \
+                     formulas and role floors apply — unless it says `asAdmin()`. \
+                     Use one over a table whose rows belong to users; plain SQL \
+                     where every row may be seen by whoever may call it.",
                 "enum": ["sql", "javascript", "python"],
             },
             ARG_BODY_TYPE: {
@@ -686,7 +699,7 @@ fn save_parameters() -> Json {
 
 async fn save(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Json> {
     let args = arguments(args, &SAVE_ARGS)?;
-    let name = required_str(&args, ARG_NAME)?;
+    let name = args.required_string(ARG_NAME)?;
     let mut app = load_app(ctx, &args).await?;
     let subdomain = app.subdomain.clone();
     let api = crate::select_api(&mut app, api_mount(&args)?.as_deref(), HOW_TO_NAME_API)?;
@@ -780,7 +793,7 @@ fn build(
     existing: Option<&CustomQuery>,
     args: &Map<String, Json>,
 ) -> Result<CustomQuery> {
-    let method = match optional_string(args, ARG_METHOD)? {
+    let method = match args.optional_string(ARG_METHOD)? {
         Some(raw) => parse_method(&raw)?,
         None => existing.map(|q| q.method).unwrap_or(Method::Get),
     };
@@ -791,13 +804,19 @@ fn build(
              (`{what}` is missing)"
         ))
     };
-    let path = match optional_string(args, ARG_PATH)?.filter(|p| !p.trim().is_empty()) {
+    let path = match args
+        .optional_string(ARG_PATH)?
+        .filter(|p| !p.trim().is_empty())
+    {
         Some(path) => path,
         None => existing
             .map(|q| q.path.clone())
             .ok_or_else(|| missing(ARG_PATH))?,
     };
-    let code = match optional_string(args, ARG_CODE)?.filter(|s| !s.trim().is_empty()) {
+    let code = match args
+        .optional_string(ARG_CODE)?
+        .filter(|s| !s.trim().is_empty())
+    {
         Some(code) => code,
         None => existing
             .map(|q| q.code.clone())
@@ -805,7 +824,7 @@ fn build(
     };
 
     let mut query = CustomQuery::new(name, method, path, code);
-    query.language = match optional_string(args, ARG_LANGUAGE)? {
+    query.language = match args.optional_string(ARG_LANGUAGE)? {
         Some(raw) => {
             serde_json::from_value(Json::String(raw.trim().to_lowercase())).map_err(|_| {
                 Error::invalid(format!(
@@ -815,7 +834,7 @@ fn build(
         }
         None => existing.map(|q| q.language).unwrap_or_default(),
     };
-    query.body_type = match optional_string(args, ARG_BODY_TYPE)? {
+    query.body_type = match args.optional_string(ARG_BODY_TYPE)? {
         Some(raw) => {
             serde_json::from_value(Json::String(raw.trim().to_lowercase())).map_err(|_| {
                 Error::invalid(format!(
@@ -825,7 +844,7 @@ fn build(
         }
         None => existing.map(|q| q.body_type).unwrap_or_default(),
     };
-    query.response_type = match optional_string(args, ARG_RESPONSE_TYPE)? {
+    query.response_type = match args.optional_string(ARG_RESPONSE_TYPE)? {
         Some(raw) => {
             serde_json::from_value(Json::String(raw.trim().to_lowercase())).map_err(|_| {
                 Error::invalid(format!(
@@ -856,7 +875,7 @@ fn build(
         None => existing.and_then(|q| q.rate_limit.clone()),
     };
     query.description = match args.contains_key(ARG_DESCRIPTION) {
-        true => optional_string(args, ARG_DESCRIPTION)?.unwrap_or_default(),
+        true => args.optional_string(ARG_DESCRIPTION)?.unwrap_or_default(),
         false => existing.map(|q| q.description.clone()).unwrap_or_default(),
     };
     query.params = match args.contains_key(ARG_PARAMS) {
@@ -868,7 +887,7 @@ fn build(
     // to be public (§13.4).
     query.min_role = match requested_role(args)? {
         Some(role) => role,
-        None => existing.map(|q| q.min_role).unwrap_or(ROLE_ADMIN),
+        None => existing.map(|q| q.min_role).unwrap_or(Role::ADMIN),
     };
     Ok(query)
 }
@@ -876,16 +895,16 @@ fn build(
 /// The role floor the arguments ask for: `min_role`, or `public: true` for
 /// 100. Both together must agree, and `public: false` says only "not 100" —
 /// so on its own it is refused rather than guessed into some other role.
-fn requested_role(args: &Map<String, Json>) -> Result<Option<u8>> {
+fn requested_role(args: &Map<String, Json>) -> Result<Option<Role>> {
     let role = optional_role(args, ARG_MIN_ROLE)?;
-    let public = optional_bool(args, ARG_PUBLIC)?;
+    let public = args.optional_bool(ARG_PUBLIC)?;
     match (role, public) {
         (role, None) => Ok(role),
-        (None, Some(true)) => Ok(Some(ROLE_PUBLIC)),
-        (Some(role), Some(public)) if (role == ROLE_PUBLIC) == public => Ok(Some(role)),
+        (None, Some(true)) => Ok(Some(Role::PUBLIC)),
+        (Some(role), Some(public)) if role.is_public() == public => Ok(Some(role)),
         (Some(role), Some(public)) => Err(Error::invalid(format!(
             "`{ARG_PUBLIC}: {public}` and `{ARG_MIN_ROLE}: {role}` disagree: public is \
-             {ARG_MIN_ROLE} {ROLE_PUBLIC}. Send one of them"
+             {ARG_MIN_ROLE} 100. Send one of them"
         ))),
         (None, Some(false)) => Err(Error::invalid(format!(
             "`{ARG_PUBLIC}: false` does not say who may call it; send `{ARG_MIN_ROLE}` \
@@ -921,11 +940,12 @@ fn parse_params(args: &Map<String, Json>) -> Result<Vec<CustomParam>> {
                 )));
             }
         }
-        let name = optional_string(obj, "name")?
+        let name = obj
+            .optional_string("name")?
             .map(|n| n.trim().to_owned())
             .filter(|n| !n.is_empty())
             .ok_or_else(|| Error::invalid(format!("`{ARG_PARAMS}[{i}]` needs a `name`")))?;
-        let raw = optional_string(obj, "type")?.ok_or_else(|| {
+        let raw = obj.optional_string("type")?.ok_or_else(|| {
             Error::invalid(format!(
                 "the parameter `{name}` needs a `type`; the types are {}",
                 type_names()
@@ -938,7 +958,7 @@ fn parse_params(args: &Map<String, Json>) -> Result<Vec<CustomParam>> {
             ))
         })?;
         let param = CustomParam::new(name, ty);
-        out.push(match optional_bool(obj, "required")? {
+        out.push(match obj.optional_bool("required")? {
             Some(false) => param.optional(),
             _ => param,
         });
@@ -993,7 +1013,7 @@ fn delete_parameters() -> Json {
 
 async fn delete(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Json> {
     let args = arguments(args, &[ARG_APPLICATION, ARG_API, ARG_NAME])?;
-    let name = required_str(&args, ARG_NAME)?;
+    let name = args.required_string(ARG_NAME)?;
     require_grant(grants.drop, "delete a custom SQL query", GRANT_DROP)?;
 
     let mut app = load_app(ctx, &args).await?;
@@ -1035,7 +1055,7 @@ async fn delete(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<J
 /// The application the arguments name, or the refusal that lists the ones there
 /// are.
 async fn load_app(ctx: &ToolContext<'_>, args: &Map<String, Json>) -> Result<Application> {
-    let subdomain = required_str(args, ARG_APPLICATION)?;
+    let subdomain = args.required_string(ARG_APPLICATION)?;
     match crate::load_application_by_subdomain(ctx.catalog, &subdomain).await? {
         Some(app) => Ok(app),
         None => {
@@ -1047,16 +1067,10 @@ async fn load_app(ctx: &ToolContext<'_>, args: &Map<String, Json>) -> Result<App
 
 /// The `api` argument, trimmed, or `None` for "there is only one".
 fn api_mount(args: &Map<String, Json>) -> Result<Option<String>> {
-    Ok(optional_string(args, ARG_API)?
+    Ok(args
+        .optional_string(ARG_API)?
         .map(|m| m.trim().to_owned())
         .filter(|m| !m.is_empty()))
-}
-
-fn required_str(args: &Map<String, Json>, key: &str) -> Result<String> {
-    optional_string(args, key)?
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| Error::invalid(format!("`{key}` is required")))
 }
 
 /// The query as it was **stored**, read back out of the saved application.
@@ -1167,7 +1181,7 @@ mod tests {
             ]),
         )
         .unwrap();
-        assert_eq!(query.min_role, ROLE_ADMIN);
+        assert_eq!(query.min_role, Role::ADMIN);
         assert_eq!(query.method, Method::Get);
         // The path is normalised on the way in, on an edit as well as a create,
         // because both go through the same constructor.
@@ -1317,7 +1331,7 @@ mod tests {
         )
         .params([CustomParam::new("since", ValueType::Int)])
         .description("Who wrote most")
-        .min_role(40);
+        .min_role(Role::of(40));
 
         let edited = build(
             "topAuthors",
@@ -1330,7 +1344,7 @@ mod tests {
         assert_eq!(edited.method, stored.method);
         assert_eq!(edited.description, stored.description);
         assert_eq!(edited.params, stored.params);
-        assert_eq!(edited.min_role, 40);
+        assert_eq!(edited.min_role, Role::of(40));
 
         // …and `params: []` is how a query that no longer takes any says so,
         // which is a different thing from omitting it.

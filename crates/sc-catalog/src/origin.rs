@@ -43,6 +43,168 @@ pub struct PublicOrigin {
     pub secure: bool,
 }
 
+/// A host this server serves, with its port when it has one (`blog.example.com`,
+/// `admin.example.com:3000`): code-quality review §4.6, TODO-code-quality Q4.2,
+/// security review #1 and #2.
+///
+/// An absolute link a server hands out — a password reset, an invitation, the
+/// OAuth callback and the hand-off back to where a sign-in began, an
+/// application's base URL — must point at a host this deployment answers for,
+/// or a `Host` header a caller made up (`blog.example.com:@evil.com`) chooses
+/// where a token goes. So the host is a type, and only two things make one:
+///
+/// - [`TrustedHost::configured`]: configuration — the base domain, the admin
+///   host, a subdomain under the base domain;
+/// - [`TrustedHost::served`]: the router, for a `Host` header it has matched
+///   against the hosts it serves (the validated host table).
+///
+/// Both refuse what is not a plain `host[:port]` ([`is_valid_host`]). Lowercased.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TrustedHost(String);
+
+impl TrustedHost {
+    /// A host the deployment's configuration names.
+    pub fn configured(host: &str) -> sc_error::Result<TrustedHost> {
+        TrustedHost::checked(host)
+    }
+
+    /// A request's `Host`, once the router has matched it against the hosts
+    /// it serves — never a header nothing checked.
+    pub fn served(host: &str) -> sc_error::Result<TrustedHost> {
+        TrustedHost::checked(host)
+    }
+
+    fn checked(host: &str) -> sc_error::Result<TrustedHost> {
+        if !is_valid_host(host) {
+            return Err(sc_error::Error::invalid(format!(
+                "`{host}` is not a host name with an optional port"
+            )));
+        }
+        Ok(TrustedHost(host.to_ascii_lowercase()))
+    }
+
+    /// `host[:port]`.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The port, when one is given.
+    pub fn port(&self) -> Option<&str> {
+        match self.0.rsplit_once(':') {
+            Some((name, port)) if !name.ends_with(':') && !port.contains(']') => Some(port),
+            _ => None,
+        }
+    }
+
+    /// This host on `other`'s port (or on none, when `other` has none) — the
+    /// admin UI's host as a request on another served host reached it.
+    pub fn on_port_of(&self, other: &TrustedHost) -> TrustedHost {
+        let name = match self.port() {
+            Some(port) => &self.0[..self.0.len() - port.len() - 1],
+            None => self.0.as_str(),
+        };
+        match other.port() {
+            Some(port) => TrustedHost(format!("{name}:{port}")),
+            None => TrustedHost(name.to_owned()),
+        }
+    }
+}
+
+impl std::fmt::Display for TrustedHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Whether `host` is a plain `host[:port]`: a name of letters, digits, `-`,
+/// `.` and `_` (or a bracketed IPv6 literal), and at most one port of one to
+/// five digits — no userinfo (`@`), no path, no second `:`. What the router
+/// accepts as a `Host` header and what a [`TrustedHost`] holds.
+pub fn is_valid_host(host: &str) -> bool {
+    let digits =
+        |port: &str| (1..=5).contains(&port.len()) && port.bytes().all(|b| b.is_ascii_digit());
+    let (name, port) = if let Some(rest) = host.strip_prefix('[') {
+        let Some((literal, after)) = rest.split_once(']') else {
+            return false;
+        };
+        if literal.is_empty()
+            || !literal
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
+        {
+            return false;
+        }
+        return match after {
+            "" => true,
+            _ => after.strip_prefix(':').is_some_and(digits),
+        };
+    } else {
+        match host.split_once(':') {
+            Some((name, port)) => (name, Some(port)),
+            None => (host, None),
+        }
+    };
+    !name.is_empty()
+        && name.len() <= 253
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
+        && port.is_none_or(digits)
+}
+
+/// The origin an absolute link starts with: `scheme://` a [`TrustedHost`], no
+/// path and no trailing slash. Every function that builds an absolute link
+/// takes one (TODO-code-quality Q4.2).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PublicBaseUrl(String);
+
+impl PublicBaseUrl {
+    /// `https://host` (or `http://`).
+    pub fn new(secure: bool, host: &TrustedHost) -> PublicBaseUrl {
+        let scheme = if secure { "https" } else { "http" };
+        PublicBaseUrl(format!("{scheme}://{host}"))
+    }
+
+    /// The origin's text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// An absolute link to `path_and_query` (which starts with `/`) on this
+    /// origin.
+    pub fn join(&self, path_and_query: &str) -> String {
+        format!("{}{path_and_query}", self.0)
+    }
+}
+
+impl std::fmt::Display for PublicBaseUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<PublicBaseUrl> for String {
+    fn from(url: PublicBaseUrl) -> String {
+        url.0
+    }
+}
+
+impl PublicOrigin {
+    /// The base URL of the application served on `subdomain`, from this
+    /// configuration: [`url_for`](PublicOrigin::url_for) as a
+    /// [`PublicBaseUrl`].
+    pub fn base_url_for(&self, subdomain: &str) -> sc_error::Result<PublicBaseUrl> {
+        let default_port = if self.secure { 443 } else { 80 };
+        let name = self.host_for(subdomain);
+        let host = if self.port == default_port {
+            TrustedHost::configured(&name)?
+        } else {
+            TrustedHost::configured(&format!("{name}:{}", self.port))?
+        };
+        Ok(PublicBaseUrl::new(self.secure, &host))
+    }
+}
+
 impl PublicOrigin {
     /// An origin on `base_domain`, port `port`, over plain HTTP.
     pub fn new(base_domain: impl Into<String>, port: u16) -> PublicOrigin {
@@ -93,6 +255,68 @@ impl PublicOrigin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Security review #1: a `Host` with userinfo, a path or a second port is
+    /// not a host, and no link is built to it.
+    #[test]
+    fn a_trusted_host_is_a_plain_host_and_port() {
+        for good in [
+            "example.com",
+            "blog.example.com:3000",
+            "localhost:8080",
+            "[::1]:443",
+            "127.0.0.1",
+        ] {
+            assert!(TrustedHost::served(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            "blog.example.com:@evil.com",
+            "user@evil.com",
+            "evil.com/path",
+            "a.com:80:81",
+            "a.com:",
+            "a.com:123456",
+            "[::1",
+            "exa mple.com",
+        ] {
+            assert!(TrustedHost::served(bad).is_err(), "{bad:?}");
+            assert!(TrustedHost::configured(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(
+            TrustedHost::served("Blog.Example.COM").unwrap().as_str(),
+            "blog.example.com"
+        );
+    }
+
+    #[test]
+    fn a_base_url_is_scheme_and_trusted_host() {
+        let host = TrustedHost::served("blog.example.com:3000").unwrap();
+        assert_eq!(host.port(), Some("3000"));
+        let url = PublicBaseUrl::new(true, &host);
+        assert_eq!(url.as_str(), "https://blog.example.com:3000");
+        assert_eq!(
+            url.join("/set-password#token=t"),
+            "https://blog.example.com:3000/set-password#token=t"
+        );
+        let admin = TrustedHost::configured("admin.example.com").unwrap();
+        assert_eq!(admin.on_port_of(&host).as_str(), "admin.example.com:3000");
+        assert_eq!(
+            admin
+                .on_port_of(&TrustedHost::served("x.example.com").unwrap())
+                .as_str(),
+            "admin.example.com"
+        );
+        assert_eq!(TrustedHost::served("[::1]").unwrap().port(), None);
+        assert_eq!(
+            PublicOrigin::new("example.com", 443)
+                .secure(true)
+                .base_url_for("blog")
+                .unwrap()
+                .as_str(),
+            "https://blog.example.com"
+        );
+    }
 
     #[test]
     fn an_apps_url_is_its_subdomain_under_the_base_domain() {

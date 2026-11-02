@@ -21,6 +21,7 @@
 //! user who began it, or — for a public slot — the browser whose cookie began
 //! it. Anybody else gets the 404 an unknown id gets.
 
+use sc_types::Role;
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -33,14 +34,15 @@ use sc_api::AuthRequirement;
 use sc_app::{UploadRecord, UploadRoute, UploadSlot};
 use sc_auth::User;
 use sc_catalog::Catalog;
-use sc_files::{FileMeta, FileStore};
+use sc_files::{CheckedStore, FileCaller, FileMeta};
 use serde_json::{Map, Value as Json, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::apps::MountedApp;
 use crate::router::{AppState, app_caller, enforce_auth, json_error, log_failure};
-use crate::security::{SESSION_COOKIE, csrf_cookie};
+use crate::security::SESSION_COOKIE;
+use sc_api::auth::csrf_cookie;
 
 /// The protocol version this server speaks, and the only one.
 const TUS_VERSION: &str = "1.0.0";
@@ -187,12 +189,11 @@ async fn answer(
     {
         return missing();
     }
-    let store = match catalog.require_file_store(&record.store) {
-        Ok(store) => store,
-        Err(_) => return missing(),
+    let Ok(store) = server_store(catalog, &record.store) else {
+        return missing();
     };
     match *method {
-        Method::HEAD => head(app, &record, store.as_ref()).await,
+        Method::HEAD => head(app, &record, &store).await,
         Method::PATCH => {
             patch(
                 app,
@@ -207,7 +208,7 @@ async fn answer(
             )
             .await
         }
-        Method::DELETE => terminate(catalog, &record, store.as_ref()).await,
+        Method::DELETE => terminate(catalog, &record, &store).await,
         _ => json_error(
             StatusCode::METHOD_NOT_ALLOWED,
             "an upload is continued with PATCH, looked at with HEAD and abandoned with DELETE",
@@ -222,7 +223,7 @@ async fn answer(
 /// ([`csrf_cookie`]), so a cookie a sibling host tossed is never the one used.
 pub(crate) fn uploader_of(user: Option<&User>, jar: &CookieJar, secure: bool) -> Option<String> {
     if let Some(user) = user {
-        return Some(format!("user:{}", user.id));
+        return Some(format!("user:{}", user.id()));
     }
     let cookie = jar
         .get(SESSION_COOKIE)
@@ -242,6 +243,7 @@ pub(crate) fn uploader_of(user: Option<&User>, jar: &CookieJar, secure: bool) ->
 /// `POST {slot}`: check the caller, the size, the type and the hook, and
 /// record the upload.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn create(
     state: &AppState,
     app: &Arc<MountedApp>,
@@ -318,7 +320,7 @@ async fn create(
             ),
         );
     }
-    let Ok(store) = catalog.require_file_store(&slot.store) else {
+    let Ok(store) = server_store(catalog, &slot.store) else {
         return json_error(
             StatusCode::NOT_FOUND,
             "the slot's file store is not connected",
@@ -351,9 +353,11 @@ async fn create(
         true => name,
         false => format!("{}/{name}", slot.folder),
     };
-    match store.stat(&final_path).await {
-        Ok(None) => {}
-        Ok(Some(_)) => {
+    // The destination is a deposit (the drop-box rule: the slot admitted the
+    // uploader), and only a new file is: anything there already is a conflict.
+    match destination(catalog, &slot.store, user, &final_path).await {
+        Ok(Destination::Free) => {}
+        Ok(Destination::Taken) => {
             return json_error(
                 StatusCode::CONFLICT,
                 format!("there is already a file at `{final_path}`"),
@@ -362,7 +366,7 @@ async fn create(
         Err(e) => return failed("checking an upload's destination", &e),
     }
     let temp_path = format!("{TEMP_DIR}/{id}.part");
-    if let Err(e) = prepare_temp(store.as_ref(), &temp_path).await {
+    if let Err(e) = prepare_temp(&store, &temp_path).await {
         return failed("starting an upload", &e);
     }
     let mut meta = Map::new();
@@ -400,7 +404,7 @@ async fn create(
         .insert("upload-offset", HeaderValue::from_static("0"));
     // An empty file is complete as soon as it exists.
     if length == 0 {
-        return match complete(app, catalog, &record, store.as_ref(), user).await {
+        return match complete(app, catalog, &record, &store, user).await {
             Ok(done) => with_file_headers(response, &done),
             Err(response) => *response,
         };
@@ -416,7 +420,7 @@ struct Decided {
     /// Extra attributes for the finished file.
     attributes: Map<String, Json>,
     /// A role floor for the finished file, which can only tighten its folder's.
-    min_role: Option<u8>,
+    min_role: Option<Role>,
 }
 
 /// Run the slot's hook, and read its answer: a refusal is the hook's own
@@ -488,8 +492,8 @@ async fn run_hook(
     }
     match obj.get("min_role").or_else(|| obj.get("minRole")) {
         None | Some(Json::Null) => {}
-        Some(value) => match value.as_u64().and_then(|n| u8::try_from(n).ok()) {
-            Some(role @ 1..=100) => decided.min_role = Some(role),
+        Some(value) => match value.as_u64().and_then(|n| Role::try_from(n).ok()) {
+            Some(role) => decided.min_role = Some(role),
             _ => return Err(bad(format!("a `min_role` of {value}, not 1 to 100"))),
         },
     }
@@ -497,7 +501,7 @@ async fn run_hook(
 }
 
 /// `HEAD {slot}/{id}`: how far it has got.
-async fn head(app: &MountedApp, record: &UploadRecord, store: &dyn FileStore) -> Response {
+async fn head(app: &MountedApp, record: &UploadRecord, store: &CheckedStore) -> Response {
     let offset = match current_offset(record, store).await {
         Ok(Some(offset)) => offset,
         Ok(None) => return json_error(StatusCode::NOT_FOUND, "no such upload"),
@@ -522,7 +526,7 @@ async fn head(app: &MountedApp, record: &UploadRecord, store: &dyn FileStore) ->
 /// whatever the row last recorded. `None` when the temporary file is gone.
 async fn current_offset(
     record: &UploadRecord,
-    store: &dyn FileStore,
+    store: &CheckedStore,
 ) -> sc_error::Result<Option<u64>> {
     if record.completed {
         return Ok(Some(record.length));
@@ -539,7 +543,7 @@ async fn patch(
     slot: &UploadSlot,
     limit: u64,
     record: &UploadRecord,
-    store: Arc<dyn FileStore>,
+    store: CheckedStore,
     headers: &HeaderMap,
     user: Option<&User>,
     body: Body,
@@ -561,7 +565,7 @@ async fn patch(
             "another request is writing this upload; ask HEAD for the offset and try again",
         );
     };
-    let offset = match current_offset(record, store.as_ref()).await {
+    let offset = match current_offset(record, &store).await {
         Ok(Some(offset)) => offset,
         Ok(None) => return json_error(StatusCode::NOT_FOUND, "no such upload"),
         Err(e) => return failed("reading an upload's progress", &e),
@@ -584,7 +588,7 @@ async fn patch(
     // The slot may have shrunk since the upload began; the smaller bound holds.
     let bound = record.length.min(limit);
 
-    let (written, outcome) = append(store.as_ref(), record, offset, bound, body).await;
+    let (written, outcome) = append(&store, record, offset, bound, body).await;
     let offset = offset + written;
     if let Err(e) = sc_app::set_upload_progress(catalog, record.id, offset, false).await {
         log_failure("recording an upload's progress", &e);
@@ -618,7 +622,7 @@ async fn patch(
     if offset < record.length {
         return offset_response(offset);
     }
-    match complete(app, catalog, record, store.as_ref(), user).await {
+    match complete(app, catalog, record, &store, user).await {
         Ok(done) => with_file_headers(offset_response(offset), &done),
         Err(response) => *response,
     }
@@ -639,7 +643,7 @@ enum Appended {
 /// Stream `body` onto the end of the upload's temporary file, never past
 /// `bound` bytes in all. Answers how many bytes were written.
 async fn append(
-    store: &dyn FileStore,
+    store: &CheckedStore,
     record: &UploadRecord,
     offset: u64,
     bound: u64,
@@ -648,7 +652,11 @@ async fn append(
     use futures::StreamExt;
     use tokio::io::AsyncWriteExt;
 
-    let mut writer = match store.open_append(&record.temp_path).await {
+    let temp = match store.writable(&record.temp_path).await {
+        Ok(temp) => temp,
+        Err(e) => return (0, Appended::Failed(e)),
+    };
+    let mut writer = match temp.open_append().await {
         Ok(writer) => writer,
         Err(e) => return (0, Appended::Failed(e)),
     };
@@ -702,33 +710,44 @@ async fn complete(
     app: &MountedApp,
     catalog: &Catalog,
     record: &UploadRecord,
-    store: &dyn FileStore,
+    store: &CheckedStore,
     user: Option<&User>,
 ) -> std::result::Result<Done, Box<Response>> {
-    if let Err(e) = store.rename(&record.temp_path, &record.final_path).await {
+    let conflict = || {
+        Box::new(json_error(
+            StatusCode::CONFLICT,
+            format!("there is already a file at `{}`", record.final_path),
+        ))
+    };
+    // The bytes leave the server's temporary folder for the slot's: a deposit
+    // by the uploader, which a file that appeared meanwhile refuses.
+    let files = uploader_store(catalog, &record.store, user)
+        .await
+        .map_err(|e| Box::new(failed("putting an upload in place", &e)))?;
+    let dest = match files.deposit(&record.final_path).await {
+        Ok(dest) => dest,
+        Err(e) if e.auth_message().is_some() => return Err(conflict()),
+        Err(e) => return Err(Box::new(failed("putting an upload in place", &e))),
+    };
+    let temp = store
+        .writable(&record.temp_path)
+        .await
+        .map_err(|e| Box::new(failed("putting an upload in place", &e)))?;
+    if let Err(e) = temp.rename_to(&dest).await {
         // The destination appeared while the bytes were arriving.
-        if store
-            .stat(&record.final_path)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-        {
-            return Err(Box::new(json_error(
-                StatusCode::CONFLICT,
-                format!("there is already a file at `{}`", record.final_path),
-            )));
+        if dest.stat().await.ok().flatten().is_some() {
+            return Err(conflict());
         }
         return Err(Box::new(failed("putting an upload in place", &e)));
     }
-    let mut meta = store.get_meta(&record.final_path).await.unwrap_or_default();
+    let mut meta = dest.get_meta().await.unwrap_or_default();
     meta = FileMeta {
-        owner: user.map(|u| u.id.to_string()).or(meta.owner),
+        owner: user.map(|u| u.id().to_string()).or(meta.owner),
         min_role: record
             .meta
             .get("min_role")
             .and_then(Json::as_u64)
-            .and_then(|n| u8::try_from(n).ok())
+            .and_then(|n| Role::try_from(n).ok())
             .or(meta.min_role),
         ..meta
     };
@@ -743,7 +762,7 @@ async fn complete(
             }
         }
     }
-    if let Err(e) = store.set_meta(&record.final_path, &meta).await {
+    if let Err(e) = dest.set_meta(&meta).await {
         log_failure("recording an upload's owner", &e);
     }
     if let Err(e) = sc_app::set_upload_progress(catalog, record.id, record.length, true).await {
@@ -754,7 +773,7 @@ async fn complete(
 
 /// `DELETE {slot}/{id}`: abandon it. A finished file stays; only the record of
 /// its upload goes.
-async fn terminate(catalog: &Catalog, record: &UploadRecord, store: &dyn FileStore) -> Response {
+async fn terminate(catalog: &Catalog, record: &UploadRecord, store: &CheckedStore) -> Response {
     if !record.completed
         && let Err(e) = store.delete(&record.temp_path).await
     {
@@ -773,7 +792,7 @@ pub async fn sweep_uploads(catalog: &Catalog, before: i64) -> sc_error::Result<u
     let stale = sc_app::uploads_begun_before(catalog, before).await?;
     for record in &stale {
         if !record.completed
-            && let Ok(store) = catalog.require_file_store(&record.store)
+            && let Ok(store) = server_store(catalog, &record.store)
         {
             let _ = store.delete(&record.temp_path).await;
         }
@@ -801,21 +820,67 @@ pub(crate) fn spawn_upload_sweep(apps: Arc<crate::apps::AppMounts>) {
 }
 
 /// Create the temporary file, empty, in a folder only an administrator reads.
-async fn prepare_temp(store: &dyn FileStore, temp_path: &str) -> sc_error::Result<()> {
-    store.mkdir(TEMP_DIR).await?;
-    let meta = store.get_meta(TEMP_DIR).await.unwrap_or_default();
-    if meta.min_role != Some(sc_files::ROLE_ADMIN) {
-        store
-            .set_meta(
-                TEMP_DIR,
-                &FileMeta {
-                    min_role: Some(sc_files::ROLE_ADMIN),
-                    ..meta
-                },
-            )
-            .await?;
+async fn prepare_temp(store: &CheckedStore, temp_path: &str) -> sc_error::Result<()> {
+    let dir = store.writable(TEMP_DIR).await?;
+    dir.mkdir().await?;
+    let meta = dir.get_meta().await.unwrap_or_default();
+    if meta.min_role != Some(Role::ADMIN) {
+        dir.set_meta(&FileMeta {
+            min_role: Some(Role::ADMIN),
+            ..meta
+        })
+        .await?;
     }
     store.write(temp_path, bytes::Bytes::new()).await
+}
+
+/// The slot's store as the **server** reaches it, for its own temporary folder
+/// (`TEMP_DIR`, which only an administrator reads): an upload's bytes until
+/// they are all there, behind the upload record's own check (the application,
+/// the slot and the uploader all match). TODO-code-quality Q3.6; listed in
+/// docs/SECURITY_REVIEW_2026-10.md's inventory.
+fn server_store(catalog: &Catalog, store: &str) -> sc_error::Result<CheckedStore> {
+    catalog.checked_file_store(store, None, FileCaller::new(Role::ADMIN, None))
+}
+
+/// The slot's store as the **uploader** reaches it: where the finished file is
+/// deposited, by the drop-box rule (`CheckedStore::deposit`).
+async fn uploader_store(
+    catalog: &Catalog,
+    store: &str,
+    user: Option<&User>,
+) -> sc_error::Result<CheckedStore> {
+    let caller = FileCaller::new(
+        user.map_or(Role::PUBLIC, |u| u.role()),
+        user.map(|u| u.id().to_string()),
+    );
+    sc_catalog::open_checked_store(catalog, store, caller).await
+}
+
+/// Whether an upload's destination is free.
+enum Destination {
+    Free,
+    Taken,
+}
+
+/// Whether the uploader may deposit a new file at `path`: free when nothing is
+/// there; taken when something is, whether or not they could replace it (an
+/// upload never replaces).
+async fn destination(
+    catalog: &Catalog,
+    store: &str,
+    user: Option<&User>,
+    path: &str,
+) -> sc_error::Result<Destination> {
+    let files = uploader_store(catalog, store, user).await?;
+    match files.deposit(path).await {
+        Ok(dest) => Ok(match dest.stat().await? {
+            None => Destination::Free,
+            Some(_) => Destination::Taken,
+        }),
+        Err(e) if e.auth_message().is_some() => Ok(Destination::Taken),
+        Err(e) => Err(e),
+    }
 }
 
 /// The URL a store file is served at on this application: through a static

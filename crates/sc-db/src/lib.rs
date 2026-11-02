@@ -24,16 +24,18 @@ mod driver;
 mod row;
 mod schema;
 mod spatial;
+mod tx;
 mod vector;
 
 pub use capabilities::{DbCapabilities, TX_SETTINGS_TABLE};
-pub use driver::{DatabaseDriver, Transaction};
+pub use driver::{DatabaseDriver, DbVersion, Transaction};
 pub use row::{Row, RowStream};
 pub use schema::{
     Column, ColumnDef, ColumnGenerator, ColumnRef, CommentTarget, DescribedColumn, ForeignKey,
     IndexOn, PhysicalConstraint, PhysicalConstraintKind, PhysicalTable, SchemaChange,
 };
 pub use spatial::SpatialSupport;
+pub use tx::{abandon, finish, with_tx};
 pub use vector::VectorSupport;
 
 #[cfg(test)]

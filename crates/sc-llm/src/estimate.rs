@@ -49,7 +49,19 @@ pub fn estimate_tokens(req: &LlmRequest, backend: &str) -> u64 {
     for message in &req.messages {
         tokens += PER_MESSAGE_OVERHEAD;
         match message {
-            LlmMessage::User { content } => chars += content.len(),
+            LlmMessage::User {
+                content,
+                attachments,
+            } => {
+                chars += content.len();
+                for attachment in attachments {
+                    if attachment.is_image() {
+                        tokens += image_tokens(&attachment.image(), backend);
+                    } else {
+                        chars += attachment.data.len() + attachment.name.len();
+                    }
+                }
+            }
             LlmMessage::Assistant {
                 content,
                 tool_calls,

@@ -23,7 +23,7 @@ use sc_app::{
     ApiConfig, Application, FrameworkRef, api_provider_config_spec, app_graphql, bootstrap,
     load_application, save_application, validate_api_config,
 };
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -63,8 +63,8 @@ fn staff_app(api: ApiConfig) -> Application {
             .with("output", "web/dist")
             .with("command", "sh build.sh"),
     )
-    .with_table(TableId("departments".to_owned()))
-    .with_table(TableId("employees".to_owned()))
+    .with_table("departments".to_owned())
+    .with_table("employees".to_owned())
     .with_api(api)
 }
 

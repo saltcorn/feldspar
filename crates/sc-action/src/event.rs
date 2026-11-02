@@ -23,19 +23,12 @@
 //! [`MAX_DEPTH`], naming the whole chain. A depth counter alone would have caught
 //! the loop but left the admin to find it; the chain *is* the diagnosis.
 
+use sc_types::Role;
 use std::sync::Arc;
 
-use sc_catalog::{CallerContext, CallingApp, Changeset, Origin};
+use sc_catalog::{CallingApp, Changeset, Origin, Principal};
 use sc_error::{Error, ErrorKind, Result};
 use serde_json::{Map, Value as Json};
-
-/// The least-restrictive role: everyone, including anonymous callers.
-///
-/// Mirrors `sc_auth::ROLE_PUBLIC` (and the copy `sc-files` keeps for the same
-/// reason): the 1–100 role scale is a domain constant, and duplicating one `u8`
-/// is cheaper than a dependency that would drag a Rust-only `User` type into a
-/// crate whose extension point must be implementable from a guest language.
-pub const ROLE_PUBLIC: u8 = 100;
 
 /// How deep a cascade of trigger-firing-a-trigger may go before it is refused.
 ///
@@ -237,8 +230,8 @@ pub struct Event {
     /// `{kind, message, …}`. Always present (`Json::Null` when there is none) so
     /// a formula reading `payload` never has to guess.
     pub payload: Json,
-    /// The caller's role — [`ROLE_PUBLIC`] when nobody is logged in.
-    pub role: u8,
+    /// The caller's role — [`Role::PUBLIC`] when nobody is logged in.
+    pub role: Role,
     /// The caller's fields, or `None` when nobody is logged in. This is what the
     /// formula language binds `user` to.
     pub user: Option<Json>,
@@ -269,7 +262,7 @@ impl Event {
             row: None,
             old_row: None,
             payload: Json::Null,
-            role: ROLE_PUBLIC,
+            role: Role::PUBLIC,
             user: None,
             chain: Vec::new(),
             app: None,
@@ -284,7 +277,7 @@ impl Event {
     /// [`caller`](Event::caller) under a name that says which occurrence it is.
     /// Fired for an admin login and for an application's own, because both are
     /// "someone signed in" and a trigger that records logins must see both.
-    pub fn login(role: u8, user: Json) -> Event {
+    pub fn login(role: Role, user: Json) -> Event {
         Event::new(EventKind::Login).caller(role, Some(user))
     }
 
@@ -321,6 +314,51 @@ impl Event {
             "method": method,
             "path": path,
         }))
+    }
+
+    /// The **`error`** event for a trigger whose run **failed** on an event
+    /// nobody was waiting on — a table write's, a login's, a stream element's.
+    ///
+    /// Such a failure has no response to become, so without this an app could
+    /// not tell that its `send_email` never reached the mail server: the write
+    /// that fired it had long since committed. The payload is
+    /// [`error`](Event::error)'s, so an alerting trigger needs no second shape,
+    /// with `method` `"TRIGGER"` and `path` `/<trigger>`, plus what identifies
+    /// the run:
+    ///
+    /// - `trigger` — the trigger that failed;
+    /// - `event` — the kind of the event it was handling (`"update"`, …);
+    /// - `table` — the event's channel (the table, for a table event), or null;
+    /// - `key` — the affected row's primary key, or null: the value for a
+    ///   single-column key, an object of the columns for a composite one.
+    ///
+    /// The caller and origin are the failed event's: the person whose write
+    /// set this off is who the failure happened to.
+    pub fn trigger_failure(
+        failed: &Event,
+        trigger: &str,
+        error: &Error,
+        key: Option<Json>,
+    ) -> Event {
+        let mut event = Event::error(
+            error.kind(),
+            format!(
+                "trigger `{trigger}` on the {} event: {}",
+                failed.kind,
+                sc_error::format_chain(error)
+            ),
+            "TRIGGER",
+            &format!("/{trigger}"),
+        )
+        .caller(failed.role, failed.user.clone())
+        .from_origin(failed.origin());
+        if let Json::Object(payload) = &mut event.payload {
+            payload.insert("trigger".to_owned(), Json::from(trigger));
+            payload.insert("event".to_owned(), Json::from(failed.kind.as_str()));
+            payload.insert("table".to_owned(), failed.channel.clone().into());
+            payload.insert("key".to_owned(), key.unwrap_or(Json::Null));
+        }
+        event
     }
 
     /// The **`stream`** event: an element arrived on the stream named `stream`
@@ -371,7 +409,7 @@ impl Event {
     }
 
     /// Set the caller: their role, and their fields when logged in.
-    pub fn caller(mut self, role: u8, user: Option<Json>) -> Event {
+    pub fn caller(mut self, role: Role, user: Option<Json>) -> Event {
         self.role = role;
         self.user = user;
         self
@@ -380,7 +418,7 @@ impl Event {
     /// Set everything about who caused this event from the caller context of
     /// the write or the run that raised it: the role, the user, the chain, the
     /// application, the guest session and the changeset.
-    pub fn caused_by(mut self, caller: &CallerContext) -> Event {
+    pub fn caused_by(mut self, caller: &Principal) -> Event {
         self.role = caller.role;
         self.user = caller.user.clone();
         self.chain = caller.chain.clone();
@@ -620,7 +658,7 @@ mod tests {
     #[test]
     fn a_fresh_event_is_anonymous_with_nothing_set() {
         let ev = Event::new(EventKind::Startup);
-        assert_eq!(ev.role, ROLE_PUBLIC);
+        assert_eq!(ev.role, Role::PUBLIC);
         assert!(ev.user.is_none() && ev.channel.is_none() && ev.row.is_none());
         assert_eq!(ev.payload, Json::Null);
         assert_eq!(ev.depth(), 0);
@@ -634,11 +672,11 @@ mod tests {
             .on("books")
             .row(json!({ "id": 1, "title": "new" }))
             .old_row(json!({ "id": 1, "title": "old" }))
-            .caller(1, Some(json!({ "email": "a@b.c" })));
+            .caller(Role::ADMIN, Some(json!({ "email": "a@b.c" })));
         assert_eq!(ev.require_channel().unwrap(), "books");
         assert_eq!(ev.row_object()["title"], json!("new"));
         assert_eq!(ev.old_row_object()["title"], json!("old"));
-        assert_eq!(ev.role, 1);
+        assert_eq!(ev.role, Role::ADMIN);
         assert_eq!(ev.user.unwrap()["email"], json!("a@b.c"));
     }
 

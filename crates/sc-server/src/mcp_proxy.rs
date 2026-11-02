@@ -66,7 +66,7 @@ pub(crate) async fn mcp_proxy(
             "a terminal's session token is accepted only from the server's own machine",
         );
     }
-    if let Err(e) = terminal_caller(&catalog, &grant).await {
+    if let Err(e) = terminal_caller(&state.sessions, &grant).await {
         return answer(StatusCode::UNAUTHORIZED, &e.to_string());
     }
     let def = match sc_mcp::load_mcp_server_by_name(&catalog, &server).await {

@@ -3,7 +3,7 @@
 //! Layer 7. This crate knows **agents, traits and the loop, and nothing about
 //! which vendor is on the other end** — that is [`sc_llm`]'s, below it. It also
 //! knows nothing about *which* traits exist: it defines what a trait is, and the
-//! built-in set lives in `sc-core-traits` at layer 9, above the row layer, so a
+//! built-in set lives in `sc-agent-builtins` at layer 9, above the row layer, so a
 //! trait that writes a row goes through `sc-api` and its write is coerced,
 //! validated and observed like any other.
 //!
@@ -46,8 +46,17 @@
 //! triggered run carries the trigger's authority, so §7.3's ownership and RLS
 //! apply inside an agent exactly as they do outside it.
 
+/// This crate's own tables' access to the primary database
+/// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores
+/// make, listed in docs/SECURITY_REVIEW_2026-10.md's system-authority
+/// inventory. Crate-private, so nothing outside the crate borrows it.
+pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> = sc_catalog::Unchecked::system(
+    "sc-agent: the agent, run and part stores (`_fd_agents`, `_fd_agent_runs`, …)",
+);
+
 pub mod agent;
 pub mod agent_trait;
+pub mod browser;
 pub mod context;
 pub mod control;
 pub mod delegate;
@@ -128,6 +137,6 @@ pub use store::{
 pub use validate::{AgentIssue, Agents, validate_agent, validate_trait};
 pub use view::{
     AppHttpRequest, AppHttpResponse, AppPreviewer, AppRequester, BrowserAction, BrowserDriver,
-    BrowserReport, BrowserRequest, HostCapabilities, ModuleInstall, ModuleManager, PreviewInfo,
-    ViewServices,
+    BrowserReport, BrowserRequest, BrowserTarget, Element, ElementInfo, HostCapabilities, Locator,
+    ModuleInstall, ModuleManager, PreviewInfo, PreviewTarget, TextMatch, ViewServices,
 };

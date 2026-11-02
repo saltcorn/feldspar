@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use sc_api::rows;
+use sc_access::rows;
 use sc_catalog::{
     Catalog, DataField, FieldMeta, TableEvents, TableWrite, WriteOp, bootstrap_field_meta,
     bootstrap_table_meta, save_field_meta,
@@ -94,7 +94,13 @@ async fn fixture() -> Result<Fixture> {
     .await?;
     let notes = catalog.require("notes")?;
     for (id, title) in [(1, "Plans"), (2, "Minutes")] {
-        rows::create_row(&catalog, &notes, &json!({"id": id, "title": title})).await?;
+        rows::create_row(
+            &catalog,
+            &notes,
+            &json!({"id": id, "title": title}),
+            sc_catalog::Unchecked::system("test"),
+        )
+        .await?;
     }
     let writes = Arc::new(Writes::default());
     catalog.add_table_events("test-writes", Arc::clone(&writes) as Arc<dyn TableEvents>)?;
@@ -115,11 +121,27 @@ fn target(key: &str, kind: RootKind, format: MirrorFormat) -> DocTarget {
 
 async fn stored(catalog: &Catalog, key: &str) -> Result<(Option<Vec<u8>>, Json)> {
     let notes = catalog.require("notes")?;
-    let body = match rows::read_field(catalog, &notes, "body", key).await? {
+    let body = match rows::read_field(
+        catalog,
+        &notes,
+        "body",
+        key,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?
+    {
         Value::Bytes(b) => Some(b),
         _ => None,
     };
-    let mirror = match rows::read_field(catalog, &notes, "body_text", key).await? {
+    let mirror = match rows::read_field(
+        catalog,
+        &notes,
+        "body_text",
+        key,
+        sc_catalog::Unchecked::system("test"),
+    )
+    .await?
+    {
         Value::Text(t) => Json::String(t),
         _ => Json::Null,
     };
@@ -313,6 +335,7 @@ async fn the_size_limit_refuses_an_edit_and_a_large_document_opens() -> Result<(
         "body",
         &state,
         None,
+        sc_catalog::Unchecked::system("test"),
         &rows::Executor::Pooled,
     )
     .await?;

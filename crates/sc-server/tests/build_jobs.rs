@@ -20,20 +20,19 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use sc_api::admin_endpoints;
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_app::{
     ApiConfig, Application, BuildTemplate, DeclaredFile, FilePhase, FrameworkDecl, FrameworkHost,
     FrameworkRef, FrameworkSet, TargetRequirement, TargetRequirementKind, TargetTemplate,
     add_build_host, bootstrap, install_frameworks, save_application,
 };
 use sc_auth::SessionStore;
-use sc_catalog::{Catalog, FileStoreId, TableId};
+use sc_catalog::{Catalog, FileStoreId};
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_expr::Template;
 use sc_files::LocalFileStore;
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-};
+use sc_server::{AppMounts, ServerConfig, admin_handlers, build_router_with_apps};
 use sc_test_harness::TestDb;
 use sc_types::{BasicType, FormField};
 use serde_json::{Value, json};
@@ -246,6 +245,7 @@ async fn serve(tag: &str) -> sc_error::Result<(Client, Application, String, Temp
 
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     bootstrap(&catalog).await?;
     sc_catalog::bootstrap_table_meta(&catalog).await?;
@@ -260,7 +260,7 @@ async fn serve(tag: &str) -> sc_error::Result<(Client, Application, String, Temp
             .with("project", "site")
             .with("token", "s3cret"),
     )
-    .with_table(TableId("tasks".to_owned()))
+    .with_table("tasks".to_owned())
     .with_file_store(FileStoreId("apps".to_owned()))
     .with_api(ApiConfig::new("rest", "/api"));
     let app = save_application(&catalog, &app).await?;
@@ -294,6 +294,7 @@ async fn serve(tag: &str) -> sc_error::Result<(Client, Application, String, Temp
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_build_host_takes_the_job_and_its_artifact_lands_in_the_store() -> sc_error::Result<()> {
     let (mut client, app, token, dir, _db) = serve("artifact").await?;
     let build = format!("/api/applications/{}/targets/remote/build", app.id);

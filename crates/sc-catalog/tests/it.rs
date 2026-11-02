@@ -35,6 +35,8 @@ mod provided_tables;
 mod provided_writes;
 #[path = "rls_policies.rs"]
 mod rls_policies;
+#[path = "services.rs"]
+mod services;
 #[path = "shared_tx.rs"]
 mod shared_tx;
 #[path = "sqlite_connections.rs"]

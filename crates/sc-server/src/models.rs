@@ -3,7 +3,7 @@
 //!
 //! `sc-model` is at layer 6 so a module can supply a model provider — the same
 //! placement argument `sc-action` carries — and the price is that it cannot read
-//! a row: `sc_api::rows` is layer 8. So it declares
+//! a row: `sc_access::rows` is layer 8. So it declares
 //! [`DatasetSource`](sc_model::DatasetSource) and this is where the seam is
 //! filled in, exactly as `sc-agent` declares `ProviderConnector` and
 //! [`agents`](crate::agents) supplies it.
@@ -48,10 +48,6 @@ use sc_stan::StanProvider;
 use sc_stan::cmdstan::{Locations, Toolchain, discover};
 use sc_stan::compile::CompileCache;
 use sc_stan::run::ProcessBudget;
-
-/// The [`DatasetSource`] a running server has: a named dataset compiled by
-/// `sc-dataset` into one query over the catalog (analytics TODO A1.8).
-pub use sc_model::CompiledSource as CatalogDatasetSource;
 
 /// The model machinery a running server holds: the provider registry, the
 /// dataset seam, and the bound a read must stay under.
@@ -149,7 +145,7 @@ impl ModelServices {
             registry: Arc::new(RwLock::new(Arc::new(
                 base_registry(&stan).context("registering the built-in model providers")?,
             ))),
-            source: Arc::new(CatalogDatasetSource::new(Arc::clone(catalog))),
+            source: Arc::new(sc_model::CompiledSource::new(Arc::clone(catalog))),
             max_rows,
             stan,
             max_draws_response: Arc::new(AtomicU64::new(sc_model::DEFAULT_MAX_DRAWS_RESPONSE)),
@@ -433,7 +429,14 @@ fn stan_provider(catalog: &Arc<Catalog>, settings: &StanSettings) -> StanProvide
         .make
         .unwrap_or_else(|| PathBuf::from("make"));
     StanProvider::new(
-        Arc::new(move |name: &str| stores.require_file_store(name)),
+        // A Stan model's program is read from the store its definition names
+        // (an admin's configuration), by the fit the server runs.
+        Arc::new(move |name: &str| {
+            stores.require_file_store(
+                name,
+                sc_catalog::Unchecked::system("Stan: read a model's program from its store"),
+            )
+        }),
         discover(&locations),
     )
     .with_scratch(std::env::temp_dir().join("feldspar-stan"))

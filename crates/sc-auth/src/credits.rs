@@ -51,8 +51,8 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use sc_catalog::{
-    CallerContext, Catalog, DataField, DataFieldKind, FieldId, SharedTx, Table, TableConstraint,
-    TableId, TableMeta, TableWrite, WriteOp, load_table_meta_by_name, save_table_meta_row,
+    Authority, Catalog, DataField, DataFieldKind, FieldId, SharedTx, Table, TableConstraint,
+    TableMeta, TableWrite, WriteOp, load_table_meta_by_name, save_table_meta_row,
 };
 use sc_db::{Row, SchemaChange};
 use sc_error::{Error, Result};
@@ -60,12 +60,13 @@ use sc_query::{
     Assignment, BinOp, Delete, Expr, Insert, OrderBy, Projection, Select, Source, Statement, UnOp,
     Update, Value,
 };
+use sc_types::Role;
 use sc_types::{BasicType, TypeRef};
 use serde::Serialize;
 use serde_json::Value as Json;
 use uuid::Uuid;
 
-use crate::users::{COL_EMAIL, COL_ID as COL_USER_ID_TARGET, ROLE_ADMIN, USERS_TABLE};
+use crate::users::{COL_EMAIL, COL_ID as COL_USER_ID_TARGET, USERS_TABLE};
 
 /// One bucket per grant.
 pub const CREDIT_BUCKETS_TABLE: &str = "credit_buckets";
@@ -345,7 +346,7 @@ fn timestamp() -> TypeRef {
 fn user_key() -> DataField {
     DataField {
         kind: DataFieldKind::Key {
-            target_table: TableId(USERS_TABLE.to_owned()),
+            target_table: USERS_TABLE.to_owned(),
             target_field: FieldId(COL_USER_ID_TARGET.to_owned()),
             summary_field: Some(FieldId(COL_EMAIL.to_owned())),
         },
@@ -385,7 +386,7 @@ fn entry_fields() -> Vec<DataField> {
         DataField::plain(COL_CREDIT_KEY, text()).required(),
         DataField {
             kind: DataFieldKind::Key {
-                target_table: TableId(CREDIT_BUCKETS_TABLE.to_owned()),
+                target_table: CREDIT_BUCKETS_TABLE.to_owned(),
                 target_field: FieldId(COL_CREDIT_ID.to_owned()),
                 summary_field: Some(FieldId(COL_CREDIT_KIND.to_owned())),
             },
@@ -492,7 +493,7 @@ async fn bootstrap_one(
         let mut meta = TableMeta::new(name)
             .label(label)
             .description(description)
-            .access(ROLE_ADMIN, ROLE_ADMIN);
+            .access(Role::ADMIN, Role::ADMIN);
         meta.set_ownership_formula(Some(CREDITS_OWNERSHIP));
         save_table_meta_row(catalog, &meta).await?;
         catalog.reload().await?;
@@ -516,7 +517,7 @@ pub fn credits(amount: Decimal) -> Decimal {
 pub async fn grant_credits(
     catalog: &Catalog,
     new: NewCreditGrant,
-    caller: Option<&CallerContext>,
+    caller: Authority<'_>,
 ) -> Result<CreditGrant> {
     check_grant(&new)?;
     ensure_tables(catalog).await?;
@@ -726,7 +727,7 @@ async fn roll_over(
 pub async fn debit_credits(
     catalog: &Catalog,
     debit: CreditDebit,
-    caller: Option<&CallerContext>,
+    caller: Authority<'_>,
 ) -> Result<CreditDebited> {
     if debit.key.trim().is_empty() {
         return Err(Error::invalid("a credit debit needs a key"));
@@ -870,7 +871,7 @@ pub async fn revoke_credits(
     source: &str,
     key: &str,
     note: Option<&str>,
-    caller: Option<&CallerContext>,
+    caller: Authority<'_>,
 ) -> Result<CreditRevoked> {
     let not_found = CreditRevoked {
         found: false,
@@ -885,7 +886,7 @@ pub async fn revoke_credits(
     let user = {
         let tx = SharedTx::begin_primary(catalog)?;
         let found = find_bucket(&tx, source, key).await;
-        let _ = tx.rollback().await;
+        tx.abandon().await;
         match found? {
             Some(bucket) => bucket.user_id,
             None => return Ok(not_found),
@@ -982,7 +983,7 @@ pub async fn set_low_balance_threshold(
     catalog: &Catalog,
     user: Uuid,
     threshold: Option<Decimal>,
-    caller: Option<&CallerContext>,
+    caller: Authority<'_>,
 ) -> Result<CreditBalance> {
     if threshold.is_some_and(|t| t < Decimal::ZERO) {
         return Err(Error::invalid(
@@ -1162,7 +1163,7 @@ impl Written {
     /// Hand each write to the table events — the application's triggers and
     /// the live hub. A dispatch that fails is said in the log, never the
     /// operation's failure: the credits are already where they belong.
-    async fn emit(self, catalog: &Catalog, caller: Option<&CallerContext>) {
+    async fn emit(self, catalog: &Catalog, caller: Authority<'_>) {
         for (name, op, row, old) in self.writes {
             if !catalog.observes_writes(name, op) {
                 continue;
@@ -1175,7 +1176,7 @@ impl Written {
                 op,
                 row: row_json(&row),
                 old_row: old.as_ref().map(row_json),
-                caller,
+                caller: caller.principal(),
                 tx: None,
             };
             if let Err(e) = catalog.emit_write(write).await {
@@ -1193,7 +1194,7 @@ fn row_json(row: &Row) -> Json {
         row.columns()
             .iter()
             .zip(row.values())
-            .map(|(c, v)| (c.clone(), sc_expr::value_to_json(v)))
+            .map(|(c, v)| (c.clone(), sc_types::value_to_script_json(v)))
             .collect(),
     )
 }
@@ -1212,22 +1213,21 @@ where
             .columns(vec![Projection::expr(Expr::col(COL_USER_ID_TARGET))])
             .filter(Expr::col(COL_USER_ID_TARGET).eq(Expr::lit(user)))
             .for_update();
-        if tx.run(None, &Statement::from(lock)).await?.is_empty() {
+        if tx
+            .run(
+                sc_catalog::Unchecked::system("credits ledger"),
+                &Statement::from(lock),
+            )
+            .await?
+            .is_empty()
+        {
             return Err(Error::not_found(format!("no user with id {user}")));
         }
         work(&tx, &mut written).await
     }
     .await;
-    match outcome {
-        Ok(value) => {
-            tx.commit().await?;
-            Ok((value, written))
-        }
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(e)
-        }
-    }
+    let value = tx.finish(outcome).await?;
+    Ok((value, written))
 }
 
 /// An account, as the locked transaction reads it.
@@ -1242,7 +1242,14 @@ async fn account_in(tx: &SharedTx, user: Uuid, written: &mut Written) -> Result<
     let select = Select::from(Source::table(CREDIT_ACCOUNTS_TABLE))
         .filter(Expr::col(COL_CREDIT_USER).eq(Expr::lit(user)))
         .for_update();
-    if let Some(row) = tx.run(None, &Statement::from(select)).await?.first() {
+    if let Some(row) = tx
+        .run(
+            sc_catalog::Unchecked::system("credits ledger"),
+            &Statement::from(select),
+        )
+        .await?
+        .first()
+    {
         return account_from_row(row);
     }
     let row = insert_returning(
@@ -1294,7 +1301,10 @@ async fn balance_in(tx: &SharedTx, user: Uuid) -> Result<CreditBalance> {
     let select = Select::from(Source::table(CREDIT_ACCOUNTS_TABLE))
         .filter(Expr::col(COL_CREDIT_USER).eq(Expr::lit(user)));
     let account = tx
-        .run(None, &Statement::from(select))
+        .run(
+            sc_catalog::Unchecked::system("credits ledger"),
+            &Statement::from(select),
+        )
         .await?
         .first()
         .map(account_from_row)
@@ -1335,11 +1345,14 @@ async fn live_buckets(
     if lock {
         select = select.for_update();
     }
-    tx.run(None, &Statement::from(select))
-        .await?
-        .iter()
-        .map(bucket_from_row)
-        .collect()
+    tx.run(
+        sc_catalog::Unchecked::system("credits ledger"),
+        &Statement::from(select),
+    )
+    .await?
+    .iter()
+    .map(bucket_from_row)
+    .collect()
 }
 
 fn live_filter(user: Uuid, now: DateTime<Utc>) -> Expr {
@@ -1394,11 +1407,14 @@ async fn find_entry(tx: &SharedTx, source: &str, key: &str) -> Result<Option<Cre
                 .and(Expr::col(COL_CREDIT_KEY).eq(Expr::lit(key))),
         )
         .limit(1);
-    tx.run(None, &Statement::from(select))
-        .await?
-        .first()
-        .map(entry_from_row)
-        .transpose()
+    tx.run(
+        sc_catalog::Unchecked::system("credits ledger"),
+        &Statement::from(select),
+    )
+    .await?
+    .first()
+    .map(entry_from_row)
+    .transpose()
 }
 
 async fn find_bucket(tx: &SharedTx, source: &str, key: &str) -> Result<Option<CreditBucket>> {
@@ -1410,22 +1426,28 @@ async fn find_bucket(tx: &SharedTx, source: &str, key: &str) -> Result<Option<Cr
         )
         .limit(1)
         .for_update();
-    tx.run(None, &Statement::from(select))
-        .await?
-        .first()
-        .map(bucket_from_row)
-        .transpose()
+    tx.run(
+        sc_catalog::Unchecked::system("credits ledger"),
+        &Statement::from(select),
+    )
+    .await?
+    .first()
+    .map(bucket_from_row)
+    .transpose()
 }
 
 async fn load_bucket(tx: &SharedTx, id: Uuid) -> Result<Option<CreditBucket>> {
     let select = Select::from(Source::table(CREDIT_BUCKETS_TABLE))
         .filter(Expr::col(COL_CREDIT_ID).eq(Expr::lit(id)))
         .limit(1);
-    tx.run(None, &Statement::from(select))
-        .await?
-        .first()
-        .map(bucket_from_row)
-        .transpose()
+    tx.run(
+        sc_catalog::Unchecked::system("credits ledger"),
+        &Statement::from(select),
+    )
+    .await?
+    .first()
+    .map(bucket_from_row)
+    .transpose()
 }
 
 /// An entry's values; what a kind does not use is left at its default.
@@ -1493,11 +1515,14 @@ async fn insert_returning(
     let (columns, exprs): (Vec<String>, Vec<Expr>) =
         values.into_iter().map(|(c, e)| (c.to_owned(), e)).unzip();
     let insert = Insert::row(table, columns, exprs).returning(vec![Projection::all()]);
-    tx.run(None, &Statement::from(insert))
-        .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| Error::database(format!("inserting into `{table}` returned no row")))
+    tx.run(
+        sc_catalog::Unchecked::system("credits ledger"),
+        &Statement::from(insert),
+    )
+    .await?
+    .into_iter()
+    .next()
+    .ok_or_else(|| Error::database(format!("inserting into `{table}` returned no row")))
 }
 
 /// Update one row by id, answering `(new, old)`.
@@ -1510,7 +1535,7 @@ async fn update_returning(
     let by_id = || Expr::col(COL_CREDIT_ID).eq(Expr::lit(id));
     let old = tx
         .run(
-            None,
+            sc_catalog::Unchecked::system("credits ledger"),
             &Statement::from(Select::from(Source::table(table)).filter(by_id())),
         )
         .await?
@@ -1524,7 +1549,10 @@ async fn update_returning(
         returning: vec![Projection::all()],
     };
     let new = tx
-        .run(None, &Statement::from(update))
+        .run(
+            sc_catalog::Unchecked::system("credits ledger"),
+            &Statement::from(update),
+        )
         .await?
         .into_iter()
         .next()
@@ -1679,7 +1707,7 @@ fn account_from_row(row: &Row) -> Result<Account> {
 
 async fn rows(catalog: &Catalog, statement: Statement) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary(crate::INTERNAL_TABLES)
         .query(&statement)
         .await?
         .try_collect()

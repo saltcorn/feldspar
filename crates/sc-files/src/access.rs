@@ -45,14 +45,9 @@
 //! floor is not enough to overwrite or delete somebody else's upload.
 
 use crate::store::{FileMeta, FileStore};
+use crate::store_path::{AsStorePath, StorePath};
 use sc_error::{Error, Result};
-
-/// The least-restrictive role: everyone, including anonymous callers. Matches the
-/// `sc-auth` scale where `100` is public.
-pub const ROLE_PUBLIC: u8 = 100;
-
-/// The most-restrictive role: admin authority, which every rule is cleared by.
-pub const ROLE_ADMIN: u8 = 1;
+use sc_types::Role;
 
 /// Who is asking: the role every floor is checked against, and the user id the
 /// owner rule compares with.
@@ -65,20 +60,20 @@ pub const ROLE_ADMIN: u8 = 1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileCaller {
     /// The caller's role (`1` admin … `100` public).
-    pub role: u8,
+    pub role: Role,
     /// The caller's user id, if they are signed in.
     pub user_id: Option<String>,
 }
 
 impl FileCaller {
     /// A caller at `role`, signed in as `user_id` when there is one.
-    pub fn new(role: u8, user_id: Option<String>) -> FileCaller {
+    pub fn new(role: Role, user_id: Option<String>) -> FileCaller {
         FileCaller { role, user_id }
     }
 
     /// A caller with no account, checked at `role` alone — anonymous at
-    /// [`ROLE_PUBLIC`], or a system run at whatever role it was given.
-    pub fn role(role: u8) -> FileCaller {
+    /// [`Role::PUBLIC`], or a system run at whatever role it was given.
+    pub fn role(role: Role) -> FileCaller {
         FileCaller {
             role,
             user_id: None,
@@ -87,12 +82,12 @@ impl FileCaller {
 
     /// Nobody: the public role and no account.
     pub fn anonymous() -> FileCaller {
-        FileCaller::role(ROLE_PUBLIC)
+        FileCaller::role(Role::PUBLIC)
     }
 
     /// Whether this caller has admin authority, which clears every rule.
     pub fn is_admin(&self) -> bool {
-        self.role <= ROLE_ADMIN
+        self.role.is_admin()
     }
 
     /// Whether this caller is the recorded owner of the entry `meta` describes.
@@ -104,45 +99,23 @@ impl FileCaller {
     }
 
     /// Whether the role alone clears `floor`.
-    fn clears(&self, floor: Option<u8>) -> bool {
-        floor.is_none_or(|required| self.role <= required)
+    fn clears(&self, floor: Option<Role>) -> bool {
+        floor.is_none_or(|required| self.role.meets(required))
     }
 }
 
-/// Combine two optional rules, keeping the more restrictive (smaller) one.
+/// Combine two optional rules, keeping the more restrictive one (the more privileged role).
 ///
 /// `None` means "this level says nothing", which must leave the inherited floor
 /// untouched rather than reset it to public — otherwise a directory with no rule
 /// of its own would silently undo its parent's.
-fn tighten(current: Option<u8>, rule: Option<u8>) -> Option<u8> {
+fn tighten(current: Option<Role>, rule: Option<Role>) -> Option<Role> {
     match (current, rule) {
-        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), Some(b)) => Some(a.most_privileged(b)),
         (Some(a), None) => Some(a),
         (None, Some(b)) => Some(b),
         (None, None) => None,
     }
-}
-
-/// Every prefix of `path` that carries a rule, from the store root inwards,
-/// including `path` itself.
-///
-/// `a/b/c.txt` yields `a`, `a/b`, `a/b/c.txt` — each of which may carry its own
-/// [`FileMeta`]. Empty segments and `.` are skipped so the caller's normalisation
-/// quirks (leading, trailing or doubled slashes) cannot change the answer.
-fn ancestors(path: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    for segment in path.split('/') {
-        if segment.is_empty() || segment == "." {
-            continue;
-        }
-        if !current.is_empty() {
-            current.push('/');
-        }
-        current.push_str(segment);
-        out.push(current.clone());
-    }
-    out
 }
 
 /// The effective minimum role required to reach `path` in `store`, given the
@@ -155,11 +128,20 @@ fn ancestors(path: &str) -> Vec<String> {
 /// caller's concern, not the access rule's.
 pub async fn effective_min_role(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
-    path: &str,
-) -> Result<Option<u8>> {
+    store_min_role: Option<Role>,
+    path: impl AsStorePath,
+) -> Result<Option<Role>> {
+    min_role_at(store, store_min_role, &*path.store_path()?).await
+}
+
+/// [`effective_min_role`] for a parsed path.
+async fn min_role_at(
+    store: &dyn FileStore,
+    store_min_role: Option<Role>,
+    path: &StorePath,
+) -> Result<Option<Role>> {
     let mut floor = store_min_role;
-    for ancestor in ancestors(path) {
+    for ancestor in path.ancestors() {
         // A missing component simply has no rule of its own. Reading metadata for
         // something that is not there is not an access failure, and treating it
         // as one would make writing a new file impossible.
@@ -183,20 +165,22 @@ pub async fn effective_min_role(
 /// of files the caller may not see.
 pub async fn check_access(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
-    path: &str,
+    store_min_role: Option<Role>,
+    path: impl AsStorePath,
     caller: &FileCaller,
 ) -> Result<()> {
+    let path = path.store_path()?;
+    let path = path.as_ref();
     if caller.is_admin() {
         return Ok(());
     }
     // A repository's own `.git` is the server's, not the store's content: its
     // `config` carries remote URLs with their tokens and its objects carry every
     // file the history ever held, so no rule set on the files reaches it.
-    if crate::in_git_dir(path) {
+    if path.in_git_dir() {
         return Err(denied(store, path));
     }
-    let floor = effective_min_role(store, store_min_role, path).await?;
+    let floor = min_role_at(store, store_min_role, path).await?;
     if caller.clears(floor) {
         return Ok(());
     }
@@ -223,20 +207,22 @@ pub async fn check_access(
 /// server's operating-system user.
 pub async fn check_write(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
-    path: &str,
+    store_min_role: Option<Role>,
+    path: impl AsStorePath,
     caller: &FileCaller,
 ) -> Result<()> {
+    let path = path.store_path()?;
+    let path = path.as_ref();
     if caller.is_admin() {
         return Ok(());
     }
-    if controls_build(path) {
-        return Err(build_input_refused(path));
+    if controls_build(path.as_str()) {
+        return Err(build_input_refused(path.as_str()));
     }
     let meta = store.get_meta(path).await.unwrap_or_default();
     let permitted = match &meta.owner {
         Some(_) => caller.owns(&meta),
-        None => caller.clears(effective_min_role(store, store_min_role, path).await?),
+        None => caller.clears(min_role_at(store, store_min_role, path).await?),
     };
     if !permitted {
         return Err(denied(store, path));
@@ -312,16 +298,21 @@ fn build_input_refused(path: &str) -> Error {
 
 /// Whether anything beneath the directory `dir` is owned by somebody other than
 /// `caller` — what makes deleting or moving the directory a write to their file.
-async fn holds_foreign_file(store: &dyn FileStore, dir: &str, caller: &FileCaller) -> Result<bool> {
-    let mut stack = vec![dir.to_owned()];
+async fn holds_foreign_file(
+    store: &dyn FileStore,
+    dir: &StorePath,
+    caller: &FileCaller,
+) -> Result<bool> {
+    let mut stack = vec![dir.clone()];
     while let Some(current) = stack.pop() {
         for entry in store.list(&current).await? {
-            let meta = store.get_meta(&entry.path).await.unwrap_or_default();
+            let path = StorePath::parse(&entry.path)?;
+            let meta = store.get_meta(&path).await.unwrap_or_default();
             if meta.owner.is_some() && !caller.owns(&meta) {
                 return Ok(true);
             }
             if entry.is_dir {
-                stack.push(entry.path);
+                stack.push(path);
             }
         }
     }
@@ -339,7 +330,11 @@ async fn holds_foreign_file(store: &dyn FileStore, dir: &str, caller: &FileCalle
 ///   whose backend cannot keep metadata (no xattr support on the filesystem) must
 ///   still be usable — an error after a successful upload would be a lie about
 ///   what happened.
-pub async fn record_owner(store: &dyn FileStore, path: &str, owner: &str) {
+pub async fn record_owner(store: &dyn FileStore, path: impl AsStorePath, owner: &str) {
+    let Ok(path) = path.store_path() else {
+        return;
+    };
+    let path = path.as_ref();
     let Ok(meta) = store.get_meta(path).await else {
         return;
     };
@@ -358,7 +353,7 @@ pub async fn record_owner(store: &dyn FileStore, path: &str, owner: &str) {
 }
 
 /// The one refusal every check answers with.
-fn denied(store: &dyn FileStore, path: &str) -> Error {
+fn denied(store: &dyn FileStore, path: &StorePath) -> Error {
     Error::auth(format!(
         "not permitted to access {path:?} in file store {}",
         store.name()
@@ -375,15 +370,17 @@ fn denied(store: &dyn FileStore, path: &str) -> Error {
 /// unreadable folder still looks like a missing one.
 pub async fn list_visible(
     store: &dyn FileStore,
-    store_min_role: Option<u8>,
-    dir: &str,
+    store_min_role: Option<Role>,
+    dir: impl AsStorePath,
     caller: &FileCaller,
 ) -> Result<Vec<VisibleEntry>> {
+    let dir = dir.store_path()?;
+    let dir = dir.as_ref();
     let readable = check_access(store, store_min_role, dir, caller).await;
     if readable.is_err() && caller.user_id.is_none() {
         return Err(denied(store, dir));
     }
-    let dir_floor = effective_min_role(store, store_min_role, dir).await?;
+    let dir_floor = min_role_at(store, store_min_role, dir).await?;
     let entries = match store.list(dir).await {
         Ok(entries) => entries,
         Err(_) if readable.is_err() => return Err(denied(store, dir)),
@@ -409,7 +406,7 @@ pub async fn list_visible(
 /// per file.
 pub async fn filter_visible(
     store: &dyn FileStore,
-    dir_floor: Option<u8>,
+    dir_floor: Option<Role>,
     entries: Vec<crate::Entry>,
     caller: &FileCaller,
 ) -> Result<Vec<crate::Entry>> {
@@ -430,7 +427,7 @@ pub struct VisibleEntry {
     pub meta: FileMeta,
     /// The rule that actually reaches it: this entry's own tightened by the
     /// directory's (which already includes the store's).
-    pub effective_min_role: Option<u8>,
+    pub effective_min_role: Option<Role>,
 }
 
 /// [`filter_visible`], keeping the metadata rather than discarding it.
@@ -441,7 +438,7 @@ pub struct VisibleEntry {
 /// same rule, one `get_meta` per entry.
 pub async fn visible_entries(
     store: &dyn FileStore,
-    dir_floor: Option<u8>,
+    dir_floor: Option<Role>,
     entries: Vec<crate::Entry>,
     caller: &FileCaller,
 ) -> Result<Vec<VisibleEntry>> {
@@ -451,7 +448,12 @@ pub async fn visible_entries(
         if !caller.is_admin() && crate::in_git_dir(&entry.path) {
             continue;
         }
-        let meta: FileMeta = store.get_meta(&entry.path).await.unwrap_or_default();
+        // A name on disk the validator refuses (`a:b` on a Unix disk) has no
+        // metadata a store operation can reach, as it never had.
+        let meta: FileMeta = match StorePath::parse(&entry.path) {
+            Ok(path) => store.get_meta(&path).await.unwrap_or_default(),
+            Err(_) => FileMeta::default(),
+        };
         let effective_min_role = tighten(dir_floor, meta.min_role);
         if caller.is_admin() || caller.clears(effective_min_role) || caller.owns(&meta) {
             visible.push(VisibleEntry {
@@ -470,6 +472,14 @@ mod tests {
 
     #[test]
     fn ancestors_walks_from_the_root_inwards() {
+        let ancestors = |p: &str| -> Vec<String> {
+            StorePath::parse(p)
+                .unwrap()
+                .ancestors()
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
         assert_eq!(ancestors("a/b/c.txt"), ["a", "a/b", "a/b/c.txt"]);
         assert_eq!(ancestors("only.txt"), ["only.txt"]);
         assert!(ancestors("").is_empty());
@@ -480,13 +490,19 @@ mod tests {
     #[test]
     fn tightening_keeps_the_most_restrictive_rule() {
         // Lower is more restrictive, so a nested rule can only narrow access.
-        assert_eq!(tighten(Some(40), Some(20)), Some(20));
-        assert_eq!(tighten(Some(20), Some(40)), Some(20));
+        assert_eq!(
+            tighten(Some(Role::of(40)), Some(Role::of(20))),
+            Some(Role::of(20))
+        );
+        assert_eq!(
+            tighten(Some(Role::of(20)), Some(Role::of(40))),
+            Some(Role::of(20))
+        );
         // A level with no rule leaves the inherited floor alone — it must not
         // reset it to public, or a folder's restriction would be undone by any
         // unmarked child.
-        assert_eq!(tighten(Some(20), None), Some(20));
-        assert_eq!(tighten(None, Some(20)), Some(20));
+        assert_eq!(tighten(Some(Role::of(20)), None), Some(Role::of(20)));
+        assert_eq!(tighten(None, Some(Role::of(20))), Some(Role::of(20)));
         assert_eq!(tighten(None, None), None);
     }
 }

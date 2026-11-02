@@ -23,15 +23,12 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use sc_agent::{AppPreviewer, RunId};
+use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
 use sc_catalog::Catalog;
-use sc_db::DatabaseDriver;
-use sc_db_postgres::PgDriver;
 use sc_files::{FileStore, LocalFileStore};
-use sc_server::{
-    AppMounts, CSRF_COOKIE, CSRF_HEADER, ServerConfig, admin_handlers, build_router_with_apps,
-};
-use sc_test_harness::TestDb;
+use sc_server::{AppMounts, ServerConfig, admin_handlers, build_router_with_apps};
+use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -159,21 +156,7 @@ impl Client {
 async fn setup(
     tmp: &TempDir,
 ) -> sc_error::Result<(Client, Router, Arc<AppMounts>, Arc<Catalog>, TestDb)> {
-    let db = TestDb::new().await?;
-    db.client()
-        .await?
-        .batch_execute(
-            "DO $$ DECLARE r record; BEGIN \
-               FOR r IN SELECT table_schema FROM information_schema.tables \
-               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
-                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
-               END LOOP; END $$",
-        )
-        .await
-        .map_err(|e| sc_error::Error::database(e.to_string()))?;
-
-    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
-    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    let TestServer { db, catalog, .. } = TestServer::builder().build().await?;
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_catalog::bootstrap_file_stores(&catalog).await?;
@@ -184,12 +167,12 @@ async fn setup(
     let site = Arc::new(LocalFileStore::new("site", tmp.path())?);
     catalog.connect_file_store(site.clone())?;
     site.write(
-        "public/index.html",
+        &sc_files::StorePath::from_static("public/index.html"),
         bytes::Bytes::from_static(b"<!doctype html><h1>Landing</h1>"),
     )
     .await?;
     site.write(
-        "public/style.css",
+        &sc_files::StorePath::from_static("public/style.css"),
         bytes::Bytes::from_static(b"h1 { color: teal }"),
     )
     .await?;

@@ -85,7 +85,7 @@ into it.
 | time | wall clock, including verification |
 
 A planned run spends most of its tokens in its sessions, so every number is
-rolled up over the run tree (`sc_core_traits::run_tree`), not read off the
+rolled up over the run tree (`sc_agent_builtins::run_tree`), not read off the
 planner alone.
 
 ## Results

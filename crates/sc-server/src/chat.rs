@@ -15,8 +15,11 @@
 //!
 //! - `{"type":"start","agent":"librarian","run":"<uuid>"?}` — which agent this
 //!   socket is talking to, optionally continuing an existing run.
-//! - `{"type":"message","text":"…","controls":{…}?}` — one user turn, with
-//!   the values of the composer's controls (TODO-agent-skills AS6.4).
+//! - `{"type":"message","text":"…","controls":{…}?,"attachments":[…]?}` —
+//!   one user turn, with the values of the composer's controls
+//!   (TODO-agent-skills AS6.4) and the files attached to it, each
+//!   `{name, media_type, data}` with `data` in base64: images the model looks
+//!   at and text documents it reads ([`sc_llm::Attachment`]).
 //! - `{"type":"message","answers_request":"<id>","value":…,"controls":{…}?}`
 //!   — the answer to the question the run is waiting on (AS6.2), as the turn.
 //! - `{"type":"abort"}` — stop the turn that is running.
@@ -89,18 +92,16 @@ use sc_agent::validate::Agents;
 use sc_agent::{
     Agent, Conclusion, ModelRole, Run, RunCaller, RunObserver, Runner, abort_run, save_run,
 };
-use sc_api::AuthRequirement;
-use sc_auth::{SessionEnded, SessionListener, SessionStore, User};
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
 use sc_expr::JsEvaluator;
 use sc_llm::{LlmDelta, ToolCall};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
-use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use uuid::Uuid;
 
+use crate::admin_session::{AdminWatch, Revalidated};
 use crate::agents::AgentServices;
 
 /// The route the admin UI opens its chat socket on.
@@ -143,6 +144,9 @@ enum ClientMessage {
         /// The composer's controls.
         #[serde(default)]
         controls: std::collections::BTreeMap<String, Json>,
+        /// The files attached to the message.
+        #[serde(default)]
+        attachments: Vec<sc_llm::Attachment>,
     },
     /// Stop the turn that is running.
     Abort,
@@ -158,120 +162,12 @@ struct ChatContext {
     /// person chatting, never the server — as the session names them at the
     /// start of the turn.
     caller: RunCaller,
-    /// The session the socket was opened on.
-    session: ChatSession,
+    /// The admin session the socket was opened on, watched (#42).
+    session: AdminWatch,
 }
 
-/// How often an open chat socket re-reads its session between the store's own
-/// notices: what reaches a demotion, and a sign-out on another node.
-pub(crate) const SESSION_RECHECK: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// The session a chat socket was opened on, and the ear it keeps on the store.
-pub(crate) struct ChatSession {
-    sessions: Arc<SessionStore>,
-    token: String,
-    user: Uuid,
-    watch: Arc<SessionWatch>,
-}
-
-/// The [`SessionListener`] a chat socket registers: told synchronously by the
-/// store, it only raises a flag and wakes the socket's task.
-struct SessionWatch {
-    token: String,
-    user: Uuid,
-    ended: std::sync::atomic::AtomicBool,
-    notify: Notify,
-}
-
-impl SessionListener for SessionWatch {
-    fn session_ended(&self, ended: &SessionEnded<'_>) {
-        let mine = match ended {
-            SessionEnded::Token(token) => *token == self.token,
-            SessionEnded::User(user) => *user == self.user,
-            SessionEnded::All => true,
-        };
-        if mine {
-            self.ended.store(true, std::sync::atomic::Ordering::SeqCst);
-            self.notify.notify_one();
-        }
-    }
-}
-
-/// What a re-read of the session found.
-enum SessionNow {
-    /// Still an admin's: the user as they are now.
-    Admin(User),
-    /// Ended, or no longer an admin's, said as the close frame says it.
-    Lost(String),
-    /// The store could not answer.
-    Unknown,
-}
-
-impl ChatSession {
-    /// Watch `token`, which `user` holds, on `sessions`.
-    pub(crate) fn new(sessions: Arc<SessionStore>, token: String, user: &User) -> ChatSession {
-        let watch = Arc::new(SessionWatch {
-            token: token.clone(),
-            user: user.id,
-            ended: std::sync::atomic::AtomicBool::new(false),
-            notify: Notify::new(),
-        });
-        let listener: Arc<dyn SessionListener> = watch.clone();
-        sessions.add_listener(Arc::downgrade(&listener));
-        ChatSession {
-            sessions,
-            token,
-            user: user.id,
-            watch,
-        }
-    }
-
-    async fn now(&self) -> SessionNow {
-        if self.watch.ended.load(std::sync::atomic::Ordering::SeqCst) {
-            return SessionNow::Lost(SIGNED_OUT.to_owned());
-        }
-        match self.sessions.user_for(&self.token).await {
-            Ok(Some(user)) if user.id == self.user => {
-                if AuthRequirement::admin().admits(Some(&user)) {
-                    SessionNow::Admin(user)
-                } else {
-                    SessionNow::Lost(
-                        "this account is no longer an administrator, so the chat is closed"
-                            .to_owned(),
-                    )
-                }
-            }
-            Ok(_) => SessionNow::Lost(SIGNED_OUT.to_owned()),
-            Err(e) => {
-                sc_log::log_warn!(
-                    "the chat socket could not re-read its session: {}",
-                    sc_error::format_chain(&e)
-                );
-                SessionNow::Unknown
-            }
-        }
-    }
-
-    /// Wait until the session is lost, and say why. A store that cannot
-    /// answer leaves the socket open until the next re-read, as the live
-    /// socket does: a database that blinked is not a sign-out.
-    async fn lost(&self) -> String {
-        loop {
-            tokio::select! {
-                () = self.watch.notify.notified() => {}
-                () = tokio::time::sleep(SESSION_RECHECK) => {}
-            }
-            if let SessionNow::Lost(reason) = self.now().await {
-                return reason;
-            }
-        }
-    }
-}
-
-/// The close reason for a session that has ended.
-const SIGNED_OUT: &str = "your session ended, so the chat is closed; sign in again";
-
-/// Serve one chat socket for `user`.
+/// Serve one chat socket for the administrator whose session `session`
+/// watches.
 ///
 /// The caller has already established that the request is an admin's. What is
 /// decided here is whether this *server* can chat at all; both refusals arrive as
@@ -283,8 +179,7 @@ pub(crate) async fn agent_chat_upgrade(
     services: Option<&AgentServices>,
     evaluator: Option<Arc<dyn JsEvaluator>>,
     triggers: Option<Arc<TriggerDispatcher>>,
-    user: User,
-    session: ChatSession,
+    session: AdminWatch,
 ) -> axum::response::Response {
     let (Some(catalog), Some(services)) = (catalog, services) else {
         let reason = "this server has no agents installed, so there is nothing to chat with";
@@ -295,7 +190,7 @@ pub(crate) async fn agent_chat_upgrade(
         services: services.clone(),
         evaluator,
         triggers,
-        caller: RunCaller::user(user),
+        caller: RunCaller::user(session.session().user().clone().into_user()),
         session,
     };
     ws.on_upgrade(move |socket| chat(socket, ctx))
@@ -377,14 +272,16 @@ async fn chat(socket: WebSocket, mut ctx: ChatContext) {
         // now; an ended session or a demoted admin closes the socket.
         if !matches!(client, ClientMessage::Abort) {
             match ctx.session.now().await {
-                SessionNow::Admin(user) => ctx.caller = RunCaller::user(user),
-                SessionNow::Lost(reason) => {
+                Revalidated::Admin(admin) => {
+                    ctx.caller = RunCaller::user(admin.user().clone().into_user());
+                }
+                Revalidated::Lost(reason) => {
                     closing = Some(reason);
                     break;
                 }
                 // A store that cannot answer refuses the turn: this socket
                 // runs tools as an admin.
-                SessionNow::Unknown => {
+                Revalidated::Unknown => {
                     send(
                         &tx,
                         error_event("the session could not be checked; try again in a moment"),
@@ -424,9 +321,11 @@ async fn chat(socket: WebSocket, mut ctx: ChatContext) {
                 answers_request,
                 value,
                 controls,
+                attachments,
             } => {
                 let input = TurnInput {
                     text,
+                    attachments,
                     answer: answers_request.map(|id| sc_agent::Answer {
                         answers_request: id,
                         value,
@@ -524,10 +423,36 @@ async fn start(
 pub(crate) struct TurnInput {
     /// What the person typed; ignored for an answer.
     pub text: String,
+    /// The files attached to the message, unchecked; none for an answer.
+    pub attachments: Vec<sc_llm::Attachment>,
     /// The answer, when the turn is one.
     pub answer: Option<sc_agent::Answer>,
     /// The composer's controls.
     pub controls: std::collections::BTreeMap<String, Json>,
+}
+
+impl TurnInput {
+    /// The attachments, checked; an answer may carry none.
+    pub(crate) fn checked_attachments(&mut self) -> Result<Vec<sc_llm::Attachment>> {
+        let attachments = std::mem::take(&mut self.attachments);
+        if self.answer.is_some() && !attachments.is_empty() {
+            return Err(Error::invalid(
+                "an answer to the agent's question cannot carry attachments; \
+                 send them with a message",
+            ));
+        }
+        sc_llm::check_attachments(attachments)
+    }
+
+    /// The run's description when this message starts one: the first line
+    /// of the text, or the names of the files when only files were sent.
+    pub(crate) fn description(&self, attachments: &[sc_llm::Attachment]) -> String {
+        if self.text.trim().is_empty() && !attachments.is_empty() {
+            let names: Vec<&str> = attachments.iter().map(|a| a.name.as_str()).collect();
+            return summarise(&names.join(", "));
+        }
+        summarise(&self.text)
+    }
 }
 
 /// How a turn ended, as far as the socket is concerned.
@@ -567,6 +492,8 @@ async fn turn(
         .providers()
         .connect(&ctx.catalog, agent, ModelRole::Executor)
         .await?;
+    let mut input = input;
+    let attachments = input.checked_attachments()?;
     let observer = SocketObserver { tx: tx.clone() };
     let mut runner = Runner::new(
         &ctx.catalog,
@@ -599,7 +526,7 @@ async fn turn(
                 Some(answer) => runner.push_answer(&mut run, answer, input.controls).await,
                 None => {
                     runner
-                        .push_message(&mut run, &input.text, input.controls)
+                        .push_message(&mut run, &input.text, attachments, input.controls)
                         .await
                 }
             };
@@ -616,11 +543,13 @@ async fn turn(
                 ));
             }
             sc_agent::check_controls(&runner.controls().await?, &input.controls)?;
-            let text = input.text;
             // The first message is the run's description: a history list carries
             // no transcript (that is what `getRun` is for), so without this a
             // list of conversations would be a list of timestamps.
-            let mut run = runner.new_run(&text)?.description(summarise(&text));
+            let description = input.description(&attachments);
+            let mut run = runner
+                .new_run_attached(input.text, attachments)?
+                .description(description);
             let mut state = run.agent_loop()?;
             state.set_controls(input.controls);
             run.record(&state);
@@ -896,8 +825,9 @@ fn tool_result_event(outcome: &sc_agent::ToolOutcome) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sc_types::Role;
 
-    fn agent_at(min_role: Option<u8>) -> Agent {
+    fn agent_at(min_role: Option<Role>) -> Agent {
         let agent = Agent::new("librarian", "anthropic");
         match min_role {
             Some(role) => agent.min_role(role),
@@ -985,21 +915,21 @@ mod tests {
     /// caller the route let through — which is the point of making it here.
     #[test]
     fn an_agent_above_the_callers_role_is_refused() {
-        let staff = RunCaller::user(sc_auth::User::new(Uuid::new_v4(), 40).expect("a user"));
+        let staff = RunCaller::user(sc_auth::User::new(Uuid::new_v4(), Role::of(40)));
         // Roles descend: 40 meets a floor of 80, and does not meet 10 or
         // admin-only.
-        assert!(may_chat(&staff, &agent_at(Some(80))).is_ok());
-        assert!(may_chat(&staff, &agent_at(Some(40))).is_ok());
-        let err = may_chat(&staff, &agent_at(Some(10))).expect_err("10 is above 40");
+        assert!(may_chat(&staff, &agent_at(Some(Role::of(80)))).is_ok());
+        assert!(may_chat(&staff, &agent_at(Some(Role::of(40)))).is_ok());
+        let err = may_chat(&staff, &agent_at(Some(Role::of(10)))).expect_err("10 is above 40");
         assert!(err.to_string().contains("librarian"), "{err}");
         assert!(may_chat(&staff, &agent_at(None)).is_err());
     }
 
     #[test]
     fn an_admin_meets_every_floor() {
-        let admin = RunCaller::user(sc_auth::User::new(Uuid::new_v4(), 1).expect("a user"));
+        let admin = RunCaller::user(sc_auth::User::new(Uuid::new_v4(), Role::ADMIN));
         assert!(may_chat(&admin, &agent_at(None)).is_ok());
-        assert!(may_chat(&admin, &agent_at(Some(100))).is_ok());
+        assert!(may_chat(&admin, &agent_at(Some(Role::PUBLIC))).is_ok());
     }
 
     #[test]

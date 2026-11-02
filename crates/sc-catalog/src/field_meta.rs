@@ -49,9 +49,7 @@ use serde_json::Value as Json;
 use uuid::Uuid;
 
 use crate::catalog::Catalog;
-use crate::field::{
-    DataField, DataFieldKind, FieldId, FileOnConflict, FileOnDelete, FileStoreId, TableId,
-};
+use crate::field::{DataField, DataFieldKind, FieldId, FileOnConflict, FileOnDelete, FileStoreId};
 use crate::file_stores::QUERY_FILE_STORES;
 use crate::table::Table;
 
@@ -360,8 +358,17 @@ pub async fn save_field_meta_row(catalog: &Catalog, meta: &FieldMeta) -> Result<
         )));
     }
 
+    // A rich type's attributes are stored in its canonical form (a `String`'s
+    // `options` typed as `Red, Green` becomes an array). An unregistered type is
+    // stored as given — see above.
+    let mut meta = meta.clone();
+    if let Some(rich) = meta.type_name.as_deref().and_then(sc_types::rich_type) {
+        rich.normalize_attrs(&mut meta.attributes)
+            .map_err(|e| Error::invalid(format!("field `{table}.{field}`: {e}")))?;
+    }
+
     let columns = meta_columns();
-    let values = meta_values(meta);
+    let values = meta_values(&meta);
     if load_field_meta(catalog, meta.id).await?.is_some() {
         let assignments = columns
             .iter()
@@ -527,7 +534,7 @@ fn attributes_for_storage(meta: &FieldMeta) -> Attrs {
         } => {
             obj.insert(
                 KEY_TARGET_TABLE.to_owned(),
-                Json::String(target_table.0.clone()),
+                Json::String(target_table.clone()),
             );
             obj.insert(
                 KEY_TARGET_FIELD.to_owned(),
@@ -613,7 +620,7 @@ fn kind_and_attributes(
     let kind = match discriminant {
         KIND_PLAIN => DataFieldKind::Plain,
         KIND_KEY => DataFieldKind::Key {
-            target_table: TableId(take_text(&mut attrs, KEY_TARGET_TABLE, table, field)?),
+            target_table: take_text(&mut attrs, KEY_TARGET_TABLE, table, field)?,
             target_field: FieldId(take_text(&mut attrs, KEY_TARGET_FIELD, table, field)?),
             summary_field: take_optional_text(&mut attrs, KEY_SUMMARY_FIELD, table, field)?
                 .map(FieldId),
@@ -793,7 +800,7 @@ fn bad_column(column: &str, expected: &str, got: Option<&Value>) -> Error {
 /// Run a statement that returns no rows of interest.
 async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
     catalog
-        .primary()
+        .primary_driver()
         .query(&statement)
         .await?
         .try_collect()
@@ -804,7 +811,7 @@ async fn run(catalog: &Catalog, statement: Statement) -> Result<()> {
 /// Run a select and collect its rows.
 async fn rows(catalog: &Catalog, select: Select) -> Result<Vec<Row>> {
     catalog
-        .primary()
+        .primary_driver()
         .query(&Statement::from(select))
         .await?
         .try_collect()

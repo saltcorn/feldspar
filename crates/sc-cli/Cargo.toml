@@ -28,6 +28,13 @@ path = "src/main.rs"
 sc-error.workspace = true
 sc-log.workspace = true
 sc-server.workspace = true
+# `feldspar backup` and `feldspar restore`: the archive, written and read.
+sc-backup.workspace = true
+# `CodeAdapter`: the Python adapter `serve` hands the trigger set. (Also a stub
+# framework's templates, for the build agent's job test.)
+sc-expr.workspace = true
+# `feldspar check` (TODO-checklists C1.12), and the checklist tables at bootstrap.
+sc-check.workspace = true
 sc-api.workspace = true
 sc-auth.workspace = true
 sc-app.workspace = true
@@ -69,6 +76,8 @@ sc-dns.workspace = true
 sc-db.workspace = true
 sc-db-postgres.workspace = true
 sc-db-sqlite.workspace = true
+# Migrations run when the database is opened, and `feldspar migrate` (§5.3).
+sc-migrate.workspace = true
 tokio.workspace = true
 # `build-agent` talks to its server over HTTPS (`TODO-build-hosts.md`).
 reqwest.workspace = true
@@ -92,7 +101,7 @@ toml.workspace = true
 serde.workspace = true
 # The coding traits' per-run state, which is where the edit-cascade counts the
 # eval reports live, and the run tree a planned run's metrics are added over.
-sc-core-traits.workspace = true
+sc-agent-builtins.workspace = true
 # The `Translator` seam `feldspar i18n translate` implements over a configured
 # LLM provider. The trait is async, so implementing it needs the same attribute
 # every other seam in this workspace is declared with.
@@ -101,6 +110,11 @@ async-trait.workspace = true
 # `feldspar cmdstan status | install`: finding CmdStan on this machine, and
 # downloading and building one (TODO "Bayesian models with Stan" §20).
 sc-stan.workspace = true
+
+# `feldspar python check` (TODO-portable-release R1.7): the embedded
+# interpreter's self-check, with no database. No features of its own — whether
+# there is an interpreter is this crate's `python` feature, through sc-server.
+sc-python.workspace = true
 
 # `feldspar module …`: the `_fd_modules` row a module command edits, and the
 # permission set it grants entries on.
@@ -123,8 +137,6 @@ sc-stan.workspace = true
 axum.workspace = true
 tower.workspace = true
 serde_json.workspace = true
-# A stub framework's templates, for the build agent's job test.
-sc-expr.workspace = true
 
 [lints]
 workspace = true

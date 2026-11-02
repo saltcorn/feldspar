@@ -352,7 +352,7 @@ the element.
 
 ## 7. Server-side publishing (A)
 
-- **`publish` action** (`sc-core-actions`): settings `stream`, `topic` (a formula; for a `user`
+- **`publish` action** (`sc-action-builtins`): settings `stream`, `topic` (a formula; for a `user`
   stream the default is `user.id`, the event's user), `value` (a map of formulas). It works as a
   trigger body and as a workflow `Action` step. A workflow run carries the user who started it
   (`_fd_runs.user_id`), so `user.id` is "the user who clicked the button". A `user` topic with
@@ -505,7 +505,7 @@ re-checking. No new providers yet. Everything later builds on this.
   60 s interval.
 
 ### Phase 3: publishers
-- [x] **L2.7** The `publish` action in `sc-core-actions`: `stream` (a picker over internal
+- [x] **L2.7** The `publish` action in `sc-action-builtins`: `stream` (a picker over internal
   streams), `topic` (a formula, defaulting to `user.id` for `user` streams), `value` (a map of
   formulas). A `user` topic with no user is an error naming the trigger. Works as a trigger body
   and as a workflow Action step. Test: a workflow started by user X publishes "started", sleeps,

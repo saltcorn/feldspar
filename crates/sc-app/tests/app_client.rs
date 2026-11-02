@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use sc_app::{
-    ApiConfig, Application, FrameworkRef, app_client, app_endpoints, app_providers,
+    ApiConfig, Application, FrameworkRef, app_client, app_endpoints, app_providers, app_schema_sql,
     app_source_from_config, build_application, emit_client,
 };
-use sc_catalog::{Catalog, TableId};
+use sc_catalog::Catalog;
 use sc_db::DatabaseDriver;
 use sc_db_postgres::PgDriver;
 use sc_error::Result;
@@ -80,7 +80,7 @@ fn code_framework() -> FrameworkRef {
 
 fn blog() -> Application {
     Application::new("Blog", "blog", code_framework())
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_api(ApiConfig::new("rest", "/api"))
 }
 
@@ -135,14 +135,73 @@ async fn app_client_is_generated_from_the_apps_own_endpoint_set() -> Result<()> 
     Ok(())
 }
 
+/// Connecting a table is not publishing it: a table the app is connected to
+/// but serves no row API for is in its `schema.sql` (what its queries are
+/// written against) and nowhere in its endpoints or client. Opting it into
+/// `api_tables` is what adds the four row routes.
+#[tokio::test]
+async fn a_connected_table_has_no_row_api_until_it_is_opted_in() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = catalog(&db).await?;
+    let connected = Application::new("Blog", "blog", code_framework())
+        .with_connected_table("posts".to_owned())
+        .with_api(ApiConfig::new("rest", "/api"));
+    assert!(connected.api_tables.is_empty());
+
+    let endpoints = app_endpoints(&connected, &cat)?;
+    // Only the app's own login / logout / whoami / forgotPassword / setPassword.
+    assert_eq!(endpoints.len(), 5);
+    assert!(endpoints.find("listPosts").is_none());
+    let ts = app_client(&connected, &cat)?;
+    assert!(!ts.contains("/api/posts"), "{ts}");
+    assert!(!ts.contains("PostsRow"), "{ts}");
+    // …while its queries may still be written against it.
+    assert!(app_schema_sql(&connected, &cat)?.contains("posts"));
+
+    // The same table, opted in: the four row routes, and nothing for `secrets`.
+    let mut served = connected.clone();
+    sc_app::change_app_api_tables(
+        &mut served,
+        &sc_app::TableChange {
+            add: vec!["posts".to_owned()],
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(app_endpoints(&served, &cat)?.len(), 4 + 5);
+    assert!(app_client(&served, &cat)?.contains("/api/posts"));
+
+    // A row API over a table the app is not connected to is refused, and
+    // disconnecting a table stops serving its row API.
+    let refused = sc_app::change_app_api_tables(
+        &mut served,
+        &sc_app::TableChange {
+            add: vec!["secrets".to_owned()],
+            ..Default::default()
+        },
+    )
+    .expect_err("secrets is not connected")
+    .to_string();
+    assert!(refused.contains("not connected"), "{refused}");
+    assert_eq!(served.api_tables, vec!["posts".to_owned()]);
+    sc_app::change_app_tables(
+        &cat,
+        &mut served,
+        &sc_app::TableChange {
+            remove: vec!["posts".to_owned()],
+            ..Default::default()
+        },
+    )?;
+    assert!(served.api_tables.is_empty());
+    Ok(())
+}
+
 #[tokio::test]
 async fn an_app_with_no_apis_gets_an_empty_client() -> Result<()> {
     let db = TestDb::new().await?;
     let cat = catalog(&db).await?;
 
     // Declaring a table but enabling no provider exposes nothing.
-    let app =
-        Application::new("Blog", "blog", code_framework()).with_table(TableId("posts".to_owned()));
+    let app = Application::new("Blog", "blog", code_framework()).with_table("posts".to_owned());
     assert!(app_providers(&app, &cat)?.is_empty());
     assert!(app_endpoints(&app, &cat)?.is_empty());
 
@@ -161,7 +220,7 @@ async fn a_declared_table_missing_from_the_catalog_is_an_error() -> Result<()> {
     // The app declares a table nobody created: a misconfiguration, not an app
     // with a quietly smaller API.
     let app = Application::new("Blog", "blog", code_framework())
-        .with_table(TableId("ghosts".to_owned()))
+        .with_table("ghosts".to_owned())
         .with_api(ApiConfig::new("rest", "/api"));
     let err = app_endpoints(&app, &cat).expect_err("a missing table must fail");
     assert!(err.to_string().contains("ghosts"), "{err}");
@@ -177,7 +236,7 @@ async fn an_unknown_api_provider_is_a_configuration_error() -> Result<()> {
     // serving an app with a silently missing API — and the refusal names what
     // this server *does* register, which is the list the admin form offers.
     let app = Application::new("Blog", "blog", code_framework())
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_api(ApiConfig::new("grpc", "/grpc"));
     let err = app_providers(&app, &cat)
         .map(|_| ())
@@ -199,7 +258,7 @@ async fn both_registered_providers_project_over_one_application() -> Result<()> 
     // providers' operations in it, which is what the app's client is generated
     // from.
     let app = Application::new("Blog", "blog", code_framework())
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_api(ApiConfig::new("rest", "/api"))
         .with_api(ApiConfig::new("graphql", "/graphql"));
 
@@ -224,7 +283,7 @@ async fn an_api_mounted_at_the_root_is_refused_before_anything_is_built() -> Res
     // browser. `app_providers` is what both building and mounting go through, so
     // this is where an app stored that way is stopped, with the reason.
     let app = Application::new("Blog", "blog", code_framework())
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_api(ApiConfig::new("rest", "/"));
     let err = app_providers(&app, &cat)
         .map(|_| ())
@@ -235,7 +294,7 @@ async fn an_api_mounted_at_the_root_is_refused_before_anything_is_built() -> Res
 
     // The same app on a sub-path is exactly what it meant to be.
     let ok = Application::new("Blog", "blog", code_framework())
-        .with_table(TableId("posts".to_owned()))
+        .with_table("posts".to_owned())
         .with_api(ApiConfig::new("rest", "/api"));
     assert_eq!(app_providers(&ok, &cat)?.len(), 1);
     Ok(())
@@ -342,7 +401,7 @@ async fn emit_client_is_a_no_op_without_a_client_path() -> Result<()> {
     assert!(written.is_empty());
 
     // Nothing was written to the store.
-    let store = cat.require_file_store("apps")?;
-    assert!(store.list("").await?.is_empty());
+    let store = cat.require_file_store("apps", sc_catalog::Unchecked::system("test"))?;
+    assert!(store.list(&sc_files::StorePath::root()).await?.is_empty());
     Ok(())
 }
