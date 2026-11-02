@@ -214,6 +214,11 @@ pub fn json_to_value(basic: &BasicType, json: &Json) -> Result<Value> {
     match basic {
         BasicType::Bool => match json {
             Json::Bool(b) => Ok(Value::Bool(*b)),
+            // The text a query string carries (`?done=eq.false`), as `"7"` is
+            // for an int column. Only the two JSON spellings: the looser
+            // `t`/`1`/`yes` a form submits is the catch-all fieldview's.
+            Json::String(s) if s == "true" => Ok(Value::Bool(true)),
+            Json::String(s) if s == "false" => Ok(Value::Bool(false)),
             _ => Err(type_error("bool", json)),
         },
         BasicType::Int => match json {
@@ -352,6 +357,17 @@ mod tests {
             Value::Null
         );
         assert_eq!(value_to_json(&Value::Null), Json::Null);
+    }
+
+    #[test]
+    fn a_bool_column_takes_true_and_false_as_text_and_nothing_looser() {
+        let bool_of = |s: &str| json_to_value(&BasicType::Bool, &Json::String(s.into()));
+        assert_eq!(bool_of("true").unwrap(), Value::Bool(true));
+        assert_eq!(bool_of("false").unwrap(), Value::Bool(false));
+        for refused in ["t", "f", "0", "1", "yes", "TRUE", " false", ""] {
+            assert!(bool_of(refused).is_err(), "`{refused}` was accepted");
+        }
+        assert!(json_to_value(&BasicType::Bool, &Json::from(0_i64)).is_err());
     }
 
     #[test]

@@ -1440,11 +1440,11 @@ async fn a_workflow_that_starts_a_workflow_carries_the_chain_and_is_bounded_by_i
         json!(["parent", "onwards", "child", "childstep"])
     );
 
-    // Deep: four triggers already, so the step is the fifth and starting the
-    // child would be the sixth. The bound refuses it before any run is created —
-    // a workflow that starts a workflow is stopped exactly where an action that
-    // writes a row is.
-    let deep: Vec<String> = (1..=4).map(|n| format!("t{n}")).collect();
+    // Deep: `MAX_DEPTH - 1` triggers already, so the step is the last level the
+    // bound allows and starting the child would be one past it. The bound
+    // refuses it before any run is created — a workflow that starts a workflow
+    // is stopped exactly where an action that writes a row is.
+    let deep: Vec<String> = (1..sc_action::MAX_DEPTH).map(|n| format!("t{n}")).collect();
     let run = start_run(
         &catalog,
         &dispatcher,
@@ -1526,10 +1526,10 @@ async fn the_cascade_bound_still_holds_when_it_goes_through_a_workflow() -> Resu
     assert_eq!(run.state, RunState::Done, "{:?}", run.error);
     assert_eq!(recording.count("audit"), 1);
 
-    // Deep: a run that already descends from four triggers makes its step the
-    // fifth, and `MAX_DEPTH` refuses the sixth — naming the whole chain, which
-    // is the diagnosis rather than a number.
-    let deep: Vec<String> = (1..=4).map(|n| format!("t{n}")).collect();
+    // Deep: a run that already descends from `MAX_DEPTH - 1` triggers makes its
+    // step the last level allowed, and `MAX_DEPTH` refuses the trigger after
+    // it — naming the whole chain, which is the diagnosis rather than a number.
+    let deep: Vec<String> = (1..sc_action::MAX_DEPTH).map(|n| format!("t{n}")).collect();
     let run = start_run(
         &catalog,
         &dispatcher,

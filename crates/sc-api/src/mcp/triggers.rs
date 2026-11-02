@@ -197,6 +197,20 @@ const SAVE_ARGS: [&str; 11] = [
 
 // --- describe_triggers --------------------------------------------------------
 
+/// How the cascade bound counts (§10.2, TODO T1), said where a trigger is
+/// designed: in `describe_triggers` and `save_trigger`.
+const CASCADE_DEPTH: &str = "**Cascade depth.** A trigger's action may run another \
+     trigger or write a row that fires one, and so on, at most 10 triggers deep; \
+     the next one is refused with the whole chain named. Each of these counts as \
+     one level: a trigger run by name (a button, the API, `trigger(…)` in a code \
+     body), a trigger fired by a write another trigger's action made, a \
+     `run_agent` trigger, and a workflow step. An agent's **tool call** does not \
+     count: a tool that runs a trigger runs it one level below the trigger that \
+     started the agent. A refusal fails the nearest call that is waiting (running \
+     a trigger by name, a code body, an agent's tool call), even when the refused \
+     trigger was fired by a row write; other failures of a trigger fired by a \
+     write are reported as an `error` event and do not fail the write.";
+
 fn describe_triggers_description() -> String {
     format!(
         "List the triggers: what each one listens for, which action it runs, how \
@@ -208,7 +222,8 @@ fn describe_triggers_description() -> String {
          {}. `insert`, `update` and `delete` name a table and carry its row; \
          `none` is run on demand (a button, `POST /actions/<name>`, another \
          agent); `login`, `startup` and `error` carry a payload; `often`, \
-         `hourly`, `daily` and `weekly` run on a schedule.",
+         `hourly`, `daily` and `weekly` run on a schedule.\n\n\
+         {CASCADE_DEPTH}",
         EVENT_KINDS
             .iter()
             .map(|k| format!("`{k}`"))
@@ -538,6 +553,7 @@ fn save_description(grants: &Grants) -> String {
          exposes: its body's `lib(name)` imports **instance-wide** code \
          libraries only, never an application's own. Code a trigger shares with \
          an application's queries goes in an instance-wide library.\n\n\
+         {CASCADE_DEPTH}\n\n\
          {permitted} {access}"
     )
 }
@@ -1009,6 +1025,13 @@ mod tests {
         // A trigger sees instance-wide libraries only, said where one is saved.
         let text = save_description(&Grants::all());
         assert!(text.contains("instance-wide** code"), "{text}");
+        // How deep a cascade may go and what counts, said where one is
+        // designed (TODO T1).
+        for text in [text, describe_triggers_description()] {
+            let bound = format!("at most {} triggers deep", sc_action::MAX_DEPTH);
+            assert!(text.contains(&bound), "{text}");
+            assert!(text.contains("**tool call** does not"), "{text}");
+        }
         // A `none` trigger's input is `payload`, said where an action is read.
         let text = describe_action_description();
         assert!(

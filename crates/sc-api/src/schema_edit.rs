@@ -67,7 +67,7 @@ use sc_catalog::{
 };
 use sc_db::{ColumnGenerator, ColumnRef, SchemaChange};
 use sc_error::{Error, Result};
-use sc_query::{Expr, UnOp};
+use sc_query::{Expr, InSet, UnOp};
 use sc_types::{BasicType, RichTypeRef, TypeRef};
 
 /// The column default a `uuid` primary-key column is given, so a row can be
@@ -384,11 +384,12 @@ impl TableSettings {
     }
 }
 
-/// Overlay-only settings on an existing field, each `None` meaning leave it.
+/// Settings on an existing field, each `None` meaning leave it.
 ///
-/// There is no `required`, `unique` or storage type here for the reason
-/// `updateField` has none (§3.3): retyping or re-constraining a column is a
-/// migration, and a migration framework is out of scope.
+/// Mostly overlay settings. The column properties that may change are the ones
+/// listed with their own rules: `primary_key`, `required` and `unique`. There is
+/// no storage type here for the reason `updateField` has none (§3.3): retyping a
+/// column rewrites its data.
 #[derive(Debug, Clone, Default)]
 pub struct FieldSettings {
     /// A new name for the field: its column is renamed (`RENAME COLUMN`), its
@@ -432,6 +433,17 @@ pub struct FieldSettings {
     /// A key column is `NOT NULL` whatever this says, so asking for it to be
     /// optional is refused; a calculated field has no column to constrain.
     pub required: Option<bool>,
+    /// Whether the field is unique on its own: a unique constraint over just
+    /// this field ([`Table::unique_constraint_on`]).
+    ///
+    /// `true` adds one (named as `add_constraint` would name it) unless there
+    /// is one already, and is refused while two rows hold the same value.
+    /// `false` drops every one-field unique constraint on the field, whatever
+    /// its name — including the database's own `<table>_<field>_key` that a
+    /// field created with `unique: true` has — and so needs the `drop` grant,
+    /// as `drop_constraint` does. A jointly-unique key the field is part of is
+    /// not touched; that is `drop_constraint`'s.
+    pub unique: Option<bool>,
     /// The default-value expression ([`FieldSpec::default_expression`]);
     /// `Some("")` clears it.
     pub default_expression: Option<String>,
@@ -1077,6 +1089,10 @@ impl Plan {
                 settings,
             } => {
                 grants.check(grants.edit, "change a field's settings", GRANT_EDIT)?;
+                if settings.unique == Some(false) {
+                    // Taking a unique rule away, which is `drop_constraint`.
+                    grants.check(grants.drop, "drop a unique constraint", GRANT_DROP)?;
+                }
                 self.alter_field(catalog, index, op, table, field, settings)
                     .await
             }
@@ -1458,6 +1474,9 @@ impl Plan {
         self.require_editable(table)?;
         // The overlay row as stored, found by the name the field has now.
         let stored = stored_field_meta(catalog, table, field).await?;
+        // The column's name in the database as it is now, before any rename in
+        // this operation: what a check on the rows already there reads.
+        let live_name = field.to_owned();
         let field = match settings.name.as_deref().map(str::trim) {
             Some(name) if name != field => {
                 self.rename_field(catalog, table, field, name)?;
@@ -1650,6 +1669,26 @@ impl Plan {
                 .await?;
         }
         self.projection.insert(projected);
+
+        // New allowed values are checked against the rows already there, for
+        // the reason `required` is: the database would not refuse them, and the
+        // first edit of such a row would. Only when they change, so editing the
+        // label of a field whose old rows predate its options still works.
+        if settings.attributes.is_some() || settings.type_name.is_some() {
+            let before = match &stored {
+                Some(row) => string_options(row.type_name.as_deref(), &row.attributes)?,
+                None => None,
+            };
+            if let Some(options) = string_options(meta.type_name.as_deref(), &meta.attributes)?
+                && before.as_ref() != Some(&options)
+            {
+                check_rows_within_options(catalog, table, &live_name, field, &options).await?;
+            }
+        }
+        if let Some(unique) = settings.unique {
+            self.set_unique(catalog, table, &live_name, field, &existing, unique)
+                .await?;
+        }
 
         self.metas.push(MetaWrite {
             index,
@@ -1850,6 +1889,86 @@ impl Plan {
     ///
     /// `projected` is the table as the operation has left it so far, so a key
     /// switched on or off by the same operation is already reflected in it.
+    /// Make `table.field` unique on its own, or stop it being so — see
+    /// [`FieldSettings::unique`]. Adds or drops constraints through
+    /// [`add_constraint`](Self::add_constraint) and
+    /// [`drop_constraint`](Self::drop_constraint), so the batch's report lists
+    /// them as it lists any other.
+    async fn set_unique(
+        &mut self,
+        catalog: &Catalog,
+        table: &str,
+        live_name: &str,
+        field: &str,
+        existing: &DataField,
+        unique: bool,
+    ) -> Result<()> {
+        let projected = self
+            .projection
+            .get(table)
+            .ok_or_else(|| Error::not_found(format!("table `{table}` is not in the catalog")))?;
+        let current: Vec<String> = projected
+            .constraints
+            .iter()
+            .filter(|c| {
+                matches!(&c.kind, ConstraintKind::Unique { fields }
+                    if fields.len() == 1 && fields[0] == field)
+            })
+            .map(|c| c.name.clone())
+            .collect();
+        // A field added earlier in this batch with `unique: true` carries it as
+        // a column property, which only becomes a constraint once it exists.
+        let flagged = projected.field(field).is_some_and(|f| f.unique);
+        if !unique {
+            if flagged {
+                return Err(Error::invalid(format!(
+                    "`{table}.{field}` is made unique earlier in this batch; leave out \
+                     `unique` there instead"
+                )));
+            }
+            for name in current {
+                self.drop_constraint(table, &name)?;
+            }
+            return Ok(());
+        }
+        if flagged || !current.is_empty() {
+            return Ok(());
+        }
+        if existing.is_calc() {
+            return Err(Error::invalid(format!(
+                "`{table}.{field}` is calculated and has no column to make unique"
+            )));
+        }
+        // The database would refuse too, naming a constraint rather than the
+        // rows the admin has to fix.
+        if let Some(live) = catalog.get(table)?
+            && live
+                .field(live_name)
+                .is_some_and(|f| !f.is_calc() && !f.is_secret())
+        {
+            let duplicates = count_duplicates(catalog, &live, live_name).await?;
+            if duplicates > 0 {
+                return Err(Error::invalid(format!(
+                    "`{table}.{field}` cannot be made unique: {duplicates} row{} \
+                     repeat{} a value another row has. Change or remove {} first.",
+                    if duplicates == 1 { "" } else { "s" },
+                    if duplicates == 1 { "s" } else { "" },
+                    if duplicates == 1 { "it" } else { "them" },
+                )));
+            }
+        }
+        self.add_constraint(
+            table,
+            "",
+            &TableConstraint::new(
+                String::new(),
+                ConstraintKind::Unique {
+                    fields: vec![field.to_owned()],
+                },
+            ),
+        )
+    }
+
     async fn set_required(
         &mut self,
         catalog: &Catalog,
@@ -3077,6 +3196,102 @@ fn validate_default_expression(
         .validate(shape, table)
         .map_err(|e| Error::invalid(format!("default value of `{table}.{name}`: {e}")))?;
     Ok(())
+}
+
+/// A `string` field's allowed values, or `None` when it has none (or is not a
+/// `string`). Read the way validation reads them ([`sc_types::parse_string_options`]),
+/// so a list typed as `Red, Green` is the list it will be stored as.
+fn string_options(type_name: Option<&str>, attributes: &Attrs) -> Result<Option<Vec<String>>> {
+    if type_name != Some(sc_types::StringType::NAME) {
+        return Ok(None);
+    }
+    let Some(options) = attributes.get(ATTR_STRING_OPTIONS) else {
+        return Ok(None);
+    };
+    let options = sc_types::parse_string_options(options)?;
+    Ok((!options.is_empty()).then_some(options))
+}
+
+/// The `options` attribute of a `string` field.
+const ATTR_STRING_OPTIONS: &str = "options";
+
+/// Refuse new allowed values for `table.field` while a row holds a value
+/// outside them, saying how many rows and which values.
+async fn check_rows_within_options(
+    catalog: &Catalog,
+    table: &str,
+    live_name: &str,
+    field: &str,
+    options: &[String],
+) -> Result<()> {
+    let Some(live) = catalog.get(table)? else {
+        return Ok(());
+    };
+    if !live.field(live_name).is_some_and(|f| !f.is_calc()) {
+        return Ok(());
+    }
+    let outside = Expr::unary(UnOp::IsNotNull, Expr::col(live_name)).and(Expr::unary(
+        UnOp::Not,
+        Expr::In {
+            e: Box::new(Expr::col(live_name)),
+            set: InSet::List(options.iter().map(|o| Expr::lit(o.as_str())).collect()),
+        },
+    ));
+    let count = sc_access::rows::count_rows_where(
+        catalog,
+        &live,
+        Some(outside),
+        sc_catalog::Unchecked::system("schema edit: check existing rows"),
+    )
+    .await?;
+    if count > 0 {
+        return Err(Error::invalid(format!(
+            "`{table}.{field}` cannot be limited to {}: {count} row{} {} a value \
+             outside them. Change {} first, or include {} values in the list.",
+            options
+                .iter()
+                .map(|o| format!("{o:?}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if count == 1 { "" } else { "s" },
+            if count == 1 { "has" } else { "have" },
+            if count == 1 { "it" } else { "them" },
+            if count == 1 { "its" } else { "their" },
+        )));
+    }
+    Ok(())
+}
+
+/// How many rows of `table` repeat a non-null value of `column` that another
+/// row has: the rows a unique constraint over it would refuse.
+async fn count_duplicates(catalog: &Catalog, table: &Table, column: &str) -> Result<i64> {
+    let count = |distinct: bool| {
+        sc_expr::aggregate_expr(
+            &sc_expr::AggFunc::Count,
+            distinct,
+            Some(Expr::col(column)),
+            &table.name,
+        )
+    };
+    let values = sc_access::rows::aggregate_values(
+        catalog,
+        table,
+        vec![
+            sc_query::Projection::expr_as(count(false)?, "all_values"),
+            sc_query::Projection::expr_as(count(true)?, "distinct_values"),
+        ],
+        None,
+        sc_catalog::Unchecked::system("schema edit: check existing rows"),
+    )
+    .await?;
+    let read = |key: &str| match values.get(key) {
+        Some(sc_query::Value::Int(n)) => Ok(*n),
+        other => Err(Error::msg(format!(
+            "counting `{}.{column}` came back as {other:?}",
+            table.name
+        ))),
+    };
+    Ok(read("all_values")? - read("distinct_values")?)
 }
 
 /// Validate a calculated field's expression against a projected schema, so a

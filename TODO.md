@@ -854,6 +854,43 @@ full access with nothing further to do, and turning the setting off restores it.
 - [ ] **A2.3** Saltcorn UI applications: the sign-up form sends the link and the framework
   serves `/auth/verify-email`. Until then, Saltcorn UI sign-ups are not verified.
 
+## T1 — Trigger cascade depth
+
+User report: a background agent run's tool called the app's `case_action` trigger, whose outbox
+insert trigger fired `mail_deliver` at depth 6, past the limit of 5. The refusal was only
+reported (stderr, `error` event), so the tool said "ok" and no mail was sent. Decisions: raise
+the limit to 10 (a constant, not a setting); an agent's library tool call stays in the chain for
+the message but is not counted; a depth refusal is returned to the synchronous caller that began
+the cascade. Declined: a same-trigger-same-row loop detector (it would refuse the
+insert-or-update write-back pattern).
+
+- [x] **T1.1** `MAX_DEPTH` 10; agent tool calls not counted (`run_tool_code`); depth refusals
+  returned to the nearest waiting caller (`sc_catalog::cascade`: `run_trigger_in`, code-body
+  runs, agent tool calls); 8 MiB worker stacks in `sc-cli`; the counting documented in
+  `describe_triggers`, `save_trigger`, the JavaScript help topic and §10.2. Test:
+  `sc-agent-builtins/tests/library_tools.rs`.
+- [ ] **T1.2** (Proposed, not decided) `deferred` insert triggers: run after commit in a new
+  chain, for queue-like tables (mail outbox, notifications, webhooks). Must keep the untrusted
+  origin mark and needs its own bound, since restarting at depth 0 would unbound a loop.
+
+## SC1 — Schema tools for agents (unique, constraints, attributes, defaults)
+
+User report (P2 – Schema, retested 2026-11-02): `alter_field unique: false` did nothing, so the
+`<table>_<field>_key` constraint stayed and `drop_field` was refused because of it;
+`describe_schema` reported every field as `"unique": false`; a default looked impossible on an
+optional field; `edit_schema` could not set `string.options` or a unique constraint over two
+columns. The engine (`schema_edit`) could already do most of this; the MCP layer did not pass it
+on, or described it wrongly.
+
+- [x] **SC1.1** `edit_schema`: `alter_field unique`, `add_constraint` / `drop_constraint`,
+  `attributes`, settings an op does not use refused by name; `describe_schema` reports `unique`
+  and a `constraints` list; the `default` descriptions say optional fields may have one;
+  module table declarations may give an optional field a `default`.
+- [ ] **SC1.2** (Proposed, not decided) Audit columns: `created_at` / `created_by` /
+  `updated_at` / `updated_by` kept by the row layer, or an "on update" expression beside the
+  default. A default already covers the `created_*` pair (`user && user.id`); `updated_*`
+  needs a value on every update, which nothing supplies today.
+
 ---
 
 ## Open questions

@@ -49,6 +49,134 @@ terminal panel's "New Terminal" open more sessions.
   `sc-server/tests/mcp_client.rs`, `sc-server/tests/tls_serving.rs`, `ui/ide/src/terminal.test.ts`,
   `ui/admin/src/mcpServers.test.ts`, `ui/admin/src/appNav.test.ts`.
 
+## Test fix: the cascade-bound tests run on an 8 MiB worker
+
+`code_host_writes::a_code_body_writing_its_own_table_is_stopped_by_the_cascade_bound` aborted the
+`sc-api` test binary with a stack overflow after `MAX_DEPTH` went from 5 to 10, and
+`table_triggers::a_self_feeding_trigger_is_stopped_by_the_depth_limit` did the same to the
+`sc-server` test binary (`it`). In both, each firing is a write nested inside the one before it,
+and ten levels overflow the 2 MiB test thread in a debug build. Each test now runs on a
+one-worker runtime with an 8 MiB stack, the stack the server gives its workers and the same setup
+as the trigger-agent-trigger loop test in `run_agent.rs`. In `code_host_writes`, the extra
+dispatch at the end now uses `MAX_DEPTH` instead of the old literal depth 5. Test only; nothing
+changes in production.
+
+## REST filters on boolean columns
+
+User report: `GET /api/<table>?pinned=eq.false` answered 400 "value "false" is not a valid
+bool", as did `eq.true`, `eq.f` and `eq.0`, so a generated client's
+`api.<table>.list({ filter: { flag: "eq.false" } })` failed and booleans had to be filtered in
+the browser. A query-string operand is text that is coerced against its column (`gt.100` binds an
+int), but a bool column took only a JSON boolean, so no boolean comparison could be written in a
+URL. A live subscription's `where` (`{ done: "eq.false" }` lowers to `{ done: { eq: "false" } }`)
+failed the same way.
+
+- **A bool column takes the strings `"true"` and `"false"`** (`sc_types::json::json_to_value`), as
+  int, float and date columns take their text. That fixes `eq`/`ne`/`in` on booleans in the REST
+  query string, live-subscription filters, GraphQL `where` and code bodies' `.where()`. Exactly
+  those two spellings: `t`, `0`, `yes` and `TRUE` are still refused. It only loosens: a JSON body
+  may now send `"false"` for a bool field where it was refused before, like `"7"` for an int
+  field.
+- Tests: `a_bool_column_takes_true_and_false_as_text_and_nothing_looser` (sc-types),
+  `a_bool_column_compares_with_true_and_false` (sc-api query string) and
+  `rest_query::a_boolean_column_is_filtered_with_true_and_false` against Postgres. The
+  `rest_query` fixture's catalog now registers its teardown.
+- `docs/tutorial-rest-queries.md` lists the boolean filter.
+
+## Schema tools: unique on and off, constraints, allowed values, defaults on optional fields (SC1.1)
+
+User report (P2 – Schema): `alter_field unique: false` reported success and changed nothing, so
+the `<table>_<field>_key` constraint stayed, inserts kept failing and `drop_field` was refused
+because of it. `describe_schema` listed every field as `"unique": false`, so a schema copied from
+it lost its unique rules. A default looked impossible on an optional field, so `created_by` was
+set by hand on every insert. `edit_schema` could not set `string.options` or a unique constraint
+over two columns. Most of this the schema editor could already do; the MCP layer did not pass it
+on, or described it wrongly.
+
+- **`alter_field unique: true|false`** (`FieldSettings::unique`). `true` adds a one-field unique
+  constraint, refused while rows repeat a value (and says how many). `false` drops every
+  one-field unique constraint on the field whatever it is called, including Postgres's own
+  `<table>_<field>_key`, and needs `allow_drop`, as dropping a constraint does. A jointly-unique
+  key the field is part of is left alone. The admin API's `updateField` does not read `unique`:
+  the field editor sends the field as it loaded it.
+- **`add_constraint` / `drop_constraint` in `edit_schema`**, with `constraint: {type, fields |
+  formula, name, error_message}`: unique over several fields (`document_id + version_no`), an
+  index, a row formula or a full-text index. The result lists `constraints_added` and
+  `constraints_dropped`.
+- **`attributes` in `edit_schema`** on `add_field`, `alter_field` and `create_table` fields: a
+  `string`'s `options`, `max_length` and `regex`, an `integer`'s `min` and `max`. They are checked
+  against the type's declared attributes: `options` on a `text` field is refused and names
+  `string`. New `options` on `alter_field` are refused while a row holds another value. That check
+  runs only when the options change, so editing the label of a field whose old rows predate its
+  options still works.
+- **`describe_schema` reports `unique` from the constraints** (`Table::is_unique`): introspection
+  reads a column's `UNIQUE` as a table constraint, so the field's own flag is `false` for every
+  introspected field. Each table now lists its `constraints` in the shape `add_constraint` takes,
+  and a field shows its `attributes`. The code host's `is_unique` (plugin field objects) had the
+  same bug and uses the same answer.
+- **Defaults on optional fields are documented where agents read them.** They already worked
+  (an expression that gives nothing leaves the field null). The `default` parameter said "for a
+  required field"; it now says optional fields may have one, with `user && user.id` for a
+  `created_by` that a trigger or scheduled job also writes. The tool description says it too, and
+  a unit test pins the wording.
+- **A setting an operation does not use is refused by name**, not ignored (`drop_field` with
+  `unique`, `alter_table` with `fields`). Every setting is read by *some* operation, so the tool's
+  JSON schema let it through. A null counts as not sent.
+- **Module table declarations may give an optional field a `default`.** The rule that a `default`
+  needs `required` is gone. A field an upgrade adds to a table that has rows is still nullable,
+  but now keeps its `default` for the rows inserted from then on; the rows already there stay
+  null. Declarations that were accepted before mean what they meant.
+- No migration: no stored data changes, and `describe_schema` and `edit_schema` results only gain
+  keys. **Behaviour change on upgrade:** an `edit_schema` call that sent a setting its operation
+  ignored is now refused.
+- Docs: §13.6 of the design (the `admin_copilot` notes) and the module-tables section of the
+  design.
+- Tests: `sc-agent-builtins/tests/admin_copilot_schema_rules.rs` (unique on, off, refused while
+  rows repeat, then `drop_field`; unique over two fields added, enforced and dropped by name;
+  options set, listed, enforced on a system write, refused when narrowed below the rows, refused
+  on `text`; a default on an optional field is null for a write with no user; an unused setting
+  refuses the whole batch). Unit tests in `sc_api::mcp::schema` (parsing, unused settings, the
+  `default` wording, `unique` described from a constraint) and in `sc_module::tables`.
+- Not done (TODO SC1.2, proposed): `created_at` / `updated_at` / `updated_by` columns kept by the
+  row layer. `updated_*` needs a value on every update, which nothing supplies today.
+
+## Trigger cascades: limit 10, agent tool calls not counted, refusals reach the caller (T1.1)
+
+User report: a background agent run's library tool ran the app's `case_action` trigger (the
+one the UI uses too). Its outbox insert trigger then fired `mail_deliver` six levels deep, past
+the limit of 5. The refusal was only logged and raised as an `error` event, so the tool reported
+"ok", the timeline said "mail sent", and no mail went out. The same tool worked from a chat,
+which starts two levels shallower.
+
+- `sc_action::MAX_DEPTH` is 10 (was 5). It stays a constant, not a setting.
+- An agent's **tool call** is no longer a level. Library tools, code tools, composer buttons
+  and `preload_code` run through the new `TriggerDispatcher::run_tool_code`, which passes the
+  caller's chain down unchanged. The trigger that started the run counts it, and its step
+  limit bounds the calls. A trigger the tool runs or fires still counts.
+- **A depth refusal reaches the nearest caller that is waiting.** New `sc_catalog::cascade`:
+  `fire_trigger_with` records each refusal in a task-local, and `run_trigger_in`, the code-body
+  runs and the agent driver's tool calls and buttons run inside `surfacing_refusals`. That
+  turns an `Ok` into the refusal, which names the whole chain. So `trigger(…).run()` throws, an
+  agent's tool call fails and the model sees why, and the run's transcript (`getRun`) shows it.
+  Other failures of a trigger fired by a write are still reported and do not fail the write.
+- **The server's tokio workers get an 8 MiB stack** (`sc-cli`'s `WORKER_STACK_BYTES`), up from
+  2 MiB. A trigger that starts an agent whose tool runs that same trigger now nests ten agent
+  runs before it is refused, and in a debug build that overflowed 2 MiB, which aborts the
+  process. Only touched pages are committed.
+- Documented in `describe_triggers` and `save_trigger` (what counts as a level, what a refusal
+  does), in the JavaScript code help topic, and in §10.2 of the design.
+- **Behaviour change on upgrade:** chains between 6 and 10 deep that used to be refused now
+  run. A synchronous call that used to return `Ok` while a trigger under it was refused now
+  returns the refusal. That only happens where the work was already being cut short.
+- Tests: `sc_catalog::cascade` unit tests; `library_tools::a_library_tool_is_not_a_cascade_level_and_a_refusal_below_it_fails_the_call`
+  (the reported chain's shape: fills the bound exactly through a tool, and one level more fails
+  the tool call naming `case_action → mail_outbox_send → mail_deliver`); the `MCP` descriptions
+  test; the event and workflow depth tests now follow `MAX_DEPTH`. The trigger-agent-trigger
+  loop test runs on an 8 MiB worker, as the server does.
+- Not done (TODO T1.2, proposed): `deferred` insert triggers for queue-like tables. Declined:
+  a same-trigger-same-row loop detector, which would refuse the insert-or-update write-back
+  pattern.
+
 ## CI: clippy and rustfmt clean under the current stable toolchain
 
 A newer toolchain made both CI checks fail on code that had not changed (on `main` as well):

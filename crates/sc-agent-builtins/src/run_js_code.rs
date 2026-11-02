@@ -188,14 +188,13 @@ impl AgentTrait for RunJsCode {
         scope.insert(ALL_ARGS.to_owned(), Json::Object(given));
         let caller = ctx.principal();
         dispatcher
-            .run_code(
+            .run_tool_code(
                 ctx.catalog,
                 "run_js_code",
                 &format!("{}/{name}", ctx.agent),
                 &code,
                 scope,
                 Authority::Caller(&caller),
-                None,
                 None,
             )
             .await
@@ -227,14 +226,13 @@ impl AgentTrait for RunJsCode {
         scope.insert("row".to_owned(), row.cloned().unwrap_or(Json::Null));
         let caller = ctx.principal();
         let result = dispatcher
-            .run_code(
+            .run_tool_code(
                 ctx.catalog,
                 "run_js_code",
                 &format!("{}/{}", ctx.agent, button_control(&label)),
                 &code,
                 scope,
                 Authority::Caller(&caller),
-                None,
                 None,
             )
             .await?;

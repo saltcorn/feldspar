@@ -191,7 +191,11 @@ fn field_json(by_name: &HashMap<&str, &Table>, table: &Table, field: &DataField)
     out.insert("type".to_owned(), type_json);
     out.insert("typename".to_owned(), json!(typename));
     out.insert("required".to_owned(), json!(field.required));
-    out.insert("is_unique".to_owned(), json!(field.unique));
+    // A column's `UNIQUE` is read back as a constraint, not as the flag.
+    out.insert(
+        "is_unique".to_owned(),
+        json!(table.is_unique(&field.base.name)),
+    );
     out.insert("primary_key".to_owned(), json!(field.primary_key));
     // v1's calculated fields come in two kinds and this server has one of them:
     // computed on read, never on disk. So `stored` is false rather than absent,

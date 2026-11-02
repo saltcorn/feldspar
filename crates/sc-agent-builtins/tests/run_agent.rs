@@ -774,8 +774,27 @@ async fn an_agent_run_as_the_events_user_keeps_the_agents_floor() -> Result<()> 
 /// An agent whose tool runs the trigger that runs the agent is one cascade:
 /// it stops at the dispatcher's depth limit, and the innermost model reads the
 /// limit as its tool's result instead of the loop running forever.
-#[tokio::test]
-async fn a_trigger_agent_trigger_loop_stops_at_the_depth_limit() -> Result<()> {
+///
+/// The deepest nesting there is: ten agent runs, each on the stack of the one
+/// that started it. So it runs on a worker with the stack the server gives its
+/// workers (`sc-cli`'s `WORKER_STACK_BYTES`, 8 MiB), not the test thread's
+/// 2 MiB, which a debug build overflows at this depth.
+#[test]
+fn a_trigger_agent_trigger_loop_stops_at_the_depth_limit() -> Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_stack_size(8 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("a runtime")
+        .block_on(async {
+            tokio::spawn(trigger_agent_trigger_loop())
+                .await
+                .expect("joined")
+        })
+}
+
+async fn trigger_agent_trigger_loop() -> Result<()> {
     // The trigger the agent's tool runs is the one that runs the agent, so the
     // agent is saved with a tool naming `file_note` and then pointed at
     // `ask_noter` once that exists.

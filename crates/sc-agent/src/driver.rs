@@ -579,9 +579,13 @@ impl<'a> Runner<'a> {
                 images: Vec::new(),
                 extras: CallExtras::default(),
             };
-            let answered = trait_
-                .on_press(&enabled.config, &control.name, self.row.as_ref(), &mut ctx)
-                .await;
+            let answered = sc_catalog::cascade::surfacing_refusals(trait_.on_press(
+                &enabled.config,
+                &control.name,
+                self.row.as_ref(),
+                &mut ctx,
+            ))
+            .await;
             let code = std::mem::take(&mut ctx.extras.code);
             let text = match answered {
                 Ok(None) => continue,
@@ -1384,9 +1388,17 @@ impl<'a> Runner<'a> {
                             images: Vec::new(),
                             extras: CallExtras::default(),
                         };
-                        let result = trait_
-                            .call(&enabled.config, &call.name, &call.arguments, &mut ctx)
-                            .await;
+                        // The model is waiting for this answer: a trigger the
+                        // cascade bound refused under the call (one fired by a
+                        // row the tool wrote) fails it, rather than the tool
+                        // saying "ok" about work that was cut short (TODO T1).
+                        let result = sc_catalog::cascade::surfacing_refusals(trait_.call(
+                            &enabled.config,
+                            &call.name,
+                            &call.arguments,
+                            &mut ctx,
+                        ))
+                        .await;
                         let signals = std::mem::take(&mut ctx.signals);
                         let images = std::mem::take(&mut ctx.images);
                         let extras = std::mem::take(&mut ctx.extras);

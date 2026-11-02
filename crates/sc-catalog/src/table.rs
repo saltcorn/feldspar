@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use sc_db::PhysicalTable;
 use sc_types::{BaseField, BasicType, RichTypeRef, TypeRef};
 
-use crate::constraint::TableConstraint;
+use crate::constraint::{ConstraintKind, TableConstraint};
 use crate::field::{DataField, DataFieldKind, DbId, FieldId};
 use crate::field_meta::FieldMeta;
 use crate::provider::ProvidedWrites;
@@ -598,6 +598,26 @@ impl Table {
     /// The field with the given name, if present.
     pub fn field(&self, name: &str) -> Option<&DataField> {
         self.fields.iter().find(|f| f.base.name == name)
+    }
+
+    /// Whether the field `name` is unique **on its own**: a unique constraint over
+    /// exactly that one field, or the field's own [`unique`](DataField::unique)
+    /// flag.
+    ///
+    /// Introspection reads a column's `UNIQUE` back as one of the table's
+    /// [`constraints`](Table::constraints), never as the flag, so the flag alone
+    /// says `false` for every field a database holds unique. This is what a
+    /// description of the schema reports instead. A field that is only part of
+    /// a jointly-unique key is not unique by itself.
+    pub fn is_unique(&self, name: &str) -> bool {
+        self.field(name).is_some_and(|f| f.unique) || self.unique_constraint_on(name).is_some()
+    }
+
+    /// The unique constraint over exactly the one field `name`, if there is one.
+    pub fn unique_constraint_on(&self, name: &str) -> Option<&TableConstraint> {
+        self.constraints.iter().find(|c| {
+            matches!(&c.kind, ConstraintKind::Unique { fields } if fields.len() == 1 && fields[0] == name)
+        })
     }
 
     /// This table's non-stored calculated fields (Phase 8), in dependency order
