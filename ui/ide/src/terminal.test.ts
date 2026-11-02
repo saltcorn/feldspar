@@ -7,16 +7,19 @@ import { describe, expect, it } from "vitest";
 
 import {
   FlowControl,
+  GIT_STATE,
   HIGH_WATERMARK_CHARS,
   LOW_WATERMARK_CHARS,
   REPORTED_PID,
   TERMINAL_STORAGE,
   TerminalConnection,
+  diskChange,
   claudeRequest,
   closeOutcome,
   terminalName,
   terminalUrl,
   withoutClaudeRequest,
+  type DiskChange,
   type TerminalSocket,
 } from "./terminal";
 
@@ -109,6 +112,28 @@ describe("what a closed socket means", () => {
   });
 });
 
+describe("a changed frame", () => {
+  it("names store paths, changed and removed", () => {
+    expect(diskChange('{"changed":["a.ts","src/b.ts"],"removed":["c.ts"]}')).toEqual({
+      changed: ["a.ts", "src/b.ts"],
+      removed: ["c.ts"],
+    });
+  });
+
+  it("is not any other text", () => {
+    expect(diskChange("not json")).toBeNull();
+    expect(diskChange('{"resize":{"cols":1,"rows":1}}')).toBeNull();
+    expect(diskChange("null")).toBeNull();
+  });
+
+  it("keeps only paths, and needs no removed list", () => {
+    expect(diskChange('{"changed":["a.ts",3,"",null]}')).toEqual({
+      changed: ["a.ts"],
+      removed: [],
+    });
+  });
+});
+
 describe("flow control", () => {
   it("pauses once, past the high mark, and resumes once, at the low mark", () => {
     const flow = new FlowControl();
@@ -180,11 +205,13 @@ function connect(size = { cols: 120, rows: 40 }) {
   const socket = new FakeSocket();
   const output: string[] = [];
   const exits: Array<number | undefined> = [];
+  const changes: DiskChange[] = [];
   const connection = new TerminalConnection(socket, size, {
     data: (text) => output.push(text),
     exit: (code) => exits.push(code),
+    changed: (paths) => changes.push(paths),
   });
-  return { socket, connection, output, exits };
+  return { socket, connection, output, exits, changes };
 }
 
 describe("a terminal session", () => {
@@ -230,9 +257,23 @@ describe("a terminal session", () => {
   });
 
   it("ignores a text frame rather than drawing it", () => {
-    const { socket, output } = connect();
+    const { socket, output, changes } = connect();
     socket.serverOpens();
     socket.serverSends("not output");
+    expect(output).toEqual([]);
+    expect(changes).toEqual([]);
+  });
+
+  it("passes on what changed on disk, without drawing it", () => {
+    const { socket, output, changes } = connect();
+    socket.serverOpens();
+    socket.serverSends(
+      JSON.stringify({ changed: ["web/page.tsx", GIT_STATE], removed: ["web/old.tsx"] })
+    );
+    socket.serverSends(JSON.stringify({ changed: [], removed: [] }));
+    expect(changes).toEqual([
+      { changed: ["web/page.tsx", GIT_STATE], removed: ["web/old.tsx"] },
+    ]);
     expect(output).toEqual([]);
   });
 

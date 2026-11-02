@@ -75,12 +75,12 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## CT5 — Keeping the workbench in step
 
-- [ ] CT5.1 While a terminal is attached, the bridge watches its working directory (`notify`,
+- [x] CT5.1 While a terminal is attached, the bridge watches its working directory (`notify`,
       debounced, ignoring `node_modules`, `.git` internals and build output) and sends
       `{"changed": [paths]}` frames.
-- [ ] CT5.2 The IDE passes them to `announceChanged` and refreshes source control when the git
+- [x] CT5.2 The IDE passes them to `announceChanged` and refreshes source control when the git
       state moved.
-- [ ] CT5.3 Tests: a file written in the directory produces one debounced frame naming it;
+- [x] CT5.3 Tests: a file written in the directory produces one debounced frame naming it;
       ignored directories produce none; an open editor shows the new contents.
 
 ### Try it

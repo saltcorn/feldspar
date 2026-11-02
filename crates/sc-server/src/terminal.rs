@@ -19,6 +19,12 @@
 //!   program writes, which is how the browser keeps up (flow control, as ttyd has
 //!   it). A text frame that is not a control message is ignored rather than
 //!   typed, so a client bug cannot become keystrokes.
+//! - **Text frames** to the browser say which files changed on disk while the
+//!   terminal was attached: `{"changed": ["src/App.tsx", ".git"], "removed":
+//!   ["src/Old.tsx"]}`, store paths, `.git` standing for the store's git state
+//!   ([`crate::terminal_watch`]). The workbench has no watcher of its own, and
+//!   an editor left open on a file the program rewrote would overwrite it on
+//!   the next save.
 //! - When the program exits the socket is closed normally, with its exit status
 //!   in the reason.
 //!
@@ -285,10 +291,14 @@ fn control_message(text: &str) -> Option<Control> {
     frame.pause.map(Control::Pause)
 }
 
-/// Where a terminal starts: the directory, and the application it is for.
+/// Where a terminal starts: the directory, the store's root it is in, and the
+/// application it is for.
 #[derive(Debug)]
 pub(crate) struct TerminalPlace {
     pub(crate) dir: PathBuf,
+    /// Only for the watch, which there is none of off Unix.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub(crate) root: PathBuf,
     pub(crate) app: Option<Application>,
 }
 
@@ -321,7 +331,8 @@ pub(crate) async fn terminal_dir(
         }
     };
     let dir = local_dir(catalog, store, &dir)?;
-    Ok(TerminalPlace { dir, app })
+    let root = local_dir(catalog, store, "")?;
+    Ok(TerminalPlace { dir, root, app })
 }
 
 /// Why a Claude session cannot start for each of `apps`, or `None` where it
@@ -497,10 +508,13 @@ pub(crate) async fn terminal_upgrade(
                         },
                         config_dir: sc_files::data_dir().ok().map(|d| d.join("claude")),
                     };
+                    // Before the program starts, so nothing it writes first is missed.
+                    let changes = watch(&store, &place);
                     match Launch::prepare(exe, place.dir, wiring, token) {
                         Ok(launch) => {
-                            return ws
-                                .on_upgrade(move |socket| bridge(socket, launch, store, permit));
+                            return ws.on_upgrade(move |socket| {
+                                bridge(socket, launch, store, changes, permit)
+                            });
                         }
                         Err(e) => format!("could not prepare the session: {e}"),
                     }
@@ -748,14 +762,40 @@ impl Drop for TempFile {
     }
 }
 
+/// The watch on a terminal's directory: what changes in it is reported to the
+/// browser ([`crate::terminal_watch`]). None off Unix, where there is no
+/// terminal to report for.
+#[cfg(unix)]
+type Watch = crate::terminal_watch::Changes;
+#[cfg(not(unix))]
+type Watch = std::convert::Infallible;
+
+/// The watch on `place`'s directory, or `None` when it cannot be had. A
+/// session without one still works; its editors just are not told.
+#[cfg(unix)]
+fn watch(store: &str, place: &TerminalPlace) -> Option<Watch> {
+    crate::terminal_watch::Changes::watch(&place.root, &place.dir)
+        .inspect_err(|e| {
+            eprintln!("feldspar: terminal for {store}: not watching its directory: {e}")
+        })
+        .ok()
+}
+
+#[cfg(not(unix))]
+fn watch(_store: &str, _place: &TerminalPlace) -> Option<Watch> {
+    None
+}
+
 /// Run the launch on a pseudo-terminal, bridged to `socket` until either end
-/// stops. `permit` is held for as long as the process lives, and the launch's
-/// session token and MCP config for as long as the bridge runs.
+/// stops, and send what `changes` reports. `permit` is held for as long as the
+/// process lives, and the launch's session token and MCP config for as long as
+/// the bridge runs.
 #[cfg(unix)]
 async fn bridge(
     mut socket: WebSocket,
     launch: Launch,
     store: String,
+    mut changes: Option<Watch>,
     permit: OwnedSemaphorePermit,
 ) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -826,22 +866,21 @@ async fn bridge(
             // A pause also cuts short a read already waiting, so nothing more
             // is sent once it has arrived. `biased`: when both are ready, the
             // pause wins; dropping the read loses nothing, as it is cancel-safe.
-            let read = tokio::select! {
+            let message = tokio::select! {
                 biased;
                 _ = paused.wait_for(|on| *on) => continue,
-                read = from_pty.read(&mut buf) => read,
-            };
-            match read {
-                Ok(0) | Err(_) => return true,
-                Ok(n) => {
-                    if sender
-                        .send(Message::Binary(bytes::Bytes::copy_from_slice(&buf[..n])))
-                        .await
-                        .is_err()
-                    {
-                        return false;
-                    }
+                read = from_pty.read(&mut buf) => match read {
+                    Ok(0) | Err(_) => return true,
+                    Ok(n) => Message::Binary(bytes::Bytes::copy_from_slice(&buf[..n])),
+                },
+                // Cancel-safe, like the read: what was gathered stays gathered.
+                report = next_changes(&mut changes) => {
+                    let frame = json!({ "changed": report.changed, "removed": report.removed });
+                    Message::Text(frame.to_string().into())
                 }
+            };
+            if sender.send(message).await.is_err() {
+                return false;
             }
         }
     };
@@ -876,9 +915,28 @@ async fn bridge(
     drop(launch);
 }
 
+/// The next changes `changes` reports; never, when there is no watch or it
+/// has ended.
+#[cfg(unix)]
+async fn next_changes(changes: &mut Option<Watch>) -> crate::terminal_watch::Report {
+    if let Some(watch) = changes.as_mut()
+        && let Some(report) = watch.next().await
+    {
+        return report;
+    }
+    *changes = None;
+    std::future::pending().await
+}
+
 /// No pseudo-terminal off Unix.
 #[cfg(not(unix))]
-async fn bridge(socket: WebSocket, _launch: Launch, _store: String, _permit: OwnedSemaphorePermit) {
+async fn bridge(
+    socket: WebSocket,
+    _launch: Launch,
+    _store: String,
+    _changes: Option<Watch>,
+    _permit: OwnedSemaphorePermit,
+) {
     refuse(socket, "the IDE terminal needs a Unix server".to_owned()).await;
 }
 

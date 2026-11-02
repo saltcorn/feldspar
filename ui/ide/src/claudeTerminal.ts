@@ -22,6 +22,7 @@
  * session at the store's root.
  */
 
+import * as monaco from "monaco-editor";
 import * as vscode from "vscode";
 import {
   getService,
@@ -34,13 +35,17 @@ import type * as TerminalOverride from "@codingame/monaco-vscode-terminal-servic
 
 import { api, errorMessage } from "./api";
 import { applicationsBuiltFrom } from "./applications";
+import type { StoreRefresh } from "./chat";
+import { toUriPath } from "./storeFiles";
 import {
+  GIT_STATE,
   REPORTED_PID,
   TERMINAL_STORAGE,
   TerminalConnection,
   terminalName,
   terminalUrl,
   type ClaudeRequest,
+  type DiskChange,
 } from "./terminal";
 
 /** The command id, as the manifest contributes it. */
@@ -54,6 +59,46 @@ export interface TerminalServices {
   readonly override: typeof TerminalOverride;
   /** Storage values to force, whatever an earlier visit stored. */
   readonly storage: Record<string, unknown>;
+  /** Where every terminal's changes on disk go. */
+  readonly changes: DiskChanges;
+}
+
+/**
+ * What the workbench is told when a terminal's program changes files.
+ *
+ * The server watches the session's directory and names what changed
+ * (`terminal_watch.rs`); this does with those names what the chat does with an
+ * agent's tool calls (`chat.ts`'s `announce`): cached listings go, open editors
+ * re-read, and source control is rescanned — after any change, since an edited
+ * file is a change in `git status` too, and after a commit or checkout, which
+ * arrives as {@link GIT_STATE}. Unlike a tool call, the server also says which
+ * paths are gone, so the explorer shows new files and drops deleted ones.
+ *
+ * Attached once the workbench is up. A change before then has no editor to be
+ * stale in.
+ */
+export class DiskChanges {
+  private refresh: StoreRefresh | null = null;
+
+  constructor(private readonly store: string) {}
+
+  attach(refresh: StoreRefresh): void {
+    this.refresh = refresh;
+  }
+
+  announce(change: DiskChange): void {
+    const refresh = this.refresh;
+    if (refresh == null) return;
+    const uris = (paths: readonly string[]) =>
+      paths
+        .filter((path) => path !== GIT_STATE)
+        .map((path) => monaco.Uri.file(toUriPath(this.store, path)));
+    const changed = uris(change.changed);
+    refresh.files.forgetEverything();
+    refresh.provider.announceChanged(changed);
+    refresh.provider.announceAddedAndRemoved(changed, uris(change.removed));
+    refresh.refreshSourceControl?.();
+  }
 }
 
 /**
@@ -92,10 +137,11 @@ export async function loadTerminalServices(
   const override = await import(
     "@codingame/monaco-vscode-terminal-service-override"
   );
-  const backend = storeBackend(override, store);
+  const changes = new DiskChanges(store);
+  const backend = storeBackend(override, store, changes);
   const services = override.default(backend);
   backend.setReady();
-  return { services, override, storage: TERMINAL_STORAGE };
+  return { services, override, storage: TERMINAL_STORAGE, changes };
 }
 
 /** Terminal ids, unique for the page. */
@@ -107,7 +153,10 @@ let nextTerminalId = 1;
  * A class factory rather than a class, because its base class is in the
  * dynamically imported override.
  */
-function socketProcessClass(override: typeof TerminalOverride) {
+function socketProcessClass(
+  override: typeof TerminalOverride,
+  changes: DiskChanges
+) {
   return class SocketTerminalProcess extends override.SimpleTerminalProcess {
     private readonly exit = new Emitter<number | undefined>();
     private readonly connection: TerminalConnection;
@@ -124,6 +173,7 @@ function socketProcessClass(override: typeof TerminalOverride) {
         {
           data: (text) => data.fire(text),
           exit: (code) => this.exit.fire(code),
+          changed: (change) => changes.announce(change),
         }
       );
       // xterm's mouse reports in the legacy encoding are bytes, not text; the
@@ -169,8 +219,12 @@ function socketUrl(store: string, app: string | null): string {
  * The backend the terminal panel's "New Terminal" reaches: a session at the
  * store's root.
  */
-function storeBackend(override: typeof TerminalOverride, store: string) {
-  const SocketTerminalProcess = socketProcessClass(override);
+function storeBackend(
+  override: typeof TerminalOverride,
+  store: string,
+  changes: DiskChanges
+) {
+  const SocketTerminalProcess = socketProcessClass(override, changes);
   return new (class extends override.SimpleTerminalBackend {
     getDefaultSystemShell = async () => "claude";
     createProcess = async (
@@ -202,7 +256,10 @@ export async function openClaudeTerminal(
   store: string,
   app: string | null
 ): Promise<void> {
-  const SocketTerminalProcess = socketProcessClass(terminal.override);
+  const SocketTerminalProcess = socketProcessClass(
+    terminal.override,
+    terminal.changes
+  );
   const service = await getService(terminal.override.ITerminalService);
   const instance = await service.createTerminal({
     config: {

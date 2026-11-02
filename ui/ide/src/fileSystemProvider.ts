@@ -165,6 +165,23 @@ export class StoreFileSystemProvider implements IFileSystemProviderWithFileReadW
     );
   }
 
+  /**
+   * Say that these paths may have appeared, and that these are gone, outside
+   * the IDE.
+   *
+   * What the explorer redraws for: it ignores an update, redraws a directory
+   * when a path in it is added that it does not show yet, and drops a path
+   * that is deleted. "May have appeared" because an added path the explorer
+   * already shows costs nothing, so the caller need not know which are new.
+   */
+  announceAddedAndRemoved(added: readonly URI[], removed: readonly URI[]): void {
+    if (added.length === 0 && removed.length === 0) return;
+    this._onDidChangeFile.fire([
+      ...added.map((resource) => ({ type: FileChangeType.ADDED, resource })),
+      ...removed.map((resource) => ({ type: FileChangeType.DELETED, resource })),
+    ]);
+  }
+
   /** The store-relative path a URI names. */
   private path(resource: URI): string {
     return toStorePath(this.files.store, resource.path);

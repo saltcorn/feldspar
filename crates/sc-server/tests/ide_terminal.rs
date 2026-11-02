@@ -1042,3 +1042,45 @@ async fn the_server_wide_reasons_reach_every_application() -> Result<()> {
     );
     Ok(())
 }
+
+/// The `changed` frames that arrive within `wait`, each as its list of paths.
+async fn changed_frames(socket: &mut Socket, wait: Duration) -> Vec<Vec<String>> {
+    let mut frames = Vec::new();
+    let until = tokio::time::Instant::now() + wait;
+    while let Ok(Some(Ok(message))) = tokio::time::timeout_at(until, socket.next()).await {
+        if let Message::Text(text) = message {
+            let frame: Value = serde_json::from_str(&text).unwrap();
+            frames.push(
+                frame["changed"]
+                    .as_array()
+                    .expect("a changed frame")
+                    .iter()
+                    .map(|path| path.as_str().unwrap().to_owned())
+                    .collect(),
+            );
+        }
+    }
+    frames
+}
+
+/// What the program writes in its directory reaches the browser once, as the
+/// store path of the file; what it writes under `node_modules` does not.
+#[tokio::test]
+async fn a_file_the_program_writes_is_reported_once_by_its_store_path() -> Result<()> {
+    let server = serve(&sh(), true).await?;
+    std::fs::create_dir_all(server.root.join("web/node_modules"))?;
+    save_app(&server, "site", "code", "web").await?;
+    let mut socket = server.open("?app=site").await;
+
+    type_line(
+        &mut socket,
+        "echo x > node_modules/dep.js; echo a > page.txt; echo b >> page.txt",
+    )
+    .await;
+    // Read directly rather than with `read_until`, which skips text frames.
+    assert_eq!(
+        changed_frames(&mut socket, Duration::from_secs(4)).await,
+        vec![vec!["web/page.txt".to_owned()]]
+    );
+    Ok(())
+}

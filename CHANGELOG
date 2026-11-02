@@ -34,13 +34,18 @@ terminal panel's "New Terminal" open more sessions.
   servers are left out, and the terminal says which.
 - The CLI's login belongs to the installation (`<data dir>/claude`), not to the operator's Unix
   account; an Anthropic LLM provider's key, when one is configured, is used without asking.
+- **The IDE stays in step**: what the program changes on disk shows up in the IDE within a
+  fraction of a second. An open file re-reads, new files appear in the explorer and deleted ones
+  leave it, and source control rescans, including after a commit or checkout in the terminal.
+  Saving an open tab no longer overwrites the program's edit. `node_modules`, `.git` internals
+  and build output are not watched.
 - Output that comes faster than the browser can draw it slows the program down rather than
   filling the page's memory.
 - The program gets an allow-listed environment, not the server's (which holds the database
   credentials). Closing the tab or the page ends it and everything it started, including
   background jobs and children in a session of their own.
-- Tests: `sc-server/tests/ide_terminal.rs`, `sc-server/tests/mcp_client.rs`,
-  `sc-server/tests/tls_serving.rs`, `ui/ide/src/terminal.test.ts`,
+- Tests: `sc-server/tests/ide_terminal.rs`, `sc-server/src/terminal_watch.rs`,
+  `sc-server/tests/mcp_client.rs`, `sc-server/tests/tls_serving.rs`, `ui/ide/src/terminal.test.ts`,
   `ui/admin/src/mcpServers.test.ts`, `ui/admin/src/appNav.test.ts`.
 
 ## CLI: set up a hosted server without the admin UI (modules, routes-only tokens, settings, mail, app tables)

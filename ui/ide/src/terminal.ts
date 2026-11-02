@@ -138,6 +138,50 @@ export class FlowControl {
   }
 }
 
+/**
+ * The path a change to the store's git state arrives as, among the files
+ * (`terminal_watch.rs`'s `GIT`): not a file to re-read, but a reason to rescan
+ * source control.
+ */
+export const GIT_STATE = ".git";
+
+/** What changed on disk, as store paths. */
+export interface DiskChange {
+  /** Written or created, and still there; or {@link GIT_STATE}. */
+  readonly changed: string[];
+  /** Gone. */
+  readonly removed: string[];
+}
+
+/**
+ * What a `{"changed": [...], "removed": [...]}` frame says, or `null` when the
+ * text is not one.
+ *
+ * The server watches the session's directory, because nothing else tells the
+ * workbench what a program in a terminal wrote (design §12.1).
+ */
+export function diskChange(text: string): DiskChange | null {
+  let frame: unknown;
+  try {
+    frame = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const { changed, removed } = (frame ?? {}) as {
+    changed?: unknown;
+    removed?: unknown;
+  };
+  if (!Array.isArray(changed)) return null;
+  return { changed: storePaths(changed), removed: storePaths(removed) };
+}
+
+function storePaths(list: unknown): string[] {
+  if (!Array.isArray(list)) return [];
+  return list.filter(
+    (path): path is string => typeof path === "string" && path !== ""
+  );
+}
+
 /** What a closed socket means for the terminal showing it. */
 export interface CloseOutcome {
   /** A line to print before the terminal stops, or `null` for none. */
@@ -184,6 +228,8 @@ export interface TerminalEvents {
   data(text: string): void;
   /** The session is over; `code` as in {@link CloseOutcome}. */
   exit(code: number | undefined): void;
+  /** Files changed on disk ({@link diskChange}). */
+  changed(change: DiskChange): void;
 }
 
 /** A terminal size in character cells. */
@@ -196,7 +242,8 @@ export interface TerminalSize {
  * One terminal session over one socket.
  *
  * Binary frames are the terminal's bytes both ways; text frames carry the
- * control messages (`{"resize": …}`, `{"pause": …}`), which is the protocol
+ * control messages (`{"resize": …}`, `{"pause": …}`) and, from the server,
+ * what changed on disk (`{"changed": […]}`), which is the protocol
  * `terminal.rs` documents.
  */
 export class TerminalConnection {
@@ -231,7 +278,17 @@ export class TerminalConnection {
       started();
     };
     socket.onmessage = (event) => {
-      // The server sends no text frames; anything else is not output.
+      // Text frames say what changed on disk; they are never output.
+      if (typeof event.data === "string") {
+        const change = diskChange(event.data);
+        if (
+          change != null &&
+          change.changed.length + change.removed.length > 0
+        ) {
+          events.changed(change);
+        }
+        return;
+      }
       if (!(event.data instanceof ArrayBuffer)) return;
       this.output(
         this.decoder.decode(new Uint8Array(event.data), { stream: true })

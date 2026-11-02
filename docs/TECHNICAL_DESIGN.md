@@ -5658,12 +5658,36 @@ plugin, but turning on a ready-made shell is an operator's decision.
 
 **The workbench must be told about changed files.** The IDE's filesystem provider has no watcher
 (above). The chat relay knows from tool calls which files changed; a PTY carries only bytes. So
-while a terminal is attached, the bridge watches its working directory (`notify`, debounced,
-ignoring `node_modules`, `.git` internals and build output) and sends
-`{"changed": [paths]}` control frames. The IDE passes them to `announceChanged` (resolved
-through the session's directory, as the relay resolves through an agent's `root`), and refreshes
-source control when anything under `.git` moved. Without this, an open tab goes stale and saving
-it overwrites the CLI's edit.
+while a terminal is attached, the bridge watches its working directory with `notify` and sends
+`{"changed": [paths]}` text frames. Without this, an open tab goes stale and saving it overwrites
+the CLI's edit.
+
+- **One directory at a time, not recursively.** `node_modules`, `.git` and build output (`dist`,
+  `build`, `target`, `.expo`, `.cache`) are never watched at all, rather than watched and
+  filtered: a recursive inotify watch adds a watch per directory, and `node_modules` alone can
+  exhaust the user's limit, which the language server shares. A directory that appears is added
+  when it does, and the files already in it are reported with it. A session stops adding watches
+  at 10,000 directories.
+- **The top of the store's `.git`, without its sub-directories.** A commit, a checkout or
+  staging rewrites `index`, `HEAD` or `COMMIT_EDITMSG` there; the object store's churn is not
+  watched. Such a change is reported as the single path `.git`. The store's `.git`, not the
+  session's directory's: a session in an application's directory is still in the store's
+  working copy.
+- **Store paths**, not paths relative to the session's directory, so the IDE needs nothing but
+  the store to resolve them, wherever in it the session started.
+- **What is gone, separately**: `{"changed": [...], "removed": [...]}`. Decided when the report is
+  made (is the path still there?), not from the events, because an editor's save is often a
+  removal and a rename onto the same name.
+- **Debounced**: reported once the directory has been quiet for 300 ms, and at most every two
+  seconds while changes keep coming, so a long install is reported as it runs.
+
+The IDE does with them what the relay does with tool calls: cached listings go, `announceChanged`
+for every path but `.git`, and source control is rescanned after **any** change, not only when
+`.git` moved, because an edited file is a change in `git status` too. Unlike the relay it also
+tells the explorer: every changed path is announced as *added* as well, which the explorer
+redraws for only when it does not show that path yet, so the IDE need not know which files are
+new; every removed one as *deleted*. A failure to start the
+watch (the inotify limit) leaves the session running without it.
 
 ### 12.2 Code settings: the editor inside a settings form
 

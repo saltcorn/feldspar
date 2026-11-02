@@ -496,6 +496,9 @@ libc = "0.2"
 # the child's session and controlling terminal, and resizing, as a tokio type.
 # Pinned below 0.5.4, which needs a newer tokio than the one locked here.
 pty-process = { version = "=0.5.3", features = ["async"] }
+# What the IDE terminal's program changed on disk (`sc-server`'s `terminal_watch.rs`):
+# inotify on Linux. Already in the tree as `deno_runtime`'s dependency.
+notify = "8.2"
 # Certificate generation **for tests only** (a dev-dependency wherever it is
 # used): a TLS test needs a certificate, and the two alternatives — checking one
 # into the repository or asking a CA for one — are a key in git and a network

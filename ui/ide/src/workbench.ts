@@ -320,13 +320,17 @@ export async function bootWorkbench(
     provider,
     git,
   );
+  const refresh = {
+    files,
+    provider,
+    refreshSourceControl: saltcorn.refreshSourceControl,
+  };
   if (chat != null) {
-    await activateAgentChat(chat, agents, store, {
-      files,
-      provider,
-      refreshSourceControl: saltcorn.refreshSourceControl,
-    });
+    await activateAgentChat(chat, agents, store, refresh);
   }
+  // What a terminal's program writes is told to the workbench as an agent's
+  // edits are.
+  terminal?.changes.attach(refresh);
   await openRequestedClaude(store, terminal);
   if (open != null) {
     // A file that is not there is said by the editor itself; the workbench is
