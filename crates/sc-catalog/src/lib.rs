@@ -26,6 +26,7 @@
 mod admin_host;
 mod calc;
 mod caller;
+pub mod cascade;
 mod catalog;
 mod change_log;
 pub mod change_log_sqlite;

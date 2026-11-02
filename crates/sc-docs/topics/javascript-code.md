@@ -110,3 +110,10 @@ Also in scope: `btoa`, `atob`, `TextEncoder`, `TextDecoder`, `crypto` (`randomUU
 operations and 20 trigger runs per run; the trigger's timeout, and one second of computing
 without awaiting. There are no timers, no `process`, no disk access and no `require` (use
 `lib()`). Exceeding a limit is an error naming it.
+
+A cascade of triggers (one runs another, or writes a row whose insert or update trigger
+fires, and so on) may be at most 10 triggers deep; the next is not run, and the error names
+the whole chain. A `run_agent` trigger and a workflow step count as a level. An agent's
+tool call does not. If a trigger is refused anywhere under `trigger(…).run()`, that call
+throws, even when the refused trigger was fired by a row write. Other failures of a trigger
+fired by a write do not fail the write; they are raised as an `error` event.

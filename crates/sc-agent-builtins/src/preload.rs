@@ -484,14 +484,13 @@ impl AgentTrait for PreloadCode {
         );
         let caller = cx.caller.principal();
         let result = dispatcher
-            .run_code(
+            .run_tool_code(
                 cx.catalog,
                 "run_js_code",
                 &format!("{}/preload_code", cx.agent),
                 &code,
                 scope,
                 Authority::Caller(&caller),
-                None,
                 None,
             )
             .await

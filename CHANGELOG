@@ -2,6 +2,43 @@
 
 Changes in reverse chronological order.
 
+## Trigger cascades: limit 10, agent tool calls not counted, refusals reach the caller (T1.1)
+
+User report: a background agent run's library tool ran the app's `case_action` trigger (the
+one the UI uses too). Its outbox insert trigger then fired `mail_deliver` six levels deep, past
+the limit of 5. The refusal was only logged and raised as an `error` event, so the tool reported
+"ok", the timeline said "mail sent", and no mail went out. The same tool worked from a chat,
+which starts two levels shallower.
+
+- `sc_action::MAX_DEPTH` is 10 (was 5). It stays a constant, not a setting.
+- An agent's **tool call** is no longer a level. Library tools, code tools, composer buttons
+  and `preload_code` run through the new `TriggerDispatcher::run_tool_code`, which passes the
+  caller's chain down unchanged. The trigger that started the run counts it, and its step
+  limit bounds the calls. A trigger the tool runs or fires still counts.
+- **A depth refusal reaches the nearest caller that is waiting.** New `sc_catalog::cascade`:
+  `fire_trigger_with` records each refusal in a task-local, and `run_trigger_in`, the code-body
+  runs and the agent driver's tool calls and buttons run inside `surfacing_refusals`. That
+  turns an `Ok` into the refusal, which names the whole chain. So `trigger(…).run()` throws, an
+  agent's tool call fails and the model sees why, and the run's transcript (`getRun`) shows it.
+  Other failures of a trigger fired by a write are still reported and do not fail the write.
+- **The server's tokio workers get an 8 MiB stack** (`sc-cli`'s `WORKER_STACK_BYTES`), up from
+  2 MiB. A trigger that starts an agent whose tool runs that same trigger now nests ten agent
+  runs before it is refused, and in a debug build that overflowed 2 MiB, which aborts the
+  process. Only touched pages are committed.
+- Documented in `describe_triggers` and `save_trigger` (what counts as a level, what a refusal
+  does), in the JavaScript code help topic, and in §10.2 of the design.
+- **Behaviour change on upgrade:** chains between 6 and 10 deep that used to be refused now
+  run. A synchronous call that used to return `Ok` while a trigger under it was refused now
+  returns the refusal. That only happens where the work was already being cut short.
+- Tests: `sc_catalog::cascade` unit tests; `library_tools::a_library_tool_is_not_a_cascade_level_and_a_refusal_below_it_fails_the_call`
+  (the reported chain's shape: fills the bound exactly through a tool, and one level more fails
+  the tool call naming `case_action → mail_outbox_send → mail_deliver`); the `MCP` descriptions
+  test; the event and workflow depth tests now follow `MAX_DEPTH`. The trigger-agent-trigger
+  loop test runs on an 8 MiB worker, as the server does.
+- Not done (TODO T1.2, proposed): `deferred` insert triggers for queue-like tables. Declined:
+  a same-trigger-same-row loop detector, which would refuse the insert-or-update write-back
+  pattern.
+
 ## CI: clippy and rustfmt clean under the current stable toolchain
 
 A newer toolchain made both CI checks fail on code that had not changed (on `main` as well):

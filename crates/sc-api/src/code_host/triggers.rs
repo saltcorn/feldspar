@@ -21,7 +21,7 @@
 //! practice. The event this host builds carries the chain the body's own trigger
 //! was handed, so `Event::firing` refuses past `MAX_DEPTH` and names the whole
 //! chain: a body that runs the trigger it is itself the action of stops at the
-//! fifth turn with a sentence an admin can read, not a stack overflow.
+//! `MAX_DEPTH`th turn with a sentence an admin can read, not a stack overflow.
 //!
 //! # Authority
 //!

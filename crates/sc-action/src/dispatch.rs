@@ -26,7 +26,10 @@
 //! the cached [`Triggers`] set, never a query — and for each, in name order:
 //!
 //! 1. **Check the depth** ([`Event::firing`]). A trigger past `MAX_DEPTH` does not
-//!    run, and the error names the whole chain.
+//!    run, and the error names the whole chain. The refusal is also handed to the
+//!    nearest caller that is waiting ([`sc_catalog::cascade`]): running a trigger
+//!    by name, a code body, an agent's tool call. That caller fails, even where
+//!    the refused trigger hung off a write whose other failures are only reported.
 //! 2. **Evaluate the `only_if`** against the affected row, reified. An evaluator
 //!    error means the trigger does **not** run — the same fail-closed contract an
 //!    ownership formula has, for the same reason: a predicate that could not be
@@ -550,7 +553,12 @@ impl TriggerDispatcher {
         if let Some(caller) = caller.principal() {
             event = event.caused_by(caller);
         }
-        let result = fire_trigger_in(self, catalog, trigger, &event, tx).await?;
+        // Somebody is waiting, so a trigger the cascade bound refused anywhere
+        // under this one fails the call rather than only being reported.
+        let result = sc_catalog::cascade::surfacing_refusals(fire_trigger_in(
+            self, catalog, trigger, &event, tx,
+        ))
+        .await?;
         Ok(result.unwrap_or(Json::Null))
     }
 
@@ -586,6 +594,7 @@ impl TriggerDispatcher {
             application,
             file_urls,
             None,
+            true,
             true,
         )
         .await
@@ -657,12 +666,50 @@ impl TriggerDispatcher {
             file_urls,
             trace,
             false,
+            true,
         )
         .await
     }
 
-    /// The one implementation of the two above: `as_caller` is whose authority
-    /// the body's handles default to.
+    /// Run an **agent tool's code body** (a library tool, a code tool, a
+    /// composer button, `preload_code`) on `action`, as
+    /// [`run_code`](TriggerDispatcher::run_code) does, except that it is **not a
+    /// level of the cascade**: the chain it hands down is the caller's own.
+    ///
+    /// The agent run is already counted by the trigger that started it, and its
+    /// tool calls are bounded by the run's step limit, so counting each call as
+    /// well spent the cascade bound on something that is not a trigger firing
+    /// (TODO T1). Whatever the body runs or writes is counted as usual.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_tool_code(
+        &self,
+        catalog: &Catalog,
+        action: &str,
+        name: &str,
+        code: &str,
+        request: Attrs,
+        caller: Authority<'_>,
+        application: Option<uuid::Uuid>,
+    ) -> Result<Json> {
+        self.run_code_as(
+            catalog,
+            action,
+            name,
+            code,
+            request,
+            caller,
+            application,
+            None,
+            None,
+            false,
+            false,
+        )
+        .await
+    }
+
+    /// The one implementation of the three above: `as_caller` is whose authority
+    /// the body's handles default to, and `counted` whether the body is a level
+    /// of the cascade.
     #[allow(clippy::too_many_arguments)]
     async fn run_code_as(
         &self,
@@ -676,12 +723,17 @@ impl TriggerDispatcher {
         file_urls: Option<Arc<dyn crate::FileUrls>>,
         trace: Option<sc_expr::TraceSink>,
         as_caller: bool,
+        counted: bool,
     ) -> Result<Json> {
         let mut event = Event::new(EventKind::None);
         if let Some(caller) = caller.principal() {
             event = event.caused_by(caller);
         }
-        let chain = event.firing(name)?;
+        let chain = if counted {
+            event.firing(name)?
+        } else {
+            event.chain.clone()
+        };
         let config: Attrs = [("code".to_owned(), Json::String(code.to_owned()))]
             .into_iter()
             .collect();
@@ -696,7 +748,13 @@ impl TriggerDispatcher {
         if let Some(trace) = trace {
             ctx = ctx.with_trace(trace);
         }
-        sc_catalog::with_origin(event.origin(), action.run(&mut ctx)).await
+        // Somebody is waiting for the body's answer, so a trigger the cascade
+        // bound refused under it fails the call (`sc_catalog::cascade`).
+        sc_catalog::cascade::surfacing_refusals(sc_catalog::with_origin(
+            event.origin(),
+            action.run(&mut ctx),
+        ))
+        .await
     }
 
     /// Run one trigger **as a test**: the admin pressed Test run, and what comes
@@ -968,8 +1026,13 @@ pub async fn fire_trigger_with(
 ) -> Result<Option<Json>> {
     let services = &dispatcher.services;
     // The cascade bound, checked before anything else runs: past it, the trigger
-    // does not fire and the error names the whole chain (§10.2).
-    let chain = event.firing(&trigger.name)?;
+    // does not fire and the error names the whole chain (§10.2). The refusal is
+    // also recorded for the nearest caller that is waiting (`sc_catalog::cascade`),
+    // because on a write's path this error is only reported, and the work that
+    // was cut short would otherwise look like it succeeded.
+    let chain = event.firing(&trigger.name).inspect_err(|e| {
+        sc_catalog::cascade::record_refusal(e.message());
+    })?;
     if !only_if_selects(catalog, services.evaluator.as_ref(), trigger, event).await? {
         return Ok(None);
     }

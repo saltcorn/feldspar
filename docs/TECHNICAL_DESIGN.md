@@ -3527,8 +3527,26 @@ One dispatch, for each matching trigger in name order:
 1. **Check the depth.** An action may write a row, which is an event, which may fire another
    trigger — a feature (denormalising into a second table is the archetype), so it is *bounded*
    rather than forbidden. An event carries the **chain of trigger names** that led to it and
-   refuses to descend past `MAX_DEPTH` (5), naming the whole chain: a depth counter alone would
-   catch the loop but leave the admin to find it.
+   refuses to descend past `MAX_DEPTH` (10), naming the whole chain: a depth counter alone would
+   catch the loop but leave the admin to find it. A level is a trigger run by name, one fired by
+   a write another trigger's action made, a `run_agent` trigger, a workflow step, and a code body
+   run as a trigger (a custom query). An agent's **tool call** is not a level
+   (`TriggerDispatcher::run_tool_code`): the run is counted by the trigger that started it and
+   bounded by its step limit. The limit was 5 until a user report (TODO T1): one trigger per
+   business action, called by a background agent's tool, with an outbox insert trigger behind it,
+   was six deep. It is a constant, not a setting.
+
+   **A refusal reaches whoever is waiting.** A failure of a trigger fired by a write is reported,
+   not returned (decision 1), and a refusal used to be too, so the work it cut short looked
+   finished: the tool said "ok" and no mail went out. So `fire_trigger_with` also records a
+   refusal in a task-local (`sc_catalog::cascade`), and each **synchronous entry point** —
+   `run_trigger_in`, the code-body runs (`run_code*`, `run_tool_code`) and the agent driver's tool
+   calls and composer buttons — runs inside `surfacing_refusals`, which turns an `Ok` into the
+   refusal. The nearest entry point gets it: a body that catches a failed `trigger(…).run()` has
+   handled it. Other failures keep the reported-not-returned rule. Work spawned off the task is
+   not reached. The deepest nesting this allows (ten agent runs, each starting the next through a
+   tool) needs more than tokio's default 2 MiB worker stack in a debug build, so the server's
+   workers get 8 MiB (`sc-cli`'s `WORKER_STACK_BYTES`).
 2. **Evaluate the `only_if`**, reified, against the affected row. An evaluator error means the
    trigger does **not** run: "could not be decided" is not "yes".
 3. **Run the action**, with the chain, so anything it writes knows how deep it is.

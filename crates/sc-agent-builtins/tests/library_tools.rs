@@ -185,3 +185,112 @@ async fn a_proposal_is_applied_only_when_the_person_approves() -> Result<()> {
     assert_eq!(title(env.rows("books").await?), json!("Dune Messiah"));
     Ok(())
 }
+
+/// The user report behind TODO T1, shrunk to its shape: a library tool runs
+/// the app's one `case_action` trigger, which writes an outbox row, whose
+/// insert trigger hands it on, whose insert trigger "delivers" it. The tool
+/// call is **not** a level of the cascade, and a trigger the bound refuses
+/// at the bottom fails the tool call instead of it saying "ok".
+#[tokio::test]
+async fn a_library_tool_is_not_a_cascade_level_and_a_refusal_below_it_fails_the_call() -> Result<()>
+{
+    use sc_action::{EventKind, MAX_DEPTH, Trigger, save_trigger};
+
+    let env = Env::with_schema(
+        "CREATE TABLE outbox (id serial primary key, msg text);
+         CREATE TABLE deliveries (id serial primary key, msg text);
+         CREATE TABLE delivered (id serial primary key, msg text);",
+    )
+    .await?
+    .with_triggers(builtin_actions()?)?;
+    bootstrap_code_libraries(&env.catalog).await?;
+    save_code_library(
+        &env.catalog,
+        &CodeLibrary::new(
+            "cases",
+            r#"exports.sendMail = async ({ msg }) => {
+                 await trigger("case_action").run({ msg });
+                 return "ok";
+               };"#,
+        ),
+    )
+    .await?;
+    let registry = env.dispatcher.as_ref().expect("a dispatcher").registry();
+    let js = |name: &str, when: EventKind, code: &str| {
+        Trigger::new(name, when, "run_js_code").config("code", code)
+    };
+    for trigger in [
+        js(
+            "case_action",
+            EventKind::None,
+            "await db.outbox.insert({ msg: payload.msg });",
+        ),
+        js(
+            "mail_outbox_send",
+            EventKind::Insert,
+            "await db.deliveries.insert({ msg: row.msg });",
+        )
+        .on("outbox"),
+        js(
+            "mail_deliver",
+            EventKind::Insert,
+            "await db.delivered.insert({ msg: row.msg });",
+        )
+        .on("deliveries"),
+    ] {
+        save_trigger(&env.catalog, &registry, &trigger).await?;
+    }
+    env.reload_triggers().await?;
+
+    let tools = config(&[
+        (CFG_LIBRARY, json!("cases")),
+        (
+            CFG_LIBRARY_TOOLS,
+            json!([{ "name": "case_send_mail", "function": "sendMail" }]),
+        ),
+    ]);
+    // A run started `levels` triggers deep (a button's trigger, then the
+    // `run_agent` one, …), calling the tool.
+    let send = |levels: usize, msg: &'static str| {
+        let env = &env;
+        let tools = &tools;
+        async move {
+            let caller =
+                RunCaller::system().chained((0..levels).map(|i| format!("outer_{i}")).collect());
+            let trait_ = env.registry.require("library_tools")?.clone();
+            let mut state = Json::Null;
+            let mut ctx = context(env, &caller, &mut state);
+            // As the agent driver runs a tool call.
+            sc_catalog::cascade::surfacing_refusals(trait_.call(
+                tools,
+                "case_send_mail",
+                &json!({ "msg": msg }),
+                &mut ctx,
+            ))
+            .await
+        }
+    };
+
+    // The three triggers fill the bound exactly: had the tool call counted,
+    // `mail_deliver` would be one past it.
+    let ok = send(MAX_DEPTH - 3, "fits").await?;
+    assert_eq!(ok, json!("ok"));
+    let delivered = env.rows("delivered").await?;
+    assert_eq!(delivered.len(), 1, "{delivered:?}");
+    assert_eq!(delivered[0]["msg"], json!("fits"));
+
+    // One level more and `mail_deliver` is refused. `case_action` itself
+    // succeeded and the outbox row was written, but the call says what was cut
+    // short, naming the chain, rather than "ok".
+    let err = send(MAX_DEPTH - 2, "too deep").await.unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("trigger `mail_deliver` was not run"), "{msg}");
+    assert!(
+        msg.contains("case_action → mail_outbox_send → mail_deliver"),
+        "{msg}"
+    );
+    assert!(msg.contains(&format!("limit of {MAX_DEPTH}")), "{msg}");
+    assert_eq!(env.rows("outbox").await?.len(), 2);
+    assert_eq!(env.rows("delivered").await?.len(), 1);
+    Ok(())
+}

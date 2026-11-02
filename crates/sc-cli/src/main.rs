@@ -32,8 +32,33 @@ use commands::serve::serve_command;
 use commands::users::{add_user_command, delete_user_command, modify_user_command, role_command};
 use sc_error::Result;
 
-#[tokio::main]
-async fn main() -> ExitCode {
+/// The stack each tokio worker thread gets: 8 MiB rather than tokio's 2 MiB.
+///
+/// A trigger cascade nests on the stack of the task that started it, and the
+/// cascade bound (`sc_action::MAX_DEPTH`, 10) lets a trigger that starts an
+/// agent whose tool runs that trigger again nest ten agent runs deep before it
+/// is refused. That loop is the deepest nesting there is, and in a debug build
+/// it needs more than 2 MiB. Overflowing aborts the whole process, so the
+/// margin is kept generous. Only the pages a thread touches are committed, so
+/// the cost is address space.
+const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
+
+fn main() -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(WORKER_STACK_BYTES)
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("error: could not start the async runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    runtime.block_on(main_async())
+}
+
+async fn main_async() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args).await {
         Ok(()) => ExitCode::SUCCESS,

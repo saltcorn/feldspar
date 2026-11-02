@@ -32,9 +32,20 @@ use serde_json::{Map, Value as Json};
 
 /// How deep a cascade of trigger-firing-a-trigger may go before it is refused.
 ///
-/// Five is enough for any deliberate chain and short enough that a runaway loop
-/// is reported while the admin can still read it.
-pub const MAX_DEPTH: usize = 5;
+/// What counts is every trigger that runs: one run by name, one fired by a
+/// write another trigger's action made, a `run_agent` trigger, a workflow step,
+/// and a code body run as a trigger would be (an application's custom query).
+/// What does not count is an agent's **tool call**: the run is already counted
+/// by the trigger that started it and bounded by its own step limit, so a tool
+/// that runs a trigger runs it one level below the agent's trigger, not two.
+///
+/// Ten (it was five until a user report, TODO T1): "one trigger per business
+/// action, called from the UI and from an agent alike" with an outbox insert
+/// trigger behind it is six deep from a background agent run, and that is good
+/// structure, not a loop. A runaway loop still stops after ten firings, with
+/// the whole chain in the message. Not a setting: the bound guards against
+/// loops, and no deliberate chain needs more.
+pub const MAX_DEPTH: usize = 10;
 
 /// The kind of occurrence a trigger listens for (design §10.2).
 ///
@@ -698,27 +709,23 @@ mod tests {
         assert_eq!(chain, vec!["audit".to_owned()]);
 
         // Descend to the limit: still allowed at MAX_DEPTH - 1.
-        let deep = Event::new(EventKind::Insert).on("books").chained(vec![
-            "a".into(),
-            "b".into(),
-            "c".into(),
-            "d".into(),
-        ]);
+        let names = |n: usize| (0..n).map(|i| format!("t{i}")).collect::<Vec<_>>();
+        let deep = Event::new(EventKind::Insert)
+            .on("books")
+            .chained(names(MAX_DEPTH - 1));
         assert_eq!(deep.depth(), MAX_DEPTH - 1);
-        assert_eq!(deep.firing("e").unwrap().len(), MAX_DEPTH);
+        assert_eq!(deep.firing("last").unwrap().len(), MAX_DEPTH);
 
         // One deeper is refused, and the message is the whole path, not just a
         // number.
-        let too_deep = deep.clone().chained(
-            ["a", "b", "c", "d", "e"]
-                .iter()
-                .map(|s| (*s).to_owned())
-                .collect(),
-        );
-        let err = too_deep.firing("f").unwrap_err();
+        let too_deep = deep.clone().chained(names(MAX_DEPTH));
+        let err = too_deep.firing("over").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("a → b → c → d → e → f"), "{msg}");
-        assert!(msg.contains("`f`"), "{msg}");
+        let mut path = names(MAX_DEPTH);
+        path.push("over".into());
+        assert!(msg.contains(&path.join(" → ")), "{msg}");
+        assert!(msg.contains("`over`"), "{msg}");
+        assert!(msg.contains("limit of 10"), "{msg}");
         // An over-deep cascade is the app builder's misconfiguration, not a bug
         // in Saltcorn (§16's split).
         assert_eq!(err.kind(), sc_error::ErrorKind::Application);

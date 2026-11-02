@@ -255,7 +255,7 @@ async fn call_function(
     // In an application's chat, its own libraries over the instance's.
     let application = caller.app.as_ref().map(|app| app.id);
     dispatcher
-        .run_code(
+        .run_tool_code(
             ctx.catalog,
             "run_js_code",
             &format!("{}/{tool}", ctx.agent),
@@ -263,7 +263,6 @@ async fn call_function(
             scope,
             Authority::Caller(&caller),
             application,
-            None,
         )
         .await
 }
