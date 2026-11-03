@@ -196,3 +196,119 @@ async fn a_query_that_collides_with_the_apps_tables_is_refused_on_save() -> Resu
     assert!(sc_app::list_applications(&cat).await?.is_empty());
     Ok(())
 }
+
+/// The app's API configuration replaced by `queries`.
+fn with_queries(app: &mut Application, queries: &[CustomQuery]) {
+    let mut config = sc_types::Attrs::new();
+    sc_api::set_custom_queries(&mut config, queries).expect("storable");
+    app.apis[0].config = config;
+}
+
+fn stored_columns(app: &Application, name: &str) -> Vec<String> {
+    sc_api::custom_queries(&app.apis[0].config)
+        .expect("stored")
+        .into_iter()
+        .find(|q| q.name == name)
+        .expect("stored query")
+        .columns
+        .into_iter()
+        .map(|c| c.name)
+        .collect()
+}
+
+/// User report: after a table rename, every save was refused while any query
+/// still named the old table, so the queries could not be fixed one at a time.
+/// Only a query the save changes is held to preparing; an unchanged one that no
+/// longer prepares keeps the columns it was stored with.
+#[tokio::test]
+async fn after_a_rename_the_queries_can_be_fixed_one_save_at_a_time() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = Arc::new(catalog(&db).await?);
+    db.on_teardown(cat.teardown_hook());
+
+    let mut counted = stocked();
+    counted.name = "copiesHeld".into();
+    counted.path = "/reports/copies".into();
+    counted.code = "SELECT sum(copies) AS total FROM books WHERE copies >= :least".into();
+    let mut app = library(&[stocked(), counted.clone()]);
+    app = save_application(&cat, &app).await?;
+
+    db.client()
+        .await?
+        .batch_execute("ALTER TABLE books RENAME TO titles")
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    cat.reload().await?;
+    app.tables = vec!["titles".to_owned()];
+    app.api_tables = app.tables.clone();
+
+    // A save that changes nothing about the queries is not refused…
+    let saved = save_application(&cat, &app).await?;
+    assert_eq!(stored_columns(&saved, "copiesHeld"), vec!["total"]);
+
+    // …nor one that fixes the first query while the second still names `books`.
+    let mut fixed = stocked();
+    fixed.code = "SELECT title, copies FROM titles WHERE copies >= :least".into();
+    with_queries(&mut app, &[fixed.clone(), counted.clone()]);
+    let saved = save_application(&cat, &app).await?;
+    assert_eq!(
+        stored_columns(&saved, "wellStocked"),
+        vec!["title", "copies"]
+    );
+    // The unchanged, broken one kept the columns it was stored with.
+    assert_eq!(stored_columns(&saved, "copiesHeld"), vec!["total"]);
+
+    // A query the save changes is still held to preparing: edited but still
+    // naming the old table, it is refused with Postgres's message…
+    let mut still_broken = counted.clone();
+    still_broken.code = "SELECT sum(copies) AS held FROM books WHERE copies >= :least".into();
+    with_queries(&mut app, &[fixed.clone(), still_broken]);
+    let err = save_application(&cat, &app)
+        .await
+        .expect_err("an edited query that does not prepare is refused");
+    assert!(err.to_string().contains("books"), "{err}");
+
+    // …and so is a new one.
+    let mut added = counted.clone();
+    added.name = "another".into();
+    added.path = "/reports/another".into();
+    with_queries(&mut app, &[fixed.clone(), counted.clone(), added]);
+    assert!(save_application(&cat, &app).await.is_err());
+
+    // Fixing the second query is a save of its own, and it is described again.
+    let mut counted_fixed = counted;
+    counted_fixed.code = "SELECT sum(copies) AS held FROM titles WHERE copies >= :least".into();
+    with_queries(&mut app, &[fixed, counted_fixed]);
+    let saved = save_application(&cat, &app).await?;
+    assert_eq!(stored_columns(&saved, "copiesHeld"), vec!["held"]);
+    Ok(())
+}
+
+/// An unchanged query that still prepares is described again on save, so its
+/// stored columns follow the schema (a column added under a `SELECT *`).
+#[tokio::test]
+async fn an_unchanged_query_is_described_again_on_save() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = Arc::new(catalog(&db).await?);
+    db.on_teardown(cat.teardown_hook());
+
+    let mut everything = stocked();
+    everything.code = "SELECT * FROM books WHERE copies >= :least".into();
+    let app = save_application(&cat, &library(&[everything])).await?;
+    assert_eq!(
+        stored_columns(&app, "wellStocked"),
+        vec!["id", "title", "copies"]
+    );
+
+    db.client()
+        .await?
+        .batch_execute("ALTER TABLE books ADD COLUMN shelf text")
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    let saved = save_application(&cat, &app).await?;
+    assert_eq!(
+        stored_columns(&saved, "wellStocked"),
+        vec!["id", "title", "copies", "shelf"]
+    );
+    Ok(())
+}

@@ -56,7 +56,7 @@ pub use git::{
 };
 pub use local::{LocalFileStore, OP_SUGGEST_DIR, local_operations};
 pub use paths::{DATA_DIR_ENV, data_dir, local_store_dir, suggest_local_dir};
-pub use reference::{free_path, mime_for_path, suffixed_path, validate_file_path};
+pub use reference::{free_path, mime_allowed, mime_for_path, suffixed_path, validate_file_path};
 pub use search::{
     DEFAULT_EXCLUDED_DIRS, DEFAULT_MAX_FOUND, DEFAULT_MAX_RESULTS, FoundFiles, MAX_FILE_BYTES,
     MAX_FILES_SCANNED, MAX_LINE_CHARS, SearchHit, SearchOutcome, SearchQuery, find_by_extension,

@@ -3,3 +3,6 @@
 
 #[path = "scoped.rs"]
 mod scoped;
+
+#[path = "self_read.rs"]
+mod self_read;

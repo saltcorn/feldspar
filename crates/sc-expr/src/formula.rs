@@ -90,6 +90,25 @@ impl Formula {
     pub fn free_vars(&self) -> &FreeVars {
         &self.free
     }
+
+    /// `self || other`: a formula that grants whatever either one grants.
+    ///
+    /// Built from the two trees rather than by parsing their sources joined,
+    /// so it costs a clone and cannot fail. The source reads
+    /// `(self) || (other)`, which parses back to the same tree.
+    pub fn or(&self, other: &Formula) -> Formula {
+        let ast = Ast::Binary {
+            op: crate::ast::BinaryOp::Or,
+            l: Box::new(self.ast.clone()),
+            r: Box::new(other.ast.clone()),
+        };
+        let free = collect_free_vars(&ast);
+        Formula {
+            source: format!("({}) || ({})", self.source, other.source),
+            ast,
+            free,
+        }
+    }
 }
 
 /// Render a swc parse error with a 1-based line/column computed from the source
@@ -117,6 +136,20 @@ fn position(source: &str, offset: usize) -> (usize, usize) {
 mod tests {
     use super::*;
     use crate::ast::{BinaryOp, MemberProp};
+
+    #[test]
+    fn or_is_the_parse_of_its_source() {
+        let a = Formula::parse("_read && id === user.id").unwrap();
+        let b = Formula::parse("manager === user.id").unwrap();
+        let both = a.or(&b);
+        assert_eq!(
+            both.source(),
+            "(_read && id === user.id) || (manager === user.id)"
+        );
+        let reparsed = Formula::parse(both.source()).unwrap();
+        assert_eq!(both.ast(), reparsed.ast());
+        assert_eq!(both.free_vars(), reparsed.free_vars());
+    }
 
     #[test]
     fn parses_a_comparison() {

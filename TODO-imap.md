@@ -1044,6 +1044,13 @@ Six real accounts (IONOS, Hetzner, Gmail) moved from a Python bridge to the modu
   the row layer and `RestProvider` both let the owner update their row with the module's full
   declaration (`module_tables::an_owner_may_update_their_own_account`). Needs the request (body,
   user, app) that failed.
+  Second report 2026-11-02: still not reproduced, now with the module's full declaration from
+  `index.js`, the whole GET row sent back, a password change, and RLS on
+  (`module_tables::an_owner_may_put_their_own_account_with_the_full_declaration`). Only one path
+  gives the symptom (reads fine, writes "not found"): the formula evaluator failing on the write
+  check, which the caller sees as not-found. That failure is now logged
+  ("an ownership check for Update was denied because the formula … could not be evaluated");
+  the next report needs that server log line.
 - [x] **M11.4** (4) Module settings: `updateModule` is MCP-tagged in the modules area (needs
   `allow_edit`); it saves and reloads. Writing `_fd_modules` directly reloads nothing.
 - [x] **M11.5** (6) `mail_messages.keywords` (non-system flags, kept up to date with the flags)

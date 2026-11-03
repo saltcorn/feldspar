@@ -136,7 +136,7 @@ pub use sync::{
     ChangedEntry, SYNC_CLIENTS_TABLE, SYNC_KEYS_TABLE, SyncWatermark, changed_entries,
     changed_keys, set_sync_enabled, sync_enabled, sync_watermark,
 };
-pub use table::{AccessRules, FieldMergeIssue, Table, TableSource};
+pub use table::{AccessRules, FieldMergeIssue, SELF_READ_FORMULA, Table, TableSource};
 pub use table_meta::{
     ATTR_METADATA_TABLE, ATTR_OWNERSHIP_FORMULA, ATTR_PROVIDER_CONFIG, ATTR_PROVIDER_MODULE,
     ATTR_PROVIDER_NAME, ATTR_RLS_ENABLED, ProvidedTableDef, TABLE_META_TABLE, TableMeta,

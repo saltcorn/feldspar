@@ -32,7 +32,9 @@ use serde_json::{Value as Json, json};
 use crate::apps::AppMounts;
 use crate::handler::{HandlerRegistry, HandlerResponse};
 use crate::handlers::{agents_of, application_api_json, stream_json, streams_of, triggers_of};
-use sc_backup::codec::{agent_json, field_json, file_store_json, table_json, trigger_json_with};
+use sc_backup::codec::{
+    agent_json, file_store_json, table_field_json, table_json, trigger_json_with,
+};
 
 /// Register `listEntities` on `reg`.
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: Arc<AppMounts>) {
@@ -154,8 +156,13 @@ async fn list_entities(
             // table by a column it has.
             definition: deep.then(|| {
                 let mut out = table_json(catalog, table, rls, locale);
-                out["fields"] =
-                    Json::Array(table.fields.iter().map(|f| field_json(f, "")).collect());
+                out["fields"] = Json::Array(
+                    table
+                        .fields
+                        .iter()
+                        .map(|f| table_field_json(table, f, ""))
+                        .collect(),
+                );
                 out
             }),
         });

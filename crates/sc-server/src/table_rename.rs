@@ -136,6 +136,27 @@ impl TableRenameHook for AppMounts {
         // views did: a Saltcorn UI application serves its views from a snapshot
         // taken when it was mounted.
         for app in sc_app::list_applications(catalog).await? {
+            // A SQL custom query is code too, and is left as written; name the
+            // ones that still say the old name, so the admin knows which to edit
+            // (each can be saved on its own: an unchanged query does not refuse
+            // a save).
+            let stale = stale_queries(&app, from);
+            if !stale.is_empty() {
+                notes.push(format!(
+                    "custom quer{} {} of application `{}` still name{} `{from}` in {} SQL; \
+                     edit {} to name `{to}`",
+                    if stale.len() == 1 { "y" } else { "ies" },
+                    stale
+                        .iter()
+                        .map(|q| format!("`{q}`"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    app.name,
+                    if stale.len() == 1 { "s" } else { "" },
+                    if stale.len() == 1 { "its" } else { "their" },
+                    if stale.len() == 1 { "it" } else { "them" },
+                ));
+            }
             if views.contains(&app.id.0) && !apps_changed.iter().any(|a| a.id == app.id) {
                 apps_changed.push(app);
             }
@@ -153,6 +174,35 @@ impl TableRenameHook for AppMounts {
         }
         Ok(notes)
     }
+}
+
+/// The names of `app`'s SQL custom queries whose text names `table` as a whole
+/// word — advice for the rename's notes, so a match inside a string literal or
+/// a comment is harmless.
+fn stale_queries(app: &Application, table: &str) -> Vec<String> {
+    app.apis
+        .iter()
+        .filter(|api| api.provider == sc_api::REST_PROVIDER)
+        .filter_map(|api| sc_api::custom_queries(&api.config).ok())
+        .flatten()
+        .filter(|q| !q.is_code() && names_word(&q.code, table))
+        .map(|q| q.name)
+        .collect()
+}
+
+/// Whether `word` occurs in `text` (ignoring ASCII case, as an unquoted SQL
+/// identifier does) with no identifier character on either side.
+fn names_word(text: &str, word: &str) -> bool {
+    if word.is_empty() {
+        return false;
+    }
+    let text = text.to_ascii_lowercase();
+    let word = word.to_ascii_lowercase();
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    text.match_indices(&word).any(|(at, _)| {
+        !text[..at].chars().next_back().is_some_and(ident)
+            && !text[at + word.len()..].chars().next().is_some_and(ident)
+    })
 }
 
 /// One rename, and the rewrites it makes.
@@ -548,6 +598,16 @@ mod tests {
         from: "books",
         to: "titles",
     };
+
+    #[test]
+    fn a_query_names_a_table_only_as_a_whole_word() {
+        assert!(names_word("SELECT * FROM books", "books"));
+        assert!(names_word("select b.title from \"Books\" b", "books"));
+        assert!(names_word("SELECT count(*) FROM books;", "books"));
+        assert!(!names_word("SELECT * FROM books_archive", "books"));
+        assert!(!names_word("SELECT * FROM old_books", "books"));
+        assert!(!names_word("SELECT * FROM titles", "books"));
+    }
 
     #[test]
     fn a_configuration_names_the_new_table_and_keeps_its_code() {

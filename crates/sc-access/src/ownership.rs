@@ -257,9 +257,10 @@ pub(crate) async fn read_row_values_by(
     if role.meets(table.access.min_role_read) {
         return rows::list_row_values_in(cat, table, query, decided(ctx), executor).await;
     }
-    let Some(formula) = &table.ownership else {
+    let Some(rule) = table.read_rule() else {
         return Err(Error::auth(format!("you may not read `{}`", table.name)));
     };
+    let formula = &*rule;
 
     let shape = cat.schema_shape()?;
     let env = UserEnv::Inline(user_values(user));
@@ -565,9 +566,8 @@ impl<'a> RowImage<'a> {
         self.table.access.min_role_read.outranks(role)
             && self
                 .table
-                .ownership
-                .as_ref()
-                .is_some_and(|formula| owner_column(self.table, formula).is_none())
+                .read_rule()
+                .is_some_and(|formula| owner_column(self.table, &formula).is_none())
     }
 
     /// Whether a caller with `role`, signed in as `user` (or not), may read
@@ -584,9 +584,10 @@ impl<'a> RowImage<'a> {
         if role.meets(table.access.min_role_read) {
             return Ok(true);
         }
-        let Some(formula) = &table.ownership else {
+        let Some(rule) = table.read_rule() else {
             return Ok(false);
         };
+        let formula = &*rule;
         if let Some(column) = owner_column(table, formula) {
             return Ok(match user {
                 // `user.id` of nobody throws in the evaluator, which denies.
@@ -620,10 +621,23 @@ impl<'a> RowImage<'a> {
 
 /// The column `formula` compares with the caller's id when it is exactly
 /// `column === user.id` (or `user.id === column`, or `==`), on a plain, stored
-/// column of `table` — `None` for every other formula.
+/// column of `table`, optionally behind `_read &&` — `None` for every other
+/// formula. Only ever asked about a read.
 fn owner_column<'f>(table: &Table, formula: &'f Formula) -> Option<&'f str> {
     use sc_expr::{Ast, BinaryOp, MemberProp};
-    let Ast::Binary { op, l, r } = formula.ast() else {
+    let mut ast = formula.ast();
+    // `_read && column === user.id` — the users table's self-read rule — is
+    // the same comparison for a read, which is all an image is asked.
+    if let Ast::Binary {
+        op: BinaryOp::And,
+        l,
+        r,
+    } = ast
+        && matches!(l.as_ref(), Ast::Ident(flag) if flag == "_read")
+    {
+        ast = r;
+    }
+    let Ast::Binary { op, l, r } = ast else {
         return None;
     };
     if !matches!(op, BinaryOp::StrictEq | BinaryOp::Eq) {
@@ -699,9 +713,10 @@ pub fn aggregate_guard(
     if role.meets(table.access.min_role_read) {
         return Ok(AggregateGuard::Predicate(None));
     }
-    let Some(formula) = &table.ownership else {
+    let Some(rule) = table.read_rule() else {
         return Err(Error::auth(format!("you may not read `{}`", table.name)));
     };
+    let formula = &*rule;
     let shape = cat.schema_shape()?;
     let env = UserEnv::Inline(user_values(user));
     let session = session_values();
@@ -765,7 +780,7 @@ pub fn join_guard(table: &Table, role: Role) -> Result<JoinAccess> {
     if role.meets(table.access.min_role_read) {
         return Ok(JoinAccess::Unrestricted);
     }
-    match &table.ownership {
+    match table.read_rule() {
         Some(_) => Err(Error::invalid(format!(
             "`{}` cannot be read through a key by you: your access to it comes from its \
              ownership formula, which decides row by row, and a related row is read as a \
@@ -1223,6 +1238,14 @@ pub fn table_row_json(table: &Table, values: &BTreeMap<String, Value>) -> Json {
 /// is not surfaced per row (a filtered list cannot carry one); the formula
 /// author sees the behaviour, and the §16 error log is where the reason will
 /// land once it exists.
+///
+/// A **write** that an evaluator error denied is logged with the reason: the
+/// caller is told only "no row with id = …" (a denial must read as an absence),
+/// while the same caller's reads, translated to SQL, never reach the evaluator
+/// and still work — so without the log an owner refused by a failing evaluator
+/// looks exactly like a wrong formula (TODO-imap M11.3). Reads are not logged:
+/// a list evaluates row by row, and a formula that throws for some rows is
+/// ordinary there.
 async fn allowed(
     evaluator: &Arc<dyn JsEvaluator>,
     formula: &Formula,
@@ -1240,7 +1263,20 @@ async fn allowed(
         // fields, `user`, `session` and the flags).
         ambient: session_values(),
     };
-    evaluator.eval(call).await.unwrap_or(false)
+    match evaluator.eval(call).await {
+        Ok(granted) => granted,
+        Err(e) => {
+            if op != Operation::Read {
+                eprintln!(
+                    "feldspar: an ownership check for {op:?} was denied because the formula \
+                     `{}` could not be evaluated: {}",
+                    formula.source(),
+                    sc_error::format_chain(&e)
+                );
+            }
+            false
+        }
+    }
 }
 
 /// Rows of `table` (optionally filtered) with one extra projected column per

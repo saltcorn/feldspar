@@ -25,6 +25,31 @@ pub fn mime_for_path(path: &str) -> Option<String> {
         .map(|mime| mime.essence_str().to_owned())
 }
 
+/// Whether `mime` is in `allow`, a `File` field's or upload slot's allow-list.
+///
+/// An entry is an exact type (`image/png`), a whole top-level type
+/// (`image/*`, as in an HTML `accept` attribute) or `*/*` (anything with a
+/// known type). Matching ignores case and any `;` parameters on an entry. An
+/// empty list allows everything; this only answers for a type that is known.
+pub fn mime_allowed(mime: &str, allow: &[String]) -> bool {
+    let mime = mime.trim().to_ascii_lowercase();
+    allow.iter().any(|entry| {
+        let entry = entry
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        match entry.strip_suffix("/*") {
+            Some("*") => true,
+            Some(top) => mime
+                .split_once('/')
+                .is_some_and(|(t, sub)| t == top && !sub.is_empty()),
+            None => !entry.is_empty() && entry == mime,
+        }
+    })
+}
+
 /// Check a store-relative `path` against a `File` field's `folder` and
 /// `mime_allow` constraints (design §3.5).
 ///
@@ -37,7 +62,8 @@ pub fn mime_for_path(path: &str) -> Option<String> {
 /// - **Outside the folder** — when the field restricts to a folder, the path must
 ///   live under it.
 /// - **Disallowed MIME** — when the field lists allowed MIME types, the path's
-///   inferred type must be one of them.
+///   inferred type must match one of them ([`mime_allowed`]: `image/*` takes
+///   every `image/…` type).
 ///
 /// The store's *resolvability* (that it is connected) is the caller's to check,
 /// because only the caller holds the catalog's store registry; this is the part
@@ -82,9 +108,7 @@ pub fn validate_file_path(path: &str, folder: Option<&str>, mime_allow: &[String
 
     if !mime_allow.is_empty() {
         let mime = mime_for_path(path);
-        let allowed = mime
-            .as_deref()
-            .is_some_and(|m| mime_allow.iter().any(|a| a == m));
+        let allowed = mime.as_deref().is_some_and(|m| mime_allowed(m, mime_allow));
         if !allowed {
             return Err(Error::invalid(format!(
                 "file `{path}` has MIME type `{}`, which is not allowed (allowed: {})",
@@ -206,5 +230,30 @@ mod tests {
         assert!(err.contains("image/png"), "names what is allowed: {err}");
         // An unknown extension against a non-empty allow-list is refused.
         assert!(validate_file_path("a.unknownext", None, &allow).is_err());
+    }
+
+    /// `image/*` takes every image type — png, jpeg, webp, gif, svg — and
+    /// nothing else (bug report: it refused png).
+    #[test]
+    fn a_wildcard_allows_a_whole_top_level_type() {
+        let allow = vec!["image/*".to_owned()];
+        for ok in ["x/dot.png", "a.jpg", "a.webp", "a.gif", "a.svg"] {
+            assert!(validate_file_path(ok, None, &allow).is_ok(), "{ok}");
+        }
+        let err = validate_file_path("x/doc.pdf", None, &allow)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("application/pdf"), "{err}");
+        assert!(validate_file_path("a.unknownext", None, &allow).is_err());
+
+        assert!(mime_allowed("image/png", &["IMAGE/*".to_owned()]));
+        assert!(mime_allowed("video/mp4", &["*/*".to_owned()]));
+        assert!(mime_allowed("image/png", &["image/png; q=1".to_owned()]));
+        assert!(!mime_allowed("imagex/png", &["image/*".to_owned()]));
+        assert!(!mime_allowed("image/png", &["".to_owned()]));
+        // An exact list is still exact.
+        let exact = vec!["image/png".to_owned(), "image/webp".to_owned()];
+        assert!(mime_allowed("image/webp", &exact));
+        assert!(!mime_allowed("image/gif", &exact));
     }
 }

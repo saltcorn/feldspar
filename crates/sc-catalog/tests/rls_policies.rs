@@ -285,3 +285,78 @@ async fn enabling_rls_refuses_a_policy_reference_cycle() -> Result<()> {
     );
     Ok(())
 }
+
+/// §7.3: a caller may always read their own `users` row. The policies are
+/// generated from the table's read rule, so under RLS the database grants the
+/// self-read exactly as the runtime checks do — ORed with the admin's formula,
+/// and only for a select.
+#[tokio::test]
+async fn the_users_policies_carry_the_self_read() -> Result<()> {
+    let db = TestDb::new().await?;
+    db.client()
+        .await?
+        .batch_execute(
+            "CREATE TABLE users (id uuid primary key, email text, role integer, department text); \
+             INSERT INTO users VALUES \
+               ('00000000-0000-4000-8000-00000000000a', 'alice@x', 80, 'ops'), \
+               ('00000000-0000-4000-8000-00000000000b', 'bob@x', 80, 'ops'), \
+               ('00000000-0000-4000-8000-00000000000c', 'carol@x', 80, 'sales')",
+        )
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    let catalog = Arc::new(catalog(&db).await?);
+    db.on_teardown(catalog.teardown_hook());
+    catalog.reload().await?;
+    configure_formula(&catalog, "users", "department === user.department").await?;
+    let table = catalog.require("users")?;
+    enable_rls(&catalog, &table).await?;
+
+    let select = Statement::Select(Box::new(
+        Select::from(Source::table("users")).columns(vec![Projection::all()]),
+    ));
+    let count = |id: &str, department: &str| {
+        let caller = Principal::new(
+            Role::of(80),
+            Some(serde_json::json!({ "id": id, "department": department })),
+        );
+        let catalog = Arc::clone(&catalog);
+        let select = select.clone();
+        async move {
+            run_in_context(
+                &catalog,
+                sc_catalog::Unchecked::vouched(&caller, "test"),
+                &select,
+            )
+            .await
+            .map(|rows| rows.len())
+        }
+    };
+    // The admin's formula grants alice her department; the self-read adds
+    // nothing she did not have.
+    assert_eq!(
+        count("00000000-0000-4000-8000-00000000000a", "ops").await?,
+        2
+    );
+    // Carol's session names a department nobody's row has: the formula grants
+    // her nothing, and she still reads herself.
+    assert_eq!(
+        count("00000000-0000-4000-8000-00000000000c", "marketing").await?,
+        1
+    );
+    // Nobody reads nothing.
+    let anon = Principal::anonymous(Role::PUBLIC);
+    let rows = run_in_context(
+        &catalog,
+        sc_catalog::Unchecked::vouched(&anon, "test"),
+        &select,
+    )
+    .await?;
+    assert!(rows.is_empty());
+
+    // The clause is the select's alone: it folds away in the write policies.
+    let select_qual = policy_qual(&db, "users", "sc_owner_select").await;
+    let delete_qual = policy_qual(&db, "users", "sc_owner_delete").await;
+    assert!(select_qual.contains("'id'"), "{select_qual}");
+    assert!(!delete_qual.contains("'id'"), "{delete_qual}");
+    Ok(())
+}

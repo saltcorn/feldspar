@@ -203,10 +203,11 @@ impl PullRequest {
     }
 }
 
-/// Whether `role` may read `table` at all: the table's floor, or an ownership
-/// formula or row-level security that decides row by row.
+/// Whether `role` may read `table` at all: the table's floor, or a read rule
+/// (an ownership formula, or the users table's self-read) or row-level
+/// security that decides row by row.
 fn may_read(table: &Table, role: Role) -> bool {
-    role.meets(table.access.min_role_read) || table.ownership.is_some() || table.rls_enabled
+    role.meets(table.access.min_role_read) || table.read_rule().is_some() || table.rls_enabled
 }
 
 /// What changed in `table` since the device's last pull: the changed rows as

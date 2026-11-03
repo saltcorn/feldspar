@@ -69,6 +69,21 @@ pub fn field_json(field: &DataField, description: &str) -> Json {
     })
 }
 
+/// [`field_json`] for a field as `table` holds it, for the admin API: `unique`
+/// says whether the field is unique on its own ([`Table::is_unique`]).
+/// Introspection reads a column's `UNIQUE` back as one of the table's
+/// constraints, never as the field's flag, so the flag alone says `false` for
+/// every field the database holds unique.
+///
+/// A backup keeps [`field_json`]'s raw flag: it carries the constraint itself
+/// in the table's `constraints`, and a restore that also read `unique: true` off
+/// the field would make the column unique twice.
+pub fn table_field_json(table: &Table, field: &DataField, description: &str) -> Json {
+    let mut out = field_json(field, description);
+    out["unique"] = json!(table.is_unique(&field.base.name));
+    out
+}
+
 /// One constraint on the wire. Every kind uses one shape, with the fields that
 /// do not apply left null — which is what lets the screen render a list of four
 /// different things without four branches for the data and four for the display.

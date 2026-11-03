@@ -472,11 +472,7 @@ fn a_self_feeding_trigger_is_stopped_by_the_depth_limit() -> sc_error::Result<()
         .enable_all()
         .build()
         .expect("a runtime")
-        .block_on(async {
-            tokio::spawn(self_feeding_trigger())
-                .await
-                .expect("joined")
-        })
+        .block_on(async { tokio::spawn(self_feeding_trigger()).await.expect("joined") })
 }
 
 async fn self_feeding_trigger() -> sc_error::Result<()> {
@@ -622,7 +618,22 @@ async fn renaming_a_table_moves_what_names_it() -> sc_error::Result<()> {
                 .with("output", "web/dist")
                 .with("command", "sh build.sh"),
         )
-        .with_table("books".to_owned()),
+        .with_table("books".to_owned())
+        .with_api(
+            sc_app::ApiConfig::new(sc_api::REST_PROVIDER, "/api").with_config({
+                let mut config = sc_types::Attrs::new();
+                sc_api::set_custom_queries(
+                    &mut config,
+                    &[sc_api::CustomQuery::new(
+                        "bookCount",
+                        sc_api::Method::Get,
+                        "/reports/count",
+                        "SELECT count(*) AS n FROM books",
+                    )],
+                )?;
+                config
+            }),
+        ),
     )
     .await?;
     let (status, body) = server
@@ -659,6 +670,11 @@ async fn renaming_a_table_moves_what_names_it() -> sc_error::Result<()> {
     assert!(
         notes.contains("is not rewritten"),
         "code is said to be left: {notes}"
+    );
+    // A SQL custom query is left as written, and named so the admin can edit it.
+    assert!(
+        notes.contains("custom query `bookCount` of application `Shelf` still names `books`"),
+        "{notes}"
     );
 
     // The rows came along, and the old name is gone.

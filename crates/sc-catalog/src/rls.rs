@@ -239,12 +239,21 @@ pub fn enable_rls_sql(
     projection: &SchemaProjection,
     table: &Table,
 ) -> Result<String> {
-    let formula = table.ownership.as_ref().ok_or_else(|| {
-        Error::invalid(format!(
-            "cannot enable row-level security on `{}`: it has no live ownership formula",
-            table.name
-        ))
-    })?;
+    // The policies come from the *read* rule — the admin's formula, plus the
+    // users table's self-read clause (§7.3) — so the database hands out what
+    // the runtime checks do. The clause is `_read`-gated, so it folds away in
+    // the write policies. It is never enough on its own to enable RLS.
+    let rule = table
+        .ownership
+        .as_ref()
+        .and_then(|_| table.read_rule())
+        .ok_or_else(|| {
+            Error::invalid(format!(
+                "cannot enable row-level security on `{}`: it has no live ownership formula",
+                table.name
+            ))
+        })?;
+    let formula = &*rule;
     let shape = projection.shape();
     // A policy on `table` that queries a child table (a Ↄ-aggregation, Phase 7)
     // whose own policy queries back would make Postgres raise "infinite
