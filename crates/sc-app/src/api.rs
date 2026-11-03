@@ -190,13 +190,25 @@ pub fn validate_api_config(app: &Application, api: &ApiConfig) -> Result<()> {
 /// and one that will is typed by the database rather than by a declaration that
 /// would go stale the first time anyone edited the SQL.
 ///
-/// Re-describing on **every** save is what keeps the two from drifting: the
-/// stored columns are never older than the stored SQL, because they are written
-/// in the same statement.
+/// Every query is described again on every save, which is what keeps the
+/// stored columns from drifting from the schema (a column added under a
+/// `SELECT *`). **Only a query this save changes can refuse it**, though:
+/// `stored` is the same API as it was last saved, and a query that is
+/// unchanged against it (same name, language, code and parameters — everything
+/// preparing reads) and no longer prepares keeps the columns it was stored with
+/// rather than failing the save. Otherwise one query left behind by a table
+/// rename or a dropped column would refuse every save of the application,
+/// including the one that fixes another query — so queries could not be fixed
+/// one at a time. A broken unchanged query fails when it is called, with the
+/// same message.
 ///
 /// An API with no custom queries — every GraphQL one, and most REST ones — is
 /// returned untouched without touching the database.
-pub async fn describe_api_queries(catalog: &Catalog, api: &ApiConfig) -> Result<ApiConfig> {
+pub async fn describe_api_queries(
+    catalog: &Catalog,
+    api: &ApiConfig,
+    stored: Option<&ApiConfig>,
+) -> Result<ApiConfig> {
     if api.provider != REST_PROVIDER {
         return Ok(api.clone());
     }
@@ -204,8 +216,27 @@ pub async fn describe_api_queries(catalog: &Catalog, api: &ApiConfig) -> Result<
     if queries.is_empty() {
         return Ok(api.clone());
     }
+    // A stored configuration that no longer parses has nothing to compare
+    // against, so every query is treated as changed.
+    let before = stored
+        .filter(|s| s.provider == REST_PROVIDER)
+        .and_then(|s| sc_api::custom_queries(&s.config).ok())
+        .unwrap_or_default();
     for query in &mut queries {
-        query.columns = sc_api::describe_custom_query(catalog, query).await?;
+        let unchanged = before.iter().find(|b| {
+            b.name == query.name
+                && b.language == query.language
+                && b.code == query.code
+                && b.params == query.params
+        });
+        match (
+            sc_api::describe_custom_query(catalog, query).await,
+            unchanged,
+        ) {
+            (Ok(columns), _) => query.columns = columns,
+            (Err(_), Some(before)) => query.columns = before.columns.clone(),
+            (Err(e), None) => return Err(e),
+        }
     }
     let mut api = api.clone();
     sc_api::set_custom_queries(&mut api.config, &queries)?;

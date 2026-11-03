@@ -1238,6 +1238,14 @@ pub fn table_row_json(table: &Table, values: &BTreeMap<String, Value>) -> Json {
 /// is not surfaced per row (a filtered list cannot carry one); the formula
 /// author sees the behaviour, and the §16 error log is where the reason will
 /// land once it exists.
+///
+/// A **write** that an evaluator error denied is logged with the reason: the
+/// caller is told only "no row with id = …" (a denial must read as an absence),
+/// while the same caller's reads, translated to SQL, never reach the evaluator
+/// and still work — so without the log an owner refused by a failing evaluator
+/// looks exactly like a wrong formula (TODO-imap M11.3). Reads are not logged:
+/// a list evaluates row by row, and a formula that throws for some rows is
+/// ordinary there.
 async fn allowed(
     evaluator: &Arc<dyn JsEvaluator>,
     formula: &Formula,
@@ -1255,7 +1263,20 @@ async fn allowed(
         // fields, `user`, `session` and the flags).
         ambient: session_values(),
     };
-    evaluator.eval(call).await.unwrap_or(false)
+    match evaluator.eval(call).await {
+        Ok(granted) => granted,
+        Err(e) => {
+            if op != Operation::Read {
+                eprintln!(
+                    "feldspar: an ownership check for {op:?} was denied because the formula \
+                     `{}` could not be evaluated: {}",
+                    formula.source(),
+                    sc_error::format_chain(&e)
+                );
+            }
+            false
+        }
+    }
 }
 
 /// Rows of `table` (optionally filtered) with one extra projected column per

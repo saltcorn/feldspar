@@ -2,6 +2,56 @@
 
 Changes in reverse chronological order.
 
+## Saving an application no longer fails on a custom query it did not change
+
+User report: after `rename_table`, every save of an application was refused with "relation … does
+not exist" while any of its SQL custom queries still named the old table. The queries could not be
+fixed one at a time, and the only way out was a temporary view under the old name. The cause:
+`save_application` prepared every query on every save, and any failure refused the whole save.
+That covered every save, not only saves of queries: settings, translations, the CLI, the MCP
+tools, and backup restore. A dropped table or column had the same effect.
+
+- **Only a changed query can refuse a save** (`sc_app::describe_api_queries`, which now takes the
+  stored API). Every query is still prepared again, so stored columns follow the schema. A query
+  that does not prepare refuses the save only if it is new, or if its language, code or parameters
+  differ from the stored query of the same name under the same mount. An unchanged query that no
+  longer prepares keeps its stored columns, and fails when called with the same database message.
+  A save that edits several queries still checks each edited one.
+- **The rename notes name the queries left behind** (`sc-server` `table_rename`): "custom query
+  `q` of application `A` still names `books` in its SQL; edit it to name `titles`". SQL is still
+  not rewritten. The match is a case-insensitive whole-word search, so `books_archive` does not
+  match.
+- No schema or stored-data change.
+- Tests: `sc-app` `custom_query_store::after_a_rename_the_queries_can_be_fixed_one_save_at_a_time`
+  (an unchanged save, a save fixing one of two queries, an edited query that still names the old
+  table, a new one, and then the second fix) and `…::an_unchanged_query_is_described_again_on_save`.
+  `sc-server` `table_rename` unit test `a_query_names_a_table_only_as_a_whole_word`, and
+  `table_triggers::renaming_a_table_moves_what_names_it` now checks the note.
+
+## Logged: a write refused because its ownership formula could not be evaluated
+
+Second user report of an owner's `PUT /api/mail_accounts/<id>` answering "not found: no row
+with id = 8" while their GET lists the account (TODO-imap M11.3). **Not reproduced.** The
+account rule (`owner === user.id || (_read && …)`) grants the owner's write, and the module's
+description already says owners may edit their accounts.
+
+- **Where the symptom can come from.** A read below the floor is translated to SQL and never
+  reaches the JavaScript evaluator. A write is checked in the evaluator (`row_allowed`), and any
+  evaluator error (the formula isolate gone, a timeout, an unbound name) denies. A denied write
+  answers with the same not-found as a missing row. So the evaluator failing on the server gives
+  exactly this report, and nothing recorded why.
+- **Change:** `sc-access` `ownership::allowed` now writes a line to stderr when an evaluator
+  error denies an insert, update or delete: "an ownership check for Update was denied because the
+  formula `…` could not be evaluated: <reason>". Behaviour is unchanged: it still denies, and the
+  caller still gets not-found. Reads are not logged, because a list evaluates row by row and a
+  formula that throws on some rows is normal there.
+- Tests: `sc-module` `module_tables::an_owner_may_put_their_own_account_with_the_full_declaration`
+  uses the module's real `mail_accounts` declaration (evaluated from `plugins/imap/index.js` with
+  node; skipped without node). The owner changes the display name, changes a password, and sends
+  back the whole row the GET answered (passwords as the sentinel). It does this through
+  `RestProvider`, first with runtime checks and then with RLS on. All of it passes. The older test
+  of the same name used a cut-down declaration.
+
 ## A caller may always read their own `users` row
 
 User report: `db.users.get(user.id)` from a code body acting as a non-admin caller failed with

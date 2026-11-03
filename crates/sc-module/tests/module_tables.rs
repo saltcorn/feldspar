@@ -764,3 +764,138 @@ async fn an_owner_may_update_their_own_account() -> Result<()> {
     assert!(refused.is_err() || refused.unwrap().status >= 400);
     Ok(())
 }
+
+/// The mail module's own table declarations, as `index.js` exports them —
+/// `None` when there is no `node` to evaluate it.
+fn real_mail_tables() -> Option<Vec<TableDecl>> {
+    let index =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/imap/index.js");
+    let script = "console.log(JSON.stringify(require(process.argv[1]).tables))";
+    let output = match std::process::Command::new("node")
+        .args(["-e", script])
+        .arg(&index)
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => panic!("could not run node: {e}"),
+    };
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let all: Vec<Json> = serde_json::from_slice(&output.stdout).unwrap();
+    // `mail_accounts` alone: the others need a file store this test has none of.
+    let accounts: Vec<Json> = all
+        .into_iter()
+        .filter(|t| t["name"] == "mail_accounts")
+        .collect();
+    Some(decls(Json::Array(accounts)))
+}
+
+/// [`an_owner_may_update_their_own_account`] with the module's **full**
+/// declaration and the whole row the GET answered sent back by PUT.
+#[tokio::test]
+async fn an_owner_may_put_their_own_account_with_the_full_declaration() -> Result<()> {
+    let Some(tables) = real_mail_tables() else {
+        eprintln!("skipped: no `node` to evaluate the mail module's index.js");
+        return Ok(());
+    };
+    let db = TestDb::new().await?;
+    let cat = Arc::new(catalog(&db).await?);
+    db.on_teardown(cat.teardown_hook());
+    let report = sync(&cat, MODULE, &tables, &ModuleTables::new()).await;
+    assert!(report.issues.is_empty(), "{:?}", report.issues);
+    sc_auth::save_role(&cat, &sc_auth::RoleDef::new(Role::of(80), "User")).await?;
+    let ann = sc_auth::create_user(&cat, "ann@example.com", "pw-ann-1", Role::of(80)).await?;
+    let admin = TableHost::new(&cat);
+    let id = ask(
+        &admin,
+        json!({ "op": "insert", "table": "mail_accounts",
+                "values": { "label": "ann@", "owner": ann.id().to_string(),
+                            "email": "ann@example.com", "imap_host": "imap.example.com",
+                            "imap_port": 993, "imap_user": "ann", "imap_password": "hunter2",
+                            "smtp_password": "hunter3", "mode": "ingest", "auth": "password",
+                            "body_days": 90, "enabled": true } }),
+    )
+    .await?["id"]
+        .to_string();
+    #[cfg(feature = "deno-host")]
+    sc_expr::set_isolate_prime(sc_module::prime_v8);
+    let evaluator: Arc<dyn JsEvaluator> = Arc::new(DenoEvaluator::new());
+    let accounts = cat.require("mail_accounts")?;
+    let rest = sc_api::RestProvider::project("/api", std::slice::from_ref(&accounts))
+        .with_evaluator(evaluator.clone());
+    let listed = rest
+        .handle(
+            sc_api::ApiRequest::get("/api/mail_accounts"),
+            &cat,
+            Some(&ann),
+        )
+        .await?;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    let mut row = listed.body[0].clone();
+    row["display_name"] = json!("Ann A.");
+    let path = format!("/api/mail_accounts/{id}");
+    for body in [
+        json!({ "display_name": "Ann" }),
+        json!({ "imap_password": "new-pw" }),
+        row,
+    ] {
+        let saved = rest
+            .handle(
+                sc_api::ApiRequest::new(sc_api::Method::Put, &path).body(body.clone()),
+                &cat,
+                Some(&ann),
+            )
+            .await;
+        let saved = saved.map_err(|e| sc_error::Error::msg(format!("{body} → {e}")))?;
+        assert_eq!(saved.status, 200, "{body} → {}", saved.body);
+    }
+
+    // And with the database's own policies deciding (RLS on).
+    let mut meta = sc_catalog::load_table_meta_by_name(&cat, "mail_accounts")
+        .await?
+        .unwrap();
+    meta.set_rls_enabled(true);
+    sc_catalog::save_table_meta(&cat, &meta).await?;
+    let accounts = cat.require("mail_accounts")?;
+    sc_catalog::enable_rls(&cat, &accounts).await?;
+    let accounts = cat.require("mail_accounts")?;
+    assert!(accounts.rls_enabled);
+    let rest = sc_api::RestProvider::project("/api", std::slice::from_ref(&accounts))
+        .with_evaluator(evaluator.clone());
+    let listed = rest
+        .handle(
+            sc_api::ApiRequest::get("/api/mail_accounts"),
+            &cat,
+            Some(&ann),
+        )
+        .await?;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    assert_eq!(
+        listed.body.as_array().map(Vec::len),
+        Some(1),
+        "{}",
+        listed.body
+    );
+    let mut row = listed.body[0].clone();
+    row["display_name"] = json!("Ann R.");
+    for body in [
+        json!({ "display_name": "Ann RLS" }),
+        json!({ "imap_password": "rls-pw" }),
+        row,
+    ] {
+        let saved = rest
+            .handle(
+                sc_api::ApiRequest::new(sc_api::Method::Put, &path).body(body.clone()),
+                &cat,
+                Some(&ann),
+            )
+            .await;
+        let saved = saved.map_err(|e| sc_error::Error::msg(format!("RLS: {body} → {e}")))?;
+        assert_eq!(saved.status, 200, "RLS: {body} → {}", saved.body);
+    }
+    Ok(())
+}

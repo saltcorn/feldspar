@@ -156,12 +156,19 @@ pub async fn save_application(catalog: &Catalog, app: &Application) -> Result<Ap
     // that will is stored with the result columns the database reported, so the
     // shape the generated client promises is the shape the query returns. The
     // application written below is therefore the one that came back from this,
-    // not the one that arrived.
+    // not the one that arrived. Only a query this save changes can refuse it:
+    // an unchanged one that no longer prepares (a table renamed under it) keeps
+    // its stored columns, so the queries a rename leaves behind can be fixed one
+    // save at a time.
+    let stored = load_application(catalog, app.id).await?;
     let described = Application {
         apis: {
             let mut apis = Vec::with_capacity(app.apis.len());
             for api in &app.apis {
-                apis.push(describe_api_queries(catalog, api).await?);
+                let before = stored
+                    .as_ref()
+                    .and_then(|s| s.apis.iter().find(|a| a.mount == api.mount));
+                apis.push(describe_api_queries(catalog, api, before).await?);
             }
             apis
         },
@@ -182,7 +189,7 @@ pub async fn save_application(catalog: &Catalog, app: &Application) -> Result<Ap
     let columns = app_columns();
     let values = app_values(app)?;
 
-    if load_application(catalog, app.id).await?.is_some() {
+    if stored.is_some() {
         let assignments = columns
             .iter()
             .zip(values)
