@@ -18,9 +18,8 @@
 //! - a Ⱶ-join formula grants through the Key link — on the symbolic path *and*
 //!   on the reified path (an untranslatable spelling of the same rule behaves
 //!   identically, which is the parity property doing production work);
-//! - the documented anonymous corner: `owner === user.email` matches
-//!   null-owner rows for anonymous callers, and the `user && …` guard closes
-//!   it;
+//! - an anonymous caller owns nothing: `owner === user.email` (or `==`) does
+//!   not match the null-owner rows, with or without a `user && …` guard;
 //! - the per-`File`-field endpoints apply the same rule;
 //! - and every formula is set through the admin API **after** the app is
 //!   mounted, so each test also exercises the live re-projection.
@@ -412,14 +411,20 @@ async fn an_owner_formula_grants_exactly_the_callers_rows() -> sc_error::Result<
     let (status, _) = alice.send("DELETE", "/api/posts/1", None).await;
     assert_eq!(status, StatusCode::OK);
 
-    // --- the documented anonymous corner, and its guard ------------------
-    // Anonymous `user.email` is null, and `null === null`: the null-owner row
-    // is granted. Then `user && …` closes it — both behaviours by design.
+    // --- an anonymous caller owns nothing ---------------------------------
+    // Anonymous `user.email` is null, but a null owner is not *their* row: the
+    // bug report was exactly this GET returning the `owner IS NULL` row.
     let mut anon = Client::new(router.clone(), APP_HOST);
     anon.prime().await;
     let (status, list) = anon.send("GET", "/api/posts", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(titles(&list), vec!["orphaned"]);
+    assert_eq!(titles(&list), Vec::<String>::new());
+    // The loose spelling from the report means the same.
+    set_formula(&mut admin, "owner == user.email").await;
+    let (_, list) = anon.send("GET", "/api/posts", None).await;
+    assert_eq!(titles(&list), Vec::<String>::new());
+
+    // The explicit guard, now redundant, still behaves.
 
     set_formula(&mut admin, "user && owner === user.email").await;
     let (_, list) = anon.send("GET", "/api/posts", None).await;

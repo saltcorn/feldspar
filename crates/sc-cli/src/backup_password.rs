@@ -8,7 +8,7 @@
 //!   throwaway machine;
 //! - `--password` with no value: asked for at the terminal without echo —
 //!   twice for a backup, once for a restore — or read as one line of stdin
-//!   when stdin is not a terminal, as `add-user` reads one;
+//!   when stdin is not a terminal, as `add-user --password` reads one;
 //! - [`PASSWORD_ENV`], for a cron job or a container, where neither of the
 //!   others fits.
 //!
@@ -128,10 +128,7 @@ fn for_restore_with(
 /// terminal.
 fn ask_once() -> Result<String> {
     if !std::io::stdin().is_terminal() {
-        let mut line = String::new();
-        std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)
-            .map_err(|e| Error::msg(format!("reading the password from stdin: {e}")))?;
-        return Ok(line.trim_end_matches(['\r', '\n']).to_owned());
+        return crate::users::read_stdin_line();
     }
     crate::users::read_hidden("Backup password: ")
 }

@@ -163,6 +163,9 @@ db.tasks.restore(12)
 db.tasks.revert(3, versions[1]["version"])
 ```
 
+A row the body may not read, or one that does not exist, has no history: `history` answers `[]`
+and `asOf` a null `row`, so there is no error to catch.
+
 A restore and a revert write in a transaction of their own, under a changeset of their own, so a
 workflow step whose body runs inside the step's transaction is refused them.
 

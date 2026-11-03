@@ -36,7 +36,7 @@ const nodemailer = require("nodemailer");
 const MailComposer = require("nodemailer/lib/mail-composer");
 const addressparser = require("nodemailer/lib/addressparser");
 const { connectionSettings, smtpTarget, smtpOptions, redact, domainOf } = require("./connect.js");
-const { withConnection, assignRoles } = require("./account.js");
+const { withConnection, assignRoles, missingMailbox } = require("./account.js");
 const { runners } = require("./service.js");
 const { FILE_STORE, FILE_FOLDER, safeName, downloadable, storeMessage, fetchAndParse, deleteMessages, deleteFolder, isMirror, headerNames } = require("./sync.js");
 const { parse } = require("./parse.js");
@@ -606,7 +606,7 @@ async function removeFolder({ payload, user, settings: configuration, files }) {
       await client.mailboxDelete(folder.path);
     } catch (e) {
       // Gone from the server already (another client): only the rows are left to delete.
-      if (!/nonexistent|not exist|no such|unknown mailbox|doesn't exist/i.test(`${e.message} ${e.responseText || ""}`)) throw e;
+      if (!missingMailbox(e)) throw e;
     }
     // Inside the queued work, so the service's next pass does not select it.
     if (runner) runner.forgetFolder(folder.path);

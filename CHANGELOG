@@ -51,6 +51,183 @@ terminal panel's "New Terminal" open more sessions.
   `sc-server/tests/mcp_client.rs`, `sc-server/tests/tls_serving.rs`, `ui/ide/src/terminal.test.ts`,
   `ui/admin/src/mcpServers.test.ts`, `ui/admin/src/appNav.test.ts`.
 
+## Fix a flaky `list_assets` test
+
+`coding_assets::the_session_header_names_the_mounts_and_the_tool_lists_them` expected the assets in
+URL order, but `list_assets` sorts newest first and only falls back to URL order on a tie. When the
+three files the test writes landed in different milliseconds, the order changed and the test
+failed. The test now compares the set of URLs. The tool is unchanged.
+
+## A code body's history read of a row it may not see answers empty, not an error
+
+User report: `db.<table>.history(id)` run below the admin (`asUser()`, or a body run with a
+non-admin caller's authority) threw `not found: there is no history of row … that you may read`
+when the row did not exist, and a body that did not catch it failed with a 500. As the admin the
+same call answered `[]`. Below the admin, a row that does not exist and a row the caller may not
+read look the same on purpose, so the history reader refused both.
+
+- **Code API** (`crates/sc-api/src/code_host/history.rs`, `HistoryReader::row_history_or_empty`
+  and `row_as_of_or_none` in `crates/sc-api/src/history.rs`). For a row the caller may not see,
+  `db.<table>.history(key)` now answers `[]`, `asOf(key, when)` answers `{ row: null, removed: {} }`,
+  v1's `table.get_history(id)` answers `[]`, and `undo_row_changes`/`redo_row_changes` do
+  nothing. That is what the admin already got for a row that was never there, and it matches
+  `db.<table>.get(pk)`, which answers `null`. Nothing is revealed: an empty answer is the same
+  for "no such row" as for "not yours".
+- **Unchanged:** the HTTP endpoints `GET {table}/{key}/history` and `GET {table}/{key}?as_of=`
+  and the MCP tools still answer 404, as documented. A table without history, or one whose
+  `history.min_role` the caller does not meet, is still an error, and so are `restore` and
+  `revert` of a row the caller may not see.
+- Test: `v1_table_history::a_missing_row_has_empty_history_below_the_admin_too`.
+
+## `add-user` no longer reads a password from stdin it was not asked to read
+
+User report: with stdin not a terminal, `feldspar add-user EMAIL --role ROLE` (no `--password`)
+read a line of stdin as the password. In `while read email role; do feldspar add-user …; done <
+users.txt`, stdin is the loop's own file, so the first account got the file's *next line* as its
+password (known to anyone who can read the file), and the loop stopped there. `std::io::stdin()`
+buffers up to 8 KiB, so the command consumed the rest of the file too. Nothing reported an error.
+
+- **No implicit stdin read** (`crates/sc-cli/src/users.rs`, `password_from`). `add-user` with no
+  `--password` still asks at a terminal. Without a terminal it is now refused, and the error names
+  `--random-password`, `--password` and `--password=VALUE`. A bare `--password` still reads one
+  line of stdin, so `echo "$PW" | feldspar add-user … --password` works. **Compatibility:** a
+  script that piped a password into `add-user` *without* `--password`, as the help text used to
+  describe, now fails with that error. The fix is to add `--password`.
+- **`--random-password`** for `add-user` and `modify-user`. It generates a password with
+  `sc_auth::random_password` (the admin UI's generator) and prints it once, alone, on stdout.
+  It can't be combined with `--password`.
+- **One line means one line.** A password read from a non-terminal stdin is now read straight
+  from fd 0, a byte at a time, up to the newline, so nothing after it is consumed. This applies
+  to `add-user`/`modify-user --password` and to `backup`/`restore --password`.
+- The help text and docs/OPERATIONS.md ("Users from a terminal") describe this, with a loop
+  example using `--random-password`.
+- Tests: `users::tests::no_password_flag_and_no_terminal_is_refused_rather_than_reading_stdin`,
+  `users::tests::one_line_is_read_and_nothing_after_it`,
+  `users::tests::random_password_is_a_flag_of_its_own`, and in `crates/sc-cli/tests/users.rs` the
+  refused case, a bare `--password` reading from a pipe, and `--random-password` for both commands
+  through the real binary.
+
+## Live documents: list items in the text mirror, and a mirror that lagged hours behind
+
+Field report (PaddiPad): the plain text of a TipTap (`xml` root) document ran the items of a
+bullet or task list together — `eins / zwei / drei` was mirrored as `einszweidrei` — and so did
+paragraphs inside one item. Separately, on 2026-11-02 a pad's stored mirror (`doc_text`) was
+hours behind the live document.
+
+- **The text walk** (`CollabDoc::text`, `crates/sc-live/src/doc.rs`), which is the `text_mirror`
+  with `mirror_format: text` and what `live.document` reads: it broke lines only between top-level
+  blocks. It now gives one line per textblock: every list item, every paragraph inside an item,
+  every table cell. A code block keeps its own lines, and a `hardBreak` is a newline. Top-level
+  paragraphs and headings read as before. A stored mirror is rewritten at the document's next
+  persist. Test: `doc::tests::nested_blocks_of_an_xml_root_read_one_line_each`.
+- **The lag** (`crates/sc-live/src/docroom.rs`): a room ran its debounced persist only while it
+  was still the one the registry held for its key. A room that was no longer held — because the
+  stream's configuration changed while it was open, so later joiners got a new room — never
+  persisted on the debounce. Its members' edits reached the row only when the last of them left,
+  which for a pad left open can be hours. A room now keeps a weak reference to itself for its
+  persists, so it persists on its own debounce whether or not the registry still holds it.
+  Test: `documents::a_room_replaced_in_the_registry_still_persists_on_the_debounce`. It failed
+  before the fix.
+- A smaller race of the same kind is closed. A member joining a room just as its last member left
+  could be seated in a room the registry was forgetting. That member then edited a copy that
+  later joiners did not share, and it was persisted only on close. A seat is now taken under the
+  registry's lock (`DocRooms::seat`), and a seat whose document fails to load leaves through its
+  `Drop`, as any seat does.
+- The test `documents::the_size_limit_refuses_an_edit_and_a_large_document_opens` failed about 1
+  run in 4 ("database table is locked"): the closing room's persist raced the test's own write.
+  It now waits for the room to close first.
+
+## Mail module: a folder deleted between a LIST and its SELECT
+
+User report: a folder deleted on the server stayed in the runner's memory until the next 5-minute
+poll, so a sync woken before then selected it and put the account in error. Deleting the folder
+row did not help. A folder made with `mail_create_folder` got its role only at the next listing.
+The user asked for `mail_sync_now { folders: true }` and/or `mail_delete_folder`.
+
+Most of this was already fixed by M11.2 (see "Mail module: the first real use's field report"
+below). `mail_sync_now` always lists the folders again. `discoverFolders` forgets folders that
+are gone, and makes a new row for one whose row was deleted. `mail_create_folder` gives the folder
+its role at once, and `mail_delete_folder` exists. The report was made against an older build.
+That build's Dovecot test (`mirror.test.mjs`, "mail_sync_now lists folders again; …") passes.
+
+One gap was left, and it is now closed: a mirror folder deleted by another client after the last
+LIST but before the runner selects it (a pass woken in that window).
+
+- **`AccountRunner.syncPath`** (`plugins/imap/account.js`): when the SELECT says the mailbox does
+  not exist, the account no longer goes to `error`. The folder is skipped and the same pass lists
+  the folders again, which forgets it and deletes its row and messages. Ingest accounts are
+  unchanged: a watched folder that is missing is still an error.
+- **`missingMailbox(e)`** (exported from `account.js`): checks for RFC 5530 `NONEXISTENT` or a
+  server's wording for it. `mail_delete_folder` now uses it instead of its own regex.
+- Test: `plugins/imap/test/field-report.test.mjs` "mirror: a folder deleted on the server
+  between a LIST and its SELECT …" (no server).
+
+## A dependency added after the first build is installed (TODO B1.1)
+
+User report (retested 2026-10-29): `feldspar build-app` and the MCP `buildApplication` did not
+run `npm install` once `node_modules` existed, so a dependency added to `package.json` later
+failed the build with TS2307 "Cannot find module". The install step checked only that its
+marker directory existed.
+
+- **The install step** (`sc-app` `build.rs`, `run_install`) now also runs when the project's
+  manifests (`package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`,
+  `pnpm-lock.yaml`, whichever exist) differ from what the last install saw. After each successful
+  install a SHA-256 of the install command and those files goes to `node_modules/.feldspar-install`
+  (`INSTALL_STAMP`). The hash is taken after the install, because npm rewrites the lockfile. A
+  rebuild with nothing changed only hashes the files and starts no process. Every path that
+  builds goes through this: the Build button, `feldspar build-app`, MCP `buildApplication`, the
+  agents' build/check tools, `typecheck_application`, target builds and boot builds.
+- **Upgrading does not reinstall every app**: a `node_modules` with no stamp is adopted (stamped,
+  no install) when every `dependencies`/`devDependencies` entry has a
+  `node_modules/<name>/package.json`; otherwise it installs. A project with no manifest keeps the
+  old marker-only check. No database change.
+- **The quick dev-loop build** (`build_application_quick`, IDE "Build on save") now runs the same
+  check, so a dependency added between saves is installed too. It used to skip the install step
+  entirely. `run_build_with` is folded back into `run_build`.
+- A failed install removes the stamp, so the next build tries again.
+- Tests: `build::tests::a_dependency_added_after_the_first_build_is_installed`,
+  `an_unstamped_tree_is_adopted_only_when_it_holds_every_dependency`,
+  `a_failed_install_leaves_no_stamp`; the real-npm `scaffold_app` end-to-end test
+  (`SC_TEST_NPM=1`) now adds `dayjs` and imports it after the first build. It fails with the
+  reported TS2307 without the fix.
+- Docs: TECHNICAL_DESIGN (the install step, the dev loop), `tutorial-react-todo.md` step 4.
+
+## An anonymous caller owns no row
+
+User report (retested 2026-11-02): with the ownership formula `created_by == user.id` and
+`min_role_read` 1, an anonymous GET of the row API returned every row whose `created_by` is NULL.
+An anonymous `user.id` is null, and equality was null-safe (`IS NOT DISTINCT FROM`, JS `===`), so
+`NULL === NULL` granted the row. This was documented as a corner, fixed by writing
+`user && …`. But the scaffold, the MCP schema help and the docs all suggest the unguarded form.
+
+- **The formula semantics** (§7.3): an equality with a caller's field on one side
+  (`user.x` or `session.x`, `===`/`==`) holds only when that caller is present; `!==`/`!=` is
+  its exact complement (`NOT present OR distinct`). Comparisons against literal `null`
+  (`user.x === null`) are unchanged. The translator (`sc-expr` `translate.rs`,
+  `caller_guarded`), the reified evaluator's normalised JS (`normalise.rs`, `equality`) and,
+  through the translator, the RLS policies (`user GUC IS NOT NULL AND …`) all apply it. An
+  anonymous guard is rendered as `$false AND (…)` rather than folded to a bare literal, so
+  Postgres can still type it inside a `CASE` branch.
+- **Behaviour change**: anonymous callers (and callers with no guest session, for `session.x`)
+  no longer get null-owner rows through an ownership formula. Logged-in callers are unaffected.
+  A formula already written `user && …` means the same as before.
+- **Existing RLS tables**: the policies are SQL generated when the table was saved, so a
+  table with RLS on keeps the old policy until it is regenerated: re-save the formula, or turn
+  RLS off and on. The runtime (non-RLS) path is fixed on upgrade.
+- **Backup of an RLS table read only what the policy grants to nobody** (found by the test
+  change above): `sc-backup`'s row snapshot ran with no caller context on a FORCE'd table, so
+  owned rows were silently left out of the archive (only null-owner rows got through, via the
+  leak this fixes). The snapshot now sets the system (admin) caller context when the backend
+  has RLS.
+- Tests: `sc-expr` `translate::an_anonymous_caller_owns_nothing`,
+  `under_rls_a_caller_field_equality_requires_the_caller`, normaliser renderings, parity
+  cases on both evaluators against Postgres; `sc-catalog`
+  `rls_policies::an_anonymous_context_does_not_own_the_null_owner_rows` (fails without the
+  fix); `sc-server` `ownership_enforcement::an_owner_formula_grants_exactly_the_callers_rows`
+  now asserts the anonymous list is empty for `===` and `==`;
+  `backup_api::an_ownership_formula_is_restored_after_the_columns_it_reads` now also backs up
+  and restores an owned row of the RLS table.
+
 ## An `image/*` MIME allow-list accepts every image type
 
 User report: a File field with `file_mime: ["image/*"]` refused `x/dot.png` ("has MIME type

@@ -993,7 +993,21 @@ impl<'a> RowSource<'a> {
                 .begin_snapshot()
                 .await?
             {
-                Some(tx) => RowSource::Snapshot(tx),
+                Some(mut tx) => {
+                    // A table under row-level security is FORCE'd, so its
+                    // policies judge the backup's own reads too: with no caller
+                    // context they admit no one, and the backup would hold only
+                    // the rows the formula grants to nobody. The backup reads as
+                    // the system (admin), whose role clears every policy's floor.
+                    if catalog.primary_info().capabilities().row_level_security {
+                        sc_catalog::set_caller_context(
+                            tx.as_mut(),
+                            &sc_catalog::Principal::anonymous(sc_types::Role::ADMIN),
+                        )
+                        .await?;
+                    }
+                    RowSource::Snapshot(tx)
+                }
                 None => RowSource::Direct(catalog),
             },
         )

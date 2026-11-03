@@ -11,10 +11,18 @@
 //! A password is never required on the command line, where it would land in the
 //! shell's history and in `ps`: `--password` with no value asks for it, without
 //! echo, at the terminal — and reads one line from stdin when stdin is not a
-//! terminal, so a script can pipe it in.
+//! terminal, so a script can pipe it in. `--random-password` has one generated
+//! and printed once on stdout.
+//!
+//! stdin is only read when it was asked for. `add-user` with neither flag asks
+//! at a terminal, but with no terminal it is refused rather than reading stdin:
+//! in a `while read …; do feldspar add-user …; done < users.txt` loop, stdin is
+//! the loop's own file, and the next line of it would silently become the new
+//! account's password. And a line read from stdin is read byte by byte, so
+//! nothing after it is taken from whoever reads stdin next.
 
 use sc_types::Role;
-use std::io::{BufRead, IsTerminal, Write};
+use std::io::{BufRead, IsTerminal, Read, Write};
 
 use sc_error::{Error, Result};
 
@@ -33,8 +41,11 @@ pub struct AddUserArgs {
     pub email: String,
     /// A role name or number, resolved against the database.
     pub role: String,
-    /// `None` is the same as [`PasswordArg::Prompt`]: a new account needs one.
+    /// `None` asks at a terminal and is refused without one (see
+    /// [`password_from`]): stdin is read only when `--password` asks for it.
     pub password: Option<PasswordArg>,
+    /// `--random-password`: generate one and print it on stdout.
+    pub random_password: bool,
 }
 
 /// What `modify-user` was asked for.
@@ -43,6 +54,8 @@ pub struct ModifyUserArgs {
     pub email: String,
     pub role: Option<String>,
     pub password: Option<PasswordArg>,
+    /// `--random-password`: generate one and print it on stdout.
+    pub random_password: bool,
     /// `--disabled` (`Some(true)`) or `--enabled` (`Some(false)`) (TODO F1.8).
     pub disabled: Option<bool>,
     /// `--reset-second-factor`: turn off the account's two-factor
@@ -57,6 +70,7 @@ struct Parsed {
     email: Option<String>,
     role: Option<String>,
     password: Option<PasswordArg>,
+    random_password: bool,
     disabled: Option<bool>,
     reset_second_factor: bool,
 }
@@ -75,6 +89,8 @@ fn parse(command: &str, args: &[String]) -> Result<Parsed> {
                 Some(value) => PasswordArg::Value(value.clone()),
                 None => PasswordArg::Prompt,
             });
+        } else if arg == "--random-password" {
+            parsed.random_password = true;
         } else if arg == "--role" {
             parsed.role = Some(
                 it.next()
@@ -102,6 +118,11 @@ fn parse(command: &str, args: &[String]) -> Result<Parsed> {
             )));
         }
     }
+    if parsed.random_password && parsed.password.is_some() {
+        return Err(Error::config(format!(
+            "{command} takes --password or --random-password, not both"
+        )));
+    }
     Ok(parsed)
 }
 
@@ -118,6 +139,7 @@ pub fn parse_add_user(args: &[String]) -> Result<AddUserArgs> {
         email,
         role,
         password: parsed.password,
+        random_password: parsed.random_password,
     })
 }
 
@@ -133,18 +155,20 @@ pub fn parse_modify_user(args: &[String]) -> Result<ModifyUserArgs> {
     })?;
     if parsed.role.is_none()
         && parsed.password.is_none()
+        && !parsed.random_password
         && parsed.disabled.is_none()
         && !parsed.reset_second_factor
     {
         return Err(Error::config(
             "modify-user needs something to change: --role ROLE, --password [VALUE], \
-             --disabled, --enabled or --reset-second-factor",
+             --random-password, --disabled, --enabled or --reset-second-factor",
         ));
     }
     Ok(ModifyUserArgs {
         email,
         role: parsed.role,
         password: parsed.password,
+        random_password: parsed.random_password,
         disabled: parsed.disabled,
         reset_second_factor: parsed.reset_second_factor,
     })
@@ -246,7 +270,13 @@ pub fn parse_role(args: &[String]) -> Result<RoleCommand> {
 }
 
 /// The password `arg` names, asking for it if it names none.
+///
+/// No `--password` at all asks only at a terminal. Without one it is refused
+/// rather than reading stdin, which a caller did not offer as a password: in a
+/// shell loop over a file it is that file, and its next line would become the
+/// password (and the loop would lose it).
 pub fn password_from(arg: Option<&PasswordArg>) -> Result<String> {
+    check_password_source(arg, std::io::stdin().is_terminal())?;
     let password = match arg {
         Some(PasswordArg::Value(value)) => value.clone(),
         Some(PasswordArg::Prompt) | None => prompt_password()?,
@@ -257,17 +287,23 @@ pub fn password_from(arg: Option<&PasswordArg>) -> Result<String> {
     Ok(password)
 }
 
+/// Refuse no `--password` with no terminal to ask at; see [`password_from`].
+fn check_password_source(arg: Option<&PasswordArg>, terminal: bool) -> Result<()> {
+    if arg.is_none() && !terminal {
+        return Err(Error::config(
+            "no password given, and stdin is not a terminal to ask at: pass \
+             --random-password to have one generated and printed, --password to read \
+             one line of stdin, or --password=VALUE",
+        ));
+    }
+    Ok(())
+}
+
 /// Ask for a password: twice and without echo at a terminal, or one line of
 /// stdin when it is not one.
 pub(crate) fn prompt_password() -> Result<String> {
-    let stdin = std::io::stdin();
-    if !stdin.is_terminal() {
-        let mut line = String::new();
-        stdin
-            .lock()
-            .read_line(&mut line)
-            .map_err(|e| Error::msg(format!("reading the password from stdin: {e}")))?;
-        return Ok(line.trim_end_matches(['\r', '\n']).to_owned());
+    if !std::io::stdin().is_terminal() {
+        return read_stdin_line();
     }
     let first = read_hidden("Password: ")?;
     let second = read_hidden("Confirm password: ")?;
@@ -275,6 +311,52 @@ pub(crate) fn prompt_password() -> Result<String> {
         return Err(Error::invalid("the two passwords did not match"));
     }
     Ok(first)
+}
+
+/// One line of stdin, which is not a terminal, without its line ending.
+///
+/// Read straight from the file descriptor a byte at a time, not through
+/// `std::io::stdin()`, whose buffer would take up to 8 KiB past the line — input
+/// that the shell, or the next command reading the same stdin, then never sees.
+pub(crate) fn read_stdin_line() -> Result<String> {
+    read_one_line(&mut RawStdin)
+        .map_err(|e| Error::msg(format!("reading the password from stdin: {e}")))
+}
+
+/// Read up to and including the first newline, one byte at a time, so the
+/// reader is left just after it. The line ending is dropped.
+fn read_one_line(reader: &mut impl Read) -> std::io::Result<String> {
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match reader.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) if byte[0] == b'\n' => break,
+            Ok(_) => line.push(byte[0]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    if line.last() == Some(&b'\r') {
+        line.pop();
+    }
+    String::from_utf8(line)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "the line is not UTF-8"))
+}
+
+/// File descriptor 0, unbuffered.
+struct RawStdin;
+
+impl Read for RawStdin {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // SAFETY: `read` writes at most `buf.len()` bytes into `buf`, which is
+        // valid for that many.
+        let n = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr().cast(), buf.len()) };
+        if n < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(n as usize)
+    }
 }
 
 /// Read one line from the terminal with echo turned off, restoring it after —
@@ -343,6 +425,7 @@ mod tests {
         assert_eq!(parsed.email, "a@example.com");
         assert_eq!(parsed.role, "admin");
         assert_eq!(parsed.password, None);
+        assert!(!parsed.random_password);
 
         let parsed =
             parse_add_user(&args(&["--role", "1", "a@example.com", "--password", "pw"])).unwrap();
@@ -364,6 +447,65 @@ mod tests {
         // A password that looks like a flag is written with `=`.
         let parsed = parse_modify_user(&args(&["a@example.com", "--password=--x"])).unwrap();
         assert_eq!(parsed.password, Some(PasswordArg::Value("--x".into())));
+    }
+
+    #[test]
+    fn random_password_is_a_flag_of_its_own() {
+        let parsed = parse_add_user(&args(&[
+            "a@example.com",
+            "--role",
+            "1",
+            "--random-password",
+        ]))
+        .unwrap();
+        assert!(parsed.random_password);
+        assert_eq!(parsed.password, None);
+        // It is something to change, for modify-user.
+        let parsed = parse_modify_user(&args(&["a@example.com", "--random-password"])).unwrap();
+        assert!(parsed.random_password);
+        for both in [
+            &[
+                "a@example.com",
+                "--role",
+                "1",
+                "--password",
+                "--random-password",
+            ][..],
+            &[
+                "a@example.com",
+                "--role",
+                "1",
+                "--random-password",
+                "--password=pw",
+            ][..],
+        ] {
+            let err = parse_add_user(&args(both)).unwrap_err().to_string();
+            assert!(err.contains("not both"), "{err}");
+        }
+    }
+
+    #[test]
+    fn no_password_flag_and_no_terminal_is_refused_rather_than_reading_stdin() {
+        let err = check_password_source(None, false).unwrap_err().to_string();
+        assert!(err.contains("--random-password"), "{err}");
+        // At a terminal it is asked for; asked for explicitly, stdin is read.
+        assert!(check_password_source(None, true).is_ok());
+        assert!(check_password_source(Some(&PasswordArg::Prompt), false).is_ok());
+        assert!(check_password_source(Some(&PasswordArg::Value("pw".into())), false).is_ok());
+    }
+
+    #[test]
+    fn one_line_is_read_and_nothing_after_it() {
+        let mut input: &[u8] = b"secret\r\nb@example.com staff\nc@example.com user\n";
+        assert_eq!(read_one_line(&mut input).unwrap(), "secret");
+        // The rest is still there for whoever reads next.
+        assert_eq!(input, b"b@example.com staff\nc@example.com user\n");
+        assert_eq!(read_one_line(&mut input).unwrap(), "b@example.com staff");
+        // A last line with no newline, then the end.
+        let mut input: &[u8] = b"no-newline";
+        assert_eq!(read_one_line(&mut input).unwrap(), "no-newline");
+        assert_eq!(read_one_line(&mut input).unwrap(), "");
+        assert!(read_one_line(&mut &b"\xff\n"[..]).is_err());
     }
 
     #[test]

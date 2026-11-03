@@ -105,12 +105,15 @@ async fn the_session_header_names_the_mounts_and_the_tool_lists_them() -> Result
 
     // --- the tool -------------------------------------------------------------
     let listed = list(&env, &coding("blog"), json!({}), Role::ADMIN).await?;
-    let urls: Vec<&str> = listed["assets"]
+    // The tool lists newest first, and the three files above can land in
+    // different milliseconds, so compare the set of URLs, not their order.
+    let mut urls: Vec<&str> = listed["assets"]
         .as_array()
         .expect("assets")
         .iter()
         .map(|a| a["url"].as_str().unwrap())
         .collect();
+    urls.sort_unstable();
     assert_eq!(
         urls,
         ["/docs/intro.md", "/img/hero.png", "/img/icons/save.svg"],

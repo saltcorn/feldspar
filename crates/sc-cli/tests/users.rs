@@ -13,6 +13,12 @@ const ADMIN: &str = "admin@example.com";
 
 /// Run `feldspar <args…>` with `stdin` piped in, returning (success, stderr).
 fn feldspar(args: &[&str], stdin: &str) -> (bool, String) {
+    let (ok, _, stderr) = feldspar_piped(args, stdin);
+    (ok, stderr)
+}
+
+/// [`feldspar`], with stdout too: (success, stdout, stderr).
+fn feldspar_piped(args: &[&str], stdin: &str) -> (bool, String, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_feldspar"))
         .args(args)
         .stdin(Stdio::piped())
@@ -29,6 +35,7 @@ fn feldspar(args: &[&str], stdin: &str) -> (bool, String) {
     let out = child.wait_with_output().expect("wait for feldspar");
     (
         out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
 }
@@ -41,6 +48,7 @@ async fn signs_in(catalog: &sc_catalog::Catalog, email: &str, password: &str) ->
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_forgotten_admin_password_is_reset_from_the_cli() -> sc_error::Result<()> {
     let db = TestDb::new().await?;
     let url = db.url();
@@ -67,8 +75,8 @@ async fn a_forgotten_admin_password_is_reset_from_the_cli() -> sc_error::Result<
     assert_eq!(user.role(), Role::ADMIN);
     assert!(signs_in(&catalog, ADMIN, "first-password").await);
 
-    // add-user with no password reads it (stdin is not a terminal here); the
-    // role by number.
+    // add-user with no --password and no terminal is refused: stdin is not
+    // read unless asked for, so a loop's next line is never a password.
     let (ok, stderr) = feldspar(
         &[
             "add-user",
@@ -78,10 +86,68 @@ async fn a_forgotten_admin_password_is_reset_from_the_cli() -> sc_error::Result<
             "--database-url",
             &url,
         ],
+        "staff@example.com 100\n",
+    );
+    assert!(!ok);
+    assert!(stderr.contains("--random-password"), "{stderr}");
+    assert!(
+        sc_auth::load_user_by_email(&catalog, "staff@example.com")
+            .await?
+            .is_none()
+    );
+
+    // --password with no value reads one line (stdin is not a terminal here);
+    // the role by number.
+    let (ok, stderr) = feldspar(
+        &[
+            "add-user",
+            "staff@example.com",
+            "--role",
+            "100",
+            "--password",
+            "--database-url",
+            &url,
+        ],
         "piped-password\n",
     );
     assert!(ok, "{stderr}");
     assert!(signs_in(&catalog, "staff@example.com", "piped-password").await);
+
+    // --random-password prints the generated one, alone, on stdout.
+    let (ok, stdout, stderr) = feldspar_piped(
+        &[
+            "add-user",
+            "random@example.com",
+            "--role",
+            "100",
+            "--random-password",
+            "--database-url",
+            &url,
+        ],
+        "not-a-password\n",
+    );
+    assert!(ok, "{stderr}");
+    let generated = stdout.trim_end();
+    assert!(
+        !generated.is_empty() && !generated.contains('\n'),
+        "{stdout}"
+    );
+    assert!(signs_in(&catalog, "random@example.com", generated).await);
+    // modify-user --random-password replaces it with a new one.
+    let (ok, stdout, stderr) = feldspar_piped(
+        &[
+            "modify-user",
+            "random@example.com",
+            "--random-password",
+            "--database-url",
+            &url,
+        ],
+        "",
+    );
+    assert!(ok, "{stderr}");
+    assert_ne!(stdout.trim_end(), generated);
+    assert!(signs_in(&catalog, "random@example.com", stdout.trim_end()).await);
+    assert!(!signs_in(&catalog, "random@example.com", generated).await);
 
     // A second account with the same email is refused before any prompt.
     let (ok, stderr) = feldspar(

@@ -1417,15 +1417,19 @@ together still fails the test). Null handling is specified once, by the translat
 reified path is normalised to meet it: `===`/`==` render as `IS NOT DISTINCT FROM` (JS's
 two-valued equality — `owner === user.id` on a null `owner` is *false*), ordered comparisons
 and arithmetic are null-guarded so JS's `null → 0` coercion cannot diverge from SQL, and
-`user.x` on an anonymous (null) user reads as null rather than throwing. `+` with a string literal
+`user.x` on an anonymous (null) user reads as null rather than throwing. **An anonymous caller
+owns nothing**: an equality with a caller's field on one side (`owner === user.id`,
+`owner == session.id`, not a literal-null test like `user.x === null`) holds only when that
+caller is present, so a null `owner` is not matched by a null `user.id`. `!==` is its exact
+complement. Both evaluators and the RLS policies (`user GUC IS NOT NULL AND …`) apply the guard. `+` with a string literal
 on either side (`"Invoice " + number`, TODO-payments P2.4) is JavaScript's concatenation: SQL
 `||` over each side cast to text, a null side reading `null` as JavaScript writes it.
 
 **Fail closed, everywhere.** A stored formula that no longer validates at load time (a field
 was dropped, a dump restored) grants nothing and the table stays `min_role`-only, with the
-reason reported on the `Table`. An anonymous caller's `user` is null, so a formula that must
-not grant anonymously is written `user && …` (bare `user` is object-or-null, so its
-truthiness is exactly the logged-in test). Under RLS a missing GUC is SQL NULL, so an
+reason reported on the `Table`. An anonymous caller's `user` is null, and an ownership
+equality against it grants nothing (above), so `owner === user.id` needs no `user && …` guard;
+bare `user` is still object-or-null, so its truthiness is exactly the logged-in test. Under RLS a missing GUC is SQL NULL, so an
 un-set caller context sees no rows by construction. A denial is always shaped identically to
 absence — affected-rows 0, mapped to not-found — so "exists but forbidden" is never a probe.
 
@@ -7065,8 +7069,9 @@ the resizer anywhere else. Resizing at request time rather than build time is wh
 server-rendered page choose a size from data.
 
 **The dev loop.** `buildApplication?quick=true` (`sc_app::build_application_quick`) is the
-bundler alone: no install step, no regenerated client, no prerendering (those pages render per
-request until the next full build); with no dependencies installed yet it is a full build. The
+bundler alone: no regenerated client, no prerendering (those pages render per request until the
+next full build), and the install step only when the manifests changed (below); with no
+dependencies installed yet it is a full build. The
 IDE's **Build on save** switch runs it for the application whose source holds the saved file,
 once per burst of saves and never two at a time.
 
@@ -7805,6 +7810,17 @@ hand. It deletes the install step's marker directory (`node_modules`), then buil
 does, and that build installs from scratch because the marker is gone. It is offered only where
 the build installs dependencies itself (`installs` on the application, which is true for
 `react`) and is refused elsewhere.
+
+**When the install step runs** (TODO B1.1). Every build runs it when the marker is absent, and
+also when the project's manifests (`package.json` and whichever lockfiles it has) differ from the
+ones the last install saw: a SHA-256 of the install command and those files is written to
+`<marker>/.feldspar-install` after each successful install, hashed again *after* the install
+because npm rewrites the lockfile. A rebuild with nothing changed hashes two small files and
+starts no installer; a dependency an agent adds to `package.json` is installed by the next
+build, rather than failing it with TS2307. A marker with no stamp (installed by an older
+feldspar, or by hand) is adopted with a stamp and no install when every `dependencies` and
+`devDependencies` entry has a `node_modules/<name>/package.json`, so an upgrade does not
+reinstall every application. A project with none of the manifests keeps the marker-only check.
 
 Builds are **serialised per process** (`sc_app::build::BUILD_LOCK`, covering install, bundler
 and Deep clean's deletion), because one React build peaks at a few hundred MB and the server
@@ -12698,6 +12714,9 @@ requires the id, because v1's every-row answer has no cheap counterpart. v1's
 version, not itself a restore, whose row it equals; undo goes to the version before it, redo to
 the next one that is not a restore, and nothing to step to does nothing, as in v1. A restore to
 the version the row is already at writes nothing (`Reverser::revert_row_if_changed`).
+A row the reader may not see (below the admin, also one that does not exist) has an empty
+history in a code body, not the admin API's 404: `history` and `get_history` answer `[]`, `asOf`
+a null row, and undo and redo do nothing, as `get` answers `null`.
 `insert_history_row` and `compress_history` stay refused. A restore is refused inside a workflow
 step's transaction, which it would wait on. `write_as`'s write floor is now met by the role of the
 context the write runs under as well as the user's, which is what lets a code body restore with

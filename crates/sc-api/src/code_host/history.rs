@@ -155,7 +155,7 @@ pub(super) async fn answer(host: &TableHost<'_>, request: Json) -> Result<Json> 
         ));
     }
     match plan.what.as_str() {
-        "history" => reader.row_history(table, &key()?).await,
+        "history" => reader.row_history_or_empty(table, &key()?).await,
         "deleted" => {
             reader
                 .deleted_rows(table, plan.limit, plan.offset.unwrap_or(0))
@@ -171,7 +171,7 @@ pub(super) async fn answer(host: &TableHost<'_>, request: Json) -> Result<Json> 
                     )));
                 }
             };
-            reader.row_as_of(table, &key()?, &when).await
+            reader.row_as_of_or_none(table, &key()?, &when).await
         }
         "versions" => {
             let (table, versions) = versions(&reader, table, &key()?).await?;
@@ -250,7 +250,8 @@ impl Version {
 }
 
 /// Every version of row `key` of `table`, oldest first, after the reader's
-/// access check.
+/// access check: none for a row the reader may not see, as for one that was
+/// never there (v1's `get_history` answers an empty list for that too).
 async fn versions(
     reader: &HistoryReader<'_>,
     table: &str,
@@ -258,7 +259,7 @@ async fn versions(
 ) -> Result<(Table, Vec<Version>)> {
     let table = reader.table(table)?;
     if !reader.may_see_row(&table, key).await? {
-        return Err(crate::history::not_found(&table, key));
+        return Ok((table, Vec::new()));
     }
     let entries = history::row_history(reader.catalog, &table, key).await?;
     let now = history::row_as_of(reader.catalog, &table, key, AsOf::Seq(i64::MAX)).await?;

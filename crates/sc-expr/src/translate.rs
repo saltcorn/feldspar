@@ -21,6 +21,10 @@
 //!   — two-valued, exactly as JS. `x === null` is `x IS NULL`. Loose `==` is
 //!   translated as strict: the type-coercion table is not part of the formula
 //!   language, and the normalised rendering makes the reified side agree.
+//! - **An anonymous caller owns nothing**: an equality with a `user.x` or
+//!   `session.x` operand (other than against literal `null`) is ANDed with
+//!   "that caller is present", so `owner === user.id` does not match a null
+//!   `owner` when nobody is logged in; `!==` is the exact complement.
 //! - **Ordered comparisons keep SQL semantics**: a null operand grants nothing.
 //!   JS's `null < 5 === true` coercion is specified away; the normalised
 //!   rendering wraps ordered comparisons in null guards to match.
@@ -645,7 +649,51 @@ impl<'a> Translator<'a> {
                     "comparing the `{amb}` object itself (compare one of its fields)"
                 ))
             }
-            _ => Ok(QExpr::binary(distinct_op, self.value(l)?, self.value(r)?)),
+            _ => {
+                let compared = QExpr::binary(distinct_op, self.value(l)?, self.value(r)?);
+                Ok(self.caller_guarded(&[l, r], compared, negated))
+            }
+        }
+    }
+
+    /// An equality with a caller's field on one side (`owner === user.id`,
+    /// `owner === session.id`) holds only when that caller is present: an
+    /// anonymous caller owns nothing, so `owner === user.id` must not match the
+    /// rows whose `owner` is null. `!==` stays the exact complement (`!(a === b)`
+    /// and `a !== b` agree), so it is `NOT present OR distinct`. The literal-null
+    /// comparisons (`user.x === null`) never reach here and keep their meaning.
+    fn caller_guarded(&self, operands: &[&Ast], compared: QExpr, negated: bool) -> QExpr {
+        let mut present: Vec<QExpr> = Vec::new();
+        for amb in Ambient::CALLER {
+            if operands
+                .iter()
+                .any(|ast| self.caller_field_of(ast) == Some(amb))
+            {
+                present.push(self.ambient_truthy(amb));
+            }
+        }
+        // A caller known present (inlined) drops its guard; an absent one is
+        // *not* folded to a bare literal: `$1 AND (…)` keeps the operand typed
+        // as boolean, where a lone `$1` in a `CASE` branch is a parameter
+        // Postgres cannot type ("could not determine data type of parameter").
+        present
+            .into_iter()
+            .rev()
+            .fold(compared, |acc, is_present| match (is_present, negated) {
+                (QExpr::Lit(Value::Bool(true)), _) => acc,
+                (p, false) => QExpr::binary(QBinOp::And, p, acc),
+                (p, true) => QExpr::binary(QBinOp::Or, QExpr::unary(QUnOp::Not, p), acc),
+            })
+    }
+
+    /// The caller object (`user`/`session`) `ast` reads a field of, if it is a
+    /// direct member access on one.
+    fn caller_field_of(&self, ast: &Ast) -> Option<Ambient> {
+        match ast {
+            Ast::Member { obj, .. } => self
+                .ambient_of(obj)
+                .filter(|amb| Ambient::CALLER.contains(amb)),
+            _ => None,
         }
     }
 
@@ -1834,21 +1882,23 @@ mod tests {
     fn guc_equality_extracts_from_the_setting_and_casts() {
         let env = guc(&[("id", "uuid")]);
         let (sql, binds) = where_sql("owner === user.id", Operation::Read, &env);
+        // Guarded by "a user is set": an un-set GUC owns nothing.
         assert_eq!(
             sql,
-            "(\"books\".\"owner\" IS NOT DISTINCT FROM \
+            "((NULLIF(current_setting($1, $2), $3) IS NOT NULL) AND \
+             (\"books\".\"owner\" IS NOT DISTINCT FROM \
              CAST(jsonb_extract_path_text(\
-             CAST(NULLIF(current_setting($1, $2), $3) AS jsonb), $4) AS uuid))"
+             CAST(NULLIF(current_setting($4, $5), $6) AS jsonb), $7) AS uuid)))"
         );
-        assert_eq!(
-            binds,
-            vec![
-                Value::Text(USER_GUC.into()),
-                Value::Bool(true),
-                Value::Text(String::new()),
-                Value::Text("id".into()),
-            ]
-        );
+        let guc_read = [
+            Value::Text(USER_GUC.into()),
+            Value::Bool(true),
+            Value::Text(String::new()),
+        ];
+        let mut expected = guc_read.to_vec();
+        expected.extend(guc_read);
+        expected.push(Value::Text("id".into()));
+        assert_eq!(binds, expected);
     }
 
     #[test]
@@ -1943,28 +1993,64 @@ mod tests {
     }
 
     #[test]
-    fn an_anonymous_users_field_is_null_which_matches_null() {
-        // The documented corner of the two-valued semantics: with no user,
-        // `user.id` is null, and `owner === user.id` therefore *matches rows
-        // whose owner is null* (`null === null` is true in JS and in
-        // IS NOT DISTINCT FROM alike). A formula that must not grant
-        // anonymously writes `user && …` — bare `user` is object-or-null, so
-        // its truthiness is exactly the logged-in test.
-        let (sql, binds) = where_sql("owner === user.id", Operation::Read, &UserEnv::Inline(None));
-        assert_eq!(sql, "(\"books\".\"owner\" IS NOT DISTINCT FROM $1)");
-        assert_eq!(binds, vec![Value::Null]);
-        // The guard in action: anonymously, the whole formula folds to FALSE.
-        let (sql, binds) = where_sql(
-            "user && owner === user.id",
-            Operation::Read,
-            &UserEnv::Inline(None),
-        );
+    fn an_anonymous_caller_owns_nothing() {
+        // With no user, `user.id` is null — but an equality against a caller's
+        // field holds only when the caller is present, so `owner === user.id`
+        // does *not* match the rows whose owner is null (the bug report: an
+        // anonymous GET returned every `created_by IS NULL` row). Anonymously
+        // the comparison folds to FALSE before it reaches SQL.
+        let anon = UserEnv::Inline(None);
+        let (sql, binds) = where_sql("owner === user.id", Operation::Read, &anon);
         assert_eq!(
             (sql.as_str(), binds),
             (
                 "($1 AND (\"books\".\"owner\" IS NOT DISTINCT FROM $2))",
                 vec![Value::Bool(false), Value::Null]
             )
+        );
+        // Its negation stays the exact complement: anonymously, TRUE.
+        let (sql, binds) = where_sql("owner !== user.id", Operation::Read, &anon);
+        assert_eq!(
+            (sql.as_str(), binds),
+            (
+                "((NOT $1) OR (\"books\".\"owner\" IS DISTINCT FROM $2))",
+                vec![Value::Bool(false), Value::Null]
+            )
+        );
+        // The same for a guest session's id.
+        let (sql, binds) = where_sql("owner === session.id", Operation::Read, &anon);
+        assert!(sql.starts_with("($1 AND "), "got: {sql}");
+        assert_eq!(binds[0], Value::Bool(false));
+        // A literal-null comparison is a question about the field, not a claim
+        // of ownership, and keeps its meaning.
+        let (sql, binds) = where_sql("user.id === null", Operation::Read, &anon);
+        assert_eq!((sql.as_str(), binds), ("($1 IS NULL)", vec![Value::Null]));
+        // Logged in, nothing changes: plain null-safe equality.
+        let user = UserEnv::Inline(Some(BTreeMap::from([(
+            "id".to_owned(),
+            Value::Text("u1".to_owned()),
+        )])));
+        let (sql, _) = where_sql("owner === user.id", Operation::Read, &user);
+        assert_eq!(sql, "(\"books\".\"owner\" IS NOT DISTINCT FROM $1)");
+        // The explicit guard still works and is now merely redundant.
+        let (_, binds) = where_sql("user && owner === user.id", Operation::Read, &anon);
+        assert!(binds.contains(&Value::Bool(false)), "got: {binds:?}");
+    }
+
+    #[test]
+    fn under_rls_a_caller_field_equality_requires_the_caller() {
+        let env = UserEnv::Guc {
+            field_types: BTreeMap::new(),
+        };
+        let (sql, _) = where_sql("owner === user.id", Operation::Read, &env);
+        assert!(
+            sql.starts_with("((NULLIF(current_setting($1, $2), $3) IS NOT NULL) AND "),
+            "got: {sql}"
+        );
+        let (sql, _) = where_sql("owner !== user.id", Operation::Read, &env);
+        assert!(
+            sql.starts_with("((NOT (NULLIF(current_setting($1, $2), $3) IS NOT NULL)) OR "),
+            "got: {sql}"
         );
     }
 

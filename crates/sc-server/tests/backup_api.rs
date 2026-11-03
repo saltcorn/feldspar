@@ -3573,6 +3573,19 @@ async fn an_ownership_formula_is_restored_after_the_columns_it_reads() -> sc_err
         )
         .await;
     assert!(status.is_success(), "{body}");
+    // And a row somebody owns. The RLS table is FORCE'd, so a backup that read
+    // it with no caller context saw only what the policy grants to nobody —
+    // this row was silently left out of every archive.
+    let admin = user_id(&source, "admin@example.com").await;
+    let (status, body) = source
+        .client
+        .send(
+            "POST",
+            "/api/tables/assignment/rows",
+            Some(json!({ "id": 2, "assigned_by": admin })),
+        )
+        .await;
+    assert!(status.is_success(), "{body}");
     let archive = backup_everything(&mut source).await;
 
     let mut target = setup().await?;
@@ -3588,8 +3601,9 @@ async fn an_ownership_formula_is_restored_after_the_columns_it_reads() -> sc_err
         );
     }
     assert!(
-        report_has(&report, "restored", "1 rows into `assignment`"),
-        "the row should go in before RLS is switched on: {report}"
+        report_has(&report, "restored", "2 rows into `assignment`"),
+        "both rows, owned or not, should be backed up and go in before RLS is switched on: \
+         {report}"
     );
     let (status, tables) = target.client.send("GET", "/api/tables", None).await;
     assert_eq!(status, StatusCode::OK, "{tables}");

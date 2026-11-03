@@ -9,6 +9,9 @@
 //!
 //! - **Loose equality becomes strict**: `==`/`!=` render as `===`/`!==`. The
 //!   coercion table is not part of the formula language.
+//! - **An equality with a caller's field is caller-guarded**, as the
+//!   translator's is: `owner === user.id` renders as
+//!   `(user !== null && (owner === …))`, and `!==` as `(user === null || …)`.
 //! - **Ordered comparisons and arithmetic are null-guarded to `null`**:
 //!   `a < b` renders as `((x, y) => x === null || y === null ? null : x < y)(a, b)`,
 //!   because JS would coerce `null` to `0` (`null < 5` is `true`!) where SQL
@@ -193,8 +196,8 @@ fn render(
             UnaryOp::TypeOf => wrap_unary("typeof ", expr, locals, hoisted, out),
         },
         Ast::Binary { op, l, r } => match op {
-            BinaryOp::Eq | BinaryOp::StrictEq => infix("===", l, r, locals, hoisted, out),
-            BinaryOp::NotEq | BinaryOp::StrictNotEq => infix("!==", l, r, locals, hoisted, out),
+            BinaryOp::Eq | BinaryOp::StrictEq => equality(false, l, r, locals, hoisted, out),
+            BinaryOp::NotEq | BinaryOp::StrictNotEq => equality(true, l, r, locals, hoisted, out),
             BinaryOp::And => infix("&&", l, r, locals, hoisted, out),
             BinaryOp::Or => infix("||", l, r, locals, hoisted, out),
             BinaryOp::Nullish => infix("??", l, r, locals, hoisted, out),
@@ -283,6 +286,58 @@ fn infix(
     out.push(' ');
     render(r, locals, hoisted, out);
     out.push(')');
+}
+
+/// `===` / `!==`, caller-guarded as the translator is: with a `user.x` or
+/// `session.x` operand (other than against literal `null`) the equality holds
+/// only when that caller is present, so an anonymous `user.id` (null) does not
+/// match a null `owner`. `!==` is the exact complement.
+fn equality(
+    negated: bool,
+    l: &Ast,
+    r: &Ast,
+    locals: &mut Vec<String>,
+    hoisted: &BTreeMap<String, String>,
+    out: &mut String,
+) {
+    let op = if negated { "!==" } else { "===" };
+    let callers: Vec<&str> = if matches!(l, Ast::Null) || matches!(r, Ast::Null) {
+        Vec::new()
+    } else {
+        Ambient::CALLER
+            .iter()
+            .filter(|amb| {
+                [l, r]
+                    .iter()
+                    .any(|ast| caller_field_of(ast, locals) == Some(**amb))
+            })
+            .map(|amb| amb.as_str())
+            .collect()
+    };
+    if callers.is_empty() {
+        return infix(op, l, r, locals, hoisted, out);
+    }
+    out.push('(');
+    for name in callers {
+        out.push_str(name);
+        out.push_str(if negated {
+            " === null || "
+        } else {
+            " !== null && "
+        });
+    }
+    infix(op, l, r, locals, hoisted, out);
+    out.push(')');
+}
+
+/// The caller object (`user`/`session`) `ast` reads a member of, unshadowed.
+fn caller_field_of(ast: &Ast, locals: &[String]) -> Option<Ambient> {
+    match ast {
+        Ast::Member { obj, .. } => {
+            free_ambient(obj, locals).filter(|amb| Ambient::CALLER.contains(amb))
+        }
+        _ => None,
+    }
 }
 
 /// A null-guarded binary operator: SQL's null-propagation for ordered
@@ -414,17 +469,26 @@ mod tests {
     fn user_access_is_null_safe() {
         assert_eq!(
             js("owner === user.id"),
-            "(owner === (user === null ? null : user.id))"
+            "(user !== null && (owner === (user === null ? null : user.id)))"
         );
         // `?.` collapses into the same guard.
         assert_eq!(
             js("owner === user?.id"),
-            "(owner === (user === null ? null : user.id))"
+            "(user !== null && (owner === (user === null ? null : user.id)))"
         );
         // Computed access takes the guard too.
         assert_eq!(
             js("owner === user[title]"),
-            "(owner === (user === null ? null : user[__scKey(title)]))"
+            "(user !== null && (owner === (user === null ? null : user[__scKey(title)])))"
+        );
+        // `!==` is the complement; a literal-null comparison is unguarded.
+        assert_eq!(
+            js("owner !== session.id"),
+            "(session === null || (owner !== (session === null ? null : session.id)))"
+        );
+        assert_eq!(
+            js("user.id === null"),
+            "((user === null ? null : user.id) === null)"
         );
     }
 
@@ -432,7 +496,7 @@ mod tests {
     fn logic_and_conditionals_render_natively() {
         assert_eq!(
             js("user && owner === user.id"),
-            "(user && (owner === (user === null ? null : user.id)))"
+            "(user && (user !== null && (owner === (user === null ? null : user.id))))"
         );
         assert_eq!(js("!(owner === null)"), "(!((owner === null)))");
         assert_eq!(js("a ? b === 1 : c === 2"), "(a ? (b === 1) : (c === 2))");
