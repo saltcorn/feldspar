@@ -121,12 +121,28 @@ impl<'a> HistoryReader<'a> {
         if !self.may_see_row(&table, key).await? {
             return Err(not_found(&table, key));
         }
-        let entries = history::row_history(self.catalog, &table, key).await?;
+        self.entries_of(&table, key).await
+    }
+
+    /// The row's entries, newest first, or none when the caller may not read
+    /// the row: what a code body's `db.<table>.history(key)` answers. A row that
+    /// was never there and one the caller may not see look the same, and the
+    /// admin gets an empty list for the first, so a code body does too.
+    pub async fn row_history_or_empty(&self, table: &str, key: &str) -> Result<Json> {
+        let table = self.table(table)?;
+        if !self.may_see_row(&table, key).await? {
+            return Ok(Json::Array(Vec::new()));
+        }
+        self.entries_of(&table, key).await
+    }
+
+    async fn entries_of(&self, table: &Table, key: &str) -> Result<Json> {
+        let entries = history::row_history(self.catalog, table, key).await?;
         let emails = self.emails(entries.iter().map(|e| &e.changeset)).await?;
         Ok(Json::Array(
             entries
                 .iter()
-                .map(|e| entry_json(&table, e, &emails))
+                .map(|e| entry_json(table, e, &emails))
                 .collect(),
         ))
     }
@@ -180,9 +196,28 @@ impl<'a> HistoryReader<'a> {
     /// when it did not exist then; `removed` holds values of columns dropped
     /// since.
     pub async fn row_as_of(&self, table: &str, key: &str, as_of: &str) -> Result<Json> {
+        self.row_as_of_inner(table, key, as_of, false).await
+    }
+
+    /// [`row_as_of`](Self::row_as_of) for a code body's `asOf`: a row the caller
+    /// may not read was, as far as they can tell, not there, so `row` is null.
+    pub async fn row_as_of_or_none(&self, table: &str, key: &str, as_of: &str) -> Result<Json> {
+        self.row_as_of_inner(table, key, as_of, true).await
+    }
+
+    async fn row_as_of_inner(
+        &self,
+        table: &str,
+        key: &str,
+        as_of: &str,
+        hidden_is_absent: bool,
+    ) -> Result<Json> {
         let point = AsOf::parse(as_of)?;
         let table = self.table(table)?;
         if !self.may_see_row(&table, key).await? {
+            if hidden_is_absent {
+                return Ok(json!({ "row": Json::Null, "removed": {} }));
+            }
             return Err(not_found(&table, key));
         }
         let rebuilt = history::row_as_of(self.catalog, &table, key, point).await?;

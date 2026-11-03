@@ -2,6 +2,27 @@
 
 Changes in reverse chronological order.
 
+## A code body's history read of a row it may not see answers empty, not an error
+
+User report: `db.<table>.history(id)` run below the admin (`asUser()`, or a body run with a
+non-admin caller's authority) threw `not found: there is no history of row … that you may read`
+when the row did not exist, and a body that did not catch it failed with a 500. As the admin the
+same call answered `[]`. Below the admin, a row that does not exist and a row the caller may not
+read look the same on purpose, so the history reader refused both.
+
+- **Code API** (`crates/sc-api/src/code_host/history.rs`, `HistoryReader::row_history_or_empty`
+  and `row_as_of_or_none` in `crates/sc-api/src/history.rs`). For a row the caller may not see,
+  `db.<table>.history(key)` now answers `[]`, `asOf(key, when)` answers `{ row: null, removed: {} }`,
+  v1's `table.get_history(id)` answers `[]`, and `undo_row_changes`/`redo_row_changes` do
+  nothing. That is what the admin already got for a row that was never there, and it matches
+  `db.<table>.get(pk)`, which answers `null`. Nothing is revealed: an empty answer is the same
+  for "no such row" as for "not yours".
+- **Unchanged:** the HTTP endpoints `GET {table}/{key}/history` and `GET {table}/{key}?as_of=`
+  and the MCP tools still answer 404, as documented. A table without history, or one whose
+  `history.min_role` the caller does not meet, is still an error, and so are `restore` and
+  `revert` of a row the caller may not see.
+- Test: `v1_table_history::a_missing_row_has_empty_history_below_the_admin_too`.
+
 ## `add-user` no longer reads a password from stdin it was not asked to read
 
 User report: with stdin not a terminal, `feldspar add-user EMAIL --role ROLE` (no `--password`)

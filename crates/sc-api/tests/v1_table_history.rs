@@ -154,3 +154,59 @@ async fn undo_and_redo_step_through_versions_and_restore_goes_to_one() -> Result
     assert_eq!(what(&db).await, vec!["b"]);
     Ok(())
 }
+
+/// Below the admin, a row that was never there has no history the caller can
+/// see, and that is an empty answer, as it is for the admin, not an error a
+/// body must catch: `history` is `[]`, `get_history` is `[]`, `asOf`'s row is
+/// null and an undo does nothing.
+#[tokio::test]
+async fn a_missing_row_has_empty_history_below_the_admin_too() -> Result<()> {
+    let db = TestDb::new().await?;
+    let cat = setup(&db).await?;
+    db.on_teardown(cat.teardown_hook());
+    let op = schema_edit::Operation::AlterTable {
+        table: "notes".to_owned(),
+        settings: schema_edit::TableSettings {
+            min_role_read: Some(sc_types::Role::of(80)),
+            history_min_role: Some(sc_types::Role::of(80)),
+            ..Default::default()
+        },
+    };
+    schema_edit::apply(&cat, &[op], &schema_edit::ApplyOptions::default()).await?;
+    cat.reload().await?;
+
+    let host = TableHost::new(&cat).caused_by(
+        sc_types::Role::of(80),
+        Some(json!({ "id": uuid::Uuid::new_v4().to_string(), "role": 80 })),
+    );
+    let snapshot = schema_snapshot(&cat)?;
+    let out = CodeRuntime::with_workers(1)
+        .run(CodeCall {
+            code: format!(
+                "const {{ Table }} = __scMakeV1Api(db.__scSend, __scSchema({}), null);\n\
+                 const notes = Table.findOne(\"notes\");\n\
+                 const mine = db.notes.asUser();\n\
+                 return {{\n\
+                   there: (await mine.history(1)).length,\n\
+                   missing: await mine.history(99),\n\
+                   v1: await notes.get_history(99),\n\
+                   asOf: await mine.asOf(99, \"2026-01-01\"),\n\
+                 }};",
+                snapshot.generation()
+            ),
+            host: Some(&host),
+            schema: Some(&snapshot),
+            ..CodeCall::default()
+        })
+        .await?;
+    assert_eq!(
+        out,
+        json!({
+            "there": 3,
+            "missing": [],
+            "v1": [],
+            "asOf": { "row": null, "removed": {} },
+        })
+    );
+    Ok(())
+}

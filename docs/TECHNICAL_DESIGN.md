@@ -12522,6 +12522,9 @@ requires the id, because v1's every-row answer has no cheap counterpart. v1's
 version, not itself a restore, whose row it equals; undo goes to the version before it, redo to
 the next one that is not a restore, and nothing to step to does nothing, as in v1. A restore to
 the version the row is already at writes nothing (`Reverser::revert_row_if_changed`).
+A row the reader may not see (below the admin, also one that does not exist) has an empty
+history in a code body, not the admin API's 404: `history` and `get_history` answer `[]`, `asOf`
+a null row, and undo and redo do nothing, as `get` answers `null`.
 `insert_history_row` and `compress_history` stay refused. A restore is refused inside a workflow
 step's transaction, which it would wait on. `write_as`'s write floor is now met by the role of the
 context the write runs under as well as the user's, which is what lets a code body restore with
