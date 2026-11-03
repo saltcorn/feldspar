@@ -320,6 +320,12 @@ async fn the_size_limit_refuses_an_edit_and_a_large_document_opens() -> Result<(
         .unwrap();
     seat.apply(&fine).unwrap();
     drop(seat);
+    // Let the room close (and persist) before writing below: on SQLite the
+    // two writes would otherwise race for the table's lock.
+    assert!(
+        eventually(|| small.counts() == (0, 0)).await,
+        "the room closed"
+    );
 
     // A document over 1 MB, stored, opens whole under the default limit.
     let doc = CollabDoc::empty(DocShape::new("default", RootKind::Text));
@@ -476,5 +482,50 @@ async fn live_document_reads_and_writes_from_the_server() -> Result<()> {
         .unwrap_err()
         .to_string();
     assert!(err.contains("not text"), "{err}");
+    Ok(())
+}
+
+/// Wait until `cond` holds, for up to two seconds.
+async fn eventually(mut cond: impl FnMut() -> bool) -> bool {
+    for _ in 0..200 {
+        if cond() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    cond()
+}
+
+/// Field report (PaddiPad, 2026-11-02): a pad's stored mirror lagged hours
+/// behind the live document. A room that is no longer the registry's — its
+/// stream's configuration changed while it was open, so later joiners got a
+/// new room — still has members editing, and must keep persisting on the
+/// debounce rather than only when its last member leaves.
+#[tokio::test]
+async fn a_room_replaced_in_the_registry_still_persists_on_the_debounce() -> Result<()> {
+    let f = fixture().await?;
+    let rooms = DocRooms::new(2 * 1024 * 1024, Duration::from_millis(20));
+    let old = target("1", RootKind::Text, MirrorFormat::Text);
+    let (seat, sync) = rooms.join(&f.catalog, &old, DocInbox::new()).await?;
+    // The stream's configuration changes: a later join opens a new room
+    // under the same key.
+    let new = target("1", RootKind::Text, MirrorFormat::Json);
+    let (other, _) = rooms.join(&f.catalog, &new, DocInbox::new()).await?;
+    assert!(!Arc::ptr_eq(seat.room(), other.room()));
+
+    // The old room's member keeps typing, and stays.
+    seat.apply(
+        &client(&sync, RootKind::Text)
+            .edit_text(0, 0, "typed")
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        eventually(|| f.writes.updates.load(Ordering::SeqCst) >= 1).await,
+        "the debounced persist ran for the replaced room"
+    );
+    let (body, mirror) = stored(&f.catalog, "1").await?;
+    assert_eq!(client(&body.unwrap(), RootKind::Text).text(), "typed");
+    assert_eq!(mirror, json!("typed"));
     Ok(())
 }

@@ -217,17 +217,27 @@ impl DocRooms {
         })
     }
 
-    /// The room for `target`, opened (and its document loaded) if it was not.
-    /// The caller is not a member until it [`join`](DocRoom::join)s.
-    async fn room(&self, catalog: &Arc<Catalog>, target: &DocTarget) -> Result<Arc<DocRoom>> {
+    /// Seat a member whose connection's inbox is `inbox` in the room for
+    /// `target`, opened (and its document loaded) if it was not. The seat is
+    /// taken under the registry's lock, so a room closing with its last member
+    /// cannot be forgotten between finding it and joining it — a member of a
+    /// forgotten room would edit a copy no later joiner shares.
+    async fn seat(
+        &self,
+        catalog: &Arc<Catalog>,
+        target: &DocTarget,
+        inbox: Arc<DocInbox>,
+    ) -> Result<DocSeat> {
+        let id = self.next_seat.fetch_add(1, Ordering::Relaxed);
         let room = {
             let mut rooms = lock(&self.rooms);
-            match rooms.get(&target.room_key()) {
+            let room = match rooms.get(&target.room_key()) {
                 // A configuration change (a new root, a new field) is a new
-                // room: the old one closes with its last member.
+                // room: the old one closes with its last member, persisting
+                // on its own debounce until then.
                 Some(room) if room.target == *target => Arc::clone(room),
                 _ => {
-                    let room = Arc::new(DocRoom {
+                    let room = Arc::new_cyclic(|me| DocRoom {
                         target: target.clone(),
                         catalog: Arc::clone(catalog),
                         doc: OnceCell::new(),
@@ -240,14 +250,20 @@ impl DocRooms {
                         max_doc_bytes: self.max_doc_bytes,
                         debounce: self.debounce,
                         rooms: self.me.clone(),
+                        me: me.clone(),
                     });
                     rooms.insert(target.room_key(), Arc::clone(&room));
                     room
                 }
-            }
+            };
+            lock(&room.members).insert(id, inbox);
+            room
         };
-        room.loaded().await?;
-        Ok(room)
+        // From here the seat leaves (and the room closes) when dropped, also
+        // when the document fails to load.
+        let seat = DocSeat { room, id };
+        seat.room.loaded().await?;
+        Ok(seat)
     }
 
     /// Join the document `target` names as a member whose connection's inbox
@@ -259,11 +275,9 @@ impl DocRooms {
         target: &DocTarget,
         inbox: Arc<DocInbox>,
     ) -> Result<(DocSeat, Vec<u8>)> {
-        let room = self.room(catalog, target).await?;
-        let id = self.next_seat.fetch_add(1, Ordering::Relaxed);
-        lock(&room.members).insert(id, inbox);
-        let state = room.state()?;
-        Ok((DocSeat { room, id }, state))
+        let seat = self.seat(catalog, target, inbox).await?;
+        let state = seat.room.state()?;
+        Ok((seat, state))
     }
 
     /// Open `target` for a server-side writer (`live.document`) — a member
@@ -314,6 +328,9 @@ pub struct DocRoom {
     max_doc_bytes: usize,
     debounce: Duration,
     rooms: Weak<DocRooms>,
+    /// This room, for the debounced persist it spawns. Not the registry's
+    /// entry: a room replaced there still has members, and keeps persisting.
+    me: Weak<DocRoom>,
 }
 
 impl std::fmt::Debug for DocRoom {
@@ -447,7 +464,7 @@ impl DocRoom {
         if self.scheduled.swap(true, Ordering::AcqRel) {
             return;
         }
-        let Some(room) = self.self_arc() else {
+        let Some(room) = self.me.upgrade() else {
             self.scheduled.store(false, Ordering::Release);
             return;
         };
@@ -467,13 +484,6 @@ impl DocRoom {
                 );
             }
         });
-    }
-
-    /// This room as an `Arc`, from the registry that holds it.
-    fn self_arc(&self) -> Option<Arc<DocRoom>> {
-        let rooms = self.rooms.upgrade()?;
-        let room = rooms.get(&self.target.room_key())?;
-        std::ptr::eq(room.as_ref(), self).then_some(room)
     }
 
     /// Persist now, if anything changed since the last persist. Answers

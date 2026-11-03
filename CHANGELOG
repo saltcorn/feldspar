@@ -2,6 +2,36 @@
 
 Changes in reverse chronological order.
 
+## Live documents: list items in the text mirror, and a mirror that lagged hours behind
+
+Field report (PaddiPad): the plain text of a TipTap (`xml` root) document ran the items of a
+bullet or task list together — `eins / zwei / drei` was mirrored as `einszweidrei` — and so did
+paragraphs inside one item. Separately, on 2026-11-02 a pad's stored mirror (`doc_text`) was
+hours behind the live document.
+
+- **The text walk** (`CollabDoc::text`, `crates/sc-live/src/doc.rs`), which is the `text_mirror`
+  with `mirror_format: text` and what `live.document` reads: it broke lines only between top-level
+  blocks. It now gives one line per textblock: every list item, every paragraph inside an item,
+  every table cell. A code block keeps its own lines, and a `hardBreak` is a newline. Top-level
+  paragraphs and headings read as before. A stored mirror is rewritten at the document's next
+  persist. Test: `doc::tests::nested_blocks_of_an_xml_root_read_one_line_each`.
+- **The lag** (`crates/sc-live/src/docroom.rs`): a room ran its debounced persist only while it
+  was still the one the registry held for its key. A room that was no longer held — because the
+  stream's configuration changed while it was open, so later joiners got a new room — never
+  persisted on the debounce. Its members' edits reached the row only when the last of them left,
+  which for a pad left open can be hours. A room now keeps a weak reference to itself for its
+  persists, so it persists on its own debounce whether or not the registry still holds it.
+  Test: `documents::a_room_replaced_in_the_registry_still_persists_on_the_debounce`. It failed
+  before the fix.
+- A smaller race of the same kind is closed. A member joining a room just as its last member left
+  could be seated in a room the registry was forgetting. That member then edited a copy that
+  later joiners did not share, and it was persisted only on close. A seat is now taken under the
+  registry's lock (`DocRooms::seat`), and a seat whose document fails to load leaves through its
+  `Drop`, as any seat does.
+- The test `documents::the_size_limit_refuses_an_edit_and_a_large_document_opens` failed about 1
+  run in 4 ("database table is locked"): the closing room's persist raced the test's own write.
+  It now waits for the room to close first.
+
 ## Mail module: a folder deleted between a LIST and its SELECT
 
 User report: a folder deleted on the server stayed in the runner's memory until the next 5-minute

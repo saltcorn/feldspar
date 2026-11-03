@@ -202,7 +202,7 @@ impl CollabDoc {
     }
 
     /// The document's plain text: a `text` root's string, or the text walked
-    /// out of an `xml` root — one line per block element, formatting marks
+    /// out of an `xml` root — one line per textblock (every list item, paragraph and table cell), formatting marks
     /// left out.
     pub fn text(&self) -> String {
         match self.shape.kind {
@@ -216,9 +216,7 @@ impl CollabDoc {
                 let txn = self.doc.transact();
                 let mut lines = Vec::new();
                 for child in xml.children(&txn) {
-                    let mut line = String::new();
-                    plain_text(&child, &txn, &mut line);
-                    lines.push(line);
+                    block_lines(&child, &txn, &mut lines);
                 }
                 lines.join("\n")
             }
@@ -320,8 +318,54 @@ fn describe(kind: RootKind) -> &'static str {
     }
 }
 
-/// Append the plain text under `node` to `out`.
-fn plain_text<T: ReadTxn>(node: &XmlOut, txn: &T, out: &mut String) {
+/// Append the lines of the block `node` to `lines`. A textblock — an element
+/// holding text, such as a paragraph, a heading or a code block — is one line
+/// (a code block's own newlines kept); a container of blocks — a list, a list
+/// item, a blockquote, a table, a row, a cell — is the lines of its children,
+/// so every item, every paragraph inside an item and every cell is a line. An
+/// element with nothing in it (an empty paragraph) is an empty line.
+fn block_lines<T: ReadTxn>(node: &XmlOut, txn: &T, lines: &mut Vec<String>) {
+    match node {
+        XmlOut::Text(_) => {
+            let mut line = String::new();
+            inline_text(node, txn, &mut line);
+            lines.push(line);
+        }
+        XmlOut::Element(e) => {
+            let children: Vec<XmlOut> = e.children(txn).collect();
+            let textblock = children.is_empty()
+                || children
+                    .iter()
+                    .any(|c| matches!(c, XmlOut::Text(_)) || is_line_break(c));
+            if textblock {
+                let mut line = String::new();
+                for child in &children {
+                    inline_text(child, txn, &mut line);
+                }
+                lines.push(line);
+            } else {
+                for child in &children {
+                    block_lines(child, txn, lines);
+                }
+            }
+        }
+        XmlOut::Fragment(f) => {
+            for child in f.children(txn) {
+                block_lines(&child, txn, lines);
+            }
+        }
+    }
+}
+
+/// ProseMirror's `hardBreak` (TipTap's `<br>`): a line break inside a
+/// textblock.
+fn is_line_break(node: &XmlOut) -> bool {
+    matches!(node, XmlOut::Element(e) if e.tag().as_ref() == "hardBreak")
+}
+
+/// Append the text inside a textblock's child `node` to `out`, formatting
+/// marks left out; a hard break is a newline.
+fn inline_text<T: ReadTxn>(node: &XmlOut, txn: &T, out: &mut String) {
     match node {
         XmlOut::Text(t) => {
             for chunk in t.diff(txn, YChange::identity) {
@@ -330,14 +374,15 @@ fn plain_text<T: ReadTxn>(node: &XmlOut, txn: &T, out: &mut String) {
                 }
             }
         }
+        XmlOut::Element(_) if is_line_break(node) => out.push('\n'),
         XmlOut::Element(e) => {
             for child in e.children(txn) {
-                plain_text(&child, txn, out);
+                inline_text(&child, txn, out);
             }
         }
         XmlOut::Fragment(f) => {
             for child in f.children(txn) {
-                plain_text(&child, txn, out);
+                inline_text(&child, txn, out);
             }
         }
     }
@@ -367,6 +412,7 @@ pub fn stored_text(shape: &DocShape, stored: Option<&[u8]>) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yrs::XmlElementRef;
 
     fn text_doc() -> CollabDoc {
         CollabDoc::empty(DocShape::new("default", RootKind::Text))
@@ -416,6 +462,60 @@ mod tests {
         // And a text edit on an xml root is refused, saying why.
         let err = d.edit_text(0, 0, "x").unwrap_err().to_string();
         assert!(err.contains("is xml, not text"), "{err}");
+    }
+
+    /// Field report (PaddiPad): a bullet list `eins / zwei / drei` was
+    /// mirrored as `einszweidrei`. Every list item, every paragraph inside an
+    /// item, every table cell is a line; a code block keeps its lines and a
+    /// hard break is one.
+    #[test]
+    fn nested_blocks_of_an_xml_root_read_one_line_each() {
+        let d = CollabDoc::empty(DocShape::new("default", RootKind::Xml));
+        {
+            let xml = d.xml_ref();
+            let mut txn = d.doc.transact_mut();
+            let block = |txn: &mut yrs::TransactionMut, parent: &XmlElementRef, tag: &str| {
+                parent.push_back(txn, XmlElementPrelim::empty(tag))
+            };
+            let para = |txn: &mut yrs::TransactionMut, parent: &XmlElementRef, text: &str| {
+                let p = parent.push_back(txn, XmlElementPrelim::empty("paragraph"));
+                p.push_back(txn, XmlTextPrelim::new(text));
+            };
+            let h = xml.push_back(&mut txn, XmlElementPrelim::empty("heading"));
+            h.push_back(&mut txn, XmlTextPrelim::new("Liste"));
+            let list = xml.push_back(&mut txn, XmlElementPrelim::empty("bulletList"));
+            for word in ["eins", "zwei", "drei"] {
+                let item = block(&mut txn, &list, "listItem");
+                para(&mut txn, &item, word);
+            }
+            // An item with two paragraphs and a nested task list.
+            let item = block(&mut txn, &list, "listItem");
+            para(&mut txn, &item, "vier");
+            para(&mut txn, &item, "fünf");
+            let tasks = block(&mut txn, &item, "taskList");
+            let task = block(&mut txn, &tasks, "taskItem");
+            para(&mut txn, &task, "sechs");
+            // A table, a code block and a hard break.
+            let table = xml.push_back(&mut txn, XmlElementPrelim::empty("table"));
+            let row = block(&mut txn, &table, "tableRow");
+            for cell in ["a1", "b1"] {
+                let c = block(&mut txn, &row, "tableCell");
+                para(&mut txn, &c, cell);
+            }
+            let code = xml.push_back(&mut txn, XmlElementPrelim::empty("codeBlock"));
+            code.push_back(&mut txn, XmlTextPrelim::new("let x;\nlet y;"));
+            let p = xml.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            p.push_back(&mut txn, XmlTextPrelim::new("vor"));
+            p.push_back(&mut txn, XmlElementPrelim::empty("hardBreak"));
+            p.push_back(&mut txn, XmlTextPrelim::new("nach"));
+            xml.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            let p = xml.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            p.push_back(&mut txn, XmlTextPrelim::new("Ende"));
+        }
+        assert_eq!(
+            d.text(),
+            "Liste\neins\nzwei\ndrei\nvier\nfünf\nsechs\na1\nb1\nlet x;\nlet y;\nvor\nnach\n\nEnde"
+        );
     }
 
     #[test]
