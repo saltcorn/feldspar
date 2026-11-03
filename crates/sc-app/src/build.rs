@@ -287,8 +287,10 @@ pub struct BuildReport {
     /// The path the generated TypeScript client was emitted to, when the build
     /// went through [`build_application`] and the app declares one.
     pub client_path: Option<String>,
-    /// Whether dependencies were installed as part of this build — true only on
-    /// the first build of a project (or after its `node_modules` went away).
+    /// Whether dependencies were installed as part of this build — on the first
+    /// build of a project, after its `node_modules` went away, or after its
+    /// `package.json` or lockfile changed since the last install
+    /// ([`INSTALL_STAMP`]).
     pub installed: bool,
     /// Whether the bundler was skipped because nothing it reads had changed
     /// since its last successful run, and the bundle is that run's output
@@ -450,9 +452,9 @@ pub async fn build_application(
 /// saved, so the preview shows the change in the time the bundler takes and no
 /// more.
 ///
-/// [`build_application`] less three things a save does not change: the
-/// generated client and runtime are not rewritten, the install step is not
-/// run, and a server-rendered site is not prerendered — its prerendered pages
+/// [`build_application`] less two things a save does not change: the
+/// generated client and runtime are not rewritten, and a server-rendered site
+/// is not prerendered — its prerendered pages
 /// are rendered per request until the next full build, which is slower and
 /// otherwise the same. When dependencies have never been installed it is a
 /// full build, because without them the bundler cannot run at all.
@@ -478,7 +480,9 @@ pub async fn build_application_quick(
         );
         return Ok(report);
     }
-    let mut report = run_build_with(&source.build, &root, false).await?;
+    // The install step still runs if the manifests changed (a dependency added
+    // between saves); when they did not, it is two small files hashed.
+    let mut report = run_build(&source.build, &root).await?;
     report.git_repo = store.is_git_repo();
     if source.build.server_entry.is_some() {
         report.stdout.push_str(
@@ -1319,11 +1323,6 @@ fn file_tail(path: &Path, bytes: usize) -> String {
 /// Catalog-free so it is testable without a database; [`build_app`] wraps it.
 /// [`BuildReport::git_repo`] is always `false` here — only the store knows.
 pub async fn run_build(spec: &BuildSpec, root: &Path) -> Result<BuildReport> {
-    run_build_with(spec, root, true).await
-}
-
-/// [`run_build`], running the install step first only when `install` says to.
-async fn run_build_with(spec: &BuildSpec, root: &Path, install: bool) -> Result<BuildReport> {
     let source_dir = resolve_under(root, &spec.source_dir)?;
     if !source_dir.is_dir() {
         return Err(Error::config(format!(
@@ -1335,11 +1334,7 @@ async fn run_build_with(spec: &BuildSpec, root: &Path, install: bool) -> Result<
     // One build at a time, install included; see [`BUILD_LOCK`].
     let _serialised = BUILD_LOCK.lock().await;
 
-    let install_log = if install {
-        run_install(spec.install.as_ref(), &source_dir, &BTreeMap::new()).await?
-    } else {
-        None
-    };
+    let install_log = run_install(spec.install.as_ref(), &source_dir, &BTreeMap::new()).await?;
 
     let output = run_bundler(spec, &source_dir).await.with_context(|| {
         format!(
@@ -1556,7 +1551,12 @@ impl NpmScript {
 static BUILD_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Install the app's dependencies when the [`BuildSpec`]'s install step says to
-/// and its marker directory is absent (TODO §2.3).
+/// and its marker directory is absent (TODO §2.3), or is present but was
+/// installed from different manifests than the project has now (TODO B1.1):
+/// a dependency added to `package.json` after the first build must reach
+/// `node_modules`, or the build fails on an import it cannot resolve. The
+/// check is a hash of the manifests against [`INSTALL_STAMP`], so a rebuild
+/// with nothing changed starts no installer.
 ///
 /// Called only with [`BUILD_LOCK`] held, which is what keeps two installs off
 /// the installer's cache at once.
@@ -1577,9 +1577,27 @@ async fn run_install(
     let Some(install) = install else {
         return Ok(None);
     };
-    if source_dir.join(&install.marker).exists() {
-        return Ok(None);
+    let marker = source_dir.join(&install.marker);
+    let stamp = marker.join(INSTALL_STAMP);
+    let wanted = manifest_hash(install, source_dir)?;
+    if marker.exists() {
+        match (&wanted, std::fs::read_to_string(&stamp)) {
+            // No manifest to compare against: the marker alone decides, as it
+            // always has.
+            (None, _) => return Ok(None),
+            (Some(wanted), Ok(seen)) if seen.trim() == wanted => return Ok(None),
+            // Installed before stamps existed (or by hand): adopt the tree
+            // rather than reinstall every application on upgrade, unless a
+            // declared dependency is plainly missing from it.
+            (Some(wanted), Err(_)) if declared_dependencies_present(source_dir, &marker) => {
+                write_install_stamp(&stamp, wanted);
+                return Ok(None);
+            }
+            _ => {}
+        }
     }
+    // A stale stamp must not survive an install that fails half-way.
+    let _ = std::fs::remove_file(&stamp);
 
     let line = format!("{} {}", install.command, install.args.join(" "));
     let output = Command::new(&install.command)
@@ -1606,7 +1624,91 @@ async fn run_install(
             tail(&stderr, &stdout)
         )));
     }
+    // Hashed again, after the install: `npm install` rewrites the lockfile, and
+    // a stamp of the files as they were before would never match again.
+    if let Some(after) = manifest_hash(install, source_dir)? {
+        write_install_stamp(&stamp, &after);
+    }
     Ok(Some(format!("{stdout}{stderr}")))
+}
+
+/// The file, inside the install marker, recording [`manifest_hash`] as of the
+/// last install. Inside the marker so that deleting `node_modules` (by hand, or
+/// [`remove_dependencies`]) deletes it too.
+pub const INSTALL_STAMP: &str = ".feldspar-install";
+
+/// The files whose contents decide what an install puts in the marker
+/// directory. Those absent from a project are skipped.
+const INSTALL_MANIFESTS: &[&str] = &[
+    "package.json",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+];
+
+/// A hash of the install command and the project's manifests, or `None` when
+/// the project has none of [`INSTALL_MANIFESTS`] (then nothing can say the
+/// install is stale, and the marker's presence is all there is to go on).
+///
+/// Contents rather than modification times: a git checkout or a restored
+/// backup resets the times without changing what is declared.
+fn manifest_hash(install: &InstallSpec, source_dir: &Path) -> Result<Option<String>> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(install.command.as_bytes());
+    for arg in &install.args {
+        hasher.update([0]);
+        hasher.update(arg.as_bytes());
+    }
+    let mut any = false;
+    for name in INSTALL_MANIFESTS {
+        let path = source_dir.join(name);
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| path.display().to_string()),
+        };
+        any = true;
+        hasher.update([0]);
+        hasher.update(name.as_bytes());
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+    }
+    Ok(any.then(|| format!("{:x}", hasher.finalize())))
+}
+
+/// Whether every package `package.json` declares in `dependencies` and
+/// `devDependencies` has a directory in `node_modules` — for a tree installed
+/// before [`INSTALL_STAMP`] existed. Optional dependencies are left out, since
+/// one legitimately absent on this platform is not a reason to install.
+///
+/// A marker that is not `node_modules`, or a manifest that does not parse, is
+/// "cannot tell", which installs: the install is the step that is always right.
+fn declared_dependencies_present(source_dir: &Path, marker: &Path) -> bool {
+    if marker.file_name().is_none_or(|n| n != "node_modules") {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(source_dir.join("package.json")) else {
+        return false;
+    };
+    let Ok(manifest) = serde_json::from_str::<Json>(&text) else {
+        return false;
+    };
+    ["dependencies", "devDependencies"]
+        .iter()
+        .filter_map(|key| manifest.get(key)?.as_object())
+        .flat_map(|deps| deps.keys())
+        .all(|name| marker.join(name).join("package.json").is_file())
+}
+
+/// Record `hash` as what the marker directory was installed from. Best effort:
+/// a stamp that cannot be written costs one more install next build, which is
+/// not worth failing this one over.
+fn write_install_stamp(stamp: &Path, hash: &str) {
+    if stamp.parent().is_some_and(Path::is_dir) {
+        let _ = std::fs::write(stamp, format!("{hash}\n"));
+    }
 }
 
 /// Join a store-relative path onto `root`, rejecting anything that escapes it.
@@ -2528,6 +2630,110 @@ touch ran
         let report = run_build(&spec, tmp.path()).await.unwrap();
         assert!(!report.installed);
         assert_eq!(report.install_log, None);
+    }
+
+    /// An npm-shaped project for the stamp tests: a `package.json` declaring
+    /// `deps`, and an installer that counts its runs in `installs.log` and
+    /// rewrites the lockfile, as `npm install` does.
+    fn stamped_project(root: &Path, deps: &[&str]) -> (PathBuf, BuildSpec) {
+        good_source(root);
+        let web = root.join("web");
+        write_manifest(&web, deps);
+        write_script(
+            &web,
+            "install.sh",
+            "#!/bin/sh\nset -e\necho run >> installs.log\nmkdir -p node_modules\n\
+             date +%s%N > package-lock.json\n",
+        );
+        let mut spec = spec(&["build.sh"]);
+        spec.install = Some(install_step());
+        (web, spec)
+    }
+
+    fn write_manifest(web: &Path, deps: &[&str]) {
+        let deps: serde_json::Map<String, Json> = deps
+            .iter()
+            .map(|d| ((*d).to_owned(), Json::from("^1.0.0")))
+            .collect();
+        let manifest = serde_json::json!({ "name": "todo", "dependencies": deps });
+        std::fs::write(web.join("package.json"), manifest.to_string()).unwrap();
+    }
+
+    fn installs(web: &Path) -> usize {
+        std::fs::read_to_string(web.join("installs.log"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+
+    /// The user report (TODO B1.1): a dependency added after the first build
+    /// never reached `node_modules`, because the marker was all that was
+    /// checked, and the build failed on its import. Now a changed manifest
+    /// installs again, and an unchanged one — every other rebuild — does not,
+    /// even though the installer rewrote the lockfile the first time.
+    #[tokio::test]
+    async fn a_dependency_added_after_the_first_build_is_installed() {
+        let tmp = TempDir::new("stampadd");
+        let (web, spec) = stamped_project(tmp.path(), &["react"]);
+
+        assert!(run_build(&spec, tmp.path()).await.unwrap().installed);
+        assert!(web.join("node_modules").join(INSTALL_STAMP).is_file());
+        assert!(!run_build(&spec, tmp.path()).await.unwrap().installed);
+        assert_eq!(installs(&web), 1);
+
+        write_manifest(&web, &["react", "dayjs"]);
+        let report = run_build(&spec, tmp.path()).await.unwrap();
+        assert!(report.installed);
+        assert_eq!(installs(&web), 2);
+
+        assert!(!run_build(&spec, tmp.path()).await.unwrap().installed);
+        assert_eq!(installs(&web), 2);
+    }
+
+    /// A tree installed by an older feldspar has no stamp. Reinstalling every
+    /// application on upgrade is the cost B1.1 avoids: a tree holding every
+    /// declared dependency is adopted with a stamp and no install, and one
+    /// missing a declared dependency is installed.
+    #[tokio::test]
+    async fn an_unstamped_tree_is_adopted_only_when_it_holds_every_dependency() {
+        let tmp = TempDir::new("stampadopt");
+        let (web, spec) = stamped_project(tmp.path(), &["react", "@tanstack/query"]);
+        for dep in ["react", "@tanstack/query"] {
+            let dir = web.join("node_modules").join(dep);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("package.json"), "{}").unwrap();
+        }
+
+        assert!(!run_build(&spec, tmp.path()).await.unwrap().installed);
+        assert!(web.join("node_modules").join(INSTALL_STAMP).is_file());
+        assert_eq!(installs(&web), 0);
+
+        let tmp = TempDir::new("stampmissing");
+        let (web, spec) = stamped_project(tmp.path(), &["react", "dayjs"]);
+        std::fs::create_dir_all(web.join("node_modules/react")).unwrap();
+        std::fs::write(web.join("node_modules/react/package.json"), "{}").unwrap();
+
+        assert!(run_build(&spec, tmp.path()).await.unwrap().installed);
+        assert_eq!(installs(&web), 1);
+    }
+
+    /// An install that fails leaves no stamp behind, so the next build tries
+    /// again rather than trusting a half-written tree.
+    #[tokio::test]
+    async fn a_failed_install_leaves_no_stamp() {
+        let tmp = TempDir::new("stampfail");
+        let (web, spec) = stamped_project(tmp.path(), &["react"]);
+        run_build(&spec, tmp.path()).await.unwrap();
+
+        write_manifest(&web, &["react", "no-such-package"]);
+        write_script(
+            &web,
+            "install.sh",
+            "#!/bin/sh\necho 'E404 no-such-package' >&2\nexit 1\n",
+        );
+        let err = run_build(&spec, tmp.path()).await.unwrap_err().to_string();
+        assert!(err.contains("E404"), "{err}");
+        assert!(!web.join("node_modules").join(INSTALL_STAMP).exists());
     }
 
     /// The installer's cache is one directory per machine and npm does not

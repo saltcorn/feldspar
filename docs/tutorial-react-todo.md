@@ -94,7 +94,8 @@ The server has written a complete Vite + React + TypeScript project into `/srv/a
 On the app's row, press **Build**. The server:
 
 1. regenerates the typed client and hooks from *this app's* endpoints,
-2. runs `npm install` if the project's dependencies are not installed yet (first build only),
+2. runs `npm install` if the project's dependencies are not installed yet, or if `package.json` or
+   `package-lock.json` changed since the last install (a dependency was added, say),
 3. runs `npm run build` — which type-checks (`tsc --noEmit`) and then bundles with Vite, and
 4. serves the result on the app's subdomain, with no restart.
 

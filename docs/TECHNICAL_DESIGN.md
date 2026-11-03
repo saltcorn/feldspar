@@ -6877,8 +6877,9 @@ the resizer anywhere else. Resizing at request time rather than build time is wh
 server-rendered page choose a size from data.
 
 **The dev loop.** `buildApplication?quick=true` (`sc_app::build_application_quick`) is the
-bundler alone: no install step, no regenerated client, no prerendering (those pages render per
-request until the next full build); with no dependencies installed yet it is a full build. The
+bundler alone: no regenerated client, no prerendering (those pages render per request until the
+next full build), and the install step only when the manifests changed (below); with no
+dependencies installed yet it is a full build. The
 IDE's **Build on save** switch runs it for the application whose source holds the saved file,
 once per burst of saves and never two at a time.
 
@@ -7617,6 +7618,17 @@ hand. It deletes the install step's marker directory (`node_modules`), then buil
 does, and that build installs from scratch because the marker is gone. It is offered only where
 the build installs dependencies itself (`installs` on the application, which is true for
 `react`) and is refused elsewhere.
+
+**When the install step runs** (TODO B1.1). Every build runs it when the marker is absent, and
+also when the project's manifests (`package.json` and whichever lockfiles it has) differ from the
+ones the last install saw: a SHA-256 of the install command and those files is written to
+`<marker>/.feldspar-install` after each successful install, hashed again *after* the install
+because npm rewrites the lockfile. A rebuild with nothing changed hashes two small files and
+starts no installer; a dependency an agent adds to `package.json` is installed by the next
+build, rather than failing it with TS2307. A marker with no stamp (installed by an older
+feldspar, or by hand) is adopted with a stamp and no install when every `dependencies` and
+`devDependencies` entry has a `node_modules/<name>/package.json`, so an upgrade does not
+reinstall every application. A project with none of the manifests keeps the marker-only check.
 
 Builds are **serialised per process** (`sc_app::build::BUILD_LOCK`, covering install, bundler
 and Deep clean's deletion), because one React build peaks at a few hundred MB and the server

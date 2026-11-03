@@ -890,6 +890,17 @@ on, or described it wrongly.
   default. A default already covers the `created_*` pair (`user && user.id`); `updated_*`
   needs a value on every update, which nothing supplies today.
 
+## B1 — Reinstall dependencies when the manifest changes
+
+User report (retested 2026-10-29): `feldspar build-app` and the MCP `buildApplication` never run
+`npm install` once `node_modules` exists, so a newly added dependency fails the build with TS2307.
+
+- [x] **B1.1** The install step runs when its marker is absent **or** the project's manifests
+  (`package.json` and lockfiles) differ from the ones the last install saw, recorded as a content
+  hash in `<marker>/.feldspar-install`. An existing `node_modules` with no stamp is adopted
+  without an install when every declared dependency is present. The quick (dev-loop) build uses
+  the same check.
+
 ---
 
 ## Open questions

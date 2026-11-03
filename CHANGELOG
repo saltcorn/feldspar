@@ -2,6 +2,36 @@
 
 Changes in reverse chronological order.
 
+## A dependency added after the first build is installed (TODO B1.1)
+
+User report (retested 2026-10-29): `feldspar build-app` and the MCP `buildApplication` did not
+run `npm install` once `node_modules` existed, so a dependency added to `package.json` later
+failed the build with TS2307 "Cannot find module". The install step checked only that its
+marker directory existed.
+
+- **The install step** (`sc-app` `build.rs`, `run_install`) now also runs when the project's
+  manifests (`package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`,
+  `pnpm-lock.yaml`, whichever exist) differ from what the last install saw. After each successful
+  install a SHA-256 of the install command and those files goes to `node_modules/.feldspar-install`
+  (`INSTALL_STAMP`). The hash is taken after the install, because npm rewrites the lockfile. A
+  rebuild with nothing changed only hashes the files and starts no process. Every path that
+  builds goes through this: the Build button, `feldspar build-app`, MCP `buildApplication`, the
+  agents' build/check tools, `typecheck_application`, target builds and boot builds.
+- **Upgrading does not reinstall every app**: a `node_modules` with no stamp is adopted (stamped,
+  no install) when every `dependencies`/`devDependencies` entry has a
+  `node_modules/<name>/package.json`; otherwise it installs. A project with no manifest keeps the
+  old marker-only check. No database change.
+- **The quick dev-loop build** (`build_application_quick`, IDE "Build on save") now runs the same
+  check, so a dependency added between saves is installed too. It used to skip the install step
+  entirely. `run_build_with` is folded back into `run_build`.
+- A failed install removes the stamp, so the next build tries again.
+- Tests: `build::tests::a_dependency_added_after_the_first_build_is_installed`,
+  `an_unstamped_tree_is_adopted_only_when_it_holds_every_dependency`,
+  `a_failed_install_leaves_no_stamp`; the real-npm `scaffold_app` end-to-end test
+  (`SC_TEST_NPM=1`) now adds `dayjs` and imports it after the first build. It fails with the
+  reported TS2307 without the fix.
+- Docs: TECHNICAL_DESIGN (the install step, the dev loop), `tutorial-react-todo.md` step 4.
+
 ## An anonymous caller owns no row
 
 User report (retested 2026-11-02): with the ownership formula `created_by == user.id` and

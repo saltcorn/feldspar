@@ -558,8 +558,28 @@ async fn a_scaffolded_app_installs_builds_and_serves_end_to_end() -> sc_error::R
     // A client-routed deep link resolves to the entry point.
     assert_eq!(fw.serve(&AppRequest::get("/tasks/42")).status, 200);
 
-    // A second build does not reinstall — the marker is on disk.
+    // A second build does not reinstall — the marker is on disk, and the
+    // manifests are what the install stamp recorded.
     let again = build_application(&cat, &app, &source, None).await?;
     assert!(!again.installed);
+
+    // The user report behind TODO B1.1: a dependency added (by an agent editing
+    // `package.json`) and imported after the first build. Without a reinstall
+    // `tsc` fails with TS2307 "Cannot find module 'dayjs'".
+    let manifest_path = tmp.path().join("todo/package.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path)?).unwrap();
+    manifest["dependencies"]["dayjs"] = serde_json::json!("^1.11.0");
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )?;
+    std::fs::write(
+        tmp.path().join("todo/src/when.ts"),
+        "import dayjs from \"dayjs\";\n\nexport const today = (): string => dayjs().format(\"YYYY-MM-DD\");\n",
+    )?;
+    let added = build_application(&cat, &app, &source, None).await?;
+    assert!(added.installed, "a changed package.json installs again");
+    assert!(tmp.path().join("todo/node_modules/dayjs").is_dir());
     Ok(())
 }
