@@ -549,7 +549,17 @@ class AccountRunner {
     const folder = this.folders.get(path);
     if (!folder) return;
     if (quick && this.mirror && path !== this.idleFolder && !(await this.changedOnServer(client, folder))) return;
-    const lock = await client.getMailboxLock(path);
+    let lock;
+    try {
+      lock = await client.getMailboxLock(path);
+    } catch (e) {
+      // Deleted by another client since the last LIST: listed again (and forgotten), not an
+      // account in error until the next poll.
+      if (!this.mirror || !missingMailbox(e)) throw e;
+      this.host.log.info(`${this.label}: the folder ${path} is gone from the server; listing the folders again`);
+      this.due.discover = true;
+      return;
+    }
     try {
       const result = await syncFolder(this.env(client), folder, { flags });
       if (result.stored || result.expunged || result.flags) {
@@ -650,6 +660,14 @@ class AccountRunner {
   }
 }
 
+/** Whether an IMAP error says the mailbox does not exist (RFC 5530 NONEXISTENT, or the
+ * wording of a server without response codes). */
+function missingMailbox(e) {
+  if (!e || typeof e !== "object") return false;
+  if (String(e.serverResponseCode || "").toUpperCase() === "NONEXISTENT") return true;
+  return /nonexistent|not exist|no such|unknown mailbox|doesn't exist/i.test(`${e.message || ""} ${e.responseText || ""} ${e.response || ""}`);
+}
+
 /** A runner's due work: folders with new mail, folders whose flags are due, folders a poll
  * may skip when STATUS shows no change, and whether to LIST again. */
 function emptyDue() {
@@ -699,4 +717,4 @@ async function connectOnce(account, settings, path, work) {
   }
 }
 
-module.exports = { AccountRunner, withConnection, folderRole, assignRoles, nextBackoff, roleRank, DEFAULTS };
+module.exports = { AccountRunner, withConnection, missingMailbox, folderRole, assignRoles, nextBackoff, roleRank, DEFAULTS };

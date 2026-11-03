@@ -2,6 +2,31 @@
 
 Changes in reverse chronological order.
 
+## Mail module: a folder deleted between a LIST and its SELECT
+
+User report: a folder deleted on the server stayed in the runner's memory until the next 5-minute
+poll, so a sync woken before then selected it and put the account in error. Deleting the folder
+row did not help. A folder made with `mail_create_folder` got its role only at the next listing.
+The user asked for `mail_sync_now { folders: true }` and/or `mail_delete_folder`.
+
+Most of this was already fixed by M11.2 (see "Mail module: the first real use's field report"
+below). `mail_sync_now` always lists the folders again. `discoverFolders` forgets folders that
+are gone, and makes a new row for one whose row was deleted. `mail_create_folder` gives the folder
+its role at once, and `mail_delete_folder` exists. The report was made against an older build.
+That build's Dovecot test (`mirror.test.mjs`, "mail_sync_now lists folders again; …") passes.
+
+One gap was left, and it is now closed: a mirror folder deleted by another client after the last
+LIST but before the runner selects it (a pass woken in that window).
+
+- **`AccountRunner.syncPath`** (`plugins/imap/account.js`): when the SELECT says the mailbox does
+  not exist, the account no longer goes to `error`. The folder is skipped and the same pass lists
+  the folders again, which forgets it and deletes its row and messages. Ingest accounts are
+  unchanged: a watched folder that is missing is still an error.
+- **`missingMailbox(e)`** (exported from `account.js`): checks for RFC 5530 `NONEXISTENT` or a
+  server's wording for it. `mail_delete_folder` now uses it instead of its own regex.
+- Test: `plugins/imap/test/field-report.test.mjs` "mirror: a folder deleted on the server
+  between a LIST and its SELECT …" (no server).
+
 ## A dependency added after the first build is installed (TODO B1.1)
 
 User report (retested 2026-10-29): `feldspar build-app` and the MCP `buildApplication` did not

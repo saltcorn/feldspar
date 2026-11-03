@@ -168,3 +168,47 @@ test("mail_send's calendar: an iTIP part whose method matches the calendar's", (
   assert.throws(() => calendarOf({ method: "INVITE", content: ics }), /must be one of/);
   assert.throws(() => calendarOf({ method: "REQUEST", content: "hello" }), /iCalendar object/);
 });
+
+test("mirror: a folder deleted on the server between a LIST and its SELECT is listed again, not an account in error", async () => {
+  const { AccountRunner, missingMailbox } = require("../account.js");
+  const fake = fakeDb();
+  const account = await fake.db.mail_accounts.insert({ label: "a@", mode: "mirror", status: "idle" });
+  const gone = await fake.db.mail_folders.insert({ account: account.id, path: "Gone", name: "Gone", sync: true });
+  await fake.db.mail_messages.insert({ account: account.id, folder: gone.id, uid: 1, subject: "g1" });
+  const log = fakeLog();
+  const runner = new AccountRunner({ db: fake.db, files: fakeFiles(), log }, account);
+  let lists = 0;
+  runner.client = {
+    usable: true,
+    mailbox: { path: "INBOX" },
+    async list() {
+      lists++;
+      return [];
+    },
+    async getMailboxLock(path) {
+      const e = new Error("Command failed");
+      e.serverResponseCode = "NONEXISTENT";
+      e.responseText = `Mailbox doesn't exist: ${path}`;
+      throw e;
+    },
+    async mailboxOpen() {},
+  };
+  // Known from the last LIST, and woken without a new one (a sync woken before the next poll).
+  runner.folders.set("Gone", gone);
+  const done = runner.settled();
+  runner.wake();
+  await done;
+  await runner.queue;
+  assert.equal(lists, 1, "the folders were listed again");
+  assert.ok(!runner.folders.has("Gone"), "forgotten by the runner");
+  assert.equal(fake.tables.mail_folders.length, 0);
+  assert.equal(fake.tables.mail_messages.length, 0);
+  assert.notEqual(fake.tables.mail_accounts[0].status, "error");
+  assert.ok(!log.lines.some((l) => l.startsWith("warn")), log.lines.join("\n"));
+  runner.controller.abort();
+  runner.clearTimers();
+
+  assert.ok(missingMailbox({ serverResponseCode: "NONEXISTENT" }));
+  assert.ok(missingMailbox(new Error("Mailbox does not exist")));
+  assert.ok(!missingMailbox(new Error("Connection closed")));
+});
