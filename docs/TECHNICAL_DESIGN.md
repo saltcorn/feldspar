@@ -5507,6 +5507,17 @@ generated typed client (§13.1), so the API and the UI cannot drift.
   its canvas must render under the subdomain's stylesheets rather than Tabler, it expects a v1
   page around it, and a CSP belongs to a route. The fourth bundle (§13.3, "The builder").
 
+**Navigation.** The sidebar groups the installation's screens under the headings an admin looks
+for — Overview (Home, All entities), Data (Tables, Files, Streams), Automation (Triggers,
+Agents), Insights (Analytics), Administration (Users, Settings) — and below them the
+Applications section, about the one application picked there. A screen's header pre-title is its
+group's name, so the header says where the screen is. The start page is **Home**: what needs
+attention (enabled triggers with a problem, failing scheduled backups, failed checklist runs, a
+nearly full disk), the applications, counts of each kind of entity, recent edits, the server's
+health, and a getting-started list that stays until its steps are done. It is assembled from the
+lists the other screens already use rather than from an endpoint of its own, and a list that does
+not load leaves its card empty rather than reporting that all is well.
+
 The XSS-safety story is now the ordinary React one — values are escaped by the framework and
 `dangerouslySetInnerHTML` is banned by lint — pairing with the structural SQL-injection
 safety in `sc-query` (§4).
@@ -10111,8 +10122,8 @@ frames. It sends `{"type":"ready","element_type":…,"status":…}`, replays the
 envelopes *this process* saw) so a screen opened on a slow stream is not blank and says that is
 what it is doing, then `element`, `lagged` and `status` frames.
 
-The admin UI is a **Streams** entry in the Data Layer section of the sidebar, between Triggers and
-Files — a stream is a source of events, so it belongs beside the thing that listens to them rather
+The admin UI is a **Streams** entry in the sidebar's Data group, last of it and directly above
+Triggers — a stream is a source of events, so it belongs beside the thing that listens to them rather
 than beside the models. Behind it are exactly the three screens GOALS lists: a list (name,
 provider, status, elements, last element; New at the top; Edit, Observe and Delete per row), a form
 (name, description, provider picker, the provider's spec-rendered settings, `min_role`, enabled),

@@ -76,7 +76,7 @@ describe("the current application's sidebar links", () => {
       "Build with Claude",
       "Build",
       "Checklists",
-      "Settings",
+      "Application settings",
     ]);
     const edit = links[1];
     expect(edit.href).toBe("/ide/?store=code");
@@ -109,7 +109,7 @@ describe("the current application's sidebar links", () => {
       "Build",
       "Coding agent",
       "Checklists",
-      "Settings",
+      "Application settings",
     ]);
     expect(appNavLinks(react, "build-todo", admin)[4].href).toBe("#/agents/build-todo/chat");
   });
@@ -167,7 +167,7 @@ describe("the current application's sidebar links", () => {
       "Pages",
       "Library",
       "Checklists",
-      "Settings",
+      "Application settings",
     ]);
   });
 

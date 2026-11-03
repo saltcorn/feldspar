@@ -2,6 +2,37 @@
 
 Changes in reverse chronological order.
 
+## Admin UI: a Home page and a clearer sidebar
+
+The admin UI now opens on **Home** instead of the entity index. Home shows:
+- what needs attention: enabled triggers that cannot run, scheduled backups whose last attempt
+  failed, checklists whose last run failed, a disk over 90% full; each item links to where it
+  is fixed. A check whose list could not be loaded is named, rather than reported as all clear
+- the applications, with an Open button
+- counts of tables, applications, triggers, agents, file stores and users
+- the five most recently edited entities, and the server's version, uptime, database, disk,
+  memory and last successful backup
+- a getting-started list (table, application, LLM provider, backup schedule), shown until every
+  step is done
+
+A "Create" menu in the header replaces the six create buttons. All entities is still there, as
+the second sidebar entry; `#/` and `#/entities` keep working.
+
+- **Sidebar groups**: "Data Layer" is split into Overview (Home, All entities), Data (Tables,
+  Files, Streams), Automation (Triggers, Agents), Insights (Analytics) and Administration
+  (Users, Settings). Screen pre-titles use the same group names. The sidebar's labels are now
+  translated.
+- **Names**: "Actions" in the sidebar is now "Triggers", as on the page it opens. An
+  application's own Settings link is now "Application settings", so it is no longer confused with
+  the installation's Settings.
+- **Folding the sidebar**: the fold/expand button is now beside the logo at the top. At the foot
+  of a long sidebar it could be off screen, leaving a folded sidebar with no visible way back.
+- The tables list shows a role by name ("Admin" rather than "Admin (1)"). The entities list shows
+  a file store with no floor as "Public", as the role is named, rather than "public".
+
+Tests: `ui/admin/src/home.test.ts`, `nav.test.ts`, `appNav.test.ts`, `roles.test.ts`;
+`crates/sc-server/tests/entities_api.rs`.
+
 ## Claude Code in the IDE
 
 An admin can run Claude Code on the server in a terminal tab of the file-store IDE. Opening

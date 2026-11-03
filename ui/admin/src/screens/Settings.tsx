@@ -266,7 +266,7 @@ export function Settings({ requestedTab = null }: { requestedTab?: string | null
   if (!sections) {
     return (
       <>
-        <PageHeader title={t("Settings")} />
+        <PageHeader pretitle={t("Administration")} title={t("Settings")} />
         <PageBody>
           {error ? (
             <Alert variant="danger">{error}</Alert>
@@ -280,7 +280,7 @@ export function Settings({ requestedTab = null }: { requestedTab?: string | null
 
   return (
     <>
-      <PageHeader title={t("Settings")} />
+      <PageHeader pretitle={t("Administration")} title={t("Settings")} />
       <PageBody>
         {/* Hand-built rather than react-bootstrap's `Tabs`, for the reason the
             multi-select is hand-built: the admin SPA is served under a strict CSP

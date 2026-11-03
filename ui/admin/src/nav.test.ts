@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { NAV } from "./App";
+import { NAV, groupLabel } from "./App";
 
 /** Which entry, if any, the sidebar marks as current for a route. */
 function activeLabels(route: string): string[] {
@@ -53,9 +53,9 @@ describe("the admin sidebar", () => {
   });
 
   /** Applications are the sidebar's other section, about one application at a
-   * time (`appNav.ts`), so the Data Layer list has no entry for them and no
-   * application route lights any of its entries up. */
-  it("keeps applications out of the Data Layer section", () => {
+   * time (`appNav.ts`), so the installation's entries have none for them and
+   * no application route lights any of them up. */
+  it("keeps applications out of the installation's entries", () => {
     expect(NAV.map((item) => item.label)).not.toContain("Applications");
     expect(activeLabels("/applications")).toEqual([]);
     expect(activeLabels("/applications/a1/views")).toEqual([]);
@@ -85,5 +85,32 @@ describe("the admin sidebar", () => {
     expect(activeLabels("/checklist-runs/r1")).toEqual(["Settings"]);
     // An application's checklists belong to the Applications half.
     expect(activeLabels("/applications/a1/checklists")).toEqual([]);
+  });
+
+  it("calls automation Triggers, as the page it opens does", () => {
+    const labels = NAV.map((item) => item.label);
+    expect(labels).toContain("Triggers");
+    expect(labels).not.toContain("Actions");
+    expect(activeLabels("/triggers/t1/workflow")).toEqual(["Triggers"]);
+  });
+
+  /** Each heading is drawn once, where its group starts, so a group whose
+   * entries were split would get its heading twice. */
+  it("groups the entries under Overview, Data, Automation, Insights and Administration", () => {
+    const groups = NAV.map((item) => item.group).filter(
+      (group, n, all) => group !== all[n - 1],
+    );
+    expect(groups).toEqual(["Overview", "Data", "Automation", "Insights", "Administration"]);
+    const members = (group: string) =>
+      NAV.filter((item) => item.group === group).map((item) => item.label);
+    expect(members("Overview")).toEqual(["Home", "All entities"]);
+    expect(members("Data")).toEqual(["Tables", "Files", "Streams"]);
+    expect(members("Automation")).toEqual(["Triggers", "Agents"]);
+    expect(members("Administration")).toEqual(["Users", "Settings"]);
+  });
+
+  it("names each group in the reader's language", () => {
+    const t = (text: string) => `<${text}>`;
+    expect(groupLabel("Administration", t)).toBe("<Administration>");
   });
 });

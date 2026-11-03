@@ -164,7 +164,7 @@ export function GraphqlExplorer({ appId, user }: { appId: string; user: CurrentU
   return (
     <>
       <PageHeader
-        pretitle="Deploy"
+        pretitle={t("Applications")}
         title={title}
         actions={
           <>

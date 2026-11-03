@@ -511,6 +511,29 @@ export function IconLayoutDashboard(props: IconProps) {
   );
 }
 
+export function IconHome(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M5 12l-2 0l9 -9l9 9l-2 0" />
+      <path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-7" />
+      <path d="M9 21v-6a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v6" />
+    </Svg>
+  );
+}
+
+export function IconList(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M9 6l11 0" />
+      <path d="M9 12l11 0" />
+      <path d="M9 18l11 0" />
+      <path d="M5 6l0 .01" />
+      <path d="M5 12l0 .01" />
+      <path d="M5 18l0 .01" />
+    </Svg>
+  );
+}
+
 /** The Saltcorn logo (`src/vendor/saltcorn-logo.svg`, the January 2023 mark).
  *
  * An `<img>` rather than inline SVG: it is brand art, not an icon — three fixed

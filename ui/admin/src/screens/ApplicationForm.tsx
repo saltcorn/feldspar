@@ -511,7 +511,7 @@ export function ApplicationForm({
   return (
     <>
       <PageHeader
-        pretitle="Deploy"
+        pretitle={t("Applications")}
         title={appId ? "Edit application" : "New application"}
         actions={
           <Button

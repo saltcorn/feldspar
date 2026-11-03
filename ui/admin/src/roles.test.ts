@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { PUBLIC_ROLE, isPublic, roleLabel, roleOptions } from "./roles";
+import { PUBLIC_ROLE, isPublic, roleLabel, roleName, roleOptions } from "./roles";
 
 describe("public endpoints", () => {
   it("is role 100 and nothing else", () => {
@@ -21,5 +21,13 @@ describe("role labels", () => {
     expect(roleLabel(100, roles)).toBe("public (100)");
     expect(roleLabel(7, roles)).toBe("Role 7");
     expect(roleOptions(7, roles).map((r) => r.role)).toEqual([7, 100]);
+  });
+});
+
+describe("roleName", () => {
+  it("is the name alone, or the number when the role has no row", () => {
+    const roles = [{ role: 1, name: "Admin" }] as unknown as Parameters<typeof roleName>[1];
+    expect(roleName(1, roles)).toBe("Admin");
+    expect(roleName(40, roles)).toBe("Role 40");
   });
 });

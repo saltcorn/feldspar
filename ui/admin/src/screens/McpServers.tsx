@@ -161,7 +161,7 @@ export function McpServers() {
   return (
     <>
       <PageHeader
-        pretitle="Agents"
+        pretitle={t("Automation")}
         title={t("MCP servers")}
         actions={
           <>

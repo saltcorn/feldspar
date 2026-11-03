@@ -221,7 +221,7 @@ export function AgentForm({ agentId }: { agentId?: string }) {
   return (
     <>
       <PageHeader
-        pretitle="Agents"
+        pretitle={t("Automation")}
         title={agentId ? "Edit agent" : "New agent"}
         actions={
           <Button variant="outline-secondary" onClick={() => navigate("/agents")}>

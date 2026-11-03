@@ -197,7 +197,9 @@ export function appNavLinks(
   });
   links.push({
     id: "settings",
-    label: "Settings",
+    // Not just "Settings": the installation's own Settings entry is in the
+    // same sidebar, a few rows up.
+    label: "Application settings",
     href: `#${base}/edit`,
     matches: [`${base}/edit`, `${base}/app-settings`],
   });

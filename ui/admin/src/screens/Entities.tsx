@@ -75,7 +75,7 @@ const KIND_LOOK: Record<EntityKind, { icon: ReactNode; color: string }> = {
 
 /** Where each "Create …" button at the foot of the list goes. A table is
  * created from the tables list, whose dialog offers the ways to make one. */
-function createButtons(t: Translator["t"]): { kind: EntityKind; label: string; href: string }[] {
+export function createButtons(t: Translator["t"]): { kind: EntityKind; label: string; href: string }[] {
   return [
     { kind: "table", label: t("Create table"), href: "#/tables" },
     { kind: "file_store", label: t("Create file store"), href: "#/file-stores/new" },

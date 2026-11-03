@@ -101,7 +101,7 @@ export function Roles() {
 
   return (
     <>
-      <PageHeader pretitle="Users" title={t("Roles")} />
+      <PageHeader pretitle={t("Administration")} title={t("Roles")} />
       <PageBody>
         {error && <Alert variant="danger">{error}</Alert>}
 

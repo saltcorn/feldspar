@@ -904,6 +904,29 @@ User report (retested 2026-10-29): `feldspar build-app` and the MCP `buildApplic
   without an install when every declared dependency is present. The quick (dev-loop) build uses
   the same check.
 
+## UX1 — Admin UI: clearer grouping, names and a home page
+
+The admin UI is an index of everything rather than a place to start, its sidebar puts users,
+settings and agents under "Data Layer", and the same thing goes by several names. The
+user-facing name for the automation entity is **Triggers** (what Saltcorn 1, the API and the
+routes call it).
+
+- [x] **UX1.1** Names and grouping: the sidebar's "Actions" becomes "Triggers"; the one "Data
+  Layer" group becomes Data (Tables, Files, Streams), Automation (Triggers, Agents), Insights
+  (Analytics) and Administration (Users, Settings); an application's own Settings link says
+  "Application settings"; page pre-titles use the sidebar's group names; the tables list shows
+  a role's name without its number, and the entities list names a file store's public floor as
+  the role is named.
+- [x] **UX1.2** A Home screen as the default route (`#/home`): what needs attention (triggers in
+  error, failing backups, failed checklist runs), the applications, counts linking to each
+  list, recently edited entities, system health (version, uptime, database, disk, last backup),
+  and a getting-started list while the installation is nearly empty. All entities stays, under
+  its own sidebar entry. `#/` and old links keep working.
+- [ ] **UX1.3** Empty states that explain: each list's empty state says in one sentence what the
+  entity is for and has its create button; `HelpLink` on the main list screens.
+- [ ] **UX1.4** Settings holds settings only: Backup, System and Modules move to their own
+  Administration entries, with the old `#/settings/<tab>` links redirecting.
+
 ---
 
 ## Open questions

@@ -157,7 +157,7 @@ export function Streams() {
   return (
     <>
       <PageHeader
-        pretitle="Dataflows"
+        pretitle={t("Data")}
         title={t("Streams")}
         actions={
           <Button onClick={() => navigate("/streams/new")}>
