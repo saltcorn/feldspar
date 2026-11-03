@@ -2,6 +2,34 @@
 
 Changes in reverse chronological order.
 
+## `add-user` no longer reads a password from stdin it was not asked to read
+
+User report: with stdin not a terminal, `feldspar add-user EMAIL --role ROLE` (no `--password`)
+read a line of stdin as the password. In `while read email role; do feldspar add-user …; done <
+users.txt`, stdin is the loop's own file, so the first account got the file's *next line* as its
+password (known to anyone who can read the file), and the loop stopped there. `std::io::stdin()`
+buffers up to 8 KiB, so the command consumed the rest of the file too. Nothing reported an error.
+
+- **No implicit stdin read** (`crates/sc-cli/src/users.rs`, `password_from`). `add-user` with no
+  `--password` still asks at a terminal. Without a terminal it is now refused, and the error names
+  `--random-password`, `--password` and `--password=VALUE`. A bare `--password` still reads one
+  line of stdin, so `echo "$PW" | feldspar add-user … --password` works. **Compatibility:** a
+  script that piped a password into `add-user` *without* `--password`, as the help text used to
+  describe, now fails with that error. The fix is to add `--password`.
+- **`--random-password`** for `add-user` and `modify-user`. It generates a password with
+  `sc_auth::random_password` (the admin UI's generator) and prints it once, alone, on stdout.
+  It can't be combined with `--password`.
+- **One line means one line.** A password read from a non-terminal stdin is now read straight
+  from fd 0, a byte at a time, up to the newline, so nothing after it is consumed. This applies
+  to `add-user`/`modify-user --password` and to `backup`/`restore --password`.
+- The help text and docs/OPERATIONS.md ("Users from a terminal") describe this, with a loop
+  example using `--random-password`.
+- Tests: `users::tests::no_password_flag_and_no_terminal_is_refused_rather_than_reading_stdin`,
+  `users::tests::one_line_is_read_and_nothing_after_it`,
+  `users::tests::random_password_is_a_flag_of_its_own`, and in `crates/sc-cli/tests/users.rs` the
+  refused case, a bare `--password` reading from a pipe, and `--random-password` for both commands
+  through the real binary.
+
 ## Live documents: list items in the text mirror, and a mirror that lagged hours behind
 
 Field report (PaddiPad): the plain text of a TipTap (`xml` root) document ran the items of a

@@ -1658,6 +1658,20 @@ feldspar modify-user admin@example.com --role admin        # a role name or numb
 feldspar add-user ops@example.com --role admin             # asks for the password
 feldspar add-user ops@example.com --role 1 --password VALUE
 echo "$PW" | feldspar modify-user admin@example.com --password   # not a terminal: one line of stdin
+feldspar add-user ops@example.com --role 1 --random-password     # prints the generated password
+```
+
+Without a terminal, `add-user` with no `--password` is refused: stdin is read
+only when `--password` (with no value) asks for it. Inside a
+`while read …; do … done < users.txt` loop, stdin is the loop's file, so a
+command that read it would take the file's next line as the password. To create
+accounts from a file, use `--random-password`, which prints each generated
+password once on stdout:
+
+```bash
+while read -r email role; do
+  printf '%s %s\n' "$email" "$(feldspar add-user "$email" --role "$role" --random-password </dev/null)"
+done < users.txt
 ```
 
 Leave the password off the command line when you can, because it ends up in the

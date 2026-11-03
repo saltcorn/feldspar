@@ -4,8 +4,9 @@ use sc_cli::DbConfig;
 use sc_cli::connect_catalog;
 use sc_error::Result;
 
-/// `feldspar add-user EMAIL --role ROLE [--password [VALUE]]` — create an
-/// account from a terminal. With no password value, it is asked for.
+/// `feldspar add-user EMAIL --role ROLE [--password [VALUE] | --random-password]`
+/// — create an account from a terminal. With no password value, it is asked
+/// for; with no `--password` at all and no terminal, it is refused.
 pub(crate) async fn add_user_command(args: &[String]) -> Result<()> {
     let (db, rest) = DbConfig::extract(args)?;
     let parsed = sc_cli::users::parse_add_user(&rest)?;
@@ -26,7 +27,10 @@ pub(crate) async fn add_user_command(args: &[String]) -> Result<()> {
             parsed.email.trim()
         )));
     }
-    let password = sc_cli::users::password_from(parsed.password.as_ref())?;
+    let password = match parsed.random_password {
+        true => sc_auth::random_password(),
+        false => sc_cli::users::password_from(parsed.password.as_ref())?,
+    };
     let user = sc_auth::create_user(&catalog, &parsed.email, &password, role.role).await?;
     eprintln!(
         "feldspar: created {} with role {} ({}), id {}",
@@ -35,6 +39,10 @@ pub(crate) async fn add_user_command(args: &[String]) -> Result<()> {
         role.role,
         user.id()
     );
+    if parsed.random_password {
+        // Printed once, alone on stdout, so a script can capture it.
+        println!("{password}");
+    }
     Ok(())
 }
 
@@ -60,6 +68,7 @@ pub(crate) async fn modify_user_command(args: &[String]) -> Result<()> {
     };
     let password = match &parsed.password {
         Some(arg) => Some(sc_cli::users::password_from(Some(arg))?),
+        None if parsed.random_password => Some(sc_auth::random_password()),
         None => None,
     };
     // First, so a refusal (the last enabled admin) changes nothing else.
@@ -109,8 +118,11 @@ pub(crate) async fn modify_user_command(args: &[String]) -> Result<()> {
             role.role
         );
     }
-    if password.is_some() {
+    if let Some(password) = &password {
         eprintln!("feldspar: password changed for {}", parsed.email.trim());
+        if parsed.random_password {
+            println!("{password}");
+        }
     }
     Ok(())
 }

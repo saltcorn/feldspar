@@ -190,9 +190,13 @@ fn print_usage() {
     eprintln!("                      [--insecure-http] [--once]");
     eprintln!("                      (or the token in FELDSPAR_BUILD_TOKEN)");
     eprintln!("  feldspar mcp-token revoke ID [database flags]");
-    eprintln!("  feldspar add-user EMAIL --role ROLE [--password [VALUE]] [database flags]");
     eprintln!(
-        "  feldspar modify-user EMAIL [--role ROLE] [--password [VALUE]] [--disabled|--enabled] \
+        "  feldspar add-user EMAIL --role ROLE [--password [VALUE] | --random-password] \
+         [database flags]"
+    );
+    eprintln!(
+        "  feldspar modify-user EMAIL [--role ROLE] [--password [VALUE] | --random-password] \
+         [--disabled|--enabled] \
          [--reset-second-factor] [database flags]"
     );
     eprintln!("  feldspar delete-user EMAIL [database flags]");
@@ -313,8 +317,12 @@ fn print_usage() {
        their password on a server with no SMTP to send a reset link. ROLE is a
        role name (admin) or number (1). A password is never needed on the command
        line: leave --password out of add-user, or give it no value, and it is
-       asked for without echo (or read as one line from stdin when that is not a
-       terminal). A password starting with -- is written --password=VALUE.
+       asked for without echo. Without a terminal, --password with no value reads
+       one line of stdin, and add-user with no --password is refused — stdin is
+       never read unless --password asks for it, so a `while read` loop over a
+       file cannot hand its next line in as a password. --random-password
+       generates one and prints it once on stdout. A password starting with -- is
+       written --password=VALUE.
        modify-user --disabled stops an account signing in (and ends its
        sessions) without deleting it; --enabled gives it back.
        modify-user --reset-second-factor turns off the account's two-factor
