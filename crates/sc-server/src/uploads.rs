@@ -308,7 +308,7 @@ async fn create(
     if !slot.mime_allow.is_empty()
         && !mime
             .as_deref()
-            .is_some_and(|m| slot.mime_allow.iter().any(|a| a == m))
+            .is_some_and(|m| sc_files::mime_allowed(m, &slot.mime_allow))
     {
         return json_error(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,

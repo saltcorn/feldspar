@@ -2,6 +2,19 @@
 
 Changes in reverse chronological order.
 
+## An `image/*` MIME allow-list accepts every image type
+
+User report: a File field with `file_mime: ["image/*"]` refused `x/dot.png` ("has MIME type
+`image/png`, which is not allowed (allowed: image/*)"), while `["image/png","image/webp"]` worked.
+Both allow-list checks compared the file's type to each entry as an exact string, so a wildcard
+entry matched nothing.
+
+- **`sc_files::mime_allowed`** is the one matcher: an entry is an exact type, a whole top-level
+  type (`image/*`, as in an HTML `accept` attribute) or `*/*`; case and `;` parameters on an entry
+  are ignored. `validate_file_path` (row writes and the REST upload endpoint) and the app upload
+  slots (`sc-server` uploads `create`) both use it. Exact lists behave as before.
+- Test: `sc-files` `reference::tests::a_wildcard_allows_a_whole_top_level_type`.
+
 ## A unique field is listed as unique, by `describe_schema` and by the admin API
 
 User report: a field created with `unique: true` was listed as `"unique": false`, so a schema copied
