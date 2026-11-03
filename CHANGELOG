@@ -2,6 +2,13 @@
 
 Changes in reverse chronological order.
 
+## Fix a flaky `list_assets` test
+
+`coding_assets::the_session_header_names_the_mounts_and_the_tool_lists_them` expected the assets in
+URL order, but `list_assets` sorts newest first and only falls back to URL order on a tie. When the
+three files the test writes landed in different milliseconds, the order changed and the test
+failed. The test now compares the set of URLs. The tool is unchanged.
+
 ## A code body's history read of a row it may not see answers empty, not an error
 
 User report: `db.<table>.history(id)` run below the admin (`asUser()`, or a body run with a
