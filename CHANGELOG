@@ -2,6 +2,42 @@
 
 Changes in reverse chronological order.
 
+## An anonymous caller owns no row
+
+User report (retested 2026-11-02): with the ownership formula `created_by == user.id` and
+`min_role_read` 1, an anonymous GET of the row API returned every row whose `created_by` is NULL.
+An anonymous `user.id` is null, and equality was null-safe (`IS NOT DISTINCT FROM`, JS `===`), so
+`NULL === NULL` granted the row. This was documented as a corner, fixed by writing
+`user && …`. But the scaffold, the MCP schema help and the docs all suggest the unguarded form.
+
+- **The formula semantics** (§7.3): an equality with a caller's field on one side
+  (`user.x` or `session.x`, `===`/`==`) holds only when that caller is present; `!==`/`!=` is
+  its exact complement (`NOT present OR distinct`). Comparisons against literal `null`
+  (`user.x === null`) are unchanged. The translator (`sc-expr` `translate.rs`,
+  `caller_guarded`), the reified evaluator's normalised JS (`normalise.rs`, `equality`) and,
+  through the translator, the RLS policies (`user GUC IS NOT NULL AND …`) all apply it. An
+  anonymous guard is rendered as `$false AND (…)` rather than folded to a bare literal, so
+  Postgres can still type it inside a `CASE` branch.
+- **Behaviour change**: anonymous callers (and callers with no guest session, for `session.x`)
+  no longer get null-owner rows through an ownership formula. Logged-in callers are unaffected.
+  A formula already written `user && …` means the same as before.
+- **Existing RLS tables**: the policies are SQL generated when the table was saved, so a
+  table with RLS on keeps the old policy until it is regenerated: re-save the formula, or turn
+  RLS off and on. The runtime (non-RLS) path is fixed on upgrade.
+- **Backup of an RLS table read only what the policy grants to nobody** (found by the test
+  change above): `sc-backup`'s row snapshot ran with no caller context on a FORCE'd table, so
+  owned rows were silently left out of the archive (only null-owner rows got through, via the
+  leak this fixes). The snapshot now sets the system (admin) caller context when the backend
+  has RLS.
+- Tests: `sc-expr` `translate::an_anonymous_caller_owns_nothing`,
+  `under_rls_a_caller_field_equality_requires_the_caller`, normaliser renderings, parity
+  cases on both evaluators against Postgres; `sc-catalog`
+  `rls_policies::an_anonymous_context_does_not_own_the_null_owner_rows` (fails without the
+  fix); `sc-server` `ownership_enforcement::an_owner_formula_grants_exactly_the_callers_rows`
+  now asserts the anonymous list is empty for `===` and `==`;
+  `backup_api::an_ownership_formula_is_restored_after_the_columns_it_reads` now also backs up
+  and restores an owned row of the RLS table.
+
 ## An `image/*` MIME allow-list accepts every image type
 
 User report: a File field with `file_mime: ["image/*"]` refused `x/dot.png` ("has MIME type

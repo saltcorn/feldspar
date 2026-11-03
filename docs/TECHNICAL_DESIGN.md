@@ -1417,15 +1417,19 @@ together still fails the test). Null handling is specified once, by the translat
 reified path is normalised to meet it: `===`/`==` render as `IS NOT DISTINCT FROM` (JS's
 two-valued equality — `owner === user.id` on a null `owner` is *false*), ordered comparisons
 and arithmetic are null-guarded so JS's `null → 0` coercion cannot diverge from SQL, and
-`user.x` on an anonymous (null) user reads as null rather than throwing. `+` with a string literal
+`user.x` on an anonymous (null) user reads as null rather than throwing. **An anonymous caller
+owns nothing**: an equality with a caller's field on one side (`owner === user.id`,
+`owner == session.id`, not a literal-null test like `user.x === null`) holds only when that
+caller is present, so a null `owner` is not matched by a null `user.id`. `!==` is its exact
+complement. Both evaluators and the RLS policies (`user GUC IS NOT NULL AND …`) apply the guard. `+` with a string literal
 on either side (`"Invoice " + number`, TODO-payments P2.4) is JavaScript's concatenation: SQL
 `||` over each side cast to text, a null side reading `null` as JavaScript writes it.
 
 **Fail closed, everywhere.** A stored formula that no longer validates at load time (a field
 was dropped, a dump restored) grants nothing and the table stays `min_role`-only, with the
-reason reported on the `Table`. An anonymous caller's `user` is null, so a formula that must
-not grant anonymously is written `user && …` (bare `user` is object-or-null, so its
-truthiness is exactly the logged-in test). Under RLS a missing GUC is SQL NULL, so an
+reason reported on the `Table`. An anonymous caller's `user` is null, and an ownership
+equality against it grants nothing (above), so `owner === user.id` needs no `user && …` guard;
+bare `user` is still object-or-null, so its truthiness is exactly the logged-in test. Under RLS a missing GUC is SQL NULL, so an
 un-set caller context sees no rows by construction. A denial is always shaped identically to
 absence — affected-rows 0, mapped to not-found — so "exists but forbidden" is never a probe.
 

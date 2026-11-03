@@ -130,7 +130,10 @@ async fn sql_verdict(client: &tokio_postgres::Client, pred: QExpr) -> bool {
     let wrapped = format!("SELECT EXISTS({sql})");
     let params = to_params(&binds);
     let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|b| b.as_ref()).collect();
-    let row = client.query_one(&wrapped, &refs).await.expect("query");
+    let row = client
+        .query_one(&wrapped, &refs)
+        .await
+        .unwrap_or_else(|e| panic!("query {wrapped} {binds:?}: {e}"));
     row.get(0)
 }
 
@@ -203,10 +206,52 @@ async fn symbolic_and_reified_agree_on_the_translatable_subset() {
     check(&client, &ev, f, read, owner(Some("u2")), Some(&u1), false).await;
     check(&client, &ev, f, read, owner(None), Some(&u1), false).await;
     check(&client, &ev, f, read, owner(Some("u1")), None, false).await;
-    // The documented corner: anonymous `user.id` is null and matches a null
-    // owner — on both evaluators.
-    check(&client, &ev, f, read, owner(None), None, true).await;
-    // …and the recommended guard closes it.
+    // An anonymous caller owns nothing: its null `user.id` does not match a
+    // null owner — on both evaluators (the bug report: `created_by == user.id`
+    // served every `created_by IS NULL` row to an anonymous GET).
+    check(&client, &ev, f, read, owner(None), None, false).await;
+    check(
+        &client,
+        &ev,
+        "owner == user.id",
+        read,
+        owner(None),
+        None,
+        false,
+    )
+    .await;
+    // `!==` stays the complement, anonymously too.
+    check(
+        &client,
+        &ev,
+        "owner !== user.id",
+        read,
+        owner(None),
+        None,
+        true,
+    )
+    .await;
+    check(
+        &client,
+        &ev,
+        "owner !== user.id",
+        read,
+        owner(Some("u1")),
+        None,
+        true,
+    )
+    .await;
+    check(
+        &client,
+        &ev,
+        "owner !== user.id",
+        read,
+        owner(Some("u1")),
+        Some(&u1),
+        false,
+    )
+    .await;
+    // …and the explicit guard is now merely redundant.
     let guarded = "user && owner === user.id";
     check(&client, &ev, guarded, read, owner(None), None, false).await;
     check(

@@ -163,6 +163,60 @@ async fn run_in_context_sets_the_caller_gucs_a_policy_reads() -> Result<()> {
     Ok(())
 }
 
+/// The bug report, under RLS: an anonymous caller never owns a row, so the
+/// policy for `owner === user.email` must not admit the `owner IS NULL` rows
+/// when no user GUC is set — an unset GUC's `user.email` is NULL too.
+#[tokio::test]
+async fn an_anonymous_context_does_not_own_the_null_owner_rows() -> Result<()> {
+    let db = TestDb::new().await?;
+    db.client()
+        .await?
+        .batch_execute(
+            "CREATE TABLE strict_posts (id bigint primary key, owner text); \
+             INSERT INTO strict_posts VALUES (1, 'alice@example.com'), (2, NULL); \
+             CREATE TABLE loose_posts (LIKE strict_posts INCLUDING ALL); \
+             INSERT INTO loose_posts SELECT * FROM strict_posts",
+        )
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    let catalog = catalog(&db).await?;
+    catalog.reload().await?;
+    let anon = Principal::anonymous(Role::PUBLIC);
+    let alice = Principal::new(
+        Role::of(80),
+        Some(serde_json::json!({ "email": "alice@example.com" })),
+    );
+    for (table, formula) in [
+        ("strict_posts", "owner === user.email"),
+        ("loose_posts", "owner == user.email"),
+    ] {
+        configure_formula(&catalog, table, formula).await?;
+        enable_rls(&catalog, &catalog.require(table)?).await?;
+        let select = Statement::Select(Box::new(
+            Select::from(Source::table(table)).columns(vec![Projection::all()]),
+        ));
+        let rows = run_in_context(
+            &catalog,
+            sc_catalog::Unchecked::vouched(&anon, "test"),
+            &select,
+        )
+        .await?;
+        assert!(
+            rows.is_empty(),
+            "{formula}: anonymous saw {} rows",
+            rows.len()
+        );
+        let rows = run_in_context(
+            &catalog,
+            sc_catalog::Unchecked::vouched(&alice, "test"),
+            &select,
+        )
+        .await?;
+        assert_eq!(rows.len(), 1, "{formula}: alice sees her own row only");
+    }
+    Ok(())
+}
+
 /// The `USING`/`WITH CHECK` expression Postgres stores for a policy.
 async fn policy_qual(db: &TestDb, table: &str, policy: &str) -> String {
     let client = db.client().await.unwrap();
