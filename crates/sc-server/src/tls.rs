@@ -58,6 +58,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls_acme::{AcmeConfig, AcmeState};
 use sc_config::{AcmeCache, SslMode, SslSettings};
 use sc_error::{Error, Result};
+use tower::ServiceExt;
 
 /// The shutdown handle of a running TLS server.
 ///
@@ -1000,13 +1001,26 @@ impl rustls_acme::AccountCache for DatabaseCache {
 }
 
 /// The plain-HTTP router served when TLS is on and redirects are wanted: every
-/// request is answered with a permanent redirect to the same URL over HTTPS.
+/// request is answered with a permanent redirect to the same URL over HTTPS,
+/// except an IDE terminal's MCP traffic from this machine, which `app` serves
+/// (see `terminal::is_terminal_mcp`).
 ///
 /// **308, not 301**: a 301 lets a client turn a `POST` into a `GET`, which for
 /// an API request means a write silently becoming a read.
-pub fn redirect_router(https_port: u16) -> Router {
-    Router::new()
-        .fallback(move |request: Request| async move { redirect_response(&request, https_port) })
+pub fn redirect_router(https_port: u16, app: Router) -> Router {
+    Router::new().fallback(move |request: Request| {
+        // Sorted before the future is made, so a redirect never clones `app`.
+        let serve = crate::terminal::is_terminal_mcp(&request).then(|| app.clone());
+        async move {
+            match serve {
+                Some(app) => match app.oneshot(request).await {
+                    Ok(response) => response,
+                    Err(never) => match never {},
+                },
+                None => redirect_response(&request, https_port),
+            }
+        }
+    })
 }
 
 /// The redirect for one request, or 400 when there is no host to redirect to.

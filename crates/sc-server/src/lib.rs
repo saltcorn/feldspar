@@ -61,6 +61,7 @@ mod agent_memory;
 mod logging;
 mod lsp;
 mod mcp;
+mod mcp_proxy;
 mod mcp_servers;
 mod models;
 mod module_routes;
@@ -79,6 +80,9 @@ mod streams;
 mod system;
 mod systemd;
 mod table_rename;
+mod terminal;
+#[cfg(unix)]
+mod terminal_watch;
 // Build targets as background jobs the admin UI polls (§13.3).
 pub mod public_datasets;
 pub mod target_builds;
@@ -194,6 +198,7 @@ pub use live::LiveServices;
 pub use logging::log_requests;
 pub use lsp::{LSP_ROUTE, MAX_LANGUAGE_SERVERS};
 pub use mcp::{MCP_PROTOCOL_VERSION, MCP_ROUTE, MCP_SERVER_NAME};
+pub use mcp_proxy::MCP_PROXY_ROUTE;
 pub use models::{
     ModelServices, StanSettings, install_model_host, install_models, install_models_with,
 };
@@ -217,6 +222,7 @@ pub use serve::{serve, serve_browser};
 pub use streams::{StreamServices, TriggerBridge, install_streams, install_streams_with};
 pub use system::version_line;
 pub use systemd::ServiceManager;
+pub use terminal::{MAX_TERMINALS, TERMINAL_ROUTE};
 pub use tls::{
     AcmeCertificate, Certificate, CertificateStatus, PastedCertificate, TlsHandle, TlsNames,
     TlsSettings, check_certificate, https_addr, install_crypto_provider, redirect_router,

@@ -56,6 +56,10 @@ use crate::security::{
     admin_content_security_policy, build_cookie, csrf_middleware, is_native_client,
     upgrade_origin_allowed, upgrade_origin_refused,
 };
+use crate::terminal::{
+    SessionTokens, TERMINAL_ROUTE, TerminalHost, TerminalQuery, TerminalSlots, loopback_origin,
+    terminal_slots, terminal_upgrade,
+};
 use sc_api::auth::CSRF_HEADER;
 use sc_backup::{BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE};
 
@@ -170,6 +174,14 @@ pub(crate) struct AppState {
     lsp_slots: ServerSlots,
     /// The language server the IDE runs ([`ServerConfig::language_server`]).
     language_server: Arc<std::path::PathBuf>,
+    /// How many more terminals the IDE may open (design §12.1).
+    terminal_slots: TerminalSlots,
+    /// The MCP credentials of the open terminals, which the MCP route accepts
+    /// beside the token table (§12.1).
+    pub(crate) terminal_tokens: SessionTokens,
+    /// The loopback URL a terminal's Claude Code uses to reach this server
+    /// (`http://127.0.0.1:<port>`), or the reason there is none.
+    terminal_origin: Arc<std::result::Result<String, String>>,
     /// The tier-2 MCP tools: one per endpoint tagged
     /// [`Endpoint::mcp`](sc_api::Endpoint::mcp), built once here because
     /// dispatching one needs the handler registry (§13.6).
@@ -271,6 +283,10 @@ pub fn build_router_with_apps(
         )?;
     }
 
+    // The terminal route and the applications list's "Build with Claude" both
+    // ask the registry, so there is one answer to "which Claude Code".
+    apps.set_claude_cli(config.claude_cli.clone());
+
     let routes = Arc::new(build_matchit(endpoints)?);
     let mut handlers = handlers;
     crate::builder::register_status_handler(&mut handlers, config.builder_dir.clone());
@@ -300,6 +316,9 @@ pub fn build_router_with_apps(
         extra_base_domains: Arc::new(config.extra_base_domains.clone()),
         lsp_slots: server_slots(),
         language_server: Arc::new(config.language_server.clone()),
+        terminal_slots: terminal_slots(),
+        terminal_tokens: SessionTokens::default(),
+        terminal_origin: Arc::new(loopback_origin(config.addr)),
         mcp_endpoint_tools,
         max_request_body: config.max_request_body,
         max_upload_bytes: config.max_upload_bytes,
@@ -354,6 +373,9 @@ pub fn build_router_with_apps(
         // not a request the fallback's `Bytes` body could survive: it has to be
         // extracted before the body is touched.
         .route(LSP_ROUTE, axum::routing::get(language_server))
+        // Claude Code in an IDE terminal tab (§12.1): the language server's
+        // sibling, an upgrade for the same reason.
+        .route(TERMINAL_ROUTE, axum::routing::get(ide_terminal))
         // The admin chat socket (§11.4). A real route for the same reason the
         // language server's is: an upgrade cannot survive the fallback's `Bytes`
         // body, and a chat turn is bidirectional in a way the typed endpoint
@@ -380,6 +402,13 @@ pub fn build_router_with_apps(
         // what makes it safe to exempt from the CSRF middleware below, and is
         // the whole of the confused-deputy story rather than belt-and-braces.
         .route(MCP_ROUTE, axum::routing::post(crate::mcp::mcp))
+        // The installation's MCP servers, forwarded for the IDE's Claude Code
+        // sessions (§12.1): an open terminal's session token and nothing else,
+        // so it is exempt from the CSRF check as `/mcp` is.
+        .route(
+            crate::mcp_proxy::MCP_PROXY_ROUTE,
+            axum::routing::any(crate::mcp_proxy::mcp_proxy),
+        )
         // A build host's agent (`TODO-build-hosts.md`): by its bearer token and
         // nothing else, so it is exempt from the CSRF check as `/mcp` is.
         .route(
@@ -1002,6 +1031,40 @@ async fn language_server(
         Arc::clone(&state.language_server),
         store,
         admin.watch(state.sessions.clone()),
+    )
+    .await
+}
+
+/// The IDE's terminal (§12.1): admin-only, one program per connection.
+///
+/// The language server's auth story again: this is a route that hands its
+/// holder a process on the server, so the admin check is answered before the
+/// upgrade and the handshake's `Origin` must be this host's own. The socket
+/// holds the session, so a sign-out, a disabled account or a demotion closes
+/// it and ends the program (#42).
+async fn ide_terminal(
+    State(state): State<AppState>,
+    admin: AdminSession,
+    headers: axum::http::HeaderMap,
+    AxumPath(store): AxumPath<String>,
+    axum::extract::Query(query): axum::extract::Query<TerminalQuery>,
+    ws: axum::extract::ws::WebSocketUpgrade,
+) -> Response {
+    if !upgrade_origin_allowed(&headers) {
+        return upgrade_origin_refused();
+    }
+    terminal_upgrade(
+        ws,
+        TerminalHost {
+            catalog: state.apps.catalog(),
+            slots: &state.terminal_slots,
+            tokens: &state.terminal_tokens,
+            origin: &state.terminal_origin,
+            program: state.apps.claude_cli(),
+        },
+        admin.watch(state.sessions.clone()),
+        store,
+        query,
     )
     .await
 }

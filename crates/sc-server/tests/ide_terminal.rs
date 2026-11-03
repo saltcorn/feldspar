@@ -1,0 +1,1145 @@
+//! The IDE terminal route (design §12.1, "Claude Code in a terminal tab";
+//! TODO-claude-terminal CT1, CT3): who may open it, when it refuses, what
+//! crosses it, and how the program is wired to this server.
+//!
+//! As `ide_language_server.rs`, a real listener and a real WebSocket client,
+//! because the subject is what happens after the upgrade. A script stands in
+//! for Claude Code ([`StandIn`]): it writes down the arguments and environment
+//! it was started with and then becomes `/bin/sh`, because the bridge does not
+//! care which program is on the terminal, and a shell can be asked about the
+//! terminal it is on (`stty size`, `pwd`, `$$`).
+//!
+//! The applications list's answer to "can Claude start here" (CT4) is tested
+//! here too, because it is this route's own checks asked ahead of time.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![cfg(unix)]
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::Router;
+use axum::body::Body;
+use axum::extract::ConnectInfo;
+use axum::http::{HeaderValue, Request, StatusCode, header};
+use futures::{SinkExt, StreamExt};
+use sc_app::{Application, FrameworkRef};
+use sc_auth::{NewApiToken, SessionStore, User};
+use sc_catalog::Catalog;
+use sc_config::{IDE_TERMINAL_ENABLED, set_config};
+use sc_db::DatabaseDriver;
+use sc_db_postgres::PgDriver;
+use sc_error::Result;
+use sc_files::{FileStore, LocalFileStore};
+use sc_server::{
+    AppMounts, MAX_TERMINALS, SESSION_COOKIE, ServerConfig, TERMINAL_ROUTE, build_router_with_apps,
+};
+use sc_test_harness::TestDb;
+use serde_json::{Value, json};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::{Error as WsError, Message};
+use tower::ServiceExt;
+use uuid::Uuid;
+
+/// How long a test waits for output that should arrive promptly.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(20);
+
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// A fresh, unique temp directory, created on disk.
+fn temp_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "sc-terminal-{}-{tag}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// A running server with the store `code` connected at `root`.
+struct Server {
+    addr: SocketAddr,
+    /// The same routes, for a request from a peer the test makes up.
+    router: Router,
+    admin: String,
+    admin_id: Uuid,
+    public: String,
+    sessions: Arc<SessionStore>,
+    catalog: Arc<Catalog>,
+    root: PathBuf,
+    _db: TestDb,
+}
+
+impl Server {
+    async fn connect(
+        &self,
+        path_and_query: &str,
+        session: Option<&str>,
+    ) -> std::result::Result<Socket, WsError> {
+        let mut request = format!("ws://{}{path_and_query}", self.addr)
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            header::ORIGIN,
+            HeaderValue::from_str(&format!("http://{}", self.addr)).unwrap(),
+        );
+        if let Some(token) = session {
+            request.headers_mut().insert(
+                header::COOKIE,
+                HeaderValue::from_str(&format!("{SESSION_COOKIE}={token}")).unwrap(),
+            );
+        }
+        tokio_tungstenite::connect_async(request)
+            .await
+            .map(|(stream, _)| stream)
+    }
+
+    /// An admin's terminal on `code`, which must open.
+    async fn open(&self, query: &str) -> Socket {
+        self.connect(&format!("/ide/terminal/code{query}"), Some(&self.admin))
+            .await
+            .expect("the handshake succeeds")
+    }
+}
+
+/// A server running `program` as its Claude Code, with the terminal turned on
+/// unless `enabled` is false, and a real admin to open it: a session token
+/// resolves to a user in the database.
+async fn serve(program: &Path, enabled: bool) -> Result<Server> {
+    let db = TestDb::new().await?;
+    // The template carries a `users` table of its own; the platform's replaces it.
+    db.client()
+        .await?
+        .batch_execute(
+            "DO $$ DECLARE r record; BEGIN \
+               FOR r IN SELECT table_schema FROM information_schema.tables \
+               WHERE table_name = 'users' AND table_type = 'BASE TABLE' LOOP \
+                 EXECUTE format('DROP TABLE IF EXISTS %I.users CASCADE', r.table_schema); \
+               END LOOP; END $$",
+        )
+        .await
+        .map_err(|e| sc_error::Error::database(e.to_string()))?;
+    let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
+    let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    sc_auth::bootstrap(&catalog).await?;
+    sc_app::bootstrap(&catalog).await?;
+    sc_config::bootstrap(&catalog).await?;
+    sc_llm::bootstrap_llm_providers(&catalog).await?;
+    sc_mcp::bootstrap_mcp_servers(&catalog).await?;
+    let admin = sc_auth::create_first_user(&catalog, "admin@example.com", "hunter2pass").await?;
+    let root = temp_dir("store");
+    catalog.connect_file_store(
+        Arc::new(LocalFileStore::new("code", root.clone())?) as Arc<dyn FileStore>
+    )?;
+    if enabled {
+        set_config(&catalog, IDE_TERMINAL_ENABLED, json!(true)).await?;
+    }
+    let sessions = Arc::new(SessionStore::default());
+    // Bound first, so the router knows the address its terminals reach MCP on.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let apps = Arc::new(AppMounts::new(Arc::clone(&catalog)));
+    let router = build_router_with_apps(
+        &sc_api::admin_endpoints(),
+        // The real ones, for the applications list's "Build with Claude".
+        sc_server::admin_handlers(Arc::clone(&catalog), Arc::clone(&apps)),
+        sessions.clone(),
+        &ServerConfig {
+            addr,
+            claude_cli: program.to_path_buf(),
+            ..ServerConfig::default()
+        },
+        apps,
+    )?;
+    let served = router.clone();
+    tokio::spawn(async move {
+        // With connect info, as `serve` does: the MCP route asks who the peer is.
+        let _ = axum::serve(
+            listener,
+            served.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await;
+    });
+    Ok(Server {
+        addr,
+        router,
+        admin_id: admin.id(),
+        admin: sessions.login(admin).await?,
+        public: sessions
+            .login(User::new(Uuid::new_v4(), sc_types::Role::PUBLIC))
+            .await?,
+        sessions,
+        catalog,
+        root,
+        _db: db,
+    })
+}
+
+/// Claude Code's stand-in: a script that writes down how it was started and
+/// then becomes `/bin/sh`.
+struct StandIn {
+    program: PathBuf,
+    dir: PathBuf,
+}
+
+impl StandIn {
+    fn new() -> StandIn {
+        let dir = temp_dir("claude");
+        let program = dir.join("claude");
+        let quoted = dir.display().to_string().replace('\'', r"'\''");
+        // The environment first and the arguments last, renamed into place, so
+        // that the arguments being there means both are complete.
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\n\
+                 env > '{quoted}/env'\n\
+                 printf '%s\\0' \"$@\" > '{quoted}/args.part'\n\
+                 mv '{quoted}/args.part' '{quoted}/args'\n\
+                 exec /bin/sh\n"
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        StandIn { program, dir }
+    }
+
+    /// The arguments the latest session was started with.
+    async fn args(&self) -> Vec<String> {
+        let path = self.dir.join("args");
+        for _ in 0..100 {
+            if let Ok(raw) = std::fs::read_to_string(&path) {
+                return raw
+                    .split('\0')
+                    .filter(|a| !a.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the stand-in never started");
+    }
+
+    /// Its environment, read once [`StandIn::args`] has returned.
+    fn env(&self) -> HashMap<String, String> {
+        std::fs::read_to_string(self.dir.join("env"))
+            .unwrap()
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect()
+    }
+
+    /// The MCP config file the session was started with, and what it says.
+    /// Read while the session is open; it goes with it.
+    async fn mcp_config(&self) -> (PathBuf, String) {
+        let args = self.args().await;
+        let at = args
+            .iter()
+            .position(|a| a == "--mcp-config")
+            .expect("an MCP config")
+            + 1;
+        let path = PathBuf::from(&args[at]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        (path, text)
+    }
+
+    /// The MCP config's file, its entry for this server's `/mcp`, and the
+    /// session's bearer token.
+    async fn mcp(&self) -> (PathBuf, String, String) {
+        let (path, text) = self.mcp_config().await;
+        let config: Value = serde_json::from_str(&text).unwrap();
+        let server = &config["mcpServers"]["feldspar"];
+        let token = server["headers"]["Authorization"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("Bearer ")
+            .unwrap()
+            .to_owned();
+        (path, server["url"].as_str().unwrap().to_owned(), token)
+    }
+}
+
+/// A stand-in for a test that does not look at how it was started.
+fn sh() -> PathBuf {
+    StandIn::new().program
+}
+
+/// `ping` over HTTP, as Claude Code's MCP client sends it: the status, and
+/// the JSON-RPC result if there was one.
+async fn ping(url: &str, token: &str) -> (StatusCode, Value) {
+    let response = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(token)
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" }))
+        .send()
+        .await
+        .expect("the server answers");
+    let status = StatusCode::from_u16(response.status().as_u16()).unwrap();
+    let body = response.json::<Value>().await.unwrap_or(Value::Null);
+    (status, body)
+}
+
+/// Type a line into the terminal.
+async fn type_line(socket: &mut Socket, line: &str) {
+    socket
+        .send(Message::binary(format!("{line}\n").into_bytes()))
+        .await
+        .expect("send");
+}
+
+/// Read terminal output until it contains `needle`; everything read so far.
+async fn read_until(socket: &mut Socket, needle: &str) -> String {
+    let mut seen = String::new();
+    let deadline = tokio::time::Instant::now() + REPLY_TIMEOUT;
+    while !seen.contains(needle) {
+        let message = tokio::time::timeout_at(deadline, socket.next())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {needle:?}; saw {seen:?}"))
+            .expect("the socket ended")
+            .expect("a socket error");
+        match message {
+            Message::Binary(bytes) => seen.push_str(&String::from_utf8_lossy(&bytes)),
+            Message::Close(frame) => panic!("closed while waiting for {needle:?}: {frame:?}"),
+            _ => {}
+        }
+    }
+    seen
+}
+
+/// The close frame's reason, skipping any output before it.
+async fn close_reason(socket: &mut Socket) -> String {
+    loop {
+        let message = tokio::time::timeout(REPLY_TIMEOUT, socket.next())
+            .await
+            .expect("timed out waiting for the close frame")
+            .expect("the socket ended without a close frame")
+            .expect("a socket error");
+        if let Message::Close(frame) = message {
+            return frame.map(|f| f.reason.to_string()).unwrap_or_default();
+        }
+    }
+}
+
+/// Whether process `pid` still exists.
+fn alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only checks that the process exists.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Wait up to a few seconds for `pid` to be gone.
+async fn gone(pid: i32) -> bool {
+    for _ in 0..50 {
+        if !alive(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+/// The URL the IDE will build and the route this crate mounts are one contract.
+#[test]
+fn the_route_is_under_the_ide() {
+    assert_eq!(TERMINAL_ROUTE, "/ide/terminal/{store}");
+}
+
+/// Only an admin, and the refusal is an HTTP status before the upgrade.
+#[tokio::test]
+async fn only_an_admin_may_open_a_terminal() -> Result<()> {
+    let server = serve(&sh(), true).await?;
+    let anonymous = server.connect("/ide/terminal/code", None).await;
+    assert!(
+        matches!(&anonymous, Err(WsError::Http(r)) if r.status() == StatusCode::UNAUTHORIZED),
+        "anonymous: {:?}",
+        anonymous.map(|_| "a socket")
+    );
+    let public = server
+        .connect("/ide/terminal/code", Some(&server.public))
+        .await;
+    assert!(
+        matches!(&public, Err(WsError::Http(r)) if r.status() == StatusCode::FORBIDDEN),
+        "non-admin: {:?}",
+        public.map(|_| "a socket")
+    );
+    Ok(())
+}
+
+/// Every other refusal is a close frame with a sentence in it.
+#[tokio::test]
+async fn each_refusal_says_why() -> Result<()> {
+    let off = serve(&sh(), false).await?;
+    let mut socket = off.open("").await;
+    assert!(close_reason(&mut socket).await.contains("turned off"));
+
+    let server = serve(&sh(), true).await?;
+    let mut socket = server
+        .connect("/ide/terminal/elsewhere", Some(&server.admin))
+        .await
+        .unwrap();
+    assert!(close_reason(&mut socket).await.contains("not connected"));
+
+    let mut socket = server.open("?app=nope").await;
+    assert!(
+        close_reason(&mut socket)
+            .await
+            .contains("no application named nope")
+    );
+
+    // An application built from a different store is not this store's.
+    server.catalog.connect_file_store(
+        Arc::new(LocalFileStore::new("other", temp_dir("other"))?) as Arc<dyn FileStore>,
+    )?;
+    let framework = FrameworkRef::new("none")
+        .with("store", "other")
+        .with("source", "web");
+    sc_app::save_application(
+        &server.catalog,
+        &Application::new("site", "site", framework),
+    )
+    .await?;
+    let mut socket = server.open("?app=site").await;
+    assert!(close_reason(&mut socket).await.contains("is in other"));
+
+    let missing = serve(Path::new("/nonexistent/claude"), true).await?;
+    let mut socket = missing.open("").await;
+    assert!(
+        close_reason(&mut socket)
+            .await
+            .contains("claude is not installed")
+    );
+    Ok(())
+}
+
+/// Keystrokes reach the program and its output comes back; a resize reaches
+/// the terminal; the program starts at the store's root.
+#[tokio::test]
+async fn bytes_and_resizes_cross_the_bridge() -> Result<()> {
+    let server = serve(&sh(), true).await?;
+    let mut socket = server.open("").await;
+
+    // Computed by the shell, so seeing it proves a round trip rather than echo.
+    type_line(&mut socket, "echo sum-$((40+2))").await;
+    read_until(&mut socket, "sum-42").await;
+
+    socket
+        .send(Message::text(
+            json!({ "resize": { "cols": 100, "rows": 33 } }).to_string(),
+        ))
+        .await
+        .unwrap();
+    type_line(&mut socket, "stty size").await;
+    read_until(&mut socket, "33 100").await;
+
+    type_line(&mut socket, "pwd").await;
+    let root = server.root.canonicalize()?;
+    read_until(&mut socket, &root.display().to_string()).await;
+    Ok(())
+}
+
+/// While the browser has paused the terminal nothing reaches it; on resuming,
+/// what the program wrote meanwhile does.
+#[tokio::test]
+async fn a_paused_terminal_holds_its_output_until_resumed() -> Result<()> {
+    let server = serve(&sh(), true).await?;
+    let mut socket = server.open("").await;
+    type_line(&mut socket, "echo ready-$((1+1))").await;
+    read_until(&mut socket, "ready-2").await;
+
+    let pause = |on: bool| Message::text(json!({ "pause": on }).to_string());
+    socket.send(pause(true)).await.unwrap();
+    type_line(&mut socket, "echo held-$((40+2))").await;
+    let mut while_paused = String::new();
+    let quiet_until = tokio::time::Instant::now() + Duration::from_millis(600);
+    while let Ok(Some(Ok(message))) = tokio::time::timeout_at(quiet_until, socket.next()).await {
+        if let Message::Binary(bytes) = message {
+            while_paused.push_str(&String::from_utf8_lossy(&bytes));
+        }
+    }
+    assert!(
+        !while_paused.contains("held-42"),
+        "output arrived while paused: {while_paused:?}"
+    );
+
+    socket.send(pause(false)).await.unwrap();
+    read_until(&mut socket, "held-42").await;
+    Ok(())
+}
+
+/// Claude Code is started with this server's MCP and nothing else, and not
+/// told to continue where there is nothing to continue; a session token opens MCP — with the external switch off, where a
+/// table token does not — while its terminal is open, and not after; and
+/// nothing is written into the store.
+#[tokio::test]
+async fn a_session_token_opens_mcp_while_its_terminal_is_open() -> Result<()> {
+    let claude = StandIn::new();
+    let server = serve(&claude.program, true).await?;
+    let mut socket = server.open("").await;
+    let (config, url, token) = claude.mcp().await;
+    let args = claude.args().await;
+    // A store no session has worked in yet has nothing to continue.
+    assert!(!args.contains(&"--continue".to_owned()), "{args:?}");
+    assert!(args.contains(&"--strict-mcp-config".to_owned()));
+    assert!(
+        !config.starts_with(&server.root),
+        "the config is outside the store"
+    );
+    assert_eq!(url, format!("http://{}/mcp", server.addr));
+
+    // `mcp_enabled` is off, as it is by default.
+    let (status, body) = ping(&url, &token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["result"], json!({}));
+    let table = sc_auth::mint_api_token(
+        &server.catalog,
+        NewApiToken {
+            user_id: server.admin_id,
+            label: "laptop".to_owned(),
+            grants: sc_types::Attrs::new(),
+            expires_at: None,
+        },
+    )
+    .await?;
+    assert_eq!(ping(&url, &table.secret).await.0, StatusCode::NOT_FOUND);
+
+    socket.close(None).await.unwrap();
+    drop(socket);
+    let mut status = StatusCode::OK;
+    for _ in 0..50 {
+        status = ping(&url, &token).await.0;
+        if status != StatusCode::OK {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "the token outlived its terminal"
+    );
+    assert!(!config.exists(), "the MCP config outlived its session");
+    let left: Vec<_> = std::fs::read_dir(&server.root)?.flatten().collect();
+    assert!(left.is_empty(), "written into the store: {left:?}");
+    Ok(())
+}
+
+/// A terminal lives as long as the admin session it was opened from: signing
+/// out closes it with the reason, ends the program, and its token stops
+/// opening MCP.
+#[tokio::test]
+async fn signing_out_ends_the_terminal_and_its_token() -> Result<()> {
+    let claude = StandIn::new();
+    let server = serve(&claude.program, true).await?;
+    let mut socket = server.open("").await;
+    let (_, url, token) = claude.mcp().await;
+    assert_eq!(ping(&url, &token).await.0, StatusCode::OK);
+    type_line(&mut socket, r"printf '\074%s\076\n' $$").await;
+    let output = read_until(&mut socket, ">\r").await;
+    let shell: i32 = output
+        .rsplit('<')
+        .next()
+        .and_then(|rest| rest.split('>').next())
+        .and_then(|pid| pid.parse().ok())
+        .expect("the shell printed its pid");
+
+    server.sessions.logout(&server.admin).await?;
+    assert!(
+        close_reason(&mut socket).await.contains("session ended"),
+        "the close says why"
+    );
+    assert!(gone(shell).await, "the program outlived the session");
+    assert_ne!(ping(&url, &token).await.0, StatusCode::OK);
+    Ok(())
+}
+
+/// A session token is the server's own child's, so it is refused from any
+/// other machine — whatever `mcp_loopback_only` says.
+#[tokio::test]
+async fn a_session_token_is_refused_from_another_machine() -> Result<()> {
+    let claude = StandIn::new();
+    let server = serve(&claude.program, true).await?;
+    set_config(&server.catalog, sc_config::MCP_LOOPBACK_ONLY, json!(false)).await?;
+    let _socket = server.open("").await;
+    let (_, _, token) = claude.mcp().await;
+    let from = |peer: &str| {
+        let mut request = Request::post("/mcp")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" }).to_string(),
+            ))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(peer.parse::<SocketAddr>().unwrap()));
+        server.router.clone().oneshot(request)
+    };
+    assert_eq!(
+        from("10.0.0.5:40000").await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        from("127.0.0.1:40000").await.unwrap().status(),
+        StatusCode::OK
+    );
+    Ok(())
+}
+
+/// In an application's directory the session gets its framework's builder
+/// prompt; the CLI keeps its login in the installation's data directory, and
+/// an Anthropic provider's key is passed.
+#[tokio::test]
+async fn an_application_session_gets_its_prompt_login_and_key() -> Result<()> {
+    let claude = StandIn::new();
+    let server = serve(&claude.program, true).await?;
+    std::fs::create_dir_all(server.root.join("web"))?;
+    let framework = FrameworkRef::new("none")
+        .with("store", "code")
+        .with("source", "web");
+    sc_app::save_application(
+        &server.catalog,
+        &Application::new("site", "site", framework),
+    )
+    .await?;
+    sc_llm::save_llm_provider(
+        &server.catalog,
+        &sc_llm::LlmProviderDef::new("house", sc_llm::ANTHROPIC_BACKEND)
+            .with(sc_llm::CFG_API_KEY, "sk-ant-test"),
+    )
+    .await?;
+
+    let _socket = server.open("?app=site").await;
+    let args = claude.args().await;
+    let at = args
+        .iter()
+        .position(|a| a == "--append-system-prompt")
+        .expect("a prompt")
+        + 1;
+    assert!(args[at].contains("site"), "{}", args[at]);
+    let env = claude.env();
+    assert!(env["CLAUDE_CONFIG_DIR"].ends_with("/claude"), "{env:?}");
+    assert_eq!(env["ANTHROPIC_API_KEY"], "sk-ant-test");
+    assert!(!env.contains_key("DATABASE_URL"));
+    Ok(())
+}
+
+/// A stand-in remote MCP server: it answers every JSON-RPC message with the
+/// method it was, under a session id of its own, and keeps the headers each
+/// request arrived with.
+struct Stub {
+    url: String,
+    seen: Arc<std::sync::Mutex<Vec<axum::http::HeaderMap>>>,
+}
+
+async fn stub() -> Stub {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&seen);
+    let app = Router::new().route(
+        "/mcp",
+        axum::routing::post(
+            move |headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>| {
+                let recorded = Arc::clone(&recorded);
+                async move {
+                    recorded.lock().unwrap().push(headers);
+                    (
+                        [("mcp-session-id", "stub-session")],
+                        axum::Json(json!({
+                            "jsonrpc": "2.0",
+                            "id": body["id"],
+                            "result": { "echo": body["method"] },
+                        })),
+                    )
+                }
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    Stub {
+        url: format!("http://{addr}/mcp"),
+        seen,
+    }
+}
+
+/// A JSON-RPC request to an offered server's proxy: the status, the
+/// `Mcp-Session-Id` the answer carried, and the body.
+async fn through_proxy(url: &str, token: &str) -> (StatusCode, Option<String>, Value) {
+    let response = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(token)
+        .header("mcp-session-id", "client-session")
+        .json(&json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/list" }))
+        .send()
+        .await
+        .expect("the server answers");
+    let status = StatusCode::from_u16(response.status().as_u16()).unwrap();
+    let session = response
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let body = response.json::<Value>().await.unwrap_or(Value::Null);
+    (status, session, body)
+}
+
+/// An offered streamable-HTTP server is in the session's config at its proxy,
+/// without its credential; a call through the proxy arrives with the stored
+/// headers and the client's session id, and the answer comes back with the
+/// server's. An SSE server is left out, and the terminal says why.
+#[tokio::test]
+async fn an_offered_server_is_reached_through_the_proxy() -> Result<()> {
+    let claude = StandIn::new();
+    let server = serve(&claude.program, true).await?;
+    let upstream = stub().await;
+    for def in [
+        sc_mcp::McpServerDef::new("crm", upstream.url.clone())
+            .header("X-Api-Key", "secret-123")
+            .private_network(true)
+            .offer_to_terminal(true),
+        sc_mcp::McpServerDef::new("hidden", upstream.url.clone()).private_network(true),
+        sc_mcp::McpServerDef::new("tickets", "https://tickets.example.com/sse")
+            .transport(sc_mcp::McpTransport::Sse)
+            .offer_to_terminal(true),
+    ] {
+        sc_mcp::save_mcp_server(&server.catalog, &def).await?;
+    }
+
+    let mut socket = server.open("").await;
+    let notice = read_until(&mut socket, "SSE").await;
+    assert!(notice.contains("`tickets`"), "{notice}");
+    let (_, text) = claude.mcp_config().await;
+    let (_, _, token) = claude.mcp().await;
+    assert!(
+        !text.contains("secret-123"),
+        "the credential is in the config: {text}"
+    );
+    let config: Value = serde_json::from_str(&text).unwrap();
+    let servers = config["mcpServers"].as_object().unwrap();
+    let mut names: Vec<_> = servers.keys().cloned().collect();
+    names.sort();
+    assert_eq!(names, ["crm", "feldspar"]);
+    let crm = servers["crm"]["url"].as_str().unwrap();
+    assert_eq!(crm, format!("http://{}/ide/mcp-proxy/crm", server.addr));
+
+    let (status, session, body) = through_proxy(crm, &token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["result"]["echo"], "tools/list");
+    assert_eq!(session.as_deref(), Some("stub-session"));
+    let seen = upstream.seen.lock().unwrap().clone();
+    let arrived = seen.last().expect("the call arrived");
+    assert_eq!(arrived["x-api-key"], "secret-123");
+    assert_eq!(arrived["mcp-session-id"], "client-session");
+    assert!(
+        arrived.get("authorization").is_none(),
+        "the session's token went upstream"
+    );
+    Ok(())
+}
+
+/// The proxy forwards only for an open session's token, only to an offered
+/// server, and only where the definition's guard allows.
+#[tokio::test]
+async fn the_proxy_refuses_what_it_should() -> Result<()> {
+    let claude = StandIn::new();
+    let server = serve(&claude.program, true).await?;
+    let upstream = stub().await;
+    for def in [
+        sc_mcp::McpServerDef::new("crm", upstream.url.clone())
+            .private_network(true)
+            .offer_to_terminal(true),
+        sc_mcp::McpServerDef::new("hidden", upstream.url.clone()).private_network(true),
+        // On loopback, without the private network allowed.
+        sc_mcp::McpServerDef::new("guarded", upstream.url.clone()).offer_to_terminal(true),
+    ] {
+        sc_mcp::save_mcp_server(&server.catalog, &def).await?;
+    }
+    let proxy = |name: &str| format!("http://{}/ide/mcp-proxy/{name}", server.addr);
+
+    let mut socket = server.open("").await;
+    let (_, _, token) = claude.mcp().await;
+    assert_eq!(through_proxy(&proxy("crm"), &token).await.0, StatusCode::OK);
+    assert_eq!(
+        through_proxy(&proxy("hidden"), &token).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let (status, _, body) = through_proxy(&proxy("guarded"), &token).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("private or reserved"),
+        "{body}"
+    );
+
+    sc_config::set_config(&server.catalog, sc_config::MCP_ENABLED, json!(true)).await?;
+    let table = sc_auth::mint_api_token(
+        &server.catalog,
+        NewApiToken {
+            user_id: server.admin_id,
+            label: "laptop".to_owned(),
+            grants: sc_types::Attrs::new(),
+            expires_at: None,
+        },
+    )
+    .await?;
+    assert_eq!(
+        through_proxy(&proxy("crm"), &table.secret).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+
+    socket.close(None).await.unwrap();
+    drop(socket);
+    let mut status = StatusCode::OK;
+    for _ in 0..50 {
+        status = through_proxy(&proxy("crm"), &token).await.0;
+        if status != StatusCode::OK {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "the token outlived its terminal"
+    );
+    Ok(())
+}
+
+/// With `?app=`, the program starts in that application's source directory.
+#[tokio::test]
+async fn an_application_terminal_starts_in_its_source_directory() -> Result<()> {
+    let server = serve(&sh(), true).await?;
+    std::fs::create_dir_all(server.root.join("web"))?;
+    let framework = FrameworkRef::new("none")
+        .with("store", "code")
+        .with("source", "web");
+    sc_app::save_application(
+        &server.catalog,
+        &Application::new("site", "site", framework),
+    )
+    .await?;
+
+    let mut socket = server.open("?app=site").await;
+    type_line(&mut socket, "pwd").await;
+    let web = server.root.join("web").canonicalize()?;
+    read_until(&mut socket, &web.display().to_string()).await;
+    Ok(())
+}
+
+/// A program that exits on its own still has what it left running ended:
+/// here a background job that let go of the terminal, so the exit is what
+/// closes it.
+#[tokio::test]
+async fn an_exit_ends_what_the_program_left_running() -> Result<()> {
+    let server = serve(&sh(), true).await?;
+    let mut socket = server.open("").await;
+    type_line(
+        &mut socket,
+        r"sleep 1002 </dev/null >/dev/null 2>&1 & printf '\074%s\076\n' $!",
+    )
+    .await;
+    let output = read_until(&mut socket, ">\r").await;
+    let job: i32 = output
+        .rsplit('<')
+        .next()
+        .and_then(|rest| rest.split('>').next())
+        .and_then(|pid| pid.parse().ok())
+        .expect("the shell printed the job's pid");
+    assert!(alive(job));
+
+    type_line(&mut socket, "exit").await;
+    let reason = close_reason(&mut socket).await;
+    assert!(reason.contains("status 0"), "{reason}");
+    assert!(gone(job).await, "a background job outlived the program");
+    Ok(())
+}
+
+/// The program exiting closes the socket normally, with its status.
+#[tokio::test]
+async fn an_exit_closes_the_socket_with_the_status() -> Result<()> {
+    let server = serve(&sh(), true).await?;
+    let mut socket = server.open("").await;
+    type_line(&mut socket, "exit 7").await;
+    let reason = close_reason(&mut socket).await;
+    assert!(reason.contains("status 7"), "{reason}");
+    Ok(())
+}
+
+/// The children of `parent`, read from `/proc` (Linux only).
+fn children_of(parent: i32) -> Vec<i32> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid: i32 = entry.file_name().to_str()?.parse().ok()?;
+            let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
+            let ppid: i32 = stat
+                .get(stat.rfind(')')? + 1..)?
+                .split_whitespace()
+                .nth(1)?
+                .parse()
+                .ok()?;
+            (ppid == parent).then_some(pid)
+        })
+        .collect()
+}
+
+/// Closing the socket ends the program **and what it started**, including the
+/// two kinds of child its process group does not contain: a background job of
+/// a shell with job control (a group of its own) and a child that left the
+/// session with `setsid` (here `setsid -w`, which keeps its parent alive as a
+/// program like Claude Code would).
+#[tokio::test]
+async fn closing_the_socket_ends_the_program_and_its_children() -> Result<()> {
+    let server = serve(&sh(), true).await?;
+    let mut socket = server.open("").await;
+    // The terminal echoes what is typed, so the marker the test waits for is
+    // spelled in octal on the way in (`\074`, `\076`) and only appears as `<`
+    // and `>` in what the shell prints.
+    type_line(&mut socket, r"sleep 1000 & printf '\074%s-%s\076\n' $$ $!").await;
+    let output = read_until(&mut socket, ">").await;
+    let pids = output
+        .rsplit('<')
+        .next()
+        .and_then(|rest| rest.split('>').next())
+        .expect("the shell printed its pids");
+    let (shell, job) = pids.split_once('-').expect("two pids");
+    let (shell, job): (i32, i32) = (shell.parse().unwrap(), job.parse().unwrap());
+
+    type_line(
+        &mut socket,
+        r"setsid -w sleep 1001 & printf '\074%s\076\n' $!",
+    )
+    .await;
+    let output = read_until(&mut socket, ">\r").await;
+    let waiter: i32 = output
+        .rsplit('<')
+        .next()
+        .and_then(|rest| rest.split('>').next())
+        .and_then(|pid| pid.parse().ok())
+        .expect("the shell printed the setsid pid");
+    // `setsid` forks when it already leads a group, as a job does; the sleep
+    // in a session of its own is that fork's child.
+    let mut detached = Vec::new();
+    for _ in 0..50 {
+        detached = children_of(waiter);
+        if !detached.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!detached.is_empty(), "setsid started no child");
+    assert!(alive(shell) && alive(job) && alive(waiter));
+
+    socket.close(None).await.unwrap();
+    drop(socket);
+    assert!(gone(shell).await, "the shell outlived its socket");
+    assert!(gone(job).await, "a background job outlived the socket");
+    assert!(gone(waiter).await, "setsid outlived the socket");
+    for pid in detached {
+        assert!(
+            gone(pid).await,
+            "a child in its own session outlived the socket: {:?}",
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        );
+    }
+    Ok(())
+}
+
+/// The bound holds, and refuses with a reason.
+#[tokio::test]
+async fn the_number_of_terminals_is_bounded() -> Result<()> {
+    let server = serve(&sh(), true).await?;
+    let mut open = Vec::new();
+    for n in 0..MAX_TERMINALS {
+        let mut socket = server.open("").await;
+        // Make sure each one really started before opening the next.
+        type_line(&mut socket, &format!("echo up-{n}-ok")).await;
+        read_until(&mut socket, &format!("up-{n}-ok")).await;
+        open.push(socket);
+    }
+    let mut refused = server.open("").await;
+    assert!(close_reason(&mut refused).await.contains("maximum"));
+
+    // Closing one frees its slot.
+    let mut first = open.remove(0);
+    first.close(None).await.unwrap();
+    drop(first);
+    let mut again = None;
+    for _ in 0..50 {
+        let mut socket = server.open("").await;
+        type_line(&mut socket, "echo again-ok").await;
+        match tokio::time::timeout(Duration::from_secs(2), socket.next()).await {
+            Ok(Some(Ok(Message::Close(_)))) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            _ => {
+                again = Some(socket);
+                break;
+            }
+        }
+    }
+    let mut again = again.expect("a slot came free");
+    read_until(&mut again, "again-ok").await;
+    Ok(())
+}
+
+/// What the applications list says about each application's "Build with
+/// Claude", as the admin's browser reads it.
+async fn claude_availability(server: &Server) -> HashMap<String, Value> {
+    let response = reqwest::Client::new()
+        .get(format!("http://{}/api/applications", server.addr))
+        .header(header::COOKIE, format!("{SESSION_COOKIE}={}", server.admin))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let apps: Vec<Value> = response.json().await.unwrap();
+    apps.into_iter()
+        .map(|app| {
+            (
+                app["name"].as_str().unwrap().to_owned(),
+                app["claude"].clone(),
+            )
+        })
+        .collect()
+}
+
+/// Save a `none` application whose source is `dir` of `store`.
+async fn save_app(server: &Server, name: &str, store: &str, dir: &str) -> Result<()> {
+    let framework = FrameworkRef::new("none")
+        .with("store", store)
+        .with("source", dir);
+    sc_app::save_application(&server.catalog, &Application::new(name, name, framework)).await?;
+    Ok(())
+}
+
+/// The reason "Build with Claude" shows for `app`, or `None` when it can start.
+fn reason(availability: &HashMap<String, Value>, app: &str) -> Option<String> {
+    let claude = &availability[app];
+    let available = claude["available"].as_bool().unwrap();
+    let reason = claude["reason"].as_str().map(str::to_owned);
+    assert_eq!(available, reason.is_none(), "{app}: {claude}");
+    reason
+}
+
+/// Each application says whether Claude can start in it, and if not, the
+/// reason the terminal route itself would give.
+#[tokio::test]
+async fn the_applications_list_says_where_claude_can_start() -> Result<()> {
+    let server = serve(&sh(), true).await?;
+    std::fs::create_dir_all(server.root.join("web"))?;
+    save_app(&server, "site", "code", "web").await?;
+    save_app(&server, "later", "code", "not-yet").await?;
+    // Saved while its store was connected; the store has gone since.
+    server.catalog.connect_file_store(
+        Arc::new(LocalFileStore::new("gone", temp_dir("gone"))?) as Arc<dyn FileStore>
+    )?;
+    save_app(&server, "elsewhere", "gone", "web").await?;
+    server.catalog.disconnect_file_store("gone")?;
+    // Constructed from views and pages: there is no directory to start in.
+    sc_app::save_application(
+        &server.catalog,
+        &Application::new("crm", "crm", FrameworkRef::new("saltcorn-ui")),
+    )
+    .await?;
+
+    let availability = claude_availability(&server).await;
+    assert_eq!(reason(&availability, "site"), None);
+    assert!(
+        reason(&availability, "later")
+            .unwrap()
+            .contains("code/not-yet is not there yet")
+    );
+    assert!(
+        reason(&availability, "elsewhere")
+            .unwrap()
+            .contains("the file store gone is not connected")
+    );
+    assert!(
+        reason(&availability, "crm")
+            .unwrap()
+            .contains("crm has no source directory")
+    );
+    Ok(())
+}
+
+/// What is true of the whole server — the terminal turned off, Claude Code not
+/// installed — is every application's reason.
+#[tokio::test]
+async fn the_server_wide_reasons_reach_every_application() -> Result<()> {
+    let off = serve(&sh(), false).await?;
+    std::fs::create_dir_all(off.root.join("web"))?;
+    save_app(&off, "site", "code", "web").await?;
+    assert!(
+        reason(&claude_availability(&off).await, "site")
+            .unwrap()
+            .contains("turned off")
+    );
+
+    let missing = serve(Path::new("/nonexistent/claude"), true).await?;
+    std::fs::create_dir_all(missing.root.join("web"))?;
+    save_app(&missing, "site", "code", "web").await?;
+    assert!(
+        reason(&claude_availability(&missing).await, "site")
+            .unwrap()
+            .contains("claude is not installed")
+    );
+    Ok(())
+}
+
+/// The `changed` frames that arrive within `wait`, each as its list of paths.
+async fn changed_frames(socket: &mut Socket, wait: Duration) -> Vec<Vec<String>> {
+    let mut frames = Vec::new();
+    let until = tokio::time::Instant::now() + wait;
+    while let Ok(Some(Ok(message))) = tokio::time::timeout_at(until, socket.next()).await {
+        if let Message::Text(text) = message {
+            let frame: Value = serde_json::from_str(&text).unwrap();
+            frames.push(
+                frame["changed"]
+                    .as_array()
+                    .expect("a changed frame")
+                    .iter()
+                    .map(|path| path.as_str().unwrap().to_owned())
+                    .collect(),
+            );
+        }
+    }
+    frames
+}
+
+/// What the program writes in its directory reaches the browser once, as the
+/// store path of the file; what it writes under `node_modules` does not.
+#[tokio::test]
+async fn a_file_the_program_writes_is_reported_once_by_its_store_path() -> Result<()> {
+    let server = serve(&sh(), true).await?;
+    std::fs::create_dir_all(server.root.join("web/node_modules"))?;
+    save_app(&server, "site", "code", "web").await?;
+    let mut socket = server.open("?app=site").await;
+
+    type_line(
+        &mut socket,
+        "echo x > node_modules/dep.js; echo a > page.txt; echo b >> page.txt",
+    )
+    .await;
+    // Read directly rather than with `read_until`, which skips text frames.
+    assert_eq!(
+        changed_frames(&mut socket, Duration::from_secs(4)).await,
+        vec![vec!["web/page.txt".to_owned()]]
+    );
+    Ok(())
+}

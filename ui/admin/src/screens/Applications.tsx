@@ -15,7 +15,7 @@ import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
 import type { ListApplicationsResponse } from "../client";
-import { ideUrl, navigate } from "../App";
+import { claudeUrl, ideUrl, navigate } from "../App";
 import { appUrl } from "../appNav";
 import { graphqlMount } from "../graphqlExplorer";
 import { IconPlus } from "../icons";
@@ -188,7 +188,22 @@ export function Applications() {
                           <a href={filesUrl(app.source.store, app.source.path)}>
                             {app.source.store}/{app.source.path || ""}
                           </a>{" "}
-                          <a href={ideUrl(app.source.store)}><T text="(edit code)" /></a>
+                          <a href={ideUrl(app.source.store)}><T text="(edit code)" /></a>{" "}
+                          {app.claude.available ? (
+                            <a href={claudeUrl(app.source.store, app.name)}>
+                              <T text="(build with Claude)" />
+                            </a>
+                          ) : (
+                            // Shown anyway, with the server's reason, so the
+                            // admin learns what to change.
+                            <span
+                              className="text-secondary"
+                              style={{ cursor: "not-allowed" }}
+                              title={app.claude.reason ?? undefined}
+                            >
+                              <T text="(build with Claude)" />
+                            </span>
+                          )}
                         </div>
                       )}
                     </td>

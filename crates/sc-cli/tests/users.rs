@@ -48,6 +48,7 @@ async fn signs_in(catalog: &sc_catalog::Catalog, email: &str, password: &str) ->
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn a_forgotten_admin_password_is_reset_from_the_cli() -> sc_error::Result<()> {
     let db = TestDb::new().await?;
     let url = db.url();

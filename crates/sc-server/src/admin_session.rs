@@ -185,6 +185,18 @@ impl AdminSession {
     }
 }
 
+#[cfg(test)]
+impl AdminSession {
+    /// A new administrator's session, signed in on `sessions` as a request
+    /// would be, for a unit test that needs one without a request.
+    pub(crate) async fn signed_in(sessions: &SessionStore) -> AdminSession {
+        let admin = User::new(Uuid::new_v4(), sc_types::Role::ADMIN);
+        let token = sessions.login(admin).await.unwrap();
+        let user = sessions.user_for(&token).await.unwrap().unwrap();
+        AdminSession { user, token }
+    }
+}
+
 impl FromRequestParts<AppState> for AdminSession {
     type Rejection = Response;
 

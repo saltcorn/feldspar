@@ -180,13 +180,7 @@ async fn setup() -> sc_error::Result<Fixture> {
     sc_config::bootstrap_config(&catalog).await?;
     save_role(&catalog, &RoleDef::new(ROLE_MEMBER, "Member")).await?;
     create_user(&catalog, "admin@example.com", "admin-pw", Role::ADMIN).await?;
-    create_user(
-        &catalog,
-        "member@example.com",
-        "member-pw",
-        ROLE_MEMBER,
-    )
-    .await?;
+    create_user(&catalog, "member@example.com", "member-pw", ROLE_MEMBER).await?;
 
     let apps = Arc::new(AppMounts::new(catalog.clone()));
     let club = Application::new("Club", "club", FrameworkRef::new("code"))

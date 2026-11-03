@@ -16,7 +16,7 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new("listApplications", Method::Get, api().lit("applications"))
-            .output(TypeSchema::array(application_schema()))
+            .output(TypeSchema::array(listed_application_schema()))
             .mcp(
                 McpTag::new(
                     "List the applications: what each is called, the subdomain it \
@@ -540,6 +540,26 @@ fn app_source_schema() -> TypeSchema {
         StructField::new("store", TypeSchema::text()),
         StructField::new("path", TypeSchema::text()),
     ])
+}
+
+/// An application as the list returns it: [`application_schema`], plus
+/// whether a Claude Code session can start for it (the "Build with Claude"
+/// link), and if not, why — the IDE terminal is off, Claude Code is not
+/// installed, the application has no source directory, or that directory is
+/// not on this server's disk. A state of this machine, checked each time the
+/// list is asked for, like a target's readiness.
+fn listed_application_schema() -> TypeSchema {
+    let TypeSchema::Struct(mut fields) = application_schema() else {
+        unreachable!("application_schema is a struct")
+    };
+    fields.push(StructField::new(
+        "claude",
+        TypeSchema::struct_of([
+            StructField::new("available", TypeSchema::bool()),
+            StructField::new("reason", TypeSchema::optional(TypeSchema::text())),
+        ]),
+    ));
+    TypeSchema::Struct(fields)
 }
 
 /// A freshly created application, plus what scaffolding it did (§2.3) and which

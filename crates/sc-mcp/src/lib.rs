@@ -19,6 +19,8 @@
 //! - The **guard** (`guard.rs`): public addresses only unless the definition
 //!   allows the private network, checked as names resolve; no redirects.
 //! - The **cache** ([`cache`]): each server's tool list, kept while fresh.
+//! - The **proxy** ([`proxy`]): one client request forwarded to a server with
+//!   its stored headers, for the IDE's Claude Code sessions.
 //!
 //! Layer 6, beside `sc-llm`: it needs a `Catalog` for its table and nothing
 //! about agents.
@@ -34,6 +36,7 @@ pub mod cache;
 pub mod client;
 pub mod def;
 mod guard;
+pub mod proxy;
 mod sse;
 pub mod storage;
 #[cfg(test)]
@@ -44,8 +47,8 @@ pub use client::{
     McpServerInfo, McpServerReport, PROTOCOL_VERSION, call_tool, list_tools, test_connection, tools,
 };
 pub use def::{
-    DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS, McpServerDef, McpServerDefId, McpTransport,
-    merge_headers, validate_server,
+    ATTR_OFFER_TO_TERMINAL, DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS, McpServerDef, McpServerDefId,
+    McpTransport, merge_headers, validate_server,
 };
 pub use storage::{
     MCP_SERVERS_TABLE, bootstrap_mcp_servers, delete_mcp_server, list_mcp_servers, load_mcp_server,

@@ -332,3 +332,65 @@ async fn a_server_an_agents_mcp_server_trait_names_is_not_deleted() -> sc_error:
     assert_eq!(deleted["deleted"], json!(true));
     Ok(())
 }
+
+/// A server is offered to the IDE's terminal only when the form says so; the
+/// flag reads back, an update that does not mention it keeps it, and an update
+/// that turns it off keeps the server's other attributes (design §12.1).
+#[tokio::test]
+async fn offering_a_server_to_the_terminal_is_a_saved_choice() -> sc_error::Result<()> {
+    let (mut client, catalog, url, _db) = setup().await?;
+    let form = |offer: Option<bool>| {
+        let mut body = json!({
+            "name": "crm", "url": url, "transport": "streamable_http", "headers": [],
+            "allow_private_network": true, "timeout_secs": 0,
+        });
+        if let Some(offer) = offer {
+            body["offer_to_terminal"] = json!(offer);
+        }
+        body
+    };
+    let (status, created) = client
+        .send("POST", "/api/mcp-servers", Some(form(None)))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["offer_to_terminal"], false, "off unless asked");
+    let id = created["id"].as_str().unwrap().to_owned();
+
+    let (_, updated) = client
+        .send(
+            "PUT",
+            &format!("/api/mcp-servers/{id}"),
+            Some(form(Some(true))),
+        )
+        .await;
+    assert_eq!(updated["offer_to_terminal"], true, "{updated}");
+    assert!(
+        sc_mcp::require_mcp_server(&catalog, "crm")
+            .await?
+            .offered_to_terminal()
+    );
+
+    // An update that does not mention the offer leaves it as it was.
+    let (_, updated) = client
+        .send("PUT", &format!("/api/mcp-servers/{id}"), Some(form(None)))
+        .await;
+    assert_eq!(updated["offer_to_terminal"], true, "{updated}");
+
+    // An attribute the form does not know survives an update that turns the
+    // offer off.
+    let mut stored = sc_mcp::require_mcp_server(&catalog, "crm").await?;
+    stored.attributes.insert("note".to_owned(), json!("kept"));
+    sc_mcp::save_mcp_server(&catalog, &stored).await?;
+    let (_, updated) = client
+        .send(
+            "PUT",
+            &format!("/api/mcp-servers/{id}"),
+            Some(form(Some(false))),
+        )
+        .await;
+    assert_eq!(updated["offer_to_terminal"], false, "{updated}");
+    let stored = sc_mcp::require_mcp_server(&catalog, "crm").await?;
+    assert!(!stored.offered_to_terminal());
+    assert_eq!(stored.attributes.get("note"), Some(&json!("kept")));
+    Ok(())
+}

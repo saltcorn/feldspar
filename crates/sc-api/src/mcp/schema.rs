@@ -1381,10 +1381,9 @@ fn check_attributes(catalog: &Catalog, operations: &[Operation]) -> Result<()> {
                 continue;
             }
             let has = match known.is_empty() {
-                true => format!(
-                    "none — for allowed values or a length limit use type `string`, for \
-                     a range `integer`"
-                ),
+                true => "none — for allowed values or a length limit use type `string`, for \
+                         a range `integer`"
+                    .to_owned(),
                 false => known
                     .iter()
                     .map(|k| format!("`{k}`"))

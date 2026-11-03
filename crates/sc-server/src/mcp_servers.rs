@@ -63,7 +63,16 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
             async move {
                 let existing = require_by_id(&catalog, ctx.path_param("id")?).await?;
                 let mut def = server_from_body(existing.id, &ctx.body, &existing.headers)?;
+                // The stored attributes, with the offer as the body says, or
+                // as it was when the body does not say: the field is optional,
+                // and a client that does not know it must not turn it off.
+                let offer = ctx
+                    .body
+                    .get("offer_to_terminal")
+                    .and_then(Json::as_bool)
+                    .unwrap_or(existing.offered_to_terminal());
                 def.attributes = existing.attributes.clone();
+                let def = def.offer_to_terminal(offer);
                 // A rename breaks the agents naming it, as a delete would.
                 if def.name.trim() != existing.name {
                     let users = agents_using(&catalog, &existing.name).await?;

@@ -54,11 +54,7 @@ async fn fixture() -> Result<Fixture> {
 }
 
 async fn account(catalog: &Catalog, email: &str, role: sc_types::Role) -> Result<Uuid> {
-    Ok(
-        create_user(catalog, email, "pw-123456", role)
-            .await?
-            .id(),
-    )
+    Ok(create_user(catalog, email, "pw-123456", role).await?.id())
 }
 
 async fn count(catalog: &Catalog, table: &str) -> Result<usize> {

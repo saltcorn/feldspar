@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use sc_error::{Error, Result};
 use sc_types::{Attrs, SECRET_SENTINEL};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as Json;
 use uuid::Uuid;
 
 /// The longest name a server may have: its tools are offered to a model as
@@ -52,6 +53,13 @@ impl Default for McpServerDefId {
         McpServerDefId::new()
     }
 }
+
+/// The attribute that offers a server to the IDE's Claude Code sessions
+/// (design §12.1): `true` to offer it, absent otherwise.
+///
+/// Off by default, because a server configured for one customer-facing agent
+/// should not appear unasked in an unrestricted coding CLI.
+pub const ATTR_OFFER_TO_TERMINAL: &str = "offer_to_terminal";
 
 /// How the server is spoken to.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -145,6 +153,26 @@ impl McpServerDef {
     /// Allow a private address, returning `self` for chaining.
     pub fn private_network(mut self, allow: bool) -> McpServerDef {
         self.allow_private_network = allow;
+        self
+    }
+
+    /// Whether the IDE's Claude Code sessions are offered this server.
+    pub fn offered_to_terminal(&self) -> bool {
+        self.attributes
+            .get(ATTR_OFFER_TO_TERMINAL)
+            .and_then(Json::as_bool)
+            == Some(true)
+    }
+
+    /// Offer the server to the IDE's sessions, or stop offering it. Sparse: off
+    /// is the attribute's absence.
+    pub fn offer_to_terminal(mut self, offer: bool) -> McpServerDef {
+        if offer {
+            self.attributes
+                .insert(ATTR_OFFER_TO_TERMINAL.to_owned(), Json::Bool(true));
+        } else {
+            self.attributes.remove(ATTR_OFFER_TO_TERMINAL);
+        }
         self
     }
 

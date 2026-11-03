@@ -247,6 +247,15 @@ one genuinely new piece of git.
   of its own and not one this milestone needs to take.
 - **`npm install` from the IDE.** The build already installs when `node_modules` is missing
   (§13.3), which covers the case that matters.
+- **A language server nobody has to install.** On a machine without `typescript-language-server`
+  on `PATH` the IDE has no type checking, and the store's own `node_modules/.bin` copy is refused
+  on purpose (security review #16). The server could install a pinned copy of its own under the
+  data directory the first time one is needed. The feedback is also unclear: a missing binary
+  fails after the WebSocket has opened, so the admin sees the language client's internal
+  "Server initialization failed… code = 1008" instead of the server's sentence. The server
+  should check that the binary can be found before the upgrade, and the client should show the
+  close reason whenever the socket closes before initialization. The README's "found in the
+  project's `node_modules/.bin`" is out of date.
 - **Non-admin access.** §12 anticipates granting restricted, app-development-only access to
   selected non-admins; the IDE is exactly such a surface, but it ships admin-only.
 

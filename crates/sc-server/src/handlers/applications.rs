@@ -1303,11 +1303,20 @@ pub(crate) async fn list_all_applications(
     let catalog = state.catalog;
     let apps = list_applications(&catalog).await?;
     let hosts = sc_app::list_build_hosts(&catalog).await?;
+    let claude =
+        crate::terminal::claude_unavailable(&catalog, &state.apps.claude_cli(), &apps).await;
     let out: Vec<Json> = apps
         .iter()
-        .map(|app| {
+        .zip(claude)
+        .map(|(app, unavailable)| {
             let mut body = application_api_json(app);
             builds_on_hosts(&mut body, &hosts);
+            // Whether "Build with Claude" can open a session, and if not, the
+            // sentence its tooltip shows.
+            body["claude"] = json!({
+                "available": unavailable.is_none(),
+                "reason": unavailable,
+            });
             body
         })
         .collect();

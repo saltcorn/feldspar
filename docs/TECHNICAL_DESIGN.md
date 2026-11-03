@@ -5877,6 +5877,198 @@ reworked `coding`):
   gets a line too — an agent that seems to have forgotten something has a reason — but not the
   summary, which is the agent's notes rather than its answer.
 
+#### Claude Code in a terminal tab
+
+The chat panel gives the admin the installation's own coding agent. Many admins already work
+with **Claude Code**, and they have been driving it against this server from a terminal of their
+own, connected over the administration MCP server (§13.6). That works, but it takes setup: mint a
+token, write an MCP config, start the CLI in the right directory (which is not the repository
+root when the store is a git repository holding several apps), and tell it which parts of the
+tree are generated. This section turns all of that into **one click**: **Build with Claude**
+opens the IDE with Claude Code already running in a terminal tab, in the application's source
+directory, connected to this server.
+
+The model is the Home Assistant "Claude Terminal" add-on: a web terminal with the CLI inside,
+started in the right directory with MCP already wired up. The add-on gets its terminal from
+a standalone web-terminal server (ttyd or similar). **That server is not used here.** It would be
+another binary to install and supervise, its WebSocket would have to be reverse-proxied, and it
+has no authentication of its own, so the admin check would have to be added around it. It also
+could not put the terminal beside the file tree. Everything it provides already exists here:
+VS Code's integrated terminal is one more `monaco-vscode-api` override, and the language server
+(above) already bridges a server process over an admin-authenticated WebSocket.
+
+**Local stores only.** The CLI works on files on disk, so this is gated on
+`FileStore::local_path` exactly as the language server and a framework's build are. A store
+with no local path gets no terminal, and the link to it says why.
+
+**How it is opened.** Wherever the admin UI links an application to the IDE ("Edit code" in the
+application sidebar, "(edit code)" in the applications list), a **Build with Claude** link sits
+beside it: `ideUrl(store)` plus `&app=<name>&claude=1`. When the workbench is up, `main.ts` reads
+`claude=1`, opens a terminal named "Claude · <app>" as a tab in the editor area rather than in
+the small bottom panel, and removes the parameter with `history.replaceState` so a reload does
+not open a second one. A status-bar item in the IDE opens another session at any time, including
+for an admin who came in through "Edit code", and the terminal panel's own "New Terminal" opens
+one at the store's root.
+
+The link is **disabled, with the reason as its tooltip**, when the session could not start: the
+feature is off, the store has no local path or is not connected, the `claude` executable is not
+installed, or the application's directory is not there yet. `listApplications` reports this per
+application (`claude: { available, reason }`), with the terminal route's own sentences, as
+`listAgents` already reports an agent's `error`. A click that is known to fail is worse than a
+link that says why it would. An application with no source directory gets no link at all, as it
+gets no "Edit code": there is nothing to open.
+
+**The terminal is VS Code's, over a terminal process of ours.** The plan was an extension
+`Pseudoterminal`, and it cannot do flow control: VS Code tells a terminal *process* how much of
+its output xterm has drawn, and drops that for an extension terminal. So the IDE gives the
+terminal service its own process object, one class used both for the tabs it opens and for the
+backend behind "New Terminal", bridging bytes, resizes and those acknowledgements to the socket.
+
+- **Only where the operator turned it on.** The terminal service contributes its panel and
+  commands as soon as it is loaded, so the IDE reads the setting before the workbench starts and
+  loads the service only when it is on, as it does for the chat. With it off there is no
+  terminal anywhere in the IDE, and a `claude=1` link says it is turned off.
+- **A session that ends stays on screen** with the server's reason or the exit status until a
+  key is pressed, so a refusal ("not installed", "maximum of 4 terminals") is read, not lost.
+- **Leaving the page asks first** while a session is running, which is VS Code's own default for
+  terminal tabs: leaving ends the program on the server.
+
+**The server side is `crates/sc-server/src/terminal.rs`**, a sibling of `lsp.rs` with the same
+shape:
+
+- **Route** `GET /ide/terminal/{store}?app=<name>`. Only the admin check is answered before the
+  upgrade; every other refusal (feature off, no such store, no local path, no executable, too
+  many sessions) upgrades and closes with the reason in the close frame, which the terminal
+  prints.
+- **A real PTY**, not piped stdio, because the CLI is a full-screen terminal program that asks
+  the terminal its size and expects Ctrl-C as a signal. Binary frames carry the terminal's bytes
+  in both directions; a text frame is a resize, and any other text is ignored rather than typed.
+  When the program exits, the socket closes with its exit status as the reason.
+- **Flow control from the browser**, as ttyd has it: the terminal asks the server to stop
+  reading from the PTY while it catches up, and to start again. A program that prints faster than
+  the browser draws then blocks on the kernel's buffer, rather than growing the page's memory.
+- **Working directory**: the application's source directory (`app_source_from_config`) when
+  `app` is given, otherwise the store's root. In a store that is a git repository this is a
+  sub-directory, so the CLI still finds the repository for git and its `CLAUDE.md`, but starts
+  in the right project.
+- **Command**: `claude --continue --mcp-config <file> --strict-mcp-config
+  --append-system-prompt <prompt>`. `--continue` resumes the latest conversation in that
+  directory, so a reload costs nothing but a redraw. It is passed only when the CLI has one saved
+  there: with none, an interactive `--continue` exits instead of starting one. The prompt is the framework's builder-agent
+  prompt (§13.3), which carries conventions such as "`src/feldspar/` is generated". The MCP
+  config is a temporary file outside the store, deleted with the session. **Nothing is written
+  into the store**, so a git-backed store gets no `.mcp.json` to ignore or accidentally commit.
+- **Environment**: an allow-list of the server's own, never the whole of it, because the
+  server's environment holds the database credentials. Then `CLAUDE_CONFIG_DIR=<data dir>/claude`, so the CLI's login belongs to the
+  installation and does not mix with the login of the operator's own Unix account. When an LLM
+  provider of the Anthropic type is configured, its key is passed as `ANTHROPIC_API_KEY` and
+  nothing is asked. Otherwise the first session shows the CLI's own `/login`, once.
+- **Executable**: `ServerConfig::claude_cli`, defaulting to `claude` on `PATH`, like
+  `language_server`.
+- **Bound**: a fixed number of concurrent sessions across the installation, for the language
+  server's reason, and lower than its bound because each session can run a build.
+- **Lifetime**: one program per socket, ended with everything it started when the socket closes.
+  A session that survives a closed tab with its scrollback, as tmux gives the add-on, is a later
+  step if `--continue` turns out not to be enough.
+
+Three things about the server side came out differently from the plan:
+
+- **The MCP URL is loopback, or there is none.** A session token is accepted from loopback only,
+  so the config names `http://127.0.0.1:<port>/mcp`, on the plain-HTTP listener. HTTPS on
+  `127.0.0.1` would fail, since the certificate names a domain. So when plain HTTP redirects to
+  HTTPS, the redirect still serves `/mcp` and the proxy to a request from this machine with a
+  session token; it redirects everything else. Nothing crosses the network unencrypted. Only a
+  server that listens on one non-loopback address starts its sessions without MCP, and the
+  terminal's first line says why. An Anthropic provider's base URL is passed with its
+  key, because a key for a gateway is no use against Anthropic's own address.
+
+- **`pty-process`, not `portable-pty`.** `portable-pty`'s value is a Windows half this route does
+  not use. `pty-process` is Unix only, its one dependency (`rustix`) is already in the tree, and
+  it gives the terminal as a tokio type, so the server has no unsafe terminal code of its own.
+  Off Unix the route refuses with a reason.
+- **"Everything it started" is not the process group.** Killing the group was the plan, and its
+  test failed: an interactive shell puts each background job in a group of its own, and a
+  program can start a child in a new session (Node's detached spawn does). So on Linux the
+  terminal's whole session and every descendant of the program are ended, listed before anything
+  is signalled, since a dead parent's children are re-parented out of the tree. Elsewhere it is
+  the process group. A process that daemonises on purpose still escapes; only a cgroup would hold
+  that.
+
+**MCP credential: a session token that lives in memory, not in the token table.** The route
+issues a random bearer token for the session, registered in an in-process map from token to
+`(user, session)` and removed when the socket closes. The MCP route consults that map before the
+token table. A session token:
+
+- resolves to the **admin who opened the terminal**, so from there nothing is different (§13.6's
+  rule), and the audit line names that admin;
+- is accepted **only from a loopback peer**, whatever `mcp_loopback_only` says, because the only
+  legitimate holder is a child process of this server;
+- is accepted **even when `mcp_enabled` is off**. That setting governs whether the installation
+  serves *external* MCP clients. Requiring it here would turn the one click into "first go to
+  Settings → Development", and would open the external surface as a side effect. With the switch
+  off, the route still does not read the token table, so §13.6's guarantee is unchanged;
+- needs no expiry or revocation story: a server restart forgets it, and a crash cannot leave it
+  valid in a table.
+
+**The installation's other MCP servers, through a proxy.** The remote MCP servers configured
+for agents (`_fd_mcp_servers`, `sc-mcp`) can be offered to the session too, so the CLI can use
+the same CRM or ticket system as the installation's agents. They are **not** written into the
+CLI's MCP config as they are stored. A server's credential is in its headers, and a header value
+is a secret the admin API never returns; a config file in a shell the admin controls would
+return it. Instead the config names one entry per offered server at
+`http://127.0.0.1:<port>/ide/mcp-proxy/<server>`, authenticated by the session token. That route
+forwards each request to the server's URL and adds the stored headers on the way, so the secret
+never leaves the server process. The upstream request goes through `sc-mcp`'s guard and the
+definition's timeout, like an agent's call: a definition that does not allow the private network
+does not become a way to reach it.
+
+- **Which servers**: a server is offered only when its definition says so (an
+  `offer_to_terminal` attribute, a checkbox on its form, off by default). A server configured
+  for one customer-facing agent should not appear by default in an unrestricted coding CLI.
+- **Transport**: streamable HTTP only, for now. It is one POST per message, so the proxy
+  forwards bodies and the `Mcp-Session-Id` header unchanged. An SSE server's event stream names
+  the URL to post to, which a proxy would have to rewrite, so SSE servers are left out of the
+  config and the session's first line says which ones were left out and why.
+
+**The setting**: `ide_terminal_enabled`, declared in the Development section, **off by default**
+and read per request like `mcp_enabled`. It needs a switch because it changes the security
+posture. The built-in coding agent's grants are a list of tools, while a CLI in a PTY can run any
+command as the server's Unix user. An admin can already do that through a code query or a
+plugin, but turning on a ready-made shell is an operator's decision.
+
+**The workbench must be told about changed files.** The IDE's filesystem provider has no watcher
+(above). The chat relay knows from tool calls which files changed; a PTY carries only bytes. So
+while a terminal is attached, the bridge watches its working directory with `notify` and sends
+`{"changed": [paths]}` text frames. Without this, an open tab goes stale and saving it overwrites
+the CLI's edit.
+
+- **One directory at a time, not recursively.** `node_modules`, `.git` and build output (`dist`,
+  `build`, `target`, `.expo`, `.cache`) are never watched at all, rather than watched and
+  filtered: a recursive inotify watch adds a watch per directory, and `node_modules` alone can
+  exhaust the user's limit, which the language server shares. A directory that appears is added
+  when it does, and the files already in it are reported with it. A session stops adding watches
+  at 10,000 directories.
+- **The top of the store's `.git`, without its sub-directories.** A commit, a checkout or
+  staging rewrites `index`, `HEAD` or `COMMIT_EDITMSG` there; the object store's churn is not
+  watched. Such a change is reported as the single path `.git`. The store's `.git`, not the
+  session's directory's: a session in an application's directory is still in the store's
+  working copy.
+- **Store paths**, not paths relative to the session's directory, so the IDE needs nothing but
+  the store to resolve them, wherever in it the session started.
+- **What is gone, separately**: `{"changed": [...], "removed": [...]}`. Decided when the report is
+  made (is the path still there?), not from the events, because an editor's save is often a
+  removal and a rename onto the same name.
+- **Debounced**: reported once the directory has been quiet for 300 ms, and at most every two
+  seconds while changes keep coming, so a long install is reported as it runs.
+
+The IDE does with them what the relay does with tool calls: cached listings go, `announceChanged`
+for every path but `.git`, and source control is rescanned after **any** change, not only when
+`.git` moved, because an edited file is a change in `git status` too. Unlike the relay it also
+tells the explorer: every changed path is announced as *added* as well, which the explorer
+redraws for only when it does not show that path yet, so the IDE need not know which files are
+new; every removed one as *deleted*. A failure to start the
+watch (the inotify limit) leaves the session running without it.
+
 ### 12.2 Code settings: the editor inside a settings form
 
 Some settings are **programs**. A `run_js_code` trigger body reads and writes tables (§10.1's

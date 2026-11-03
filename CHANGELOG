@@ -2,6 +2,55 @@
 
 Changes in reverse chronological order.
 
+## Claude Code in the IDE
+
+An admin can run Claude Code on the server in a terminal tab of the file-store IDE. Opening
+`/ide/?store=<store>&claude=1&app=<name>` starts a session in that application's source
+directory, in an editor tab named "Claude · <name>". The "Claude" status-bar button and the
+terminal panel's "New Terminal" open more sessions.
+
+- **One click from the admin UI**: "Build with Claude" in an application's sidebar links and
+  "(build with Claude)" in the applications list, next to "Edit code", open that URL. When a
+  session cannot start (terminal off, Claude Code not installed, store not on disk or not
+  connected, directory not there yet) the link is greyed out and its tooltip says why.
+
+- **Off by default**: Settings → Development → "Claude Code in the IDE" (`ide_terminal_enabled`).
+  While it is off the IDE has no terminal at all. Only stores on this machine's disk can have one.
+- `--claude-cli PATH` names the executable (default `claude` on `PATH`). At most four sessions
+  run at once. A refusal (off, unknown store or app, not on disk, not installed, too many) is
+  printed in the tab, which stays open until a key is pressed.
+- **Connected to this server**: Claude Code resumes the directory's last conversation when there
+  is one (a reload costs nothing), with this server's MCP and nothing else, and in an
+  application's directory with its framework's builder prompt. MCP works without turning on
+  `mcp_enabled` and without minting a token: each session gets its own token, held in memory,
+  accepted only from this machine and only while the tab is open. Nothing is written into the
+  store. This works with HTTPS too: a server that redirects plain HTTP to HTTPS still serves a
+  session's MCP traffic from this machine. Only a server that listens on one external address
+  starts its sessions without MCP, and says why.
+- **The installation's MCP servers too**: a new "Offer to Claude Code in the IDE" checkbox on an
+  MCP server's form (off by default) puts that server in the session's config, reached through
+  `/ide/mcp-proxy/<server>`, which adds the stored headers on the way. Their credentials never
+  reach the session, and the private-network rule and timeout apply as for an agent's call. SSE
+  servers are left out, and the terminal says which.
+- The CLI's login belongs to the installation (`<data dir>/claude`), not to the operator's Unix
+  account; an Anthropic LLM provider's key, when one is configured, is used without asking.
+- **The IDE stays in step**: what the program changes on disk shows up in the IDE within a
+  fraction of a second. An open file re-reads, new files appear in the explorer and deleted ones
+  leave it, and source control rescans, including after a commit or checkout in the terminal.
+  Saving an open tab no longer overwrites the program's edit. `node_modules`, `.git` internals
+  and build output are not watched.
+- Output that comes faster than the browser can draw it slows the program down rather than
+  filling the page's memory.
+- The program gets an allow-listed environment, not the server's (which holds the database
+  credentials). Closing the tab or the page ends it and everything it started, including
+  background jobs and children in a session of their own; so does the program exiting, for what
+  it left running. So does signing out, or the admin being disabled or demoted: the terminal
+  closes with the reason, and its MCP access ends.
+- An MCP server update that leaves out "Offer to Claude Code in the IDE" keeps the stored choice.
+- Tests: `sc-server/tests/ide_terminal.rs`, `sc-server/src/terminal_watch.rs`,
+  `sc-server/tests/mcp_client.rs`, `sc-server/tests/tls_serving.rs`, `ui/ide/src/terminal.test.ts`,
+  `ui/admin/src/mcpServers.test.ts`, `ui/admin/src/appNav.test.ts`.
+
 ## Fix a flaky `list_assets` test
 
 `coding_assets::the_session_header_names_the_mounts_and_the_tool_lists_them` expected the assets in

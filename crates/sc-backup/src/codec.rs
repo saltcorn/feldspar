@@ -1935,6 +1935,7 @@ fn with_headers(def: &sc_mcp::McpServerDef) -> Json {
             .collect::<Vec<_>>(),
         "allow_private_network": def.allow_private_network,
         "timeout_secs": def.timeout_secs,
+        "offer_to_terminal": def.offered_to_terminal(),
     })
 }
 
@@ -1967,7 +1968,7 @@ pub fn server_from_body(
             return Err(Error::invalid(format!("header `{name}` is given twice")));
         }
     }
-    Ok(sc_mcp::McpServerDef {
+    let def = sc_mcp::McpServerDef {
         id,
         name: text("name").trim().to_owned(),
         description: text("description"),
@@ -1980,7 +1981,12 @@ pub fn server_from_body(
             .unwrap_or(false),
         timeout_secs: obj.get("timeout_secs").and_then(Json::as_u64).unwrap_or(0),
         attributes: Map::new(),
-    })
+    };
+    Ok(def.offer_to_terminal(
+        obj.get("offer_to_terminal")
+            .and_then(Json::as_bool)
+            .unwrap_or(false),
+    ))
 }
 
 // --- Analytics datasets and workspaces -----------------------------------------

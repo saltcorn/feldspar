@@ -223,11 +223,12 @@ async fn serve_with_tls(
         .await
         .with_context(|| format!("binding to {}", config.addr))?;
 
-    // What the plain-HTTP port answers with. A redirect is the default; serving
-    // the application there too is the deployment that is reachable both ways on
+    // What the plain-HTTP port answers with. A redirect is the default (an IDE
+    // terminal's MCP traffic from this machine is still served); serving the
+    // application there too is the deployment that is reachable both ways on
     // purpose.
     let http_app = if config.tls.redirect_http() {
-        redirect_router(port)
+        redirect_router(port, app.clone())
     } else {
         app.clone()
     };

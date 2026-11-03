@@ -134,8 +134,9 @@ async fn a_client_that_does_not_trust_the_certificate_is_refused() {
 async fn the_plain_listener_redirects_to_https() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let server =
-        tokio::spawn(async move { axum::serve(listener, sc_server::redirect_router(8443)).await });
+    let server = tokio::spawn(async move {
+        axum::serve(listener, sc_server::redirect_router(8443, Router::new())).await
+    });
 
     // No redirect following: the redirect *is* the response under test, and its
     // target is not listening.
@@ -155,5 +156,86 @@ async fn the_plain_listener_redirects_to_https() {
         response.headers().get("location").unwrap(),
         "https://example.com:8443/api/tables?limit=2"
     );
+    server.abort();
+}
+
+/// An IDE terminal's MCP traffic is the exception: it comes from this machine to
+/// the plain listener, which is where the session's config points, so it is
+/// served there rather than redirected. Everything else still is.
+#[tokio::test]
+async fn the_plain_listener_still_serves_a_terminals_mcp() {
+    use axum::routing::{any, post};
+    use tower::ServiceExt;
+
+    let app = Router::new()
+        .route("/mcp", post(|| async { "mcp" }))
+        .route("/ide/mcp-proxy/{server}", any(|| async { "proxy" }))
+        .route("/api/tables", get(|| async { "tables" }));
+    let router = sc_server::redirect_router(8443, app);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn({
+        let router = router.clone();
+        async move {
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+        }
+    });
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let send = |method: reqwest::Method, path: &str, token: Option<&str>| {
+        let mut request = client
+            .request(method, format!("http://{addr}{path}"))
+            .header("host", "example.com");
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        request.send()
+    };
+
+    let mcp = send(reqwest::Method::POST, "/mcp", Some("fdterm_abc"))
+        .await
+        .unwrap();
+    assert_eq!(mcp.status(), 200);
+    assert_eq!(mcp.text().await.unwrap(), "mcp");
+    let proxied = send(
+        reqwest::Method::GET,
+        "/ide/mcp-proxy/crm",
+        Some("fdterm_abc"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(proxied.text().await.unwrap(), "proxy");
+
+    for (method, path, token) in [
+        (reqwest::Method::POST, "/mcp", None),
+        (reqwest::Method::POST, "/mcp", Some("fd_a_table_token")),
+        (reqwest::Method::GET, "/api/tables", Some("fdterm_abc")),
+    ] {
+        let response = send(method, path, token).await.unwrap();
+        assert_eq!(response.status(), 308, "{path} with {token:?}");
+    }
+
+    // From another machine, a session token is redirected like anything else.
+    let mut request = axum::http::Request::post("/mcp")
+        .header("host", "example.com")
+        .header("authorization", "Bearer fdterm_abc")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(SocketAddr::from((
+            [192, 168, 1, 5],
+            50000,
+        ))));
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), 308);
+
     server.abort();
 }
