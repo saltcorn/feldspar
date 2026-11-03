@@ -17,6 +17,8 @@ import Card from "react-bootstrap/Card";
 import Form from "react-bootstrap/Form";
 
 import { api, errorStatus } from "../api";
+import type { AuthStatusResponse } from "../client";
+import { signIn } from "../signIn";
 import { SaltcornLogo } from "../icons";
 import { CenteredPage } from "../layout";
 import {
@@ -28,7 +30,14 @@ import {
 import { T, useT } from "../i18n";
 import { SecondFactorSignIn } from "./SecondFactor";
 
-export function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
+/** `onLoggedIn` re-reads the auth status the app renders from and returns it
+ * (`null` if it could not be read), so the screen can tell a sign-in that took
+ * from one whose session the browser did not keep. */
+export function Login({
+  onLoggedIn,
+}: {
+  onLoggedIn: () => Promise<AuthStatusResponse | null>;
+}) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const { t } = useT();
@@ -57,23 +66,24 @@ export function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
     e.preventDefault();
     setBusy(true);
     setError(null);
-    try {
-      const answer = await api.login({ email, password });
-      if (answer.second_factor) {
-        setPassword("");
-        setChallenge(answer.second_factor);
-        setBusy(false);
+    const outcome = await signIn({
+      login: () => api.login({ email, password }),
+      refresh: onLoggedIn,
+      errorStatus,
+    });
+    switch (outcome.kind) {
+      case "signed_in":
+        // The app has moved on to the signed-in shell; this screen is gone.
         return;
-      }
-      onLoggedIn();
-    } catch (err) {
-      setError(
-        errorStatus(err) === 401
-          ? "Invalid email or password."
-          : "Login failed. Please try again.",
-      );
-      setBusy(false);
+      case "second_factor":
+        setPassword("");
+        setChallenge(outcome.challenge);
+        break;
+      case "error":
+        setError(outcome.message);
+        break;
     }
+    setBusy(false);
   };
 
   if (challenge) {

@@ -22,5 +22,5 @@ mod transaction;
 mod value;
 
 pub use dialect::PgDialect;
-pub use driver::{PgConnectParams, PgDriver};
+pub use driver::{DEFAULT_CHECKOUT_TIMEOUT, PgConnectParams, PgDriver};
 pub use value::PgParam;

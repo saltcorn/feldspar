@@ -13,6 +13,8 @@
 
 #[path = "apply_schema.rs"]
 mod apply_schema;
+#[path = "checkout_timeout.rs"]
+mod checkout_timeout;
 #[path = "crud.rs"]
 mod crud;
 #[path = "introspect.rs"]
