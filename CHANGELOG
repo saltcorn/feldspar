@@ -2,6 +2,27 @@
 
 Changes in reverse chronological order.
 
+## A unique field is listed as unique, by `describe_schema` and by the admin API
+
+User report: a field created with `unique: true` was listed as `"unique": false`, so a schema copied
+from `describe_schema` output silently lost its unique constraints. The cause: introspection reads a
+column's `UNIQUE` back as one of the table's constraints and never sets the field's own `unique`
+flag, so after the catalog re-reads the database, the flag says `false` for every unique field.
+`describe_schema` already reads `Table::is_unique` (commit 3d9e3209), and this change adds the
+end-to-end test that was missing. The admin API still reported the raw flag, and is fixed here.
+
+- **The admin field API reports `unique` from the table** (`sc_backup::codec::table_field_json`):
+  `GET /api/tables/{table}/fields`, the create and update field responses, and the entity search's
+  table definitions now say `unique: true` for a field with a unique constraint of its own. A field
+  that is only part of a jointly-unique key still says `false`. `updateField` still ignores
+  `unique`, so a form that echoes the value back cannot add or drop a constraint.
+- **Backups are unchanged.** They keep the raw flag, because the constraint is already in the
+  table's `constraints`, and restoring both would make the column unique twice.
+- No schema or stored-data change.
+- Tests: `sc-server` `mcp_server::a_unique_field_is_described_as_unique_after_a_reload` creates
+  unique fields through `create_table`, `add_field` and `alter_field` plus a joint key, reloads the
+  catalog, and checks both `describe_schema` and the admin field list.
+
 ## Saving an application no longer fails on a custom query it did not change
 
 User report: after `rename_table`, every save of an application was refused with "relation … does

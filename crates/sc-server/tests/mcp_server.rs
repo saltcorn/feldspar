@@ -2004,3 +2004,85 @@ async fn a_trigger_is_exposed_on_an_app_and_removed_over_mcp() -> sc_error::Resu
     assert!(gone, "the client still has runLogVisit");
     Ok(())
 }
+
+/// A field created with `unique: true` — in `create_table`, by `add_field` or by
+/// `alter_field` — is described back as `unique: true` once the catalog has
+/// re-read the database, so a schema copied from `describe_schema` keeps its
+/// unique rules. A field that is only part of a jointly-unique key is not.
+#[tokio::test]
+async fn a_unique_field_is_described_as_unique_after_a_reload() -> sc_error::Result<()> {
+    let Harness {
+        mut client,
+        router,
+        catalog,
+        apps: _apps,
+        _db,
+    } = setup().await?;
+    enable_mcp(&catalog, true).await?;
+    let token = mint(&mut client, "unique round trip", json!({})).await;
+
+    let result = edit_schema(
+        &router,
+        &token,
+        json!([
+            {
+                "op": "create_table",
+                "table": "items",
+                "fields": [
+                    { "name": "id", "type": "int", "primary_key": true },
+                    { "name": "code", "type": "text", "unique": true },
+                    { "name": "plain", "type": "text" },
+                    { "name": "a", "type": "int" },
+                    { "name": "b", "type": "int" },
+                ],
+            },
+            { "op": "add_field", "table": "items", "field": "sku", "type": "text", "unique": true },
+            { "op": "alter_field", "table": "items", "field": "plain", "unique": true },
+            {
+                "op": "add_constraint", "table": "items",
+                "constraint": { "type": "unique", "fields": ["a", "b"] },
+            },
+        ]),
+    )
+    .await;
+    assert_eq!(result["isError"], json!(false), "{result}");
+
+    catalog.reload().await?;
+    let (is_error, described) = call_tool(
+        &router,
+        &token,
+        "describe_schema",
+        json!({ "table": "items" }),
+    )
+    .await;
+    assert!(!is_error, "{described}");
+    let fields = described["tables"][0]["fields"].as_array().expect("fields");
+    let unique = |name: &str| {
+        fields
+            .iter()
+            .find(|f| f["name"] == json!(name))
+            .unwrap_or_else(|| panic!("no field {name}: {described}"))["unique"]
+            .clone()
+    };
+    assert_eq!(unique("code"), json!(true), "{described}");
+    assert_eq!(unique("sku"), json!(true), "{described}");
+    assert_eq!(unique("plain"), json!(true), "{described}");
+    assert_eq!(unique("a"), json!(false), "{described}");
+    assert_eq!(unique("b"), json!(false), "{described}");
+
+    // The admin API's field list reads it the same way.
+    let (status, listed) = client.send("GET", "/api/tables/items/fields", None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let rest = |name: &str| {
+        listed
+            .as_array()
+            .and_then(|fs| fs.iter().find(|f| f["name"] == json!(name)))
+            .unwrap_or_else(|| panic!("no field {name}: {listed}"))["unique"]
+            .clone()
+    };
+    assert_eq!(rest("code"), json!(true), "{listed}");
+    assert_eq!(rest("sku"), json!(true), "{listed}");
+    assert_eq!(rest("plain"), json!(true), "{listed}");
+    assert_eq!(rest("a"), json!(false), "{listed}");
+    Ok(())
+}

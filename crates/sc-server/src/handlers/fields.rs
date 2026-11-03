@@ -25,7 +25,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let out: Vec<Json> = table
                     .fields
                     .iter()
-                    .map(|f| field_json(f, &description_of(&metas, &f.base.name)))
+                    .map(|f| table_field_json(&table, f, &description_of(&metas, &f.base.name)))
                     .collect();
                 Ok(HandlerResponse::ok(Json::Array(out)))
             }
@@ -88,7 +88,10 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let created = table
                     .field(&name)
                     .ok_or_else(|| Error::msg(format!("field `{name}` missing after create")))?;
-                Ok(HandlerResponse::ok(field_json(created, &description)).with_status(201))
+                Ok(
+                    HandlerResponse::ok(table_field_json(&table, created, &description))
+                        .with_status(201),
+                )
             }
         }
     });
@@ -158,7 +161,11 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let updated = table.field(&field_name).ok_or_else(|| {
                     Error::msg(format!("field `{field_name}` missing after update"))
                 })?;
-                Ok(HandlerResponse::ok(field_json(updated, &description)))
+                Ok(HandlerResponse::ok(table_field_json(
+                    &table,
+                    updated,
+                    &description,
+                )))
             }
         }
     });
