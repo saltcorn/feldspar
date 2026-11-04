@@ -33,6 +33,28 @@ the second sidebar entry; `#/` and `#/entities` keep working.
 Tests: `ui/admin/src/home.test.ts`, `nav.test.ts`, `appNav.test.ts`, `roles.test.ts`;
 `crates/sc-server/tests/entities_api.rs`.
 
+## Sign-in no longer hangs with the button disabled
+
+Sometimes the admin sign-in did nothing: "Signing in…" stayed on, disabled, until the page was
+reloaded. This was seen most right after the server started.
+
+- **The sign-in screen always finishes.** It used to stay disabled in two cases. Now each one
+  shows a message and enables the button again:
+  - the login request never answered: after 30 seconds the screen says the server did not
+    answer;
+  - the password was accepted, but the status read that follows still showed nobody signed in:
+    the screen says the browser was not signed in.
+
+  The steps are in `ui/admin/src/signIn.ts`, with tests in `signIn.test.ts`. `App`'s `refresh`
+  now returns the status it read.
+- **A full Postgres pool is an error, not a hang.** The pool holds eight connections. A request
+  that found all of them in use used to wait for ever, with nothing in the log. `PgDriver` now
+  waits up to 60 seconds (`DEFAULT_CHECKOUT_TIMEOUT`, which `with_checkout_timeout` can change).
+  Then the request fails with "no database connection came free within 60s: all 8 of the pool's
+  connections are in use (N waiting)", and the same text is logged as a warning. If the hang
+  happens again, this message will show that the pool was the cause.
+  Test: `crates/sc-db-postgres/tests/checkout_timeout.rs`.
+
 ## Claude Code in the IDE
 
 An admin can run Claude Code on the server in a terminal tab of the file-store IDE. Opening

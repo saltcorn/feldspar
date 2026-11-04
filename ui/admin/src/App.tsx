@@ -138,12 +138,17 @@ export function App() {
   const [status, setStatus] = useState<AuthStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  // Returns what it read (`null` when it could not), for the sign-in screen to
+  // check that the session it just started is the one the server now sees.
+  const refresh = useCallback(async (): Promise<AuthStatusResponse | null> => {
     try {
-      setStatus(await api.authStatus());
+      const next = await api.authStatus();
+      setStatus(next);
       setError(null);
+      return next;
     } catch {
       setError("Could not reach the server. Is it running?");
+      return null;
     }
   }, []);
 

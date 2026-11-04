@@ -12,6 +12,7 @@
 use async_trait::async_trait;
 use deadpool_postgres::{Manager, ManagerConfig, Object, Pool, RecyclingMethod};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use sc_db::{
     DatabaseDriver, DbCapabilities, DescribedColumn, PhysicalTable, RowStream, SchemaChange,
@@ -51,7 +52,21 @@ pub struct PgDriver {
     /// Whether the database has pgvector, as last found out (see
     /// [`sc_db::VectorSupport`]). Shared, so a clone answers the same.
     vector: Arc<RwLock<VectorSupport>>,
+    /// How long a checkout waits for a free connection before it fails
+    /// ([`DEFAULT_CHECKOUT_TIMEOUT`]).
+    checkout_timeout: Duration,
 }
+
+/// How long [`PgDriver`] waits for a pooled connection before giving up.
+///
+/// The pool has eight connections, and without a limit a request that finds
+/// them all taken waits for ever: a sign-in that never answers, a page that
+/// never loads, and nothing in any log to say why. Long enough that a burst of
+/// ordinary queries queueing behind a slow one still gets through; short enough
+/// that a pool that is genuinely exhausted (connections held by something that
+/// will not let go, or a task waiting on a second connection while holding the
+/// first) becomes an error naming the pool's state rather than a silent hang.
+pub const DEFAULT_CHECKOUT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What an admin types to reach another Postgres database (§9's Connections
 /// screen): the parts of a connection rather than a URL.
@@ -91,7 +106,15 @@ impl PgDriver {
             vector: Arc::new(RwLock::new(VectorSupport::Unavailable {
                 reason: "pgvector has not been looked for in this database yet".to_owned(),
             })),
+            checkout_timeout: DEFAULT_CHECKOUT_TIMEOUT,
         }
+    }
+
+    /// The same driver, waiting at most `timeout` for a free pooled connection
+    /// instead of [`DEFAULT_CHECKOUT_TIMEOUT`].
+    pub fn with_checkout_timeout(mut self, timeout: Duration) -> Self {
+        self.checkout_timeout = timeout;
+        self
     }
 
     /// The same driver scoped to one schema — see [`PgDriver::schema`].
@@ -317,12 +340,25 @@ impl PgDriver {
         }
     }
 
-    /// Check out a pooled connection.
+    /// Check out a pooled connection, failing after the checkout timeout
+    /// ([`DEFAULT_CHECKOUT_TIMEOUT`]) rather than waiting for ever on a pool
+    /// whose connections are all held.
     async fn client(&self) -> Result<Object> {
-        self.pool
-            .get()
-            .await
-            .map_err(|e| Error::database(format!("checkout connection: {e}")))
+        match tokio::time::timeout(self.checkout_timeout, self.pool.get()).await {
+            Ok(got) => got.map_err(|e| Error::database(format!("checkout connection: {e}"))),
+            Err(_) => {
+                let status = self.pool.status();
+                let message = format!(
+                    "no database connection came free within {}s: all {} of the pool's \
+                     connections are in use ({} waiting)",
+                    self.checkout_timeout.as_secs_f32(),
+                    status.max_size,
+                    status.waiting,
+                );
+                sc_log::log_warn!("{message}");
+                Err(Error::database(message))
+            }
+        }
     }
 }
 
