@@ -106,13 +106,13 @@ export function builderAgentFor(
  * - **The application itself comes first**, on its own subdomain, in a new
  *   tab: it is what all the other links are for.
  * - An application that is **built** from a source tree (React, code) gets the
- *   loop an admin works in: edit the code (or have Claude Code edit it),
- *   build. A build rewrites the generated client first, so there is no
- *   separate link for that. One with no framework has a directory but no
- *   build, so it gets only the first.
+ *   loop an admin works in: edit the code, build. A build rewrites the
+ *   generated client first, so there is no separate link for that. One with no
+ *   framework has a directory but no build, so it gets only the first.
  * - One that is **constructed** from views and pages (Saltcorn UI) gets those,
  *   and the library its views and pages place.
- * - Either gets a new chat with its coding agent, when it has one.
+ * - Either gets **one** "Coding agent" link, when it has a coding agent of
+ *   either kind (`codingAgentLink`).
  * - **Every application has checklists** (TODO-checklists C1.16): what is
  *   checked about it does not depend on how it is made.
  * - **Settings is always there, and always last**; deleting is not a sidebar
@@ -122,7 +122,15 @@ export function builderAgentFor(
 export function appNavLinks(
   app: Pick<
     AppItem,
-    "id" | "name" | "subdomain" | "builds" | "has_views" | "source" | "targets" | "claude"
+    | "id"
+    | "name"
+    | "subdomain"
+    | "builds"
+    | "has_views"
+    | "source"
+    | "targets"
+    | "claude"
+    | "attributes"
   >,
   agent: string | null,
   admin: AdminLocation,
@@ -147,19 +155,6 @@ export function appNavLinks(
       external: true,
       matches: [],
     });
-    // The same directory with Claude Code already running in it. Shown even
-    // when it cannot start, disabled with the server's reason, so the admin
-    // learns what to change rather than that the link exists somewhere.
-    links.push({
-      id: "claude",
-      label: "Build with Claude",
-      href: claudeUrl(app.source.store, app.name),
-      external: true,
-      matches: [],
-      unavailable: app.claude.available
-        ? undefined
-        : (app.claude.reason ?? "Claude Code cannot start here"),
-    });
   }
   if (app.builds) {
     links.push({ id: "build", label: "Build", matches: [] });
@@ -179,16 +174,8 @@ export function appNavLinks(
       matches: [`${base}/library`],
     });
   }
-  if (agent) {
-    links.push({
-      id: "chat",
-      label: "Coding agent",
-      href: `#/agents/${encodeURIComponent(agent)}/chat`,
-      // A new chat is a thing to start, not a place to be: the chat screen
-      // belongs to Agents, which is what lights up once it is open.
-      matches: [],
-    });
-  }
+  const coding = codingAgentLink(app, agent);
+  if (coding) links.push(coding);
   links.push({
     id: "checklists",
     label: "Checklists",
@@ -225,4 +212,103 @@ export function appIdFromRoute(path: string): string | null {
  * what the picker's own "All applications" entry stands for. */
 export function onApplicationsList(path: string): boolean {
   return path === "/applications" || path === "/applications/new";
+}
+
+/** The application attribute naming which coding agent its sidebar link opens
+ * (UX1.5). Read by the admin UI only: the server stores it with the rest of
+ * the bag and does nothing with it. */
+export const CODING_AGENT_ATTRIBUTE = "coding_agent";
+
+/** The coding agents an application's link can open: Claude Code in the IDE's
+ * terminal, in the application's directory, or the built-in coding agent's
+ * chat. */
+export type CodingAgentChoice = "claude" | "agent";
+
+/** The choice stored on an application, or `null` when none is (or what is
+ * stored is not one). */
+export function storedCodingAgent(attributes: unknown): CodingAgentChoice | null {
+  if (!attributes || typeof attributes !== "object" || Array.isArray(attributes)) return null;
+  const value = (attributes as Record<string, unknown>)[CODING_AGENT_ATTRIBUTE];
+  return value === "claude" || value === "agent" ? value : null;
+}
+
+/** `attributes` with the coding-agent choice written in. `null` (there was
+ * nothing to choose from) leaves what is stored as it was. */
+export function withCodingAgent(
+  attributes: Record<string, unknown>,
+  choice: CodingAgentChoice | null,
+): Record<string, unknown> {
+  return choice ? { ...attributes, [CODING_AGENT_ATTRIBUTE]: choice } : attributes;
+}
+
+/** Whether Claude Code can start for `app` now: it needs a directory, and the
+ * server's say-so. */
+export function claudeAvailable(app: Pick<AppItem, "source" | "claude">): boolean {
+  return !!app.source && app.claude.available;
+}
+
+/** Which coding agent the application's one link opens.
+ *
+ * The stored choice, when it can be followed. Otherwise — nothing chosen, or
+ * the chosen one is not there (Claude Code switched off, the agent deleted) —
+ * Claude Code where it can start, else the built-in agent. An application
+ * with a directory but neither gets the Claude Code link disabled, with the
+ * server's reason: it teaches what to change. */
+export function codingAgentTarget(
+  app: Pick<AppItem, "source" | "claude" | "attributes">,
+  agent: string | null,
+): CodingAgentChoice | null {
+  const claude = claudeAvailable(app);
+  const chosen = storedCodingAgent(app.attributes);
+  if (chosen === "agent" && agent) return "agent";
+  if (chosen === "claude" && claude) return "claude";
+  if (claude) return "claude";
+  if (agent) return "agent";
+  return app.source ? "claude" : null;
+}
+
+/** What the settings' coding-agent selector starts on: the one the link opens
+ * now — the stored choice, or Claude Code where it can start, else the
+ * built-in agent — so it always names an agent rather than "Default". `null`
+ * when neither can be chosen. */
+export function selectedCodingAgent(
+  app: Pick<AppItem, "source" | "claude" | "attributes">,
+  agent: string | null,
+): CodingAgentChoice | null {
+  const target = codingAgentTarget(app, agent);
+  if (target === "claude") return claudeAvailable(app) ? "claude" : null;
+  return target;
+}
+
+/** The sidebar's one "Coding agent" link for `app`, or `null` when it has no
+ * coding agent of either kind. */
+export function codingAgentLink(
+  app: Pick<AppItem, "name" | "source" | "claude" | "attributes">,
+  agent: string | null,
+): AppNavLink | null {
+  const target = codingAgentTarget(app, agent);
+  if (target === "agent" && agent) {
+    return {
+      id: "chat",
+      label: "Coding agent",
+      href: `#/agents/${encodeURIComponent(agent)}/chat`,
+      // A new chat is a thing to start, not a place to be: the chat screen
+      // belongs to Agents, which is what lights up once it is open.
+      matches: [],
+    };
+  }
+  if (target === "claude" && app.source) {
+    // The application's directory with Claude Code already running in it.
+    return {
+      id: "claude",
+      label: "Coding agent",
+      href: claudeUrl(app.source.store, app.name),
+      external: true,
+      matches: [],
+      unavailable: app.claude.available
+        ? undefined
+        : (app.claude.reason ?? "Claude Code cannot start here"),
+    };
+  }
+  return null;
 }

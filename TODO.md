@@ -926,6 +926,11 @@ routes call it).
   entity is for and has its create button; `HelpLink` on the main list screens.
 - [ ] **UX1.4** Settings holds settings only: Backup, System and Modules move to their own
   Administration entries, with the old `#/settings/<tab>` links redirecting.
+- [x] **UX1.5** A shorter sidebar: no Home entry (the logo goes home), All entities first in
+  Data, and one "Coding agent" link per application instead of "Build with Claude" beside it.
+  Which one it opens is an application setting (`coding_agent`: the built-in coding agent or
+  Claude Code), and the selector always names one; Claude Code can be chosen only where it can
+  start. Unset, it opens Claude Code where Claude Code can start, else the built-in agent.
 
 ---
 

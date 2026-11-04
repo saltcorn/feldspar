@@ -31,7 +31,6 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconFolder,
-  IconHome,
   IconList,
   IconLogout,
   IconMoon,
@@ -216,24 +215,20 @@ type NavItem = {
 /** The headings the installation's entries are grouped under, in sidebar
  * order. They are also the pre-titles of the screens in each group, so the
  * header says where a screen is in the sidebar. */
-export type NavGroup = "Overview" | "Data" | "Automation" | "Insights" | "Administration";
+export type NavGroup = "Data" | "Automation" | "Insights" | "Administration";
 
 /** The installation's entries in the sidebar: its shared furniture, under
  * their group headings. Applications are the other section, and are not
  * entries here — that section is about one application at a time, picked in
  * the sidebar (`AppSidebar.tsx`). */
 export const NAV: NavItem[] = [
-  {
-    href: "#/home",
-    group: "Overview",
-    label: "Home",
-    icon: <IconHome />,
-    matches: ["/home"],
-  },
+  // No Home entry: the logo at the top of the sidebar is the way home, and an
+  // entry for it would be one more row in a sidebar that is already tall.
   {
     // The index of everything, Saltcorn 1's start page; Home is now the start.
+    // First of Data, as the list of everything the other entries hold.
     href: "#/entities",
-    group: "Overview",
+    group: "Data",
     label: "All entities",
     icon: <IconList />,
     matches: ["/entities"],
@@ -328,8 +323,6 @@ export const NAV: NavItem[] = [
  * sees each literal. */
 export function groupLabel(group: NavGroup, t: Translator["t"]): string {
   switch (group) {
-    case "Overview":
-      return t("Overview");
     case "Data":
       return t("Data");
     case "Automation":
@@ -344,8 +337,6 @@ export function groupLabel(group: NavGroup, t: Translator["t"]): string {
 /** An entry's label in the reader's language, for the same reason. */
 function navLabel(label: string, t: Translator["t"]): string {
   switch (label) {
-    case "Home":
-      return t("Home");
     case "All entities":
       return t("All entities");
     case "Tables":
@@ -486,7 +477,9 @@ function Shell({
             <a
               href="#/home"
               className="d-flex align-items-center gap-2"
-              aria-label={t("Saltcorn")}
+              // The sidebar has no Home entry: this is the way home, and says so.
+              aria-label={t("Home")}
+              title={t("Home")}
             >
               <div className="d-flex">
                 <SaltcornLogo />

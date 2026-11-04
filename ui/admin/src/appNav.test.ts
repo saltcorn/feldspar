@@ -9,7 +9,11 @@ import {
   appIdFromRoute,
   appNavLinks,
   builderAgentFor,
+  codingAgentTarget,
   linkActive,
+  selectedCodingAgent,
+  storedCodingAgent,
+  withCodingAgent,
   linkKey,
   onApplicationsList,
 } from "./appNav";
@@ -26,6 +30,7 @@ const react = {
   source: { store: "code", path: "todo" },
   targets: [],
   claude: claudeOk,
+  attributes: {},
 };
 
 const saltcornUi = {
@@ -37,6 +42,7 @@ const saltcornUi = {
   source: null,
   targets: [],
   claude: { available: false, reason: "crm has no source directory" },
+  attributes: {},
 };
 
 /** Where the admin is served; applications sit on subdomains of it. */
@@ -73,8 +79,8 @@ describe("the current application's sidebar links", () => {
     expect(links.map((l) => l.label)).toEqual([
       "Application link",
       "Edit code",
-      "Build with Claude",
       "Build",
+      "Coding agent",
       "Checklists",
       "Application settings",
     ]);
@@ -83,7 +89,7 @@ describe("the current application's sidebar links", () => {
     expect(edit.external).toBe(true);
     // Build does something rather than going somewhere, and it brings the
     // generated client up to date itself — there is no separate link for that.
-    expect(links[3].href).toBeUndefined();
+    expect(links[2].href).toBeUndefined();
     expect(links.map((l) => l.id)).not.toContain("update-client");
   });
 
@@ -100,18 +106,39 @@ describe("the current application's sidebar links", () => {
     }
   });
 
-  it("adds a link to the coding agent when the application has one", () => {
-    const labels = appNavLinks(react, "build-todo", admin).map((l) => l.label);
-    expect(labels).toEqual([
+  /** One link, whichever coding agent it opens: Claude Code and the built-in
+   * agent used to be two rows of a sidebar that is already tall. */
+  it("has one Coding agent link, whatever it opens", () => {
+    for (const app of [react, saltcornUi]) {
+      for (const agent of [null, "build-todo"]) {
+        const coding = appNavLinks(app, agent, admin).filter((l) => l.label === "Coding agent");
+        expect(coding.length).toBeLessThanOrEqual(1);
+      }
+    }
+    expect(appNavLinks(react, "build-todo", admin).map((l) => l.label)).toEqual([
       "Application link",
       "Edit code",
-      "Build with Claude",
       "Build",
       "Coding agent",
       "Checklists",
       "Application settings",
     ]);
-    expect(appNavLinks(react, "build-todo", admin)[4].href).toBe("#/agents/build-todo/chat");
+  });
+
+  it("opens the built-in coding agent's chat when that is chosen", () => {
+    const chosen = { ...react, attributes: { coding_agent: "agent" } };
+    const link = appNavLinks(chosen, "build-todo", admin).find((l) => l.label === "Coding agent")!;
+    expect(link.id).toBe("chat");
+    expect(link.href).toBe("#/agents/build-todo/chat");
+    expect(link.external).toBeUndefined();
+  });
+
+  it("opens the built-in agent for an application Claude Code cannot work on", () => {
+    // No directory, so no Claude Code; its agent is all there is.
+    const link = appNavLinks(saltcornUi, "build-crm", admin).find(
+      (l) => l.label === "Coding agent",
+    )!;
+    expect(link.href).toBe("#/agents/build-crm/chat");
   });
 
   it("gives an application with no framework edit code but nothing to build", () => {
@@ -124,6 +151,7 @@ describe("the current application's sidebar links", () => {
       source: { store: "site", path: "public" },
       targets: [],
       claude: claudeOk,
+      attributes: {},
     };
     const links = appNavLinks(none, null, admin);
     expect(links.map((l) => l.id)).toEqual([
@@ -143,7 +171,7 @@ describe("the current application's sidebar links", () => {
     expect(claude.unavailable).toBeUndefined();
   });
 
-  it("shows Build with Claude disabled, with the server's reason, when it cannot start", () => {
+  it("shows the Claude Code link disabled, with the server's reason, when it cannot start", () => {
     const off = {
       ...react,
       claude: {
@@ -158,6 +186,11 @@ describe("the current application's sidebar links", () => {
     expect(appNavLinks(spaced, null, admin).find((l) => l.id === "claude")!.href).toBe(
       "/ide/?store=code&claude=1&app=my%20shop",
     );
+  });
+
+  it("leaves a Saltcorn UI application with no coding agent without the link", () => {
+    expect(appNavLinks(saltcornUi, null, admin).map((l) => l.id)).not.toContain("claude");
+    expect(appNavLinks(saltcornUi, null, admin).map((l) => l.id)).not.toContain("chat");
   });
 
   it("gives a Saltcorn UI application views, pages and library, then settings", () => {
@@ -249,3 +282,74 @@ describe("which application a route is about", () => {
     expect(onApplicationsList("/applications/a1/edit")).toBe(false);
   });
 });
+
+describe("which coding agent an application's link opens", () => {
+  const off = { ...react, claude: { available: false, reason: "turned off" } };
+  const choose = <A extends object>(app: A, choice: string) => ({
+    ...app,
+    attributes: { coding_agent: choice },
+  });
+
+  it("follows the application's choice when it can", () => {
+    expect(codingAgentTarget(choose(react, "claude"), "build-todo")).toBe("claude");
+    expect(codingAgentTarget(choose(react, "agent"), "build-todo")).toBe("agent");
+  });
+
+  it("prefers Claude Code where it can start, when nothing is chosen", () => {
+    expect(codingAgentTarget(react, "build-todo")).toBe("claude");
+    expect(codingAgentTarget(off, "build-todo")).toBe("agent");
+  });
+
+  /** A choice that cannot be followed is not a dead link: Claude Code
+   * switched off, or the agent deleted, falls back to the other. */
+  it("falls back to the other when the chosen one is not there", () => {
+    expect(codingAgentTarget(choose(off, "claude"), "build-todo")).toBe("agent");
+    expect(codingAgentTarget(choose(react, "agent"), null)).toBe("claude");
+  });
+
+  it("ignores a stored value it does not know", () => {
+    expect(codingAgentTarget(choose(off, "copilot"), "build-todo")).toBe("agent");
+  });
+
+  it("keeps the disabled Claude Code link only when there is nothing else", () => {
+    expect(codingAgentTarget(off, null)).toBe("claude");
+    expect(codingAgentTarget(saltcornUi, null)).toBeNull();
+  });
+});
+
+describe("the stored coding-agent choice", () => {
+  it("is written into the attributes, keeping the rest", () => {
+    const out = withCodingAgent({ check_after_build: true }, "agent");
+    expect(out).toEqual({ check_after_build: true, coding_agent: "agent" });
+    expect(storedCodingAgent(out)).toBe("agent");
+  });
+
+  it("replaces an earlier choice", () => {
+    const out = withCodingAgent({ coding_agent: "claude" }, "agent");
+    expect(storedCodingAgent(out)).toBe("agent");
+  });
+
+  it("is left as it was when there was nothing to choose from", () => {
+    expect(withCodingAgent({ coding_agent: "claude" }, null)).toEqual({ coding_agent: "claude" });
+  });
+
+  /** The selector names an agent, never "Default": with nothing stored it
+   * starts on Claude Code where Claude Code can start. */
+  it("starts the selector on the agent the link opens", () => {
+    const off = { ...react, claude: { available: false, reason: "off" } };
+    expect(selectedCodingAgent(react, "build-todo")).toBe("claude");
+    expect(selectedCodingAgent(off, "build-todo")).toBe("agent");
+    expect(selectedCodingAgent({ ...react, attributes: { coding_agent: "agent" } }, "build-todo")).toBe(
+      "agent",
+    );
+    // Neither can be chosen: no selector at all.
+    expect(selectedCodingAgent(off, null)).toBeNull();
+    expect(selectedCodingAgent(saltcornUi, null)).toBeNull();
+  });
+
+  it("reads nothing out of attributes that are not an object", () => {
+    expect(storedCodingAgent(null)).toBeNull();
+    expect(storedCodingAgent(["claude"])).toBeNull();
+  });
+});
+

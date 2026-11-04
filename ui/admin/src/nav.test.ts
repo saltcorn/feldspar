@@ -96,17 +96,23 @@ describe("the admin sidebar", () => {
 
   /** Each heading is drawn once, where its group starts, so a group whose
    * entries were split would get its heading twice. */
-  it("groups the entries under Overview, Data, Automation, Insights and Administration", () => {
+  it("groups the entries under Data, Automation, Insights and Administration", () => {
     const groups = NAV.map((item) => item.group).filter(
       (group, n, all) => group !== all[n - 1],
     );
-    expect(groups).toEqual(["Overview", "Data", "Automation", "Insights", "Administration"]);
+    expect(groups).toEqual(["Data", "Automation", "Insights", "Administration"]);
     const members = (group: string) =>
       NAV.filter((item) => item.group === group).map((item) => item.label);
-    expect(members("Overview")).toEqual(["Home", "All entities"]);
-    expect(members("Data")).toEqual(["Tables", "Files", "Streams"]);
+    expect(members("Data")).toEqual(["All entities", "Tables", "Files", "Streams"]);
     expect(members("Automation")).toEqual(["Triggers", "Agents"]);
     expect(members("Administration")).toEqual(["Users", "Settings"]);
+  });
+
+  /** The logo is the way home; an entry for it would only make the sidebar
+   * taller. Home itself is still a route (the default one). */
+  it("has no Home entry", () => {
+    expect(NAV.map((item) => item.label)).not.toContain("Home");
+    expect(activeLabels("/home")).toEqual([]);
   });
 
   it("names each group in the reader's language", () => {

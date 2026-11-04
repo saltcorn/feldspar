@@ -2,6 +2,20 @@
 
 Changes in reverse chronological order.
 
+## Admin UI: a shorter sidebar, one Coding agent link
+
+- **No Home entry.** The logo at the top of the sidebar goes to Home, and says so. All entities
+  is now the first entry under Data, so the Overview heading is gone.
+- **One "Coding agent" link per application** replaces "Build with Claude" and "Coding agent".
+  It opens Claude Code in the IDE terminal, or a new chat with the application's built-in coding
+  agent. Application settings has a new **Coding agent** choice between Claude Code (only where
+  Claude Code can start) and the application's built-in coding agent, by name (only when it has
+  one). An application with no choice yet starts on Claude Code where it can start, else the
+  built-in agent; a chosen one that is no longer there falls back the same way. Stored as the application's `coding_agent` attribute, so
+  existing applications need no migration and keep a working link.
+
+Tests: `ui/admin/src/appNav.test.ts`, `nav.test.ts`.
+
 ## Admin UI: a Home page and a clearer sidebar
 
 The admin UI now opens on **Home** instead of the entity index. Home shows:
