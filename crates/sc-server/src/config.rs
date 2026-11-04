@@ -262,10 +262,12 @@ pub struct ServerConfig {
     /// `node_modules/.bin` is written by whoever may edit the store, and the
     /// process runs as the server's operating-system user.
     pub language_server: PathBuf,
-    /// The Claude Code executable the IDE's terminal runs (`--claude-cli`,
-    /// default `claude` on `PATH`; design §12.1). The server's own, for
-    /// `language_server`'s reason.
-    pub claude_cli: PathBuf,
+    /// The Claude Code executable the IDE's terminal runs (`--claude-cli`;
+    /// design §12.1). The server's own, for `language_server`'s reason. `None`
+    /// when the option is not given: then Settings → Development's executable,
+    /// else `claude` on `PATH` or in the usual install locations
+    /// (`crate::terminal::find_claude`).
+    pub claude_cli: Option<PathBuf>,
     /// How long a run's preview mount may go unused before the sweep removes it
     /// (`--preview-idle-minutes`, default an hour).
     pub preview_idle: std::time::Duration,
@@ -350,7 +352,7 @@ impl Default for ServerConfig {
             browser_sandbox: true,
             browser_contexts: DEFAULT_BROWSER_CONTEXTS,
             language_server: PathBuf::from(crate::lsp::SERVER_BIN),
-            claude_cli: PathBuf::from(crate::terminal::CLAUDE_BIN),
+            claude_cli: None,
             preview_idle: std::time::Duration::from_secs(DEFAULT_PREVIEW_IDLE_MINUTES * 60),
             max_request_body: DEFAULT_MAX_REQUEST_BODY,
             max_upload_bytes: DEFAULT_MAX_UPLOAD_BYTES,
@@ -555,7 +557,7 @@ impl ServerConfig {
                     cfg.language_server = PathBuf::from(next_value(&mut it, "--language-server")?);
                 }
                 "--claude-cli" => {
-                    cfg.claude_cli = PathBuf::from(next_value(&mut it, "--claude-cli")?);
+                    cfg.claude_cli = Some(PathBuf::from(next_value(&mut it, "--claude-cli")?));
                 }
                 "--browser-contexts" => {
                     cfg.browser_contexts = positive(

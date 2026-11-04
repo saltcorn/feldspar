@@ -113,6 +113,12 @@ impl Server {
 /// unless `enabled` is false, and a real admin to open it: a session token
 /// resolves to a user in the database.
 async fn serve(program: &Path, enabled: bool) -> Result<Server> {
+    serve_with(Some(program), enabled).await
+}
+
+/// [`serve`] with `--claude-cli` given only when `program` is: without it the
+/// server looks for Claude Code (the Development setting, then `PATH`).
+async fn serve_with(program: Option<&Path>, enabled: bool) -> Result<Server> {
     let db = TestDb::new().await?;
     // The template carries a `users` table of its own; the platform's replaces it.
     db.client()
@@ -128,6 +134,7 @@ async fn serve(program: &Path, enabled: bool) -> Result<Server> {
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     let driver = Arc::new(PgDriver::from_pool(db.pool().clone()));
     let catalog = Arc::new(Catalog::init(driver as Arc<dyn DatabaseDriver>).await?);
+    db.on_teardown(catalog.teardown_hook());
     sc_auth::bootstrap(&catalog).await?;
     sc_app::bootstrap(&catalog).await?;
     sc_config::bootstrap(&catalog).await?;
@@ -153,7 +160,7 @@ async fn serve(program: &Path, enabled: bool) -> Result<Server> {
         sessions.clone(),
         &ServerConfig {
             addr,
-            claude_cli: program.to_path_buf(),
+            claude_cli: program.map(Path::to_path_buf),
             ..ServerConfig::default()
         },
         apps,
@@ -1140,6 +1147,97 @@ async fn a_file_the_program_writes_is_reported_once_by_its_store_path() -> Resul
     assert_eq!(
         changed_frames(&mut socket, Duration::from_secs(4)).await,
         vec![vec!["web/page.txt".to_owned()]]
+    );
+    Ok(())
+}
+
+/// Settings → Development as the admin UI saves it: the session cookie, and a
+/// CSRF cookie the header repeats.
+async fn save_development(server: &Server, values: Value) -> (StatusCode, Value) {
+    let csrf = "test-csrf";
+    let response = reqwest::Client::new()
+        .post(format!("http://{}/api/settings", server.addr))
+        .header(
+            header::COOKIE,
+            format!(
+                "{SESSION_COOKIE}={}; {}={csrf}",
+                server.admin,
+                sc_api::auth::CSRF_COOKIE
+            ),
+        )
+        .header(sc_api::auth::CSRF_HEADER, csrf)
+        .json(&json!({ "values": values }))
+        .send()
+        .await
+        .unwrap();
+    let status = StatusCode::from_u16(response.status().as_u16()).unwrap();
+    (status, response.json().await.unwrap_or(Value::Null))
+}
+
+/// What the Development tab's Claude Code panel reads.
+async fn claude_status(server: &Server) -> Value {
+    let response = reqwest::Client::new()
+        .get(format!("http://{}/api/development/claude", server.addr))
+        .header(header::COOKIE, format!("{SESSION_COOKIE}={}", server.admin))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    response.json().await.unwrap()
+}
+
+/// A stand-in `claude` that prints a version, executable.
+fn fake_claude(dir: &Path) -> PathBuf {
+    let program = dir.join("claude");
+    std::fs::write(&program, "#!/bin/sh\necho '9.9.9 (Claude Code)'\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    program
+}
+
+/// With no `--claude-cli`, the executable named under Development is the one
+/// the terminal runs: the status says so, with what its `--version` printed,
+/// and a path the server could not run is refused when it is saved.
+#[tokio::test]
+async fn the_development_setting_names_claude_and_the_status_says_which() -> Result<()> {
+    let server = serve_with(None, true).await?;
+    let program = fake_claude(&temp_dir("claude"));
+
+    let (status, body) = save_development(&server, json!({ "claude_code_path": "claude" })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("not a full path"), "{body}");
+    let (status, body) = save_development(
+        &server,
+        json!({ "claude_code_path": "/nonexistent/claude" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let path = program.to_string_lossy().into_owned();
+    let (status, body) =
+        save_development(&server, json!({ "claude_code_path": format!("  {path} ") })).await;
+    assert!(status.is_success(), "{status} {body}");
+    let found = claude_status(&server).await;
+    assert_eq!(found["enabled"], json!(true));
+    assert_eq!(found["path"], json!(path));
+    assert_eq!(found["source"], json!("setting"));
+    assert_eq!(found["version"], json!("9.9.9 (Claude Code)"));
+    assert!(found["problem"].is_null(), "{found}");
+
+    // The option, when given, comes before the setting.
+    let flagged = serve_with(Some(Path::new("/nonexistent/claude")), true).await?;
+    set_config(&flagged.catalog, sc_config::CLAUDE_CODE_PATH, json!(path)).await?;
+    let refused = claude_status(&flagged).await;
+    assert!(refused["path"].is_null(), "{refused}");
+    assert!(
+        refused["problem"]
+            .as_str()
+            .unwrap()
+            .contains("--claude-cli names /nonexistent/claude"),
+        "{refused}"
     );
     Ok(())
 }

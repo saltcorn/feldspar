@@ -94,6 +94,15 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         normalised.map_or(Json::Null, Json::String),
                     );
                 }
+                // The Claude Code executable likewise: refused unless the
+                // server can run it, and stored trimmed, or as nothing.
+                if let Some(Json::String(raw)) = values.get(sc_config::CLAUDE_CODE_PATH) {
+                    let normalised = sc_config::check_claude_code_path(raw)?;
+                    values.insert(
+                        sc_config::CLAUDE_CODE_PATH.to_owned(),
+                        normalised.map_or(Json::Null, Json::String),
+                    );
+                }
 
                 // What the settings *mean together* is checked before anything
                 // is written: `custom` with no certificate, or a certificate its
@@ -413,6 +422,27 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
             async move {
                 Ok(HandlerResponse::ok(
                     crate::system::system_info(&catalog).await,
+                ))
+            }
+        }
+    });
+
+    // Settings → Development: which Claude Code the IDE's terminal would run,
+    // so an admin sees which one without opening a terminal to find out.
+    reg.register_admin("getClaudeCodeStatus", {
+        let catalog = catalog.clone();
+        let apps = apps.clone();
+        move |_ctx| {
+            let catalog = catalog.clone();
+            let apps = apps.clone();
+            async move {
+                let option = apps.claude_cli();
+                Ok(HandlerResponse::ok(
+                    crate::terminal::claude_status(
+                        &catalog,
+                        option.as_deref().map(|p| p.as_path()),
+                    )
+                    .await,
                 ))
             }
         }

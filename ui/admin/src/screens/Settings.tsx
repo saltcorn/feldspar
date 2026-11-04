@@ -60,6 +60,8 @@ import { BackupTab } from "./BackupTab";
 import { CodeLibraryPanel } from "./CodeLibraries";
 import { SharedTranslationsPanel } from "./SharedTranslations";
 import { McpTokensPanel } from "./McpTokens";
+import { ClaudeCodeStatusPanel } from "./ClaudeCodeStatus";
+import { statusKey, terminalTicked } from "../claudeStatus";
 import { OAuthProvidersPanel } from "./OAuthProviders";
 import { ModulesTab } from "./ModulesTab";
 import { BuildHostsPanel } from "./BuildHosts";
@@ -479,6 +481,10 @@ function SectionExtra({
             loopback switch is; ticked but not yet saved, the panel says the
             route is not served yet. */}
         {mcpEnabled(values) && <McpTokensPanel enabled={mcpEnabled(stored)} />}
+        {/* Which claude the IDE's terminal runs: shown while the switch is
+            ticked, and read again after a save changes the switch or the
+            path, so it answers for what was saved. */}
+        {terminalTicked(values) && <ClaudeCodeStatusPanel key={statusKey(stored)} />}
         <CodeLibraryPanel />
         {/* The machines that build native apps for this server
             (`TODO-build-hosts.md`). */}

@@ -931,6 +931,12 @@ routes call it).
   Which one it opens is an application setting (`coding_agent`: the built-in coding agent or
   Claude Code), and the selector always names one; Claude Code can be chosen only where it can
   start. Unset, it opens Claude Code where Claude Code can start, else the built-in agent.
+- [~] **UX1.6** Where Claude Code is: a "Claude Code executable" setting under Development
+  (`claude_code_path`, shown while Claude Code in the IDE is on, refused on save unless an
+  absolute path to an executable file). Looked up as `--claude-cli`, the setting, `PATH`, then
+  the usual install locations; a path given explicitly is never replaced by another. The
+  Development tab shows which `claude` runs and its version, or why there is none. The child
+  gets the executable's directory first on its `PATH`, so an nvm install finds its `node`.
 
 ---
 

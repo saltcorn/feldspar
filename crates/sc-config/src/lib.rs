@@ -72,9 +72,10 @@ pub use defs::{
     config_spec, definition, hidden_sections, internal_defs, known_keys,
 };
 pub use development::{
-    ADMIN_SUBDOMAIN, DevelopmentSettings, IDE_TERMINAL_ENABLED, LOG_SQL, LOG_VERBOSITY,
-    MCP_ENABLED, MCP_LOOPBACK_ONLY, McpSettings, ROOT_SUBDOMAIN, admin_subdomain,
-    admin_subdomain_from, apply_development_settings, check_admin_subdomain, development_section,
+    ADMIN_SUBDOMAIN, CLAUDE_CODE_PATH, DevelopmentSettings, IDE_TERMINAL_ENABLED, LOG_SQL,
+    LOG_VERBOSITY, MCP_ENABLED, MCP_LOOPBACK_ONLY, McpSettings, ROOT_SUBDOMAIN, admin_subdomain,
+    admin_subdomain_from, apply_development_settings, check_admin_subdomain,
+    check_claude_code_path, claude_code_path, claude_code_path_from, development_section,
     development_settings, development_settings_from, ide_terminal_enabled,
     ide_terminal_enabled_from, mcp_settings, mcp_settings_from,
 };
