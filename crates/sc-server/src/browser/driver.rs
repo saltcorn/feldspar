@@ -236,6 +236,24 @@ impl ChromiumDriver {
         }
     }
 
+    /// The id of the application `target` shows, which its session names.
+    fn app_id(&self, target: &BrowserTarget) -> Result<uuid::Uuid> {
+        self.apps
+            .app_id(
+                &target.subdomain,
+                target
+                    .preview
+                    .as_ref()
+                    .map(|preview| preview.label.as_str()),
+            )
+            .ok_or_else(|| {
+                sc_error::Error::invalid(format!(
+                    "no application is being served at `{}`",
+                    target.subdomain
+                ))
+            })
+    }
+
     /// Let this context's pass reach the target's preview, if it is one.
     fn allow(&self, target: &BrowserTarget, pass: &str) {
         if let Some(preview) = &target.preview {
@@ -424,12 +442,15 @@ impl ChromiumDriver {
         if let Some(user) = request.user
             && page.session.is_none()
         {
-            // An application's page: an application's session (#15).
-            page.session = Some(
-                self.sessions
-                    .login_in(user.clone(), sc_auth::SessionScope::App)
-                    .await?,
+            // An application's page: that application's session (#15),
+            // past the second factor by a named waiver — the run acts for
+            // this user (security review 2026-11, §2).
+            let who = sc_auth::FullyAuthenticated::waived(
+                user.clone(),
+                sc_auth::SecondFactorWaiver::BrowserDriver,
             );
+            let scope = sc_auth::SessionScope::App(self.app_id(request.target)?);
+            page.session = Some(self.sessions.start(who, self.sessions.ttl(), scope).await?);
         }
         if !page.origins.contains(&origin) {
             let mut cookies = vec![(PREVIEW_COOKIE, page.pass.clone())];

@@ -680,6 +680,19 @@ impl AppMounts {
         Ok(Some(preview.mounted.clone()))
     }
 
+    /// The id of the application served at `subdomain` — its live mount, or
+    /// the preview of it under `label` — which an application session for it
+    /// names (security review 2026-11, §2).
+    pub fn app_id(&self, subdomain: &str, label: Option<&str>) -> Option<uuid::Uuid> {
+        if let Some(label) = label
+            && let Some(preview) = self.previews().by_label.get(label)
+            && preview.mounted.app.subdomain == subdomain
+        {
+            return Some(preview.mounted.app.id.0);
+        }
+        self.get(subdomain).map(|mounted| mounted.app.id.0)
+    }
+
     /// How many previews are mounted.
     pub fn preview_count(&self) -> usize {
         self.previews().by_label.len()

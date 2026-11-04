@@ -40,6 +40,7 @@ use tower::ServiceExt;
 
 const BASE_DOMAIN: &str = "example.com";
 const CLUB: &str = "club.example.com";
+const SHOP: &str = "shop.example.com";
 const ROLE_MEMBER: Role = Role::of(80);
 const SESSION: &str = "sc_session";
 
@@ -151,7 +152,7 @@ impl Client {
 /// The code an app with `secret` shows `steps` steps from now.
 fn code(secret: &str, steps: i64) -> String {
     sc_auth::totp_at(
-        &sc_auth::decode_secret(secret).unwrap(),
+        &sc_auth::TotpSecret::from_base32(secret).unwrap(),
         Utc::now().timestamp() + steps * sc_auth::STEP_SECONDS,
     )
 }
@@ -192,6 +193,21 @@ async fn setup() -> sc_error::Result<Fixture> {
         .with_table(sc_auth::USERS_TABLE.to_owned());
     apps.mount(MountedApp::new_with(
         club,
+        Arc::new(CodeFramework::new(
+            "code",
+            AssetBundle::new().with("index.html", "<!doctype html>"),
+        )),
+        &catalog,
+        None,
+        apps.triggers(),
+    )?)?;
+    // A second application, written by somebody else (security review
+    // 2026-11, §2: a session names the one application that issued it).
+    let shop = Application::new("Shop", "shop", FrameworkRef::new("code"))
+        .with_api(ApiConfig::new("rest", "/api"))
+        .with_table(sc_auth::USERS_TABLE.to_owned());
+    apps.mount(MountedApp::new_with(
+        shop,
         Arc::new(CodeFramework::new(
             "code",
             AssetBundle::new().with("index.html", "<!doctype html>"),
@@ -770,5 +786,97 @@ async fn changing_the_second_factor_ends_the_other_sessions() -> sc_error::Resul
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _) = desk.send("GET", "/api/tables", None).await;
     assert_eq!(status, StatusCode::OK);
+    Ok(())
+}
+
+/// An application's session names the application that issued it (security
+/// review 2026-11, §2; H2.1). Carried to another application's host — as a
+/// shared sign-in cookie is — it is still the user there (`whoami`), but it
+/// is not that application's session, so the second factor's routes there
+/// answer as to nobody: the other application's script cannot enroll a second
+/// factor on, or turn one off for, an account that only visited it.
+#[tokio::test]
+async fn a_session_names_the_application_that_issued_it() -> sc_error::Result<()> {
+    let fx = setup().await?;
+    let mut club = Client::new(&fx.router, CLUB).await;
+    let (status, me) = club.login("member@example.com", "member-pw").await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    let token = club
+        .cookies
+        .get(SESSION)
+        .cloned()
+        .expect("a session cookie");
+    assert!(token.starts_with(sc_auth::APP_TOKEN_PREFIX));
+    assert!(
+        matches!(
+            sc_auth::SessionScope::of_token(&token),
+            sc_auth::SessionScope::App(_)
+        ),
+        "the token names its application"
+    );
+    let (status, _) = club.send("GET", "/_feldspar/second-factor", None).await;
+    assert_eq!(status, StatusCode::OK, "its own application's session");
+
+    let mut shop = Client::new(&fx.router, SHOP).await;
+    shop.cookies.insert(SESSION.to_owned(), token);
+    let (status, who) = shop.send("GET", "/api/whoami", None).await;
+    assert_eq!(status, StatusCode::OK, "{who}");
+    assert_eq!(
+        who["email"],
+        json!("member@example.com"),
+        "still the user here"
+    );
+    for (method, route) in [
+        ("GET", "/_feldspar/second-factor"),
+        ("POST", "/_feldspar/second-factor/setup"),
+        ("POST", "/_feldspar/second-factor/enable"),
+        ("POST", "/_feldspar/second-factor/disable"),
+        ("POST", "/_feldspar/second-factor/recovery-codes"),
+    ] {
+        let body = (method == "POST").then(|| json!({ "password": "member-pw", "code": "123456" }));
+        let (status, answer) = shop.send(method, route, body).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{route}: {answer}");
+    }
+    Ok(())
+}
+
+/// A sign-in waiting for its second factor ends when the account's password
+/// is changed meanwhile — here by an admin — even with the right code
+/// (security review 2026-11, B4; H2.3): the challenge was issued under the
+/// old credentials.
+#[tokio::test]
+async fn a_password_reset_ends_a_sign_in_waiting_for_its_code() -> sc_error::Result<()> {
+    let fx = setup().await?;
+    let mut member = Client::new(&fx.router, CLUB).await;
+    let (_, me) = member.login("member@example.com", "member-pw").await;
+    let id = me["id"].as_str().expect("an id").to_owned();
+    let (secret, _) = turn_on(&mut member, "member-pw").await;
+
+    let mut laptop = Client::new(&fx.router, CLUB).await;
+    let (_, answer) = laptop.login("member@example.com", "member-pw").await;
+    let token = answer["second_factor"]["token"]
+        .as_str()
+        .expect("a challenge")
+        .to_owned();
+
+    let mut desk = Client::new(&fx.router, BASE_DOMAIN).await;
+    desk.login("admin@example.com", "admin-pw").await;
+    let (status, body) = desk
+        .send("POST", &format!("/api/users/{id}/random-password"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = laptop
+        .send(
+            "POST",
+            "/_feldspar/second-factor/verify",
+            Some(json!({ "token": token, "code": code(&secret, 0) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert!(!laptop.signed_in());
+    // The member's own session ended with the old password too.
+    let (status, _) = member.send("GET", "/_feldspar/second-factor", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     Ok(())
 }

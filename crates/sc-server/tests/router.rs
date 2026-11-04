@@ -71,8 +71,9 @@ fn test_registry() -> HandlerRegistry {
     });
     reg.register("login", |_ctx| async {
         let admin = User::new(Uuid::new_v4(), Role::ADMIN);
-        Ok(HandlerResponse::start_session(
-            admin,
+        // No database here, so no second factor to ask for: a test's waiver.
+        Ok(HandlerResponse::start_verified_session(
+            sc_auth::FullyAuthenticated::waived(admin, sc_auth::SecondFactorWaiver::Test),
             json!({ "role": Role::ADMIN }),
         ))
     });
@@ -409,7 +410,7 @@ async fn an_application_session_is_no_admin_session_on_the_admin_host() {
     };
 
     let app_token = sessions
-        .login_in(admin.clone(), sc_auth::SessionScope::App)
+        .login_in(admin.clone(), sc_auth::SessionScope::App(Uuid::new_v4()))
         .await
         .unwrap();
     assert!(app_token.starts_with(sc_auth::APP_TOKEN_PREFIX));

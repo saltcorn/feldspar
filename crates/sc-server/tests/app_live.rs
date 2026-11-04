@@ -245,7 +245,7 @@ impl Server {
             .await
             .unwrap()
             .unwrap();
-        sc_auth::update_user(
+        let _changed = sc_auth::update_user(
             &self.catalog,
             user.id(),
             UserUpdate {

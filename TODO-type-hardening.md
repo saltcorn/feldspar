@@ -57,14 +57,14 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## H2 — Sessions and authentication as types (§2)
 
-- [ ] H2.1 `Session<AdminScope>` / `Session<AppScope>` extractors; `AppScope` names one app.
+- [x] H2.1 `Session<AdminScope>` / `Session<AppScope>` extractors; `AppScope` names one app.
       Delete `router::session_user`; every raw route names a scope.
-- [ ] H2.2 Auth typestate: `PasswordVerified` + `SecondFactor` (`Proof` | named `Waiver`) →
+- [x] H2.2 Auth typestate: `PasswordVerified` + `SecondFactor` (`Proof` | named `Waiver`) →
       `FullyAuthenticated`, the only input to `SessionStore::start`. The hand-off, `call_api`,
       browser driver and CLI become named waivers.
-- [ ] H2.3 `AuthEpoch` in the session row and proof; `#[must_use] CredentialsChanged`.
-- [ ] H2.4 `#[must_use] AttemptPermit` argument of every code check.
-- [ ] H2.5 `TotpSecret`, `RecoveryCode` (≥ 80 bits, keyed hash), `ChallengeToken` as secret
+- [x] H2.3 `AuthEpoch` in the session row and proof; `#[must_use] CredentialsChanged`.
+- [x] H2.4 `#[must_use] AttemptPermit` argument of every code check.
+- [x] H2.5 `TotpSecret`, `RecoveryCode` (≥ 80 bits, keyed hash), `ChallengeToken` as secret
       newtypes with constant-time equality. Migration for existing recovery-code hashes
       (or rehash on next use).
 

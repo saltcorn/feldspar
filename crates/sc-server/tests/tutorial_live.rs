@@ -557,7 +557,7 @@ async fn part_one_the_live_socket() -> Result<()> {
         .await?
         .unwrap()
         .id();
-    sc_auth::update_user(
+    let _changed = sc_auth::update_user(
         &tutorial.catalog,
         member_id,
         UserUpdate {

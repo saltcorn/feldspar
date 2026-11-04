@@ -147,7 +147,7 @@ async fn a_blank_password_is_generated_and_handed_back_once() -> Result<()> {
 
     // Resetting it invalidates the old one, which is the whole point.
     let next = random_password();
-    set_user_password(&cat, created.user.id(), &next).await?;
+    let _changed = set_user_password(&cat, created.user.id(), &next).await?;
     assert!(
         authenticate(&cat, "new@example.com", &password)
             .await?
@@ -201,7 +201,7 @@ async fn disabling_stops_sign_in_without_losing_the_account() -> Result<()> {
         Some(&Value::Text("leaver@example.com".into()))
     );
 
-    set_user_disabled(&cat, id, false).await?;
+    let _changed = set_user_disabled(&cat, id, false).await?;
     assert!(
         authenticate(&cat, "leaver@example.com", "still-my-password")
             .await?

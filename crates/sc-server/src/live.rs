@@ -1668,7 +1668,7 @@ impl Live {
         // access settings have had their say; `None` while nobody is signed in.
         let mut now: Option<User> = None;
         if let Some(token) = &self.caller.session {
-            match self.env.sessions.user_for(token).await {
+            match crate::session::revalidate(&self.env.sessions, token).await {
                 Ok(Some(user)) => now = Some(user.into_user()),
                 Ok(None) => {
                     return Err(CloseReason {

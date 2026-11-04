@@ -1313,8 +1313,13 @@ impl RestProvider {
             // link is followed, which is what `whoami` will say too.
             summary["role"] = json!(i64::from(verification.serve_as(&user)));
         }
-        let mut out =
-            ApiResponse::start_session_remembering(user, summary, crate::auth::remember(body));
+        let signing_in =
+            sc_auth::PasswordVerified::by(cat, user, sc_auth::FirstFactor::SignUp).await?;
+        let mut out = ApiResponse::start_session_remembering(
+            signing_in,
+            summary,
+            crate::auth::remember(body),
+        );
         out.status = 201;
         Ok(out)
     }

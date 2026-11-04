@@ -621,15 +621,16 @@ async fn an_application_and_the_admin_ui_sign_in_with_an_identity_provider() -> 
     let guarded =
         sc_auth::create_user(&catalog, "twofa@example.com", "twofa-pw", Role::PUBLIC).await?;
     let secret = sc_auth::begin_second_factor_setup(&catalog, guarded.id()).await?;
-    let code = sc_auth::totp_at(
-        &sc_auth::decode_secret(&secret).unwrap(),
-        chrono::Utc::now().timestamp(),
-    );
-    assert!(
-        sc_auth::finish_second_factor_setup(&catalog, guarded.id(), &code)
-            .await?
-            .is_some()
-    );
+    let code = sc_auth::totp_at(&secret, chrono::Utc::now().timestamp());
+    let sc_auth::Attempt::Permitted(permit) =
+        sc_auth::reserve_attempt(&catalog, guarded.id()).await?
+    else {
+        panic!("a first guess");
+    };
+    let enabled = sc_auth::finish_second_factor_setup(&catalog, permit, guarded.id(), &code)
+        .await?
+        .expect("the app's code turns it on");
+    let _no_sessions_yet = enabled.changed;
     let mut asked = Browser::new(router.clone(), APP_HOST);
     let (_, back) = sign_in(&router, &mut asked, &seen, "twofa@example.com", "/orders").await;
     let back = back.unwrap_or_default();

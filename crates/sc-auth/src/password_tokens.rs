@@ -56,6 +56,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::create::{NewUser, insert_user};
+use crate::epoch::AuthEpoch;
 use crate::lookup::{load_user, load_user_by_email};
 use crate::password::hash_password;
 use crate::user::User;
@@ -76,6 +77,11 @@ pub const COL_PURPOSE: &str = "purpose";
 pub const COL_CREATED_AT: &str = "created_at";
 /// When it stops working.
 pub const COL_EXPIRES_AT: &str = "expires_at";
+/// The account's [`AuthEpoch`] when a second-factor challenge was issued
+/// (security review 2026-11, H2.3): a credential changed while the code is
+/// being typed ends the sign-in. `NULL` for every other purpose, and for a
+/// challenge from before epochs, which reads as the initial epoch.
+pub(crate) const COL_AUTH_EPOCH: &str = "auth_epoch";
 
 /// How many random bytes a token carries: 256 bits, as a session token has.
 pub const PASSWORD_TOKEN_BYTES: usize = 32;
@@ -166,6 +172,8 @@ fn token_fields() -> Vec<DataField> {
         DataField::plain(COL_PURPOSE, text()).required(),
         DataField::plain(COL_CREATED_AT, timestamp()).required(),
         DataField::plain(COL_EXPIRES_AT, timestamp()).required(),
+        // Nullable, so the bootstrap adds it to an existing table.
+        DataField::plain(COL_AUTH_EPOCH, TypeRef::Basic(BasicType::Int)),
     ]
 }
 
@@ -186,29 +194,54 @@ pub async fn issue_password_token(
     user_id: Uuid,
     purpose: PasswordTokenPurpose,
 ) -> Result<String> {
+    issue(catalog, user_id, purpose, None).await
+}
+
+/// Issue a second-factor challenge for `user_id`, recording the epoch its
+/// password was checked at.
+pub(crate) async fn issue_challenge_token(
+    catalog: &Catalog,
+    user_id: Uuid,
+    purpose: PasswordTokenPurpose,
+    epoch: AuthEpoch,
+) -> Result<String> {
+    issue(catalog, user_id, purpose, Some(epoch)).await
+}
+
+async fn issue(
+    catalog: &Catalog,
+    user_id: Uuid,
+    purpose: PasswordTokenPurpose,
+    epoch: Option<AuthEpoch>,
+) -> Result<String> {
     let mut bytes = [0u8; PASSWORD_TOKEN_BYTES];
     OsRng.fill_bytes(&mut bytes);
     let token = URL_SAFE_NO_PAD.encode(bytes);
     let now = Utc::now();
+    let mut columns = vec![
+        COL_TOKEN_HASH,
+        COL_USER,
+        COL_PURPOSE,
+        COL_CREATED_AT,
+        COL_EXPIRES_AT,
+    ];
+    let mut values = vec![
+        Expr::lit(token_hash(&token)),
+        Expr::lit(user_id),
+        Expr::lit(purpose.as_str()),
+        Expr::Lit(Value::Timestamp(now)),
+        Expr::Lit(Value::Timestamp(now + purpose.ttl())),
+    ];
+    // Named only when there is one, so a table the bootstrap has not yet
+    // given the column still takes every other token.
+    if let Some(epoch) = epoch {
+        columns.push(COL_AUTH_EPOCH);
+        values.push(Expr::lit(epoch.value()));
+    }
     let insert = Insert::row(
         PASSWORD_TOKENS_TABLE,
-        [
-            COL_TOKEN_HASH,
-            COL_USER,
-            COL_PURPOSE,
-            COL_CREATED_AT,
-            COL_EXPIRES_AT,
-        ]
-        .iter()
-        .map(|c| (*c).to_owned())
-        .collect(),
-        vec![
-            Expr::lit(token_hash(&token)),
-            Expr::lit(user_id),
-            Expr::lit(purpose.as_str()),
-            Expr::Lit(Value::Timestamp(now)),
-            Expr::Lit(Value::Timestamp(now + purpose.ttl())),
-        ],
+        columns.iter().map(|c| (*c).to_owned()).collect(),
+        values,
     );
     rows(catalog, Statement::from(insert)).await?;
     sweep_expired_password_tokens(catalog).await?;
@@ -266,6 +299,10 @@ pub async fn redeem_password_token(
         return Ok(None);
     };
     crate::session::delete_sessions_for_user(catalog, user_id).await?;
+    // A new password: whatever the old one handed out ends on every node at
+    // its next read, sessions and sign-ins waiting for a code alike. The rows
+    // are gone already, so there is nothing for a session store to do here.
+    let _ended = crate::epoch::bump_auth_epoch(catalog, user_id).await?;
     load_user(catalog, user_id).await
 }
 
@@ -363,28 +400,56 @@ pub(crate) async fn password_token_holder(
     }
 }
 
-/// Spend `token` if it is live and was issued for one of `purposes`, returning
-/// the user it names. Exactly one of two racing callers gets `Some`.
-pub(crate) async fn spend_password_token(
+/// Spend a second-factor challenge `token` if it is live and was issued for
+/// one of `purposes`, returning the account, the purpose and the epoch it
+/// recorded. Exactly one of two racing callers gets `Some`.
+pub(crate) async fn spend_challenge_token(
     catalog: &Catalog,
     token: &str,
     purposes: &[PasswordTokenPurpose],
-) -> Result<Option<Uuid>> {
+) -> Result<Option<(Uuid, PasswordTokenPurpose, AuthEpoch)>> {
     let token = token.trim();
     if token.is_empty() {
         return Ok(None);
     }
     let tx = SharedTx::begin_primary(catalog)?;
-    match spend_token(&tx, token, purposes).await {
+    let returning = vec![
+        Projection::expr(Expr::col(COL_USER)),
+        Projection::expr(Expr::col(COL_PURPOSE)),
+        Projection::expr(Expr::col(COL_AUTH_EPOCH)),
+    ];
+    let spent = match spend_rows(&tx, token, purposes, returning).await {
         Ok(spent) => {
             tx.commit().await?;
-            Ok(spent)
+            spent
         }
         Err(e) => {
             let _ = tx.rollback().await;
-            Err(e)
+            return Err(e);
         }
-    }
+    };
+    let Some(row) = spent.first() else {
+        return Ok(None);
+    };
+    let user = match row.get(COL_USER) {
+        Some(Value::Uuid(id)) => *id,
+        other => {
+            return Err(Error::invalid(format!(
+                "{PASSWORD_TOKENS_TABLE}.{COL_USER} should be a uuid, got {other:?}"
+            )));
+        }
+    };
+    let Some(purpose) = (match row.get(COL_PURPOSE) {
+        Some(Value::Text(p)) => PasswordTokenPurpose::parse(p),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    Ok(Some((
+        user,
+        purpose,
+        AuthEpoch::of_column(row.get(COL_AUTH_EPOCH))?,
+    )))
 }
 
 /// Delete the live token `token`, if it was issued for one of `purposes`, and
@@ -395,13 +460,37 @@ async fn spend_token(
     token: &str,
     purposes: &[PasswordTokenPurpose],
 ) -> Result<Option<Uuid>> {
+    let spent = spend_rows(
+        tx,
+        token,
+        purposes,
+        vec![Projection::expr(Expr::col(COL_USER))],
+    )
+    .await?;
+    match spent.first().map(|row| row.get(COL_USER)) {
+        None => Ok(None),
+        Some(Some(Value::Uuid(id))) => Ok(Some(*id)),
+        Some(other) => Err(Error::invalid(format!(
+            "{PASSWORD_TOKENS_TABLE}.{COL_USER} should be a uuid, got {other:?}"
+        ))),
+    }
+}
+
+/// [`spend_token`]'s `DELETE … RETURNING`, returning `returning` of the row it
+/// spent (none, or one).
+async fn spend_rows(
+    tx: &SharedTx,
+    token: &str,
+    purposes: &[PasswordTokenPurpose],
+    returning: Vec<Projection>,
+) -> Result<Vec<Row>> {
     let purpose = purposes
         .iter()
         .map(|p| Expr::col(COL_PURPOSE).eq(Expr::lit(p.as_str())))
         .reduce(Expr::or)
         .ok_or_else(|| Error::invalid("a token is spent for at least one purpose"))?;
     let delete = Delete {
-        returning: vec![Projection::expr(Expr::col(COL_USER))],
+        returning,
         ..Delete::from(PASSWORD_TOKENS_TABLE).filter(
             Expr::col(COL_TOKEN_HASH)
                 .eq(Expr::lit(token_hash(token)))
@@ -413,19 +502,11 @@ async fn spend_token(
                 .and(purpose),
         )
     };
-    let spent = tx
-        .run(
-            sc_catalog::Unchecked::system("password token: spend"),
-            &Statement::from(delete),
-        )
-        .await?;
-    match spent.first().map(|row| row.get(COL_USER)) {
-        None => Ok(None),
-        Some(Some(Value::Uuid(id))) => Ok(Some(*id)),
-        Some(other) => Err(Error::invalid(format!(
-            "{PASSWORD_TOKENS_TABLE}.{COL_USER} should be a uuid, got {other:?}"
-        ))),
-    }
+    tx.run(
+        sc_catalog::Unchecked::system("password token: spend"),
+        &Statement::from(delete),
+    )
+    .await
 }
 
 /// Spend an **email verification** token, returning the user whose address it

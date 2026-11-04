@@ -900,7 +900,11 @@ impl SaltcornUiFramework {
         }
         // Recorded as unproven: the visitor chose the address (security review #41).
         match sc_auth::sign_up_user(cat, &email, &password, self.new_user_role()).await {
-            Ok(user) => Ok(signed_in(user, dest, true)),
+            Ok(user) => Ok(signed_in(
+                sc_auth::PasswordVerified::by(cat, user, sc_auth::FirstFactor::SignUp).await?,
+                dest,
+                true,
+            )),
             // "role 80 does not exist" is the admin's to fix, and the one
             // sentence that says how.
             Err(e) if e.kind() == ErrorKind::Application => again(&reason_of(&e)),
@@ -1661,7 +1665,7 @@ enum AuthForm {
 
 /// Signed in as `user`, and on to `dest` if it is a path on this application,
 /// else to `/`. Not `remember`ed, the session's cookie ends with the browser.
-fn signed_in(user: User, dest: &str, remember: bool) -> AppResponse {
+fn signed_in(user: sc_auth::PasswordVerified, dest: &str, remember: bool) -> AppResponse {
     let mut out = AppResponse::redirect(safe_redirect(Some(dest).filter(|d| !d.is_empty())));
     out.session = SessionAction::start(user, remember);
     out

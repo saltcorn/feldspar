@@ -183,6 +183,9 @@ libc.workspace = true
 notify.workspace = true
 
 [dev-dependencies]
+# Tests start sessions without a sign-in (`SessionStore::login`), which only
+# the `testing` feature offers (security review 2026-11, §2).
+sc-auth = { workspace = true, features = ["testing"] }
 # The Saltcorn UI golden-HTML test normalises what legitimately differs between
 # two renders (a user's UUID, v1's random element ids).
 regex-lite.workspace = true

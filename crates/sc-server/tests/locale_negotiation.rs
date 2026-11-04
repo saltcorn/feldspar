@@ -29,7 +29,7 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_auth::SessionStore;
-use sc_server::{AppMounts, ServerConfig, admin_handlers, build_router};
+use sc_server::{AppMounts, ServerConfig, admin_handlers, build_router_with_apps};
 use sc_test_harness::{TestDb, TestServer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -160,11 +160,14 @@ async fn setup() -> sc_error::Result<(Client, TestDb)> {
 
     let sessions = Arc::new(SessionStore::default());
     let apps = Arc::new(AppMounts::new(catalog.clone()));
-    let router = build_router(
+    // The router reads the catalog too: where every sign-in's second factor is
+    // decided (it starts no session without one).
+    let router = build_router_with_apps(
         &sc_api::admin_endpoints(),
-        admin_handlers(catalog, apps),
+        admin_handlers(catalog, apps.clone()),
         sessions,
         &ServerConfig::default(),
+        apps,
     )?;
 
     let mut client = Client::new(router);

@@ -90,6 +90,7 @@ mod router;
 mod second_factor;
 mod security;
 mod serve;
+mod session;
 mod streams;
 mod system;
 mod systemd;

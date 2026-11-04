@@ -405,3 +405,158 @@ fn the_request_facing_crates_carry_the_advisory_lints() {
     let ci = read(&root, ".github/workflows/ci.yml");
     assert!(ci.contains("--cfg feldspar_advisory_lints"));
 }
+
+/// Every way an sc-server route reads a session goes through
+/// `crates/sc-server/src/session.rs`, which compares the host a session was
+/// issued for with the host the request arrived on (security review 2026-11,
+/// §2; TODO-type-hardening H2.1): `Session<AdminScope>`, `Session<AppScope>`,
+/// `OwnSession`, `AppSession`, `HostSession`. A raw store lookup anywhere
+/// else would be a route that names no scope — the bug class of B1, B7, E2
+/// and #15 — and `router::session_user`, which ignored the scope, is gone.
+#[test]
+fn sc_server_reads_sessions_only_through_the_scoped_session_module() {
+    let root = workspace_root();
+    let mut files = Vec::new();
+    rust_files(&root.join("crates/sc-server/src"), &mut files);
+    let raw = [
+        ".user_for(",
+        "SessionScope::of_token(",
+        "sessions.session(",
+        ".session(&token",
+    ];
+    let mut found = Vec::new();
+    for path in &files {
+        let rel = path
+            .strip_prefix(&root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        if rel == "crates/sc-server/src/session.rs" {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        for (n, line) in text.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if raw.iter().any(|r| code.contains(r)) {
+                found.push(format!("{rel}:{}: {}", n + 1, code));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "read a request's session through crates/sc-server/src/session.rs, which names its \
+         scope, not straight from the store:\n{}",
+        found.join("\n")
+    );
+    let router = read(&root, "crates/sc-server/src/router.rs");
+    assert!(
+        !router.contains("fn session_user("),
+        "router::session_user ignored the session's scope and must not come back"
+    );
+}
+
+/// A session is started from a `FullyAuthenticated` alone; the shortcut that
+/// starts one from a bare `User` (`SessionStore::login` and friends,
+/// `SecondFactorWaiver::Test`) is sc-auth's `testing` feature, which only a
+/// dev-dependency may enable (security review 2026-11, §2; H2.2).
+#[test]
+fn only_dev_dependencies_enable_sc_auth_testing() {
+    let root = workspace_root();
+    let auth = toml_of(&root, "crates/sc-auth/Cargo.toml");
+    assert!(
+        auth.get("features")
+            .and_then(|f| f.as_table())
+            .and_then(|f| f.get("default"))
+            .is_none(),
+        "sc-auth must not have default features (they would be on in every build)"
+    );
+    let mut manifests: Vec<String> = members(&root)
+        .into_iter()
+        .map(|m| format!("{m}/Cargo.toml"))
+        .collect();
+    manifests.push("Cargo.toml".to_owned());
+    for manifest in manifests {
+        let table = toml_of(&root, &manifest);
+        let mut sections: Vec<&toml::Table> = Vec::new();
+        for key in ["dependencies", "build-dependencies"] {
+            if let Some(t) = table.get(key).and_then(|v| v.as_table()) {
+                sections.push(t);
+            }
+        }
+        if let Some(t) = table
+            .get("workspace")
+            .and_then(|w| w.get("dependencies"))
+            .and_then(|v| v.as_table())
+        {
+            sections.push(t);
+        }
+        if let Some(targets) = table.get("target").and_then(|v| v.as_table()) {
+            for target in targets.values() {
+                for key in ["dependencies", "build-dependencies"] {
+                    if let Some(t) = target.get(key).and_then(|v| v.as_table()) {
+                        sections.push(t);
+                    }
+                }
+            }
+        }
+        for section in sections {
+            let Some(dep) = section.get("sc-auth") else {
+                continue;
+            };
+            let features: Vec<&str> = dep
+                .get("features")
+                .and_then(|f| f.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+            assert!(
+                !features.contains(&"testing"),
+                "{manifest} enables sc-auth's `testing` feature outside [dev-dependencies]"
+            );
+        }
+    }
+}
+
+/// The ways past the second factor are the `SecondFactorWaiver` variants, and
+/// the places that use one are this list (security review 2026-11, §2; H2.2):
+/// a new one is a decision for review, not something a handler does.
+#[test]
+fn second_factor_waivers_are_used_only_where_listed() {
+    const WAIVER_SITES: &[&str] = &[
+        "crates/sc-cli/src/auth.rs",
+        "crates/sc-server/src/browser/driver.rs",
+        "crates/sc-server/src/handlers/auth.rs",
+        "crates/sc-server/src/handlers/users.rs",
+        "crates/sc-server/src/requests.rs",
+        "crates/sc-server/src/router.rs",
+    ];
+    let root = workspace_root();
+    let mut files = Vec::new();
+    rust_files(&root.join("crates"), &mut files);
+    let mut found: Vec<String> = files
+        .iter()
+        .filter_map(|path| {
+            path.strip_prefix(&root)
+                .ok()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+        })
+        // sc-auth defines them; tests make sessions as they like.
+        .filter(|rel| rel.contains("/src/") && !rel.starts_with("crates/sc-auth/"))
+        .filter(|rel| {
+            fs::read_to_string(root.join(rel)).is_ok_and(|text| {
+                text.lines().any(|line| {
+                    !line.trim_start().starts_with("//") && line.contains("SecondFactorWaiver::")
+                })
+            })
+        })
+        .collect();
+    found.sort();
+    assert_eq!(
+        found, WAIVER_SITES,
+        "the places that start a session past the second factor changed: update WAIVER_SITES \
+         (and justify the new waiver in review)"
+    );
+}

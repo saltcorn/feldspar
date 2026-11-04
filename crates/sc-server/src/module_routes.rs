@@ -39,10 +39,9 @@ use sc_error::{Error, Result};
 use sc_module::{RouteRequest, WEBHOOK_MAX_BODY, WebhookRequest};
 use serde_json::{Value as Json, json};
 
-use crate::admin_session::admin_host_session;
 use crate::modules::RouteLookup;
 use crate::router::{AppState, Resolved, json_error, parse_query, request_client_ip, resolve_app};
-use crate::security::{AnonymousCaller, SESSION_COOKIE};
+use crate::security::AnonymousCaller;
 use sc_backup::schedule::{Frequency, load_schedules, load_statuses};
 
 /// The route.
@@ -211,19 +210,12 @@ async fn route_caller(
     }
     // Through the admin host's own session check: an application's session is
     // no session here, whatever its user's role (security review 2026-11, #5).
-    let Some(token) = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) else {
-        return Ok(nobody);
-    };
-    let user = admin_host_session(&state.sessions, &token)
-        .await
-        .map_err(|_| {
-            Box::new(json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session lookup failed",
-            ))
-        })?;
-    Ok(user.map_or(nobody, |user| {
-        sc_access::principal_of(Some(&user.into_user()))
+    let session =
+        crate::session::Session::<crate::session::AdminScope>::on_admin_host(&state.sessions, jar)
+            .await
+            .map_err(|failed| Box::new(failed.into_response()))?;
+    Ok(session.map_or(nobody, |session| {
+        sc_access::principal_of(Some(&session.into_user().into_user()))
     }))
 }
 

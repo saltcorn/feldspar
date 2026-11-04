@@ -23,6 +23,13 @@
 //! an authenticator app's codes and recovery codes, asked for after a password
 //! when an account turned it on or its role requires it.
 //!
+//! **Signing in is typestate** ([`signin`](crate::PasswordVerified), security
+//! review 2026-11 §2): a session starts from a [`FullyAuthenticated`] alone —
+//! a [`PasswordVerified`] completed with a [`SecondFactorProof`] or a
+//! [`NoSecondFactorNeeded`], or a named [`SecondFactorWaiver`]. Every
+//! credential change raises the account's [`AuthEpoch`], which ends the
+//! sessions and sign-ins from before it ([`CredentialsChanged`]).
+//!
 //! Roles live in [`_fd_roles`](ROLES_TABLE) and `users.role` is a foreign key
 //! onto it (§7.1, §9): a role is a row carrying a name and role-specific
 //! settings, not a bare integer with a convention attached.
@@ -76,6 +83,7 @@ pub(crate) const INTERNAL_TABLES: sc_catalog::Unchecked<'static> = sc_catalog::U
 mod check_user;
 mod create;
 mod credits;
+mod epoch;
 mod first_user;
 mod grants;
 mod guest;
@@ -86,7 +94,9 @@ mod password;
 mod password_tokens;
 mod roles;
 mod second_factor;
+mod secret_types;
 mod session;
+mod signin;
 mod tokens;
 mod user;
 mod users;
@@ -106,6 +116,7 @@ pub use credits::{
     debit_credits, grant_credits, list_credit_buckets, list_credit_entries, revoke_credits,
     set_low_balance_threshold,
 };
+pub use epoch::{AUTH_EPOCHS_TABLE, AuthEpoch, CredentialsChanged, current_epoch};
 pub use first_user::{any_user_exists, create_first_user, first_user_token_matches};
 pub use grants::{
     COL_GRANT_CREATED_AT, COL_GRANT_EXPIRES_AT, COL_GRANT_ID, COL_GRANT_NOTE, COL_GRANT_REVOKED_AT,
@@ -121,8 +132,8 @@ pub use guest::{
 pub use login::{authenticate, authenticate_admin};
 pub use lookup::{first_user_with_role, load_base_user, load_user, load_user_by_email};
 pub use manage::{
-    UserUpdate, claim_unproven_account, delete_user, set_user_disabled, set_user_password,
-    update_user,
+    UserChanged, UserUpdate, claim_unproven_account, delete_user, set_user_disabled,
+    set_user_password, update_user,
 };
 pub use password::{
     HashScheme, RANDOM_PASSWORD_LENGTH, hash_password, is_valid_hash, random_password,
@@ -144,20 +155,27 @@ pub use roles::{
     load_role, save_role,
 };
 pub use second_factor::{
-    ATTR_REQUIRE_SECOND_FACTOR, CODE_DIGITS, Guess, GuessPermit, MAX_GUESSES, RECOVERY_CODE_COUNT,
-    RECOVERY_CODES_TABLE, SECOND_FACTOR_TABLE, STEP_SECONDS, SecondFactorNeeded,
-    SecondFactorStatus, begin_second_factor_setup, decode_secret, disable_second_factor,
+    ATTR_REQUIRE_SECOND_FACTOR, Attempt, AttemptPermit, CODE_DIGITS, MAX_GUESSES, PendingChallenge,
+    RECOVERY_CODE_COUNT, RECOVERY_CODES_TABLE, SECOND_FACTOR_TABLE, STEP_SECONDS,
+    SecondFactorEnabled, SecondFactorNeeded, SecondFactorRemoved, SecondFactorStatus,
+    SpentChallenge, begin_second_factor_setup, decode_secret, disable_second_factor,
     finish_second_factor_setup, issue_second_factor_challenge, otpauth_url, qr_svg,
-    regenerate_recovery_codes, requires_second_factor, reserve_guess, role_requires_second_factor,
-    second_factor_challenge, second_factor_enabled, second_factor_needed, second_factor_status,
-    second_factor_users, spend_second_factor_challenge, totp_at, verify_second_factor,
+    regenerate_recovery_codes, requires_second_factor, reserve_attempt,
+    role_requires_second_factor, second_factor_challenge, second_factor_enabled,
+    second_factor_needed, second_factor_status, second_factor_users, spend_second_factor_challenge,
+    totp_at, verify_second_factor,
 };
+pub use secret_types::{ChallengeToken, RecoveryCode, TotpSecret};
 pub use session::{
-    APP_TOKEN_PREFIX, CACHE_CAPACITY, CACHE_TTL_SECONDS, COL_EXPIRES_AT as COL_SESSION_EXPIRES_AT,
-    COL_TOKEN_HASH as COL_SESSION_TOKEN_HASH, COL_USER as COL_SESSION_USER, DEFAULT_TTL_HOURS,
-    SESSIONS_TABLE, SessionEnded, SessionListener, SessionScope, SessionStore,
-    changeset_session_key, changeset_token_key, create_session, delete_sessions_for_user,
-    delete_sessions_lacking_second_factor,
+    APP_TOKEN_PREFIX, CACHE_CAPACITY, CACHE_TTL_SECONDS, COL_AUTH_EPOCH as COL_SESSION_AUTH_EPOCH,
+    COL_EXPIRES_AT as COL_SESSION_EXPIRES_AT, COL_TOKEN_HASH as COL_SESSION_TOKEN_HASH,
+    COL_USER as COL_SESSION_USER, DEFAULT_TTL_HOURS, LiveSession, SESSIONS_TABLE, SessionEnded,
+    SessionListener, SessionScope, SessionStore, changeset_session_key, changeset_token_key,
+    create_session, delete_sessions_for_user, delete_sessions_lacking_second_factor,
+};
+pub use signin::{
+    FirstFactor, FullyAuthenticated, NoSecondFactorNeeded, PasswordVerified, SecondFactor,
+    SecondFactorProof, SecondFactorWaiver,
 };
 pub use tokens::{
     API_TOKENS_TABLE, ApiCaller, ApiToken, COL_CREATED_AT as COL_TOKEN_CREATED_AT,

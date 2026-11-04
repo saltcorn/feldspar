@@ -60,7 +60,8 @@ async fn phase5_auth_acceptance_walk() -> sc_error::Result<()> {
     // --- login success --------------------------------------------------------
     let user = authenticate(&catalog, "admin@example.com", "s3cret-pw")
         .await?
-        .expect("valid credentials authenticate");
+        .expect("valid credentials authenticate")
+        .into_user();
     assert_eq!(user.id(), admin.id());
     assert_eq!(user.role(), Role::ADMIN);
     assert_eq!(

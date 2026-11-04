@@ -9219,6 +9219,7 @@ dependencies = [
  "lru 0.12.5",
  "qrcode",
  "rust_decimal",
+ "sc-auth",
  "sc-catalog",
  "sc-db",
  "sc-db-postgres",

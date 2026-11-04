@@ -50,7 +50,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use sc_api::{AuthRequirement, EndpointSet, HandlerRef, SessionAction};
-use sc_auth::{AuthenticatedUser, User};
+use sc_auth::{AuthenticatedUser, CredentialsChanged, FullyAuthenticated, PasswordVerified, User};
 use sc_error::{Error, Result};
 use serde_json::Value;
 
@@ -377,12 +377,13 @@ impl HandlerResponse {
         }
     }
 
-    /// A `200 OK` response that also starts a session for `user` (login).
-    pub fn start_session(user: User, body: Value) -> HandlerResponse {
+    /// A `200 OK` response that also starts a session for `signing_in`
+    /// (login), once its second factor is dealt with.
+    pub fn start_session(signing_in: PasswordVerified, body: Value) -> HandlerResponse {
         HandlerResponse {
             body,
             status: 200,
-            session: SessionAction::Start(user),
+            session: SessionAction::Start(signing_in),
             download: None,
             serve: None,
         }
@@ -390,20 +391,25 @@ impl HandlerResponse {
 
     /// [`start_session`](HandlerResponse::start_session), honouring the
     /// sign-in's "Remember me" (`sc_api::auth::remember` of its body).
-    pub fn start_session_remembering(user: User, body: Value, remember: bool) -> HandlerResponse {
+    pub fn start_session_remembering(
+        signing_in: PasswordVerified,
+        body: Value,
+        remember: bool,
+    ) -> HandlerResponse {
         HandlerResponse {
-            session: SessionAction::start(user, remember),
+            session: SessionAction::start(signing_in, remember),
             ..HandlerResponse::ok(body)
         }
     }
 
-    /// A `200 OK` response that starts a session for `user` **without asking for
-    /// a second factor**: an admin becoming a user, or the first user of a new
-    /// installation, who has none yet.
-    pub fn start_verified_session(user: User, body: Value) -> HandlerResponse {
+    /// A `200 OK` response that starts a session for `who` **without asking
+    /// for a second factor**: one past both factors, or a named waiver — an
+    /// admin becoming a user, the first user of a new installation, who has
+    /// none yet.
+    pub fn start_verified_session(who: FullyAuthenticated, body: Value) -> HandlerResponse {
         HandlerResponse {
             session: SessionAction::StartVerified {
-                user,
+                who,
                 remember: true,
             },
             ..HandlerResponse::ok(body)
@@ -431,6 +437,24 @@ impl HandlerResponse {
             session: SessionAction::EndUser(user_id),
             download: None,
             serve: None,
+        }
+    }
+
+    /// A `200 OK` response for a change to an account's credentials
+    /// (security review 2026-11, H2.3): `changed` ends the account's sessions
+    /// on this node ([`SessionAction::CredentialsChanged`]), and a change that
+    /// was none (`None`) changes nothing about sessions. The one way a
+    /// handler hands a [`CredentialsChanged`] on.
+    pub fn credentials_changed(
+        changed: Option<CredentialsChanged>,
+        body: Value,
+    ) -> HandlerResponse {
+        HandlerResponse {
+            session: match changed {
+                Some(changed) => SessionAction::CredentialsChanged(vec![changed]),
+                None => SessionAction::Keep,
+            },
+            ..HandlerResponse::ok(body)
         }
     }
 

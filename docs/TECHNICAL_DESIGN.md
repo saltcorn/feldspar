@@ -342,7 +342,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-config` | `sc-catalog` `sc-db` `sc-error` `sc-i18n` `sc-log` `sc-query` `sc-types` |
 | `sc-email` | `sc-catalog` `sc-config` `sc-error` `sc-net` |
 | `sc-auth` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
-| `sc-llm` | `sc-catalog` `sc-config` `sc-db` `sc-error` `sc-log` `sc-query` `sc-types` |
+| `sc-llm` | `sc-catalog` `sc-config` `sc-db` `sc-error` `sc-log` `sc-net` `sc-query` `sc-types` |
 | `sc-access` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-query` `sc-types` |
 | `sc-mcp` | `sc-catalog` `sc-db` `sc-error` `sc-net` `sc-query` `sc-types` |
 | `sc-action` | `sc-access` `sc-catalog` `sc-db` `sc-email` `sc-error` `sc-expr` `sc-query` `sc-types` |
@@ -350,7 +350,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-model` | `sc-catalog` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-analytics` | `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-db-sqlite` `sc-error` `sc-model` `sc-query` `sc-types` |
 | `sc-stream` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
-| `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-types` |
+| `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-net` `sc-types` |
 | `sc-agent` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
 | `sc-api` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
@@ -362,9 +362,9 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-python` | `sc-action` `sc-action-builtins` `sc-catalog` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
 | `sc-check` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
 | `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-query` `sc-repomap` `sc-types` |
-| `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
+| `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-net` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-net` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-net` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:
 
@@ -1220,13 +1220,52 @@ pub struct User {
   The window is the freshness TTL, it closes entirely once the message bus (§16) can carry an
   eviction to every node — `SessionStore::invalidate` is the seam it will hook to — and a
   deployment that will not accept it sets the cache TTL to zero, making every lookup a read.
+- **A session names the host it was issued for, and routes name the scope they take**
+  (security review 2026-11 §2, TODO-type-hardening H2.1). The scope is in the token
+  (`SessionScope::of_token`): an admin-host session's token is 64 hex digits; an application's
+  is `app-`, the application's id (32 hex digits), `-` and the random part, hashed whole, so it
+  cannot be pointed at another application. An application token from before tokens named
+  their application (`app-` and 64 hex digits) reads as `SessionScope::AnyApp` and works where
+  it did until it expires. `sc-server/src/session.rs` is the only place a request's session is
+  read: `Session<AdminScope>` (admin host, admin-issued), `Session<AppScope>` (an application's
+  host, issued by **that** application), `Session<Visiting>` (an application's host, issued
+  elsewhere and carried there by shared sign-in — served as the user, as before), and
+  `OwnSession` (`Session<AdminScope>` or `Session<AppScope>`, whichever the host is). Routes
+  take them as axum extractors or through their `of_request`. A route that changes the account
+  — the second-factor routes — takes an `OwnSession`, so a visiting session is nobody there.
+  `router::session_user`, which ignored the scope, is gone, and a workspace test keeps raw
+  store lookups out of the rest of `sc-server`.
+- **Signing in is typestate** (H2.2). `SessionStore::start` takes a `sc_auth::FullyAuthenticated`
+  and nothing else (`login(User)` and friends exist only behind sc-auth's `testing` feature,
+  which only dev-dependencies enable — a workspace test checks it). A sign-in's first factor
+  gives a `PasswordVerified` (`authenticate`, or `PasswordVerified::by` with a named
+  `FirstFactor`: a password or verification link, sign-up, an identity provider). It is
+  completed with a `SecondFactor`: a `SecondFactorProof`, made only by a right code, or a
+  `NoSecondFactorNeeded`, made only by `second_factor_needed`. `SessionAction::Start` carries a
+  `PasswordVerified`, so `apply_session`'s second-factor decision is the only way it becomes a
+  session. The sessions started for somebody who did not sign in are named
+  `SecondFactorWaiver`s — `BecomeUser`, `FirstUser`, `AdminHandoff`, `CallApi`, `BrowserDriver`,
+  `Cli` — and a workspace test lists the files that use one.
+- **Credential changes raise an auth epoch** (H2.3). `_fd_auth_epochs` (`user_id` PK, `epoch`;
+  no row is epoch 0) goes up on a new password (set by an admin, through `update_user`, or a
+  reset link), the second factor turned on or off, the account disabled, and its role made to
+  require a second factor it lacks. The session row records the epoch it started at
+  (`_fd_sessions.auth_epoch`, nullable, `NULL` = 0, added by the bootstrap) and so does a
+  challenge (`_fd_password_tokens.auth_epoch`); `SessionStore` refuses a session from an
+  earlier epoch at its next read on any node, and `start` refuses a `PasswordVerified` checked
+  at an earlier one (a password reset while a sign-in waits for its code). The functions that
+  change a credential raise the epoch themselves and return a `#[must_use]
+  CredentialsChanged`, which `SessionStore::bump_epoch` consumes: it deletes the account's
+  other session rows, restamps the one that made the change (when it goes on), drops this
+  node's cached copies and tells the live sockets. A handler hands one on with
+  `HandlerResponse::credentials_changed` (`SessionAction::CredentialsChanged`).
 - **Device recognition** ("Google-level"): remember known devices, email the user on a
   new-device login.
 - **OAuth2 server option**: Saltcorn can act as an identity provider (`sc-auth` exposes the
   authorization-code/PKCE endpoints when enabled).
 - **Session lifetime** (`session_ttl_hours`, Settings → Authentication, default 24, 1 to 8760).
   Live: every sign-in reads it from `_fd_config` (`AppMounts::current_session_ttl`) where
-  the router starts a session (`SessionStore::login_for`). So the next sign-in after a save
+  the router starts a session (`SessionStore::start`). So the next sign-in after a save
   gets it on every node, including after a save made by another node, `feldspar config set` or
   a restore. That covers a password's, an identity provider's and an admin handoff's. A session
   already started keeps the expiry it was given.
@@ -1282,11 +1321,11 @@ pub struct User {
   Codes from an authenticator app (TOTP, RFC 6238: HMAC-SHA-1, 6 digits, 30 seconds, one step
   of drift either way), and 10 single-use recovery codes. It belongs to the **account**, not
   to an application, so the routes are the server's own, under `/_feldspar/second-factor`,
-  answering on every host as the OAuth routes do. "Signed in" there means a session issued
-  for the kind of host the request arrived on: an application's session on an application's
-  host, an admin session on the admin host. An admin session sent to an application's host
-  (shared sign-in) is nobody to these routes, so an application's script cannot change a
-  visiting admin's second factor:
+  answering on every host as the OAuth routes do. "Signed in" there means an `OwnSession`, a
+  session issued for the host the request arrived on: the application's own session on its
+  host, an admin session on the admin host. A session shared sign-in sends to an
+  application's host from the admin host or another application is nobody to these routes, so
+  an application's script cannot change a visiting account's second factor:
 
   - `GET` (signed in): `{enabled, required, recovery_codes_left}`.
   - `POST setup {token?, password?}`: a new secret, as `{secret, otpauth_url, qr_svg,
@@ -1306,10 +1345,17 @@ pub struct User {
   **Storage.** `_fd_second_factor` (`user_id` PK, the secret **sealed** with the instance key
   as a Secret field is, `enabled_at` (`NULL` while a setup waits for its first code),
   `last_step`, and the guess counter `guesses` / `guesses_since`) and `_fd_recovery_codes`
-  (SHA-256 of the account and the code). Both are made by
+  (`k1:` and the HMAC-SHA-256 of the account and the code, under a key derived from the
+  instance key). Both are made by
   the users bootstrap, are not foreign keys, and are deleted with the account. A code is
   accepted only for a time-step after `last_step`, in one conditional `UPDATE`, so a code
-  cannot be used twice. A recovery code is spent by `DELETE … RETURNING`.
+  cannot be used twice. A recovery code is spent by `DELETE … RETURNING`. Recovery codes are
+  18 symbols from a 31-letter alphabet drawn without bias (about 89 bits), shown as
+  `xxxxxx-xxxxxx-xxxxxx`. Codes made before (10 symbols, unkeyed SHA-256) are still spent once
+  under their old hash, and go when the account makes new ones. The secrets are types
+  (`sc_auth::TotpSecret`, `RecoveryCode`, `ChallengeToken`, H2.5): `Debug` redacted, no
+  `Display`, constant-time equality, read through an explicit `expose…`. Starting a setup
+  deletes only a setup still waiting for its first code, never one that is on (B6).
 
   **The challenge.** `apply_session` is where every session starts. For a
   `SessionAction::Start` by an account that has a second factor on, or whose role has
@@ -1326,9 +1372,13 @@ pub struct User {
     returns to the form's redirect, and an identity provider's `complete`, where it returns to
     `return_to`.
 
-  The answer starts the session through `apply_session` with `SessionAction::StartVerified`,
-  which is never challenged. That variant is also what `becomeUser` and the first user's
-  creation use. An identity-provider sign-in uses `Start`, so it is challenged exactly as a
+  The answer spends the challenge, which gives back the `PasswordVerified` it held (at the
+  epoch it recorded: a credential changed meanwhile ends it), completes it with the code's
+  `SecondFactorProof` and starts the session through `apply_session` with
+  `SessionAction::StartVerified`, which is never challenged. That variant also carries the
+  named waivers `becomeUser` and the first user's creation use. A sign-in that sets up the
+  second factor its role requires raises the epoch itself; the challenge may outlive exactly
+  that one change. An identity-provider sign-in uses `Start`, so it is challenged exactly as a
   password is: the provider's own second factor is not one this server can see, and accounts
   match by email. (The former setting *Ask for a two-factor code after an identity provider*,
   `second_factor_for_identity_providers`, is no longer read or shown.) Every password path is
@@ -1337,21 +1387,25 @@ pub struct User {
   whether an account has a second factor, no session is started.
 
   **Guessing.** Each code is counted against the account
-  **before** it is checked: `sc_auth::reserve_guess` takes one of 5 guesses per 15 minutes in a
+  **before** it is checked: `sc_auth::reserve_attempt` takes one of 5 guesses per 15 minutes in a
   single conditional `UPDATE` of the account's `_fd_second_factor` row, so concurrent requests
-  cannot all be checked before one is counted, and every node shares the budget. A right code
-  gives its guess back (`GuessPermit::succeeded`). Over the budget the answer is `429` with
-  `Retry-After`. Each code also counts against the login budget per IP.
+  cannot all be checked before one is counted, and every node shares the budget. The
+  `#[must_use] AttemptPermit` it returns is an argument, by value, of every check of a code
+  (`verify_second_factor`, `finish_second_factor_setup`), which settles it: a right code gives
+  its guess back (H2.4). Over the budget the answer is `429` with `Retry-After`. Each code
+  also counts against the login budget per IP. Replacing the recovery codes takes the
+  `SecondFactorProof` of a right code.
 
   **Credential changes end sessions.** A new password (`set_user_password`, `update_user` with
   one, a reset link), disabling an account, and a role change to one that requires a second
-  factor the account lacks delete the account's session rows in `sc_auth::manage`, whoever
-  calls it; a new password also deletes its outstanding reset links and challenges. Making a
-  role require a second factor ends the sessions of its accounts that have none on
-  (`delete_sessions_lacking_second_factor`), except the admin making the change. Turning the
-  second factor on or off ends the account's other sessions and keeps the one that did it
-  (`SessionStore::end_other_sessions`). A server handler also ends them through the store, which
-  evicts this node's cache and closes live sockets; another node's cache lives out its 60 s.
+  factor the account lacks raise the account's auth epoch (above) and delete its session rows
+  in `sc_auth::manage`, whoever calls it; a new password also deletes its outstanding reset
+  links and challenges. Making a role require a second factor ends the sessions of its
+  accounts that have none on (`delete_sessions_lacking_second_factor`), except the admin
+  making the change. Turning the second factor on or off ends the account's other sessions and
+  keeps the one that did it (`SessionStore::bump_epoch` with the session to keep). A server
+  handler hands the `CredentialsChanged` to the store, which evicts this node's cache and
+  closes live sockets; another node refuses the old sessions at its next read of them.
 
   **Applications made before it.** A build regenerates only an application's `src/feldspar/`
   runtime, never its own `Login.tsx`, so the generated client covers pages that know nothing of
@@ -2371,6 +2425,7 @@ erDiagram
     text token_hash PK "SHA-256 of the cookie token"
     uuid user_id "deliberately NOT a foreign key"
     timestamp expires_at
+    int auth_epoch "the account's epoch at sign-in; null = 0"
   }
   GUESTSESSIONS["_fd_guest_sessions"] {
     text token_hash PK "SHA-256 of the guest cookie token"
@@ -2395,6 +2450,7 @@ erDiagram
     text purpose "invite | reset | verify | second_factor | second_factor_session"
     timestamp created_at
     timestamp expires_at "7 days for an invitation, 1 hour for a reset"
+    int auth_epoch "a challenge's: the account's epoch at its password"
   }
   SECONDFACTOR["_fd_second_factor"] {
     uuid user_id PK "deliberately NOT a foreign key"
@@ -2404,9 +2460,13 @@ erDiagram
     timestamp created_at
   }
   RECOVERYCODES["_fd_recovery_codes"] {
-    text code_hash PK "a recovery code, hashed"
+    text code_hash PK "k1: + HMAC of the account and the code"
     uuid user_id "deliberately NOT a foreign key"
     timestamp created_at
+  }
+  AUTHEPOCHS["_fd_auth_epochs"] {
+    uuid user_id PK "deliberately NOT a foreign key"
+    int epoch "raised by every credential change; no row = 0"
   }
   TABLES["_fd_tables"] {
     uuid id PK
@@ -2872,6 +2932,7 @@ erDiagram
   USERS ||--o{ PASSWORDTOKENS : "user_id -- by value"
   USERS ||--o| SECONDFACTOR : "user_id -- by value"
   USERS ||--o{ RECOVERYCODES : "user_id -- by value"
+  USERS ||--o| AUTHEPOCHS : "user_id -- by value"
   USERS |o--o{ RUNS : "user_id -- by value, nullable"
   TABLES ||--o{ FIELDS : "table_name -- same subject, joined by name"
   TABLES ||--o| TABLEEDITS : "name -- by name, bookkeeping"

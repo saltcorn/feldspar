@@ -58,8 +58,9 @@ use sha2::{Digest, Sha256};
 
 use crate::router::{
     AppState, Resolved, SessionClient, apply_session, log_failure, parse_query, refuse_sign_in,
-    resolve_app, served_request_host, session_user,
+    resolve_app, served_request_host,
 };
+use crate::session::HostSession;
 
 /// Where every route of the flow lives.
 pub const OAUTH_PREFIX: &str = "/_feldspar/oauth";
@@ -429,11 +430,13 @@ pub(crate) async fn consent(
     let return_to = flow.return_to.clone();
     // The one who asked, and nobody else: a link to this flow sent to somebody
     // else must not connect *their* account to the asker's row.
-    let user = match session_user(&state, &jar).await {
-        Ok(user) => user,
-        Err(response) => return *response,
+    // Whoever the host the consent page is on reads the session as: the
+    // admin host's own, or the user an application serves.
+    let session = match HostSession::of_request(&state, &headers, &jar).await {
+        Ok(session) => session,
+        Err(failed) => return failed.into_response(),
     };
-    if user.is_none_or(|u| u.id().to_string() != flow.user) {
+    if session.is_none_or(|s| s.user().id().to_string() != flow.user) {
         return Redirect::to(&with_error(
             &return_to,
             "sign in as the user who asked to connect this account",
@@ -775,11 +778,10 @@ async fn account_for(
         let claimed = sc_auth::claim_unproven_account(catalog, user)
             .await
             .map_err(failed)?;
-        sessions
-            .end_user_sessions(claimed.id())
-            .await
-            .map_err(failed)?;
-        return Ok(claimed);
+        if let Some(changed) = claimed.credentials {
+            sessions.bump_epoch(changed, None).await.map_err(failed)?;
+        }
+        return Ok(claimed.user);
     }
     Ok(user)
 }
@@ -853,7 +855,35 @@ pub(crate) async fn complete(
     // `apply_session`. A provider's own second factor is not one this server
     // can see, and the account is matched by email, which the provider's
     // directory decides (security review 2026-11, #10).
-    let session = SessionAction::Start(user);
+    let signing_in = match state.apps.catalog() {
+        Some(catalog) => {
+            match sc_auth::PasswordVerified::by(
+                catalog,
+                user,
+                sc_auth::FirstFactor::IdentityProvider,
+            )
+            .await
+            {
+                Ok(signing_in) => signing_in,
+                Err(e) => {
+                    log_failure("could not finish an identity provider's sign-in", &e);
+                    return Redirect::to(&with_error(
+                        &completion.return_to,
+                        "the sign-in could not be completed",
+                    ))
+                    .into_response();
+                }
+            }
+        }
+        None => {
+            return Redirect::to(&with_error(
+                &completion.return_to,
+                "this server has no database",
+            ))
+            .into_response();
+        }
+    };
+    let session = SessionAction::Start(signing_in);
     let client = client.returning_to(completion.return_to.clone());
     let cookies = match apply_session(&state, jar, session_token, client, session).await {
         Ok(cookies) => cookies,

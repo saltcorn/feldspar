@@ -248,8 +248,10 @@ pub(crate) async fn verify_email(req: &ApiRequest, cat: &Catalog) -> Result<ApiR
     match redeem_email_verification(cat, token).await? {
         Some(user) => {
             let summary = user_summary_json(&user);
+            let signing_in =
+                sc_auth::PasswordVerified::by(cat, user, sc_auth::FirstFactor::EmailLink).await?;
             Ok(ApiResponse::start_session_remembering(
-                user,
+                signing_in,
                 summary,
                 crate::auth::remember(&req.body),
             ))

@@ -10,9 +10,10 @@
 //!   one constructor ([`AdminSession::of_request`], also its axum
 //!   [`FromRequestParts`] impl) checks all of it: the request is on the admin
 //!   host (not an application's, not a preview's), it carries a live session,
-//!   the session was **issued on the admin host** ([`SessionScope`], security
-//!   review #15's open item), and the user is an administrator. A route that
-//!   takes one cannot be reached otherwise.
+//!   the session was **issued on the admin host** (a
+//!   [`Session<AdminScope>`](crate::session::Session), security review #15's
+//!   open item), and the user is an administrator. A route that takes one
+//!   cannot be reached otherwise.
 //! - [`Admin`] is what an admin endpoint's handler is handed: an
 //!   [`AdminSession`], or the in-process admin tool layers (the MCP server's
 //!   endpoint tools and the catalog's admin host), which have run their own
@@ -38,12 +39,12 @@ use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
 use sc_api::AuthRequirement;
-use sc_auth::{AuthenticatedUser, SessionEnded, SessionListener, SessionScope, SessionStore, User};
+use sc_auth::{AuthenticatedUser, SessionEnded, SessionListener, SessionStore, User};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-use crate::router::{AppState, Resolved, enforce_auth, json_error, log_failure, resolve_app};
-use crate::security::SESSION_COOKIE;
+use crate::router::{AppState, Resolved, enforce_auth, json_error, resolve_app};
+use crate::session::{AdminScope, LookupFailed, Session};
 
 /// A request's admin session: on the admin host, live, issued on the admin
 /// host, and an administrator's (module docs). Constructed only by
@@ -82,6 +83,21 @@ impl AdminRefusal {
     /// sign-in rather than shown the refusal.
     pub(crate) fn is_anonymous(&self) -> bool {
         matches!(self, AdminRefusal::Anonymous)
+    }
+}
+
+impl From<LookupFailed> for AdminRefusal {
+    fn from(_: LookupFailed) -> AdminRefusal {
+        AdminRefusal::Failed
+    }
+}
+
+impl From<Session<AdminScope>> for AdminSession {
+    fn from(session: Session<AdminScope>) -> AdminSession {
+        AdminSession {
+            token: session.token().to_owned(),
+            user: session.into_user(),
+        }
     }
 }
 
@@ -130,19 +146,18 @@ impl AdminSession {
             Resolved::Admin => {}
             Resolved::App(_) | Resolved::HiddenPreview => return Err(AdminRefusal::NotHere),
         }
-        let Some(token) = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) else {
-            return Err(AdminRefusal::Anonymous);
-        };
-        match admin_host_session(&state.sessions, &token).await? {
-            Some(user) if user.is_admin() => Ok(AdminSession { user, token }),
-            Some(user) => Err(AdminRefusal::NotAdmin(Box::new(user.into_user()))),
+        match Session::<AdminScope>::on_admin_host(&state.sessions, jar).await? {
+            Some(session) if session.user().is_admin() => Ok(AdminSession::from(session)),
+            Some(session) => Err(AdminRefusal::NotAdmin(Box::new(
+                session.into_user().into_user(),
+            ))),
             None => Err(AdminRefusal::Anonymous),
         }
     }
 
     /// The session as it is now: still this administrator's, or lost.
     pub(crate) async fn revalidate(&self, sessions: &SessionStore) -> Revalidated {
-        match sessions.user_for(&self.token).await {
+        match crate::session::revalidate(sessions, &self.token).await {
             Ok(Some(user)) if user.id() == self.user.id() && user.is_admin() => {
                 Revalidated::Admin(AdminSession {
                     user,
@@ -192,8 +207,11 @@ impl AdminSession {
     pub(crate) async fn signed_in(sessions: &SessionStore) -> AdminSession {
         let admin = User::new(Uuid::new_v4(), sc_types::Role::ADMIN);
         let token = sessions.login(admin).await.unwrap();
-        let user = sessions.user_for(&token).await.unwrap().unwrap();
-        AdminSession { user, token }
+        Session::<AdminScope>::of_token(sessions, token)
+            .await
+            .unwrap()
+            .map(AdminSession::from)
+            .unwrap()
     }
 }
 
@@ -209,22 +227,6 @@ impl FromRequestParts<AppState> for AdminSession {
             .await
             .map_err(IntoResponse::into_response)
     }
-}
-
-/// The user an admin-host session token names, or `None` when it names
-/// nobody **or was issued on an application's host**: on the admin host an
-/// application's session is not a session (security review #15).
-pub(crate) async fn admin_host_session(
-    sessions: &SessionStore,
-    token: &str,
-) -> Result<Option<AuthenticatedUser>, AdminRefusal> {
-    if SessionScope::of_token(token) != SessionScope::Admin {
-        return Ok(None);
-    }
-    sessions.user_for(token).await.map_err(|e| {
-        log_failure("session lookup failed", &e);
-        AdminRefusal::Failed
-    })
 }
 
 /// What a re-read of an admin session found.
@@ -409,17 +411,14 @@ impl Caller {
         state: &AppState,
         jar: &CookieJar,
     ) -> Result<Caller, Box<Response>> {
-        let Some(token) = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) else {
-            return Ok(Caller::Anonymous);
-        };
-        let user = admin_host_session(&state.sessions, &token)
+        let session = Session::<AdminScope>::on_admin_host(&state.sessions, jar)
             .await
-            .map_err(|refusal| Box::new(refusal.into_response()))?;
-        Ok(match user {
-            Some(user) if user.is_admin() => {
-                Caller::Admin(Admin::from(AdminSession { user, token }))
+            .map_err(|failed| Box::new(failed.into_response()))?;
+        Ok(match session {
+            Some(session) if session.user().is_admin() => {
+                Caller::Admin(Admin::from(AdminSession::from(session)))
             }
-            Some(user) => Caller::User(user),
+            Some(session) => Caller::User(session.into_user()),
             None => Caller::Anonymous,
         })
     }

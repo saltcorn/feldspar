@@ -214,7 +214,7 @@ async fn a_token_is_no_stronger_than_the_account_it_names() -> Result<()> {
     let demoted = admin(&f.catalog, "demoted@example.com").await?;
     let theirs = mint_api_token(&f.catalog, new_token(&demoted, "demoted")).await?;
     authenticate_api_token(&f.catalog, &theirs.secret).await?;
-    update_user(
+    let _changed = update_user(
         &f.catalog,
         demoted.id(),
         UserUpdate {
@@ -231,7 +231,7 @@ async fn a_token_is_no_stronger_than_the_account_it_names() -> Result<()> {
     // Disabled.
     let disabled = admin(&f.catalog, "disabled@example.com").await?;
     let theirs = mint_api_token(&f.catalog, new_token(&disabled, "disabled")).await?;
-    set_user_disabled(&f.catalog, disabled.id(), true).await?;
+    let _changed = set_user_disabled(&f.catalog, disabled.id(), true).await?;
     let err = authenticate_api_token(&f.catalog, &theirs.secret)
         .await
         .expect_err("a disabled account's token is not a credential");

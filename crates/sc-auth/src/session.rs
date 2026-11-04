@@ -82,13 +82,18 @@
 //! # The host scope a session was issued for
 //!
 //! A session is minted either for the **admin host** — the admin UI's sign-in,
-//! the admin handoff, `feldspar auth token` — or for an **application's**
-//! host: an application's own sign-in, a checklist's browser, `call_api`. The
-//! scope is part of the token itself ([`SessionScope::of_token`]): an
-//! application session's token starts with [`APP_TOKEN_PREFIX`], an admin
-//! session's is the plain 64 hex digits every token was before scopes existed.
-//! The token is hashed whole, so the prefix cannot be added or removed without
-//! making a token nobody issued, and nothing is added to the table.
+//! the admin handoff, `feldspar auth token` — or for **one application's**
+//! host: that application's own sign-in, a checklist's browser, `call_api`.
+//! The scope is part of the token itself ([`SessionScope::of_token`]): an
+//! application session's token is [`APP_TOKEN_PREFIX`], the application's id
+//! (32 hex digits), `-` and the random part; an admin session's is the plain
+//! 64 hex digits every token was before scopes existed. The token is hashed
+//! whole, so the prefix cannot be added, removed or pointed at another
+//! application without making a token nobody issued, and nothing is added to
+//! the table. An application token from before tokens named their application
+//! (`app-` and 64 hex digits) is [`SessionScope::AnyApp`]: it goes on working
+//! where it did until it expires, but is never a session *issued by* the
+//! application it is presented to (security review 2026-11, §2).
 //!
 //! The server refuses an application session admin authority on the admin
 //! host: with shared sign-in, or an admin signed in to an application, the
@@ -112,12 +117,16 @@ use lru::LruCache;
 use sc_catalog::{Catalog, DataField, Table};
 use sc_db::Row;
 use sc_error::{Error, Result};
-use sc_query::{BinOp, Delete, Expr, Insert, Projection, Select, Source, Statement, Value};
+use sc_query::{
+    Assignment, BinOp, Delete, Expr, Insert, Projection, Select, Source, Statement, Update, Value,
+};
 use sc_types::{BasicType, TypeRef};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::epoch::{AuthEpoch, CredentialsChanged, current_epoch};
 use crate::lookup::load_user_until;
+use crate::signin::FullyAuthenticated;
 use crate::user::{AuthenticatedUser, User};
 
 /// What an application-scoped session token starts with (module docs, "The host
@@ -128,11 +137,14 @@ pub const APP_TOKEN_PREFIX: &str = "app-";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionScope {
     /// Issued on the admin host (or by `feldspar auth token`). Such a session
-    /// also works on an application's host, as it always has.
+    /// also works on an application's host, as it always has (shared sign-in).
     Admin,
-    /// Issued on an application's host. Never admin authority on the admin
-    /// host, whatever the user's role.
-    App,
+    /// Issued on the host of the application with this id. Never admin
+    /// authority on the admin host, whatever the user's role.
+    App(Uuid),
+    /// Issued on an application's host before tokens named their application
+    /// (module docs). Never minted now.
+    AnyApp,
 }
 
 impl SessionScope {
@@ -140,12 +152,31 @@ impl SessionScope {
     /// prefix — including every token minted before scopes existed — is an
     /// admin-host one.
     pub fn of_token(token: &str) -> SessionScope {
-        if token.starts_with(APP_TOKEN_PREFIX) {
-            SessionScope::App
-        } else {
-            SessionScope::Admin
+        let Some(rest) = token.strip_prefix(APP_TOKEN_PREFIX) else {
+            return SessionScope::Admin;
+        };
+        match rest.split_once('-') {
+            Some((app, random)) if app.len() == 32 && random.len() == 64 => {
+                Uuid::try_parse(app).map_or(SessionScope::AnyApp, SessionScope::App)
+            }
+            _ => SessionScope::AnyApp,
         }
     }
+
+    /// Whether this is an application's session (of whichever application).
+    pub fn is_app(self) -> bool {
+        !matches!(self, SessionScope::Admin)
+    }
+}
+
+/// A session a token names, as [`SessionStore::session`] finds it: who it is,
+/// and the host it was issued for.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveSession {
+    /// The signed-in user, at their effective role.
+    pub user: AuthenticatedUser,
+    /// Where the session was issued ([`SessionScope::of_token`]).
+    pub scope: SessionScope,
 }
 
 /// Default session lifetime: one day.
@@ -172,6 +203,11 @@ pub const COL_TOKEN_HASH: &str = "token_hash";
 pub const COL_USER: &str = "user_id";
 /// When the session lapses.
 pub const COL_EXPIRES_AT: &str = "expires_at";
+/// The account's [`AuthEpoch`] when the session started (security review
+/// 2026-11, H2.3): a session from an earlier epoch is nobody's. Nullable, so
+/// the bootstrap adds it to an existing table, and `NULL` — a session from
+/// before epochs — reads as the initial epoch.
+pub const COL_AUTH_EPOCH: &str = "auth_epoch";
 
 /// How often a process sweeps lapsed rows, at most.
 const SWEEP_INTERVAL_SECONDS: i64 = 60;
@@ -200,6 +236,7 @@ fn session_fields() -> Vec<DataField> {
             .primary_key(),
         DataField::plain(COL_USER, uuid()).required(),
         DataField::plain(COL_EXPIRES_AT, timestamp()).required(),
+        DataField::plain(COL_AUTH_EPOCH, TypeRef::Basic(BasicType::Int)),
     ]
 }
 
@@ -210,8 +247,12 @@ fn session_fields() -> Vec<DataField> {
 /// every other bootstrap — including across the truncation an unclean shutdown
 /// does to an unlogged table, which empties it without dropping it.
 pub(crate) async fn bootstrap_sessions(catalog: &Catalog) -> Result<Table> {
-    if let Some(existing) = catalog.get(SESSIONS_TABLE)? {
-        return Ok(existing);
+    if catalog.get(SESSIONS_TABLE)?.is_some() {
+        // Additively reconciled: a column added since (`auth_epoch`) is
+        // created; the table stays unlogged.
+        return catalog
+            .bootstrap_table(SESSIONS_TABLE, &session_fields())
+            .await;
     }
     catalog
         .create_unlogged_table(SESSIONS_TABLE, &session_fields())
@@ -230,12 +271,45 @@ pub(crate) async fn bootstrap_sessions(catalog: &Catalog) -> Result<Table> {
 /// any of them — it is the same authority, spelled once instead of twice.
 ///
 /// The session it makes is an ordinary one: it does exactly what that user's
-/// account does, and expires like any other.
-pub async fn create_session(catalog: &Catalog, user_id: Uuid, ttl: Duration) -> Result<String> {
-    let token = new_token(SessionScope::Admin);
+/// account does, and expires like any other. It starts from a
+/// [`FullyAuthenticated`] like every other session (`feldspar auth token`'s is
+/// [`SecondFactorWaiver::Cli`](crate::SecondFactorWaiver::Cli)).
+pub async fn create_session(
+    catalog: &Catalog,
+    who: FullyAuthenticated,
+    ttl: Duration,
+) -> Result<String> {
+    let epoch = epoch_to_start_at(catalog, &who).await?;
+    let token = new_token(SessionScope::Admin)?;
     let expires_at = Utc::now() + ttl;
-    insert_session(catalog, &token_hash(&token), user_id, expires_at).await?;
+    insert_session(
+        catalog,
+        &token_hash(&token),
+        who.user().id(),
+        expires_at,
+        epoch,
+    )
+    .await?;
     Ok(token)
+}
+
+/// The epoch a session for `who` starts at: the account's now, which must be
+/// the one its sign-in was checked at (a credential changed since refuses it).
+async fn epoch_to_start_at(catalog: &Catalog, who: &FullyAuthenticated) -> Result<AuthEpoch> {
+    let now = current_epoch(catalog, who.user().id()).await?;
+    refuse_stale(who, now)?;
+    Ok(now)
+}
+
+/// Refuse to start a session from a sign-in checked before the account's
+/// credentials last changed.
+fn refuse_stale(who: &FullyAuthenticated, now: AuthEpoch) -> Result<()> {
+    match who.epoch() {
+        Some(checked) if checked != now => Err(Error::auth(
+            "this account's sign-in details changed while it was signing in; sign in again",
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// One cached session: who it is, when the session lapses, and how long this
@@ -251,13 +325,30 @@ struct Cached {
 struct Entry {
     user: User,
     expires_at: DateTime<Utc>,
+    epoch: AuthEpoch,
+}
+
+/// The in-memory backend's sessions, and the epochs its bumps raised.
+#[derive(Default)]
+struct MemorySessions {
+    entries: std::collections::HashMap<String, Entry>,
+    epochs: std::collections::HashMap<Uuid, AuthEpoch>,
+}
+
+impl MemorySessions {
+    fn epoch_of(&self, user: Uuid) -> AuthEpoch {
+        self.epochs
+            .get(&user)
+            .copied()
+            .unwrap_or(AuthEpoch::INITIAL)
+    }
 }
 
 /// Where sessions actually live.
 enum Backend {
     /// A plain map in this process — no database, no sharing (see the module
     /// docs: a test seam).
-    Memory(RwLock<std::collections::HashMap<String, Entry>>),
+    Memory(RwLock<MemorySessions>),
     /// Rows in [`_fd_sessions`](SESSIONS_TABLE), shared by every node.
     Database {
         catalog: Arc<Catalog>,
@@ -342,7 +433,7 @@ impl SessionStore {
         SessionStore {
             ttl,
             cache_ttl: Duration::seconds(CACHE_TTL_SECONDS),
-            backend: Backend::Memory(RwLock::new(std::collections::HashMap::new())),
+            backend: Backend::Memory(RwLock::new(MemorySessions::default())),
             cache: new_cache(CACHE_CAPACITY),
             listeners: RwLock::new(Vec::new()),
         }
@@ -418,47 +509,44 @@ impl SessionStore {
         self.ttl
     }
 
-    /// Start a session for `user` on the admin host and return its token (to
-    /// be set as a cookie).
-    pub async fn login(&self, user: User) -> Result<String> {
-        self.login_scoped(user, self.ttl, SessionScope::Admin).await
-    }
-
-    /// Start a session for `user` on `scope`'s host, with the store's own
-    /// lifetime.
-    pub async fn login_in(&self, user: User, scope: SessionScope) -> Result<String> {
-        self.login_scoped(user, self.ttl, scope).await
-    }
-
-    /// Start an admin-host session for `user` that lasts `ttl` rather than the
-    /// store's own lifetime: what the server does with the stored Settings →
-    /// Authentication → Session lifetime, which can change while it runs.
-    pub async fn login_for(&self, user: User, ttl: Duration) -> Result<String> {
-        self.login_scoped(user, ttl, SessionScope::Admin).await
-    }
-
-    /// Start a session for `user` on `scope`'s host that lasts `ttl` (module
-    /// docs, "The host scope a session was issued for").
-    pub async fn login_scoped(
+    /// Start a session for `who` on `scope`'s host that lasts `ttl`, and
+    /// return its token (to be set as a cookie) — the one way a session is
+    /// started (module docs of [`crate::signin`]).
+    ///
+    /// Refused when `who` was signed in at an earlier [`AuthEpoch`] than the
+    /// account is at now (by the database-backed store, which can read it),
+    /// and for [`SessionScope::AnyApp`], which is never minted.
+    pub async fn start(
         &self,
-        user: User,
+        who: FullyAuthenticated,
         ttl: Duration,
         scope: SessionScope,
     ) -> Result<String> {
-        let token = new_token(scope);
+        let token = new_token(scope)?;
         let expires_at = Utc::now() + ttl;
         match &self.backend {
-            Backend::Memory(entries) => {
-                entries
-                    .write()
-                    .map_err(|_| poisoned())?
-                    .insert(token.clone(), Entry { user, expires_at });
+            Backend::Memory(sessions) => {
+                // No database here, so no epoch to hold the sign-in to: the
+                // map's own epochs only count the bumps this store was given
+                // (a test seam, module docs).
+                let mut sessions = sessions.write().map_err(|_| poisoned())?;
+                let epoch = sessions.epoch_of(who.user().id());
+                sessions.entries.insert(
+                    token.clone(),
+                    Entry {
+                        user: who.into_user(),
+                        expires_at,
+                        epoch,
+                    },
+                );
             }
             Backend::Database {
                 catalog,
                 last_sweep,
             } => {
-                insert_session(catalog, &token_hash(&token), user.id(), expires_at).await?;
+                let epoch = epoch_to_start_at(catalog, &who).await?;
+                let user = who.into_user();
+                insert_session(catalog, &token_hash(&token), user.id(), expires_at, epoch).await?;
                 // Housekeeping rides along with the one write sessions do, but
                 // at most once a minute: a login is common and a full-table
                 // delete is not free.
@@ -480,6 +568,38 @@ impl SessionStore {
         Ok(token)
     }
 
+    /// A test's session for `user` on the admin host. Only with the
+    /// `testing` feature: a server starts a session from a
+    /// [`FullyAuthenticated`].
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn login(&self, user: User) -> Result<String> {
+        self.login_scoped(user, self.ttl, SessionScope::Admin).await
+    }
+
+    /// A test's session for `user` on `scope`'s host.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn login_in(&self, user: User, scope: SessionScope) -> Result<String> {
+        self.login_scoped(user, self.ttl, scope).await
+    }
+
+    /// A test's admin-host session for `user` lasting `ttl`.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn login_for(&self, user: User, ttl: Duration) -> Result<String> {
+        self.login_scoped(user, ttl, SessionScope::Admin).await
+    }
+
+    /// A test's session for `user` on `scope`'s host lasting `ttl`.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn login_scoped(
+        &self,
+        user: User,
+        ttl: Duration,
+        scope: SessionScope,
+    ) -> Result<String> {
+        let who = FullyAuthenticated::waived(user, crate::SecondFactorWaiver::Test);
+        self.start(who, ttl, scope).await
+    }
+
     /// The user for a session token, if the token is known and unexpired. An
     /// expired token is treated as absent (and eagerly purged).
     ///
@@ -490,24 +610,42 @@ impl SessionStore {
         Ok(self.resolve(token).await?.map(AuthenticatedUser::verified))
     }
 
+    /// The session `token` names — who, and the host it was issued for — if
+    /// it is known, unexpired and of the account's current epoch. What a
+    /// server reads a request's session with, and then holds to the host the
+    /// request arrived on.
+    pub async fn session(&self, token: &str) -> Result<Option<LiveSession>> {
+        Ok(self.user_for(token).await?.map(|user| LiveSession {
+            user,
+            scope: SessionScope::of_token(token),
+        }))
+    }
+
     /// [`user_for`](SessionStore::user_for)'s lookup, before the proof is
     /// attached.
     async fn resolve(&self, token: &str) -> Result<Option<User>> {
         let now = Utc::now();
         match &self.backend {
-            Backend::Memory(entries) => {
+            Backend::Memory(sessions) => {
                 // Fast path: a valid session under a read lock.
                 {
-                    let guard = entries.read().map_err(|_| poisoned())?;
-                    match guard.get(token) {
+                    let guard = sessions.read().map_err(|_| poisoned())?;
+                    match guard.entries.get(token) {
                         None => return Ok(None),
-                        Some(entry) if entry.expires_at > now => {
+                        Some(entry)
+                            if entry.expires_at > now
+                                && entry.epoch == guard.epoch_of(entry.user.id()) =>
+                        {
                             return Ok(Some(entry.user.clone()));
                         }
-                        Some(_) => {} // expired — fall through to purge
+                        Some(_) => {} // expired or stale — fall through to purge
                     }
                 }
-                entries.write().map_err(|_| poisoned())?.remove(token);
+                sessions
+                    .write()
+                    .map_err(|_| poisoned())?
+                    .entries
+                    .remove(token);
                 Ok(None)
             }
             Backend::Database { catalog, .. } => {
@@ -526,7 +664,7 @@ impl SessionStore {
                     }
                 }
 
-                let Some((user_id, expires_at)) =
+                let Some((user_id, expires_at, epoch)) =
                     select_session(catalog, &token_hash(token)).await?
                 else {
                     // Deliberately not cached — see the module docs.
@@ -535,6 +673,16 @@ impl SessionStore {
                 };
                 if expires_at <= now {
                     delete_session(catalog, &token_hash(token)).await?;
+                    self.invalidate(token)?;
+                    return Ok(None);
+                }
+                // A session from before the account's last credential change
+                // ended with it (crate::epoch), on whichever node it was
+                // started. Refused, not deleted: the one session a change
+                // keeps is restamped a moment after the epoch goes up, and a
+                // request of its own in between must not delete it
+                // (`bump_epoch` deletes the others, the sweep the rest).
+                if epoch != current_epoch(catalog, user_id).await? {
                     self.invalidate(token)?;
                     return Ok(None);
                 }
@@ -562,9 +710,10 @@ impl SessionStore {
     /// node's cache entry lives out its freshness TTL (module docs).
     pub async fn logout(&self, token: &str) -> Result<bool> {
         let ended = match &self.backend {
-            Backend::Memory(entries) => entries
+            Backend::Memory(sessions) => sessions
                 .write()
                 .map_err(|_| poisoned())?
+                .entries
                 .remove(token)
                 .is_some(),
             Backend::Database { catalog, .. } => {
@@ -597,11 +746,11 @@ impl SessionStore {
     /// the listeners are told.
     async fn end_user_rows(&self, user_id: Uuid) -> Result<usize> {
         match &self.backend {
-            Backend::Memory(entries) => {
-                let mut guard = entries.write().map_err(|_| poisoned())?;
-                let before = guard.len();
-                guard.retain(|_, e| e.user.id() != user_id);
-                Ok(before - guard.len())
+            Backend::Memory(sessions) => {
+                let mut guard = sessions.write().map_err(|_| poisoned())?;
+                let before = guard.entries.len();
+                guard.entries.retain(|_, e| e.user.id() != user_id);
+                Ok(before - guard.entries.len())
             }
             Backend::Database { catalog, .. } => {
                 // The cache is keyed by token, so the tokens to forget are found
@@ -630,11 +779,13 @@ impl SessionStore {
     /// change goes on (security review 2026-11, #11).
     pub async fn end_other_sessions(&self, user_id: Uuid, keep: &str) -> Result<usize> {
         let ended = match &self.backend {
-            Backend::Memory(entries) => {
-                let mut guard = entries.write().map_err(|_| poisoned())?;
-                let before = guard.len();
-                guard.retain(|token, e| e.user.id() != user_id || token == keep);
-                before - guard.len()
+            Backend::Memory(sessions) => {
+                let mut guard = sessions.write().map_err(|_| poisoned())?;
+                let before = guard.entries.len();
+                guard
+                    .entries
+                    .retain(|token, e| e.user.id() != user_id || token == keep);
+                before - guard.entries.len()
             }
             Backend::Database { catalog, .. } => {
                 let stale: Vec<String> = {
@@ -668,13 +819,95 @@ impl SessionStore {
         Ok(ended)
     }
 
+    /// Apply a credential change ([`CredentialsChanged`]): end every session
+    /// of the account from before it, but the one with token `keep` — the
+    /// session that made the change, which goes on at the new epoch. Its row
+    /// is restamped, the others go, this node's cached copies are dropped and
+    /// the live sockets holding one are told. Returns how many sessions ended.
+    ///
+    /// The epoch is already raised in the database, so another node refuses
+    /// an older session at its next read of it; a cached copy there lives out
+    /// its freshness ([`CACHE_TTL_SECONDS`]), as after a logout.
+    pub async fn bump_epoch(
+        &self,
+        changed: CredentialsChanged,
+        keep: Option<&str>,
+    ) -> Result<usize> {
+        let (user_id, epoch) = changed.into_parts();
+        let ended = match &self.backend {
+            Backend::Memory(sessions) => {
+                let mut guard = sessions.write().map_err(|_| poisoned())?;
+                let raised = guard.epoch_of(user_id).next().max(epoch);
+                guard.epochs.insert(user_id, raised);
+                let before = guard.entries.len();
+                guard
+                    .entries
+                    .retain(|token, e| e.user.id() != user_id || Some(token.as_str()) == keep);
+                if let Some(entry) = keep.and_then(|keep| guard.entries.get_mut(keep)) {
+                    entry.epoch = raised;
+                }
+                before - guard.entries.len()
+            }
+            Backend::Database { catalog, .. } => {
+                let mine = || Expr::col(COL_USER).eq(Expr::lit(user_id));
+                let mut others = mine();
+                if let Some(keep) = keep {
+                    let update = Update {
+                        table: SESSIONS_TABLE.to_owned(),
+                        assignments: vec![Assignment::new(
+                            COL_AUTH_EPOCH,
+                            Expr::lit(epoch.value()),
+                        )],
+                        filter: Some(
+                            mine().and(Expr::col(COL_TOKEN_HASH).eq(Expr::lit(token_hash(keep)))),
+                        ),
+                        returning: Vec::new(),
+                    };
+                    run(catalog, Statement::from(update)).await?;
+                    others = others.and(Expr::binary(
+                        BinOp::Ne,
+                        Expr::col(COL_TOKEN_HASH),
+                        Expr::lit(token_hash(keep)),
+                    ));
+                }
+                let delete = Delete {
+                    returning: vec![Projection::expr(Expr::col(COL_TOKEN_HASH))],
+                    ..Delete::from(SESSIONS_TABLE).filter(others)
+                };
+                let ended = rows(catalog, Statement::from(delete)).await?.len();
+                // Last, so a request that re-reads finds the rows as they now
+                // are: the kept one restamped, the others gone.
+                let cached: Vec<String> = {
+                    let cache = self.cache.lock().map_err(|_| poisoned())?;
+                    cache
+                        .iter()
+                        .filter(|(_, cached)| cached.user.id() == user_id)
+                        .map(|(token, _)| token.clone())
+                        .collect()
+                };
+                for token in &cached {
+                    self.invalidate(token)?;
+                }
+                ended
+            }
+        };
+        self.ended(match keep {
+            Some(keep) => SessionEnded::UserExcept {
+                user: user_id,
+                keep,
+            },
+            None => SessionEnded::User(user_id),
+        });
+        Ok(ended)
+    }
+
     /// End every session there is: the rows (or the in-memory map) and this
     /// node's cached copies. What Clear all does once it has deleted every
     /// account, so a session resolved a moment before cannot outlive its user.
     pub async fn end_all_sessions(&self) -> Result<()> {
         match &self.backend {
-            Backend::Memory(entries) => {
-                entries.write().map_err(|_| poisoned())?.clear();
+            Backend::Memory(sessions) => {
+                sessions.write().map_err(|_| poisoned())?.entries.clear();
             }
             Backend::Database { catalog, .. } => {
                 self.invalidate_all()?;
@@ -706,11 +939,12 @@ impl SessionStore {
     /// purges lazily and `login` sweeps periodically.
     pub async fn sweep_expired(&self) -> Result<()> {
         match &self.backend {
-            Backend::Memory(entries) => {
+            Backend::Memory(sessions) => {
                 let now = Utc::now();
-                entries
+                sessions
                     .write()
                     .map_err(|_| poisoned())?
+                    .entries
                     .retain(|_, e| e.expires_at > now);
                 Ok(())
             }
@@ -787,6 +1021,7 @@ async fn insert_session(
     token_hash: &str,
     user_id: Uuid,
     expires_at: DateTime<Utc>,
+    epoch: AuthEpoch,
 ) -> Result<()> {
     let insert = Insert::row(
         SESSIONS_TABLE,
@@ -794,21 +1029,23 @@ async fn insert_session(
             COL_TOKEN_HASH.to_owned(),
             COL_USER.to_owned(),
             COL_EXPIRES_AT.to_owned(),
+            COL_AUTH_EPOCH.to_owned(),
         ],
         vec![
             Expr::lit(token_hash),
             Expr::lit(user_id),
             Expr::Lit(Value::Timestamp(expires_at)),
+            Expr::lit(epoch.value()),
         ],
     );
     run(catalog, Statement::from(insert)).await
 }
 
-/// The user and expiry a session row names, if the row is there.
+/// The user, expiry and epoch a session row names, if the row is there.
 async fn select_session(
     catalog: &Catalog,
     token_hash: &str,
-) -> Result<Option<(Uuid, DateTime<Utc>)>> {
+) -> Result<Option<(Uuid, DateTime<Utc>, AuthEpoch)>> {
     let select = Select::from(Source::table(SESSIONS_TABLE))
         .filter(Expr::col(COL_TOKEN_HASH).eq(Expr::lit(token_hash)))
         .limit(1);
@@ -841,19 +1078,18 @@ pub async fn delete_sessions_for_user(catalog: &Catalog, user_id: Uuid) -> Resul
     Ok(rows(catalog, Statement::from(delete)).await?.len())
 }
 
-/// Delete the sessions of every account whose (effective) role is `role` and
+/// End the sessions of every account whose (effective) role is `role` and
 /// that has no second factor on, except `except`'s: what making `role` require
 /// a second factor does, since a session started before it was asked for none
 /// (security review 2026-11, #11). Only accounts that hold a session are
-/// looked at. Returns the accounts whose sessions went.
-///
-/// The rows go; a node's cached copy lives out its freshness
-/// ([`CACHE_TTL_SECONDS`]), as for [`delete_sessions_for_user`].
+/// looked at. Each such account's epoch goes up (crate::epoch) and its rows
+/// go; the changes are returned for the session store
+/// ([`SessionStore::bump_epoch`]).
 pub async fn delete_sessions_lacking_second_factor(
     catalog: &Catalog,
     role: sc_types::Role,
     except: Option<Uuid>,
-) -> Result<Vec<Uuid>> {
+) -> Result<Vec<CredentialsChanged>> {
     let select = Select::from(Source::table(SESSIONS_TABLE))
         .columns(vec![Projection::expr(Expr::col(COL_USER))]);
     let mut holders: Vec<Uuid> = rows(catalog, Statement::from(select))
@@ -877,7 +1113,7 @@ pub async fn delete_sessions_lacking_second_factor(
         };
         if user.role() == role {
             delete_sessions_for_user(catalog, id).await?;
-            ended.push(id);
+            ended.push(crate::epoch::bump_auth_epoch(catalog, id).await?);
         }
     }
     Ok(ended)
@@ -895,7 +1131,7 @@ async fn sweep_sessions(catalog: &Catalog) -> Result<()> {
 
 /// The two columns a lookup needs, read strictly: a missing or ill-typed column
 /// in an `_fd_*` table is an error naming it, never a silent default.
-fn session_from_row(row: &Row) -> Result<(Uuid, DateTime<Utc>)> {
+fn session_from_row(row: &Row) -> Result<(Uuid, DateTime<Utc>, AuthEpoch)> {
     let user_id = match row.get(COL_USER) {
         Some(Value::Uuid(u)) => *u,
         other => return Err(bad_column(COL_USER, "a uuid", other)),
@@ -904,7 +1140,11 @@ fn session_from_row(row: &Row) -> Result<(Uuid, DateTime<Utc>)> {
         Some(Value::Timestamp(ts)) => *ts,
         other => return Err(bad_column(COL_EXPIRES_AT, "a timestamp", other)),
     };
-    Ok((user_id, expires_at))
+    Ok((
+        user_id,
+        expires_at,
+        AuthEpoch::of_column(row.get(COL_AUTH_EPOCH))?,
+    ))
 }
 
 fn bad_column(column: &str, expected: &str, got: Option<&Value>) -> Error {
@@ -938,17 +1178,23 @@ fn poisoned() -> Error {
 }
 
 /// A fresh, unguessable session token for `scope`: 256 bits from two v4
-/// UUIDs, hex-encoded, after [`APP_TOKEN_PREFIX`] for an application's.
-fn new_token(scope: SessionScope) -> String {
+/// UUIDs, hex-encoded, after [`APP_TOKEN_PREFIX`] and the application's id for
+/// an application's (module docs).
+fn new_token(scope: SessionScope) -> Result<String> {
     let prefix = match scope {
-        SessionScope::Admin => "",
-        SessionScope::App => APP_TOKEN_PREFIX,
+        SessionScope::Admin => String::new(),
+        SessionScope::App(app) => format!("{APP_TOKEN_PREFIX}{}-", app.simple()),
+        SessionScope::AnyApp => {
+            return Err(Error::invalid(
+                "a new application session names its application",
+            ));
+        }
     };
-    format!(
+    Ok(format!(
         "{prefix}{}{}",
         Uuid::new_v4().simple(),
         Uuid::new_v4().simple()
-    )
+    ))
 }
 
 /// The key a changeset records for the session `token` belongs to (§14.12):
@@ -1110,9 +1356,31 @@ mod tests {
     async fn a_session_says_which_host_issued_it() {
         let store = SessionStore::memory();
         let admin_token = store.login(admin()).await.unwrap();
-        let app_token = store.login_in(admin(), SessionScope::App).await.unwrap();
+        let app = Uuid::new_v4();
+        let app_token = store
+            .login_in(admin(), SessionScope::App(app))
+            .await
+            .unwrap();
         assert_eq!(SessionScope::of_token(&admin_token), SessionScope::Admin);
-        assert_eq!(SessionScope::of_token(&app_token), SessionScope::App);
+        assert_eq!(SessionScope::of_token(&app_token), SessionScope::App(app));
+        // An application token from before tokens named their application is
+        // an application's, but no application's in particular.
+        let unnamed = format!(
+            "{APP_TOKEN_PREFIX}{}{}",
+            Uuid::new_v4().simple(),
+            Uuid::new_v4().simple()
+        );
+        assert_eq!(SessionScope::of_token(&unnamed), SessionScope::AnyApp);
+        assert!(SessionScope::AnyApp.is_app() && !SessionScope::Admin.is_app());
+        // And none is minted any more.
+        assert!(store.login_in(admin(), SessionScope::AnyApp).await.is_err());
+        // The application inside the token is hashed with it: pointing it at
+        // another application is a token nobody issued.
+        let moved = app_token.replace(
+            &app.simple().to_string(),
+            &Uuid::new_v4().simple().to_string(),
+        );
+        assert!(store.user_for(&moved).await.unwrap().is_none());
         // Both resolve: the scope is the server's to apply, not a dead token.
         assert!(store.user_for(&app_token).await.unwrap().is_some());
         // A token minted before scopes existed — 64 hex digits — reads as the
@@ -1133,7 +1401,7 @@ mod tests {
             token_hash(""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
-        let token = new_token(SessionScope::Admin);
+        let token = new_token(SessionScope::Admin).unwrap();
         let hash = token_hash(&token);
         assert_eq!(hash.len(), 64);
         assert_ne!(hash, token); // what is stored is never what is presented
@@ -1158,6 +1426,48 @@ mod tests {
                 .iter()
                 .all(|f| !matches!(f.kind, DataFieldKind::Key { .. })),
             "a session must not pin the user row it names"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_credential_change_ends_the_other_sessions_and_keeps_the_one_that_made_it() {
+        let store = SessionStore::default();
+        let heard = Arc::new(Heard::default());
+        let listener: Arc<dyn SessionListener> = heard.clone();
+        store.add_listener(Arc::downgrade(&listener));
+        let user = admin();
+        let here = store.login(user.clone()).await.unwrap();
+        let there = store.login(user.clone()).await.unwrap();
+        let other = store.login(admin()).await.unwrap();
+
+        let changed = CredentialsChanged::new(user.id(), AuthEpoch::INITIAL.next());
+        assert_eq!(store.bump_epoch(changed, Some(&here)).await.unwrap(), 1);
+        assert!(store.user_for(&here).await.unwrap().is_some());
+        assert_eq!(store.user_for(&there).await.unwrap(), None);
+        assert!(store.user_for(&other).await.unwrap().is_some());
+        assert_eq!(
+            *heard.0.lock().unwrap(),
+            vec![format!("user {} but {here}", user.id())]
+        );
+
+        // A session started after it is at the new epoch, and lives.
+        let after = store.login(user.clone()).await.unwrap();
+        assert!(store.user_for(&after).await.unwrap().is_some());
+
+        // With nothing kept, every session of the account ends.
+        let changed = CredentialsChanged::new(user.id(), AuthEpoch::INITIAL.next().next());
+        assert_eq!(store.bump_epoch(changed, None).await.unwrap(), 2);
+        assert_eq!(store.user_for(&here).await.unwrap(), None);
+    }
+
+    #[test]
+    fn a_proof_for_one_account_does_not_sign_in_another() {
+        let user = admin();
+        let proof = crate::signin::SecondFactorProof::new(Uuid::new_v4());
+        assert!(
+            crate::signin::PasswordVerified::resumed(user, AuthEpoch::INITIAL)
+                .complete(crate::signin::SecondFactor::Proof(proof))
+                .is_err()
         );
     }
 

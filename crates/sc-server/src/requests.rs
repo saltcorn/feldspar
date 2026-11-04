@@ -53,6 +53,21 @@ pub struct AppRequests {
 }
 
 impl AppRequests {
+    /// The id of the application `request` goes to, which its session names.
+    fn app_id(&self, request: &AppHttpRequest<'_>) -> Result<uuid::Uuid> {
+        self.apps
+            .app_id(
+                request.subdomain,
+                request.preview.map(|preview| preview.label.as_str()),
+            )
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "no application is being served at `{}`",
+                    request.subdomain
+                ))
+            })
+    }
+
     /// A requester over `router`, the router the server serves. Its sessions
     /// are made in `sessions`, which must be the store `router` reads.
     pub fn new(
@@ -182,11 +197,21 @@ impl AppRequester for AppRequests {
             )));
         }
         let session = match request.user {
-            Some(user) => Some(
-                self.sessions
-                    .login_in(user.clone(), sc_auth::SessionScope::App)
-                    .await?,
-            ),
+            // An application's session, past the second factor by a named
+            // waiver: the run acts for this user, and the session ends with
+            // the request (security review 2026-11, §2).
+            Some(user) => {
+                let app = self.app_id(&request)?;
+                let who = sc_auth::FullyAuthenticated::waived(
+                    user.clone(),
+                    sc_auth::SecondFactorWaiver::CallApi,
+                );
+                Some(
+                    self.sessions
+                        .start(who, self.sessions.ttl(), sc_auth::SessionScope::App(app))
+                        .await?,
+                )
+            }
             None => None,
         };
         let pass = request.preview.map(|preview| {

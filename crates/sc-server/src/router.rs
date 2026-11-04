@@ -1585,7 +1585,15 @@ async fn admin_handoff(
         return Redirect::to("/").into_response();
     };
     let policy = state.apps.current_session_policy().await;
-    match state.sessions.login_for(user, policy.ttl).await {
+    // Past the second factor, named: the token was minted from this
+    // administrator's own session on the old host (security review 2026-11,
+    // §2).
+    let who = sc_auth::FullyAuthenticated::waived(user, sc_auth::SecondFactorWaiver::AdminHandoff);
+    match state
+        .sessions
+        .start(who, policy.ttl, sc_auth::SessionScope::Admin)
+        .await
+    {
         Ok(token) => {
             let domain = session_cookie_domain(&state, Some(&host));
             let mut cookie = session_cookie(&state, token, domain.as_deref());
@@ -2474,14 +2482,14 @@ pub(crate) async fn app_caller(
         .get(SESSION_COOKIE)
         .filter(|_| !anonymous)
         .map(|c| c.value().to_owned());
+    // Its own session, or one a shared sign-in cookie brings from the admin
+    // host or another application (`crate::session::AppSession`): either is
+    // the user here, at most at the application's `max_role`.
     let signed_in = match &session {
-        Some(token) => state.sessions.user_for(token).await.map_err(|e| {
-            log_failure("session lookup failed", &e);
-            Box::new(json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session lookup failed",
-            ))
-        })?,
+        Some(_) => crate::session::AppSession::of_request(&state.sessions, app.id.0, jar)
+            .await
+            .map_err(|failed| Box::new(failed.into_response()))?
+            .map(crate::session::AppSession::into_user),
         None => None,
     };
     let (user, refused) = admit_caller(
@@ -3153,91 +3161,99 @@ pub(crate) async fn apply_session(
         return Err(Box::new(refusal));
     }
     // A sign-in by an account with two-factor authentication on, or whose role
-    // requires it, gets a challenge here instead of a session (design §7.2):
-    // every way of signing in starts its session in this one place, so none of
-    // them can forget to ask. `StartVerified` is a sign-in that has answered
-    // it, or one that never asks.
-    if let SessionAction::Start(user) | SessionAction::StartUntilBrowserCloses(user) = &session
-        && let Some(challenge) =
-            crate::second_factor::challenge_for(state, &client, user, remember).await
-    {
-        return Err(Box::new(challenge));
-    }
+    // requires it, gets a challenge here instead of a session (design §7.2).
+    // A session starts from a `FullyAuthenticated` alone, and the half of a
+    // sign-in a `Start` carries becomes one only here, by way of the
+    // second-factor decision (security review 2026-11, §2): no way of signing
+    // in can skip it. `StartVerified` is a sign-in that has answered it, or a
+    // named waiver.
+    let (session, starting) = match session {
+        SessionAction::Start(signing_in) | SessionAction::StartUntilBrowserCloses(signing_in) => {
+            let who = crate::second_factor::challenge_for(state, &client, signing_in, remember)
+                .await
+                .map_err(Box::new)?;
+            (SessionAction::Keep, Some(who))
+        }
+        SessionAction::StartVerified { who, .. } => (SessionAction::Keep, Some(who)),
+        other => (other, None),
+    };
     // Read from the store for a sign-in rather than believed from this process,
     // so a lifetime saved on another node applies here too.
-    let policy = match &session {
-        SessionAction::Start(_)
-        | SessionAction::StartUntilBrowserCloses(_)
-        | SessionAction::StartVerified { .. } => state.apps.current_session_policy().await,
-        _ => crate::apps::SessionPolicy {
+    let policy = match &starting {
+        Some(_) => state.apps.current_session_policy().await,
+        None => crate::apps::SessionPolicy {
             ttl: state.apps.session_ttl(),
             persistent: state.apps.persistent_session_cookie(),
         },
     };
     let ttl = policy.ttl;
+    if let Some(who) = starting {
+        let user = who.user().clone();
+        // Bound to the host that issued it (security review #15): an
+        // application's session is never admin authority on the admin host,
+        // and names the one application it was issued by (2026-11, §2).
+        return match state.sessions.start(who, ttl, client.scope()).await {
+            Ok(token) => {
+                // The session the request arrived with is replaced, not joined:
+                // the cookie is about to name the new one, so leaving the old one
+                // live would leave a credential nobody can present and nobody can
+                // withdraw. That is what makes `becomeUser` a swap — the admin
+                // session that authorised it does not survive behind the session
+                // it turned into.
+                //
+                // A failed logout is logged rather than failing the sign-in: the
+                // new session already exists and the cookie stops naming the old
+                // one, so the old token is one no browser presents any more, and
+                // it expires with its lifetime. Refusing here would instead leave
+                // the caller holding the old session *and* a new one nobody
+                // withdrew.
+                if let Some(previous) = &session_token
+                    && let Err(e) = state.sessions.logout(previous).await
+                {
+                    log_failure(
+                        "could not end the session a sign-in replaced; it stays valid \
+                             until it expires",
+                        &e,
+                    );
+                }
+                // A guest who signs in or signs up in the same browser stops
+                // being a guest (TODO-payments P1.6): the guest session ends, its
+                // cookie goes, and the `login` event says which one it was, so
+                // the application's trigger can move the guest's rows to the
+                // account. Holding the cookie is what proves it is the same
+                // buyer; an email address would not.
+                let (jar, guest) = end_guest_session_at_sign_in(state, jar, &client).await;
+                // After the session exists, not before: an event that says
+                // someone logged in must not fire for a login that then failed.
+                fire_login(state, &user, guest.as_deref()).await;
+                let mut cookie = session_cookie(state, token, domain.as_deref());
+                if remember && (policy.persistent || client.native) {
+                    persist(&mut cookie, ttl);
+                }
+                Ok(cookies(jar.add(cookie)))
+            }
+            // The account's credentials changed while it signed in.
+            Err(e) if e.auth_message().is_some() => Err(Box::new(json_error(
+                StatusCode::UNAUTHORIZED,
+                e.auth_message().unwrap_or("sign in again").to_owned(),
+            ))),
+            Err(e) => {
+                log_failure("could not start session", &e);
+                Err(Box::new(json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "could not start session",
+                )))
+            }
+        };
+    }
     Ok(match session {
-        SessionAction::Keep => SessionCookies {
+        SessionAction::Keep
+        | SessionAction::Start(_)
+        | SessionAction::StartUntilBrowserCloses(_)
+        | SessionAction::StartVerified { .. } => SessionCookies {
             jar,
             stale: AppendHeaders(None),
         },
-        // Bound to the host that issued it (security review #15): an
-        // application's session is never admin authority on the admin host.
-        SessionAction::Start(user)
-        | SessionAction::StartUntilBrowserCloses(user)
-        | SessionAction::StartVerified { user, .. } => {
-            match state
-                .sessions
-                .login_scoped(user.clone(), ttl, client.scope())
-                .await
-            {
-                Ok(token) => {
-                    // The session the request arrived with is replaced, not joined:
-                    // the cookie is about to name the new one, so leaving the old one
-                    // live would leave a credential nobody can present and nobody can
-                    // withdraw. That is what makes `becomeUser` a swap — the admin
-                    // session that authorised it does not survive behind the session
-                    // it turned into.
-                    //
-                    // A failed logout is logged rather than failing the sign-in: the
-                    // new session already exists and the cookie stops naming the old
-                    // one, so the old token is one no browser presents any more, and
-                    // it expires with its lifetime. Refusing here would instead leave
-                    // the caller holding the old session *and* a new one nobody
-                    // withdrew.
-                    if let Some(previous) = &session_token
-                        && let Err(e) = state.sessions.logout(previous).await
-                    {
-                        log_failure(
-                            "could not end the session a sign-in replaced; it stays valid \
-                             until it expires",
-                            &e,
-                        );
-                    }
-                    // A guest who signs in or signs up in the same browser stops
-                    // being a guest (TODO-payments P1.6): the guest session ends, its
-                    // cookie goes, and the `login` event says which one it was, so
-                    // the application's trigger can move the guest's rows to the
-                    // account. Holding the cookie is what proves it is the same
-                    // buyer; an email address would not.
-                    let (jar, guest) = end_guest_session_at_sign_in(state, jar, &client).await;
-                    // After the session exists, not before: an event that says
-                    // someone logged in must not fire for a login that then failed.
-                    fire_login(state, &user, guest.as_deref()).await;
-                    let mut cookie = session_cookie(state, token, domain.as_deref());
-                    if remember && (policy.persistent || client.native) {
-                        persist(&mut cookie, ttl);
-                    }
-                    cookies(jar.add(cookie))
-                }
-                Err(e) => {
-                    log_failure("could not start session", &e);
-                    return Err(Box::new(json_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "could not start session",
-                    )));
-                }
-            }
-        }
         SessionAction::End => {
             if let Some(token) = &session_token
                 && let Err(e) = state.sessions.logout(token).await
@@ -3267,6 +3283,25 @@ pub(crate) async fn apply_session(
                 log_failure("could not end every session", &e);
             }
             cookies(jar.remove(session_cookie_removal(domain.as_deref())))
+        }
+        // Accounts whose credentials changed (security review 2026-11, H2.3):
+        // their epochs are raised already, so every node refuses their older
+        // sessions; this ends them here — the rows, this node's cached copies
+        // and its live sockets. The caller's own cookie stops resolving when
+        // it was one of them.
+        SessionAction::CredentialsChanged(changes) => {
+            for changed in changes {
+                if let Err(e) = state.sessions.bump_epoch(changed, None).await {
+                    log_failure(
+                        "could not end the sessions a credential change outdated",
+                        &e,
+                    );
+                }
+            }
+            SessionCookies {
+                jar,
+                stale: AppendHeaders(None),
+            }
         }
         // A guest session's cookie (TODO-payments P1.5): the application's own,
         // so set on the host the request reached and never on the shared
@@ -3381,8 +3416,8 @@ impl SessionClient {
     /// The host scope a session this client starts is issued for: an
     /// application's when it signs in to one, the admin host's otherwise.
     pub(crate) fn scope(&self) -> sc_auth::SessionScope {
-        match self.app {
-            Some(_) => sc_auth::SessionScope::App,
+        match &self.app {
+            Some(app) => sc_auth::SessionScope::App(app.app.id.0),
             None => sc_auth::SessionScope::Admin,
         }
     }
@@ -3624,33 +3659,6 @@ fn accepts_html(headers: &axum::http::HeaderMap) -> bool {
         .get(header::ACCEPT)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|accept| accept.contains("text/html"))
-}
-
-/// The user a request's session cookie names, or the response to send instead.
-///
-/// `Ok(None)` is an anonymous request — which is not by itself an error, since
-/// what anonymity costs depends on what is being asked for; `Err` is a session
-/// store that failed, which no caller can do anything about. The error is boxed
-/// because a `Response` is large and this is the rare path.
-pub(crate) async fn session_user(
-    state: &AppState,
-    jar: &CookieJar,
-) -> std::result::Result<Option<User>, Box<Response>> {
-    let Some(token) = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) else {
-        return Ok(None);
-    };
-    state
-        .sessions
-        .user_for(&token)
-        .await
-        .map(|user| user.map(sc_auth::AuthenticatedUser::into_user))
-        .map_err(|e| {
-            log_failure("session lookup failed", &e);
-            Box::new(json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "session lookup failed",
-            ))
-        })
 }
 
 /// Serve a file from the static bundle, falling back to the bundle's own
