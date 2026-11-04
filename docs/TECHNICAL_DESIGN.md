@@ -1547,6 +1547,325 @@ authority: the caller is already an admin, and an admin sets these through `upda
 What it changes is the *speed* at which they can be set, which is why enabling RLS is refused
 unless the formula translates for all four operations, and why disabling it — the one operation
 whose damage is invisible in the schema afterwards — is reported back to the model in words.
+(§7.3a replaces this. The `allow_access_changes` grant goes away. Agents may change a table's
+access settings, and may turn RLS on, but on a table with RLS only a person, in the admin UI or
+with the CLI, may change them.)
+
+### 7.3a Formula additions, and RLS as a hard boundary (TODO-type-hardening H7)
+
+**Status: design, not yet built.** This comes from the November 2026 security review
+([SECURITY_REVIEW_2026-11.md](./SECURITY_REVIEW_2026-11.md)).
+
+**Why.** Coding agents are told to build applications from custom queries rather than the
+generic table API, because a query is a smaller boundary. But a code body can say `asAdmin()`,
+and an agent working towards a short-term goal will use it whenever the table's rules get in
+the way. Each use is defensible on its own. Together they move the real policy out of the
+tables and into many code bodies, and then nobody controls permissions centrally any more.
+
+There are two answers, and they fit together:
+
+- Make the ownership formula able to state the common cases that today drive code to
+  `asAdmin()`. This must not add configuration fields.
+- Give RLS a single meaning: **"enforce this 100%, with no escape hatches"**. A second
+  setting such as "RLS, but immune to elevation" would always be set together with RLS or
+  not at all, so it would only be a second way to get it wrong.
+
+#### Already expressible (document, don't build)
+
+- **Rows shared by a group**: a Ↄ aggregation over a membership table.
+- **Append-only tables** (logs, form submissions): read floor admin, formula
+  `_insert && owner === user.id`. A write's response never returns a row the caller may not
+  read (security review #28).
+- **Deny that applies even above the role floor** ("nobody may edit a closed invoice"): set the
+  operation's floor to admin and state the whole rule, roles included, in the formula:
+  `_update && user.role <= 40 && status !== "closed"`. `user.role` already translates. There
+  is no separate deny rule.
+
+#### Time
+
+`new Date()` parses today but does not translate, so a formula that uses it drops to the
+row-by-row evaluator. That path is slower, is refused for streamed reads, and cannot become an
+RLS policy. The additions:
+
+- `new Date()` and `Date.now()` are **one instant per statement**. The host fixes it once and
+  binds it: a parameter on the runtime-check path, a GUC `sc.now` set by `set_caller_context`
+  on the RLS path. The SQL path and the row-by-row path therefore agree. SQL `now()` is not
+  used, because inside a shared transaction it is the transaction's start time.
+- Translatable forms:
+  - a date column, `new Date()`, `new Date(<date column>)`, and `new Date(<number>)` (epoch
+    milliseconds);
+  - `.getTime()` on any of those, and `Date.now()`, as numbers (epoch milliseconds);
+  - `+ - * /` on those numbers, and the comparisons `< <= > >= === !==` on dates or numbers.
+
+  Anything else is untranslatable, as today.
+
+```js
+published_at <= new Date()                                                  // embargo
+_update && owner === user.id && created_at.getTime() > Date.now() - 15*60e3 // 15-minute edit window
+_read && ticketⱵstatus === "open" && ticketⱵagent === user.id               // while a ticket is open
+```
+
+#### `old` in updates
+
+On an update, the proposed row is checked with `old` bound to the existing row, so a formula
+can compare the two:
+
+```js
+_update && owner === user.id && (status === old.status || (old.status === "draft" && status === "submitted"))
+_update && owner === user.id && credits === old.credits
+```
+
+- **Where `old` is defined.** Only in the proposed-row check of an update. In every other check
+  (`_read`, `_insert`, `_delete`, and the existing-row check of an update), `old.x` is `null`,
+  so a formula written as `_update && …` is unaffected.
+- **Runtime-check path.** `old.x` translates to the existing row's column, correlated in the
+  `UPDATE`. It is also bound in the reified check, which already has both rows.
+- **RLS.** A Postgres policy cannot see the old and new row together. The first version refuses
+  to enable RLS for a formula that uses `old`, under the existing rule that RLS is refused for a
+  formula the database cannot honour. A later version can emit a `BEFORE UPDATE` trigger that
+  evaluates the formula over `OLD` and `NEW` under the same GUCs.
+
+#### Presented values: `_request`
+
+A share link, an unsubscribe link or an invitation must be readable by whoever holds its secret,
+and listable by nobody. The formula expresses this by comparing a column with a value the caller
+presents:
+
+```js
+_read && token === _request.token
+_update && token === _request.token && email === old.email      // unsubscribe: may set opted_out
+_insert && inviteⱵcode === _request.invite                      // join with an invitation code
+```
+
+This is ordinary evaluation in an environment, like `user`. Because the equality is checked per
+row, a caller only ever reaches the row whose secret they already hold. Listing, prefix searches
+and filters do not help without it.
+
+**The environment.**
+- `_request` holds the values the caller presented for this request: a map from key to string.
+- Keys are `[a-z][a-z0-9_]{0,31}`, at most 8 per request.
+- A key that is missing, `null` or empty is **absent**: `undefined` on the evaluator path, and
+  an unset GUC that folds to `NULL` on the SQL and RLS paths. An absent value therefore equals
+  nothing, not even a `null` column. On the JavaScript side, `undefined === null` is false; on
+  the SQL side, a comparison with `NULL` is never true.
+
+**How a caller presents values.** Never in the query string, so tokens stay out of access logs
+and history:
+- REST and fetch: the header `X-Sc-Request-<key>`.
+- Code API: `db.shares.withRequest({ token })`. A code query receives the value as one of its
+  own parameters and passes it on.
+- GraphQL: a `request` argument.
+- Live and sync subscriptions: the connection parameters.
+- MCP: a tool argument.
+
+A response computed with a presented value is `Cache-Control: private, no-store`.
+
+**RLS.** `set_caller_context` sets `sc.request.<key>` for every key that any table's formula
+references, empty when the caller presented none. It sets **all of them** every time, for the
+same reason it always sets both role and user: on a shared transaction, one writer's values must
+not carry over to the next writer. The key names come from the formulas, which an admin writes,
+not from the request. The values are bound via `set_config`.
+
+**Shape checked at save time.** `_request` is caller-controlled and sits next to the trusted
+`user`. A formula like `owner === _request.user_id` would look plausible to an agent and give
+away every row. So when a formula is saved:
+- `_request.<key>` may appear only as one side of `===` whose other side is a column of this
+  table or a Ⱶ-reached column.
+- That column must be **unique**, not the primary key, and not an integer or sequence column.
+- Any other use (compared with `user`, `old`, a literal, `!==`, arithmetic, truthiness) is
+  refused, with the reason given.
+- A warning is given when the column has no random default. The documented default is a
+  128-bit random string, so tokens are never chosen by users.
+
+**Rate limit.** Reads and writes on a table whose formula references `_request` count against a
+per-IP limit whenever they present a value. This is automatic, with no setting.
+
+**Not in the first version:** looking up a hashed token. A Secret field uses a salted hash,
+which cannot be looked up; this would need a keyed, deterministic hash.
+
+#### RLS as a hard boundary
+
+**The rule.** On a table with `rls_enabled`, every statement runs with the authority of the
+**cause** of the work, never more. The cause is the principal who started the request, the
+event or the trigger chain, carried along the chain (§10). Code cannot raise it:
+
+| Source of authority | On an RLS table |
+|---|---|
+| An admin's own request (admin session, admin API token, admin MCP user) | admin (unchanged: the admin role meets every floor) |
+| A signed-in user's request, and everything it triggers in cascade | that user |
+| An anonymous request, an inbound webhook | public |
+| A scheduled or startup trigger (no human cause) | system (admin role); it may narrow itself to a named user (below) |
+| The internal jobs in the system-authority inventory (backup, restore, retention, change log, sync bookkeeping, schema checks) | system (unchanged); these are not application code |
+| `asAdmin()` in a code body (`db`, `fs`, `trigger`, `models`) | **refused**, with an error naming the table and RLS |
+| A trigger's or code action's default authority ("admin in the event user's name"), and the built-in row actions' `ActionContext::scoped` | the cause |
+| A trigger marked "runs as system" and approved by a person for its current code (below) | system, for the trigger's own statements only |
+| `asUser(id)`, `forUser` / `Authority::Named` | the named user, only if they hold no more authority than the cause; otherwise refused |
+| `db.sql()` as admin, a custom SQL query | the cause's GUCs. Admin-authored statements cannot forge them (below) |
+
+**One chokepoint.** RLS tables are `FORCE`d, so every statement that touches one goes through
+`set_caller_context` (`sc-catalog/src/rls.rs`). Enforcement lives there:
+- `Principal` gains the authority of its cause.
+- An elevated principal ("admin in the user's name") is built with
+  `Principal::elevated(&cause, reason)` and keeps the cause.
+- `set_caller_context` writes the **cause's** role and user to `sc.role` and `sc.user`. Postgres
+  then enforces the policies whatever path the statement took.
+- Tables without RLS keep reading the elevated authority, through the runtime row layer, as
+  today. One statement over both kinds of table is therefore filtered on the RLS tables only.
+
+The code host's refusal of an explicit `asAdmin()` on an RLS table is an extra layer for clear
+error messages: the code body is told why, instead of silently getting fewer rows.
+
+**Statements cannot forge the context.** Custom SQL queries and `db.sql()` are admin-authored,
+but agents author them too, and a statement could call
+`set_config('sc.role', '1', true)` itself. So:
+- At save time, and again at run time, the statement is parsed and refused if it calls
+  `set_config`, is a `SET`, `RESET` or `DO`, or creates or replaces a function or procedure.
+- A later, stronger version makes the GUCs unforgeable. The policies would read the caller
+  through a `SECURITY DEFINER` function that checks a per-transaction MAC, keyed by a secret the
+  statement's database role cannot read.
+
+**On an RLS table, only a person changes who may access it.** A person is an admin in a browser
+session (an `AdminSession`, not `Admin::delegated`), or an operator with the CLI on the server.
+Coding agents (Claude Code in the IDE, the in-app coding agent), MCP clients, `admin_copilot`
+and code bodies may **enable** RLS on a table. Once it is on, they cannot change the table's
+access settings at all: not its floors, not its ownership formula, and not RLS itself. That
+includes changes that would be stricter. A formula cannot in general be proven stricter than
+another, a rule that accepted some tightenings and refused others would be one agents cannot
+predict, and a tightening can break an application, so a person should see it anyway.
+
+Such a request is refused with: *"`<table>` has row-level security, so its access rules can
+only be changed by a person in the admin UI. Tell the user what change you need and why."* The
+reply does not suggest disabling RLS: the admin can edit the rules with RLS left on, and asking
+for it to be turned off invites exactly the wrong request.
+
+Everything else an agent does over an RLS table stays open, because none of it changes who may
+read or write its rows: adding or editing columns, rows, queries and code. Dropping a column
+the formula reads is also open, because the formula then fails closed and grants nothing.
+
+These paths are refused for agents, because each would end with a table losing RLS or with
+its rules changed:
+
+- `min_role_read`, `min_role_write`, `ownership_formula` or `rls_enabled` in a schema edit, in
+  any tool or batch, when the table has RLS. (`rls_enabled: true` on a table without it is
+  allowed.)
+- Dropping a table that has RLS. Otherwise drop-and-recreate would turn it off with extra
+  steps.
+- DDL in a custom SQL query or `db.sql()` that disables or reshapes policies:
+  `ALTER TABLE … DISABLE | NO FORCE ROW LEVEL SECURITY`, and `CREATE`, `ALTER` or
+  `DROP POLICY` (a new permissive `USING (true)` policy widens just as well). This is refused
+  by the same statement check that refuses `set_config` (H7.9).
+- An import or restore that agents can start (application import, partial restore, app sync)
+  that would replace an RLS table's metadata with `rls_enabled: false`.
+
+**Making this a type.** The schema-edit entry point takes an `Editor`, either
+`Person(&AdminSession)`, `Operator` (the CLI) or `Delegated(&Admin)`. Only the first two can
+build the `RlsTableAccess` value that changing an RLS table's access settings, disabling RLS
+or dropping an RLS table requires, so a new agent-facing path cannot get around the rule by
+forgetting a check.
+
+**No permission grants for agents.** This rule replaces the `allow_access_changes` grant
+(admin_copilot, MCP tokens, `feldspar mcp-token`). Grants on agents are options nobody keeps
+track of. RLS is the one lever: a table without RLS has access rules an agent may change, and a
+table with RLS has access rules only a person may change. Everything else the grant guarded
+becomes open to agents: a query's or stream's `min_role`, `api_tables`, public triggers and
+signed-out agents, an application's CSP, and roles and accounts. Deleting a role or an account
+still needs `allow_drop`, and the last enabled admin still cannot be disabled or deleted. These
+are low risk from an agent that goes wrong, and none of them is a boundary that RLS promises.
+
+Existing stored agent configurations and MCP tokens that carry `allow_access_changes` keep
+loading; the field is ignored. The CLI accepts the flag with a deprecation warning.
+
+#### Triggers that run as system
+
+The permission system decides access. Some business logic needs more authority than the user
+whose event starts it: an order decrements the shop's stock, a booking recounts the seats over
+every booking, accepting a friend request writes a row for each of the two users. On a table
+without RLS such logic can use `asAdmin()`. On an RLS table nothing elevates. The one exception
+is a trigger that a person has approved to run as system, the equivalent of Postgres's
+`SECURITY DEFINER`: the trusted logic lives in one named, listed place instead of in request
+code.
+
+**The setting.** A trigger has one more setting, **runs as system**. When it is on *and
+approved*, the trigger's action runs at system authority, the authority a scheduled trigger
+already has, even when a user's event fired it. RLS tables are included. Nothing else changes:
+the event, its row and the caller (`user` in the code) are as before.
+
+**Only a person approves it.** An agent, an MCP client or a code body may set it, which records
+a request, but the trigger keeps running at the cause's authority until a person approves it.
+A person is an admin in a browser session or an operator with the CLI, as in H7.11. The admin
+UI's triggers list shows every trigger that runs as system and every pending request, with the
+code to read. An agent that sets it is told: *"`<trigger>` will run as system once a person
+approves it in the admin UI. Until then it runs as the user who caused it."*
+
+**The approval is for the code, not the name.** The approval records a hash of the trigger's
+action configuration (its code, or its workflow definition, and its settings) together with who
+approved it and when. If the configuration changes and the hash no longer matches, the approval
+lapses and the trigger runs at the cause's authority again, until it is approved again. A change
+made by a person in an admin session re-approves it at once. Without this rule an agent could
+put anything into a trigger that is already trusted.
+
+**Elevation does not cascade.** Only the trigger's own statements run as system. Rows it writes
+fire further triggers whose cause is still the original user (the chain carries it, §10), so one
+approved trigger cannot lend its authority to a chain of unapproved ones. A trigger it calls
+directly runs as system only if that trigger is itself approved.
+
+**What the approver takes on.** The trigger runs at system authority on input the user controls
+(the row they wrote, a button's arguments), and its code is the only check on that input.
+Whatever it returns to the caller or writes where the caller can read it is disclosed on
+purpose. An action fired by a button that returns rows it read as system hands those rows to
+whoever pressed the button. The admin UI says this next to the approve button.
+
+**Storage.** Three nullable columns on the trigger's metadata table record the approval: the
+approved hash, the approver's user id, and the time. This is an additive change, made by the
+bootstrap. A backup restore by a person keeps approvals. An application import, partial restore
+or app sync that an agent starts drops them, which leaves the request pending. Each approved
+trigger is an entry in the system-authority inventory (SECURITY_REVIEW_2026-10.md).
+
+**What RLS does not promise.** It protects the rows of the table it is on, not information
+derived from them. A scheduled job, or an approved trigger, with system authority can still copy
+rows into a table without RLS. That is visible, central configuration, approved by a person, not
+an escape hatch in a request path.
+
+**Compatibility.** This intentionally changes behaviour on instances that combine RLS tables with
+code that elevates:
+- A code body that says `asAdmin()` over an RLS table now gets an error.
+- A trigger whose default admin authority reached RLS rows now sees what its cause sees.
+
+There is no setting to restore the old behaviour. On the first start after upgrading, the server
+lists in the admin notices and the log every code body, custom query and trigger that touches an
+RLS table at elevated authority, found statically from the code and from the trigger
+definitions. The CHANGELOG states the change.
+
+**Scheduled and startup triggers run at system authority** (decided). The rule is "never more
+than the cause", and a job with no caller has no one whose authority it could exceed. Running
+them as the public role was rejected: a nightly job such as "remind each user of their overdue
+tasks" would then need the formula to grant the public role, which is worse.
+
+**Acting as a named user.** A job with system authority, or an admin, can narrow itself to one
+user, and should when it acts on that user's behalf. The nightly reminder reads each user's
+tasks as that user, so the table's rules decide what goes into each email:
+
+```js
+for (const u of await db.users.where({ wants_reminders: true }).rows()) {
+  const overdue = await db.tasks.asUser(u.id).where({ done: false }).rows(); // u's own view
+  …
+}
+```
+
+- **API.** `asUser(id)` on `db`, `fs`, `trigger` and `models` is the native form of the plan
+  protocol's `{ "user": id }`, which today only Saltcorn 1's `Table` API reaches (`forUser`,
+  `insertRow(row, user)`). `asUser()` without an argument stays "the event's caller".
+- **Allowed** only when the named user holds no more authority than the cause: role at least
+  as high a number, and the cause is an admin, the system, or that same user. Otherwise it is
+  refused, on every table, not only RLS ones. System authority may therefore name anyone; a
+  role-80 caller may name only themselves.
+- **Enforcement.** The named user's principal keeps the cause (`Principal::elevated`'s
+  counterpart, `Principal::narrowed(&cause, user)`), and `set_caller_context` writes the named
+  user's role and user. Postgres sees exactly that user.
+- **Not checked today.** `load_named_user` (`sc-api/src/code_host/mod.rs`) loads any user
+  without comparing it to the cause, on the reasoning that a body "already runs as admin".
+  That no longer holds in a code query, which defaults to the caller: a query that passes a
+  request-supplied id to `forUser` would run as that user, an admin included. H7.8 closes it.
 
 ### 7.4 Roles (`_fd_roles`)
 
