@@ -160,7 +160,7 @@ fn token_fields() -> Vec<DataField> {
 /// **Must run after the users table**, which its rows name.
 /// [`bootstrap`](crate::bootstrap) does them in that order. Idempotent, like
 /// every other bootstrap.
-pub async fn bootstrap_api_tokens(catalog: &Catalog) -> Result<Table> {
+pub(crate) async fn bootstrap_api_tokens(catalog: &Catalog) -> Result<Table> {
     catalog
         .bootstrap_table(API_TOKENS_TABLE, &token_fields())
         .await
@@ -367,7 +367,7 @@ pub async fn revoke_api_token(catalog: &Catalog, id: Uuid) -> Result<bool> {
 /// A revoked token is *not* swept: it is evidence that somebody took a
 /// credential back, and it is the only record of that. A lapsed one stopped
 /// working on its own and nobody decided anything.
-pub async fn sweep_expired_api_tokens(catalog: &Catalog) -> Result<usize> {
+pub(crate) async fn sweep_expired_api_tokens(catalog: &Catalog) -> Result<usize> {
     let delete = Delete {
         returning: vec![Projection::expr(Expr::col(COL_ID))],
         ..Delete::from(API_TOKENS_TABLE).filter(Expr::binary(

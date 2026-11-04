@@ -28,6 +28,10 @@ pub const DEFAULT_TOKENS: usize = 1024;
 const CHARS_PER_TOKEN: f64 = 3.5;
 
 /// A text's size in tokens, estimated as `sc-llm` estimates a request's text.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "an estimate: a non-negative float, saturating at usize::MAX"
+)]
 pub fn estimate_tokens(text: &str) -> usize {
     (text.chars().count() as f64 / CHARS_PER_TOKEN).ceil() as usize
 }

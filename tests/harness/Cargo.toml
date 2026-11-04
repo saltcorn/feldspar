@@ -25,6 +25,11 @@ sc-catalog = { workspace = true, optional = true }
 sc-db = { workspace = true, optional = true }
 sc-db-postgres = { workspace = true, optional = true }
 
+[dev-dependencies]
+# `workspace_invariants`: the manifests, `clippy.toml` and `deny.toml` read as
+# data, so the lint policy is asserted on what the files say.
+toml.workspace = true
+
 [features]
 catalog = ["dep:sc-catalog", "dep:sc-db", "dep:sc-db-postgres"]
 

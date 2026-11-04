@@ -450,6 +450,10 @@ fn term(c: &Condition, column: &str, ty: ColType) -> Result<String> {
 }
 
 /// `v` as a formula literal of a column of type `ty`, or why it cannot be.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+)]
 fn literal(v: &Json, ty: ColType, column: &str) -> Result<String> {
     let wrong = || {
         Error::invalid(format!(
@@ -529,6 +533,10 @@ fn a_column(ty: ColType) -> String {
 
 /// An instant from a JSON value: milliseconds since 1970 (what a time axis
 /// brushes in), RFC 3339, a date and time without a zone (UTC), or a date.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a timestamp in milliseconds; the cast saturates and from_timestamp_millis refuses what is out of range"
+)]
 fn instant(v: &Json) -> Option<DateTime<Utc>> {
     match v {
         Json::Number(n) => n

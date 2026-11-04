@@ -6,6 +6,10 @@
 //! The fixture: regions 1 "west" and 2 "east", two circles about 700 m
 //! across; sites a and b in the west, c in the east, each about 1.3 km from
 //! the next.
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use sc_analytics::classify::Classification;
 use sc_analytics::layer::{GeometrySource, LayerData, LayerRequest, SKETCH_VALUES, layer_sketch};

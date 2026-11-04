@@ -61,37 +61,37 @@ pub const RECOVERY_CODES_TABLE: &str = "_fd_recovery_codes";
 
 /// The account (`users.id`) — the primary key of [`SECOND_FACTOR_TABLE`], and
 /// the owner of a recovery code.
-pub const COL_USER: &str = "user_id";
+pub(crate) const COL_USER: &str = "user_id";
 /// The base32 secret, sealed with the instance key.
-pub const COL_SECRET: &str = "secret";
+pub(crate) const COL_SECRET: &str = "secret";
 /// When the second factor was turned on; `NULL` while its setup waits for the
 /// first code.
-pub const COL_ENABLED_AT: &str = "enabled_at";
+pub(crate) const COL_ENABLED_AT: &str = "enabled_at";
 /// The last time-step a code was accepted for.
-pub const COL_LAST_STEP: &str = "last_step";
+pub(crate) const COL_LAST_STEP: &str = "last_step";
 /// When the row was written.
-pub const COL_CREATED_AT: &str = "created_at";
+pub(crate) const COL_CREATED_AT: &str = "created_at";
 /// Guesses at the code counted in the current window ([`reserve_guess`]).
-pub const COL_GUESSES: &str = "guesses";
+pub(crate) const COL_GUESSES: &str = "guesses";
 /// When the current guessing window began.
-pub const COL_GUESSES_SINCE: &str = "guesses_since";
+pub(crate) const COL_GUESSES_SINCE: &str = "guesses_since";
 
 /// How many codes an account may have checked in [`GUESS_WINDOW`] before they
 /// are refused until it passes — wrong ones, since a right one is refunded. A
 /// code is six digits and lasts 30 seconds, so this makes guessing one hopeless.
 pub const MAX_GUESSES: i64 = 5;
 /// The window [`MAX_GUESSES`] counts over.
-pub const GUESS_WINDOW: chrono::TimeDelta = chrono::TimeDelta::minutes(15);
+pub(crate) const GUESS_WINDOW: chrono::TimeDelta = chrono::TimeDelta::minutes(15);
 /// The SHA-256 of the account and a recovery code — the primary key of
 /// [`RECOVERY_CODES_TABLE`].
-pub const COL_CODE_HASH: &str = "code_hash";
+pub(crate) const COL_CODE_HASH: &str = "code_hash";
 
 /// The role attribute (`_fd_roles.attributes`) that makes a second factor
 /// mandatory for every account holding the role.
 pub const ATTR_REQUIRE_SECOND_FACTOR: &str = "require_second_factor";
 
 /// The length of a secret, in bytes: 160 bits, as RFC 4226 recommends.
-pub const SECRET_BYTES: usize = 20;
+pub(crate) const SECRET_BYTES: usize = 20;
 /// How long a code lasts, in seconds.
 pub const STEP_SECONDS: i64 = 30;
 /// How many digits a code has.
@@ -131,7 +131,7 @@ fn recovery_code_fields() -> Vec<DataField> {
 
 /// Ensure both tables exist. **Must run after the users table**, which their
 /// rows name; [`bootstrap`](crate::bootstrap) does them in that order.
-pub async fn bootstrap_second_factor(catalog: &Catalog) -> Result<Table> {
+pub(crate) async fn bootstrap_second_factor(catalog: &Catalog) -> Result<Table> {
     catalog
         .bootstrap_table(RECOVERY_CODES_TABLE, &recovery_code_fields())
         .await?;
@@ -144,7 +144,7 @@ pub async fn bootstrap_second_factor(catalog: &Catalog) -> Result<Table> {
 
 /// The code for `secret` at time-step `step` (RFC 4226's HOTP, which TOTP is
 /// over the time-step).
-pub fn hotp(secret: &[u8], step: u64) -> u32 {
+pub(crate) fn hotp(secret: &[u8], step: u64) -> u32 {
     // `new_from_slice` accepts a key of any length for HMAC.
     let Ok(mut mac) = Hmac::<sha1::Sha1>::new_from_slice(secret) else {
         return u32::MAX;
@@ -160,7 +160,7 @@ pub fn hotp(secret: &[u8], step: u64) -> u32 {
 }
 
 /// The time-step `unix_seconds` falls in.
-pub fn time_step(unix_seconds: i64) -> u64 {
+pub(crate) fn time_step(unix_seconds: i64) -> u64 {
     u64::try_from(unix_seconds.div_euclid(STEP_SECONDS)).unwrap_or(0)
 }
 
@@ -176,7 +176,7 @@ pub fn totp_at(secret: &[u8], unix_seconds: i64) -> String {
 
 /// The time-step `code` is right for at `unix_seconds`, allowing one step of
 /// clock drift either way — or `None`.
-pub fn matching_step(secret: &[u8], code: &str, unix_seconds: i64) -> Option<u64> {
+pub(crate) fn matching_step(secret: &[u8], code: &str, unix_seconds: i64) -> Option<u64> {
     let code = digits_of(code)?;
     let now = time_step(unix_seconds);
     [now, now.saturating_sub(1), now + 1]
@@ -197,7 +197,7 @@ fn constant_time_eq(a: u32, b: u32) -> bool {
 }
 
 /// A new random secret, in base32 (what an app is given).
-pub fn new_secret() -> String {
+pub(crate) fn new_secret() -> String {
     let mut bytes = [0u8; SECRET_BYTES];
     OsRng.fill_bytes(&mut bytes);
     BASE32_NOPAD.encode(&bytes)

@@ -81,6 +81,10 @@ pub fn breaks(values: &[f64], classes: u32, method: Classification) -> Vec<f64> 
 }
 
 /// The `p` quantile of sorted values, R's type 7 (as `quantile()`).
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+)]
 fn quantile7(sorted: &[f64], p: f64) -> f64 {
     let h = (sorted.len() - 1) as f64 * p;
     let lo = h.floor() as usize;

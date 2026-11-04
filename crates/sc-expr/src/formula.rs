@@ -77,7 +77,13 @@ impl Formula {
     }
 
     fn parse_bounded(source: &str) -> Result<Formula> {
-        let input = StringInput::new(source, BytePos(0), BytePos(source.len() as u32));
+        // `parse` has already refused anything over `MAX_FORMULA_BYTES`.
+        let end = u32::try_from(source.len()).map_err(|_| {
+            Error::invalid(format!(
+                "a formula may be at most {MAX_FORMULA_BYTES} bytes long"
+            ))
+        })?;
+        let input = StringInput::new(source, BytePos(0), BytePos(end));
         let lexer = Lexer::new(
             Syntax::Es(EsSyntax::default()),
             EsVersion::latest(),
@@ -165,6 +171,7 @@ pub(crate) fn too_deep() -> Error {
 ///
 /// Binary operators, `?:` and member chains are not counted: swc parses those
 /// in a loop, and `lower` counts the depth of the tree they build.
+#[allow(clippy::too_many_lines)]
 fn nesting_bound(source: &str) -> usize {
     let b = source.as_bytes();
     // Per open bracket: whether it is a template's `${`, and how many prefix

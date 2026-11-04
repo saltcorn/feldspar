@@ -539,6 +539,10 @@ impl Encoded {
     /// It is also simply true: a class index is not a measurement, and encoding
     /// it as one would be the only place in this crate where a category is
     /// spelled as a float.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+    )]
     pub fn frame(&self) -> Frame {
         let mut frame = self.features.to_frame();
         if let (Some(name), Some(target)) = (&self.target_name, &self.target) {

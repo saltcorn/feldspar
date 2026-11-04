@@ -2,6 +2,10 @@
 //! server's own MCP endpoint never does — answer with an event stream, hand out
 //! a session id, page its tool list, announce a change, speak HTTP+SSE — is
 //! exercised here. `sc-server`'s tests run the client against the real thing.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

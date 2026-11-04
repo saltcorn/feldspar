@@ -40,7 +40,7 @@ pub struct HttpFetch {
 impl HttpFetch {
     /// A client with a timeout, saying who it is.
     pub fn new() -> HttpFetch {
-        let client = reqwest::Client::builder()
+        let client = sc_net::client_builder()
             .timeout(DOWNLOAD_TIMEOUT)
             .user_agent(concat!(
                 "Feldspar/",
@@ -152,6 +152,10 @@ impl InstallJobs {
 
     /// Start installing `key` on its own task, unless an install of it is
     /// already running — in which case that one is answered.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn: detached on purpose; the work outlives the request that started it and must not run in that request's changeset"
+    )]
     pub fn start(
         &self,
         catalog: Arc<Catalog>,

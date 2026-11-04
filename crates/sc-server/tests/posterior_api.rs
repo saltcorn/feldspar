@@ -9,6 +9,10 @@
 //! draws, and (milestone 31, 2.6) its `writePosterior` from a workflow step
 //! after `fit_model` and under a caller's authority. The Python handle is
 //! `sc-python`'s `python_models.rs`.
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_catalog::Authority;

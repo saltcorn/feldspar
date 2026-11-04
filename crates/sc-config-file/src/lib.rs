@@ -708,6 +708,18 @@ fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
+/// The one `libc` call this crate makes, in a module of its own so that is
+/// the only place `unsafe` is allowed (the workspace denies it).
+#[cfg(unix)]
+#[allow(unsafe_code)]
+mod os {
+    /// The process's effective group id.
+    pub(crate) fn effective_gid() -> libc::gid_t {
+        // SAFETY: `getegid` reads one field of the calling process and cannot fail.
+        unsafe { libc::getegid() }
+    }
+}
+
 /// Warn — once, on stderr — when the file other people can read holds a password.
 ///
 /// Not an error: refusing to start over a file mode would be a bad trade for a
@@ -730,8 +742,7 @@ fn warn_if_world_readable(path: &Path) {
         return;
     };
     let mode = meta.permissions().mode();
-    // SAFETY: `getegid` reads one field of the calling process and cannot fail.
-    let own_group = unsafe { libc::getegid() };
+    let own_group = os::effective_gid();
     if reachable_by_others(mode, meta.gid(), own_group) {
         eprintln!(
             "feldspar: warning: the configuration file {} is readable by other users \

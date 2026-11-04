@@ -5406,6 +5406,10 @@ impl CodeRuntime {
     /// out. Not public: [`DEFAULT_MAX_HEAP`] is a bound on the *engine*, not a
     /// per-installation policy, and the tests are what want to say it in
     /// megabytes rather than hundreds of them.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "unbounded: each queued job is a caller awaiting its answer, so the queue is never longer than the runs in flight; max_inflight bounds how many are resident"
+    )]
     fn build(workers: usize, max_inflight: usize, max_heap: usize) -> CodeRuntime {
         let max_inflight = max_inflight.max(1);
         let mut pool = Vec::new();
@@ -5449,6 +5453,10 @@ impl CodeRuntime {
     /// other, because a body's `Promise.all([…])` issues several at once and
     /// serving them in turn would quietly make that sequential — the parallelism
     /// the body asked for is real, and this is where it is honoured.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "unbounded: a run's requests to its hosts, each awaited by the body that sent it; the run's time and heap limits bound how many it can issue"
+    )]
     pub async fn run(&self, call: CodeCall<'_>) -> Result<Json> {
         let (reply, answer) = tokio::sync::oneshot::channel();
         // The proxies go to the worker and the borrowed hosts stay here, with

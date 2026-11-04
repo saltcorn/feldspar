@@ -793,6 +793,22 @@ nalgebra = { version = "0.35", default-features = false, features = ["std"] }
 # Member crates opt in with `[lints]` + `workspace = true`. Test code is exempted
 # via `clippy.toml` (`allow-unwrap-in-tests` / `allow-expect-in-tests`). These
 # lints fire under `cargo clippy`, not `cargo build`/`cargo test`.
+# The lint set from the 2026-11 security review (§6, TODO-type-hardening H1),
+# so that what the review fixed stays fixed.
+#
+# `unsafe_code` is denied everywhere, and allowed again only on the modules
+# that call into C (`sc-dns`'s `getaddrinfo`, CPython, the `libc` process and
+# terminal calls): `#![allow(unsafe_code)]` at the top of that module, each
+# block with a `// SAFETY:` comment (`undocumented_unsafe_blocks` below). It is
+# `deny` rather than `forbid` because `forbid` cannot be allowed again in one
+# module, and a crate cannot override part of an inherited `[lints]` table.
+[workspace.lints.rust]
+unsafe_code = "deny"
+# `--cfg feldspar_advisory_lints` turns on the advisory lints of the
+# request-facing crates (H1.7; their `lib.rs` says which). Declared so that the
+# `cfg_attr` naming it is not itself an unexpected-cfg warning.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feldspar_advisory_lints)'] }
+
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
@@ -801,6 +817,21 @@ expect_used = "deny"
 # explicit `#[allow(clippy::too_many_lines)]`: split one when it is next
 # changed, and drop its allow.
 too_many_lines = "warn"
+# Every `unsafe` block says why it is sound.
+undocumented_unsafe_blocks = "deny"
+# Placeholders and debugging left behind.
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+# `let _ = fut;` drops a future without running it.
+let_underscore_future = "deny"
+# The methods `clippy.toml` lists, each with the replacement to use instead.
+disallowed_methods = "deny"
+# `x as i32` silently drops the high bits of a wider value: an `i64` id bound to
+# an `int4` column matched a different row (security review #8). Use
+# `i32::try_from(x)` and handle the error, or `#[allow]` the cast with a
+# reason when the range is known.
+cast_possible_truncation = "deny"
 
 # --- Build profiles ----------------------------------------------------------
 #
@@ -843,9 +874,17 @@ debug = false
 #
 # Switch this back to optimising builds before a release anyone relies on the
 # performance of.
+#
+# `overflow-checks` stays on in release, as it is in `dev` (security review
+# 2026-11, §6): an integer that overflows panics — a failed request — instead of
+# wrapping into a wrong length, offset or id. The cost is a compare per
+# arithmetic operation, which at `opt-level = 0` is lost in the noise; keep it
+# on when optimisation is turned back on. Arithmetic that is meant to wrap says
+# so with `wrapping_*`.
 [profile.release]
 opt-level = 0
 codegen-units = 16
 incremental = true
 debug = false
 strip = true
+overflow-checks = true

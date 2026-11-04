@@ -332,6 +332,10 @@ async fn reload_applications(
 /// running is coalesced by the kernel into the next `recv`, so a burst of them
 /// cannot start overlapping reloads.
 #[cfg(unix)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
+)]
 pub fn spawn_sighup_reload(apps: Arc<AppMounts>) {
     use tokio::signal::unix::{SignalKind, signal};
 

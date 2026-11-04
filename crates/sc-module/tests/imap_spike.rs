@@ -10,7 +10,10 @@
 //!
 //! `plugins/imap/spike/run-spike.sh` starts the servers and runs this; on its
 //! own it skips unless `IMAP_SPIKE_DIR` is set.
-
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 #![cfg(feature = "deno-host")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use crate::common;

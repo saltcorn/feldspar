@@ -13,6 +13,10 @@
 //! tests. `node` is not needed: a module runs on a Deno worker in this process,
 //! and `modules_no_node.rs` is the test that says so with the `PATH` stripped.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_catalog::Authority;

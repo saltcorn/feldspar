@@ -6,6 +6,10 @@
 //! layers, their names, keys and features, each feature's id and the length
 //! of its geometry commands — so the test checks what MapLibre will be given
 //! rather than that bytes came back.
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use std::sync::Arc;
 

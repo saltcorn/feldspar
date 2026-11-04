@@ -674,7 +674,7 @@ impl Catalog {
     /// The module functions installed on this catalog, as `(function, module)`
     /// pairs — what a [`SchemaShape`](sc_expr::SchemaShape) declares so a
     /// formula may call one (§4b). Empty on a server with no modules.
-    pub fn module_function_names(&self) -> Vec<(String, String)> {
+    pub(crate) fn module_function_names(&self) -> Vec<(String, String)> {
         self.module_functions().map_or_else(Vec::new, |host| {
             host.functions()
                 .into_iter()
@@ -1150,7 +1150,7 @@ impl Catalog {
 
     /// Whether a key is already in hand — installed, or read once already —
     /// without reading or creating the file.
-    pub fn has_secret_key(&self) -> bool {
+    pub(crate) fn has_secret_key(&self) -> bool {
         self.secret_key.read().is_ok_and(|key| key.is_some())
     }
 
@@ -1483,7 +1483,11 @@ impl Catalog {
     /// `primary` is refused rather than shadowed: it is the [`DbId`] every table
     /// of the primary database carries, and a second holder of that name would
     /// make `driver_for` ambiguous in the one direction that matters.
-    pub fn connect_database(&self, name: &str, driver: Arc<dyn DatabaseDriver>) -> Result<()> {
+    pub(crate) fn connect_database(
+        &self,
+        name: &str,
+        driver: Arc<dyn DatabaseDriver>,
+    ) -> Result<()> {
         if name == self.primary_db.0 {
             return Err(Error::invalid(format!(
                 "`{name}` is the name of the primary database and cannot name a connection"
@@ -1560,7 +1564,7 @@ impl Catalog {
 
     /// Record why the connection named `name` is not usable, so the admin UI can
     /// show a connection that is defined but not connected, with the reason.
-    pub fn record_database_error(&self, name: &str, error: impl Into<String>) -> Result<()> {
+    pub(crate) fn record_database_error(&self, name: &str, error: impl Into<String>) -> Result<()> {
         let mut guard = self
             .database_errors
             .write()

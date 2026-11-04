@@ -18,6 +18,10 @@
 //!   deleted the same range request is refused; and a handle opened `asUser`
 //!   on a file the caller may not read is a 404.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;

@@ -32,6 +32,10 @@
 //!    status, because that is the one refusal a browser can read; an admin gets
 //!    `ready` with the element type, then the ring replay, then live elements.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use crate::support::next_frame;
 use std::collections::HashMap;

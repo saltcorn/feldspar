@@ -221,6 +221,10 @@ fn fit_close_reason(reason: String) -> String {
 }
 
 /// Read the socket until it closes, running a turn for every message.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "unbounded: the stream observer is synchronous and cannot await a bounded queue; tokio::spawn: the socket writer, an I/O pump that writes no rows"
+)]
 async fn chat(socket: WebSocket, mut ctx: ChatContext) {
     let (mut sender, mut receiver) = socket.split();
     // Events are pushed from two places — this task, and the observer the driver

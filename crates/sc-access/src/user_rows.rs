@@ -55,7 +55,7 @@ pub const ADMIN_ONLY_WRITE: &str = "admin_only_write";
 const ADMIN_ONLY_SYSTEM_COLUMNS: [&str; 4] = [COL_ID, COL_EMAIL, COL_DISABLED, COL_EMAIL_VERIFIED];
 
 /// Whether `table` is the users table.
-pub fn is_users(table: &Table) -> bool {
+pub(crate) fn is_users(table: &Table) -> bool {
     table.name == USERS_TABLE
 }
 

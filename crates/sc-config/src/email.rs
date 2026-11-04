@@ -356,7 +356,7 @@ impl EmailSettings {
                     )));
                 }
             },
-            _ => DEFAULT_SMTP_PORT as u16,
+            _ => u16::try_from(DEFAULT_SMTP_PORT).unwrap_or(587),
         };
         let security = match config.get(SMTP_SECURITY) {
             Some(Json::String(s)) if !s.trim().is_empty() => SmtpSecurity::parse(s.trim())?,
@@ -446,6 +446,10 @@ impl EmailSettings {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 mod tests {
     use super::*;
     use serde_json::json;

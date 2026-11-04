@@ -398,6 +398,10 @@ fn render_str(s: &str, out: &mut String) {
 
 /// A number literal. Integral values in the exact range print without a
 /// decimal point; Rust's shortest-round-trip `Display` covers the rest.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the value is integral and within 2^53, so the cast is exact"
+)]
 fn render_num(n: f64, out: &mut String) {
     const MAX_EXACT_INT: f64 = 9_007_199_254_740_992.0; // 2^53
     if n.fract() == 0.0 && n.abs() <= MAX_EXACT_INT {

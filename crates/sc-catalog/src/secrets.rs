@@ -226,7 +226,7 @@ pub fn is_envelope(value: &str) -> bool {
 }
 
 /// Where this instance's key lives: `<data dir>/secrets.key`.
-pub fn secret_key_path() -> Result<PathBuf> {
+pub(crate) fn secret_key_path() -> Result<PathBuf> {
     Ok(sc_files::data_dir()?.join(SECRET_KEY_FILE))
 }
 

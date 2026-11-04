@@ -45,7 +45,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 files.check_read(dir).await?;
                 let query = obj.non_empty_str_field("query")?.to_owned();
                 let max_results = match obj.get("max_results").and_then(Json::as_i64) {
-                    Some(n) if n >= 1 => n as usize,
+                    Some(n) if n >= 1 => usize::try_from(n).unwrap_or(usize::MAX),
                     _ => sc_files::DEFAULT_MAX_FOUND,
                 };
                 // The columns beside each hit's name are the same ones a listing
@@ -111,7 +111,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     .map(str::to_owned);
                 let flag = |key: &str| obj.get(key).and_then(Json::as_bool).unwrap_or(false);
                 let max_results = match obj.get("max_results").and_then(Json::as_i64) {
-                    Some(n) if n >= 1 => n as usize,
+                    Some(n) if n >= 1 => usize::try_from(n).unwrap_or(usize::MAX),
                     _ => sc_files::DEFAULT_MAX_RESULTS,
                 };
                 let query = sc_files::SearchQuery {

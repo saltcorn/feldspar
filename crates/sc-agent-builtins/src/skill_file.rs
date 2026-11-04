@@ -129,7 +129,12 @@ impl AgentTrait for SkillFile {
         let scope = skill_scope(config)?;
         let rel = args.string_arg(ARG_PATH)?;
         let rel = relative_to_skill(&skill_path(config)?, &rel);
-        let limit = config_count(config, CFG_SKILL_MAX_CHARS, DEFAULT_SKILL_MAX_CHARS)? as usize;
+        let limit = usize::try_from(config_count(
+            config,
+            CFG_SKILL_MAX_CHARS,
+            DEFAULT_SKILL_MAX_CHARS,
+        )?)
+        .unwrap_or(usize::MAX);
         let text = read_as(ctx.catalog, ctx.caller, &scope, &rel).await?;
         let (contents, truncated) = bounded(&text, limit);
         Ok(json!({
@@ -146,7 +151,12 @@ impl AgentTrait for SkillFile {
     ) -> Result<Option<String>> {
         let scope = skill_scope(config)?;
         let file = skill_path(config)?;
-        let limit = config_count(config, CFG_SKILL_MAX_CHARS, DEFAULT_SKILL_MAX_CHARS)? as usize;
+        let limit = usize::try_from(config_count(
+            config,
+            CFG_SKILL_MAX_CHARS,
+            DEFAULT_SKILL_MAX_CHARS,
+        )?)
+        .unwrap_or(usize::MAX);
         let text = read_as(cx.catalog, cx.caller, &scope, &file)
             .await
             .map_err(|e| {

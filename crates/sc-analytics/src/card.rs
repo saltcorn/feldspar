@@ -674,6 +674,10 @@ impl Card<'_> {
     /// The card's aggregate over `rows`: once over every row, or once per
     /// period between consecutive `bounds` (each period's first day, then the
     /// day after the last period).
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+    )]
     async fn values(
         &self,
         rows: &PlotRows,

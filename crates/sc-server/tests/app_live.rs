@@ -22,6 +22,10 @@
 //! - **L1.8** every limit is crossed once and answered with its error frame.
 //! - **L1.9** the generated client reaches the same socket.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use crate::support::{Socket, next_frame, send};
 use sc_types::Role;

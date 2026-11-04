@@ -497,6 +497,10 @@ impl Drop for Host {
 impl Host {
     /// Write the host script, build the worker, install the seam, and evaluate
     /// it.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "unbounded: the isolate's ops are synchronous and cannot await a bounded queue; each entry is a promise the module is awaiting"
+    )]
     async fn start(config: &WorkerConfig) -> Result<Host> {
         std::fs::create_dir_all(&config.root).map_err(|e| {
             Error::config(format!(

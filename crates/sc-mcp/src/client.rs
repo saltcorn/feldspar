@@ -557,6 +557,10 @@ impl Drop for Session<'_> {
 }
 
 /// Open an HTTP+SSE session's event stream, and wait for the endpoint it names.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: an I/O pump for a child process or connection; it writes no rows, so there is no task scope to carry"
+)]
 async fn open_sse(
     def: &McpServerDef,
     client: &guard::McpClient,

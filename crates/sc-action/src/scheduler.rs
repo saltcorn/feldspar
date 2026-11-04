@@ -100,6 +100,10 @@ impl Scheduler {
     /// task running, which is what a server wants (it ends with the process).
     /// **The one place the clock is read**: everything below takes the time as an
     /// argument.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
+    )]
     pub fn start(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let scheduler = Arc::clone(self);
         tokio::spawn(async move {
@@ -225,6 +229,10 @@ impl Scheduler {
     /// `at` is the tick's time, not the completion time, and that is what is
     /// recorded: a daily job that takes twenty minutes must not drift twenty
     /// minutes later every day.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
+    )]
     fn spawn_run(&self, trigger: Trigger, at: DateTime<Utc>) {
         let catalog = Arc::clone(&self.catalog);
         let dispatcher = Arc::clone(&self.dispatcher);

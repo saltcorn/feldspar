@@ -41,18 +41,18 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## H1 — Enforcement (§6)
 
-- [ ] H1.1 `unsafe_code = "deny"` in `[workspace.lints.rust]`, with a module-level `allow` and
+- [x] H1.1 `unsafe_code = "deny"` in `[workspace.lints.rust]`, with a module-level `allow` and
       `// SAFETY:` comment in the crates with FFI; `undocumented_unsafe_blocks`, `todo`,
       `unimplemented`, `dbg_macro`, `let_underscore_future` denied.
-- [ ] H1.2 `overflow-checks = true` in the release profile.
-- [ ] H1.3 `clippy.toml` `disallowed-methods`: `std::env::set_var`, `reqwest::Client::new` /
+- [x] H1.2 `overflow-checks = true` in the release profile.
+- [x] H1.3 `clippy.toml` `disallowed-methods`: `std::env::set_var`, `reqwest::Client::new` /
       `builder` outside sc-net, `tokio::spawn` outside `spawn_scoped`, `unbounded_channel`.
-- [ ] H1.4 `cast_possible_truncation` denied; fix the ~215 sites (or `allow` with a reason).
-- [ ] H1.5 `unreachable_pub` in sc-access, sc-auth, sc-files, sc-catalog; make the ≈90
+- [x] H1.4 `cast_possible_truncation` denied; fix the ~215 sites (or `allow` with a reason).
+- [x] H1.5 `unreachable_pub` in sc-access, sc-auth, sc-files, sc-catalog; make the ≈90
       single-crate functions `pub(crate)`.
-- [ ] H1.6 `deny.toml` (advisories, licences, sources; RUSTSEC-2023-0071 ignored with a reason)
+- [x] H1.6 `deny.toml` (advisories, licences, sources; RUSTSEC-2023-0071 ignored with a reason)
       and `cargo deny check` plus `--locked` in CI.
-- [ ] H1.7 `indexing_slicing`, `string_slice`, `arithmetic_side_effects` as warnings in
+- [x] H1.7 `indexing_slicing`, `string_slice`, `arithmetic_side_effects` as warnings in
       request-facing crates.
 
 ## H2 — Sessions and authentication as types (§2)

@@ -35,6 +35,10 @@ const MIN_FACTOR: f64 = 0.25;
 const MAX_FACTOR: f64 = 4.0;
 
 /// The raw estimate for `req`, using `backend`'s image rule. No calibration.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "an estimate: a non-negative float, saturating at u64::MAX"
+)]
 pub fn estimate_tokens(req: &LlmRequest, backend: &str) -> u64 {
     let mut chars: usize = 0;
     let mut tokens: u64 = 0;
@@ -103,6 +107,10 @@ pub fn estimate_tokens(req: &LlmRequest, backend: &str) -> u64 {
 /// - **OpenAI** (both APIs, and the default for any other host): the image is
 ///   scaled to fit 2048×2048, then its short side to 768, and costs 85 plus 170
 ///   per 512-pixel tile.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "an estimate: a non-negative float, saturating at u64::MAX"
+)]
 pub fn image_tokens(image: &ImagePart, backend: &str) -> u64 {
     let (width, height) =
         image_dimensions(&image.data).unwrap_or((UNKNOWN_IMAGE_SIDE, UNKNOWN_IMAGE_SIDE));
@@ -173,6 +181,10 @@ impl TokenEstimator {
     }
 
     /// The calibrated estimate for `req`.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "an estimate: a non-negative float, saturating at u64::MAX"
+    )]
     pub fn estimate(&self, req: &LlmRequest) -> u64 {
         (estimate_tokens(req, &self.backend) as f64 * self.factor).ceil() as u64
     }

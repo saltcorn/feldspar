@@ -13,7 +13,10 @@
 //! the status *and* quoting the endpoint's own explanation; a hung endpoint fails
 //! at the configured timeout rather than holding the caller; and the ways the
 //! configuration can be wrong are refused on save.
-
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use sc_types::Role;

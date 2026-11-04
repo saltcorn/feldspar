@@ -162,6 +162,10 @@ impl TaskScope {
 
 /// `tokio::spawn`, keeping the spawning task's [`TaskScope`]: its origin,
 /// changeset and outbox reach the spawned task.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the replacement clippy.toml names for tokio::spawn"
+)]
 pub fn spawn_scoped<F>(fut: F) -> tokio::task::JoinHandle<F::Output>
 where
     F: std::future::Future + Send + 'static,
@@ -481,6 +485,10 @@ impl<'a> From<&'a Principal> for Authority<'a> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 mod tests {
     use super::*;
     use serde_json::json;

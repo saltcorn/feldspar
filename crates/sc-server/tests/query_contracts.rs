@@ -13,6 +13,10 @@
 //! - F4.5: `ratelimit.check("share:" + token, …)` in a public query turns the
 //!   sixth wrong guess into a `429`, and another share still opens.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;

@@ -80,6 +80,8 @@ sc-db-sqlite.workspace = true
 sc-migrate.workspace = true
 tokio.workspace = true
 # `build-agent` talks to its server over HTTPS (`TODO-build-hosts.md`).
+# Where its HTTP clients start (`sc_net::client_builder`: a connect timeout).
+sc-net.workspace = true
 reqwest.workspace = true
 tokio-postgres.workspace = true
 serde_json.workspace = true

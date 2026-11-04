@@ -47,6 +47,8 @@ rig-core = { workspace = true }
 # through it directly — rig owns every call — but the type has to be nameable,
 # and naming the workspace's pinned one is what guarantees it is the same client
 # the rest of the tree builds.
+# Where its HTTP clients start (`sc_net::client_builder`: a connect timeout).
+sc-net.workspace = true
 reqwest.workspace = true
 
 [dev-dependencies]

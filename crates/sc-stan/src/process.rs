@@ -12,6 +12,11 @@
 //!
 //! And [`Watch`]: what stops a running child early — a cancel, read from the
 //! fit's context, or the fit's deadline — polled while its output is read.
+//!
+//! May use `unsafe` (the workspace denies it) for the two `libc` calls a child
+//! process needs and std has no safe form of: `prctl(PR_SET_PDEATHSIG)` in
+//! `pre_exec`, and `killpg`.
+#![allow(unsafe_code)]
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -94,6 +99,10 @@ impl Drop for KillGroupOnDrop {
 }
 
 /// Every line `stream` produces, sent to `tx` as it arrives.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: an I/O pump for a child process or connection; it writes no rows, so there is no task scope to carry"
+)]
 pub(crate) fn forward_lines(
     stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
@@ -109,6 +118,10 @@ pub(crate) fn forward_lines(
 }
 
 /// A child's stdout and stderr as one stream of lines, in arrival order.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "unbounded: the lines a child process prints, read as they arrive; the child's run is bounded by its timeout"
+)]
 pub(crate) fn output_lines(
     child: &mut tokio::process::Child,
 ) -> tokio::sync::mpsc::UnboundedReceiver<String> {

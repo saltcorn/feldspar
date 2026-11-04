@@ -272,7 +272,7 @@ impl Coverage {
         if self.total == 0 {
             return 100;
         }
-        ((self.translated * 100) / self.total) as u32
+        u32::try_from((self.translated * 100) / self.total).unwrap_or(100)
     }
 }
 

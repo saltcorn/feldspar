@@ -545,6 +545,10 @@ impl StreamSupervisor {
     /// **The one place the clock is read.** The interval is short because the
     /// thing it decides is "is a retry due", and the retries it is deciding
     /// about start at a second.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
+    )]
     pub fn start_task(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let supervisor = Arc::clone(self);
         tokio::spawn(async move {

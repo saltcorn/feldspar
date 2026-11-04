@@ -2959,6 +2959,10 @@ fn json_value(value: &Json, ty: ColType) -> Result<Value> {
 }
 
 /// The values of a Complete range.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+)]
 fn range_values(ty: ColType, from: &Json, to: &Json, step: Option<&Json>) -> Result<Vec<Value>> {
     let too_many = || {
         Error::invalid(format!(

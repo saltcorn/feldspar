@@ -232,6 +232,10 @@ pub(crate) fn fit_close_reason(reason: String) -> String {
 /// end of this function is what returns the slot, so a socket that closes (a
 /// reload, a closed tab, a lost network) frees the server it was using without
 /// anything having to notice separately.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: an I/O pump for a child process or connection; it writes no rows, so there is no task scope to carry"
+)]
 async fn bridge(
     socket: WebSocket,
     program: Arc<PathBuf>,

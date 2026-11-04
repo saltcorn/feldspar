@@ -721,6 +721,10 @@ fn qbeta(p: f64, a: f64, b: f64) -> f64 {
 /// The exact binomial test that the chance of a success is `p0`, from `x`
 /// successes in `n` trials, with the Clopper–Pearson interval — R's
 /// `binom.test`.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "numeric code: float-to-integer as saturates (NaN is 0), and the integer casts index tables this function sized"
+)]
 pub fn binomial(x: u64, n: u64, p0: f64, level: f64) -> Result<TestResult, Refusal> {
     if n == 0 {
         return Err("a binomial test needs at least one value".to_owned());
@@ -1004,6 +1008,10 @@ pub fn tukey_hsd(groups: &[Moments], level: f64) -> Result<Vec<Pairwise>, Refusa
 }
 
 /// The Kruskal–Wallis test that the groups' values are alike.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "numeric code: float-to-integer as saturates (NaN is 0), and the integer casts index tables this function sized"
+)]
 pub fn kruskal_wallis(groups: &[Vec<f64>]) -> Result<TestResult, Refusal> {
     let groups: Vec<&Vec<f64>> = groups.iter().filter(|g| !g.is_empty()).collect();
     let k = groups.len();
@@ -1137,6 +1145,10 @@ pub fn fisher_exact(table: &[Vec<u64>], level: f64) -> Result<TestResult, Refusa
     Ok(TestResult::new(TestKind::FisherExact, n, p).method("exact"))
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "numeric code: float-to-integer as saturates (NaN is 0), and the integer casts index tables this function sized"
+)]
 fn fisher_2x2(t: &[Vec<u64>], level: f64) -> TestResult {
     let x = t[0][0] as i64;
     let m = (t[0][0] + t[1][0]) as i64;
@@ -1247,6 +1259,10 @@ fn fisher_2x2(t: &[Vec<u64>], level: f64) -> TestResult {
 /// add — each column on its own, ignoring the others — settle at once every
 /// past value whose completions are all in the tail (their whole probability
 /// is added in closed form) or all out of it (dropped).
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "numeric code: float-to-integer as saturates (NaN is 0), and the integer casts index tables this function sized"
+)]
 fn fisher_rxc(table: &[Vec<u64>]) -> Option<f64> {
     use std::collections::HashMap;
     // Rows are the state, so the shorter side goes there.
@@ -1679,6 +1695,10 @@ pub fn logistic_regression(x: &[f64], y: &[bool], level: f64) -> Result<TestResu
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 mod tests {
     use super::*;
     use crate::stats::reference::{close, nums, reference};

@@ -357,6 +357,10 @@ fn literal_or_binding(ast: &Ast) -> Option<ModuleArg> {
 }
 
 /// A numeric literal as JSON text, integral where it can be.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the value is integral and within 2^53, so the cast is exact"
+)]
 fn number_literal(n: f64) -> String {
     const MAX_EXACT_INT: f64 = 9_007_199_254_740_992.0; // 2^53
     if !n.is_finite() {

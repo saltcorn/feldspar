@@ -251,6 +251,10 @@ fn output_of(process: &Managed) -> String {
     }
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: an I/O pump for a child process or connection; it writes no rows, so there is no task scope to carry"
+)]
 async fn start(
     scope: &FileScope,
     config: &Attrs,

@@ -802,6 +802,10 @@ pub async fn sweep_uploads(catalog: &Catalog, before: i64) -> sc_error::Result<u
 }
 
 /// Sweep abandoned uploads every ten minutes, for the life of the process.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
+)]
 pub(crate) fn spawn_upload_sweep(apps: Arc<crate::apps::AppMounts>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(600));

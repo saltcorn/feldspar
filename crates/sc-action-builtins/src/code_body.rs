@@ -37,6 +37,10 @@ pub(crate) const CFG_TIMEOUT: &str = "timeout_ms";
 
 /// What a trigger that names no timeout gets — the engine's own default, said in
 /// the unit the form takes.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a timeout of seconds, far inside u64 milliseconds; try_from is not const"
+)]
 pub(crate) const DEFAULT_TIMEOUT_MS: u64 = DEFAULT_CODE_TIMEOUT.as_millis() as u64;
 
 /// The ceiling on a configured timeout.
@@ -45,6 +49,10 @@ pub(crate) const DEFAULT_TIMEOUT_MS: u64 = DEFAULT_CODE_TIMEOUT.as_millis() as u
 /// write that fired it, so an unbounded body is an unbounded hold on that caller.
 /// A body now reads and writes tables, so it can genuinely need more than the
 /// default — and still not a minute.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a timeout of seconds, far inside u64 milliseconds; try_from is not const"
+)]
 pub(crate) const MAX_TIMEOUT_MS: u64 = MAX_CODE_TIMEOUT.as_millis() as u64;
 
 /// The two settings a code body has, with the editor told which language to

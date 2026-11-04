@@ -843,8 +843,15 @@ where
 }
 
 /// Set (or clear) the data-directory variable, returning what it was.
+#[allow(
+    unsafe_code,
+    clippy::disallowed_methods,
+    reason = "the tests of where a clone goes are tests of this variable"
+)]
 fn set_data_dir(dir: Option<&Path>) -> Option<String> {
     let before = std::env::var(DATA_DIR_ENV).ok();
+    // SAFETY: the callers hold this binary's environment lock for the whole
+    // test, so no other test reads or writes the variable meanwhile.
     unsafe {
         match dir {
             Some(d) => std::env::set_var(DATA_DIR_ENV, d),

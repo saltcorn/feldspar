@@ -41,6 +41,11 @@
 //! compared ([`super::snapshot`]): every changed path enters the change ledger
 //! with its pre-image, the model's read of it is forgotten (so the next edit
 //! asks for a re-read), and the result lists the paths.
+//!
+//! May use `unsafe` (the workspace denies it) for the `libc` calls a shell
+//! child needs: `getuid`/`getgid`, `pipe2`, `File::from_raw_fd`,
+//! `prctl(PR_SET_PDEATHSIG)` in `pre_exec`, and `killpg`.
+#![allow(unsafe_code)]
 
 use sc_types::ArgsExt;
 use std::path::{Path, PathBuf};

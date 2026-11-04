@@ -188,9 +188,9 @@ impl Settings {
             timeout: Duration::from_secs(bounded(
                 config,
                 CFG_TIMEOUT,
-                DEFAULT_TIMEOUT_SECONDS as usize,
+                usize::try_from(DEFAULT_TIMEOUT_SECONDS).unwrap_or(usize::MAX),
                 1,
-                MAX_TIMEOUT_SECONDS as usize,
+                usize::try_from(MAX_TIMEOUT_SECONDS).unwrap_or(usize::MAX),
             )? as u64),
         })
     }
@@ -210,8 +210,8 @@ fn bounded(config: &Attrs, key: &str, default: usize, min: usize, max: usize) ->
         None | Some(Json::Null) => return Ok(default),
         Some(v) => v
             .as_u64()
-            .ok_or_else(|| Error::invalid(format!("`{key}` should be a whole number, got {v}")))?
-            as usize,
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| Error::invalid(format!("`{key}` should be a whole number, got {v}")))?,
     };
     if !(min..=max).contains(&value) {
         return Err(Error::invalid(format!(
@@ -407,7 +407,7 @@ impl AgentTrait for Http {
         let start_line = args
             .get("start_line")
             .and_then(Json::as_u64)
-            .map_or(1, |n| n.max(1) as usize);
+            .map_or(1, |n| usize::try_from(n.max(1)).unwrap_or(usize::MAX));
         let find = args.get("find").and_then(Json::as_str);
 
         let key = Key {

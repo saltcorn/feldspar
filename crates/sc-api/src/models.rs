@@ -390,6 +390,10 @@ fn check_targets(table: &Table, write: &PosteriorWrite) -> Result<()> {
 }
 
 /// An effective sample size written into an integer field is rounded down.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+)]
 fn round_counts(table: &Table, write: &PosteriorWrite, mut values: Attrs) -> Attrs {
     for (statistic, field) in &write.statistics {
         let int = table

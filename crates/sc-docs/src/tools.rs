@@ -101,10 +101,11 @@ pub fn call(tool: &str, args: &Json) -> Result<Json> {
                 None | Some(Json::Null) => DEFAULT_HITS,
                 Some(Json::Number(n)) => n
                     .as_u64()
-                    .filter(|n| (1..=MAX_HITS as u64).contains(n))
+                    .and_then(|n| usize::try_from(n).ok())
+                    .filter(|n| (1..=MAX_HITS).contains(n))
                     .ok_or_else(|| {
                         Error::invalid(format!("`limit` should be between 1 and {MAX_HITS}"))
-                    })? as usize,
+                    })?,
                 Some(other) => {
                     return Err(Error::invalid(format!(
                         "`limit` should be a number, got {other}"

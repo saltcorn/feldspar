@@ -465,8 +465,8 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
                     .body
                     .get("position")
                     .and_then(Json::as_u64)
-                    .ok_or_else(|| Error::invalid("`position` is required"))?
-                    as usize;
+                    .and_then(|n| usize::try_from(n).ok())
+                    .ok_or_else(|| Error::invalid("`position` is required"))?;
                 let replace = ctx
                     .body
                     .get("replace")
@@ -1348,7 +1348,9 @@ fn workspace_id<W>(ctx: &HandlerCtx<W>) -> Result<WorkspaceId> {
 }
 
 fn optional_usize(body: &Json, key: &str) -> Option<usize> {
-    body.get(key).and_then(Json::as_u64).map(|n| n as usize)
+    body.get(key)
+        .and_then(Json::as_u64)
+        .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
 }
 
 /// The `dataset` of a read endpoint's body: a whole definition, stored or not.

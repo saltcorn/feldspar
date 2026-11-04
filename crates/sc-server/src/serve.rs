@@ -139,6 +139,10 @@ pub async fn serve(
 /// plain HTTP and with non-`Secure` cookies. The browser maps every host under
 /// the base domain onto it and no other name resolves, so no certificate needs
 /// trusting and a page cannot reach anything but this server (TODO §7b).
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
+)]
 pub async fn serve_browser(
     config: &ServerConfig,
     endpoints: &EndpointSet,
@@ -206,6 +210,10 @@ pub async fn serve_browser(
 /// without the capability to bind it is the usual one — is an error at startup
 /// naming the address, rather than a server that is up on one protocol and
 /// silently missing on the other.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
+)]
 async fn serve_with_tls(
     config: ServerConfig,
     app: axum::Router,
@@ -322,6 +330,10 @@ async fn shutdown_signal(service: ServiceManager) {
 }
 
 /// Sweep idle previews once a minute, for the life of the process.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
+)]
 fn spawn_preview_sweep(apps: Arc<AppMounts>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));

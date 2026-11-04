@@ -106,6 +106,10 @@ impl TargetBuilds {
     ///
     /// Answers the job as it stands once started, which is `running`. The
     /// build runs on its own task, so the caller's request can end at once.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn: detached on purpose; the work outlives the request that started it and must not run in that request's changeset"
+    )]
     pub fn start<F>(&self, app: &str, job: NewJob<'_>, build: F) -> TargetJob
     where
         F: Future<Output = Result<TargetArtifact>> + Send + 'static,

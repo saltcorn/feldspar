@@ -1487,6 +1487,10 @@ fn fold_comparison(op: QBinOp, a: &Value, b: &Value) -> Option<bool> {
     })
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the value is integral and within 2^53, so the cast is exact"
+)]
 fn num_value(n: f64) -> Value {
     const MAX_EXACT_INT: f64 = 9_007_199_254_740_992.0; // 2^53
     if n.fract() == 0.0 && n.abs() <= MAX_EXACT_INT {

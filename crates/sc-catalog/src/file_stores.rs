@@ -40,19 +40,19 @@ use crate::table::Table;
 pub const FILE_STORES_TABLE: &str = "_fd_file_stores";
 
 /// The UUID primary-key column (§9).
-pub const COL_ID: &str = "id";
+pub(crate) const COL_ID: &str = "id";
 /// The store's name — the key it is connected and referenced under (§14.1).
-pub const COL_NAME: &str = "name";
+pub(crate) const COL_NAME: &str = "name";
 /// The human-readable description column (§9).
-pub const COL_DESCRIPTION: &str = "description";
+pub(crate) const COL_DESCRIPTION: &str = "description";
 /// The backend serving the store (`local`, later `s3`, …).
-pub const COL_BACKEND: &str = "backend";
+pub(crate) const COL_BACKEND: &str = "backend";
 /// The backend's settings (JSON object).
-pub const COL_CONFIG: &str = "config";
+pub(crate) const COL_CONFIG: &str = "config";
 /// The store-wide minimum role, or NULL for unrestricted.
-pub const COL_MIN_ROLE: &str = "min_role";
+pub(crate) const COL_MIN_ROLE: &str = "min_role";
 /// The sparse per-store values column (§9) — JSON, always an object.
-pub const COL_ATTRIBUTES: &str = "attributes";
+pub(crate) const COL_ATTRIBUTES: &str = "attributes";
 
 /// The fields of the `_fd_file_stores` table, in declaration order.
 ///

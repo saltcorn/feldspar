@@ -363,6 +363,10 @@ pub(crate) async fn serve(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 mod tests {
     use super::*;
     use std::sync::Arc;

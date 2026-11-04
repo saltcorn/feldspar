@@ -54,6 +54,10 @@
 //! module's is what that crate does not know about: which directory, which
 //! environment, and ending everything the program started when the socket
 //! closes ([`pty::Session::kill`]). Off Unix the route refuses with a reason.
+//!
+//! May use `unsafe` (the workspace denies it) for the `killpg`/`kill` calls
+//! that end a terminal's process tree.
+#![allow(unsafe_code)]
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};

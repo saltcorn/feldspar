@@ -85,7 +85,7 @@ const MAX_REDIRECTS: usize = 10;
 /// literal checked, so neither a name nor a hop can lead it inside.
 fn public_client() -> Result<sc_net::PublicClient> {
     sc_net::PublicClient::new(
-        reqwest::Client::builder(),
+        sc_net::client_builder(),
         ", which a URL whose host comes from data may not reach",
         sc_net::Redirects::Follow(MAX_REDIRECTS),
     )
@@ -111,7 +111,7 @@ fn host_is_templated(source: &str) -> bool {
 /// settings and connection pooling are one thing to reason about rather than
 /// two that could drift.
 pub(crate) fn http_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    sc_net::client_builder()
         .build()
         .map_err(|e| Error::config(format!("could not build the HTTP client: {e}")))
 }

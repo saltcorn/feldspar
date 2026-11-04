@@ -135,6 +135,10 @@ impl ModelProvider for RandomForest {
         }
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+    )]
     async fn fit(&self, frame: &Frame, config: &Attrs, hyper: &Attrs) -> Result<FitResult> {
         let label = column_setting(config, LABEL)?;
         let seed = whole_setting(config, SEED, 0, 0)? as u64;
@@ -202,6 +206,10 @@ impl ModelProvider for RandomForest {
             .parameter(ParameterBlock::scalar("observations", x.rows() as f64)))
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+    )]
     async fn predict(&self, state: &Json, frame: &Frame) -> Result<Vec<Prediction>> {
         let state: State = from_state(self.name(), state)?;
         let x = design(frame, &state.features)?;
@@ -338,6 +346,10 @@ fn loss(kind: Kind, predictions: &[f64], truth: &[f64]) -> f64 {
 /// of the same fit would be a number nobody could quote. The generator is a
 /// 64-bit xorshift, which is all a Fisher–Yates shuffle needs and avoids a
 /// dependency on a crate this workspace does not otherwise use for arithmetic.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "numeric code: float-to-integer as saturates (NaN is 0), and the integer casts index tables this function sized"
+)]
 fn permute_column(x: &Matrix, j: usize, seed: u64) -> Result<Matrix> {
     let mut values = x.values().to_vec();
     let width = x.width();

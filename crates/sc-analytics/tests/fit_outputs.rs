@@ -1,6 +1,10 @@
 //! Plots over a fit's **output data** (analytics TODO A3.1): a frame stored
 //! beside the instance, read from it rather than through SQL, its stats
 //! computed in memory — whichever database the instance is stored in.
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use std::collections::BTreeMap;
 

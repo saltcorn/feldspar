@@ -185,7 +185,7 @@ pub(crate) fn whole_setting(attrs: &Attrs, key: &str, default: usize, min: usize
             "`{key}`: {n} is too small; it must be at least {min}"
         )));
     }
-    Ok(n as usize)
+    usize::try_from(n).map_err(|_| Error::invalid(format!("`{key}`: {n} is too large")))
 }
 
 /// An optional whole-number setting: absent, null or zero all mean "no limit".

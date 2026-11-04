@@ -166,8 +166,8 @@ impl<'a> HistoryReader<'a> {
             }
             granted
                 .into_iter()
-                .skip(offset as usize)
-                .take(limit as usize)
+                .skip(usize::try_from(offset).unwrap_or(usize::MAX))
+                .take(usize::try_from(limit).unwrap_or(usize::MAX))
                 .collect()
         };
         let emails = self.emails(found.iter().map(|e| &e.changeset)).await?;

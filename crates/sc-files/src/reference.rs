@@ -126,7 +126,7 @@ const MAX_SUFFIX: u32 = 10_000;
 /// `path` with `_n` before its extension: `docs/report.pdf` → `docs/report_2.pdf`,
 /// `notes` → `notes_2`. A leading dot (`.env`) is a name, not an extension, and
 /// only the last extension moves (`a.tar.gz` → `a.tar_2.gz`).
-pub fn suffixed_path(path: &str, n: u32) -> String {
+pub(crate) fn suffixed_path(path: &str, n: u32) -> String {
     let (dir, name) = match path.rfind('/') {
         Some(at) => path.split_at(at + 1),
         None => ("", path),

@@ -115,7 +115,7 @@ impl Installed {
 }
 
 fn client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    sc_net::client_builder()
         // GitHub's API refuses a request with no User-Agent.
         .user_agent(concat!(
             "feldspar/",
@@ -320,6 +320,10 @@ async fn unpack(tarball: &Path, staging: &Path, target: &Path) -> Result<()> {
 }
 
 /// `make build -j<jobs>` in `dir`, every line of its output passed to `on`.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "unbounded: the lines a child process prints, read as they arrive; the child's run is bounded by its timeout"
+)]
 async fn build(dir: &Path, jobs: u32, on: &mut (dyn FnMut(InstallEvent<'_>) + Send)) -> Result<()> {
     let mut command = tokio::process::Command::new("make");
     command

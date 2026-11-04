@@ -257,9 +257,11 @@ impl Matcher {
                 let length = found.as_str().chars().count();
                 hits.push(SearchHit {
                     path: path.to_owned(),
-                    line: index as u32 + 1,
-                    column: column as u32,
-                    length: length as u32,
+                    // Saturating: a line or a match past four billion is not
+                    // one a person is going to be shown.
+                    line: u32::try_from(index + 1).unwrap_or(u32::MAX),
+                    column: u32::try_from(column).unwrap_or(u32::MAX),
+                    length: u32::try_from(length).unwrap_or(u32::MAX),
                     text: truncate_chars(line, MAX_LINE_CHARS),
                 });
             }

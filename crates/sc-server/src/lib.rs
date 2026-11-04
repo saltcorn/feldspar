@@ -18,6 +18,20 @@
 //! The concrete admin handlers (login, tables, rows, users) live in
 //! [`admin_handlers`]; they are resolved by name against the [`sc_api`] admin
 //! endpoint set at dispatch time.
+//!
+//! Indexing, string slicing and unchecked arithmetic are warned about here
+//! (security review 2026-11, §6; TODO-type-hardening H1.7) when built with
+//! `--cfg feldspar_advisory_lints` (the CI `clippy-advisory` job): this crate
+//! handles request input, where each is a panic a request can cause. Advisory
+//! until the existing hits are fixed, so they do not fail `-D warnings`.
+#![cfg_attr(
+    feldspar_advisory_lints,
+    warn(
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::arithmetic_side_effects
+    )
+)]
 
 /// The administrator's tasks' access to the primary database and to the raw
 /// file stores (TODO-code-quality Q3.5, Q3.6): the one `Unchecked::system` the

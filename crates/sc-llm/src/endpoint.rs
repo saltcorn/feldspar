@@ -136,7 +136,7 @@ impl<'a> Endpoint<'a> {
                 })?,
             other => return Err(crate::def::unknown_backend(other)),
         };
-        let client = reqwest::Client::builder()
+        let client = sc_net::client_builder()
             .timeout(timeout)
             .build()
             .map_err(|e| Error::msg(format!("building the {kind} client: {e}")))?;

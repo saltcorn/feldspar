@@ -71,12 +71,12 @@ use crate::store::{Entry, FileMeta, FileStat, FileStore};
 use crate::store_path::StorePath;
 
 /// Where clones live: `<data dir>/git-stores`.
-pub fn clone_dir() -> Result<PathBuf> {
+pub(crate) fn clone_dir() -> Result<PathBuf> {
     Ok(data_dir()?.join("git-stores"))
 }
 
 /// Where deploy keys live: `<data dir>/keys`.
-pub fn key_dir() -> Result<PathBuf> {
+pub(crate) fn key_dir() -> Result<PathBuf> {
     Ok(data_dir()?.join("keys"))
 }
 
@@ -1211,7 +1211,7 @@ pub const ARG_CREATE: &str = "create";
 /// already accepts. Everything else is
 /// [`Instance`](OperationScope::Instance): there is no working tree to pull
 /// until there is a saved store.
-pub fn git_operations() -> Vec<Operation> {
+pub(crate) fn git_operations() -> Vec<Operation> {
     vec![
         Operation::new(OP_GENERATE_KEY, OperationScope::Configure)
             .label("Generate deploy key")
@@ -1587,7 +1587,7 @@ pub fn record_clone_path(def: &mut FileStoreDef, path: &Path) {
 /// admin can legitimately supply by hand — pointing a store at a key that
 /// already exists on the machine is a perfectly good configuration, and one an
 /// admin managing several stores against one repository will want.
-pub fn record_deploy_key(def: &mut FileStoreDef, key: &DeployKey) {
+pub(crate) fn record_deploy_key(def: &mut FileStoreDef, key: &DeployKey) {
     def.config.insert(
         CFG_KEY_PATH.to_owned(),
         serde_json::Value::String(key.private_key_path.to_string_lossy().into_owned()),
@@ -1601,14 +1601,13 @@ pub fn record_deploy_key(def: &mut FileStoreDef, key: &DeployKey) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paths::DATA_DIR_ENV;
     use crate::paths::testing::temp_env;
 
     #[test]
     fn the_data_directory_honours_the_override() {
         // A test must never clone into the developer's real data directory.
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             assert_eq!(data_dir().unwrap(), PathBuf::from("/tmp/sc-data"));
             assert_eq!(
                 clone_dir().unwrap(),
@@ -1621,7 +1620,7 @@ mod tests {
     #[test]
     fn a_clone_path_is_derived_from_the_name_until_one_is_recorded() {
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             let mut def = FileStoreDef::git("web app", "git@example.com:me/app.git");
             assert_eq!(
                 clone_path(&def).unwrap(),
@@ -1639,7 +1638,7 @@ mod tests {
     #[test]
     fn a_repo_is_built_from_the_definitions_settings() {
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             let def = FileStoreDef::git("app", "git@example.com:me/app.git")
                 .with(CFG_BRANCH, "main")
                 .with(CFG_KEY_PATH, "/keys/app.key");
@@ -1662,7 +1661,7 @@ mod tests {
     #[test]
     fn a_blank_url_is_no_url() {
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             // Whitespace is not a URL. The repository is still buildable — a
             // store may have a directory instead — but it has nothing to clone
             // from, which is what stops it being git's "repository '   ' does
@@ -1675,7 +1674,7 @@ mod tests {
     #[test]
     fn a_configured_directory_is_where_the_working_copy_goes() {
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             let def = FileStoreDef::git("app", "git@example.com:me/app.git")
                 .with(CFG_DIR, "/srv/checkout");
             assert_eq!(clone_path(&def).unwrap(), PathBuf::from("/srv/checkout"));
@@ -1697,7 +1696,7 @@ mod tests {
     #[test]
     fn a_store_may_have_a_directory_and_no_url_at_all() {
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             let def = FileStoreDef::new("app", GIT_BACKEND).with(CFG_DIR, "/srv/checkout");
             let repo = GitRepo::from_def(&def).unwrap();
             assert_eq!(repo.url(), None);
@@ -1728,7 +1727,7 @@ mod tests {
         // where a working tree *is*, and following it is what keeps that tree
         // reachable.
         temp_env(|| {
-            unsafe { std::env::set_var(DATA_DIR_ENV, "/tmp/sc-data") };
+            crate::paths::testing::set_data_dir("/tmp/sc-data");
             let mut def = FileStoreDef::git("app", "git@example.com:me/app.git")
                 .with(CFG_DIR, "/srv/checkout");
             record_clone_path(&mut def, Path::new("/srv/original"));

@@ -7,6 +7,10 @@
 //! - a guest session that has ended (its guest signed in) closes the socket at
 //!   the next re-check, as a signed-in session's end does.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use crate::support::Socket;
 use sc_types::Role;

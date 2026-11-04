@@ -212,7 +212,7 @@ pub async fn read_row_values_as(
 }
 
 /// [`read_row_values_as`] on a caller's [`Executor`](rows::Executor).
-pub async fn read_row_values_as_in(
+pub(crate) async fn read_row_values_as_in(
     cat: &Catalog,
     table: &Table,
     query: &rows::RowQuery,
@@ -822,7 +822,7 @@ pub async fn aggregate_values_as(
 /// from an untranslatable ownership formula is refused here for exactly the
 /// reason an ungrouped count is: a per-group number computed over rows it could
 /// not filter would be several numbers nobody can check instead of one.
-pub async fn aggregate_grouped_as(
+pub(crate) async fn aggregate_grouped_as(
     cat: &Catalog,
     table: &Table,
     projections: Vec<Projection>,
@@ -1128,7 +1128,7 @@ pub async fn row_allowed(
 /// translatable — ANDed into the UPDATE/DELETE WHERE so the row cannot change
 /// hands between the check and the write. `None` for an untranslatable
 /// formula, whose single-row reified check already ran.
-pub fn write_guard(
+pub(crate) fn write_guard(
     cat: &Catalog,
     table: &Table,
     formula: &Formula,
@@ -1154,7 +1154,7 @@ pub fn write_guard(
 
 /// Fetch the full row addressed by `id` — its columns plus every Ⱶ-join value
 /// the formula reads, projected in the same query. `None` when no such row.
-pub async fn fetch_row_values(
+pub(crate) async fn fetch_row_values(
     cat: &Catalog,
     table: &Table,
     formula: &Formula,
@@ -1189,7 +1189,7 @@ pub async fn fetch_row_values(
 /// ([`generated`](sc_catalog::DataField::generated): an identity key, a
 /// `DEFAULT`) is left unbound — `null` would not be what is stored, and a
 /// formula that reads one on insert keeps failing closed.
-pub fn proposed_insert_row(table: &Table, body: &Json) -> Result<BTreeMap<String, Value>> {
+pub(crate) fn proposed_insert_row(table: &Table, body: &Json) -> Result<BTreeMap<String, Value>> {
     let mut values = rows::coerce_row_values(table, body)?;
     for field in &table.fields {
         if field.is_calc() || field.is_collab_doc() || field.generated.is_some() {

@@ -310,7 +310,8 @@ fn percent_decoded(segment: &str) -> String {
                 bytes.get(i + 2).copied().and_then(hex),
             )
         {
-            out.push((h * 16 + l) as u8);
+            // Two hex digits, so at most 255.
+            out.push(u8::try_from(h * 16 + l).unwrap_or(u8::MAX));
             i += 3;
         } else {
             out.push(bytes[i]);

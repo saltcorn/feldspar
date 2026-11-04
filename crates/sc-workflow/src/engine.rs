@@ -120,6 +120,10 @@ impl WorkflowEngineTask {
     ///
     /// Returns the handle so a caller can abort it; a dropped handle leaves the
     /// task running, which is what a server wants (it ends with the process).
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
+    )]
     pub fn start(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let engine = Arc::clone(self);
         tokio::spawn(async move {

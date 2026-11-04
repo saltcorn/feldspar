@@ -71,7 +71,7 @@ impl PgParam<'_> {
                 Type::NUMERIC => Decimal::try_from(*v)
                     .map_err(BoxError::from)
                     .and_then(|d| d.to_sql_checked(ty, out)),
-                Type::FLOAT4 => (*v as f32).to_sql_checked(ty, out),
+                Type::FLOAT4 => single_precision(*v).to_sql_checked(ty, out),
                 _ => v.to_sql_checked(ty, out),
             },
             // A geometry travels as GeoJSON and PostGIS takes EWKB (see
@@ -210,6 +210,17 @@ fn encode_geometry(
 /// itself: an extension's type has no fixed OID.
 pub(crate) const VECTOR_TYPE: &str = "vector";
 
+/// `v` rounded to the single precision a `float4` column (and a vector
+/// element) holds, as Postgres itself rounds a `float8` assigned to one. A value
+/// past `f32`'s range becomes infinite.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the narrowing is the point: a float4 holds single precision"
+)]
+fn single_precision(v: f64) -> f32 {
+    v as f32
+}
+
 /// A JSON array of numbers as pgvector's binary form: the dimension count and
 /// an unused word, as 16-bit integers, then each element as a big-endian
 /// `f32` (pgvector's `vector_recv`).
@@ -229,7 +240,7 @@ fn encode_vector(
     for item in items {
         let x = item
             .as_f64()
-            .map(|x| x as f32)
+            .map(single_precision)
             .filter(|x| x.is_finite())
             .ok_or_else(|| BoxError::from(format!("{item} is not a number of a vector")))?;
         out.extend_from_slice(&x.to_be_bytes());

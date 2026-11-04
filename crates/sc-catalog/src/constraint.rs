@@ -555,7 +555,7 @@ pub fn is_full_text_field(field: &DataField) -> bool {
 /// ([`sc_query::text_search_document`]), because an index and the search that
 /// hopes to use it must be the same expression or the index is simply never
 /// used.
-pub fn full_text_expression(
+pub(crate) fn full_text_expression(
     dialect: &dyn SqlDialect,
     table: &Table,
     language: &str,

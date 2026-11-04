@@ -32,6 +32,8 @@ sha2.workspace = true
 tokio = { workspace = true, features = ["fs", "process", "time", "sync", "macros", "io-util"] }
 # The release tarball and the "latest release" lookup, over the workspace's one
 # rustls reqwest.
+# Where its HTTP clients start (`sc_net::client_builder`: a connect timeout).
+sc-net.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 # Killing `make`'s whole process group when an install is abandoned: `make -jJ`

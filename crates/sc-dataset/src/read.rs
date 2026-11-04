@@ -223,6 +223,10 @@ pub fn last_stage(
 /// computed `price > 100` comes back `1` and a `min(viewed_on)` as text, and a
 /// Postgres `sum` of integers is a decimal. The same dataset then reads the
 /// same on both.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+)]
 fn coerce(columns: &[StageColumn], rows: &mut [Vec<Value>]) {
     for row in rows {
         for (value, column) in row.iter_mut().zip(columns) {

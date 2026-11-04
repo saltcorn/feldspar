@@ -48,6 +48,10 @@
 //! It also carries [`TestSmtp`], a local SMTP server that accepts one message,
 //! for the same reason: a test of the mail transport that never puts bytes on a
 //! socket is a test of a mock.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test support: it runs its own servers and tasks; the replacements are for production paths"
+)]
 
 pub mod scratch;
 #[cfg(feature = "catalog")]

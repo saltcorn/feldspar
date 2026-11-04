@@ -29,7 +29,7 @@ pub const SYNC_KEYS_TABLE: &str = "_fd_sync_keys";
 
 /// `_fd_tables.attributes` key holding a table's sync settings, an object
 /// (`{ "enabled": true }`) so later settings have somewhere to go.
-pub const ATTR_SYNC: &str = "sync";
+pub(crate) const ATTR_SYNC: &str = "sync";
 
 /// The device table's columns. `watermark` is what the device last said it has
 /// (it sends it with each pull), not what the server last handed out: an answer

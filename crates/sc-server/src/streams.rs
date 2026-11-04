@@ -177,6 +177,10 @@ impl TriggerBridge {
 }
 
 impl StreamConsumer for TriggerBridge {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn: a stream element fires its triggers at system origin, not at the scope of the task that received it"
+    )]
     fn consume(&self, envelope: &Envelope) -> Delivery {
         let stream = envelope.stream.clone();
         if !self.anybody_listening(&stream) {

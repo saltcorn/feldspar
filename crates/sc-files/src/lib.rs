@@ -15,6 +15,26 @@
 //!   a [`StorePath`], which only the one validator makes: `..`, `\`, `:`, NUL
 //!   and Windows-trimmed segments are refused before any backend sees the path,
 //!   and `.git` in any spelling is known (TODO-code-quality Q4.1).
+//!
+//! `unreachable_pub` (security review 2026-11, F-15): an item is `pub` only
+//! when another crate calls it. A primitive that skips the guarded entry
+//! points stays `pub(crate)`, so a handler elsewhere cannot reach past the
+//! guard by importing it.
+//!
+//! Indexing, string slicing and unchecked arithmetic are warned about here
+//! (security review 2026-11, §6; TODO-type-hardening H1.7) when built with
+//! `--cfg feldspar_advisory_lints` (the CI `clippy-advisory` job): this crate
+//! handles request input, where each is a panic a request can cause. Advisory
+//! until the existing hits are fixed, so they do not fail `-D warnings`.
+#![warn(unreachable_pub)]
+#![cfg_attr(
+    feldspar_advisory_lints,
+    warn(
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::arithmetic_side_effects
+    )
+)]
 
 mod access;
 mod backend;
@@ -35,12 +55,12 @@ pub mod xattr;
 
 pub use access::{
     FileCaller, VisibleEntry, check_access, check_write, configures_coding_agent, controls_build,
-    effective_min_role, filter_visible, list_visible, record_owner, visible_entries,
+    effective_min_role, list_visible, record_owner,
 };
 pub use backend::{
     OperationOutcome, Relocation, backend_config_spec, backend_operations, connect_from_def,
-    display_config, git_config_spec, local_config_spec, registered_backends, relocate_for_restore,
-    run_backend_operation, validate_file_store_config,
+    display_config, registered_backends, relocate_for_restore, run_backend_operation,
+    validate_file_store_config,
 };
 pub use checked::{CheckedStore, Readable, Writable};
 pub use def::{
@@ -51,13 +71,12 @@ pub use disk::{remove_store_from_disk, store_directory};
 pub use git::{
     ARG_BRANCH, ARG_CREATE, ARG_MESSAGE, ARG_PATHS, ARG_STAGED_ONLY, CommitOutcome, DeployKey,
     GitChange, GitFileStore, GitOutput, GitRepo, GitStatus, OP_CHECKOUT, OP_CLONE, OP_COMMIT,
-    OP_DISCARD, OP_GENERATE_KEY, OP_PULL, OP_PUSH, OP_STAGE, OP_STATUS, OP_UNSTAGE, clone_dir,
-    clone_path, generate_deploy_key, git_operations, key_dir, parse_change, record_clone_path,
-    record_deploy_key,
+    OP_DISCARD, OP_GENERATE_KEY, OP_PULL, OP_PUSH, OP_STAGE, OP_STATUS, OP_UNSTAGE, clone_path,
+    generate_deploy_key, parse_change, record_clone_path,
 };
-pub use local::{LocalFileStore, OP_SUGGEST_DIR, local_operations};
-pub use paths::{DATA_DIR_ENV, data_dir, local_store_dir, suggest_local_dir};
-pub use reference::{free_path, mime_allowed, mime_for_path, suffixed_path, validate_file_path};
+pub use local::{LocalFileStore, OP_SUGGEST_DIR};
+pub use paths::{DATA_DIR_ENV, data_dir, suggest_local_dir};
+pub use reference::{free_path, mime_allowed, mime_for_path, validate_file_path};
 pub use search::{
     DEFAULT_EXCLUDED_DIRS, DEFAULT_MAX_FOUND, DEFAULT_MAX_RESULTS, FoundFiles, MAX_FILE_BYTES,
     MAX_FILES_SCANNED, MAX_LINE_CHARS, SearchHit, SearchOutcome, SearchQuery, find_by_extension,
@@ -66,9 +85,7 @@ pub use search::{
 pub use serve::ServeFile;
 pub use store::{CONTENT_TYPE_ATTRIBUTE, Entry, FILENAME_ATTRIBUTE, FileMeta, FileStat, FileStore};
 pub use store_path::{AsStorePath, StorePath, in_git_dir};
-pub use stream::{
-    BoxAsyncRead, BoxAsyncWrite, READ_CHUNK, check_range, read_chunks, read_to_bytes,
-};
+pub use stream::{BoxAsyncRead, BoxAsyncWrite, READ_CHUNK, read_chunks, read_to_bytes};
 
 #[cfg(test)]
 mod tests {
@@ -1113,14 +1130,14 @@ mod tests {
 
         // A listing must be filtered rather than merely refused: showing a name
         // the caller cannot open leaks exactly what the rule was set to hide.
-        let visible = filter_visible(&store, None, all.clone(), &FileCaller::anonymous())
+        let visible = access::filter_visible(&store, None, all.clone(), &FileCaller::anonymous())
             .await
             .unwrap();
         let names: Vec<&str> = visible.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["open.txt"]);
 
         // An admin sees everything.
-        let admin = filter_visible(&store, None, all, &FileCaller::role(Role::ADMIN))
+        let admin = access::filter_visible(&store, None, all, &FileCaller::role(Role::ADMIN))
             .await
             .unwrap();
         assert_eq!(admin.len(), 2);

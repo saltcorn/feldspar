@@ -853,6 +853,10 @@ fn flag_value(op: Operation, flag: OpFlag) -> bool {
 
 #[cfg(feature = "eval")]
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 mod tests {
     use super::*;
 

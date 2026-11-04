@@ -251,7 +251,8 @@ pub fn header(
 ) -> Option<String> {
     let tokens = configured_tokens(config).ok().filter(|t| *t > 0)?;
     let focus = focus_of(files, terms_of(brief));
-    Some(render(scope, files, &focus, tokens as usize, truncated))
+    let tokens = usize::try_from(tokens).unwrap_or(usize::MAX);
+    Some(render(scope, files, &focus, tokens, truncated))
 }
 
 #[cfg(test)]

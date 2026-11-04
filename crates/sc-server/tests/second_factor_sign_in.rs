@@ -11,6 +11,10 @@
 //! - a browser answers the challenge on the server's own page, with a form, and
 //!   goes on to where it was going;
 //! - becoming a user is not stopped by the user's second factor.
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use std::collections::HashMap;
 use std::sync::Arc;

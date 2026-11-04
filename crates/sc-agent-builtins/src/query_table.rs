@@ -178,7 +178,7 @@ impl AgentTrait for QueryTable {
 
         let mut rows: Vec<Json> = found.as_array().cloned().unwrap_or_default();
         let more = rows.len() as u64 > limit;
-        rows.truncate(limit as usize);
+        rows.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
         let rows: Vec<Json> = rows.iter().map(|row| project(row, &visible)).collect();
         if shows_results(config)? {
             return show(&table, config, &visible, rows, more, ctx);

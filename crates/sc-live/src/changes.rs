@@ -427,9 +427,10 @@ pub(crate) async fn decide(
         });
         *slot = Some(Arc::clone(envelope));
     }
-    counters
-        .evaluator_micros
-        .fetch_add(evaluating.as_micros() as u64, Ordering::Relaxed);
+    counters.evaluator_micros.fetch_add(
+        u64::try_from(evaluating.as_micros()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
     out
 }
 

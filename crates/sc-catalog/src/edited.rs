@@ -53,7 +53,7 @@ pub fn updated_now() -> Value {
 /// Ensure `_fd_table_edits` exists. Called by
 /// [`bootstrap_table_meta`](crate::bootstrap_table_meta), so every installation
 /// that can configure a table can also record that it did.
-pub async fn bootstrap_table_edits(catalog: &Catalog) -> Result<Table> {
+pub(crate) async fn bootstrap_table_edits(catalog: &Catalog) -> Result<Table> {
     catalog
         .bootstrap_table(
             TABLE_EDITS_TABLE,
@@ -98,7 +98,7 @@ pub async fn touch_tables<S: AsRef<str>>(catalog: &Catalog, names: &[S]) -> Resu
 
 /// Forget a dropped table's edit time, so a new table of the same name does not
 /// inherit it.
-pub async fn forget_table_edit(catalog: &Catalog, name: &str) -> Result<()> {
+pub(crate) async fn forget_table_edit(catalog: &Catalog, name: &str) -> Result<()> {
     if catalog.get(TABLE_EDITS_TABLE)?.is_none() {
         return Ok(());
     }

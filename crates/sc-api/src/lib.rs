@@ -29,6 +29,20 @@
 //! triggers, an application's custom queries — written once here and offered
 //! both to the built-in copilot agent and to the administration MCP server
 //! (§13.6), rather than implemented once per caller.
+//!
+//! Indexing, string slicing and unchecked arithmetic are warned about here
+//! (security review 2026-11, §6; TODO-type-hardening H1.7) when built with
+//! `--cfg feldspar_advisory_lints` (the CI `clippy-advisory` job): this crate
+//! handles request input, where each is a panic a request can cause. Advisory
+//! until the existing hits are fixed, so they do not fail `-D warnings`.
+#![cfg_attr(
+    feldspar_advisory_lints,
+    warn(
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::arithmetic_side_effects
+    )
+)]
 
 /// This crate's own tables' access to the primary database
 /// (TODO-code-quality Q3.5): the one `Unchecked::system` its internal stores

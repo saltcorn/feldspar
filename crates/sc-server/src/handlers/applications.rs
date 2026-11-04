@@ -1202,6 +1202,10 @@ fn builds_on_hosts(body: &mut Json, hosts: &[sc_app::BuildHost]) {
 /// Never fatal, in either shape: the row is saved and valid, and a build that
 /// fails is one the admin fixes in the project and re-runs with the Build
 /// button.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: detached on purpose; the work outlives the request that started it and must not run in that request's changeset"
+)]
 async fn serve_new_application(apps: &Arc<AppMounts>, app: &sc_app::Application, body: &mut Json) {
     if sc_app::framework_factory(&app.framework.name).is_some() {
         mount_if_constructed(apps, app, body).await;

@@ -8,6 +8,10 @@
 //! application on it, mints a session the way the command does — against the
 //! database alone — and then presents it over HTTP.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use sc_types::Role;
 use std::sync::Arc;

@@ -439,7 +439,7 @@ pub async fn list_visible(
 /// so this only consults each child's own metadata — the ancestors are common to
 /// every entry and re-reading them per child would be one `get_meta` per level
 /// per file.
-pub async fn filter_visible(
+pub(crate) async fn filter_visible(
     store: &dyn FileStore,
     dir_floor: Option<Role>,
     entries: Vec<crate::Entry>,
@@ -471,7 +471,7 @@ pub struct VisibleEntry {
 /// see it, and a caller that then wants to *show* the rule — a file manager with
 /// an access column — would otherwise read all of it a second time. Same walk,
 /// same rule, one `get_meta` per entry.
-pub async fn visible_entries(
+pub(crate) async fn visible_entries(
     store: &dyn FileStore,
     dir_floor: Option<Role>,
     entries: Vec<crate::Entry>,

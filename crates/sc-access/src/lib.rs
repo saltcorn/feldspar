@@ -23,6 +23,26 @@
 //!   syntax lowers through; [`user_rows`] the users table's own rules
 //!   (the bridge from JSON to the query layer's `Value` is `sc_types::json`'s);
 //!   and [`calc_read`] calculated fields on the read path.
+//!
+//! `unreachable_pub` (security review 2026-11, F-15): an item is `pub` only
+//! when another crate calls it. A primitive that skips the guarded entry
+//! points stays `pub(crate)`, so a handler elsewhere cannot reach past the
+//! guard by importing it.
+//!
+//! Indexing, string slicing and unchecked arithmetic are warned about here
+//! (security review 2026-11, §6; TODO-type-hardening H1.7) when built with
+//! `--cfg feldspar_advisory_lints` (the CI `clippy-advisory` job): this crate
+//! handles request input, where each is a panic a request can cause. Advisory
+//! until the existing hits are fixed, so they do not fail `-D warnings`.
+#![warn(unreachable_pub)]
+#![cfg_attr(
+    feldspar_advisory_lints,
+    warn(
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::arithmetic_side_effects
+    )
+)]
 
 pub mod calc_read;
 pub mod filter;

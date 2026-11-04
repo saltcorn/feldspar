@@ -261,7 +261,7 @@ pub async fn delete_user(catalog: &Catalog, id: Uuid) -> Result<bool> {
 /// than at each door. An installation with no enabled admin can only be
 /// recovered from a terminal (`feldspar modify-user … --enabled`), and that is
 /// not a state any of those callers means to produce.
-pub async fn refuse_last_admin(catalog: &Catalog, id: Uuid, verb: &str) -> Result<()> {
+pub(crate) async fn refuse_last_admin(catalog: &Catalog, id: Uuid, verb: &str) -> Result<()> {
     let Some(user) = load_base_user(catalog, id).await? else {
         return Ok(());
     };

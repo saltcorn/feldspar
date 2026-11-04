@@ -600,7 +600,7 @@ async fn exchange(
     code: &str,
     pending: &Pending,
 ) -> std::result::Result<(reqwest::Client, Value), String> {
-    let client = reqwest::Client::builder()
+    let client = sc_net::client_builder()
         .timeout(PROVIDER_TIMEOUT)
         .user_agent("Saltcorn Feldspar")
         .build()

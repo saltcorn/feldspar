@@ -388,7 +388,7 @@ impl Grid {
                 let mut k = between.div_euclid(months);
                 // A start mid-month: the step that month begins may still be
                 // ahead of `t`.
-                while k > 0 && self.start_of(k as usize)? > t {
+                while k > 0 && self.start_of(usize::try_from(k).unwrap_or(usize::MAX))? > t {
                     k -= 1;
                 }
                 k

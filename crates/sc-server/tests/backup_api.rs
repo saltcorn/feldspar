@@ -26,6 +26,14 @@
 //! - and every one of these is **admin-only**, like every other configuration
 //!   endpoint.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};
 use sc_types::Role;
@@ -2440,10 +2448,17 @@ async fn every_backup_route_is_admin_only() -> sc_error::Result<()> {
 /// Set once for the whole binary, as `git_store_api`'s is: the environment is
 /// process-wide and these tests run in parallel. Only this test defines a store
 /// the restore has to place; every other one prepares its store first.
+#[allow(
+    unsafe_code,
+    reason = "the binary's data directory is set once, through the environment the server reads"
+)]
 fn data_dir() -> &'static std::path::Path {
     static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
         let dir = temp_dir();
+        // SAFETY: test-only: written once per binary, under the `OnceLock`,
+        // and never changed after. A concurrent `getenv` in another test is
+        // the test-code race security review 2026-11 (F §1) records.
         unsafe { std::env::set_var(sc_files::DATA_DIR_ENV, &dir) };
         dir
     })

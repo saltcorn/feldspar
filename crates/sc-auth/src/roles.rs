@@ -38,10 +38,10 @@ use crate::users::USERS_TABLE;
 pub const ROLES_TABLE: &str = "_fd_roles";
 
 /// The UUID primary-key column (§9).
-pub const COL_ID: &str = "id";
+pub(crate) const COL_ID: &str = "id";
 /// The role number, `1..=100` — the value `users.role` and every `min_role`
 /// holds, and the target of the users table's foreign key.
-pub const COL_ROLE: &str = "role";
+pub(crate) const COL_ROLE: &str = "role";
 /// The role's human name (§9's required `name`), e.g. `Admin`.
 pub const COL_NAME: &str = "name";
 /// The human-readable description column (§9).
@@ -224,7 +224,7 @@ pub async fn load_role(catalog: &Catalog, role: Role) -> Result<Option<RoleDef>>
 }
 
 /// The role with this name, if any.
-pub async fn load_role_by_name(catalog: &Catalog, name: &str) -> Result<Option<RoleDef>> {
+pub(crate) async fn load_role_by_name(catalog: &Catalog, name: &str) -> Result<Option<RoleDef>> {
     load_one(catalog, Expr::col(COL_NAME).eq(Expr::lit(name))).await
 }
 

@@ -209,7 +209,7 @@ fn session_fields() -> Vec<DataField> {
 /// [`bootstrap`](crate::bootstrap) does them in that order. Idempotent, like
 /// every other bootstrap — including across the truncation an unclean shutdown
 /// does to an unlogged table, which empties it without dropping it.
-pub async fn bootstrap_sessions(catalog: &Catalog) -> Result<Table> {
+pub(crate) async fn bootstrap_sessions(catalog: &Catalog) -> Result<Table> {
     if let Some(existing) = catalog.get(SESSIONS_TABLE)? {
         return Ok(existing);
     }
@@ -338,7 +338,7 @@ impl SessionStore {
     }
 
     /// An in-process store whose sessions expire `ttl` after they are created.
-    pub fn with_ttl(ttl: Duration) -> SessionStore {
+    pub(crate) fn with_ttl(ttl: Duration) -> SessionStore {
         SessionStore {
             ttl,
             cache_ttl: Duration::seconds(CACHE_TTL_SECONDS),
@@ -697,7 +697,7 @@ impl SessionStore {
 
     /// Drop every cached session on this node. The blunt instrument, for a
     /// change too broad to name tokens for.
-    pub fn invalidate_all(&self) -> Result<()> {
+    pub(crate) fn invalidate_all(&self) -> Result<()> {
         self.cache.lock().map_err(|_| poisoned())?.clear();
         Ok(())
     }

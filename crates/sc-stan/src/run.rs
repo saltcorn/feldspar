@@ -244,6 +244,10 @@ impl RunSettings {
 }
 
 /// `2` rather than `2.0`, `0.95` as itself.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-integer as saturates (NaN is 0); it rounds a finite count, bin or index computed from the data"
+)]
 fn number(x: f64) -> String {
     if x.fract() == 0.0 && x.abs() < 1e15 {
         format!("{}", x as i64)

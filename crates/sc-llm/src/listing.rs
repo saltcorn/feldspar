@@ -34,7 +34,7 @@ pub async fn fetch_host_models(provider: &LlmProviderDef) -> Result<Vec<String>>
     let key = provider.setting(CFG_API_KEY).unwrap_or_default().trim();
     let base = provider.setting(CFG_BASE_URL).unwrap_or_default().trim();
 
-    let client = reqwest::Client::builder()
+    let client = sc_net::client_builder()
         .timeout(LISTING_TIMEOUT)
         .build()
         .map_err(|e| Error::msg(format!("cannot build an HTTP client: {e}")))?;

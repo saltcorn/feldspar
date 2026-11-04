@@ -4,6 +4,10 @@
 //! No harness and no server: a SQLite database is a file (or, here, a private
 //! in-memory database), which is the whole reason this backend exists.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::sync::Arc;
 

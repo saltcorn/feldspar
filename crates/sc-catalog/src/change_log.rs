@@ -36,15 +36,15 @@ use sc_types::Attrs;
 /// The change log: one entry per recorded insert, update or delete.
 pub const CHANGES_TABLE: &str = "_fd_changes";
 /// The function every change-log trigger calls.
-pub const RECORD_FUNCTION: &str = "_fd_record_change";
+pub(crate) const RECORD_FUNCTION: &str = "_fd_record_change";
 /// The name of the trigger on a recorded table — one per table, so a table's
 /// trigger is found and dropped by this name. (Postgres names triggers per
 /// table, so sharing the log's name clashes with nothing.)
-pub const CHANGES_TRIGGER: &str = "_fd_changes";
+pub(crate) const CHANGES_TRIGGER: &str = "_fd_changes";
 
 /// `_fd_tables.attributes` key holding a table's history settings, an object
 /// (`{ "enabled": true, "keep_days": 365 }`) like sync's.
-pub const ATTR_HISTORY: &str = "history";
+pub(crate) const ATTR_HISTORY: &str = "history";
 
 /// Which feature asked for the change log, so a refusal can name it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +95,7 @@ fn changes_fields() -> Vec<DataField> {
 }
 
 /// The function that merges one write into its changeset's entry for the row.
-pub const MERGE_FUNCTION: &str = "_fd_merge_change";
+pub(crate) const MERGE_FUNCTION: &str = "_fd_merge_change";
 
 /// The transaction-local marker naming the changeset whose `_fd_changesets`
 /// row this transaction has already seen to, and whether it created it
@@ -383,7 +383,7 @@ pub fn json_texts_sql(dialect: &dyn SqlDialect, bind: &str) -> String {
 }
 
 /// The aggregate collecting `expr`'s distinct values into a JSON array.
-pub fn json_distinct_array_sql(dialect: &dyn SqlDialect, expr: &str) -> String {
+pub(crate) fn json_distinct_array_sql(dialect: &dyn SqlDialect, expr: &str) -> String {
     if dialect.is_sqlite() {
         format!("json_group_array(DISTINCT {expr})")
     } else {

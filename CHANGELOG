@@ -2,6 +2,66 @@
 
 Changes in reverse chronological order.
 
+## Security hardening H1: the compiler and CI enforce the review
+
+The lint and CI half of `docs/SECURITY_REVIEW_2026-11.md` §6 (TODO-type-hardening H1). No change to
+the wire format or stored data.
+
+- **`unsafe` only where C is called** (H1.1). `unsafe_code` is denied workspace-wide and allowed
+  again per module in `sc-dns`'s `addrinfo`, `sc-python`'s interpreter, the `libc` process,
+  terminal and statvfs calls (`sc-stan`, `sc-server`, `sc-agent-builtins`' shell, `sc-cli`), and
+  a one-function module for `sc-config-file`'s `getegid`. `undocumented_unsafe_blocks` is denied:
+  `addrinfo.rs`'s 53 blocks and the tests' `set_var` calls now each say why they are sound (or,
+  for the tests that set the environment, that they are not airtight). `todo`, `unimplemented`,
+  `dbg_macro` and `let_underscore_future` are denied. `sc-files`' tests set the data directory
+  through one helper under their lock.
+- **Release builds keep overflow checks** (H1.2): `overflow-checks = true` in `[profile.release]`.
+- **Disallowed methods** (H1.3), each with its replacement in `clippy.toml`:
+  - `std::env::set_var`/`remove_var`.
+  - `reqwest::Client::new`/`builder`/`reqwest::get`. The new `sc_net::client_builder()` sets a
+    30-second connect timeout. Every HTTP client now starts from it: the LLM endpoints and
+    model listing, OAuth, S3 backups, public datasets, the CmdStan download, the `fetch`
+    action, the agent `http` trait, the MCP client and the CLI build agent. Existing total
+    timeouts are unchanged.
+  - `tokio::spawn`: use `sc_catalog::spawn_scoped`. A deleted row's file removal after commit
+    now uses it, as the uncommitted path already ran in the caller's scope. Background loops,
+    detached jobs and I/O pumps keep `tokio::spawn`, each with a reason saying why they must not
+    inherit the caller's scope.
+  - `tokio::sync::mpsc::unbounded_channel`. Each existing use says what bounds it.
+- **Truncating casts** (H1.4): `cast_possible_truncation` is denied and its ~130 production sites are fixed (test code has a module-level `allow`).
+  Counts and limits use saturating `try_from`. A value that would wrap is an error: a geo import's
+  feature index, a model setting, an index position. Exact or saturating float casts have an
+  `allow` with a reason. **Fixed bug:** a public dataset's combined date (`[year, month, day]`)
+  cast an out-of-range year with `as i32`, so 4294969296 read as the year 2000. It is now
+  refused (test `a_combined_date_out_of_range_is_refused_rather_than_wrapped`).
+- **Narrower public surface** (H1.5): `sc-access`, `sc-auth`, `sc-files` and `sc-catalog` warn on
+  `unreachable_pub`. 71 functions no other crate calls are now `pub(crate)` and out of the
+  crate-root re-exports, among them `fetch_row_values`, `delete_row_in`, `list_rows_where`,
+  `run_select_over`, `refuse_last_admin`, `spend_password_token`, `hotp`, the `bootstrap_*` and
+  `sweep_*` functions, `filter_visible` and `check_range`. Five that nothing calls at all stay
+  `pub` for review: `RowQuery::sql_only`, `select_values`, `Catalog::create_table_in`,
+  `constrained_fields` and `clear_caller_context`.
+- **Dependencies are checked** (H1.6): a `deny.toml` covers advisories, licences, bans
+  (`fancy-regex`, `openssl-sys`) and sources. `RUSTSEC-2023-0071` (rsa, no fix upstream) is
+  ignored with its reason. CI has a `cargo-deny` job, and clippy and tests run with
+  `--locked`, in GitHub CI and in whale-ci's clippy step. **Note:** an offline check of
+  `Cargo.lock` against the RustSec database finds about 50 other advisories (tokio, rustls,
+  rustls-webpki, h2, quinn-proto, zip, zstd, hickory-proto, pulldown-cmark, lru, …). Most need
+  only a semver-compatible `cargo update`. Until the lock file is updated, the `cargo-deny`
+  job fails.
+- **Advisory panic lints** (H1.7): the request-facing crates (`sc-access`, `sc-api`, `sc-auth`,
+  `sc-backup`, `sc-files`, `sc-live`, `sc-server`) warn on `indexing_slicing`, `string_slice`
+  and `arithmetic_side_effects` under `--cfg feldspar_advisory_lints`. A non-gating
+  `clippy-advisory` CI job reports them. They have about 570 existing hits, so plain warnings
+  would fail every `-D warnings` run.
+- Tests in `tests/harness/tests/workspace_invariants.rs` check that every crate inherits the
+  workspace lints and that the lints above stay denied. They also check release overflow
+  checks, the disallowed methods and their replacements, the list of files that may contain
+  `unsafe`, the `unreachable_pub` and advisory attributes, `deny.toml`'s ignore list, and that
+  CI runs `cargo deny` with `--locked`.
+- An existing `too_many_lines` warning on `sc-expr`'s `nesting_bound` (from H0.7) gets the
+  usual `allow`.
+
 ## Security hardening H0: the live findings of the November review
 
 Fixes for the live findings of `docs/SECURITY_REVIEW_2026-11.md` (TODO-type-hardening H0).

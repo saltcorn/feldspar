@@ -2,6 +2,11 @@
 //! would resolve the target name itself, bypassing the public-only resolver
 //! (security review 2026-11, #4 / A1). Its own binary, since it sets the
 //! process environment.
+//!
+//! Setting the environment is `unsafe` and disallowed (`clippy.toml`) because
+//! another thread may read it; this binary has one test, which sets it before
+//! anything else runs.
+#![allow(unsafe_code, clippy::disallowed_methods)]
 
 use std::time::Duration;
 
@@ -29,7 +34,7 @@ async fn a_public_client_ignores_proxy_variables() {
         std::env::remove_var("no_proxy");
     }
     let client = PublicClient::new(
-        reqwest::Client::builder().timeout(Duration::from_secs(3)),
+        sc_net::client_builder().timeout(Duration::from_secs(3)),
         ", which this test may not reach",
         Redirects::None,
     )

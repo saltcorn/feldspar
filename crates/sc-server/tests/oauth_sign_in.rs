@@ -14,6 +14,10 @@
 //! - Settings → Authentication's session lifetime and shared cookie apply to
 //!   these sessions as they do to a password's.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use crate::support::code_framework;
 use sc_api::auth::{CSRF_COOKIE, CSRF_HEADER};

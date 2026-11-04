@@ -19,6 +19,10 @@
 //! server**, never a vendor: no test may require an API key or spend a token
 //! (decision 7).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

@@ -110,7 +110,7 @@ pub async fn call(
         whole_word: false,
         glob: (!glob.trim().is_empty()).then_some(glob),
         dir: scope.resolve(&dir)?,
-        max_results: ceiling as usize,
+        max_results: usize::try_from(ceiling).unwrap_or(usize::MAX),
         ..SearchQuery::literal("")
     };
 

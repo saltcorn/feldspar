@@ -60,6 +60,10 @@
 //! request fails without `SSL_CERT_FILE` and passes with the distribution's
 //! bundle, it sets that variable for the service (a systemd drop-in, or
 //! `/etc/conf.d/feldspar` under OpenRC).
+//!
+//! May use `unsafe` (the workspace denies it) for one `libc::geteuid`, the root
+//! check.
+#![allow(unsafe_code)]
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};

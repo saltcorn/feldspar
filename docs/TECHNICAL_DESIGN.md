@@ -14312,6 +14312,31 @@ each crate opts in via `[lints] workspace = true`, and `clippy.toml` exempts tes
 Errors carry context and either are handled or propagate to a crash with a clear message. No
 `Result` is silently discarded.
 
+**What the compiler enforces (security review 2026-11, §6).** Beyond `unwrap_used`/`expect_used`,
+the workspace lint table denies:
+
+- `unsafe_code`. It is allowed again only in the modules that call C (`sc-dns`'s
+  `getaddrinfo`, CPython, the `libc` process, terminal and filesystem calls), and every block
+  needs a `// SAFETY:` comment (`undocumented_unsafe_blocks`). A test in
+  `tests/harness/tests/workspace_invariants.rs` lists the files that may contain `unsafe`.
+- `cast_possible_truncation`: use `try_from`, or an `#[allow]` with a reason when the range
+  is known.
+- `todo`, `unimplemented`, `dbg_macro` and `let_underscore_future`.
+- `disallowed_methods`, for the calls `clippy.toml` gives a replacement for:
+  - `std::env::set_var`/`remove_var`: pass the value explicitly.
+  - `reqwest::Client::new`/`builder`: use `sc_net::PublicClient`, or `sc_net::client_builder`,
+    which sets a connect timeout.
+  - `tokio::spawn`: use `sc_catalog::spawn_scoped`, which carries the task scope.
+  - `unbounded_channel`: bound the queue.
+
+  An existing site that keeps the original call says why in its `allow`.
+
+The release profile keeps `overflow-checks`. `sc-access`, `sc-auth`, `sc-files` and
+`sc-catalog` warn on `unreachable_pub`. The request-facing crates carry `indexing_slicing`,
+`string_slice` and `arithmetic_side_effects` as advisory lints under
+`--cfg feldspar_advisory_lints` (a non-gating CI job) until their existing hits are fixed. CI
+runs `cargo deny` (`deny.toml`: advisories, licences, bans, sources) and builds with `--locked`.
+
 **Error classification and logging (from GOALS).** Every `Error` carries a **kind** that
 splits errors into two classes with different audiences and different remedies:
 

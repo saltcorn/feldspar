@@ -55,7 +55,7 @@ pub type BoxAsyncWrite<'a> = Box<dyn AsyncWrite + Send + Unpin + 'a>;
 /// Check a requested range against a file of `size` bytes, as the HTTP layer
 /// has already resolved it: non-empty or empty, never inverted, never past the
 /// end.
-pub fn check_range(range: &Range<u64>, size: u64, path: &str) -> Result<()> {
+pub(crate) fn check_range(range: &Range<u64>, size: u64, path: &str) -> Result<()> {
     if range.start > range.end || range.end > size {
         return Err(Error::invalid(format!(
             "bytes {}..{} are not within {path:?}, which is {size} bytes",
@@ -77,7 +77,12 @@ pub(crate) async fn read_by_slicing(
         None => bytes,
         Some(range) => {
             check_range(&range, bytes.len() as u64, path.as_str())?;
-            bytes.slice(range.start as usize..range.end as usize)
+            // Within `bytes.len()` (checked above), so both ends fit a `usize`.
+            let index = |at: u64| {
+                usize::try_from(at)
+                    .map_err(|_| Error::invalid(format!("a range past the end of `{path}`")))
+            };
+            bytes.slice(index(range.start)?..index(range.end)?)
         }
     };
     Ok(Box::new(std::io::Cursor::new(bytes)))

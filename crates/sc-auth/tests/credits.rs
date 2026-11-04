@@ -14,6 +14,10 @@
 //!   `low_balance` entry, not one per later call;
 //! - a grant that **rolls over** an earlier bucket (P7.1) carries what is left
 //!   of it up to a cap, once, and empties it.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use sc_catalog::Authority;
 use sc_types::Role;

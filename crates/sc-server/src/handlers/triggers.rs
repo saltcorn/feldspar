@@ -811,7 +811,10 @@ async fn random_row(
     if count <= 0 {
         return Ok(None);
     }
-    let offset = (uuid::Uuid::new_v4().as_u128() % count as u128) as u64;
+    // `count` is positive (checked above), and the remainder is less than it,
+    // so both conversions hold.
+    let below = u128::try_from(count).unwrap_or(1);
+    let offset = u64::try_from(uuid::Uuid::new_v4().as_u128() % below).unwrap_or(0);
     let query = rows::RowQuery::new().limit(1).offset(offset);
     let read =
         rows::list_rows_query(catalog, &table, &query, sc_access::admin_access(caller)?).await?;

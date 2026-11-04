@@ -284,6 +284,10 @@ impl ChromiumDriver {
     }
 
     /// The browser, started if it is not running.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn: an I/O pump for a child process or connection; it writes no rows, so there is no task scope to carry"
+    )]
     async fn launched(&self) -> Result<tokio::sync::MutexGuard<'_, Option<Launched>>> {
         let mut guard = self.browser.lock().await;
         let dead = match guard.as_mut() {
@@ -1110,6 +1114,10 @@ async fn screenshot(page: &Page, full_page: bool) -> Result<Vec<u8>> {
 }
 
 /// Start collecting the page's console errors and failed requests.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: CDP event listeners for one page; they write no rows, so there is no task scope to carry"
+)]
 async fn listen(page: &Page, seen: &Arc<Mutex<Seen>>) -> Result<Vec<tokio::task::JoinHandle<()>>> {
     let lock = |seen: &Arc<Mutex<Seen>>| {
         let seen = seen.clone();

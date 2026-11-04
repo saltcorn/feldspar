@@ -12,6 +12,10 @@ use crate::router::log_failure;
 const INTERVAL_SECS: u64 = 3600;
 
 /// Clean the change log every hour, for the life of the process.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
+)]
 pub(crate) fn spawn_change_log_cleanup(apps: Arc<crate::apps::AppMounts>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(INTERVAL_SECS));

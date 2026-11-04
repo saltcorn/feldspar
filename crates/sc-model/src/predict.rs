@@ -253,6 +253,10 @@ pub fn no_per_row_prediction(posterior: bool) -> &'static str {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "test code: casts over test data whose range the test chose"
+)]
 mod tests {
     use async_trait::async_trait;
     use std::sync::Arc;

@@ -22,6 +22,10 @@
 //! manager to talk to, and the implementation is compiled out.
 #![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use std::net::SocketAddr;
 use std::os::unix::net::UnixDatagram;
@@ -56,6 +60,10 @@ fn free_port() -> u16 {
 /// stop are three points on **one** process's life, and the second and third
 /// cannot be reached without the first.
 #[tokio::test]
+#[allow(
+    unsafe_code,
+    reason = "systemd's variables reach the server through the environment"
+)]
 async fn a_served_process_reports_ready_watchdog_and_stopping() {
     // The service manager's end of the socket. In a directory of this process's
     // own, since the path is the address.
@@ -74,6 +82,8 @@ async fn a_served_process_reports_ready_watchdog_and_stopping() {
     // which is the condition that makes it sound.
     //
     // `WATCHDOG_USEC=2000000` is `WatchdogSec=2s`, so a ping every second.
+    //
+    // SAFETY: the only test in this binary, before anything is spawned.
     unsafe {
         std::env::set_var("NOTIFY_SOCKET", &socket_path);
         std::env::set_var("WATCHDOG_USEC", "2000000");

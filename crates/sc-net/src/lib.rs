@@ -23,6 +23,12 @@
 //!   hands a resolver — is checked on the request and on every redirect it
 //!   follows.
 //!
+//! - [`client_builder`] is where every other HTTP client starts — one for a
+//!   host an administrator configured (an LLM endpoint, an S3 bucket, an OAuth
+//!   provider) — with a connect timeout set, so a host that does not answer
+//!   fails the request instead of holding it. `reqwest::Client::new` and
+//!   `builder` are disallowed elsewhere (`clippy.toml`).
+//!
 //! What may be reached *besides* the public internet — an agent's allow-list,
 //! an MCP server or agent whose definition opens the private network — is the
 //! caller's policy and stays with the caller; this crate only answers "public
@@ -31,6 +37,7 @@
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
 use reqwest::Url;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
@@ -274,6 +281,22 @@ pub enum Redirects {
     Follow(usize),
 }
 
+/// How long [`client_builder`]'s clients wait for a connection to open.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A `reqwest` client builder with [`CONNECT_TIMEOUT`] set: the start of every
+/// HTTP client in the workspace. Build it directly for a host an administrator
+/// configured, or hand it to [`PublicClient::new`] for one that came from data.
+/// A caller that needs another connect timeout, or a total one, sets it on the
+/// builder.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the replacement clippy.toml names for reqwest::Client::builder"
+)]
+pub fn client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT)
+}
+
 /// An HTTP client that only connects to a [`PublicAddr`]: names through
 /// [`PublicResolver`], literals checked on the request
 /// ([`request`](PublicClient::request)) and on every redirect it follows.
@@ -423,7 +446,7 @@ mod tests {
     #[tokio::test]
     async fn a_public_client_refuses_a_private_literal_before_sending() {
         let client = PublicClient::new(
-            reqwest::Client::builder(),
+            client_builder(),
             ", which nothing may reach",
             Redirects::None,
         )

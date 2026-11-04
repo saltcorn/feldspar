@@ -7,7 +7,10 @@
 //! arguments, progress, the process budget, cancel, the timeout, the failure
 //! sentences, the raw run and its discard. The same fit against a real
 //! CmdStan is in `real_cmdstan.rs`.
-
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;

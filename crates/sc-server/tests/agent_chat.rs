@@ -23,6 +23,10 @@
 //! 4. **A stop leaves a readable run.** Abort ends the turn, the run is
 //!    `aborted`, and what the agent had already done is still in its context.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 
 use crate::support::{Socket, send};
 use sc_types::Role;

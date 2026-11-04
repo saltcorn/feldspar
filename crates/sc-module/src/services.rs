@@ -201,6 +201,10 @@ impl ServiceSupervisor {
     /// Start every service of every loaded JavaScript module in `set`, each on
     /// a task that restarts it when it fails. Whatever was running is stopped
     /// first.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
+    )]
     pub async fn start(&self, set: &ModuleSet) {
         self.stop_all().await;
         let mut running = self.running.lock().await;
@@ -388,6 +392,10 @@ async fn run_once(
 /// [`run_once`]'s body, in a function of its own so that everything the call
 /// borrows — and the event sender with it — is dropped before the router
 /// forgets the run's subscriptions.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: the service's change delivery, for as long as the service runs, at no caller's behalf; unbounded: the table changes the change router hands the service, delivered in order"
+)]
 async fn serve_once(
     shared: &Shared,
     module: &str,

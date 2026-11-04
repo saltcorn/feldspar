@@ -285,6 +285,10 @@ pub(crate) async fn invite(
 /// The one other answer is a `429` (TODO F4.4): too many requests from this
 /// IP, or for this address, counted before the address is looked up — so it
 /// comes the same for an address with an account and one without.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tokio::spawn: the reset mail is sent off the request, so a slow mail server does not hold the response; it writes no rows"
+)]
 pub(crate) async fn forgot_password(
     req: &ApiRequest,
     cat: &Catalog,

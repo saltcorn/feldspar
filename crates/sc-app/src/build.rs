@@ -1775,6 +1775,10 @@ fn last_bytes(text: &str) -> &str {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test code: it drives its own servers, tasks and channels; the replacements are for production paths"
+)]
 mod tests {
     use super::*;
     use crate::framework::{AppRequest, Framework, InstallSpec};
@@ -2532,6 +2536,10 @@ touch ran
     }
 
     #[tokio::test]
+    #[allow(
+        unsafe_code,
+        reason = "the test of a variable the build must not pass on sets it"
+    )]
     async fn the_build_hosts_token_never_reaches_the_build() {
         let tmp = TempDir::new("targettoken");
         let web = tmp.path().join("web");
@@ -2541,7 +2549,10 @@ touch ran
             "apk.sh",
             "#!/bin/sh\nset -e\nmkdir -p out\nprintf %s \"${FELDSPAR_BUILD_TOKEN-unset}\" > out/app.apk\n",
         );
-        // Only this test sets the variable, so no other test can see it change.
+        // SAFETY: test-only, and not airtight: only this test writes the
+        // environment and nothing else reads this variable, but a concurrent
+        // `getenv` elsewhere in the binary is the test-code race security review
+        // 2026-11 (F §1) records.
         unsafe { std::env::set_var(BUILD_TOKEN_ENV, "fsbh_secret") };
 
         run_target(&target_spec("apk.sh"), tmp.path(), LOG)

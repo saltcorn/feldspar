@@ -171,7 +171,7 @@ fn token_fields() -> Vec<DataField> {
 
 /// Ensure the password token table exists. **Must run after the users table**,
 /// which its rows name; [`bootstrap`](crate::bootstrap) does them in that order.
-pub async fn bootstrap_password_tokens(catalog: &Catalog) -> Result<Table> {
+pub(crate) async fn bootstrap_password_tokens(catalog: &Catalog) -> Result<Table> {
     catalog
         .bootstrap_table(PASSWORD_TOKENS_TABLE, &token_fields())
         .await
@@ -323,7 +323,7 @@ async fn spend_in(
 /// them it was issued for — **without spending it**. What a second-factor
 /// challenge is read with while its holder is still typing the code: a wrong
 /// code must leave the token to try again.
-pub async fn password_token_holder(
+pub(crate) async fn password_token_holder(
     catalog: &Catalog,
     token: &str,
     purposes: &[PasswordTokenPurpose],
@@ -365,7 +365,7 @@ pub async fn password_token_holder(
 
 /// Spend `token` if it is live and was issued for one of `purposes`, returning
 /// the user it names. Exactly one of two racing callers gets `Some`.
-pub async fn spend_password_token(
+pub(crate) async fn spend_password_token(
     catalog: &Catalog,
     token: &str,
     purposes: &[PasswordTokenPurpose],
@@ -500,7 +500,7 @@ pub async fn delete_password_tokens_for_user(catalog: &Catalog, user_id: Uuid) -
 }
 
 /// Delete every token that has lapsed, returning how many went.
-pub async fn sweep_expired_password_tokens(catalog: &Catalog) -> Result<usize> {
+pub(crate) async fn sweep_expired_password_tokens(catalog: &Catalog) -> Result<usize> {
     let delete = Delete {
         returning: vec![Projection::expr(Expr::col(COL_TOKEN_HASH))],
         ..Delete::from(PASSWORD_TOKENS_TABLE).filter(Expr::binary(
@@ -518,7 +518,7 @@ pub async fn sweep_expired_password_tokens(catalog: &Catalog) -> Result<usize> {
 /// The same checks [`create_user_with`](crate::create_user_with) makes — a
 /// non-blank email, a role that exists, no system column among the extras — and
 /// the same `UNIQUE` constraint behind them.
-pub async fn create_invited_user(catalog: &Catalog, new: NewUser) -> Result<User> {
+pub(crate) async fn create_invited_user(catalog: &Catalog, new: NewUser) -> Result<User> {
     insert_user(catalog, new, None).await
 }
 

@@ -1287,6 +1287,10 @@ struct Fanout {
 }
 
 impl Fanout {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tokio::spawn and unbounded: a stream's fan-out router, for as long as the stream runs; commands are subscriptions attaching and leaving, sent by the hub under its lock"
+    )]
     fn start(running: Arc<RunningStream>, counters: Arc<ChangeCounters>) -> Arc<Fanout> {
         let (commands, inbox) = mpsc::unbounded_channel();
         tokio::spawn(route(Arc::clone(&running), inbox, counters));

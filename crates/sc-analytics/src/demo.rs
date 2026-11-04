@@ -131,6 +131,10 @@ impl Rng {
     }
 
     /// An integer in `lo..=hi`.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "demo data: indices drawn from 0..len, and float-to-integer casts of bounded random values"
+    )]
     fn int(&mut self, lo: i64, hi: i64) -> i64 {
         lo + (self.next() * (hi - lo + 1) as f64).floor() as i64
     }
@@ -189,6 +193,10 @@ fn key(name: &str, table: &str) -> DataField {
 /// Make the demo's tables in `catalog`, refusing to touch any that are there
 /// unless `replace`.
 #[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "demo data: indices drawn from 0..len, and float-to-integer casts of bounded random values"
+)]
 pub async fn demo_analytics(catalog: &Catalog, replace: bool) -> Result<DemoReport> {
     let present: Vec<String> = DEMO_TABLES
         .iter()
@@ -640,6 +648,10 @@ fn polygon(cell: &[(f64, f64)]) -> serde_json::Value {
 /// 900 m about each), the rest are scattered evenly; a point that falls
 /// outside the city is drawn again. Burglary is commoner at the hot spots,
 /// so a category's map differs from the whole's. Each has a date in 2025.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "demo data: indices drawn from 0..len, and float-to-integer casts of bounded random values"
+)]
 async fn districts_and_incidents(catalog: &Catalog) -> Result<()> {
     let geometry = |name: &str, kind: GeometryKind| {
         DataField::plain(name, TypeRef::Basic(BasicType::Geometry(kind)))
