@@ -351,6 +351,42 @@ async fn disabling_and_force_logout_end_the_session_already_in_progress() -> sc_
         .await;
     assert_eq!(status, StatusCode::OK);
 
+    // A new password set by an admin ends the sessions the old one started
+    // (security review 2026-11, #11), as an edit with a password does.
+    let (status, reset) = client
+        .send("POST", &format!("/api/users/{id}/random-password"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = other.send("GET", "/api/tables", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "a new password ends it");
+    let new_password = reset["password"].as_str().unwrap().to_owned();
+    let (status, _) = other
+        .send(
+            "POST",
+            "/api/login",
+            Some(json!({ "email": "other@example.com", "password": new_password })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = client
+        .send(
+            "PUT",
+            &format!("/api/users/{id}"),
+            Some(json!({ "email": "other@example.com", "role": 1, "password": "otherpass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = other.send("GET", "/api/tables", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "so does an edit with one");
+    let (status, _) = other
+        .send(
+            "POST",
+            "/api/login",
+            Some(json!({ "email": "other@example.com", "password": "otherpass" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
     // Disabling withdraws both: the live session and the next login.
     let (status, body) = client
         .send(

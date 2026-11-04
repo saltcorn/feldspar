@@ -202,3 +202,43 @@ async fn a_role_can_require_one_and_a_challenge_is_spent_once() -> Result<()> {
     assert_eq!(count(cat, RECOVERY_CODES_TABLE).await?, 0);
     Ok(())
 }
+
+/// Guesses at a code are counted before the code is checked, in the
+/// database: the account gets `MAX_GUESSES` in the window and then none, and
+/// a right code gives its guess back (security review 2026-11, #9).
+#[tokio::test]
+async fn guesses_are_reserved_in_the_database_and_a_right_one_is_given_back() -> Result<()> {
+    let f = fixture().await?;
+    let id = account(&f.catalog, "guess@example.com", sc_types::Role::ADMIN).await?;
+    // No second factor: nothing to guess, nothing counted.
+    for _ in 0..(sc_auth::MAX_GUESSES + 2) {
+        match sc_auth::reserve_guess(&f.catalog, id).await? {
+            sc_auth::Guess::Permitted(permit) => permit.failed(),
+            sc_auth::Guess::Limited { .. } => panic!("no second factor, no limit"),
+        }
+    }
+    let secret = sc_auth::begin_second_factor_setup(&f.catalog, id).await?;
+    // A right code's guess is given back, so it never uses the budget up.
+    for _ in 0..(sc_auth::MAX_GUESSES + 2) {
+        let sc_auth::Guess::Permitted(permit) = sc_auth::reserve_guess(&f.catalog, id).await?
+        else {
+            panic!("right codes are given back");
+        };
+        permit.succeeded(&f.catalog).await?;
+    }
+    for _ in 0..sc_auth::MAX_GUESSES {
+        let sc_auth::Guess::Permitted(permit) = sc_auth::reserve_guess(&f.catalog, id).await?
+        else {
+            panic!("within the budget");
+        };
+        permit.failed();
+    }
+    match sc_auth::reserve_guess(&f.catalog, id).await? {
+        sc_auth::Guess::Limited { retry_after_secs } => {
+            assert!(retry_after_secs > 0 && retry_after_secs <= 15 * 60);
+        }
+        sc_auth::Guess::Permitted(_) => panic!("the budget is spent"),
+    }
+    let _ = code(&secret, 0);
+    Ok(())
+}

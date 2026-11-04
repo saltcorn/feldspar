@@ -848,27 +848,12 @@ pub(crate) async fn complete(
         _ => SessionClient::of(&headers),
     };
     let jar = jar.remove(binding_removal());
-    // The provider's sign-in is trusted to have asked for its own second
-    // factor, unless Settings → Authentication says to ask for ours as well;
-    // then it is asked for on a page that comes back to `return_to`.
-    let ask = match state.apps.catalog() {
-        Some(catalog) => match sc_config::second_factor_for_identity_providers(catalog).await {
-            Ok(ask) => ask,
-            Err(e) => {
-                log_failure("could not read the two-factor settings", &e);
-                true
-            }
-        },
-        None => false,
-    };
-    let session = if ask {
-        SessionAction::Start(user)
-    } else {
-        SessionAction::StartVerified {
-            user,
-            remember: true,
-        }
-    };
+    // An account with a second factor on, or whose role requires one, is asked
+    // for it here as after a password: `Start` meets the challenge in
+    // `apply_session`. A provider's own second factor is not one this server
+    // can see, and the account is matched by email, which the provider's
+    // directory decides (security review 2026-11, #10).
+    let session = SessionAction::Start(user);
     let client = client.returning_to(completion.return_to.clone());
     let cookies = match apply_session(&state, jar, session_token, client, session).await {
         Ok(cookies) => cookies,

@@ -14,7 +14,6 @@
 //! no local directory: both get the diff only.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
 
 use sc_catalog::Catalog;
@@ -181,13 +180,14 @@ async fn git(dir: &Path, args: &[&str]) -> Result<String> {
 
 /// Run git in `dir` with no prompt and a time limit, whatever its exit status.
 async fn run_git(dir: &Path, args: &[&str]) -> Result<std::process::Output> {
-    let run = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    // Against the work tree's own repository, never one git discovers from
+    // `dir`, which a user below admin may write (security review 2026-11, #1).
+    let work_tree = sc_files::git_command::work_tree_of(dir)
+        .ok_or_else(|| Error::invalid(format!("{} is not in a git work tree", dir.display())))?;
+    let run = sc_files::git_command::command(&work_tree)
+        .current_dir(dir)
         .args(["-c", "core.quotepath=false"])
         .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
         .kill_on_drop(true)
         .output();
     tokio::time::timeout(GIT_TIMEOUT, run)
@@ -231,7 +231,14 @@ mod tests {
     async fn staged_changes_are_asked_of_git_not_read_off_a_message() {
         let dir = std::env::temp_dir().join(format!("sc-commit-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        git(&dir, &["init", "--quiet"]).await.unwrap();
+        // `git` runs against an existing work tree only, so the repository is
+        // made directly.
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        assert!(init.success());
         let ident = [
             "-c",
             "user.name=t",

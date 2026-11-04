@@ -214,7 +214,7 @@ impl FromRequestParts<AppState> for AdminSession {
 /// The user an admin-host session token names, or `None` when it names
 /// nobody **or was issued on an application's host**: on the admin host an
 /// application's session is not a session (security review #15).
-async fn admin_host_session(
+pub(crate) async fn admin_host_session(
     sessions: &SessionStore,
     token: &str,
 ) -> Result<Option<AuthenticatedUser>, AdminRefusal> {
@@ -265,11 +265,7 @@ struct Ear {
 
 impl SessionListener for Ear {
     fn session_ended(&self, ended: &SessionEnded<'_>) {
-        let mine = match ended {
-            SessionEnded::Token(token) => *token == self.token,
-            SessionEnded::User(user) => *user == self.user,
-            SessionEnded::All => true,
-        };
+        let mine = ended.covers(Some(&self.token), Some(self.user));
         if mine {
             self.ended.store(true, Ordering::SeqCst);
             self.notify.notify_one();

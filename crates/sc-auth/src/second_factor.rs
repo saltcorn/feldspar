@@ -71,6 +71,17 @@ pub const COL_ENABLED_AT: &str = "enabled_at";
 pub const COL_LAST_STEP: &str = "last_step";
 /// When the row was written.
 pub const COL_CREATED_AT: &str = "created_at";
+/// Guesses at the code counted in the current window ([`reserve_guess`]).
+pub const COL_GUESSES: &str = "guesses";
+/// When the current guessing window began.
+pub const COL_GUESSES_SINCE: &str = "guesses_since";
+
+/// How many codes an account may have checked in [`GUESS_WINDOW`] before they
+/// are refused until it passes — wrong ones, since a right one is refunded. A
+/// code is six digits and lasts 30 seconds, so this makes guessing one hopeless.
+pub const MAX_GUESSES: i64 = 5;
+/// The window [`MAX_GUESSES`] counts over.
+pub const GUESS_WINDOW: chrono::TimeDelta = chrono::TimeDelta::minutes(15);
 /// The SHA-256 of the account and a recovery code — the primary key of
 /// [`RECOVERY_CODES_TABLE`].
 pub const COL_CODE_HASH: &str = "code_hash";
@@ -102,6 +113,9 @@ fn second_factor_fields() -> Vec<DataField> {
         DataField::plain(COL_ENABLED_AT, timestamp()),
         DataField::plain(COL_LAST_STEP, TypeRef::Basic(BasicType::Int)),
         DataField::plain(COL_CREATED_AT, timestamp()).required(),
+        // Nullable, so the bootstrap adds them to an existing table.
+        DataField::plain(COL_GUESSES, TypeRef::Basic(BasicType::Int)),
+        DataField::plain(COL_GUESSES_SINCE, timestamp()),
     ]
 }
 
@@ -468,6 +482,140 @@ pub async fn verify_second_factor(catalog: &Catalog, user_id: Uuid, code: &str) 
         return Ok(!rows(catalog, Statement::from(update)).await?.is_empty());
     }
     spend_recovery_code(catalog, user_id, code).await
+}
+
+/// One guess at an account's code, **counted before** the code is checked
+/// ([`reserve_guess`]), so that a burst of concurrent requests cannot all be
+/// checked before any of them is counted (security review 2026-11, #9). Settle
+/// it: [`succeeded`](GuessPermit::succeeded) gives the guess back, and
+/// [`failed`](GuessPermit::failed) leaves it counted.
+#[must_use = "a guess must be settled as a success or a failure"]
+#[derive(Debug)]
+pub struct GuessPermit {
+    user: Uuid,
+    counted: bool,
+}
+
+/// The answer to [`reserve_guess`].
+#[derive(Debug)]
+pub enum Guess {
+    /// The guess may be checked.
+    Permitted(GuessPermit),
+    /// The account has had [`MAX_GUESSES`] in the window: none is checked for
+    /// this many more seconds.
+    Limited { retry_after_secs: u64 },
+}
+
+/// Count one guess at `user_id`'s code, or refuse it when the account has had
+/// [`MAX_GUESSES`] in the last [`GUESS_WINDOW`].
+///
+/// The count is on the account's row of [`SECOND_FACTOR_TABLE`], taken in one
+/// statement that refuses as it counts, so two requests cannot both take the
+/// last guess and every node shares the budget. An account with no row has no
+/// code to guess: the guess is permitted and checks against nothing.
+pub async fn reserve_guess(catalog: &Catalog, user_id: Uuid) -> Result<Guess> {
+    let now = Utc::now();
+    let cutoff = now - GUESS_WINDOW;
+    let mine = || Expr::col(COL_USER).eq(Expr::lit(user_id));
+    // A window that has passed (or never began) starts again with this guess.
+    let fresh = || {
+        Expr::unary(UnOp::IsNull, Expr::col(COL_GUESSES_SINCE))
+            .or(Expr::unary(UnOp::IsNull, Expr::col(COL_GUESSES)))
+            .or(Expr::binary(
+                BinOp::Lt,
+                Expr::col(COL_GUESSES_SINCE),
+                Expr::Lit(Value::Timestamp(cutoff)),
+            ))
+    };
+    let case = |fresh_value: Expr, counting: Expr| Expr::Case {
+        operand: None,
+        arms: vec![sc_query::CaseArm {
+            when: fresh(),
+            then: fresh_value,
+        }],
+        else_result: Some(Box::new(counting)),
+    };
+    let update = Update {
+        table: SECOND_FACTOR_TABLE.to_owned(),
+        assignments: vec![
+            Assignment::new(
+                COL_GUESSES,
+                case(
+                    Expr::lit(1i64),
+                    Expr::binary(BinOp::Add, Expr::col(COL_GUESSES), Expr::lit(1i64)),
+                ),
+            ),
+            Assignment::new(
+                COL_GUESSES_SINCE,
+                case(
+                    Expr::Lit(Value::Timestamp(now)),
+                    Expr::col(COL_GUESSES_SINCE),
+                ),
+            ),
+        ],
+        filter: Some(mine().and(fresh().or(Expr::binary(
+            BinOp::Lt,
+            Expr::col(COL_GUESSES),
+            Expr::lit(MAX_GUESSES),
+        )))),
+        returning: vec![Projection::expr(Expr::col(COL_USER))],
+    };
+    if !rows(catalog, Statement::from(update)).await?.is_empty() {
+        return Ok(Guess::Permitted(GuessPermit {
+            user: user_id,
+            counted: true,
+        }));
+    }
+    let select = Select::from(Source::table(SECOND_FACTOR_TABLE))
+        .columns(vec![Projection::expr(Expr::col(COL_GUESSES_SINCE))])
+        .filter(mine())
+        .limit(1);
+    let found = rows(catalog, Statement::from(select)).await?;
+    let Some(row) = found.first() else {
+        return Ok(Guess::Permitted(GuessPermit {
+            user: user_id,
+            counted: false,
+        }));
+    };
+    let since = match row.get(COL_GUESSES_SINCE) {
+        Some(Value::Timestamp(t)) => *t,
+        _ => now,
+    };
+    let left = (since + GUESS_WINDOW - now).num_seconds().max(1);
+    Ok(Guess::Limited {
+        retry_after_secs: u64::try_from(left).unwrap_or(1),
+    })
+}
+
+impl GuessPermit {
+    /// The code was right: the guess is given back.
+    pub async fn succeeded(self, catalog: &Catalog) -> Result<()> {
+        if !self.counted {
+            return Ok(());
+        }
+        let update = Update {
+            table: SECOND_FACTOR_TABLE.to_owned(),
+            assignments: vec![Assignment::new(
+                COL_GUESSES,
+                Expr::binary(BinOp::Sub, Expr::col(COL_GUESSES), Expr::lit(1i64)),
+            )],
+            filter: Some(
+                Expr::col(COL_USER)
+                    .eq(Expr::lit(self.user))
+                    .and(Expr::binary(
+                        BinOp::Gt,
+                        Expr::col(COL_GUESSES),
+                        Expr::lit(0i64),
+                    )),
+            ),
+            returning: Vec::new(),
+        };
+        rows(catalog, Statement::from(update)).await?;
+        Ok(())
+    }
+
+    /// The code was wrong: the guess stays counted.
+    pub fn failed(self) {}
 }
 
 /// Turn `user_id`'s second factor off, and spend its recovery codes. Whether

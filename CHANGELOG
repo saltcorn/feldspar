@@ -2,6 +2,64 @@
 
 Changes in reverse chronological order.
 
+## Security hardening H0: the live findings of the November review
+
+Fixes for the live findings of `docs/SECURITY_REVIEW_2026-11.md` (TODO-type-hardening H0).
+
+- **Git never discovers a repository in an app's source directory** (#1). A user below admin
+  could plant a bare-repository layout (`HEAD`, `objects/`, `refs/`, a `config` naming a
+  `core.fsmonitor` command) in an app's source directory, and the next build, IDE save or coding
+  session ran it as the server user. Every git run over a working tree now goes through
+  `sc_files::git_command`: the work tree is found by looking for `.git` only (`work_tree_of`),
+  and is passed as `GIT_DIR`/`GIT_WORK_TREE` with `-c safe.bareRepository=explicit
+  -c core.fsmonitor=false -c core.hooksPath=/dev/null`. Used by the build cache, the git file
+  store, the coding agent's header, snapshot and commit, and the scaffold's `git init`. Hooks in
+  a store's own repository no longer run on a commit from Feldspar. Test:
+  `build_cache::a_planted_bare_repository_in_the_source_dir_is_not_run_by_a_build`.
+- **Claude Code's configuration is an admin-only write** (#2): `.claude/**`, `CLAUDE.md` and
+  `CLAUDE.local.md` are refused below admin on every file write route and in the agent's file
+  tools (`sc_files::configures_coding_agent`), as build inputs are, because the admin's terminal
+  starts Claude Code in a store and runs its hooks as the server user.
+- **Two-factor routes take only a session issued for this host** (#3). On an application's host
+  an admin session (sent there by shared sign-in) is nobody to `/_feldspar/second-factor/*`, so an
+  application's script cannot enroll a second factor on a visiting admin. Setting one up from a
+  session now needs the current `password` (held to the login form's budget); a challenge's token still
+  suffices. The generated client's `secondFactorSetup` takes `{ password }` (a string is still
+  the challenge token), and the admin UI and the scaffold's `Security.tsx` ask for it. An
+  application made before this keeps its own `Security.tsx`, whose "Set up" now answers 401
+  "enter your current password" until it sends one.
+- **Module routes use the admin host's session check** (#5): an application's session is nobody
+  there, and a module's answer can no longer set the admin origin's CSP, framing, HSTS,
+  `Cross-Origin-*` or CORS-credential headers; the admin host's own apply.
+- **`PublicClient` never uses a proxy** (#4): `.no_proxy()` always, so `HTTPS_PROXY` cannot route
+  around the public-address resolver. Test: `crates/sc-net/tests/proxy_env.rs`.
+- **Row history hides `users.password_hash`** (#6) and every other column no API reads, as
+  `api_row` does, in entries, `row_as_of` and the deleted-rows list. Restoring or reverting a
+  `users` row now works and leaves the password as it is. Existing change-log rows still hold
+  the hashes; they are only no longer shown. Test: `crates/sc-api/tests/history_users.rs`.
+- **Formulas are bounded** (#7): at most 64 KiB (`MAX_FORMULA_BYTES`) and 512 levels deep
+  (`MAX_FORMULA_DEPTH`). The depth is bounded by an iterative scan of the source before swc
+  parses it (swc's parser itself overflowed a debug thread's stack at 200 parentheses), the
+  parse runs on a stack sized for that bound (`stacker`), and lowering counts levels. 100 000
+  nested parentheses are an error, not a process abort.
+- **Integers are range-checked for `int2`/`int4` placeholders** (#8): `4294967297` is an error,
+  not row 1. A v1 backup's day-only value is cut on a character boundary (F-2).
+- **Wrong codes are counted before they are checked, in the database** (#9):
+  `sc_auth::reserve_guess` takes one of 5 guesses per 15 minutes in one conditional `UPDATE` of
+  the account's `_fd_second_factor` row (new nullable columns `guesses`, `guesses_since`, added by
+  the bootstrap), and a right code gives it back. Concurrent bursts get no more than 5 checked,
+  and every node shares the budget. Test: `concurrent_guesses_get_no_more_than_the_budget`.
+- **An identity-provider sign-in asks for the account's second factor** (#10) when the account has
+  one on or its role requires one, as a password sign-in does. The setting *Ask for a two-factor
+  code after an identity provider* is retired (no longer read or shown).
+- **Credential changes end sessions** (#11): a password set by an admin (random or in the edit
+  form, in the UI or the CLI) deletes the account's sessions and outstanding reset links and
+  challenges; disabling deletes its sessions; turning the second factor on or off ends the
+  account's other sessions and keeps the current one (`SessionStore::end_other_sessions`, a new
+  `SessionEnded::UserExcept`); making a role require a second factor ends the sessions of its
+  accounts without one (not the admin's making the change), and so does moving an account to
+  such a role. An admin who sets their own password in the users screen is signed out.
+
 ## Sign-in no longer hangs with the button disabled
 
 Sometimes the admin sign-in did nothing: "Signing in…" stayed on, disabled, until the page was

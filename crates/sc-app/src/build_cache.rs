@@ -269,9 +269,10 @@ impl Drop for ScratchIndex {
 }
 
 /// Run git in `dir`, optionally against another index, returning stdout on
-/// success and `None` on any failure — including git not being installed.
+/// success and `None` on any failure — including git not being installed, and
+/// `dir` being in no work tree.
 async fn git(dir: &Path, index: Option<&Path>, args: &[&str]) -> Option<String> {
-    let output = git_command(dir, index, args).output().await.ok()?;
+    let output = git_command(dir, index, args)?.output().await.ok()?;
     if !output.status.success() {
         return None;
     }
@@ -281,25 +282,26 @@ async fn git(dir: &Path, index: Option<&Path>, args: &[&str]) -> Option<String> 
 /// [`git`] for a command whose exit status carries an answer: stdout when it
 /// exits with one of `ok`, `None` otherwise.
 async fn git_status_ok(dir: &Path, args: &[&str], ok: &[i32]) -> Option<String> {
-    let output = git_command(dir, None, args).output().await.ok()?;
+    let output = git_command(dir, None, args)?.output().await.ok()?;
     if !output.status.code().is_some_and(|code| ok.contains(&code)) {
         return None;
     }
     String::from_utf8(output.stdout).ok()
 }
 
-fn git_command(dir: &Path, index: Option<&Path>, args: &[&str]) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.args(args)
-        .current_dir(dir)
-        // Nothing here should ever ask a question, and a server has nobody to
-        // answer one.
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(std::process::Stdio::null());
+/// `git args` in `dir`, against the repository of the work tree `dir` is in,
+/// named explicitly rather than discovered: `dir` is an app's source directory,
+/// which users below admin write, and a planted bare repository layout there
+/// would otherwise be the repository git uses, `core.fsmonitor` and all
+/// (security review 2026-11, #1).
+fn git_command(dir: &Path, index: Option<&Path>, args: &[&str]) -> Option<Command> {
+    let work_tree = sc_files::git_command::work_tree_of(dir)?;
+    let mut cmd = sc_files::git_command::command(&work_tree);
+    cmd.args(args).current_dir(dir);
     if let Some(index) = index {
         cmd.env("GIT_INDEX_FILE", index);
     }
-    cmd
+    Some(cmd)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -425,6 +427,35 @@ mod tests {
             .output()
             .unwrap();
         assert!(staged.stdout.is_empty(), "{staged:?}");
+    }
+
+    /// A user below admin can write an app's source directory, so a bare
+    /// repository layout planted there — `HEAD`, `objects/`, `refs/` and a
+    /// `config` naming an fsmonitor command — must not become the repository a
+    /// build's git runs against (security review 2026-11, #1).
+    #[tokio::test]
+    async fn a_planted_bare_repository_in_the_source_dir_is_not_run_by_a_build() {
+        let Some(tmp) = repo("planted") else { return };
+        let root = &tmp.0;
+        let clean = key(root).await;
+        let web = root.join("web");
+        std::fs::create_dir_all(web.join("objects/k")).unwrap();
+        std::fs::create_dir_all(web.join("refs/k")).unwrap();
+        std::fs::write(web.join("HEAD"), "ref: refs/heads/x\n").unwrap();
+        let marker = root.join("fsmonitor-ran");
+        std::fs::write(
+            web.join("config"),
+            format!(
+                "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\
+                 \tfsmonitor = \"touch '{}'\"\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let planted = key(root).await;
+        assert!(!marker.exists(), "the planted fsmonitor command ran");
+        // The planted files are source like any other: the key changed.
+        assert_ne!(planted, clean);
     }
 
     #[tokio::test]

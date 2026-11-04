@@ -198,13 +198,13 @@ async fn git_log(scope: &FileScope, cx: &SessionContext<'_>) -> Option<String> {
 
 /// A git command's stdout in `dir`, when it succeeds in time.
 async fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let run = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    // Against the work tree's own repository, never one git discovers from
+    // `dir`, which a user below admin may write (security review 2026-11, #1).
+    let work_tree = sc_files::git_command::work_tree_of(dir)?;
+    let run = sc_files::git_command::command(&work_tree)
+        .current_dir(dir)
         .args(["-c", "core.quotepath=false"])
         .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .output();

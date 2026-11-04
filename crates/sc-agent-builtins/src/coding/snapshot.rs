@@ -241,12 +241,12 @@ fn git_show(dir: &Path, head: &str, rel: &str) -> Option<Vec<u8>> {
 
 /// A git command's stdout, when it succeeds.
 fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    // Against the work tree's own repository, never one git discovers from
+    // `dir`, which a user below admin may write (security review 2026-11, #1).
+    let work_tree = sc_files::git_command::work_tree_of(dir)?;
+    let output = sc_files::git_command::std_command(&work_tree)
+        .current_dir(dir)
         .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
         .ok()?;

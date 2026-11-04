@@ -529,7 +529,11 @@ impl<'a> Reverser<'a> {
                 };
                 let left = entry.new_values.clone().unwrap_or_default();
                 for (column, expected) in &left {
-                    if table.field(column).is_none() {
+                    // A column no API reads (`users.password_hash`) is neither
+                    // compared nor written back: the caller never saw it.
+                    if table.field(column).is_none()
+                        || sc_access::user_rows::is_hidden_column(table, column)
+                    {
                         continue;
                     }
                     let actual = now.get(column).cloned().unwrap_or(Json::Null);
@@ -730,6 +734,9 @@ fn writable(
     for (column, value) in values {
         match table.field(&column) {
             None => dropped.push(column),
+            // A hidden column (`users.password_hash`) is not the caller's to
+            // write: restoring a `users` row leaves the password as it is.
+            Some(_) if sc_access::user_rows::is_hidden_column(table, &column) => {}
             Some(field) if field.is_calc() || field.is_collab_doc() => {}
             Some(_) if !with_key && Some(column.as_str()) == pk => {}
             Some(_) => {

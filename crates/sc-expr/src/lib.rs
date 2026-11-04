@@ -61,7 +61,7 @@ pub use analyze::{
     Ambient, AmbientUse, Analysis, FreeVars, JOIN, JoinPath, ModelCall, ModuleArg, ModuleCall,
     OpFlag, PREDICT, hoisted_call_key,
 };
-pub use ast::{Ast, BinaryOp, MemberProp, UnaryOp};
+pub use ast::{Ast, BinaryOp, MAX_FORMULA_DEPTH, MemberProp, UnaryOp};
 #[cfg(feature = "eval")]
 pub use code::CodeRuntime;
 pub use code::{

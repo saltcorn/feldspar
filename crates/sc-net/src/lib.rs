@@ -285,7 +285,9 @@ pub struct PublicClient {
 
 impl PublicClient {
     /// The client `builder` makes, with the public-only resolver and redirect
-    /// rule installed over whatever it set for those two. `why` ends every
+    /// rule installed over whatever it set for those two, and no proxy: a
+    /// proxy (`HTTPS_PROXY`, `ALL_PROXY`, or one the builder set) resolves the
+    /// target name itself, so the resolver would never see it. `why` ends every
     /// refusal (`", which this agent may not reach"`).
     pub fn new(
         builder: reqwest::ClientBuilder,
@@ -311,6 +313,7 @@ impl PublicClient {
             }
         };
         let client = builder
+            .no_proxy()
             .dns_resolver(Arc::new(PublicResolver::new(Arc::clone(&why))))
             .redirect(policy)
             .build()

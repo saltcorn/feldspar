@@ -13,30 +13,30 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## H0 — Fix the live findings
 
-- [ ] H0.1 Git in a source directory (#1): every git invocation (`sc-app/src/build_cache.rs:291`,
+- [x] H0.1 Git in a source directory (#1): every git invocation (`sc-app/src/build_cache.rs:291`,
       `sc-files/src/git.rs`, `coding/header.rs`, `snapshot.rs`, `commit.rs`) sets `GIT_DIR` and
       `GIT_WORK_TREE` explicitly and passes `-c safe.bareRepository=explicit
       -c core.fsmonitor=false -c core.hooksPath=/dev/null`. Test: a planted bare-repo layout with
       an fsmonitor command in an app source dir is not executed by a build.
-- [ ] H0.2 Refuse non-admin writes to `.claude/**` and `CLAUDE.md` in stores the terminal can
+- [x] H0.2 Refuse non-admin writes to `.claude/**` and `CLAUDE.md` in stores the terminal can
       start in (#2). Test: a staff write to `.claude/settings.json` is refused.
-- [ ] H0.3 Two-factor `setup` / `enable` / `disable` / `recovery_codes` refuse an admin-scope
+- [x] H0.3 Two-factor `setup` / `enable` / `disable` / `recovery_codes` refuse an admin-scope
       session off the admin host, and `setup`/`disable` require the current password or a
       current code (#3, B1). Test from an app host.
-- [ ] H0.4 Module routes resolve the caller with the scope check `admin_host_session` uses, and
+- [x] H0.4 Module routes resolve the caller with the scope check `admin_host_session` uses, and
       drop module-set `Content-Security-Policy` (and other security headers) on the admin host
       (#5). Test: an app-scope token on the admin host is anonymous to a module route.
-- [ ] H0.5 `PublicClient::new` always calls `.no_proxy()` (#4). Test with `HTTPS_PROXY` set.
-- [ ] H0.6 History entries and `row_as_of` hide `users.password_hash` and admin-only columns
+- [x] H0.5 `PublicClient::new` always calls `.no_proxy()` (#4). Test with `HTTPS_PROXY` set.
+- [x] H0.6 History entries and `row_as_of` hide `users.password_hash` and admin-only columns
       the way `api_row` does; restoring a `users` row no longer fails on the hash (#6).
-- [ ] H0.7 `Formula::parse` refuses over-long input and checks nesting depth iteratively before
+- [x] H0.7 `Formula::parse` refuses over-long input and checks nesting depth iteratively before
       lowering (#7). Test: 100k nested parentheses give an error, not a crash.
-- [ ] H0.8 `sc-db-postgres/src/value.rs:49-50`: `i16::try_from` / `i32::try_from`, out of range
+- [x] H0.8 `sc-db-postgres/src/value.rs:49-50`: `i16::try_from` / `i32::try_from`, out of range
       is an error (#8). `sc-backup/src/v1.rs:788`: slice on a char boundary (F-2). Tests.
-- [ ] H0.9 Wrong-code throttle reserves the attempt before checking, and is shared across nodes
+- [x] H0.9 Wrong-code throttle reserves the attempt before checking, and is shared across nodes
       (#9).
-- [ ] H0.10 OAuth sign-in honours an account's or role's second-factor requirement (#10).
-- [ ] H0.11 Ending sessions on credential change (#11): password set by admin or reset, 2FA
+- [x] H0.10 OAuth sign-in honours an account's or role's second-factor requirement (#10).
+- [x] H0.11 Ending sessions on credential change (#11): password set by admin or reset, 2FA
       enabled/disabled, role requirement change, account disabled.
 
 ## H1 — Enforcement (§6)

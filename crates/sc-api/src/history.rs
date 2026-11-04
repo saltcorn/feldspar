@@ -347,8 +347,14 @@ pub(crate) fn not_found(table: &Table, key: &str) -> Error {
     ))
 }
 
-/// `values` with each secret of `table` as its sentinel.
-pub(crate) fn redacted(table: &Table, values: Map<String, Json>) -> Map<String, Json> {
+/// `values` as an API may show them: without the columns no API reads
+/// (`users.password_hash`, a `collab_doc` field — the rule
+/// [`api_row`](sc_access::api_row) applies to every other read), and with
+/// each secret of `table` as its sentinel. The change log records the whole
+/// row, so every history answer goes through this (security review 2026-11,
+/// E1). A column dropped since is kept, for `removed`.
+pub(crate) fn redacted(table: &Table, mut values: Map<String, Json>) -> Map<String, Json> {
+    values.retain(|column, _| !sc_access::user_rows::is_hidden_column(table, column));
     let mut row = Json::Object(values);
     sc_catalog::secrets::redact_json(table, &mut row);
     match row {

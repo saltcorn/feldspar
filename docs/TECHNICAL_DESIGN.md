@@ -1282,13 +1282,20 @@ pub struct User {
   Codes from an authenticator app (TOTP, RFC 6238: HMAC-SHA-1, 6 digits, 30 seconds, one step
   of drift either way), and 10 single-use recovery codes. It belongs to the **account**, not
   to an application, so the routes are the server's own, under `/_feldspar/second-factor`,
-  answering on every host as the OAuth routes do:
+  answering on every host as the OAuth routes do. "Signed in" there means a session issued
+  for the kind of host the request arrived on: an application's session on an application's
+  host, an admin session on the admin host. An admin session sent to an application's host
+  (shared sign-in) is nobody to these routes, so an application's script cannot change a
+  visiting admin's second factor:
 
   - `GET` (signed in): `{enabled, required, recovery_codes_left}`.
-  - `POST setup {token?}`: a new secret, as `{secret, otpauth_url, qr_svg, account}`. The QR
-    code is an SVG drawn on the server. Refused while one is on.
+  - `POST setup {token?, password?}`: a new secret, as `{secret, otpauth_url, qr_svg,
+    account}`. The QR code is an SVG drawn on the server. Refused while one is on. Signed in
+    (rather than with a challenge's `token`), the account gives its current `password` again,
+    held to the login form's budget.
   - `POST enable {code, token?}`: turn it on with the app's first code. Answers
-    `{recovery_codes}`, shown once.
+    `{recovery_codes}`, shown once. Signed in, it ends the account's other sessions and keeps
+    this one, as `disable` does.
   - `POST verify {token, code}`: answer a sign-in's challenge (see below).
   - `POST disable {code}` and `POST recovery-codes {code}` (signed in): turn it off, or
     replace the recovery codes. Both need a current code. A role that requires it cannot turn
@@ -1298,7 +1305,8 @@ pub struct User {
 
   **Storage.** `_fd_second_factor` (`user_id` PK, the secret **sealed** with the instance key
   as a Secret field is, `enabled_at` (`NULL` while a setup waits for its first code),
-  `last_step`) and `_fd_recovery_codes` (SHA-256 of the account and the code). Both are made by
+  `last_step`, and the guess counter `guesses` / `guesses_since`) and `_fd_recovery_codes`
+  (SHA-256 of the account and the code). Both are made by
   the users bootstrap, are not foreign keys, and are deleted with the account. A code is
   accepted only for a time-step after `last_step`, in one conditional `UPDATE`, so a code
   cannot be used twice. A recovery code is spent by `DELETE … RETURNING`.
@@ -1320,12 +1328,30 @@ pub struct User {
 
   The answer starts the session through `apply_session` with `SessionAction::StartVerified`,
   which is never challenged. That variant is also what `becomeUser` and the first user's
-  creation use. An identity-provider sign-in uses it too, unless Settings → Authentication
-  *Ask for a two-factor code after an identity provider* is on. Every password path is covered
-  this way without knowing about the second factor: the admin and REST logins, set-password,
-  verify-email, sign-up, and a rendered login form. Wrong codes count against the account (5 in
-  15 minutes, then `429`) as well as the login budget per IP. If the database cannot say
+  creation use. An identity-provider sign-in uses `Start`, so it is challenged exactly as a
+  password is: the provider's own second factor is not one this server can see, and accounts
+  match by email. (The former setting *Ask for a two-factor code after an identity provider*,
+  `second_factor_for_identity_providers`, is no longer read or shown.) Every password path is
+  covered this way without knowing about the second factor: the admin and REST logins,
+  set-password, verify-email, sign-up, and a rendered login form. If the database cannot say
   whether an account has a second factor, no session is started.
+
+  **Guessing.** Each code is counted against the account
+  **before** it is checked: `sc_auth::reserve_guess` takes one of 5 guesses per 15 minutes in a
+  single conditional `UPDATE` of the account's `_fd_second_factor` row, so concurrent requests
+  cannot all be checked before one is counted, and every node shares the budget. A right code
+  gives its guess back (`GuessPermit::succeeded`). Over the budget the answer is `429` with
+  `Retry-After`. Each code also counts against the login budget per IP.
+
+  **Credential changes end sessions.** A new password (`set_user_password`, `update_user` with
+  one, a reset link), disabling an account, and a role change to one that requires a second
+  factor the account lacks delete the account's session rows in `sc_auth::manage`, whoever
+  calls it; a new password also deletes its outstanding reset links and challenges. Making a
+  role require a second factor ends the sessions of its accounts that have none on
+  (`delete_sessions_lacking_second_factor`), except the admin making the change. Turning the
+  second factor on or off ends the account's other sessions and keeps the one that did it
+  (`SessionStore::end_other_sessions`). A server handler also ends them through the store, which
+  evicts this node's cache and closes live sockets; another node's cache lives out its 60 s.
 
   **Applications made before it.** A build regenerates only an application's `src/feldspar/`
   runtime, never its own `Login.tsx`, so the generated client covers pages that know nothing of
@@ -13856,7 +13882,8 @@ syntax is an issue on the card. The server matches before it calls the module (`
 
 **A route runs as whoever calls.** This is unlike a webhook. The caller is an API token's user
 when the request carries `Authorization: Bearer` (a bad token is a 401, never the public), else
-the admin host's session user, else nobody. `apiToken: true` refuses nobody with a 401, as v1's
+the admin host's session user — through the same scope check as every admin-host surface, so an
+application's session is nobody here — else nobody. `apiToken: true` refuses nobody with a 401, as v1's
 middleware does. A `POST` passes the CSRF check unless the route says `noCsrf`. In that case
 `open_to_public` lets a cookie-less request through as the anonymous caller, as it does a webhook.
 The module's `Table` reads and writes as the caller, like a view's (`TableHost::viewer_only`).
@@ -13869,7 +13896,12 @@ the prefix, `originalUrl`, and `req.res`/`res.req`. `res` provides `status`, `se
 `res` is a named stub, so `res.render` and v1's `res.sendWrap` fail saying what they are. The
 call answers once `res` is ended, not once the callback returns, because a callback may answer
 from a promise it did not return. Calls are bounded like a webhook's: 1 MiB body, 600 requests a
-minute per address, and the action wall clock. A throw is a 500 and the `error` event.
+minute per address, and the action wall clock. A throw is a 500 and the `error` event. The
+answer's headers are the module's, except the admin origin's security policy, which the module
+cannot set: `Content-Security-Policy` (and `-Report-Only`), `X-Frame-Options`,
+`X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, `Strict-Transport-Security`,
+the `Cross-Origin-*-Policy` headers and `Access-Control-Allow-Origin`/`-Credentials` are dropped,
+and the router adds the admin host's own.
 
 **What a route reads of the installation** (the `system` ask surface, `AskSurface::System`, carried only
 by a route's call). This is what `heartbeat-monitor` needs:

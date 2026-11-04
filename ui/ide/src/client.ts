@@ -517,9 +517,12 @@ export interface ApiClient {
   /** The signed-in account's two-factor authentication. */
   secondFactorStatus(): Promise<SecondFactorStatus>;
   /** Start setting up two-factor authentication: for the signed-in account,
-   * or — with the `second_factor.token` a sign-in answered with `setup: true` —
-   * for the account signing in, whose role requires it. */
-  secondFactorSetup(token?: string): Promise<SecondFactorSetup>;
+   * which gives its current `password` again, or — with the
+   * `second_factor.token` a sign-in answered with `setup: true` (as a string,
+   * or `{ token }`) — for the account signing in, whose role requires it. */
+  secondFactorSetup(
+    auth?: string | { token?: string; password?: string },
+  ): Promise<SecondFactorSetup>;
   /** Turn it on with the first code from the app. With a sign-in's `token`
    * this also finishes the sign-in. */
   secondFactorEnable(code: string, token?: string): Promise<SecondFactorEnabled>;
@@ -872,11 +875,11 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       if (!res.ok) throw await clientError("secondFactorStatus", res);
       return (await res.json()) as SecondFactorStatus;
     },
-    async secondFactorSetup(token?: string) {
+    async secondFactorSetup(auth?: string | { token?: string; password?: string }) {
       const res = await doFetch(`${baseUrl}/_feldspar/second-factor/setup`, {
         method: "POST",
         headers: requestHeaders("POST", true),
-        body: JSON.stringify(token ? { token } : {}),
+        body: JSON.stringify(typeof auth === "string" ? { token: auth } : (auth ?? {})),
       });
       if (!res.ok) throw await clientError("secondFactorSetup", res);
       return (await res.json()) as SecondFactorSetup;

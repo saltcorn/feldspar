@@ -22,6 +22,7 @@ mod checked;
 mod def;
 mod disk;
 mod git;
+pub mod git_command;
 mod local;
 mod paths;
 mod reference;
@@ -33,8 +34,8 @@ mod stream;
 pub mod xattr;
 
 pub use access::{
-    FileCaller, VisibleEntry, check_access, check_write, controls_build, effective_min_role,
-    filter_visible, list_visible, record_owner, visible_entries,
+    FileCaller, VisibleEntry, check_access, check_write, configures_coding_agent, controls_build,
+    effective_min_role, filter_visible, list_visible, record_owner, visible_entries,
 };
 pub use backend::{
     OperationOutcome, Relocation, backend_config_spec, backend_operations, connect_from_def,
@@ -528,6 +529,46 @@ mod tests {
             "web/README.md",
         ] {
             assert!(!controls_build(path), "{path}");
+            assert!(
+                check_write(&store, None, path, &staff).await.is_ok(),
+                "{path}"
+            );
+        }
+    }
+
+    /// Claude Code's project configuration is written by an admin only: the
+    /// admin's terminal starts in a store and runs its hooks as the server's
+    /// user (security review 2026-11, #2).
+    #[tokio::test]
+    async fn coding_agent_config_is_an_admin_only_write() {
+        let (_base, store) = temp_store();
+        let staff = FileCaller::new(Role::of(40), Some("u1".into()));
+        for path in [
+            ".claude/settings.json",
+            "web/.claude/settings.json",
+            "web/.claude/settings.local.json",
+            "web/.Claude./commands/x.md",
+            "CLAUDE.md",
+            "web/claude.md",
+            "web/CLAUDE.local.md",
+            "web/.claude",
+        ] {
+            assert!(configures_coding_agent(path), "{path}");
+            let err = check_write(&store, None, path, &staff).await.unwrap_err();
+            assert!(err.to_string().contains("coding agent"), "{path}: {err}");
+            assert!(
+                check_write(&store, None, path, &FileCaller::role(Role::ADMIN))
+                    .await
+                    .is_ok(),
+                "{path}"
+            );
+        }
+        for path in [
+            "web/claude.txt",
+            "docs/CLAUDE.md.bak",
+            "web/src/claude/x.ts",
+        ] {
+            assert!(!configures_coding_agent(path), "{path}");
             assert!(
                 check_write(&store, None, path, &staff).await.is_ok(),
                 "{path}"

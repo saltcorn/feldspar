@@ -204,7 +204,8 @@ pub async fn check_access(
 ///
 /// Below admin, a file that decides what a build runs ([`controls_build`]) is
 /// refused whatever the floor: an admin's next build or check runs it as the
-/// server's operating-system user.
+/// server's operating-system user. So is one that configures Claude Code
+/// ([`configures_coding_agent`]): the admin's terminal starts in a store.
 pub async fn check_write(
     store: &dyn FileStore,
     store_min_role: Option<Role>,
@@ -218,6 +219,9 @@ pub async fn check_write(
     }
     if controls_build(path.as_str()) {
         return Err(build_input_refused(path.as_str()));
+    }
+    if configures_coding_agent(path.as_str()) {
+        return Err(agent_config_refused(path.as_str()));
     }
     let meta = store.get_meta(path).await.unwrap_or_default();
     let permitted = match &meta.owner {
@@ -286,6 +290,37 @@ pub fn controls_build(path: &str) -> bool {
     CONFIG_EXTS.contains(&ext)
         && (stem.split('.').skip(1).any(|part| part == "config")
             || (stem.starts_with('.') && stem.ends_with("rc")))
+}
+
+/// The files Claude Code reads from the directory it starts in as its own
+/// configuration: anything under `.claude` (`settings.json` hooks run shell
+/// commands, `permissions.allow` grants tools, plus commands, agents and
+/// skills), and the `CLAUDE.md` / `CLAUDE.local.md` instructions.
+///
+/// The admin's terminal starts Claude Code in an app's source directory or a
+/// store's root, as the server's operating-system user, so whoever writes one
+/// of these decides what runs there — below admin they are refused on every
+/// write route (security review 2026-11, #2). Matched as [`controls_build`]
+/// matches: any segment, any case, trailing dots and spaces ignored.
+pub fn configures_coding_agent(path: &str) -> bool {
+    let segments: Vec<String> = path
+        .split(['/', '\\'])
+        .map(|s| s.trim_end_matches(['.', ' ']).to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let Some(name) = segments.last() else {
+        return false;
+    };
+    // `.claude.` trims to `.claude` too.
+    segments.iter().any(|s| s == ".claude") || name == "claude.md" || name == "claude.local.md"
+}
+
+/// The refusal [`check_write`] gives a coding agent's configuration.
+fn agent_config_refused(path: &str) -> Error {
+    Error::auth(format!(
+        "only an administrator may write {path:?}: it configures the coding agent an \
+         administrator runs on the server"
+    ))
 }
 
 /// The refusal [`check_write`] gives a build input.

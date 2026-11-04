@@ -126,20 +126,21 @@ pub use roles::{
     load_role, load_role_by_name, save_role,
 };
 pub use second_factor::{
-    ATTR_REQUIRE_SECOND_FACTOR, CODE_DIGITS, RECOVERY_CODE_COUNT, RECOVERY_CODES_TABLE,
-    SECOND_FACTOR_TABLE, STEP_SECONDS, SecondFactorNeeded, SecondFactorStatus,
-    begin_second_factor_setup, bootstrap_second_factor, decode_secret, disable_second_factor,
-    finish_second_factor_setup, hotp, issue_second_factor_challenge, matching_step, new_secret,
-    otpauth_url, qr_svg, regenerate_recovery_codes, requires_second_factor,
-    role_requires_second_factor, second_factor_challenge, second_factor_enabled,
-    second_factor_needed, second_factor_status, second_factor_users, spend_second_factor_challenge,
-    time_step, totp_at, verify_second_factor,
+    ATTR_REQUIRE_SECOND_FACTOR, CODE_DIGITS, Guess, GuessPermit, MAX_GUESSES, RECOVERY_CODE_COUNT,
+    RECOVERY_CODES_TABLE, SECOND_FACTOR_TABLE, STEP_SECONDS, SecondFactorNeeded,
+    SecondFactorStatus, begin_second_factor_setup, bootstrap_second_factor, decode_secret,
+    disable_second_factor, finish_second_factor_setup, hotp, issue_second_factor_challenge,
+    matching_step, new_secret, otpauth_url, qr_svg, regenerate_recovery_codes,
+    requires_second_factor, reserve_guess, role_requires_second_factor, second_factor_challenge,
+    second_factor_enabled, second_factor_needed, second_factor_status, second_factor_users,
+    spend_second_factor_challenge, time_step, totp_at, verify_second_factor,
 };
 pub use session::{
     APP_TOKEN_PREFIX, CACHE_CAPACITY, CACHE_TTL_SECONDS, COL_EXPIRES_AT as COL_SESSION_EXPIRES_AT,
     COL_TOKEN_HASH as COL_SESSION_TOKEN_HASH, COL_USER as COL_SESSION_USER, DEFAULT_TTL_HOURS,
     SESSIONS_TABLE, SessionEnded, SessionListener, SessionScope, SessionStore, bootstrap_sessions,
     changeset_session_key, changeset_token_key, create_session, delete_sessions_for_user,
+    delete_sessions_lacking_second_factor,
 };
 pub use tokens::{
     API_TOKENS_TABLE, ApiCaller, ApiToken, COL_CREATED_AT as COL_TOKEN_CREATED_AT,

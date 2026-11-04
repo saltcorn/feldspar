@@ -314,3 +314,76 @@ async fn a_role_change_reaches_a_live_session() -> Result<()> {
     );
     Ok(())
 }
+
+/// A credential change ends what the old credentials handed out, whoever makes
+/// it (security review 2026-11, #11): a new password, disabling the account,
+/// and a role that now requires a second factor the account lacks — not the
+/// sessions of an account that has one on, nor the one named as making the
+/// change. And an account can end its other sessions and keep its own.
+#[tokio::test]
+async fn credential_changes_end_the_sessions_they_outdate() -> Result<()> {
+    let f = fixture().await?;
+    f.catalog.set_secret_key(sc_catalog::SecretKey::generate()?);
+    let store = uncached(&f.catalog);
+    let member = Role::new(80).unwrap();
+    sc_auth::save_role(&f.catalog, &sc_auth::RoleDef::new(member, "Member")).await?;
+    let ann = create_user(&f.catalog, "ann@example.com", "ann-pw", member).await?;
+    let bob = create_user(&f.catalog, "bob@example.com", "bob-pw", member).await?;
+    let cat = create_user(&f.catalog, "cat@example.com", "cat-pw", member).await?;
+    let dee = create_user(&f.catalog, "dee@example.com", "dee-pw", member).await?;
+    let live = |token: String| {
+        let store = &store;
+        async move { store.user_for(&token).await.map(|u| u.is_some()) }
+    };
+
+    // A new password.
+    let token = store.login(ann.clone()).await?;
+    sc_auth::set_user_password(&f.catalog, ann.id(), "new-ann-pw").await?;
+    assert!(!live(token).await?, "a new password ends the session");
+    let token = store.login(ann.clone()).await?;
+    sc_auth::update_user(
+        &f.catalog,
+        ann.id(),
+        sc_auth::UserUpdate {
+            password: Some(sc_error::Secret::new("newer-ann-pw".to_owned())),
+            ..Default::default()
+        },
+    )
+    .await?;
+    assert!(!live(token).await?, "so does an edit with one");
+
+    // Disabled.
+    let token = store.login(bob.clone()).await?;
+    sc_auth::set_user_disabled(&f.catalog, bob.id(), true).await?;
+    assert_eq!(session_rows(&f.catalog).await?, 0);
+    assert!(!live(token).await?);
+
+    // The role now requires a second factor: Cat has none, Dee has one on,
+    // and Ann is the admin making the change.
+    let secret = sc_auth::begin_second_factor_setup(&f.catalog, dee.id()).await?;
+    let code = sc_auth::totp_at(
+        &sc_auth::decode_secret(&secret)?,
+        chrono::Utc::now().timestamp(),
+    );
+    assert!(
+        sc_auth::finish_second_factor_setup(&f.catalog, dee.id(), &code)
+            .await?
+            .is_some()
+    );
+    let cats = store.login(cat.clone()).await?;
+    let dees = store.login(dee.clone()).await?;
+    let anns = store.login(ann.clone()).await?;
+    let ended =
+        sc_auth::delete_sessions_lacking_second_factor(&f.catalog, member, Some(ann.id())).await?;
+    assert_eq!(ended, vec![cat.id()]);
+    assert!(!live(cats).await?);
+    assert!(live(dees).await?);
+    assert!(live(anns.clone()).await?);
+
+    // An account's other sessions, but not this one.
+    let other = store.login(ann.clone()).await?;
+    assert_eq!(store.end_other_sessions(ann.id(), &anns).await?, 1);
+    assert!(!live(other).await?);
+    assert!(live(anns).await?);
+    Ok(())
+}

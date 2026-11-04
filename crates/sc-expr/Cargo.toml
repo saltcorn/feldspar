@@ -51,6 +51,7 @@ serde_json = { workspace = true }
 swc_common = { workspace = true }
 swc_ecma_ast = { workspace = true }
 swc_ecma_parser = { workspace = true }
+stacker = { workspace = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]

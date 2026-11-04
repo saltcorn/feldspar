@@ -284,6 +284,12 @@ pub async fn open_to_write(
                  whose caller is an administrator may write it"
             )));
         }
+        if sc_files::configures_coding_agent(&path) {
+            return Err(Error::invalid(format!(
+                "`{rel}` configures the coding agent an administrator runs on the server, \
+                 so only a run whose caller is an administrator may write it"
+            )));
+        }
         if let Some(output) = build_output_holding(ctx.catalog, &scope.store, &path).await? {
             return Err(Error::invalid(format!(
                 "`{rel}` is inside `{output}`, where an application's build writes what is \

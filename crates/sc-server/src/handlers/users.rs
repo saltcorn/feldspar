@@ -61,6 +61,18 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     role.attributes.remove(sc_auth::ATTR_REQUIRE_SECOND_FACTOR);
                 }
                 save_role(&catalog, &role).await?;
+                if required {
+                    // A session started without the second factor the role now
+                    // requires ends, and its next sign-in sets one up (security
+                    // review 2026-11, #11) — but not the admin's making the
+                    // change, who is here and is asked at their next sign-in.
+                    sc_auth::delete_sessions_lacking_second_factor(
+                        &catalog,
+                        number,
+                        ctx.user().map(User::id),
+                    )
+                    .await?;
+                }
                 Ok(HandlerResponse::ok(role_json(&role)))
             }
         }
@@ -172,6 +184,12 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     },
                 )
                 .await?;
+                // A new password ends the sessions the old one started
+                // (security review 2026-11, #11), the editing admin's own
+                // included when it is their account.
+                if !optional_str(obj, "password").is_empty() {
+                    return Ok(HandlerResponse::end_user_sessions(id, user_row_json(&user)));
+                }
                 Ok(HandlerResponse::ok(user_row_json(&user)))
             }
         }
@@ -465,13 +483,17 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let id = parse_user_id(ctx.path_param("id")?)?;
                 let password = random_password();
                 let user = set_user_password(&catalog, id, &password).await?;
-                // The one response that carries a readable password. Every live
-                // session keeps working — a password reset is not a logout, and
-                // an admin who wants both has "force logout" next to this.
-                Ok(HandlerResponse::ok(json!({
-                    "email": user.get(COL_EMAIL).and_then(sc_query::Value::as_text).unwrap_or_default(),
-                    "password": password,
-                })))
+                // The one response that carries a readable password. A new
+                // password ends the sessions the old one started (security
+                // review 2026-11, #11): `set_user_password` drops their rows,
+                // and this drops this node's cached copies and live sockets.
+                Ok(HandlerResponse::end_user_sessions(
+                    id,
+                    json!({
+                        "email": user.get(COL_EMAIL).and_then(sc_query::Value::as_text).unwrap_or_default(),
+                        "password": password,
+                    }),
+                ))
             }
         }
     });

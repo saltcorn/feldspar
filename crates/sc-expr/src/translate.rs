@@ -1783,6 +1783,28 @@ mod tests {
         (clause, binds)
     }
 
+    /// The deepest formula `Formula::parse` admits translates and renders on
+    /// a server worker's 8 MiB stack (`sc-cli`'s `WORKER_STACK_BYTES`), even
+    /// in a debug build: the walkers after parsing are recursive, and the
+    /// depth limit is what bounds them (security review 2026-11, D1).
+    #[test]
+    fn the_deepest_formula_allowed_translates_on_a_worker_stack() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let src = format!(
+                    "owner === user.id{}",
+                    " || pages > 1".repeat((crate::MAX_FORMULA_DEPTH - 2) / 2)
+                );
+                let env = inline_user(&[("id", Value::Text("u1".into()))]);
+                let (sql, _) = where_sql(&src, Operation::Read, &env);
+                assert!(sql.contains("\"pages\""), "{sql}");
+            })
+            .unwrap()
+            .join()
+            .expect("translating must not overflow the stack");
+    }
+
     #[test]
     fn a_rooted_translation_names_the_alias_everywhere_the_row_is_read() {
         // What a child table's ownership predicate needs to be usable inside a

@@ -585,11 +585,7 @@ impl LiveHub {
             message: "your session ended, so this connection is closed; sign in again".to_owned(),
         };
         for entry in lock(&self.connections).values() {
-            let covered = match ended {
-                SessionEnded::Token(token) => entry.info.session.as_deref() == Some(*token),
-                SessionEnded::User(user) => entry.info.user == Some(*user),
-                SessionEnded::All => entry.info.session.is_some(),
-            };
+            let covered = ended.covers(entry.info.session.as_deref(), entry.info.user);
             if covered {
                 entry.close.send_replace(Some(reason.clone()));
             }

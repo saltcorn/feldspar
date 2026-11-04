@@ -610,6 +610,30 @@ async fn an_application_and_the_admin_ui_sign_in_with_an_identity_provider() -> 
     let (status, _) = sign_in(&router, &mut admin_ui, &seen, ADMIN_EMAIL, "/").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(admin_ui.admin_user().await.as_deref(), Some(ADMIN_EMAIL));
+
+    // --- an account's second factor is asked for after the provider too
+    // (security review 2026-11, #10): the sign-in ends at the code page, with
+    // no session yet.
+    let guarded =
+        sc_auth::create_user(&catalog, "twofa@example.com", "twofa-pw", Role::PUBLIC).await?;
+    let secret = sc_auth::begin_second_factor_setup(&catalog, guarded.id()).await?;
+    let code = sc_auth::totp_at(
+        &sc_auth::decode_secret(&secret).unwrap(),
+        chrono::Utc::now().timestamp(),
+    );
+    assert!(
+        sc_auth::finish_second_factor_setup(&catalog, guarded.id(), &code)
+            .await?
+            .is_some()
+    );
+    let mut asked = Browser::new(router.clone(), APP_HOST);
+    let (_, back) = sign_in(&router, &mut asked, &seen, "twofa@example.com", "/orders").await;
+    let back = back.unwrap_or_default();
+    assert!(
+        back.starts_with("/_feldspar/second-factor/sign-in"),
+        "the code is asked for: {back}"
+    );
+    assert_eq!(asked.whoami().await, None, "no session before the code");
     // A flow started on a host this server does not serve by name — which
     // routes to the admin, as any unknown host does — is refused: its
     // completion token would be sent back there, to whoever runs that host.

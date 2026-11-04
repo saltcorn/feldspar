@@ -70,7 +70,8 @@ pub const PREFIX: &str = "/_feldspar/second-factor";
 /// `GET`: the signed-in account's second factor — `{enabled, required,
 /// recovery_codes_left}`.
 pub const STATUS_ROUTE: &str = "/_feldspar/second-factor";
-/// `POST {token?}`: a new secret to scan — `{secret, otpauth_url, qr_svg}`.
+/// `POST {token?, password?}`: a new secret to scan — `{secret, otpauth_url,
+/// qr_svg}`. Signed in rather than with a challenge, the current `password`.
 pub const SETUP_ROUTE: &str = "/_feldspar/second-factor/setup";
 /// `POST {code, token?}`: turn it on with the first code — `{recovery_codes}`,
 /// and with a challenge, the session too (`user`).
@@ -223,9 +224,15 @@ impl Fields {
 
 /// The account a request's session cookie signs in, if any.
 ///
-/// Off an application's host, a session issued on an application's host is
-/// no session (security review #15), as it is for every other admin-host
-/// route: it must not change the second factor an admin signs in with.
+/// Only a session issued for the kind of host the request arrived on counts:
+/// an application's session on an application's host, an admin session on the
+/// admin host. Off an application's host, an application's session is no
+/// session (security review #15): it must not change the second factor an
+/// admin signs in with. And on an application's host an admin session — sent
+/// there when sign-in is shared across the base domain — is no session
+/// either (security review 2026-11, #3): the application's script, which an
+/// admin did not necessarily write, must not enroll a second factor on the
+/// admin who visits it.
 async fn signed_in(
     state: &AppState,
     headers: &HeaderMap,
@@ -234,9 +241,13 @@ async fn signed_in(
     let Some(token) = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned()) else {
         return Ok(None);
     };
-    if sc_auth::SessionScope::of_token(&token) == sc_auth::SessionScope::App
-        && !matches!(resolve_app(state, headers, jar), Resolved::App(_))
-    {
+    let scope = sc_auth::SessionScope::of_token(&token);
+    let issued_here = match resolve_app(state, headers, jar) {
+        Resolved::App(_) => scope == sc_auth::SessionScope::App,
+        Resolved::Admin => scope == sc_auth::SessionScope::Admin,
+        Resolved::HiddenPreview => false,
+    };
+    if !issued_here {
         return Ok(None);
     }
     match state.sessions.user_for(&token).await {
@@ -278,31 +289,82 @@ fn ip_of(state: &AppState, peer: Peer, headers: &HeaderMap) -> Option<std::net::
     crate::router::request_client_ip(state, peer.map(|p| p.0.0), headers)
 }
 
-/// Throttle a code for `user_id`, or the `429` to answer instead.
-fn throttle(ip: Option<std::net::IpAddr>, user_id: Uuid) -> Result<(), Response> {
-    sc_api::throttle::second_factor_attempt(ip, &user_id.to_string()).map_err(|limited| {
-        let secs = limited.retry_after_secs();
-        let mut out = (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({ "error": "too many wrong codes; try again later", "retry_after": secs })),
-        )
-            .into_response();
-        out.headers_mut()
-            .insert(header::RETRY_AFTER, HeaderValue::from(secs));
-        out
-    })
+/// The `429` for a code that may not be checked yet.
+fn too_many(secs: u64) -> Response {
+    let mut out = (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({ "error": "too many wrong codes; try again later", "retry_after": secs })),
+    )
+        .into_response();
+    out.headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from(secs));
+    out
 }
 
-/// Whether `code` is right for `user_id`, counting it against the account when
-/// it is not.
-async fn check_code(catalog: &Catalog, user_id: Uuid, code: &str) -> Result<bool, Response> {
-    let ok = sc_auth::verify_second_factor(catalog, user_id, code)
-        .await
-        .map_err(|e| failed("could not check the code", &e))?;
-    if !ok {
-        sc_api::throttle::second_factor_failed(&user_id.to_string());
+/// Count a code for `user_id` before it is checked — against the IP, and as
+/// one of the account's guesses (kept in the database, so shared by every
+/// node) — or the `429` to answer instead.
+async fn reserve(
+    catalog: &Catalog,
+    ip: Option<std::net::IpAddr>,
+    user_id: Uuid,
+) -> Result<sc_auth::GuessPermit, Response> {
+    sc_api::throttle::second_factor_attempt(ip)
+        .map_err(|limited| too_many(limited.retry_after_secs()))?;
+    match sc_auth::reserve_guess(catalog, user_id).await {
+        Ok(sc_auth::Guess::Permitted(permit)) => Ok(permit),
+        Ok(sc_auth::Guess::Limited { retry_after_secs }) => Err(too_many(retry_after_secs)),
+        Err(e) => Err(failed("could not check the code", &e)),
     }
+}
+
+/// Settle a guess: given back when the code was right, kept counted otherwise.
+async fn settle(catalog: &Catalog, permit: sc_auth::GuessPermit, right: bool) {
+    if !right {
+        permit.failed();
+    } else if let Err(e) = permit.succeeded(catalog).await {
+        // The guess stays counted: one fewer for the window, not a failure.
+        log_failure("could not give back a right code's guess", &e);
+    }
+}
+
+/// Whether `code` is right for `user_id`, the guess counted before it is
+/// checked and given back when it was right.
+async fn check_code(
+    catalog: &Catalog,
+    ip: Option<std::net::IpAddr>,
+    user_id: Uuid,
+    code: &str,
+) -> Result<bool, Response> {
+    let permit = reserve(catalog, ip, user_id).await?;
+    let ok = match sc_auth::verify_second_factor(catalog, user_id, code).await {
+        Ok(ok) => ok,
+        Err(e) => {
+            permit.failed();
+            return Err(failed("could not check the code", &e));
+        }
+    };
+    settle(catalog, permit, ok).await;
     Ok(ok)
+}
+
+/// End every session of `user_id` but this request's: what the account
+/// changing its own second factor does (security review 2026-11, #11).
+async fn end_other_sessions(
+    state: &AppState,
+    jar: &CookieJar,
+    user_id: Uuid,
+) -> Result<(), Response> {
+    let keep = jar
+        .get(SESSION_COOKIE)
+        .map(|c| c.value().to_owned())
+        .unwrap_or_default();
+    state
+        .sessions
+        .end_other_sessions(user_id, &keep)
+        .await
+        .map(|_| ())
+        .map_err(|e| failed("could not end the account's other sessions", &e))
 }
 
 fn wrong_code() -> Response {
@@ -483,9 +545,54 @@ async fn setup_for(
     Ok(json!({ "secret": secret, "otpauth_url": url, "qr_svg": svg, "account": account }))
 }
 
-/// `POST` [`SETUP_ROUTE`].
+/// That the signed-in `user` gave their current password as `password`: what
+/// setting a second factor up from a session takes. Held to the login form's
+/// budget (per IP, and wrong passwords per address), so it is no better a
+/// place to guess the password than signing in is.
+async fn reauthenticated(
+    state: &AppState,
+    catalog: &Catalog,
+    peer: Peer,
+    headers: &HeaderMap,
+    user: &User,
+    fields: &Fields,
+) -> Result<(), Response> {
+    let Some(password) = fields.text("password") else {
+        return Err(json_error(
+            StatusCode::UNAUTHORIZED,
+            "enter your current password to set up two-factor authentication",
+        ));
+    };
+    let Some(email) = sc_auth::user_email(user) else {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "this account has no email address to check a password for",
+        ));
+    };
+    sc_api::throttle::login_attempt(ip_of(state, peer, headers), email)
+        .map_err(|limited| too_many(limited.retry_after_secs()))?;
+    let right = sc_auth::authenticate(catalog, email, password)
+        .await
+        .map_err(|e| failed("could not check the password", &e))?
+        .is_some_and(|found| found.id() == user.id());
+    if !right {
+        sc_api::throttle::login_failed(email);
+    }
+    if right {
+        Ok(())
+    } else {
+        Err(json_error(
+            StatusCode::UNAUTHORIZED,
+            "that password is not right",
+        ))
+    }
+}
+
+/// `POST` [`SETUP_ROUTE`]: `{password}` when signed in, `{token}` with a
+/// challenge.
 pub(crate) async fn setup(
     State(state): State<AppState>,
+    peer: Peer,
     headers: HeaderMap,
     jar: CookieJar,
     body: Bytes,
@@ -499,6 +606,14 @@ pub(crate) async fn setup(
         Ok(a) => a,
         Err(r) => return r,
     };
+    // A challenge has just proved the password. A session has not, and a
+    // second factor set up from one decides who can sign in to the account,
+    // so it proves the password again (security review 2026-11, #3).
+    if let Actor::SignedIn(user) = &actor
+        && let Err(r) = reauthenticated(&state, catalog, peer, &headers, user, &fields).await
+    {
+        return r;
+    }
     match setup_for(&state, catalog, &headers, actor.user_id()).await {
         Ok(body) => {
             let mut out = Json(body).into_response();
@@ -527,23 +642,35 @@ pub(crate) async fn enable(
         Err(r) => return r,
     };
     let user_id = actor.user_id();
-    if let Err(r) = throttle(ip_of(&state, peer, &headers), user_id) {
-        return r;
-    }
+    let permit = match reserve(catalog, ip_of(&state, peer, &headers), user_id).await {
+        Ok(permit) => permit,
+        Err(r) => return r,
+    };
     let code = fields.text("code").unwrap_or_default();
     let codes = match sc_auth::finish_second_factor_setup(catalog, user_id, code).await {
-        Ok(Some(codes)) => codes,
+        Ok(Some(codes)) => {
+            settle(catalog, permit, true).await;
+            codes
+        }
         Ok(None) => {
-            sc_api::throttle::second_factor_failed(&user_id.to_string());
+            settle(catalog, permit, false).await;
             if fields.form {
                 return page_redirect(&fields.return_to(), true);
             }
             return wrong_code();
         }
-        Err(e) => return failed("could not turn on two-factor authentication", &e),
+        Err(e) => {
+            permit.failed();
+            return failed("could not turn on two-factor authentication", &e);
+        }
     };
     match actor {
-        Actor::SignedIn(_) => {
+        Actor::SignedIn(user) => {
+            // A session somebody else holds must not outlive the account
+            // turning a second factor on; this one goes on.
+            if let Err(r) = end_other_sessions(&state, &jar, user.id()).await {
+                return r;
+            }
             let mut out = Json(json!({ "recovery_codes": codes })).into_response();
             no_store(&mut out);
             out
@@ -594,11 +721,8 @@ pub(crate) async fn verify(
         Ok(None) => return expired(),
         Err(e) => return failed("could not read the sign-in", &e),
     };
-    if let Err(r) = throttle(ip_of(&state, peer, &headers), user_id) {
-        return r;
-    }
     let code = fields.text("code").unwrap_or_default();
-    match check_code(catalog, user_id, code).await {
+    match check_code(catalog, ip_of(&state, peer, &headers), user_id, code).await {
         Ok(true) => {}
         Ok(false) if fields.form => return page_redirect(&fields.return_to(), true),
         Ok(false) => return wrong_code(),
@@ -636,8 +760,14 @@ async fn signed_in_with_code(
     let user = signed_in(state, headers, jar)
         .await?
         .ok_or_else(not_signed_in)?;
-    throttle(ip, user.id())?;
-    if !check_code(catalog, user.id(), fields.text("code").unwrap_or_default()).await? {
+    if !check_code(
+        catalog,
+        ip,
+        user.id(),
+        fields.text("code").unwrap_or_default(),
+    )
+    .await?
+    {
         return Err(wrong_code());
     }
     Ok(user)
@@ -685,7 +815,10 @@ pub(crate) async fn disable(
         Err(r) => return r,
     };
     match sc_auth::disable_second_factor(catalog, user.id()).await {
-        Ok(_) => Json(json!({ "ok": true })).into_response(),
+        Ok(_) => match end_other_sessions(&state, &jar, user.id()).await {
+            Ok(()) => Json(json!({ "ok": true })).into_response(),
+            Err(r) => r,
+        },
         Err(e) => failed("could not turn off two-factor authentication", &e),
     }
 }

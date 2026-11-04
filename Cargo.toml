@@ -350,6 +350,9 @@ rust_decimal = { version = "1", features = ["db-tokio-postgres"] }
 swc_common = "24"
 swc_ecma_ast = "26"
 swc_ecma_parser = "42"
+# Grows the stack for a long formula, whose swc tree is walked and dropped
+# recursively (security review 2026-11, D1). Already a dependency of swc.
+stacker = "0.1"
 # The reified formula evaluator (TODO Phase 3): a real V8 isolate via deno_core,
 # so a formula runs under exactly the engine whose grammar swc parses. Built
 # with no extensions and no ops — the sandbox has no I/O to reach. Pulls the

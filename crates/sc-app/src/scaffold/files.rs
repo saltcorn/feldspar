@@ -2818,8 +2818,9 @@ export default function SecondFactor() {
 "#;
 
 /// The signed-in person's own **two-factor authentication**: turn it on (scan,
-/// first code, recovery codes), make new recovery codes, or turn it off — each
-/// of the last two with a current code. At `/security`, linked from the header.
+/// first code, recovery codes) after giving the password again, make new
+/// recovery codes, or turn it off — each of the last two with a current code.
+/// At `/security`, linked from the header.
 const SECURITY_TSX: &str = r#"import { useEffect, useState, type FormEvent } from "react";
 import type { SecondFactorSetup, SecondFactorStatus } from "./feldspar/client";
 import { api } from "./feldspar/hooks";
@@ -2833,6 +2834,7 @@ export default function Security() {
   const [codes, setCodes] = useState<string[] | null>(null);
   const [action, setAction] = useState<"disable" | "codes" | null>(null);
   const [code, setCode] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | undefined>(undefined);
 
   const load = () =>
@@ -2929,9 +2931,29 @@ export default function Security() {
       ) : (
         <>
           <p>{t("Off: signing in takes your password only.")}</p>
-          <button onClick={() => void run(async () => setSetup(await api.secondFactorSetup()))}>
-            {t("Set up two-factor authentication")}
-          </button>
+          {/* Setting one up proves the password again. */}
+          <form
+            onSubmit={(e: FormEvent) => {
+              e.preventDefault();
+              void run(async () => {
+                setSetup(await api.secondFactorSetup({ password }));
+                setPassword("");
+              });
+            }}
+          >
+            <label>
+              {t("Your current password")}
+              <input
+                type="password"
+                value={password}
+                autoComplete="current-password"
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </label>
+            <button type="submit" disabled={!password}>
+              {t("Set up two-factor authentication")}
+            </button>
+          </form>
         </>
       )}
     </div>

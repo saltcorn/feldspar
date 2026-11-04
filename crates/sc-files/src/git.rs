@@ -905,12 +905,17 @@ impl GitRepo {
         )))
     }
 
-    /// Run `git` with this repository's credentials, non-interactively.
+    /// Run `git` with this repository's credentials, non-interactively. In the
+    /// store's root, against the repository there by name, never one git
+    /// discovers ([`crate::git_command`]); elsewhere (the parent a clone runs
+    /// in) with no repository at all.
     async fn run<S: AsRef<std::ffi::OsStr>>(&self, dir: &Path, args: &[S]) -> Result<GitOutput> {
-        let mut cmd = Command::new("git");
-        cmd.current_dir(dir).args(args);
-        // No terminal, so no question git asks can be answered (module docs).
-        cmd.env("GIT_TERMINAL_PROMPT", "0");
+        let mut cmd: Command = if dir == self.root && self.is_cloned() {
+            crate::git_command::command(&self.root)
+        } else {
+            crate::git_command::command_without_repository(dir)
+        };
+        cmd.args(args);
         if let Some(key) = &self.key_path {
             cmd.env("GIT_SSH_COMMAND", ssh_command(key));
         }

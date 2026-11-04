@@ -16,11 +16,17 @@
 //!   [`set_user_disabled`]. Writing the password hash through a bag of column
 //!   values is exactly the hole that rule closes.
 //!
-//! **Nothing here touches sessions**, deliberately. Disabling or deleting a user
-//! must also drop the credentials already handed out, but that is
-//! [`SessionStore::end_user_sessions`](crate::SessionStore::end_user_sessions)'s
-//! job: it evicts the calling node's cache as well as the rows, and only the
-//! server holds the store. Doing half of it here would look like the whole of it.
+//! **A credential change ends what the old credentials handed out**
+//! (security review 2026-11, #11): a new password ([`set_user_password`], or
+//! [`update_user`] with one), a role that now requires a second factor the
+//! account lacks, and disabling it delete the account's session rows — and a
+//! new password its outstanding reset links and sign-in challenges too — here,
+//! so that every caller (the admin UI, the CLI, an MCP tool) does it. Only the
+//! rows: the server's
+//! [`SessionStore::end_user_sessions`](crate::SessionStore::end_user_sessions)
+//! also evicts the calling node's cache and tells its live sockets, which a
+//! server handler asks for besides; any other node's cached copy lives out its
+//! freshness ([`CACHE_TTL_SECONDS`](crate::CACHE_TTL_SECONDS)).
 
 use sc_types::Role;
 use std::collections::BTreeMap;
@@ -118,7 +124,26 @@ pub async fn update_user(catalog: &Catalog, id: Uuid, update: UserUpdate) -> Res
             .await?
             .ok_or_else(|| no_such_user(id));
     }
-    write(catalog, id, assignments).await
+    let user = write(catalog, id, assignments).await?;
+    if update.password.is_some() {
+        password_changed(catalog, id).await?;
+    } else if let Some(role) = update.role
+        && crate::second_factor::role_requires_second_factor(catalog, role).await?
+        && !crate::second_factor::second_factor_enabled(catalog, id).await?
+    {
+        // Its sessions were started without the second factor its role now
+        // asks for.
+        crate::session::delete_sessions_for_user(catalog, id).await?;
+    }
+    Ok(user)
+}
+
+/// What a new password ends: the account's sessions, and the reset links and
+/// sign-in challenges issued under the old one.
+async fn password_changed(catalog: &Catalog, id: Uuid) -> Result<()> {
+    crate::password_tokens::delete_password_tokens_for_user(catalog, id).await?;
+    crate::session::delete_sessions_for_user(catalog, id).await?;
+    Ok(())
 }
 
 /// Disable or re-enable an account, returning the user as it now is.
@@ -136,12 +161,16 @@ pub async fn set_user_disabled(catalog: &Catalog, id: Uuid, disabled: bool) -> R
     if disabled {
         refuse_last_admin(catalog, id, "disable").await?;
     }
-    write(
+    let user = write(
         catalog,
         id,
         vec![Assignment::new(COL_DISABLED, Expr::lit(disabled))],
     )
-    .await
+    .await?;
+    if disabled {
+        crate::session::delete_sessions_for_user(catalog, id).await?;
+    }
+    Ok(user)
 }
 
 /// Replace a user's password, returning the user as it now is.
@@ -150,6 +179,19 @@ pub async fn set_user_disabled(catalog: &Catalog, id: Uuid, disabled: bool) -> R
 /// ([`random_password`](crate::random_password)) holds the only readable copy and
 /// is the one that has to show it.
 pub async fn set_user_password(catalog: &Catalog, id: Uuid, password: &str) -> Result<User> {
+    let user = replace_password_hash(catalog, id, password).await?;
+    password_changed(catalog, id).await?;
+    Ok(user)
+}
+
+/// Store `password`'s hash for `id`, and nothing else: the same password in
+/// a better hash ([`authenticate`](crate::authenticate)'s upgrade of a legacy
+/// one), which changes no credential and so ends nothing.
+pub(crate) async fn replace_password_hash(
+    catalog: &Catalog,
+    id: Uuid,
+    password: &str,
+) -> Result<User> {
     if password.is_empty() {
         return Err(Error::invalid("password is required"));
     }

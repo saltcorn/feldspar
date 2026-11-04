@@ -276,8 +276,29 @@ pub enum SessionEnded<'a> {
     /// Every session of this user: a forced sign-out, a disabled or deleted
     /// account.
     User(Uuid),
+    /// Every session of this user but the one with token `keep`: the account
+    /// changed its own credentials from that session (security review
+    /// 2026-11, #11).
+    UserExcept {
+        /// The account.
+        user: Uuid,
+        /// The session that made the change, which goes on.
+        keep: &'a str,
+    },
     /// Every session there is.
     All,
+}
+
+impl SessionEnded<'_> {
+    /// Whether this ending covers the session with `token`, of `user`.
+    pub fn covers(&self, token: Option<&str>, user: Option<Uuid>) -> bool {
+        match self {
+            SessionEnded::Token(t) => token == Some(*t),
+            SessionEnded::User(u) => user == Some(*u),
+            SessionEnded::UserExcept { user: u, keep } => user == Some(*u) && token != Some(*keep),
+            SessionEnded::All => token.is_some(),
+        }
+    }
 }
 
 /// Something that holds a session open between requests and must let go of it
@@ -602,6 +623,51 @@ impl SessionStore {
         }
     }
 
+    /// End every session of `user_id` **but** the one with token `keep`,
+    /// returning how many went: what a credential change the account makes
+    /// itself does (turning its second factor on or off), so that a session
+    /// somebody else holds does not outlive it while the one that made the
+    /// change goes on (security review 2026-11, #11).
+    pub async fn end_other_sessions(&self, user_id: Uuid, keep: &str) -> Result<usize> {
+        let ended = match &self.backend {
+            Backend::Memory(entries) => {
+                let mut guard = entries.write().map_err(|_| poisoned())?;
+                let before = guard.len();
+                guard.retain(|token, e| e.user.id() != user_id || token == keep);
+                before - guard.len()
+            }
+            Backend::Database { catalog, .. } => {
+                let stale: Vec<String> = {
+                    let cache = self.cache.lock().map_err(|_| poisoned())?;
+                    cache
+                        .iter()
+                        .filter(|(token, cached)| cached.user.id() == user_id && *token != keep)
+                        .map(|(token, _)| token.clone())
+                        .collect()
+                };
+                for token in &stale {
+                    self.invalidate(token)?;
+                }
+                let delete = Delete {
+                    returning: vec![Projection::expr(Expr::col(COL_TOKEN_HASH))],
+                    ..Delete::from(SESSIONS_TABLE).filter(
+                        Expr::col(COL_USER).eq(Expr::lit(user_id)).and(Expr::binary(
+                            BinOp::Ne,
+                            Expr::col(COL_TOKEN_HASH),
+                            Expr::lit(token_hash(keep)),
+                        )),
+                    )
+                };
+                rows(catalog, Statement::from(delete)).await?.len()
+            }
+        };
+        self.ended(SessionEnded::UserExcept {
+            user: user_id,
+            keep,
+        });
+        Ok(ended)
+    }
+
     /// End every session there is: the rows (or the in-memory map) and this
     /// node's cached copies. What Clear all does once it has deleted every
     /// account, so a session resolved a moment before cannot outlive its user.
@@ -775,6 +841,48 @@ pub async fn delete_sessions_for_user(catalog: &Catalog, user_id: Uuid) -> Resul
     Ok(rows(catalog, Statement::from(delete)).await?.len())
 }
 
+/// Delete the sessions of every account whose (effective) role is `role` and
+/// that has no second factor on, except `except`'s: what making `role` require
+/// a second factor does, since a session started before it was asked for none
+/// (security review 2026-11, #11). Only accounts that hold a session are
+/// looked at. Returns the accounts whose sessions went.
+///
+/// The rows go; a node's cached copy lives out its freshness
+/// ([`CACHE_TTL_SECONDS`]), as for [`delete_sessions_for_user`].
+pub async fn delete_sessions_lacking_second_factor(
+    catalog: &Catalog,
+    role: sc_types::Role,
+    except: Option<Uuid>,
+) -> Result<Vec<Uuid>> {
+    let select = Select::from(Source::table(SESSIONS_TABLE))
+        .columns(vec![Projection::expr(Expr::col(COL_USER))]);
+    let mut holders: Vec<Uuid> = rows(catalog, Statement::from(select))
+        .await?
+        .iter()
+        .filter_map(|row| match row.get(COL_USER) {
+            Some(Value::Uuid(id)) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    holders.sort_unstable();
+    holders.dedup();
+    let protected = crate::second_factor::second_factor_users(catalog).await?;
+    let mut ended = Vec::new();
+    for id in holders {
+        if Some(id) == except || protected.contains(&id) {
+            continue;
+        }
+        let Some(user) = crate::lookup::load_user(catalog, id).await? else {
+            continue;
+        };
+        if user.role() == role {
+            delete_sessions_for_user(catalog, id).await?;
+            ended.push(id);
+        }
+    }
+    Ok(ended)
+}
+
 /// Delete every session that has lapsed.
 async fn sweep_sessions(catalog: &Catalog) -> Result<()> {
     let delete = Delete::from(SESSIONS_TABLE).filter(Expr::binary(
@@ -923,6 +1031,7 @@ mod tests {
             let line = match ended {
                 SessionEnded::Token(token) => format!("token {token}"),
                 SessionEnded::User(user) => format!("user {user}"),
+                SessionEnded::UserExcept { user, keep } => format!("user {user} but {keep}"),
                 SessionEnded::All => "all".to_owned(),
             };
             self.0.lock().unwrap().push(line);

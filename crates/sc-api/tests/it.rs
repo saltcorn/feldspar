@@ -63,6 +63,8 @@ mod history_retention;
 mod history_sqlite;
 #[path = "history_undo.rs"]
 mod history_undo;
+#[path = "history_users.rs"]
+mod history_users;
 #[path = "live_connection.rs"]
 mod live_connection;
 #[path = "public_datasets.rs"]
