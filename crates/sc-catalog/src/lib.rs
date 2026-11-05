@@ -61,6 +61,7 @@ mod rls;
 pub mod secrets;
 mod services;
 mod spatial;
+mod supervise;
 mod sync;
 mod table;
 mod table_meta;
@@ -138,6 +139,7 @@ pub use rls::{
 pub use secrets::SecretKey;
 pub use services::{Extensions, Services};
 pub use spatial::bootstrap_spatial;
+pub use supervise::supervise;
 pub use sync::{
     ChangedEntry, SYNC_CLIENTS_TABLE, SYNC_KEYS_TABLE, SyncWatermark, changed_entries,
     changed_keys, set_sync_enabled, sync_enabled, sync_watermark,

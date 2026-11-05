@@ -116,6 +116,12 @@ const DESCRIPTION_CHARS: usize = 120;
 /// are written to fit.
 const MAX_CLOSE_REASON: usize = 120;
 
+/// The largest message the client may send (TODO-type-hardening H5.1): a turn
+/// with its attachments in base64. 16 MiB is tungstenite's own frame limit,
+/// which a browser's message — sent as one frame — could already not exceed,
+/// so no turn that worked before is refused now.
+const MESSAGE_LIMIT: crate::ws::MessageLimit = crate::ws::MessageLimit::mib(16);
+
 /// What the client can say.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -183,7 +189,9 @@ pub(crate) async fn agent_chat_upgrade(
 ) -> axum::response::Response {
     let (Some(catalog), Some(services)) = (catalog, services) else {
         let reason = "this server has no agents installed, so there is nothing to chat with";
-        return ws.on_upgrade(move |socket| refuse(socket, reason.to_owned()));
+        return crate::ws::upgrade(ws, crate::ws::REFUSAL, move |socket| {
+            refuse(socket, reason.to_owned())
+        });
     };
     let ctx = ChatContext {
         catalog: Arc::clone(catalog),
@@ -193,7 +201,7 @@ pub(crate) async fn agent_chat_upgrade(
         caller: session.session().run_caller(),
         session,
     };
-    ws.on_upgrade(move |socket| chat(socket, ctx))
+    crate::ws::upgrade(ws, MESSAGE_LIMIT, move |socket| chat(socket, ctx))
 }
 
 /// Close a socket, saying why.

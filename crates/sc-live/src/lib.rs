@@ -74,6 +74,7 @@ pub mod protocol;
 pub mod rows;
 pub mod subscription;
 pub mod topic;
+mod yjs_scan;
 
 pub use access::{
     Caller, Denied, Grant, PublishFacts, Refusal, RowFact, StoredStream, StreamFacts, may_open,

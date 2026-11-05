@@ -107,6 +107,7 @@ pub mod translations;
 mod triggers;
 mod uploads;
 mod webhooks;
+mod ws;
 
 pub use admin_host::{AdminHost, HANDOFF_ROUTE, HANDOFF_TTL};
 pub use agents::{AgentServices, install_agents, install_agents_on};

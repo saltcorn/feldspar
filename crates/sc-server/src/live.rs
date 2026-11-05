@@ -219,9 +219,9 @@ pub(crate) fn live_upgrade(
     // The transport's own cap sits above the frame limit, so a frame over the
     // limit is answered `too_large` rather than hung up on (`sc-live`'s limits).
     let max = env.hub.limits().transport_max_bytes();
-    ws.max_message_size(max)
-        .max_frame_size(max)
-        .on_upgrade(move |socket| serve(socket, env, caller))
+    crate::ws::upgrade(ws, crate::ws::MessageLimit::bytes(max), move |socket| {
+        serve(socket, env, caller)
+    })
 }
 
 /// One thing that happened to a connection, taken out of the `select!` so it is

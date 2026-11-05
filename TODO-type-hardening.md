@@ -100,11 +100,11 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## H5 — Bounded input and robustness (§5)
 
-- [ ] H5.1 Size caps: shapefile members, fetch response bodies, websocket messages (all 7
+- [x] H5.1 Size caps: shapefile members, fetch response bodies, websocket messages (all 7
       endpoints), LLM client timeouts.
-- [ ] H5.2 Panic boundary (`CatchPanicLayer`) and hook; `supervise` helper for background loops;
+- [x] H5.2 Panic boundary (`CatchPanicLayer`) and hook; `supervise` helper for background loops;
       session-store lock recovers from poison.
-- [ ] H5.3 Remaining recursive walkers over untrusted input get depth limits.
+- [x] H5.3 Remaining recursive walkers over untrusted input get depth limits.
 
 ## H6 — Typed endpoints and identifiers (§7, §8)
 

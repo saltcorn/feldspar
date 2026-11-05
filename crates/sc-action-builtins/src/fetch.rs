@@ -7,6 +7,7 @@ use sc_expr::{Formula, RenderMode, Template};
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value as Json, json};
 
+use crate::code_fetch::MAX_RESPONSE_BYTES;
 use sc_action::{
     Action, ActionContext, ConfigCheck, EVENT_SCOPE, Event, check_formula, event_formula_value,
     optional_formula, render_event_template, required_template, template_scope,
@@ -247,14 +248,16 @@ impl Action for Fetch {
             .map_err(|e| failed(ctx.trigger, &url, e))?;
 
         let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| failed(ctx.trigger, &url, e))?;
-        let text = String::from_utf8_lossy(&bytes);
+        // Capped (security review 2026-11 F-8): the body becomes the action's
+        // result, in memory, and a templated host is whatever a row says.
+        let body = sc_net::read_body(response, MAX_RESPONSE_BYTES).await;
         if !status.is_success() {
             // An application error: the endpoint answered, and what it said is
-            // the most useful thing the admin can be told.
+            // the most useful thing the admin can be told — when it said
+            // something short enough to quote; the status either way.
+            let text = body
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_default();
             return Err(Error::invalid(format!(
                 "trigger `{}`: {method} {url} returned {}{}",
                 ctx.trigger,
@@ -262,7 +265,15 @@ impl Action for Fetch {
                 quoted_body(&text),
             )));
         }
-        Ok(parse_body(&text))
+        let bytes = body.map_err(|e| match e {
+            sc_net::BodyError::Transport(e) => failed(ctx.trigger, &url, e),
+            sc_net::BodyError::TooLarge(limit) => Error::invalid(format!(
+                "trigger `{}`: the response to {method} {url} is larger than the {limit} a \
+                 `fetch` may read; ask the endpoint for less of it",
+                ctx.trigger
+            )),
+        })?;
+        Ok(parse_body(&String::from_utf8_lossy(&bytes)))
     }
 }
 

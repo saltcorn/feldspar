@@ -186,6 +186,7 @@ fn clippy_disallows_the_methods_with_a_sanctioned_replacement() {
         "reqwest::Client::builder",
         "tokio::spawn",
         "tokio::sync::mpsc::unbounded_channel",
+        "axum::extract::ws::WebSocketUpgrade::on_upgrade",
     ] {
         assert!(paths.contains(&path), "clippy.toml must disallow `{path}`");
     }
@@ -203,6 +204,8 @@ fn clippy_disallows_the_methods_with_a_sanctioned_replacement() {
     assert!(net.contains("pub fn client_builder() -> reqwest::ClientBuilder"));
     let caller = read(&root, "crates/sc-catalog/src/caller.rs");
     assert!(caller.contains("pub fn spawn_scoped<F>"));
+    let ws = read(&root, "crates/sc-server/src/ws.rs");
+    assert!(ws.contains("pub(crate) fn upgrade<F, Fut>"));
 }
 
 /// The files that may contain `unsafe` code. Adding one is a review decision:
@@ -216,9 +219,11 @@ const UNSAFE_FILES: &[&str] = &[
     "crates/sc-config-file/src/lib.rs",
     "crates/sc-dns/src/addrinfo.rs",
     "crates/sc-python/src/interp.rs",
+    // The process builder's process group, death signal and group kill
+    // (H4; it took sc-stan's `process.rs` calls with it).
+    "crates/sc-proc/src/command.rs",
     "crates/sc-server/src/system.rs",
     "crates/sc-server/src/terminal.rs",
-    "crates/sc-stan/src/process.rs",
     "crates/sc-stan/src/run_dir.rs",
     // Tests that call C directly or set the process environment.
     "crates/sc-app/src/build.rs",

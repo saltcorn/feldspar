@@ -90,6 +90,11 @@ pub const TERMINAL_ROUTE: &str = "/ide/terminal/{store}";
 /// session someone opened on purpose, and each one can run a build.
 pub const MAX_TERMINALS: usize = 4;
 
+/// The largest message the terminal's page may send (TODO-type-hardening
+/// H5.1): keystrokes, a resize, or a paste — a megabyte of pasted text is
+/// already more than a terminal can take in at once.
+const MESSAGE_LIMIT: crate::ws::MessageLimit = crate::ws::MessageLimit::mib(1);
+
 /// The executable, as `PATH` lookup would find it.
 pub(crate) const CLAUDE_BIN: &str = "claude";
 
@@ -543,7 +548,7 @@ pub(crate) async fn terminal_upgrade(
                     let changes = watch(&store, &place);
                     match Launch::prepare(exe, place.dir, wiring, token) {
                         Ok(launch) => {
-                            return ws.on_upgrade(move |socket| {
+                            return crate::ws::upgrade(ws, MESSAGE_LIMIT, move |socket| {
                                 bridge(socket, launch, store, changes, admin, permit)
                             });
                         }
@@ -556,7 +561,9 @@ pub(crate) async fn terminal_upgrade(
             },
         },
     };
-    ws.on_upgrade(move |socket| refuse(socket, refusal))
+    crate::ws::upgrade(ws, crate::ws::REFUSAL, move |socket| {
+        refuse(socket, refusal)
+    })
 }
 
 /// The environment the program starts with: the allow-listed part of the

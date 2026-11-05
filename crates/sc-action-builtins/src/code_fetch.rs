@@ -42,7 +42,10 @@ use serde_json::{Value as Json, json};
 /// A resident run holds what it reads in the V8 heap, and the isolate's heap is
 /// shared with every other run on it — so this is the same kind of bound the
 /// row cap is, in the same place, for the same reason.
-pub(crate) const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+///
+/// The `fetch` action reads at most the same: one answer to "how much may a
+/// trigger read".
+pub(crate) const MAX_RESPONSE_BYTES: sc_net::ByteLimit = sc_net::ByteLimit::mib(8);
 
 /// The methods a body may send. `CONNECT` and `TRACE` are left out: neither is
 /// something a trigger has any business doing, and a proxy or an echo of the
@@ -172,36 +175,24 @@ impl FetchHost for CodeFetchHost {
 }
 
 impl CodeFetchHost {
-    /// Read the body, refusing one that is larger than the bound.
-    ///
-    /// Chunk by chunk rather than `bytes()`, because the point of a cap that is
-    /// checked after the whole response is in memory is hard to explain: an
-    /// endpoint that answers with a gigabyte must be dropped while it is being
-    /// answered, not afterwards.
+    /// Read the body, refusing one that is larger than the bound
+    /// ([`sc_net::read_body`]: dropped while it is being answered, not after).
     async fn read_capped(
         &self,
-        mut response: reqwest::Response,
+        response: reqwest::Response,
         method: &reqwest::Method,
         url: &reqwest::Url,
     ) -> Result<Vec<u8>> {
-        let mut bytes: Vec<u8> = Vec::new();
-        loop {
-            let chunk = match response.chunk().await {
-                Ok(Some(chunk)) => chunk,
-                Ok(None) => break,
-                Err(e) => return Err(self.failed(method, url, &e)),
-            };
-            if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
-                return Err(Error::invalid(format!(
+        sc_net::read_body(response, MAX_RESPONSE_BYTES)
+            .await
+            .map_err(|e| match e {
+                sc_net::BodyError::Transport(e) => self.failed(method, url, &e),
+                sc_net::BodyError::TooLarge(limit) => Error::invalid(format!(
                     "trigger `{}`: the response to {method} {url} is larger than the \
-                     {} MB a code body may read; ask the endpoint for less of it",
+                     {limit} a code body may read; ask the endpoint for less of it",
                     self.trigger,
-                    MAX_RESPONSE_BYTES / (1024 * 1024),
-                )));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        Ok(bytes)
+                )),
+            })
     }
 
     /// A transport failure, in words that say which bound was reached when it

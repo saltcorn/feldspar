@@ -66,6 +66,8 @@ pub mod embed;
 mod endpoint;
 pub mod estimate;
 pub mod host;
+mod http;
+pub use http::PROVIDER_READ_TIMEOUT;
 pub mod image;
 pub mod listing;
 pub mod logging;

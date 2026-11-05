@@ -110,7 +110,7 @@
 //! database-backed store.
 
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use chrono::{DateTime, Duration, Utc};
 use lru::LruCache;
@@ -529,7 +529,7 @@ impl SessionStore {
                 // No database here, so no epoch to hold the sign-in to: the
                 // map's own epochs only count the bumps this store was given
                 // (a test seam, module docs).
-                let mut sessions = sessions.write().map_err(|_| poisoned())?;
+                let mut sessions = write(sessions);
                 let epoch = sessions.epoch_of(who.user().id());
                 sessions.entries.insert(
                     token.clone(),
@@ -629,7 +629,7 @@ impl SessionStore {
             Backend::Memory(sessions) => {
                 // Fast path: a valid session under a read lock.
                 {
-                    let guard = sessions.read().map_err(|_| poisoned())?;
+                    let guard = read(sessions);
                     match guard.entries.get(token) {
                         None => return Ok(None),
                         Some(entry)
@@ -641,11 +641,7 @@ impl SessionStore {
                         Some(_) => {} // expired or stale — fall through to purge
                     }
                 }
-                sessions
-                    .write()
-                    .map_err(|_| poisoned())?
-                    .entries
-                    .remove(token);
+                write(sessions).entries.remove(token);
                 Ok(None)
             }
             Backend::Database { catalog, .. } => {
@@ -710,12 +706,7 @@ impl SessionStore {
     /// node's cache entry lives out its freshness TTL (module docs).
     pub async fn logout(&self, token: &str) -> Result<bool> {
         let ended = match &self.backend {
-            Backend::Memory(sessions) => sessions
-                .write()
-                .map_err(|_| poisoned())?
-                .entries
-                .remove(token)
-                .is_some(),
+            Backend::Memory(sessions) => write(sessions).entries.remove(token).is_some(),
             Backend::Database { catalog, .. } => {
                 self.invalidate(token)?;
                 delete_session(catalog, &token_hash(token)).await?
@@ -747,7 +738,7 @@ impl SessionStore {
     async fn end_user_rows(&self, user_id: Uuid) -> Result<usize> {
         match &self.backend {
             Backend::Memory(sessions) => {
-                let mut guard = sessions.write().map_err(|_| poisoned())?;
+                let mut guard = write(sessions);
                 let before = guard.entries.len();
                 guard.entries.retain(|_, e| e.user.id() != user_id);
                 Ok(before - guard.entries.len())
@@ -757,7 +748,7 @@ impl SessionStore {
                 // by asking the cached users who they are — the rows are gone
                 // either way, this is only about the copies in front of them.
                 let stale: Vec<String> = {
-                    let cache = self.cache.lock().map_err(|_| poisoned())?;
+                    let cache = self.cache();
                     cache
                         .iter()
                         .filter(|(_, cached)| cached.user.id() == user_id)
@@ -780,7 +771,7 @@ impl SessionStore {
     pub async fn end_other_sessions(&self, user_id: Uuid, keep: &str) -> Result<usize> {
         let ended = match &self.backend {
             Backend::Memory(sessions) => {
-                let mut guard = sessions.write().map_err(|_| poisoned())?;
+                let mut guard = write(sessions);
                 let before = guard.entries.len();
                 guard
                     .entries
@@ -789,7 +780,7 @@ impl SessionStore {
             }
             Backend::Database { catalog, .. } => {
                 let stale: Vec<String> = {
-                    let cache = self.cache.lock().map_err(|_| poisoned())?;
+                    let cache = self.cache();
                     cache
                         .iter()
                         .filter(|(token, cached)| cached.user.id() == user_id && *token != keep)
@@ -836,7 +827,7 @@ impl SessionStore {
         let (user_id, epoch) = changed.into_parts();
         let ended = match &self.backend {
             Backend::Memory(sessions) => {
-                let mut guard = sessions.write().map_err(|_| poisoned())?;
+                let mut guard = write(sessions);
                 let raised = guard.epoch_of(user_id).next().max(epoch);
                 guard.epochs.insert(user_id, raised);
                 let before = guard.entries.len();
@@ -878,7 +869,7 @@ impl SessionStore {
                 // Last, so a request that re-reads finds the rows as they now
                 // are: the kept one restamped, the others gone.
                 let cached: Vec<String> = {
-                    let cache = self.cache.lock().map_err(|_| poisoned())?;
+                    let cache = self.cache();
                     cache
                         .iter()
                         .filter(|(_, cached)| cached.user.id() == user_id)
@@ -907,7 +898,7 @@ impl SessionStore {
     pub async fn end_all_sessions(&self) -> Result<()> {
         match &self.backend {
             Backend::Memory(sessions) => {
-                sessions.write().map_err(|_| poisoned())?.entries.clear();
+                write(sessions).entries.clear();
             }
             Backend::Database { catalog, .. } => {
                 self.invalidate_all()?;
@@ -924,14 +915,14 @@ impl SessionStore {
     /// The seam a bus-delivered logout (§16) will call on every other node: the
     /// row is already gone, what remains is the copies.
     pub fn invalidate(&self, token: &str) -> Result<()> {
-        self.cache.lock().map_err(|_| poisoned())?.pop(token);
+        self.cache().pop(token);
         Ok(())
     }
 
     /// Drop every cached session on this node. The blunt instrument, for a
     /// change too broad to name tokens for.
     pub(crate) fn invalidate_all(&self) -> Result<()> {
-        self.cache.lock().map_err(|_| poisoned())?.clear();
+        self.cache().clear();
         Ok(())
     }
 
@@ -941,15 +932,22 @@ impl SessionStore {
         match &self.backend {
             Backend::Memory(sessions) => {
                 let now = Utc::now();
-                sessions
-                    .write()
-                    .map_err(|_| poisoned())?
-                    .entries
-                    .retain(|_, e| e.expires_at > now);
+                write(sessions).entries.retain(|_, e| e.expires_at > now);
                 Ok(())
             }
             Backend::Database { catalog, .. } => sweep_sessions(catalog).await,
         }
+    }
+
+    /// This node's cache, emptied if a panic left its lock poisoned (see
+    /// [`read`]): a stale entry is not worth keeping a doubt about.
+    fn cache(&self) -> MutexGuard<'_, LruCache<String, Cached>> {
+        self.cache.lock().unwrap_or_else(|poisoned| {
+            self.cache.clear_poison();
+            let mut cache = poisoned.into_inner();
+            cache.clear();
+            cache
+        })
     }
 
     /// The cached entry for `token`, if there is one.
@@ -957,12 +955,7 @@ impl SessionStore {
         if self.cache_ttl.is_zero() {
             return Ok(None);
         }
-        Ok(self
-            .cache
-            .lock()
-            .map_err(|_| poisoned())?
-            .get(token)
-            .cloned())
+        Ok(self.cache().get(token).cloned())
     }
 
     /// Cache `user` under `token` for one freshness TTL.
@@ -979,20 +972,16 @@ impl SessionStore {
         if self.cache_ttl.is_zero() {
             return;
         }
-        // A cache is an optimisation: a poisoned lock loses it rather than
-        // failing the request that was only trying to be fast.
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.put(
-                token.to_owned(),
-                Cached {
-                    user: user.clone(),
-                    expires_at,
-                    fresh_until: changes_at.map_or(Utc::now() + self.cache_ttl, |at| {
-                        at.min(Utc::now() + self.cache_ttl)
-                    }),
-                },
-            );
-        }
+        self.cache().put(
+            token.to_owned(),
+            Cached {
+                user: user.clone(),
+                expires_at,
+                fresh_until: changes_at.map_or(Utc::now() + self.cache_ttl, |at| {
+                    at.min(Utc::now() + self.cache_ttl)
+                }),
+            },
+        );
     }
 }
 
@@ -1006,7 +995,7 @@ fn new_cache(capacity: usize) -> Mutex<LruCache<String, Cached>> {
 
 /// Whether enough time has passed to sweep again, recording the attempt.
 fn due_for_sweep(last_sweep: &Mutex<DateTime<Utc>>) -> Result<bool> {
-    let mut last = last_sweep.lock().map_err(|_| poisoned())?;
+    let mut last = lock(last_sweep);
     let now = Utc::now();
     if now - *last < Duration::seconds(SWEEP_INTERVAL_SECONDS) {
         return Ok(false);
@@ -1173,8 +1162,39 @@ async fn rows(catalog: &Catalog, statement: Statement) -> Result<Vec<Row>> {
         .await
 }
 
-fn poisoned() -> Error {
-    Error::msg("session store lock poisoned")
+// --- Locks that outlive a panic ----------------------------------------------
+//
+// The session map and the cache are process-wide and read on every
+// authenticated request, so a lock that stayed poisoned after one panic while
+// it was held would be every later sign-in and session check failing until a
+// restart (security review 2026-11 F-4, TODO-type-hardening H5.2). Each is
+// recovered instead, and the poison cleared, as the rest of the tree does. The
+// critical sections are a map insert, remove or retain, which safe code cannot
+// leave half-done in a way that breaks the map; the cache is emptied as well,
+// because a cache is only ever an optimisation and the database answers again.
+
+/// The session map, to read.
+fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(|poisoned| {
+        lock.clear_poison();
+        poisoned.into_inner()
+    })
+}
+
+/// The session map, to change.
+fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(|poisoned| {
+        lock.clear_poison();
+        poisoned.into_inner()
+    })
+}
+
+/// A plain value behind a mutex (the last sweep's time).
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| {
+        mutex.clear_poison();
+        poisoned.into_inner()
+    })
 }
 
 /// A fresh, unguessable session token for `scope`: 256 bits from two v4
@@ -1251,6 +1271,60 @@ mod tests {
         assert_eq!(store.user_for(&token).await.unwrap(), None);
         let token = store.login_for(admin(), Duration::hours(1)).await.unwrap();
         assert!(store.user_for(&token).await.unwrap().is_some());
+    }
+
+    /// Poison `lock` the way a bug would: a thread that panics holding it.
+    fn poison<T: Send + Sync>(lock: &RwLock<T>) {
+        std::thread::scope(|scope| {
+            let _ = scope
+                .spawn(|| {
+                    let _held = lock.write().unwrap();
+                    std::panic::panic_any("a bug while the session map was held");
+                })
+                .join();
+        });
+        assert!(lock.is_poisoned());
+    }
+
+    /// One panic while the session map was held used to fail every later
+    /// sign-in and session check until a restart ("session store lock
+    /// poisoned"): the lock now recovers (TODO-type-hardening H5.2).
+    #[tokio::test]
+    async fn a_poisoned_session_lock_recovers() {
+        let store = SessionStore::default();
+        let user = admin();
+        let token = store.login(user.clone()).await.unwrap();
+        let Backend::Memory(sessions) = &store.backend else {
+            panic!("the default store is the memory one");
+        };
+        poison(sessions);
+        assert_eq!(
+            store.user_for(&token).await.unwrap().map(|u| u.into_user()),
+            Some(user.clone()),
+            "the session survives"
+        );
+        assert!(!sessions.is_poisoned(), "and the poison is cleared");
+        let again = store.login(user.clone()).await.unwrap();
+        assert!(store.logout(&again).await.unwrap());
+        assert_eq!(store.end_user_sessions(user.id()).await.unwrap(), 1);
+    }
+
+    #[test]
+    fn a_poisoned_cache_is_emptied_and_used_again() {
+        let store = SessionStore::default();
+        store.cache_put("t", &admin(), Utc::now() + Duration::hours(1), None);
+        std::thread::scope(|scope| {
+            let _ = scope
+                .spawn(|| {
+                    let _held = store.cache.lock().unwrap();
+                    std::panic::panic_any("a bug while the cache was held");
+                })
+                .join();
+        });
+        assert!(store.cache_get("t").unwrap().is_none(), "emptied");
+        store.invalidate("t").unwrap();
+        store.cache_put("t", &admin(), Utc::now() + Duration::hours(1), None);
+        assert!(store.cache_get("t").unwrap().is_some(), "and in use again");
     }
 
     #[tokio::test]

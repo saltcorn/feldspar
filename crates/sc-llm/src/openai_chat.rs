@@ -38,6 +38,24 @@ impl OpenAiChat {
         model: impl Into<String>,
         capabilities: ModelCapabilities,
     ) -> Result<OpenAiChat> {
+        OpenAiChat::with_http(
+            base_url,
+            api_key,
+            model,
+            capabilities,
+            crate::http::provider_client(crate::http::PROVIDER_READ_TIMEOUT)?,
+        )
+    }
+
+    /// [`new`](Self::new), streaming on `http` — a test's client with a
+    /// short read timeout.
+    pub(crate) fn with_http(
+        base_url: &str,
+        api_key: &str,
+        model: impl Into<String>,
+        capabilities: ModelCapabilities,
+        http: reqwest::Client,
+    ) -> Result<OpenAiChat> {
         let base_url = base_url.trim();
         if base_url.is_empty() {
             return Err(Error::config(
@@ -45,6 +63,7 @@ impl OpenAiChat {
             ));
         }
         let client = openai::Client::builder()
+            .http_client(http)
             .api_key(api_key)
             .base_url(base_url)
             .build()

@@ -563,7 +563,7 @@ aes-gcm = { version = "0.10", default-features = false, features = ["aes", "allo
 # merged in Yjs's own binary format, so the browser keeps the standard `yjs`.
 yrs = "0.28"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["fs", "set-header", "trace", "compression-br", "compression-gzip"] }
+tower-http = { version = "0.6", features = ["fs", "set-header", "trace", "compression-br", "compression-gzip", "catch-panic"] }
 matchit = "0.8"
 # A WebSocket **client**, for tests only: the IDE's language-server route (§12.1)
 # is the one piece of the server a `tower::oneshot` cannot exercise, because the

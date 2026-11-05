@@ -48,6 +48,10 @@ fn test_endpoints() -> EndpointSet {
         Endpoint::new("logout", Method::Post, PathSpec::root().lit("api/logout"))
             .auth(AuthRequirement::LoggedIn),
     );
+    set.register(
+        Endpoint::new("boom", Method::Get, PathSpec::root().lit("api/boom"))
+            .auth(AuthRequirement::Public),
+    );
     set
 }
 
@@ -79,6 +83,13 @@ fn test_registry() -> HandlerRegistry {
     });
     reg.register_signed_in("logout", |_ctx| async {
         Ok(HandlerResponse::end_session(json!({ "ok": true })))
+    });
+    reg.register("boom", |_ctx| async {
+        let rows: Vec<Value> = Vec::new();
+        // A bug: what the panic boundary is for.
+        #[allow(clippy::indexing_slicing, reason = "the panic under test")]
+        let first = rows[0].clone();
+        Ok(HandlerResponse::ok(first))
     });
     reg
 }
@@ -902,4 +913,40 @@ async fn requests_are_logged_at_info_and_not_below_it() {
         "{:?}",
         logged_at[1]
     );
+}
+
+/// A handler that panics is answered with a 500 in the usual `{error}` shape,
+/// with the security headers, and the server goes on serving
+/// (TODO-type-hardening H5.2).
+#[tokio::test]
+async fn a_panicking_handler_is_a_500_and_the_server_keeps_serving() {
+    let (router, _) = test_router();
+    let response = router
+        .clone()
+        .oneshot(Request::get("/api/boom").body(Body::empty()).unwrap())
+        .await
+        .expect("answered, not unwound");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::X_CONTENT_TYPE_OPTIONS)
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff")
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    let error = body["error"].as_str().unwrap();
+    assert!(error.contains("bug"), "{error}");
+    // What the panic said stays in the log.
+    assert!(!error.contains("index out of bounds"), "{error}");
+
+    let (status, _, body) = call(
+        &router,
+        Request::get("/api/ping").body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }

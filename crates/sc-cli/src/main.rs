@@ -44,6 +44,10 @@ use sc_error::Result;
 const WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 fn main() -> ExitCode {
+    // Every panic is one line in the log, saying where (TODO-type-hardening
+    // H5.2): a request's is answered with a 500 and a background loop's is
+    // restarted, and this is what says that it happened.
+    sc_log::install_panic_hook();
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(WORKER_STACK_BYTES)

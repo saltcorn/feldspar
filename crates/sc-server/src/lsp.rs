@@ -70,6 +70,11 @@ pub(crate) const SERVER_BIN: &str = "typescript-language-server";
 /// truncated rather than dropped if one ever does not.
 const MAX_CLOSE_REASON: usize = 120;
 
+/// The largest message the IDE may send (TODO-type-hardening H5.1): a
+/// `didOpen` or `didChange` carries a whole file. 16 MiB is tungstenite's own
+/// frame limit, which a browser's message could already not exceed.
+const MESSAGE_LIMIT: crate::ws::MessageLimit = crate::ws::MessageLimit::mib(16);
+
 /// The bound on concurrent language servers, as the router holds it.
 pub(crate) type ServerSlots = Arc<Semaphore>;
 
@@ -186,7 +191,7 @@ pub(crate) async fn language_server_upgrade(
             Ok(permit) => {
                 // Held open only while the admin session lasts (#42's class):
                 // its end drops the bridge, which kills the process.
-                return ws.on_upgrade(move |socket| {
+                return crate::ws::upgrade(ws, MESSAGE_LIMIT, move |socket| {
                     session.guard(bridge(socket, program, root, store, permit, who))
                 });
             }
@@ -195,7 +200,9 @@ pub(crate) async fn language_server_upgrade(
             ),
         },
     };
-    ws.on_upgrade(move |socket| refuse(socket, refusal))
+    crate::ws::upgrade(ws, crate::ws::REFUSAL, move |socket| {
+        refuse(socket, refusal)
+    })
 }
 
 /// Close a socket, saying why. The IDE turns this into one notification.

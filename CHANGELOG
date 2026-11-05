@@ -2,6 +2,95 @@
 
 Changes in reverse chronological order.
 
+## Security hardening H5: bounded input and robustness
+
+The fifth part of `docs/SECURITY_REVIEW_2026-11.md` (§5; area report F, F-3 to F-11, F-14;
+TODO-type-hardening H5): how much a peer may send is part of reading it, a panic is a 500 or a
+restart rather than a dead connection or a dead loop, and every recursive walk over untrusted
+input has a depth bound. No change to the wire format or stored data; no migration.
+
+- **Size caps** (H5.1):
+  - A Shapefile zip's member is refused past 256 MiB (`MAX_MEMBER_BYTES`), by its declared size
+    first and by a capped read (`read_member`) whatever it declares (F-6, zip bomb). Test:
+    `geo_import::shapefile::tests::a_member_that_inflates_past_the_limit_is_refused_not_read`.
+  - New `sc_net::ByteLimit` and `sc_net::read_body(response, limit)`: a body read chunk by chunk
+    and refused (`BodyError::TooLarge`) past the limit or a `Content-Length` over it. The `fetch`
+    action now reads at most 8 MiB, the cap a code body's `fetch` already had (F-8); both use it.
+    A non-2xx answer still names its status when its body is too large to quote. Tests:
+    `sc-net`'s `a_body_up_to_the_limit_is_read_and_one_past_it_is_refused`,
+    `a_body_with_no_declared_length_is_refused_as_it_arrives`;
+    `fetch_action::a_response_past_the_cap_is_refused_rather_than_read_whole`.
+  - Every WebSocket is accepted through `sc-server`'s `ws::upgrade(ws, MessageLimit, …)`, which
+    sets the message and frame limit; `WebSocketUpgrade::on_upgrade` is a disallowed method
+    elsewhere (`clippy.toml`, and the workspace-invariants test). Limits: the chat and the
+    language server 16 MiB (tungstenite's frame limit, which a browser's message could already
+    not exceed), the terminal 1 MiB, Observe and fit progress 64 KiB (they only listen), a
+    socket opened only to be closed with a reason 4 KiB, the live socket as before (F-9). A
+    message over the limit ends the connection before the handler reads it. Tests:
+    `ws::tests::a_message_at_the_limit_is_read_and_one_past_it_ends_the_socket`,
+    `agent_chat::a_message_past_the_limit_ends_the_socket_and_the_server_keeps_serving`.
+  - The Anthropic, OpenAI Responses and Chat Completions adapters stream on a client built from
+    `sc_net::client_builder` (its connect timeout) with a read timeout of 10 minutes between two
+    reads (`sc_llm::PROVIDER_READ_TIMEOUT`); before, rig built a bare client with neither,
+    and a provider that went silent held the turn for ever (F-11). No total timeout: a long
+    answer streams for as long as it streams. Test:
+    `http::tests::a_provider_that_goes_silent_fails_the_call_at_the_read_timeout`.
+- **Panics** (H5.2):
+  - The router has a panic boundary (tower-http `catch-panic`, innermost): a handler that panics
+    is answered 500 with the usual `{error}` body and the security headers, and the request's
+    changeset and log see the answer (F-3). `sc_log::install_panic_hook` (installed by the
+    binary) logs each panic as one line naming the thread and the place, at every verbosity,
+    with the backtrace when `RUST_BACKTRACE` asks; `sc_log::panic_message` reads a payload. Tests:
+    `router::a_panicking_handler_is_a_500_and_the_server_keeps_serving`,
+    `sc-log`'s `a_panic_is_logged_as_one_line_saying_where`.
+  - `sc_catalog::supervise(name, make)` runs a background loop and starts it again after a
+    panic (logged by name), with a pause from 1 second doubling to 5 minutes; a loop that
+    returns is done, and aborting the handle stops it. The trigger scheduler, the backup
+    scheduler, the stream supervisor, the change-log cleanup, the upload and preview sweeps and
+    the `SIGHUP` reload listener run under it (F-5). The backup scheduler's `busy` flag is given
+    back by a drop guard, so a backup that panics no longer stops every later one. Tests:
+    `supervise::tests::a_loop_that_panics_is_started_again_until_it_finishes`,
+    `aborting_the_handle_stops_the_loop`.
+  - The session store's locks recover from poisoning (and clear it) instead of failing every
+    later sign-in and session check with "session store lock poisoned"; a poisoned cache is
+    emptied (F-4). The cascade's refusals are kept, not dropped, on a poisoned lock. Tests:
+    `session::tests::a_poisoned_session_lock_recovers`,
+    `a_poisoned_cache_is_emptied_and_used_again`.
+  - `sc-dns`'s `getaddrinfo` wrapper answers `EAI_FAIL` instead of unwinding out of
+    `extern "C"`, which aborts the process (U-2).
+- **Depth limits** (H5.3) — a stack overflow aborts the whole process, so each of these was a
+  way for one input to take every application on the node down:
+  - **Live documents.** An update is read first by a new iterative scanner of the Yjs v1 format
+    (`sc_live::yjs_scan`, mirroring `yrs` 0.28's decoder), which refuses a value nested more than
+    64 levels (yrs's `Any::decode` recursed once per two bytes: a 1 MiB `doc_update` from any
+    member was half a million frames) and counts the shared types the update creates. A
+    document is kept within `MAX_DOC_DEPTH` (256) levels of shared types, which yrs walks
+    recursively to delete, collect and print: a bound plus the new types, and when that would
+    pass the limit the depth is measured from the encodings — the document's state, its pending
+    update and the new one, parent chains resolved iteratively (`yjs_scan::depth`), never by
+    walking a yrs tree (yrs's own iterators were not safe to run over every branch kind) — and an
+    update past it is refused, not applied. Stored states are scanned and measured before they
+    are loaded or merged; a stored document past the bound is not loaded. Tests in `doc.rs` and `yjs_scan.rs`
+    (`a_value_nested_half_a_million_deep_is_refused_before_it_is_decoded`,
+    `a_document_nested_past_the_limit_is_refused_and_not_applied`,
+    `nesting_one_level_an_update_is_stopped_at_the_limit`,
+    `what_yrs_writes_is_read_and_its_new_types_counted`,
+    `the_depth_of_a_document_is_read_from_its_encoding`); the recorded-Yjs format tests pass
+    through the scanner unchanged.
+  - **The agent's `http` trait.** A page's elements nested past 256 levels are kept as their text
+    (`flatten_below`, iterative) before the Markdown conversion and the walks over the tree.
+    Test: `a_page_nested_past_the_limit_keeps_its_text_and_does_not_overflow` (30 000 `<span>`s).
+  - **Geometry.** EWKB read from the database and GeoJSON written to it nest at most 32 levels
+    (`MAX_GEOMETRY_DEPTH`): a GeometryCollection in a collection in a collection. Test:
+    `nesting_is_bounded_both_ways` (100 000 levels of bytes).
+  - **The browser's accessibility snapshot** stops 256 levels down (a page's script nests as
+    deep as it likes; a cyclic tree ends too). Test:
+    `a_tree_nested_past_the_limit_or_cyclic_is_cut_not_overflowed`.
+  - Formulas were bounded in H0.7; JSON from text keeps serde_json's 128 levels; Python values
+    are bounded at 64 (`sc-python`'s `convert`).
+- The workspace-invariants test's list of files with `unsafe` code names `sc-proc`'s
+  `command.rs` instead of `sc-stan`'s `process.rs` (stale since H4 moved those calls).
+
 ## Security hardening H4: one way to start a process (`sc-proc`)
 
 The fourth part of `docs/SECURITY_REVIEW_2026-11.md` (§4, area report C; TODO-type-hardening H4):

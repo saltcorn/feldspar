@@ -802,22 +802,23 @@ pub async fn sweep_uploads(catalog: &Catalog, before: i64) -> sc_error::Result<u
 }
 
 /// Sweep abandoned uploads every ten minutes, for the life of the process.
-#[allow(
-    clippy::disallowed_methods,
-    reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
-)]
+/// Supervised ([`sc_catalog::supervise`]): a sweep that panics is logged and
+/// the loop starts again.
 pub(crate) fn spawn_upload_sweep(apps: Arc<crate::apps::AppMounts>) {
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(600));
-        loop {
-            tick.tick().await;
-            let Some(catalog) = apps.catalog() else {
-                continue;
-            };
-            match sweep_uploads(catalog, now() - ABANDONED_AFTER_SECS).await {
-                Ok(0) => {}
-                Ok(n) => sc_log::log_info!("removed {n} upload(s) begun over a day ago"),
-                Err(e) => log_failure("sweeping abandoned uploads", &e),
+    sc_catalog::supervise("the upload sweep", move || {
+        let apps = Arc::clone(&apps);
+        async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(600));
+            loop {
+                tick.tick().await;
+                let Some(catalog) = apps.catalog() else {
+                    continue;
+                };
+                match sweep_uploads(catalog, now() - ABANDONED_AFTER_SECS).await {
+                    Ok(0) => {}
+                    Ok(n) => sc_log::log_info!("removed {n} upload(s) begun over a day ago"),
+                    Err(e) => log_failure("sweeping abandoned uploads", &e),
+                }
             }
         }
     });

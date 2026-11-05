@@ -417,6 +417,41 @@ async fn a_second_message_continues_the_same_run() -> Result<()> {
     Ok(())
 }
 
+/// A message past the socket's limit (16 MiB, TODO-type-hardening H5.1) ends
+/// the connection before the server reads it, and the server goes on serving.
+#[tokio::test]
+async fn a_message_past_the_limit_ends_the_socket_and_the_server_keeps_serving() -> Result<()> {
+    let provider = Arc::new(FakeProvider::new([Reply::says("Hello.")]));
+    let server = serve_with(talker(), Arc::new(Scripted(provider))).await?;
+    let mut socket = server.connect(Some(&server.admin)).await.expect("connect");
+    send(&mut socket, json!({"type": "start", "agent": "librarian"})).await;
+
+    let huge = json!({"type": "message", "text": "x".repeat(16 * 1024 * 1024)});
+    // The send itself may fail part way: the server hangs up mid-message.
+    let _ = futures::SinkExt::send(&mut socket, Message::text(huge.to_string())).await;
+    let ended = tokio::time::timeout(REPLY_TIMEOUT, async {
+        loop {
+            match socket.next().await {
+                None | Some(Err(_) | Ok(Message::Close(_))) => return true,
+                // A frame the turn would have produced means it was read.
+                Some(Ok(Message::Text(text))) if text.contains("\"delta\"") => return false,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .expect("the socket ends");
+    assert!(ended, "an oversized message was read as a turn");
+
+    // A new socket, and a turn on it, as before.
+    let mut socket = server.connect(Some(&server.admin)).await.expect("connect");
+    send(&mut socket, json!({"type": "start", "agent": "librarian"})).await;
+    send(&mut socket, json!({"type": "message", "text": "hello"})).await;
+    let events = drain_turn(&mut socket).await;
+    assert_eq!(streamed_text(&events), "Hello.");
+    Ok(())
+}
+
 /// A message may carry files and no text: the model is sent them, the run is
 /// titled by their names, and the stored transcript — which the admin panel
 /// reopens a conversation from — keeps them. A file that cannot be attached is

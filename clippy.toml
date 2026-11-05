@@ -46,6 +46,9 @@ disallowed-methods = [
     { path = "tokio::process::Command::new", reason = "start a process with sc_proc::HostCommand (sc_proc::Git for git): cleared environment, timeout, operands, process group, authority" },
     { path = "pty_process::Command::new", reason = "start the terminal's program with sc_proc::spawn_on_pty" },
     { path = "chromiumoxide::Browser::launch", reason = "the browser inherits the server's environment; it is launched in one place (sc-server's browser driver)" },
+    # A WebSocket is accepted with the largest message its endpoint takes
+    # (TODO-type-hardening H5.1); left alone, axum buffers 64 MiB a message.
+    { path = "axum::extract::ws::WebSocketUpgrade::on_upgrade", reason = "upgrade through sc-server's ws::upgrade, which sets the endpoint's message and frame limit" },
     # A queue a peer can fill faster than it is drained grows without limit.
     { path = "tokio::sync::mpsc::unbounded_channel", reason = "bound the queue (tokio::sync::mpsc::channel); a producer can outpace the consumer" },
 ]

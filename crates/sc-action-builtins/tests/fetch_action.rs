@@ -409,6 +409,65 @@ async fn a_non_2xx_response_names_the_status_and_quotes_the_endpoint() -> Result
     Ok(())
 }
 
+/// A listener that answers every request with a `200` whose chunked body is
+/// `chunks` chunks of 1 MiB — no `Content-Length`, so only the read itself can
+/// stop it — ignoring a client that hangs up part way.
+async fn streams_mebibytes(chunks: usize) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/hook", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let _ = read_request(&mut socket).await;
+                let head = "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\n\
+                            transfer-encoding: chunked\r\nconnection: close\r\n\r\n";
+                if socket.write_all(head.as_bytes()).await.is_err() {
+                    return;
+                }
+                let chunk = vec![b'x'; 1024 * 1024];
+                for _ in 0..chunks {
+                    let sent = async {
+                        socket.write_all(b"100000\r\n").await?;
+                        socket.write_all(&chunk).await?;
+                        socket.write_all(b"\r\n").await
+                    };
+                    if sent.await.is_err() {
+                        return;
+                    }
+                }
+                let _ = socket.write_all(b"0\r\n\r\n").await;
+            });
+        }
+    });
+    url
+}
+
+#[tokio::test]
+async fn a_response_past_the_cap_is_refused_rather_than_read_whole() -> Result<()> {
+    let db = TestDb::new().await?;
+    let catalog = Arc::new(setup(&db).await?);
+    db.on_teardown(catalog.teardown_hook());
+
+    // 64 MiB offered; the action stops reading at 8.
+    let url = streams_mebibytes(64).await;
+    let cfg = config(&[("url", json!(url)), ("method", json!("GET"))]);
+    let err = run(&catalog, &book_insert(), &cfg).await.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("larger than the 8 MiB a `fetch` may read"),
+        "{msg}"
+    );
+    assert!(msg.contains("notify"), "the trigger is named: {msg}");
+    assert_eq!(err.kind(), sc_error::ErrorKind::Application);
+
+    // Under the cap is read as before.
+    let url = streams_mebibytes(2).await;
+    let cfg = config(&[("url", json!(url)), ("method", json!("GET"))]);
+    let got = run(&catalog, &book_insert(), &cfg).await?;
+    assert_eq!(got.as_str().map(str::len), Some(2 * 1024 * 1024));
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_hung_endpoint_fails_at_the_configured_timeout() -> Result<()> {
     let db = TestDb::new().await?;

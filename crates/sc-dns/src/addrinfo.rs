@@ -114,8 +114,16 @@ pub unsafe extern "C" fn __wrap_getaddrinfo(
     res: *mut *mut libc::addrinfo,
 ) -> c_int {
     INTERCEPTED.fetch_add(1, Ordering::Relaxed);
-    // SAFETY: the caller's contract is `getaddrinfo`'s, which is this function's.
-    unsafe { getaddrinfo(node, service, hints, res) }
+    // A panic must not unwind out of an `extern "C"` function — that aborts
+    // the whole process (TODO-type-hardening H5.2) — so one is a failed
+    // lookup instead. The pointers are only read and written through, so a
+    // half-done lookup leaves nothing for the caller to observe: `*res` is
+    // written last, once the list is built.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: the caller's contract is `getaddrinfo`'s, which is this function's.
+        unsafe { getaddrinfo(node, service, hints, res) }
+    }))
+    .unwrap_or(libc::EAI_FAIL)
 }
 
 /// `freeaddrinfo(3)`: this module's lists, and glibc's for anything it did not

@@ -331,11 +331,11 @@ async fn reload_applications(
 /// Reloads are **serialised by the listener**: a signal that arrives while one is
 /// running is coalesced by the kernel into the next `recv`, so a burst of them
 /// cannot start overlapping reloads.
+///
+/// Supervised ([`sc_catalog::supervise`]): a reload that panics is logged and
+/// the listener starts again on the same handler, so the next `SIGHUP` still
+/// reloads rather than being swallowed by a handler nobody reads.
 #[cfg(unix)]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
-)]
 pub fn spawn_sighup_reload(apps: Arc<AppMounts>) {
     use tokio::signal::unix::{SignalKind, signal};
 
@@ -345,7 +345,7 @@ pub fn spawn_sighup_reload(apps: Arc<AppMounts>) {
     // of reloading it. Registering synchronously closes that window — this
     // function returns with the handler installed. It also means a registration
     // failure is reported at boot rather than swallowed by a detached task.
-    let mut hangup = match signal(SignalKind::hangup()) {
+    let hangup = match signal(SignalKind::hangup()) {
         Ok(hangup) => hangup,
         // Not fatal: the server serves, it just cannot be reloaded without a
         // restart, and the operator should know which of those they are in.
@@ -361,10 +361,17 @@ pub fn spawn_sighup_reload(apps: Arc<AppMounts>) {
         "feldspar: SIGHUP reloads the catalog, the applications and changed modules in \
          place — `pkill -HUP feldspar` after a build, no restart needed"
     );
-    tokio::spawn(async move {
-        while hangup.recv().await.is_some() {
-            eprintln!("feldspar: SIGHUP — reloading the catalog and the applications");
-            reload_all(&apps).await.log();
+    // Shared with each restart of the listener: the handler is registered once.
+    let hangup = Arc::new(tokio::sync::Mutex::new(hangup));
+    sc_catalog::supervise("the SIGHUP reload listener", move || {
+        let hangup = Arc::clone(&hangup);
+        let apps = Arc::clone(&apps);
+        async move {
+            let mut hangup = hangup.lock().await;
+            while hangup.recv().await.is_some() {
+                eprintln!("feldspar: SIGHUP — reloading the catalog and the applications");
+                reload_all(&apps).await.log();
+            }
         }
     });
 }

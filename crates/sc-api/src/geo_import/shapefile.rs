@@ -17,6 +17,50 @@ use serde_json::{Map, Number, Value as Json, json};
 
 use super::{Feature, GeoFile, GeoFormat, SourceCrs, SourceGeometry};
 
+/// The most one member of the zip may inflate to (security review 2026-11
+/// F-6, TODO-type-hardening H5.1).
+///
+/// A zip's members are compressed, and a few megabytes of upload can inflate
+/// to gigabytes — enough to take the whole server down, every tenant with it.
+/// Generous for a real Shapefile (a `.shp` of a quarter of a gigabyte is a
+/// country's parcels, which would be slow to import long before this), and a
+/// bound all the same.
+pub(super) const MAX_MEMBER_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Read the whole of one member, refusing one that inflates past `limit`.
+///
+/// Refused, not truncated: half a `.dbf` is records that do not match their
+/// shapes. [`read`] checks the size the zip declares first, so an honest large
+/// member is refused before anything is inflated; the read itself is capped
+/// here, because the declared size is whatever the zip says it is.
+fn read_member(file: &mut impl Read, name: &str, limit: u64) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut out)
+        .map_err(|e| Error::invalid(format!("{name}: {e}")))?;
+    if u64::try_from(out.len()).unwrap_or(u64::MAX) > limit {
+        return Err(member_too_large(name, limit));
+    }
+    Ok(out)
+}
+
+fn member_too_large(name: &str, limit: u64) -> Error {
+    Error::invalid(format!(
+        "{name} inflates to more than the {} one member of a Shapefile zip may hold",
+        human_limit(limit)
+    ))
+}
+
+/// A byte limit as a person reads one: whole MiB when it is, bytes otherwise.
+fn human_limit(limit: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    if limit >= MIB && limit % MIB == 0 {
+        format!("{} MiB", limit / MIB)
+    } else {
+        format!("{limit} bytes")
+    }
+}
+
 /// Read a zip holding one Shapefile, or several with `layer` naming one.
 pub(super) fn read(bytes: &[u8], layer: Option<&str>) -> Result<GeoFile> {
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes))
@@ -68,10 +112,10 @@ pub(super) fn read(bytes: &[u8], layer: Option<&str>) -> Result<GeoFile> {
         let mut file = zip
             .by_name(name)
             .map_err(|e| Error::invalid(format!("{name}: {e}")))?;
-        let mut out = Vec::new();
-        file.read_to_end(&mut out)
-            .map_err(|e| Error::invalid(format!("{name}: {e}")))?;
-        Ok(Some(out))
+        if file.size() > MAX_MEMBER_BYTES {
+            return Err(member_too_large(name, MAX_MEMBER_BYTES));
+        }
+        read_member(&mut file, name, MAX_MEMBER_BYTES).map(Some)
     };
     let shp = member("shp")?.unwrap_or_default();
     let dbf = member("dbf")?;
@@ -463,6 +507,43 @@ mod tests {
         assert_eq!(two["type"], "MultiPolygon");
         assert_eq!(two["coordinates"][0].as_array().map(Vec::len), Some(2));
         assert_eq!(two["coordinates"][1].as_array().map(Vec::len), Some(1));
+    }
+
+    /// A zip whose one member is `size` zero bytes: deflated, a few bytes.
+    fn zip_of(name: &str, size: usize) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .expect("start a member");
+        zip.write_all(&vec![0_u8; size]).expect("write the member");
+        zip.finish().expect("finish the zip").into_inner()
+    }
+
+    #[test]
+    fn a_member_that_inflates_past_the_limit_is_refused_not_read() {
+        let bytes = zip_of("big.shp", 4096);
+        assert!(
+            bytes.len() < 1024,
+            "the member compresses: {} bytes",
+            bytes.len()
+        );
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).expect("a zip");
+        let mut file = zip.by_name("big.shp").expect("the member");
+        let err = read_member(&mut file, "big.shp", 1024).expect_err("past the limit");
+        assert!(
+            err.to_string()
+                .contains("big.shp inflates to more than the 1024 bytes"),
+            "{err}"
+        );
+        // At the limit is fine.
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).expect("a zip");
+        let mut file = zip.by_name("big.shp").expect("the member");
+        assert_eq!(
+            read_member(&mut file, "big.shp", 4096)
+                .expect("at the limit")
+                .len(),
+            4096
+        );
     }
 
     #[test]

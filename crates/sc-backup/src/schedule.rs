@@ -558,6 +558,15 @@ pub async fn run_schedule(
     result
 }
 
+/// A tick's hold on the scheduler's `busy` flag, let go when it drops.
+struct Busy<'a>(&'a Mutex<bool>);
+
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
+    }
+}
+
 /// The task that runs the automated backups.
 pub struct BackupScheduler {
     catalog: Arc<Catalog>,
@@ -574,23 +583,29 @@ impl BackupScheduler {
         }
     }
 
-    /// Start the task loop: a tick on every minute boundary.
+    /// Start the task loop: a tick on every minute boundary. Supervised
+    /// ([`sc_catalog::supervise`]), so the clock outlives a bug in it.
     #[allow(
         clippy::disallowed_methods,
         reason = "tokio::spawn: a background loop for the life of the process, at no caller's behalf, so it must not inherit the starting task's scope"
     )]
     pub fn start(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let scheduler = Arc::clone(self);
-        tokio::spawn(async move {
-            loop {
-                let now = Utc::now();
-                let wait = 60 - u64::from(now.second());
-                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
-                let scheduler = Arc::clone(&scheduler);
-                // A task of its own, so a backup that takes ten minutes does
-                // not stop the clock; `busy` keeps the next ticks from starting
-                // another until it is done.
-                tokio::spawn(async move { scheduler.tick(Utc::now()).await });
+        sc_catalog::supervise("the backup scheduler", move || {
+            let scheduler = Arc::clone(&scheduler);
+            async move {
+                loop {
+                    let now = Utc::now();
+                    let wait = 60 - u64::from(now.second());
+                    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                    let scheduler = Arc::clone(&scheduler);
+                    // A task of its own, so a backup that takes ten minutes
+                    // does not stop the clock; `busy` keeps the next ticks
+                    // from starting another until it is done — and is given
+                    // back if the tick panics (`Busy`), so a bug in one backup
+                    // does not stop every later one.
+                    tokio::spawn(async move { scheduler.tick(Utc::now()).await });
+                }
             }
         })
     }
@@ -606,9 +621,11 @@ impl BackupScheduler {
             }
             *busy = true;
         }
-        let ran = self.run_due(now).await;
-        *self.busy.lock().unwrap_or_else(|e| e.into_inner()) = false;
-        ran
+        // Given back on the way out, however the tick ends — a panic in a
+        // backup included, which would otherwise leave every later tick
+        // finding the scheduler busy for ever.
+        let _busy = Busy(&self.busy);
+        self.run_due(now).await
     }
 
     async fn run_due(&self, now: DateTime<Utc>) -> Vec<Uuid> {

@@ -538,6 +538,14 @@ pub fn build_router_with_apps(
             config.max_request_body,
         ))
         .with_state(state.clone())
+        // The panic boundary (security review 2026-11 F-3, TODO-type-hardening
+        // H5.2): a handler that panics is answered with a 500 — the standard
+        // `{error}` body, with every header below — rather than a connection
+        // reset, and the panic hook has logged where. Innermost, so the
+        // changeset and the request log around it see the answer.
+        .layer(tower_http::catch_panic::CatchPanicLayer::custom(
+            panic_response,
+        ))
         // Every request is one changeset (§14.12): what it writes, and what the
         // triggers its writes fire write, is one action to read back or undo.
         .layer(axum::middleware::from_fn(request_changeset))
@@ -624,6 +632,20 @@ pub fn build_router_with_apps(
         .layer(axum::middleware::from_fn(crate::logging::log_requests));
 
     Ok(app)
+}
+
+/// The answer to a request whose handler panicked: a 500 in the shape of every
+/// other error. What the panic said is logged, not sent — it is a bug's
+/// message, written for whoever fixes it.
+fn panic_response(panic: Box<dyn std::any::Any + Send + 'static>) -> Response {
+    sc_log::log_error!(
+        "feldspar: a request handler panicked ({}); answered 500",
+        sc_log::panic_message(panic.as_ref())
+    );
+    json_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the server hit a bug answering this request; it has been logged",
+    )
 }
 
 /// Run the request inside a changeset of its own (§14.12), keyed to its
