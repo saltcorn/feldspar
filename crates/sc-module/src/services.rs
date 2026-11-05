@@ -66,7 +66,7 @@ use std::time::{Duration, Instant};
 
 use sc_action::TriggerDispatcher;
 use sc_api::code_host::{DEFAULT_MAX_ROWS, HostLimits, TableHost, TriggerRunHost, schema_snapshot};
-use sc_catalog::{Catalog, DataFieldKind, TableEvents, TableWrite, WriteOp};
+use sc_catalog::{AdminPrincipal, Catalog, DataFieldKind, TableEvents, TableWrite, WriteOp};
 use sc_error::{Error, Result};
 use sc_expr::{CodeHost, CodeHosts, TriggerHost};
 use serde::Serialize;
@@ -305,6 +305,12 @@ impl Shared {
     }
 }
 
+/// What stands behind a module service's admin authority: an installed
+/// module's long-running service, which an administrator installed, with no
+/// caller, its `db` confined to the module's own tables. Listed in the
+/// system-authority inventory.
+pub const MODULE_SERVICE: &str = "a module's service (sc-module services.rs)";
+
 /// The user a service's writes carry: the module, by name.
 fn module_user(module: &str, service: &str) -> Json {
     json!({ "module": module, "service": service })
@@ -406,10 +412,11 @@ async fn serve_once(
     stop: &mut oneshot::Receiver<()>,
 ) -> Ended {
     let catalog = &*shared.catalog;
-    let user = module_user(module, service);
+    // The module's authority, as a webhook's (TODO-type-hardening H3.6).
+    let admin = AdminPrincipal::vouched(Some(module_user(module, service)), MODULE_SERVICE);
     let scoped = ScopedTables {
         inner: TableHost::new(catalog)
-            .caused_by(Role::ADMIN, Some(user.clone()))
+            .for_admin(&admin)
             // A service asks for as long as it runs; the row cap still holds
             // on every read.
             .with_limits(HostLimits {
@@ -424,7 +431,7 @@ async fn serve_once(
     let dispatcher = shared.dispatcher.read().ok().and_then(|d| d.clone());
     let triggers = dispatcher.as_deref().map(|d| {
         TriggerRunHost::new(d, catalog)
-            .caused_by(Role::ADMIN, Some(user.clone()))
+            .for_admin(&admin)
             .with_max_runs(u32::MAX)
     });
     let (events, received) = mpsc::unbounded_channel::<Json>();
@@ -861,7 +868,7 @@ impl TableEvents for ChangeRouter {
         }
         let by = write
             .caller
-            .and_then(|c| c.user.as_ref())
+            .and_then(|c| c.user())
             .and_then(|u| u.get("module"))
             .and_then(Json::as_str)
             .map(str::to_owned);

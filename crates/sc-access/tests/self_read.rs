@@ -66,7 +66,7 @@ async fn users() -> Result<(Arc<Catalog>, sc_test_harness::Teardown, Table)> {
 
 /// A signed-in staff caller (role 80) as the row layer carries them.
 fn staff(id: &str, department: &str) -> Principal {
-    Principal::new(
+    Principal::recorded(
         Role::of(80),
         Some(json!({ "id": id, "role": 80, "department": department })),
     )
@@ -109,7 +109,7 @@ async fn a_caller_below_the_floor_reads_their_own_row_and_nobody_elses() -> Resu
     );
 
     // Nobody is nobody's own row.
-    let public = Principal::anonymous(Role::PUBLIC);
+    let public = Principal::anonymous();
     let scoped = Scoped::new(&catalog, Authority::Caller(&public));
     assert_eq!(
         emails(&scoped.read(&table, &RowQuery::new()).await?),

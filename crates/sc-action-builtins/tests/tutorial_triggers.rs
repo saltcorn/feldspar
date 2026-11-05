@@ -185,7 +185,7 @@ impl Tutorial {
     /// who ticked the box.
     async fn tick(&self, id: &str, done: bool, member: &str) -> Result<()> {
         let tasks = self.catalog.require("tasks")?;
-        let caller = Principal::new(Role::of(40), Some(json!({ "email": member })));
+        let caller = Principal::recorded(Role::of(40), Some(json!({ "email": member })));
         rows::update_row(
             &self.catalog,
             &tasks,
@@ -304,7 +304,7 @@ async fn the_none_trigger_archives_the_callers_own_finished_tasks() -> Result<()
 
     // What the app's `POST /api/actions/archive_done` does, with the member as
     // the caller: the same `run_trigger` the admin's Run button calls.
-    let caller = Principal::new(Role::of(40), Some(json!({ "email": member })));
+    let caller = Principal::recorded(Role::of(40), Some(json!({ "email": member })));
     let result = t
         .dispatcher
         .run_trigger(
@@ -376,7 +376,7 @@ async fn the_code_body_reads_the_tasks_and_writes_an_audit_row_for_each() -> Res
     }
 
     // Pressing Run, as the document says to.
-    let caller = Principal::new(Role::of(40), Some(json!({ "email": member })));
+    let caller = Principal::recorded(Role::of(40), Some(json!({ "email": member })));
     let result = t
         .dispatcher
         .run_trigger(
@@ -469,7 +469,7 @@ async fn the_streamed_sweep_writes_the_same_rows_the_read_one_does() -> Result<(
     // that does not fit in one — so the test is that the body it prints does what
     // the body above it does, on the same three tasks. Ordered by title here,
     // which is what the printed example orders by.
-    let caller = Principal::new(Role::of(40), Some(json!({ "email": member })));
+    let caller = Principal::recorded(Role::of(40), Some(json!({ "email": member })));
     let result = t
         .dispatcher
         .run_trigger(
@@ -520,7 +520,7 @@ async fn a_body_runs_the_other_two_triggers_the_tutorial_wrote() -> Result<()> {
     // happening from one body: step 3's `archive_done` deletes this member's
     // finished tasks, and step 5's `sweep_report` — which runs *after* it — finds
     // none left to sweep.
-    let caller = Principal::new(Role::of(40), Some(json!({ "email": member })));
+    let caller = Principal::recorded(Role::of(40), Some(json!({ "email": member })));
     let result = t
         .dispatcher
         .run_trigger(

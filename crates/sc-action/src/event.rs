@@ -430,12 +430,12 @@ impl Event {
     /// the write or the run that raised it: the role, the user, the chain, the
     /// application, the guest session and the changeset.
     pub fn caused_by(mut self, caller: &Principal) -> Event {
-        self.role = caller.role;
-        self.user = caller.user.clone();
-        self.chain = caller.chain.clone();
-        self.app = caller.app.clone();
-        self.session = caller.session.clone();
-        self.changeset = caller.changeset.clone();
+        self.role = caller.role();
+        self.user = caller.user().cloned();
+        self.chain = caller.chain().to_vec();
+        self.app = caller.app().cloned();
+        self.session = caller.session().map(str::to_owned);
+        self.changeset = caller.changeset().cloned();
         self
     }
 

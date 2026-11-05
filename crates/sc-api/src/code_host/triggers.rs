@@ -105,7 +105,7 @@ impl<'a> TriggerRunHost<'a> {
         TriggerRunHost {
             dispatcher,
             catalog,
-            caller: Principal::anonymous(Role::PUBLIC),
+            caller: Principal::anonymous(),
             tx: None,
             max_runs: DEFAULT_MAX_TRIGGER_RUNS,
             runs: AtomicU32::new(0),
@@ -127,8 +127,8 @@ impl<'a> TriggerRunHost<'a> {
     /// fields, exactly as `Event::caller` carries them.
     #[must_use]
     pub fn caused_by(mut self, role: Role, user: Option<Json>) -> TriggerRunHost<'a> {
-        self.caller.role = role;
-        self.caller.user = user;
+        let chain = self.caller.chain().to_vec();
+        self.caller = Principal::recorded(role, user).chained(chain);
         self
     }
 
@@ -136,16 +136,22 @@ impl<'a> TriggerRunHost<'a> {
     /// chain that led here: `caused_by` and `chained` in one.
     #[must_use]
     pub fn for_caller(mut self, caller: &Principal) -> TriggerRunHost<'a> {
-        self.caller.role = caller.role;
-        self.caller.user = caller.user.clone();
-        self.caller.chain = caller.chain.clone();
+        self.caller = Principal::recorded(caller.role(), caller.user().cloned())
+            .chained(caller.chain().to_vec());
         self
+    }
+
+    /// Attach an administrator's authority as the caller (see
+    /// [`TableHost::for_admin`](super::TableHost::for_admin)).
+    #[must_use]
+    pub fn for_admin(self, admin: &sc_catalog::AdminPrincipal) -> TriggerRunHost<'a> {
+        self.for_caller(admin.principal())
     }
 
     /// Attach the trigger chain that led here — what bounds the cascade.
     #[must_use]
     pub fn chained(mut self, chain: Vec<String>) -> TriggerRunHost<'a> {
-        self.caller.chain = chain;
+        self.caller = self.caller.chained(chain);
         self
     }
 
@@ -193,10 +199,11 @@ impl<'a> TriggerRunHost<'a> {
             // admin's authority is the *trigger's*, and the run still carries
             // who caused it.
             Authority::Default | Authority::Admin | Authority::User => (
-                Principal::new(self.caller.role, self.caller.user.clone()).in_current_origin(),
+                Principal::recorded(self.caller.role(), self.caller.user().cloned())
+                    .in_current_origin(),
                 None,
             ),
-            Authority::Public => (Principal::new(Role::PUBLIC, None), None),
+            Authority::Public => (Principal::anonymous(), None),
             Authority::Named(id) => {
                 let user = super::load_named_user(self.catalog, id).await?;
                 let caller = sc_access::ownership::principal_at(user.role(), Some(&user));
@@ -212,7 +219,7 @@ impl<'a> TriggerRunHost<'a> {
             let triggers = self.dispatcher.triggers()?;
             let min_role = triggers.require(name)?.min_role;
             let floor = min_role.unwrap_or(Role::ADMIN);
-            if floor.outranks(caller.role) {
+            if floor.outranks(caller.role()) {
                 return Err(Error::auth(format!(
                     "{} may not run `{name}`; it needs role {floor} or better",
                     match (&named, &request.authority) {
@@ -225,7 +232,7 @@ impl<'a> TriggerRunHost<'a> {
         }
         // The caller carries the chain that led here, so the trigger that runs
         // sees who caused it and the cascade bound counts this level.
-        let caller = caller.chained(self.caller.chain.clone());
+        let caller = caller.chained(self.caller.chain().to_vec());
         let run = self.dispatcher.run_trigger_in(
             self.catalog,
             name,

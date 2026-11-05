@@ -1233,7 +1233,7 @@ mod tests {
     #[test]
     fn a_write_becomes_the_event_its_caller_describes() {
         let books = table("books");
-        let caller = Principal::new(Role::ADMIN, Some(json!({ "email": "a@b.c" })))
+        let caller = Principal::recorded(Role::ADMIN, Some(json!({ "email": "a@b.c" })))
             .chained(vec!["audit".into()]);
         let event = table_event(&TableWrite {
             table: &books,

@@ -205,25 +205,43 @@ pub async fn load_file_store_by_name(
     load_one(catalog, Expr::col(COL_NAME).eq(Expr::lit(name))).await
 }
 
-/// The connected store `name` as `caller` reaches it, its floor read from the
+/// The connected store `name` as `who` reaches it, its floor read from the
 /// stored definition (`None` for a store with no definition row — an
 /// ephemeral `--file-store` — the answer every file route resolves for one).
-/// An administrator clears every floor, so for one it is not read.
+/// The floor is read whoever asks — an administrator clears it, but a file's
+/// effective rule is reported as well as checked. For a caller below the
+/// administrator a failure to read it is an error, never "no floor".
 ///
-/// The way a route reaches a caller's files (TODO-code-quality Q3.6): every
-/// operation of the [`CheckedStore`](sc_files::CheckedStore) checks the
-/// path-cumulative rule, where the raw store
-/// ([`Catalog::file_store`](crate::Catalog::file_store)) takes a token.
-pub async fn open_checked_store(
+/// The way a route reaches a caller's files (TODO-code-quality Q3.6,
+/// TODO-type-hardening H3.2): every operation of the
+/// [`CheckedStore`](sc_files::CheckedStore) checks the path-cumulative rule,
+/// where the raw store ([`Catalog::file_store`](crate::Catalog::file_store))
+/// takes a token. Neither the floor nor the file caller is the caller's to
+/// choose: both come from `who` and the catalog.
+pub async fn open_checked_store<'a>(
     catalog: &Catalog,
     name: &str,
-    caller: sc_files::FileCaller,
+    who: impl Into<crate::Authority<'a>>,
 ) -> Result<sc_files::CheckedStore> {
+    let who = who.into();
     let store = catalog.require_raw_file_store(name)?;
+    let caller = match who {
+        crate::Authority::System(_) => crate::Principal::system().file_caller(),
+        crate::Authority::Caller(principal) => principal.file_caller(),
+    };
     let floor = match caller.is_admin() {
-        true => None,
+        // The floor decides this caller's access: unreadable is refused.
         false => load_file_store_by_name(catalog, name)
             .await?
+            .and_then(|def| def.min_role),
+        // An administrator clears every floor, so it is only reported (a
+        // file's effective rule); a definition that cannot be read — no
+        // definitions table on a server whose stores came from
+        // `--file-store` — reports none rather than refusing the admin.
+        true => load_file_store_by_name(catalog, name)
+            .await
+            .ok()
+            .flatten()
             .and_then(|def| def.min_role),
     };
     Ok(sc_files::CheckedStore::new(store, floor, caller))

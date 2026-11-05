@@ -13,7 +13,6 @@
 //! Neither needs a server or a harness: a SQLite database is a file.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use sc_types::Role;
 use std::sync::Arc;
 
 use sc_catalog::{Catalog, DataField};
@@ -142,8 +141,8 @@ async fn a_caller_context_read_runs_where_there_are_no_policies() -> sc_error::R
         .try_collect()
         .await?;
 
-    let caller = sc_catalog::Principal::anonymous(Role::ADMIN);
-    let access = sc_catalog::Unchecked::admin(&caller).expect("an administrator");
+    let caller = sc_catalog::AdminPrincipal::system("test: an administrator's read");
+    let access = sc_catalog::Unchecked::admin(&caller);
     let statement = Statement::from(Select::from(Source::table("book")));
     let rows = sc_catalog::run_in_context(&catalog, access, &statement).await?;
     assert_eq!(rows.len(), 1);

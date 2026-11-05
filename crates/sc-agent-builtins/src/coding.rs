@@ -761,9 +761,12 @@ pub(crate) fn may(config: &Attrs, key: &str) -> bool {
 /// what it is asked to do is only as trustworthy as whoever caused the event
 /// ([`RunCaller::triggered`]). Nor is an admin chatting with an agent an
 /// application exposes: any script on the application's origin can send that
-/// chat with the admin's cookie ([`RunCaller::exposed`]).
+/// chat with the admin's cookie ([`RunCaller::exposed`]). Nor is an admin's
+/// chat turn nobody vouched was at the console ([`RunCaller::user`]): the
+/// tools need the console's proof ([`RunCaller::console_admin`],
+/// TODO-type-hardening H3.3).
 pub(crate) fn is_admin(caller: &RunCaller) -> bool {
-    caller.role.is_admin() && !caller.untrusted_origin()
+    caller.console_admin().is_some()
 }
 
 /// The grants that run the project's own code — its `package.json` scripts,

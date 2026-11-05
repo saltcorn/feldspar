@@ -67,6 +67,7 @@ mod file_response;
 mod fit_progress;
 mod handler;
 mod handlers;
+mod html_page;
 mod i18n;
 mod live;
 // An application's own strings: the Translations screen's server half

@@ -676,7 +676,7 @@ pub async fn create_row_in(
         catalog,
         table,
         body,
-        context.principal().and_then(|c| c.user.as_ref()),
+        context.principal().and_then(|c| c.user()),
     )
     .await?;
     let body = &*crate::vector::embed_insert(catalog, table, body).await?;
@@ -1575,11 +1575,10 @@ async fn may_attach_file(
         Value::Text(path) if !path.is_empty() => path.as_str(),
         _ => return Ok(true),
     };
-    let caller = context.file_caller();
-    if caller.is_admin() {
+    if context.role().is_admin() {
         return Ok(true);
     }
-    let files = sc_catalog::open_checked_store(catalog, &store.0, caller).await?;
+    let files = sc_catalog::open_checked_store(catalog, &store.0, context).await?;
     // Both or neither: a file the caller may write, and one that is there.
     let Ok(file) = files.writable(path).await else {
         return Ok(false);
@@ -1937,7 +1936,7 @@ mod tests {
     /// fail-closed shape §7.3 depends on.
     #[test]
     fn the_table_decides_the_caller_context_transaction_not_the_caller() {
-        let caller = Principal::anonymous(Role::ADMIN);
+        let caller = Principal::recorded(Role::ADMIN, None);
         assert!(in_context(&table(true), Some(&caller), false).is_some());
         assert!(in_context(&table(false), Some(&caller), false).is_none());
         assert!(in_context(&table(true), None, false).is_none());
@@ -1954,7 +1953,7 @@ mod tests {
     /// gets to ask for the transaction the table did not need.
     #[test]
     fn a_statement_reaching_a_protected_table_asks_for_the_transaction_itself() {
-        let caller = Principal::anonymous(Role::ADMIN);
+        let caller = Principal::recorded(Role::ADMIN, None);
         assert!(in_context(&table(false), Some(&caller), true).is_some());
         // Still fail-closed on the other half: no context is no transaction,
         // whatever the statement reaches.

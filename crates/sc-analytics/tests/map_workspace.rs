@@ -94,7 +94,7 @@ async fn graduated_colours_come_with_their_breaks_and_proportional_symbols_are_p
             ..MapLayer::new(regions_id, outline())
         },
     ]);
-    let drawn = render_map(&cat, &sc_dataset::Caller::admin(), &spec).await?;
+    let drawn = render_map(&cat, &sc_dataset::Caller::system("test"), &spec).await?;
     let classes = |i: usize| drawn.layers[i].classes.clone().expect("classes");
     // Three distinct longitudes, three classes, the last of the largest alone.
     assert_eq!(classes(0), vec![0.01, 0.02, 0.03, 0.03]);
@@ -150,7 +150,7 @@ async fn graduated_colours_come_with_their_breaks_and_proportional_symbols_are_p
             ..MapLayer::new(sites_id, at())
         },
     ]);
-    let drawn = render_map(&cat, &sc_dataset::Caller::admin(), &spec).await?;
+    let drawn = render_map(&cat, &sc_dataset::Caller::system("test"), &spec).await?;
     assert_eq!(
         refused(&drawn.layers[0].data),
         "graduated colours need a number on Color, and `name` is text; choose categories instead"
@@ -177,7 +177,7 @@ async fn the_sketch_is_every_value_of_a_small_layer_and_rank_spaced_of_a_large_o
     };
     let small = layer_sketch(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &LayerRequest::new(sites_id, at()),
         "lat",
     )
@@ -215,7 +215,7 @@ async fn the_sketch_is_every_value_of_a_small_layer_and_rank_spaced_of_a_large_o
     save_dataset(&cat, &many).await?;
     let sketch = layer_sketch(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &LayerRequest::new(many.id, at()),
         "v",
     )
@@ -233,7 +233,7 @@ async fn the_sketch_is_every_value_of_a_small_layer_and_rank_spaced_of_a_large_o
     // Read again, the same values.
     let again = layer_sketch(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &LayerRequest::new(many.id, at()),
         "v",
     )
@@ -249,7 +249,7 @@ async fn the_attribute_table_has_each_rows_feature_id() -> Result<()> {
         return Ok(());
     };
     let req = LayerRequest::new(sites_id, at());
-    let rows = layer_rows(&cat, &sc_dataset::Caller::admin(), &req, None, 100)
+    let rows = layer_rows(&cat, &sc_dataset::Caller::system("test"), &req, None, 100)
         .await?
         .expect("reads");
     let names: Vec<&str> = rows.columns.iter().map(|c| c.name.as_str()).collect();
@@ -266,7 +266,7 @@ async fn the_attribute_table_has_each_rows_feature_id() -> Result<()> {
     };
     let rows = layer_rows(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &req,
         Some(&by_name),
         100,
@@ -280,9 +280,15 @@ async fn the_attribute_table_has_each_rows_feature_id() -> Result<()> {
         filter: Some("region == 1".into()),
         ..req.clone()
     };
-    let rows = layer_rows(&cat, &sc_dataset::Caller::admin(), &filtered, None, 1)
-        .await?
-        .expect("reads");
+    let rows = layer_rows(
+        &cat,
+        &sc_dataset::Caller::system("test"),
+        &filtered,
+        None,
+        1,
+    )
+    .await?
+    .expect("reads");
     assert_eq!((rows.ids.clone(), rows.total), (vec![json!(1)], 2));
 
     // Rows that are not a table's: ids are places in the order, and the
@@ -294,7 +300,7 @@ async fn the_attribute_table_has_each_rows_feature_id() -> Result<()> {
     };
     let rows = layer_rows(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &LayerRequest::new(counted.id, geometry),
         Some(&by_name),
         100,
@@ -318,7 +324,7 @@ async fn features_are_selected_by_condition_shape_and_distance() -> Result<()> {
     let req = LayerRequest::new(sites_id, at());
     let select = |by: SelectBy| {
         let (cat, req) = (&cat, &req);
-        async move { select_features(cat, &sc_dataset::Caller::admin(), req, &by).await }
+        async move { select_features(cat, &sc_dataset::Caller::system("test"), req, &by).await }
     };
     let ids = |found: &sc_analytics::selection::Selected| found.ids.clone();
 
@@ -385,7 +391,7 @@ async fn features_are_selected_by_condition_shape_and_distance() -> Result<()> {
     );
     let found = select_features(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &by_region,
         &SelectBy::Condition {
             formula: "count > 1".into(),
@@ -423,7 +429,7 @@ async fn features_are_selected_by_condition_shape_and_distance() -> Result<()> {
 async fn rows_of(cat: &sc_catalog::Catalog, def: &DatasetDef) -> Result<Vec<Vec<Json>>> {
     let page = read_stage(
         cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         def,
         None,
         Page::first(100),
@@ -449,7 +455,7 @@ async fn a_selection_is_saved_as_a_dataset_over_the_layers() -> Result<()> {
     };
     let saved = save_selection(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &req,
         "Picked",
         &[json!(1), json!(3)],
@@ -474,7 +480,7 @@ async fn a_selection_is_saved_as_a_dataset_over_the_layers() -> Result<()> {
     // A selection made by a condition keeps the condition.
     let saved = save_selection(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &LayerRequest::new(sites_id, at()),
         "Near a",
         &[],
@@ -494,7 +500,7 @@ async fn a_selection_is_saved_as_a_dataset_over_the_layers() -> Result<()> {
     );
     let saved = save_selection(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &by_region,
         "East",
         &[json!(2)],
@@ -529,7 +535,7 @@ async fn a_selection_is_saved_as_a_dataset_over_the_layers() -> Result<()> {
     save_dataset(&cat, &stacked).await?;
     let e = save_selection(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &LayerRequest::new(stacked.id, at()),
         "Nope",
         &[json!(1)],
@@ -543,7 +549,7 @@ async fn a_selection_is_saved_as_a_dataset_over_the_layers() -> Result<()> {
     );
     let e = save_selection(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &req,
         "Picked",
         &[json!(2)],
@@ -624,7 +630,7 @@ async fn the_toolbox_makes_datasets_and_layers() -> Result<()> {
     // Its layer draws, with its classes.
     let drawn = render_map(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &MapSpec::of(vec![run.layer.clone()]),
     )
     .await?;
@@ -673,7 +679,7 @@ async fn the_toolbox_makes_datasets_and_layers() -> Result<()> {
     assert_eq!(run.dataset.name, "Sites within 250 m");
     let drawn = render_map(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &MapSpec::of(vec![run.layer.clone()]),
     )
     .await?;
@@ -746,7 +752,7 @@ async fn the_toolbox_makes_datasets_and_layers() -> Result<()> {
     .await?;
     let page = read_stage(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &run.dataset,
         None,
         Page::first(10),
@@ -784,7 +790,7 @@ async fn the_toolbox_makes_datasets_and_layers() -> Result<()> {
     .await?;
     let page = read_stage(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &run.dataset,
         None,
         Page::first(10),
@@ -793,7 +799,7 @@ async fn the_toolbox_makes_datasets_and_layers() -> Result<()> {
     assert_eq!(page.total, 2);
     let drawn = render_map(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &MapSpec::of(vec![run.layer.clone()]),
     )
     .await?;

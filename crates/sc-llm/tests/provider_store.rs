@@ -185,9 +185,9 @@ async fn a_stored_key_survives_a_read_edit_save_cycle_that_never_saw_it() -> Res
 
     // The stored key is untouched and the URL changed.
     let after = load_llm_provider(&catalog, def.id).await?.expect("the row");
-    assert_eq!(after.setting(CFG_API_KEY), Some("sk-ant-secret"));
+    assert_eq!(after.api_key().expose(), "sk-ant-secret");
     assert_eq!(after.setting(CFG_BASE_URL), Some("https://proxy.internal"));
-    assert_ne!(after.setting(CFG_API_KEY), Some(SECRET_SENTINEL));
+    assert_ne!(after.api_key().expose(), SECRET_SENTINEL);
     Ok(())
 }
 

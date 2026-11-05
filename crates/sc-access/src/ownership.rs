@@ -75,22 +75,16 @@ pub fn principal_of(user: Option<&User>) -> Principal {
     principal_at(sc_auth::role_of(user), user)
 }
 
-/// [`principal_of`] at an **explicit** role — what the admin API's row
-/// endpoints use: [`Role::ADMIN`](Role::ADMIN) clears every policy's role
-/// floor, so the admin's own row editor works on a FORCE'd table, while the user
-/// object still says which admin did it.
+/// [`principal_of`] at an **explicit** role — a caller whose authority is not
+/// its user's own: an agent run's caller, a code body's handle, a history
+/// reader. Never a way to the unchecked layer: that takes an
+/// [`AdminPrincipal`](sc_catalog::AdminPrincipal) (TODO-type-hardening H3.1),
+/// which an administrator's own row endpoints get from their session proof.
 pub fn principal_at(role: Role, user: Option<&User>) -> Principal {
-    let fields = user_values(user).map(|map| {
-        let obj: serde_json::Map<String, Json> = map
-            .iter()
-            .map(|(k, v)| (k.clone(), value_to_json(v)))
-            .collect();
-        Json::Object(obj)
-    });
     // The application and the guest session of the request this runs inside
     // (TODO-payments P1.3, P1.5): what the event a write raises reports, and the
     // `sc.session` an RLS policy reads.
-    Principal::new(role, fields).in_current_origin()
+    Principal::recorded(role, user.map(User::fields_json)).in_current_origin()
 }
 
 /// The user object as the formula sees it: `id`, `role`, and every extra field
@@ -171,10 +165,9 @@ pub async fn read_rows_as_in(
             .iter()
             .map(|values| {
                 // What this renders is read by a client — an agent's tools, a
-                // device's offline pull — so a secret is its sentinel.
-                let mut values = values.clone();
-                sc_catalog::secrets::redact_values(table, &mut values);
-                table_row_json(table, &values)
+                // device's offline pull — so it is an `ApiRow`: no hidden
+                // column, and a secret is its sentinel.
+                crate::ApiRow::of_values(table, values).into_json()
             })
             .collect(),
     ))
@@ -237,7 +230,7 @@ pub(crate) async fn read_row_values_by(
     evaluator: Option<&Arc<dyn JsEvaluator>>,
     executor: &rows::Executor,
 ) -> Result<Vec<BTreeMap<String, Value>>> {
-    let role = ctx.role;
+    let role = ctx.role();
     if let Some(search) = &query.search {
         crate::search::require_answerable(cat, table, search).await?;
     }
@@ -441,7 +434,7 @@ pub async fn row_insertable_as(
         return Ok(false);
     };
     let caller = principal_at(role, user);
-    let body = rows::fill_defaults(cat, table, body, caller.user.as_ref()).await?;
+    let body = rows::fill_defaults(cat, table, body, caller.user()).await?;
     let proposed = proposed_insert_row(table, &body)?;
     row_allowed(
         cat,
@@ -844,7 +837,7 @@ pub(crate) async fn aggregate_grouped_by(
     ctx: &Principal,
     user: Option<&User>,
 ) -> Result<Vec<BTreeMap<String, Value>>> {
-    match aggregate_guard(cat, table, &table.name, ctx.role, user)? {
+    match aggregate_guard(cat, table, &table.name, ctx.role(), user)? {
         AggregateGuard::InContext => {
             rows::aggregate_grouped(cat, table, projections, query, decided(ctx)).await
         }
@@ -913,10 +906,10 @@ pub(crate) async fn insert_row_by(
     evaluator: Option<&Arc<dyn JsEvaluator>>,
     executor: &rows::Executor,
 ) -> Result<Json> {
-    let role = caller.role;
+    let role = caller.role();
     // The defaults first, so the check below sees the row that would be
     // written — an `owner` defaulted to `user.id` is what grants it.
-    let body = &rows::fill_defaults(cat, table, body, caller.user.as_ref()).await?;
+    let body = &rows::fill_defaults(cat, table, body, caller.user()).await?;
     // The database enforces this table's ownership: the policies decide, and a
     // `WITH CHECK` they refuse surfaces from `run_in_context`.
     if table.rls_enabled {
@@ -984,7 +977,7 @@ pub(crate) async fn update_row_by(
     evaluator: Option<&Arc<dyn JsEvaluator>>,
     executor: &rows::Executor,
 ) -> Result<Json> {
-    let role = caller.role;
+    let role = caller.role();
     if table.rls_enabled {
         return rows::update_row_in(cat, table, id, body, decided(caller), executor).await;
     }
@@ -1047,7 +1040,7 @@ pub(crate) async fn delete_row_by(
     evaluator: Option<&Arc<dyn JsEvaluator>>,
     executor: &rows::Executor,
 ) -> Result<Json> {
-    let role = caller.role;
+    let role = caller.role();
     if table.rls_enabled {
         return rows::delete_row_in(cat, table, id, decided(caller), executor).await;
     }

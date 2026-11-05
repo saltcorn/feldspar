@@ -184,8 +184,7 @@ async fn open_url(
         return Err(not_served());
     }
     let store_path = dir.resolve(rest).ok_or_else(not_served)?;
-    let (store, floor) = assets::dir_scope(dir).connect(ctx.catalog).await?;
-    let store = sc_files::CheckedStore::new(store, floor, crate::files::file_caller(ctx.caller));
+    let store = assets::dir_scope(dir).bind(ctx.catalog, ctx.caller).await?;
     store.check_read(&store_path).await?;
     Ok((store, store_path, dir.store.0.clone()))
 }

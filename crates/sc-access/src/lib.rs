@@ -44,6 +44,7 @@
     )
 )]
 
+mod api_row;
 pub mod calc_read;
 pub mod filter;
 pub mod ownership;
@@ -63,6 +64,7 @@ mod testing;
 pub(crate) const SCAN_COUNT: sc_catalog::Unchecked<'static> =
     sc_catalog::Unchecked::system("row layer: count the rows a scan would read");
 
+pub use api_row::ApiRow;
 pub use ownership::{
     RowImage, delete_row_as, insert_row_as, principal_at, principal_of, read_row_values_as,
     read_rows_as, row_deletable_as, row_insertable_as, row_readable_as, row_updatable_as,
@@ -70,15 +72,15 @@ pub use ownership::{
 };
 pub use scoped::Scoped;
 
-/// `principal`'s [`Unchecked`] access, refused when it is not an
-/// administrator's: what code that runs as "admin, in somebody's name" (an
-/// action's write, a code body's `asAdmin()` handle, an admin's own row
-/// endpoints) hands the row layer.
-pub fn admin_access(
-    principal: &sc_catalog::Principal,
-) -> sc_error::Result<sc_catalog::Unchecked<'_>> {
-    sc_catalog::Unchecked::admin(principal).ok_or_else(|| {
-        sc_error::Error::auth("only an administrator may read or write rows unchecked")
-    })
+/// An administrator's [`Unchecked`] access: what code that runs as "admin, in
+/// somebody's name" (an action's write, a code body's `asAdmin()` handle, an
+/// admin's own row endpoints) hands the row layer.
+///
+/// It takes the proof, not a principal whose role says admin
+/// (TODO-type-hardening H3.1): an
+/// [`AdminPrincipal`](sc_catalog::AdminPrincipal) is made only from an admin
+/// session or a named reason, each listed in the system-authority inventory.
+pub fn admin_access(admin: &sc_catalog::AdminPrincipal) -> sc_catalog::Unchecked<'_> {
+    sc_catalog::Unchecked::admin(admin)
 }
 pub use user_rows::{ADMIN_ONLY_WRITE, api_row};

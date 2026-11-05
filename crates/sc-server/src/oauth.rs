@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 use axum::Json;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{HeaderValue, StatusCode, Uri, header};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use base64::Engine;
@@ -897,14 +897,14 @@ pub(crate) async fn complete(
 /// end of a chain that began at the provider. Leaving from a page on this host
 /// is same-site.
 fn leave_for(target: &str) -> Response {
-    let target = sc_expr::html::escape(target);
     let mut out = (
         StatusCode::OK,
-        Html(format!(
+        crate::html_page::html(sc_expr::safe_html!(
             "<!doctype html><html><head><meta charset=\"utf-8\">\
              <meta http-equiv=\"refresh\" content=\"0;url={target}\">\
              <title>Continuing…</title></head>\
-             <body><p><a href=\"{target}\">Continue</a></p></body></html>"
+             <body><p><a href=\"{target}\">Continue</a></p></body></html>",
+            target = sc_expr::html::escape(target),
         )),
     )
         .into_response();

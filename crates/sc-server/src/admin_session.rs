@@ -121,10 +121,29 @@ impl IntoResponse for AdminRefusal {
     }
 }
 
+/// What stands behind an admin session's authority: the session check
+/// `AdminSession::of_request` made (the admin host, an admin-scope session,
+/// live, at the admin role). Listed in the system-authority inventory.
+const ADMIN_SESSION: &str = "an admin session (sc-server AdminSession::of_request)";
+
 impl AdminSession {
     /// The administrator.
     pub fn user(&self) -> &AuthenticatedUser {
         &self.user
+    }
+
+    /// The proof that this administrator is at the console
+    /// (TODO-type-hardening H3.3): what an agent run started from the console
+    /// (`RunCaller::console`) and the catalog's admin host take.
+    pub fn console(&self) -> sc_catalog::ConsoleAdmin {
+        sc_catalog::ConsoleAdmin::at_console(Some(self.user.fields_json()), ADMIN_SESSION)
+    }
+
+    /// The administrator as the caller of an agent run started from the
+    /// console: their own authority, with the console's proof, so the tools
+    /// that act as the server are theirs.
+    pub fn run_caller(&self) -> sc_agent::RunCaller {
+        sc_agent::RunCaller::console(self.user.clone().into_user(), self.console())
     }
 
     /// The session token the request carried — what a response that leaves
@@ -365,6 +384,17 @@ impl Admin {
             Via::Session(session) => Some(session.user()),
             Via::Delegated { user, .. } => user.as_ref(),
         }
+    }
+
+    /// This authority as the row layer's admin proof (TODO-type-hardening
+    /// H3.1): the admin role, in the administrator's name, vouched for by the
+    /// session check or by the delegating layer's own check.
+    pub fn principal(&self) -> sc_catalog::AdminPrincipal {
+        let by = match &self.0 {
+            Via::Session(_) => ADMIN_SESSION,
+            Via::Delegated { by, .. } => by,
+        };
+        sc_catalog::AdminPrincipal::vouched(self.user().map(User::fields_json), by)
     }
 
     /// The browser session behind this authority, when it is one.

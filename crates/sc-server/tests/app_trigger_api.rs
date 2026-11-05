@@ -522,7 +522,7 @@ async fn a_trigger_the_app_does_not_expose_is_not_there_at_all() -> sc_error::Re
 
     // Which is not the same as the trigger being missing: the server has it, and
     // it runs when the server itself asks.
-    let caller = sc_catalog::Principal::new(Role::ADMIN, Some(json!({ "email": ADMIN })));
+    let caller = sc_catalog::Principal::recorded(Role::ADMIN, Some(json!({ "email": ADMIN })));
     let result = server
         .dispatcher
         .run_trigger(

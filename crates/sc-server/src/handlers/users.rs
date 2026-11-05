@@ -328,7 +328,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     }
                 };
                 let note = optional_str(obj, "note");
-                let caller = admin_caller(ctx.user());
+                let caller = admin_caller(&ctx.who);
                 sc_auth::grant_credits(
                     &catalog,
                     sc_auth::NewCreditGrant {
@@ -357,7 +357,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let id = parse_user_id(ctx.path_param("id")?)?;
                 let obj = require_object(&ctx.body)?;
                 let threshold = credit_amount(obj.get("threshold"), "threshold")?;
-                let caller = admin_caller(ctx.user());
+                let caller = admin_caller(&ctx.who);
                 sc_auth::set_low_balance_threshold(
                     &catalog,
                     id,

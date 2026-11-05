@@ -1993,7 +1993,7 @@ async fn the_builder_options_are_what_saltcorn_1_passes() -> sc_error::Result<()
         sc_viewpattern::view_runtime()?,
         &catalog,
         &app,
-        None,
+        &sc_catalog::AdminPrincipal::system("test: the builder's options"),
         None,
     )
     .await?;

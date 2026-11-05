@@ -212,7 +212,7 @@ impl DatasetSource for CompiledSource {
         // admin's to start, and a prediction answers for the model, not for
         // whoever's row it is (analytics TODO A9.1 narrows the Analytics UI's
         // reads, not a model's).
-        let caller = Caller::admin();
+        let caller = Caller::system("model: read its dataset (a fit or a prediction)");
         // The count first, and on purpose: a dataset is held in memory, so
         // the refusal costs one `COUNT(*)` rather than a partial read. A
         // limited read is bounded by construction and skips it.

@@ -283,7 +283,7 @@ pub enum MemoryReader {
 impl MemoryReader {
     /// The reader a run's caller is.
     pub fn of(caller: &sc_agent::RunCaller) -> MemoryReader {
-        match &caller.user {
+        match &caller.user_ref() {
             Some(user) => MemoryReader::User(user.id()),
             None => MemoryReader::Nobody,
         }
@@ -707,7 +707,7 @@ impl AgentTrait for AgentMemory {
         match tool {
             TOOL_STORE_MEMORY => {
                 let personal = flag(config, CFG_PERSONAL, true);
-                let user = ctx.caller.user.as_ref().map(|u| u.id());
+                let user = ctx.caller.user_ref().map(|u| u.id());
                 if personal && user.is_none() {
                     return Err(Error::invalid(
                         "nobody is signed in to this conversation, so there is nobody to \
@@ -759,7 +759,7 @@ impl AgentTrait for AgentMemory {
         if !flag(config, CFG_PREFERENCES_IN_HEADER, true) {
             return Ok(None);
         }
-        let Some(user) = cx.caller.user.as_ref() else {
+        let Some(user) = cx.caller.user_ref() else {
             return Ok(None);
         };
         let Some(preferences) = preferences_of(cx.catalog, cx.agent, user.id()).await? else {

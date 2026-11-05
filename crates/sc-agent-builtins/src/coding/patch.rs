@@ -412,8 +412,7 @@ pub async fn call(scope: &FileScope, args: &Json, ctx: &mut TraitContext<'_>) ->
         .map_err(|e| Error::invalid(format!("status: failed. The patch is malformed: {e}")))?;
 
     // Every read and write of the plan is checked for the run's caller.
-    let (store, floor) = scope.connect(ctx.catalog).await?;
-    let store = CheckedStore::new(store, floor, crate::files::file_caller(ctx.caller));
+    let store = scope.bind(ctx.catalog, ctx.caller).await?;
     let mut state = CodingState::load(ctx.state());
     let read_tool = super::read::tool_name(scope);
 

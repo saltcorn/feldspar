@@ -71,7 +71,7 @@ fn formula<'t>(
     caller: &Caller<'_>,
 ) -> std::result::Result<Option<&'t Formula>, Denied> {
     if ownership::meets(caller.user, table.access.min_role_write)
-        || caller.context.role.meets(table.access.min_role_write)
+        || caller.context.role().meets(table.access.min_role_write)
     {
         return Ok(None);
     }
@@ -102,7 +102,7 @@ pub async fn create(
     };
     // The defaults first, so the ownership check sees the row that would be
     // written (`rows::fill_defaults`).
-    let body = &rows::fill_defaults(cat, table, body, caller.context.user.as_ref()).await?;
+    let body = &rows::fill_defaults(cat, table, body, caller.context.user()).await?;
     if let Some(f) = formula {
         // An insert is checked against the proposed row, `_insert` folded true
         // (§7.3) — WITH CHECK semantics at runtime.

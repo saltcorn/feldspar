@@ -435,9 +435,11 @@ pub struct ToolContext<'a> {
     /// The user this call runs as, or `None` for a system run — a trigger-driven
     /// agent turn has authority but no user.
     pub user: Option<&'a User>,
-    /// The role this call is authorized at: the user's own, or 1 for a system
-    /// run. Every tool here refuses anything but 1.
-    pub role: Role,
+    /// The proof that an administrator at the console makes this call, or
+    /// `None` for anybody else — another role, or an admin whose prompt came
+    /// from outside the console (TODO-type-hardening H3.3, H3.4). Every tool
+    /// here refuses a call without it ([`ToolContext::require_admin`]).
+    pub admin: Option<sc_catalog::ConsoleAdmin>,
     /// The trigger dispatcher, where this process has one.
     ///
     /// Carried rather than reached for, exactly as `TraitContext` carries it: a
@@ -450,6 +452,14 @@ pub struct ToolContext<'a> {
 }
 
 impl ToolContext<'_> {
+    /// The console administrator's proof, or the refusal a model can relay:
+    /// what a tool that reaches the admin host hands it.
+    pub fn require_admin(&self, tool: &str) -> Result<&sc_catalog::ConsoleAdmin> {
+        self.admin
+            .as_ref()
+            .ok_or_else(|| not_an_admin(tool, self.user.map_or(Role::PUBLIC, User::role)))
+    }
+
     /// The dispatcher, or the configuration error that says this context has
     /// none. Fail closed and say why.
     pub fn require_triggers(&self) -> Result<&Arc<TriggerDispatcher>> {
@@ -585,7 +595,7 @@ impl ToolSet {
     /// names what would fix it, because each is read by a model rather than by a
     /// developer with a backtrace.
     pub async fn call(&self, tool: &str, args: &Json, ctx: &ToolContext<'_>) -> Result<Json> {
-        require_admin(ctx.role, tool)?;
+        ctx.require_admin(tool)?;
         self.resolve(tool)?.call(ctx, &self.grants, args).await
     }
 
@@ -630,11 +640,24 @@ pub fn require_admin(role: Role, tool: &str) -> Result<()> {
     if role.is_admin() {
         return Ok(());
     }
-    Err(Error::invalid(format!(
+    Err(not_an_admin(tool, role))
+}
+
+/// The refusal [`require_admin`] and [`ToolContext::require_admin`] give.
+fn not_an_admin(tool: &str, role: Role) -> Error {
+    if role.is_admin() {
+        // The role is the admin's, but the call did not come from the console.
+        return Error::invalid(format!(
+            "`{tool}` is only available to an administrator at the admin console, and this \
+             call did not come from it. Tell the user the schema and the triggers over it \
+             can only be seen or changed from the admin console.",
+        ));
+    }
+    Error::invalid(format!(
         "`{tool}` is only available to an administrator, and this conversation is \
          with a role-{role} user. Tell them the schema and the triggers over it can \
          only be seen or changed by an admin.",
-    )))
+    ))
 }
 
 /// Refuse an operation the admin did not tick the box for, naming the box.

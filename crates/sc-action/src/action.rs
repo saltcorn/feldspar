@@ -19,12 +19,11 @@ use std::sync::Arc;
 
 use sc_access::Scoped;
 use sc_access::rows::Executor;
-use sc_catalog::{Authority, Catalog, Principal, SharedTx};
+use sc_catalog::{AdminPrincipal, Authority, Catalog, Principal, SharedTx};
 use sc_email::Mailer;
 use sc_error::{Error, Result};
 use sc_expr::{Ambient, CodeAdapter, ConsoleSink, Formula, JsEvaluator, SchemaShape, Template};
 use sc_query::Value;
-use sc_types::Role;
 use sc_types::value_from_json;
 use sc_types::{Attrs, FormField};
 use serde_json::Value as Json;
@@ -193,6 +192,11 @@ pub trait FileUrls: Send + Sync {
     fn file_url(&self, store: &str, path: &str) -> Option<String>;
 }
 
+/// What stands behind an action's admin authority: a trigger is server-side
+/// configuration an administrator wrote, and its action runs as admin in its
+/// event's user's name (§10.2). Listed in the system-authority inventory.
+pub const TRIGGER_ACTION_RULE: &str = "a trigger's action (admin-authored configuration)";
+
 /// Everything one action run has access to.
 ///
 /// Borrowed rather than owned (hence the lifetime): a run is a single `await` on
@@ -313,7 +317,7 @@ pub struct ActionContext<'a> {
     /// The principal [`scoped`](ActionContext::scoped) binds: built on first
     /// use, which is inside the event's origin and changeset (the dispatcher
     /// enters both around `Action::run`).
-    principal: std::sync::OnceLock<Principal>,
+    principal: std::sync::OnceLock<AdminPrincipal>,
 }
 
 impl<'a> ActionContext<'a> {
@@ -364,11 +368,10 @@ impl<'a> ActionContext<'a> {
     /// raises both see who caused it.
     pub fn scoped(&self) -> Scoped<'_> {
         let principal = self.principal.get_or_init(|| {
-            Principal::new(Role::ADMIN, self.event.user.clone())
+            AdminPrincipal::vouched(self.event.user.clone(), TRIGGER_ACTION_RULE)
                 .chained(self.chain.clone())
-                .in_current_origin()
         });
-        let scoped = Scoped::new(self.catalog, Authority::Caller(principal))
+        let scoped = Scoped::new(self.catalog, Authority::from(principal))
             .in_executor(Executor::of(self.tx.clone()));
         match self.evaluator {
             Some(evaluator) => scoped.with_evaluator(Some(Arc::clone(evaluator))),
@@ -381,7 +384,7 @@ impl<'a> ActionContext<'a> {
     /// (`asUser()`, `undo`) acts as. Built from the event rather than read from
     /// `event.role` / `event.user` at each call site.
     pub fn caller(&self) -> Principal {
-        Principal::new(self.event.role, self.event.user.clone())
+        Principal::recorded(self.event.role, self.event.user.clone())
             .chained(self.chain.clone())
             .in_current_origin()
     }

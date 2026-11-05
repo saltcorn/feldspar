@@ -169,10 +169,14 @@ pub async fn import_table(
     let principal = context
         .principal()
         .map(|c| c.clone().in_changeset(Some(changeset.clone())));
-    let context = match &principal {
-        Some(principal) => Unchecked::admin(principal)
-            .ok_or_else(|| Error::auth("only an administrator imports a CSV file"))?,
-        None => context,
+    // The same token, moved into the import's changeset: the check that made
+    // it (an admin session's proof) still stands behind it.
+    let context = match (&principal, context.vouched_by()) {
+        (Some(principal), Some(by)) if principal.role().is_admin() => {
+            Unchecked::vouched(principal, by)
+        }
+        (Some(_), _) => return Err(Error::auth("only an administrator imports a CSV file")),
+        (None, _) => context,
     };
     changeset::scope(
         changeset,

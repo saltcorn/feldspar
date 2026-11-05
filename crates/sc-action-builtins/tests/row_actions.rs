@@ -476,7 +476,8 @@ async fn an_actions_writes_carry_admin_authority_on_an_rls_table() -> Result<()>
     enable_rls(&catalog, &secrets).await?;
 
     // The policies decide: a caller who owns nothing here sees nothing.
-    let outsider = Principal::new(Role::PUBLIC, Some(json!({ "email": "nobody@example.com" })));
+    let outsider =
+        Principal::recorded(Role::PUBLIC, Some(json!({ "email": "nobody@example.com" })));
     let visible = rows::list_rows(
         &catalog,
         &secrets,
@@ -517,7 +518,7 @@ async fn an_actions_writes_carry_admin_authority_on_an_rls_table() -> Result<()>
     // Read back through an admin context, because the table is `FORCE`d: a read
     // with no caller context at all sees nothing here, policies applying to the
     // table's owner too. (That is why the action sets one.)
-    let admin = Principal::anonymous(Role::ADMIN);
+    let admin = Principal::recorded(Role::ADMIN, None);
     let remaining = rows::list_rows(
         &catalog,
         &secrets,

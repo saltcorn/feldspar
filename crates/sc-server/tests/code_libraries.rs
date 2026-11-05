@@ -664,7 +664,7 @@ async fn the_mcp_tools_need_their_grants_and_refuse_a_syntax_error() -> sc_error
     let ctx = ToolContext {
         catalog: &server.catalog,
         user: None,
-        role: Role::ADMIN,
+        admin: Some(sc_catalog::ConsoleAdmin::system("test: an admin tool call")),
         triggers: Some(&server.dispatcher),
         actor: "test",
     };

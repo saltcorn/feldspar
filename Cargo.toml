@@ -827,6 +827,7 @@ dbg_macro = "deny"
 let_underscore_future = "deny"
 # The methods `clippy.toml` lists, each with the replacement to use instead.
 disallowed_methods = "deny"
+disallowed_types = "deny"
 # `x as i32` silently drops the high bits of a wider value: an `i64` id bound to
 # an `int4` column matched a different row (security review #8). Use
 # `i32::try_from(x)` and handle the error, or `#[allow]` the cast with a

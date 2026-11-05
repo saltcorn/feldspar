@@ -70,21 +70,21 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## H3 — Proof-taking constructors (§1, §3)
 
-- [ ] H3.1 `Principal` fields private; constructors `anonymous`, `of(&AuthenticatedUser)`,
+- [x] H3.1 `Principal` fields private; constructors `anonymous`, `of(&AuthenticatedUser)`,
       crate-private `system`. `AdminPrincipal` from `Admin` or a system reason; `admin_access`
       and `admin_caller` take it.
-- [ ] H3.2 `checked_file_store` / `open_checked_store` take a `&Principal` and read the floor
+- [x] H3.2 `checked_file_store` / `open_checked_store` take a `&Principal` and read the floor
       themselves; `FileCaller` construction leaves the public surface (#14). Fix the
       `.ok().flatten()` floor drop in `handlers/files.rs:368`.
-- [ ] H3.3 `AdminHost` takes a `ConsoleAdmin` proof (#16). `RunCaller` authority as an enum that
+- [x] H3.3 `AdminHost` takes a `ConsoleAdmin` proof (#16). `RunCaller` authority as an enum that
       defaults to withheld.
-- [ ] H3.4 Finish Q1.8: `sc_dataset::Caller`, `ToolContext`, `HistoryReader`, `Reverser`,
+- [x] H3.4 Finish Q1.8: `sc_dataset::Caller`, `ToolContext`, `HistoryReader`, `Reverser`,
       `sc_live::access::Caller` as views over `Principal` (#19).
-- [ ] H3.5 `ApiRow`: the only row type with `Serialize` on response paths (REST, GraphQL, MCP,
+- [x] H3.5 `ApiRow`: the only row type with `Serialize` on response paths (REST, GraphQL, MCP,
       history, code-body results); `RawRow` has none.
-- [ ] H3.6 Add module webhooks/services (`caused_by(Role::ADMIN, …)`) and the terminal's admin
+- [x] H3.6 Add module webhooks/services (`caused_by(Role::ADMIN, …)`) and the terminal's admin
       file binding to the system-authority inventory, or give them narrower authority (E5, A2).
-- [ ] H3.7 `SafeHtml` required by the HTML response sinks (A10); `Secret` for LLM API keys.
+- [x] H3.7 `SafeHtml` required by the HTML response sinks (A10); `Secret` for LLM API keys.
 
 ## H4 — `sc-proc` (§4)
 
@@ -141,7 +141,8 @@ table elevation should not work at all. No new configuration fields.
       computed with one. An automatic per-IP rate limit. Rewrite the share example in
       `code_api_js.md` without `asAdmin()`.
 - [ ] H7.7 RLS takes the cause's authority: `Principal` carries its cause;
-      `Principal::elevated(&cause, reason)` replaces `Principal::new(Role::ADMIN, user)` in the
+      `Principal::elevated(&cause, reason)` replaces the admin principals (`AdminPrincipal::vouched` with
+      `CODE_ADMIN_RULE` / `TRIGGER_ACTION_RULE` since H3.1, formerly `Principal::new(Role::ADMIN, user)`) in the
       code host, `ActionContext::scoped` and the trigger default; `set_caller_context` writes
       the cause's role and user. Tests: a code action run by a role-80 user reads only that
       user's rows from an RLS table; a scheduled trigger reads all of them; a cascade started

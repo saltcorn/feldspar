@@ -16,8 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::def::{
-    ANTHROPIC_BACKEND, CFG_API_KEY, CFG_BASE_URL, LlmProviderDef, OPENAI_CHAT_BACKEND,
-    OPENAI_RESPONSES_BACKEND,
+    ANTHROPIC_BACKEND, CFG_BASE_URL, LlmProviderDef, OPENAI_CHAT_BACKEND, OPENAI_RESPONSES_BACKEND,
 };
 use crate::message::Usage;
 use crate::model::{LlmModelDef, ModelKind};
@@ -144,12 +143,7 @@ impl<'a> Endpoint<'a> {
             provider,
             model,
             base_url: base_url.trim_end_matches('/').to_owned(),
-            api_key: provider
-                .setting(CFG_API_KEY)
-                .unwrap_or_default()
-                .trim()
-                .to_owned()
-                .into(),
+            api_key: provider.api_key(),
             client,
             started: std::time::Instant::now(),
         })

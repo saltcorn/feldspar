@@ -79,6 +79,11 @@ pub(crate) fn server_slots() -> ServerSlots {
     Arc::new(Semaphore::new(MAX_LANGUAGE_SERVERS))
 }
 
+/// The system reason the language server's store is opened under: a process
+/// over the whole tree, started for the admin session the route admits.
+/// Listed in the system-authority inventory.
+const LSP_ROOT: &str = "IDE language server: the store's directory, for an admin session";
+
 /// Why this store cannot have a language server, or the directory to run one in.
 ///
 /// Split out from the handler because it is the whole of the policy and none of
@@ -102,11 +107,7 @@ pub(crate) fn language_server_root(
     // opened for (the route admits an admin session only, and the bridge lives
     // as long as it does), and only an administrator's binding answers a root.
     let handle = catalog
-        .checked_file_store(
-            store,
-            None,
-            sc_files::FileCaller::new(sc_types::Role::ADMIN, None),
-        )
+        .admin_file_store(store, &sc_catalog::AdminPrincipal::system(LSP_ROOT))
         .map_err(|e| format!("file store {store}: {e}"))?;
     let root = handle
         .local_root()

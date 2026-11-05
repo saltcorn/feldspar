@@ -1994,21 +1994,37 @@ impl Catalog {
             .ok_or_else(|| Error::not_found(format!("file store `{name}` is not connected")))
     }
 
-    /// The connected store `name` with `caller` bound to it: every operation
-    /// checks the path-cumulative rule first ([`sc_files::CheckedStore`]).
-    /// `floor` is the store definition's `min_role` — what
-    /// [`load_file_store_by_name`](crate::load_file_store_by_name) reads, and
-    /// what [`open_checked_store`](crate::open_checked_store) reads for you.
-    pub fn checked_file_store(
+    /// The connected store `name` as `who` reaches it: every operation checks
+    /// the path-cumulative rule first ([`sc_files::CheckedStore`]), against the
+    /// store-wide floor this reads from the stored definition itself
+    /// ([`open_checked_store`](crate::open_checked_store)).
+    ///
+    /// `who` is an authority, not a caller-built `FileCaller` and floor
+    /// (security review 2026-11 #14, TODO-type-hardening H3.2): a binding at
+    /// the administrator's authority is an [`AdminPrincipal`](crate::AdminPrincipal)
+    /// or a greppable `Authority::system(`.
+    pub async fn checked_file_store<'a>(
         &self,
         name: &str,
-        floor: Option<sc_types::Role>,
-        caller: sc_files::FileCaller,
+        who: impl Into<crate::Authority<'a>>,
+    ) -> Result<sc_files::CheckedStore> {
+        crate::open_checked_store(self, name, who).await
+    }
+
+    /// The connected store `name` bound to the administrator `admin`, without
+    /// reading its floor, which an administrator clears: what a process over
+    /// the whole tree (the IDE's language server, the terminal) and the
+    /// server's own temporary folders open. Only an administrator's binding
+    /// answers [`CheckedStore::local_root`](sc_files::CheckedStore::local_root).
+    pub fn admin_file_store(
+        &self,
+        name: &str,
+        admin: &crate::AdminPrincipal,
     ) -> Result<sc_files::CheckedStore> {
         Ok(sc_files::CheckedStore::new(
             self.require_raw_file_store(name)?,
-            floor,
-            caller,
+            None,
+            admin.file_caller(),
         ))
     }
 

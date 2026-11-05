@@ -183,33 +183,70 @@ where
 /// [`Authority::Caller`] carries; the server acting on its own authority is
 /// [`Authority::System`], not a `Principal`.
 ///
-/// The user is still the JSON object the `sc.user` GUC carries; it becomes a
-/// proof-carrying `AuthenticatedUser` with TODO-code-quality Q2.2.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// The fields are private and there is no `Default` (security review 2026-11
+/// #15, TODO-type-hardening H3.1): a principal is made by one of the named
+/// constructors, each greppable —
+///
+/// - [`anonymous`](Principal::anonymous): nobody, at the public role;
+/// - [`of`](Principal::of): a signed-in user, from the [`VerifiedUser`] proof
+///   sc-auth's `AuthenticatedUser` is;
+/// - [`recorded`](Principal::recorded): a caller some layer above already
+///   established and is handing on — the user a request resolved
+///   (`sc_access::principal_of`), an event's cause, a stored run's caller;
+/// - the system's, crate-private, reached through
+///   [`Authority::as_principal`] and [`AdminPrincipal::system`].
+///
+/// An administrator's role in a principal is not enough to skip the row rule:
+/// [`Unchecked::admin`] takes an [`AdminPrincipal`], which only an admin
+/// session's proof or a named system reason makes.
+///
+/// A principal's role cannot be raised after it is made:
+///
+/// ```compile_fail
+/// let mut caller = sc_catalog::Principal::anonymous();
+/// caller.role = sc_types::Role::ADMIN;
+/// ```
+///
+/// and one whose role says admin is not the proof:
+///
+/// ```compile_fail
+/// let caller = sc_catalog::Principal::recorded(sc_types::Role::ADMIN, None);
+/// let _ = sc_catalog::Unchecked::admin(&caller);
+/// ```
+#[derive(Debug, Clone, PartialEq)]
 pub struct Principal {
     /// The caller's role (public when anonymous).
-    pub role: Role,
+    role: Role,
     /// The logged-in user's fields as a JSON object, or `None` when anonymous —
     /// in which case `sc.user` is left unset and the policies'
     /// `current_setting('sc.user', true)` reads `NULL`.
-    pub user: Option<Json>,
+    user: Option<Json>,
     /// The trigger names whose actions led to this write, outermost first. Empty
     /// for a write a request made directly.
-    pub chain: Vec<String>,
+    chain: Vec<String>,
     /// The application the write's request came through, if any.
-    pub app: Option<CallingApp>,
+    app: Option<CallingApp>,
     /// The guest session's public id, if the caller has one — what the
     /// `sc.session` GUC carries.
-    pub session: Option<String>,
+    session: Option<String>,
     /// The changeset this write belongs to. `None` lets the change-log trigger
     /// mint one of its own (`source = 'sql'`), as for a write from outside.
-    pub changeset: Option<Arc<Changeset>>,
+    changeset: Option<Arc<Changeset>>,
+}
+
+/// A signed-in user whose credential was verified: what [`Principal::of`]
+/// takes. sc-auth's `AuthenticatedUser` is the one implementation
+/// (sc-catalog sits below sc-auth, so the proof is named by this trait);
+/// `impl VerifiedUser for` is the inventory grep.
+pub trait VerifiedUser {
+    /// The role the user is served at.
+    fn verified_role(&self) -> Role;
+    /// The user's fields as the JSON object the `sc.user` GUC carries.
+    fn verified_fields(&self) -> Json;
 }
 
 impl Principal {
-    /// A context for `role` carrying `user`'s fields, in the ambient changeset
-    /// ([`changeset::current`]) when the task runs inside one.
-    pub fn new(role: Role, user: Option<Json>) -> Principal {
+    fn build(role: Role, user: Option<Json>) -> Principal {
         Principal {
             role,
             user,
@@ -218,6 +255,80 @@ impl Principal {
             session: None,
             changeset: changeset::current(),
         }
+    }
+
+    /// Nobody: the public role with no user, in the ambient changeset.
+    pub fn anonymous() -> Principal {
+        Principal::build(Role::PUBLIC, None)
+    }
+
+    /// A signed-in user, at the role their proof carries, in the origin and
+    /// changeset this task runs inside.
+    pub fn of(user: &impl VerifiedUser) -> Principal {
+        Principal::build(user.verified_role(), Some(user.verified_fields())).in_current_origin()
+    }
+
+    /// A caller a layer above has already established and hands on: `role` and
+    /// the user's fields as the `sc.user` GUC carries them. What
+    /// `sc_access::principal_of` builds a request's caller with, and what an
+    /// event's cause and a stored run's caller are restored as.
+    ///
+    /// It decides what the row rule sees, never more: an administrator's role
+    /// here meets every floor, as the rule says, but does not make an
+    /// [`AdminPrincipal`], so it opens no unchecked layer.
+    pub fn recorded(role: Role, user: Option<Json>) -> Principal {
+        Principal::build(role, user)
+    }
+
+    /// The server's own principal: the admin role and no user.
+    pub(crate) fn system() -> Principal {
+        Principal::build(Role::ADMIN, None)
+    }
+
+    /// The caller's role (public when anonymous).
+    pub fn role(&self) -> Role {
+        self.role
+    }
+
+    /// The signed-in user's fields, or `None` when anonymous.
+    pub fn user(&self) -> Option<&Json> {
+        self.user.as_ref()
+    }
+
+    /// The trigger names whose actions led here, outermost first.
+    pub fn chain(&self) -> &[String] {
+        &self.chain
+    }
+
+    /// The application the request came through, if any.
+    pub fn app(&self) -> Option<&CallingApp> {
+        self.app.as_ref()
+    }
+
+    /// The guest session's public id, if the caller has one.
+    pub fn session(&self) -> Option<&str> {
+        self.session.as_deref()
+    }
+
+    /// The changeset this write belongs to.
+    pub fn changeset(&self) -> Option<&Arc<Changeset>> {
+        self.changeset.as_ref()
+    }
+
+    /// Whether this caller's cascade began on untrusted input
+    /// ([`UNTRUSTED_ORIGIN`]).
+    pub fn is_untrusted(&self) -> bool {
+        is_untrusted_chain(&self.chain)
+    }
+
+    /// The same caller served at no more privilege than `ceiling`: an
+    /// application's maximum role. Lowering a role forges nothing.
+    #[must_use]
+    pub fn capped_at(mut self, ceiling: Role) -> Principal {
+        if !ceiling.meets(self.role) {
+            self.role = ceiling;
+        }
+        self
     }
 
     /// The same, from `origin`: the application and the guest session.
@@ -238,11 +349,6 @@ impl Principal {
             app: self.app.clone(),
             session: self.session.clone(),
         }
-    }
-
-    /// A context for `role` with no user (anonymous).
-    pub fn anonymous(role: Role) -> Principal {
-        Principal::new(role, None)
     }
 
     /// The chain of triggers this write descends from — what
@@ -276,6 +382,142 @@ impl Principal {
     /// The user's fields as the JSON text the `sc.user` GUC carries.
     pub(crate) fn user_json(&self) -> Option<String> {
         self.user.as_ref().map(Json::to_string)
+    }
+}
+
+/// A principal known to be an administrator's (security review 2026-11 #15,
+/// TODO-type-hardening H3.1): what [`Unchecked::admin`] and
+/// `sc_access::admin_access` take, so an admin role written into a
+/// [`Principal`] opens no unchecked layer.
+///
+/// Two ways to make one, both greppable and listed in the system-authority
+/// inventory (docs/SECURITY_REVIEW_2026-10.md):
+///
+/// - [`AdminPrincipal::system`]: the server's own authority, with a reason;
+/// - [`AdminPrincipal::vouched`]: an administrator's authority a named check
+///   stands behind — sc-server's `Admin` session proof, the code host's
+///   `asAdmin()` handle, an action running as admin in its cause's name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdminPrincipal {
+    principal: Principal,
+    by: &'static str,
+}
+
+impl AdminPrincipal {
+    /// The server's own authority, for `reason`: the admin role and no user.
+    pub fn system(reason: &'static str) -> AdminPrincipal {
+        AdminPrincipal {
+            principal: Principal::system(),
+            by: reason,
+        }
+    }
+
+    /// An administrator's authority in `user`'s name, which the check named
+    /// `by` stands behind. `user` is the fields the `sc.user` GUC carries
+    /// (`None` for an admin tool run with no user), and the principal is in the
+    /// origin and changeset this task runs inside.
+    pub fn vouched(user: Option<Json>, by: &'static str) -> AdminPrincipal {
+        AdminPrincipal {
+            principal: Principal::build(Role::ADMIN, user).in_current_origin(),
+            by,
+        }
+    }
+
+    /// The principal: the admin role, and the user it acts in the name of.
+    pub fn principal(&self) -> &Principal {
+        &self.principal
+    }
+
+    /// The principal, without the proof.
+    pub fn into_principal(self) -> Principal {
+        self.principal
+    }
+
+    /// The check, or the system reason, that stands behind it.
+    pub fn vouched_by(&self) -> &'static str {
+        self.by
+    }
+
+    /// The same, carrying the trigger chain that led here.
+    #[must_use]
+    pub fn chained(mut self, chain: Vec<String>) -> AdminPrincipal {
+        self.principal = self.principal.chained(chain);
+        self
+    }
+
+    /// The same, in `changeset`.
+    #[must_use]
+    pub fn in_changeset(mut self, changeset: Option<Arc<Changeset>>) -> AdminPrincipal {
+        self.principal = self.principal.in_changeset(changeset);
+        self
+    }
+
+    /// The same, from `origin`.
+    #[must_use]
+    pub fn from_origin(mut self, origin: Origin) -> AdminPrincipal {
+        self.principal = self.principal.from_origin(origin);
+        self
+    }
+}
+
+/// An administrator **at the admin console** (security review 2026-11 #16,
+/// TODO-type-hardening H3.3): what the catalog's
+/// [`AdminHost`](crate::AdminHost) and the administrative tools take.
+///
+/// Narrower than an [`AdminPrincipal`]: a code body or a trigger's action runs
+/// as admin too, but its prompt or input came from whoever caused its event,
+/// and that is not an administrator at the console. So there is no conversion
+/// from an `AdminPrincipal`; the two ways to make one are greppable and listed
+/// in the system-authority inventory:
+///
+/// - [`ConsoleAdmin::at_console`]: an administrator's console authority a
+///   named check stands behind — sc-server's admin session, an administrator's
+///   MCP token, an agent run started from the console (`RunCaller`);
+/// - [`ConsoleAdmin::system`]: the server's own, with a reason (the operator's
+///   CLI, a run an administrator marked as on trusted input).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConsoleAdmin {
+    admin: AdminPrincipal,
+}
+
+impl ConsoleAdmin {
+    /// An administrator at the console, in `user`'s name (the fields the
+    /// `sc.user` GUC carries; `None` for a tool run with no user), which the
+    /// check named `by` stands behind.
+    pub fn at_console(user: Option<Json>, by: &'static str) -> ConsoleAdmin {
+        ConsoleAdmin {
+            admin: AdminPrincipal::vouched(user, by),
+        }
+    }
+
+    /// The server's own console authority, for `reason`.
+    pub fn system(reason: &'static str) -> ConsoleAdmin {
+        ConsoleAdmin {
+            admin: AdminPrincipal::system(reason),
+        }
+    }
+
+    /// The administrator as the row layer's admin proof.
+    pub fn principal(&self) -> &AdminPrincipal {
+        &self.admin
+    }
+
+    /// The administrator's user id, or `None` for a run with no user.
+    pub fn user_id(&self) -> Option<Uuid> {
+        self.admin.user_id()?.parse().ok()
+    }
+
+    /// The check, or the system reason, that stands behind it.
+    pub fn vouched_by(&self) -> &'static str {
+        self.admin.vouched_by()
+    }
+}
+
+impl std::ops::Deref for AdminPrincipal {
+    type Target = Principal;
+
+    fn deref(&self) -> &Principal {
+        &self.principal
     }
 }
 
@@ -360,7 +602,7 @@ impl<'a> Authority<'a> {
     pub fn as_principal(self) -> std::borrow::Cow<'a, Principal> {
         match self {
             Authority::Caller(principal) => std::borrow::Cow::Borrowed(principal),
-            Authority::System(_) => std::borrow::Cow::Owned(Principal::new(Role::ADMIN, None)),
+            Authority::System(_) => std::borrow::Cow::Owned(Principal::system()),
         }
     }
 }
@@ -375,10 +617,20 @@ impl<'a> Authority<'a> {
                 who: self,
                 by: None,
             }),
-            Authority::Caller(principal) => Unchecked::admin(principal),
+            // An administrator meets every floor, which is when the rule
+            // consults nothing else: this is the rule's own decision.
+            Authority::Caller(principal) => principal.role.is_admin().then_some(Unchecked {
+                who: self,
+                by: Some(ADMIN_MEETS_EVERY_FLOOR),
+            }),
         }
     }
 }
+
+/// What [`Authority::unchecked`] vouches an administrator's principal with: the
+/// rule itself, under which a caller at the admin role meets every floor and
+/// nothing else is consulted.
+pub const ADMIN_MEETS_EVERY_FLOOR: &str = "the row rule: an administrator meets every floor";
 
 /// Permission to read or write rows **without** a table's role floors and
 /// ownership formula (code-quality review §4.4, TODO-code-quality Q3.5).
@@ -393,9 +645,10 @@ impl<'a> Authority<'a> {
 ///
 /// - [`Unchecked::system`]: the server's own authority, with a reason. Listed in
 ///   docs/SECURITY_REVIEW_2026-10.md's system-authority inventory.
-/// - [`Unchecked::admin`]: an administrator's principal. An administrator meets
-///   every role floor, which is when the ownership rule is not consulted, so
-///   unchecked and checked access are the same; any other principal is refused.
+/// - [`Unchecked::admin`]: an [`AdminPrincipal`], which only an admin session's
+///   proof or a named system reason makes. An administrator meets every role
+///   floor, which is when the ownership rule is not consulted, so unchecked and
+///   checked access are the same.
 /// - [`Unchecked::vouched`]: a caller whose access a named check already
 ///   decided (the REST provider's own rule, the ownership functions themselves).
 ///   Listed in the same inventory, with the check that stands behind it.
@@ -421,13 +674,13 @@ impl Unchecked<'static> {
 }
 
 impl<'a> Unchecked<'a> {
-    /// `principal`'s unchecked access, when it is an administrator's; `None`
-    /// otherwise.
-    pub fn admin(principal: &'a Principal) -> Option<Unchecked<'a>> {
-        principal.role.is_admin().then_some(Unchecked {
-            who: Authority::Caller(principal),
-            by: None,
-        })
+    /// An administrator's unchecked access. Infallible: the
+    /// [`AdminPrincipal`] is the proof.
+    pub fn admin(admin: &'a AdminPrincipal) -> Unchecked<'a> {
+        Unchecked {
+            who: Authority::Caller(admin.principal()),
+            by: Some(admin.vouched_by()),
+        }
     }
 
     /// `principal`'s access, which the check named `by` has already decided.
@@ -474,7 +727,24 @@ impl Principal {
     /// so the view is built here): the role, and the user id the owner rule
     /// compares with.
     pub fn file_caller(&self) -> sc_files::FileCaller {
-        sc_files::FileCaller::new(self.role, self.user_id().map(str::to_owned))
+        // A user id is a uuid's text; a number (a test's, or a v1 import's) is
+        // compared as its text, as the owner column records it.
+        let id = self
+            .user
+            .as_ref()
+            .and_then(|u| u.get("id"))
+            .and_then(|id| match id {
+                Json::String(s) => Some(s.clone()),
+                Json::Number(n) => Some(n.to_string()),
+                _ => None,
+            });
+        sc_files::FileCaller::of_principal(self.role, id)
+    }
+}
+
+impl<'a> From<&'a AdminPrincipal> for Authority<'a> {
+    fn from(admin: &'a AdminPrincipal) -> Authority<'a> {
+        Authority::Caller(admin.principal())
     }
 }
 
@@ -504,18 +774,18 @@ mod tests {
             session: Some("guest-1".into()),
         };
         let cs = Arc::new(Changeset::new(crate::changeset::ChangesetSource::Request));
-        let caller = Principal::new(Role::of(40), None)
+        let caller = Principal::recorded(Role::of(40), None)
             .chained(vec!["on_insert".into()])
             .untrusted();
         let (scoped, bare) = with_origin(
             origin.clone(),
             changeset::scope(cs.clone(), async move {
                 let scoped = spawn_scoped(async move {
-                    let rebuilt = Principal::new(Role::of(40), None).in_current_origin();
+                    let rebuilt = Principal::recorded(Role::of(40), None).in_current_origin();
                     (caller.chain.clone(), rebuilt.origin(), rebuilt.changeset)
                 });
                 let bare = tokio::spawn(async {
-                    let rebuilt = Principal::new(Role::of(40), None).in_current_origin();
+                    let rebuilt = Principal::recorded(Role::of(40), None).in_current_origin();
                     (rebuilt.origin(), rebuilt.changeset)
                 });
                 (scoped.await.unwrap(), bare.await.unwrap())
@@ -537,16 +807,167 @@ mod tests {
 
     #[test]
     fn a_file_rule_sees_the_principals_role_and_user_id() {
-        let ada = Principal::new(Role::of(40), Some(json!({ "id": "u-1", "email": "a@b.c" })));
+        let ada = Principal::recorded(Role::of(40), Some(json!({ "id": "u-1", "email": "a@b.c" })));
         assert_eq!(ada.user_id(), Some("u-1"));
         assert_eq!(
             ada.file_caller(),
-            sc_files::FileCaller::new(Role::of(40), Some("u-1".into()))
+            sc_files::FileCaller::of_principal(Role::of(40), Some("u-1".into()))
         );
         assert_eq!(
-            Principal::anonymous(Role::PUBLIC).file_caller(),
+            Principal::anonymous().file_caller(),
             sc_files::FileCaller::anonymous()
         );
+    }
+
+    struct Verified;
+
+    impl VerifiedUser for Verified {
+        fn verified_role(&self) -> Role {
+            Role::of(40)
+        }
+
+        fn verified_fields(&self) -> Json {
+            json!({ "id": "u-7", "role": 40 })
+        }
+    }
+
+    /// TODO-type-hardening H3.6: every admin proof made outside a test names a
+    /// reason (a literal, or the constant holding one) that the
+    /// system-authority inventory in docs/SECURITY_REVIEW_2026-10.md lists, so
+    /// a new one is a decision somebody reviews rather than a line nobody
+    /// greps for.
+    #[test]
+    fn admin_proofs_are_in_the_inventory() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let inventory = std::fs::read_to_string(root.join("docs/SECURITY_REVIEW_2026-10.md"))
+            .expect("the inventory");
+        const MAKERS: [&str; 5] = [
+            "AdminPrincipal::vouched(",
+            "AdminPrincipal::system(",
+            "ConsoleAdmin::at_console(",
+            "ConsoleAdmin::system(",
+            "Caller::system(",
+        ];
+        let mut missing = Vec::new();
+        let mut sources = vec![root.join("crates")];
+        while let Some(dir) = sources.pop() {
+            for entry in std::fs::read_dir(&dir)
+                .expect("a source directory")
+                .flatten()
+            {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if path.is_dir() {
+                    if name != "tests" && name != "target" && name != "node_modules" {
+                        sources.push(path);
+                    }
+                    continue;
+                }
+                if !name.ends_with(".rs") || name == "tests.rs" || name.ends_with("_tests.rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                // The source, up to its test module.
+                let mut code = String::new();
+                let mut lines = text.lines().peekable();
+                while let Some(line) = lines.next() {
+                    let trimmed = line.trim_start();
+                    if trimmed.starts_with("mod tests")
+                        || trimmed.starts_with("pub(crate) mod tests")
+                    {
+                        break;
+                    }
+                    if line.trim() == "#[cfg(test)]"
+                        && lines
+                            .peek()
+                            .is_some_and(|next| next.trim_start().starts_with("mod "))
+                    {
+                        break;
+                    }
+                    if !line.trim_start().starts_with("//") {
+                        code.push_str(line);
+                        code.push('\n');
+                    }
+                }
+                for maker in MAKERS {
+                    for (at, _) in code.match_indices(maker) {
+                        let args = &code[at + maker.len()..];
+                        let args = &args[..args.find(';').unwrap_or(args.len())];
+                        let reason = reason_in(maker, args);
+                        let Some(reason) = reason else { continue };
+                        if !inventory.contains(&reason) {
+                            missing.push(format!("{}: {maker} {reason}", path.display()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(missing.is_empty(), "not in the inventory: {missing:#?}");
+    }
+
+    /// The reason a maker's call names: its string literal, or the constant
+    /// holding one (an UPPER_CASE name). `None` for a variable (the makers'
+    /// own definitions pass theirs through).
+    fn reason_in(maker: &str, args: &str) -> Option<String> {
+        // The reason is the last argument of a two-argument maker.
+        let last = match maker {
+            "AdminPrincipal::vouched(" | "ConsoleAdmin::at_console(" => {
+                let mut depth = 0i32;
+                let mut split = None;
+                for (i, c) in args.char_indices() {
+                    match c {
+                        '(' | '[' | '{' => depth += 1,
+                        ')' | ']' | '}' if depth == 0 => break,
+                        ')' | ']' | '}' => depth -= 1,
+                        ',' if depth == 0 => split = Some(i),
+                        _ => {}
+                    }
+                }
+                &args[split? + 1..]
+            }
+            _ => args,
+        };
+        let last = last.trim_start();
+        if let Some(rest) = last.strip_prefix('"') {
+            return Some(rest[..rest.find('"')?].to_owned());
+        }
+        let ident: String = last
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':')
+            .collect();
+        let ident = ident.rsplit("::").next()?.to_owned();
+        (!ident.is_empty() && ident.chars().all(|c| c.is_ascii_uppercase() || c == '_'))
+            .then_some(ident)
+    }
+
+    /// TODO-type-hardening H3.1: the named constructors, and the admin proof.
+    #[test]
+    fn a_principal_comes_from_a_proof_and_only_the_admin_proof_is_unchecked() {
+        let ada = Principal::of(&Verified);
+        assert_eq!(ada.role(), Role::of(40));
+        assert_eq!(ada.user_id(), Some("u-7"));
+        assert!(Principal::anonymous().role().is_public());
+        assert!(Principal::anonymous().user().is_none());
+
+        // An application's maximum role lowers, and never raises.
+        assert_eq!(ada.clone().capped_at(Role::of(80)).role(), Role::of(80));
+        assert_eq!(ada.clone().capped_at(Role::ADMIN).role(), Role::of(40));
+
+        // The proof names what stands behind it, and is the admin role.
+        let admin = AdminPrincipal::vouched(Some(json!({ "id": "a-1" })), "a test's check");
+        let token = Unchecked::admin(&admin);
+        assert_eq!(token.vouched_by(), Some("a test's check"));
+        assert_eq!(token.principal().map(Principal::role), Some(Role::ADMIN));
+        assert_eq!(token.principal().and_then(Principal::user_id), Some("a-1"));
+        let system = AdminPrincipal::system("a test's job");
+        assert!(system.user().is_none() && system.role().is_admin());
+
+        // An admin role in a principal still meets every floor — the rule
+        // decides that, and says so — but it is not the admin proof.
+        let recorded = Principal::recorded(Role::ADMIN, None);
+        let decided = Authority::caller(&recorded).unchecked().unwrap();
+        assert_eq!(decided.vouched_by(), Some(ADMIN_MEETS_EVERY_FLOOR));
+        assert!(Authority::caller(&ada).unchecked().is_none());
     }
 
     #[test]
@@ -559,7 +980,7 @@ mod tests {
         let as_principal = system.as_principal();
         assert!(as_principal.role.is_admin() && as_principal.user.is_none());
 
-        let anonymous = Principal::anonymous(Role::PUBLIC);
+        let anonymous = Principal::anonymous();
         let caller = Authority::from(&anonymous);
         assert!(!caller.is_system());
         assert_eq!(caller.reason(), None);
@@ -569,7 +990,7 @@ mod tests {
 
     #[test]
     fn a_caller_carries_its_role_its_user_and_what_led_here() {
-        let anonymous = Principal::anonymous(Role::PUBLIC);
+        let anonymous = Principal::anonymous();
         assert_eq!(anonymous.role, Role::PUBLIC);
         assert!(anonymous.user.is_none());
         // Nothing led here: the ordinary case is a request, at depth 0.
@@ -577,7 +998,8 @@ mod tests {
         assert_eq!(anonymous.user_json(), None);
 
         let user = json!({ "id": 1, "email": "a@b.c" });
-        let caller = Principal::new(Role::ADMIN, Some(user.clone())).chained(vec!["audit".into()]);
+        let caller =
+            Principal::recorded(Role::ADMIN, Some(user.clone())).chained(vec!["audit".into()]);
         assert_eq!(caller.chain, vec!["audit".to_owned()]);
         // The GUC carries the object as compact JSON — what `UserEnv::Guc`'s
         // `current_setting('sc.user', …)::jsonb ->> 'x'` reads.

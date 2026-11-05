@@ -346,11 +346,14 @@ async fn filter_value(source: &str, cx: &SessionContext<'_>) -> Result<Json> {
             cx.agent
         ))
     })?;
-    let caller = sc_access::principal_at(cx.caller.role, cx.caller.user.as_ref());
+    let caller = sc_access::principal_at(cx.caller.role(), cx.caller.user_ref());
     // `row` is in scope in every run, and null where no row started it, so a
     // filter written for a triggered run still reads in a chat.
     let bindings = BTreeMap::from([
-        ("user".to_owned(), caller.user.clone().unwrap_or(Json::Null)),
+        (
+            "user".to_owned(),
+            caller.user().cloned().unwrap_or(Json::Null),
+        ),
         ("row".to_owned(), cx.row.cloned().unwrap_or(Json::Null)),
     ]);
     let call = CodeCall {

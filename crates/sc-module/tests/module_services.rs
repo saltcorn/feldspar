@@ -47,7 +47,7 @@ mod deno {
         async fn emit(&self, _catalog: &Catalog, write: TableWrite<'_>) -> Result<()> {
             let user = write
                 .caller
-                .and_then(|c| c.user.clone())
+                .and_then(|c| c.user().cloned())
                 .unwrap_or(Json::Null);
             self.inserts.lock().unwrap().push(user);
             Ok(())

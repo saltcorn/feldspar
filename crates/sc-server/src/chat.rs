@@ -190,7 +190,7 @@ pub(crate) async fn agent_chat_upgrade(
         services: services.clone(),
         evaluator,
         triggers,
-        caller: RunCaller::user(session.session().user().clone().into_user()),
+        caller: session.session().run_caller(),
         session,
     };
     ws.on_upgrade(move |socket| chat(socket, ctx))
@@ -277,7 +277,7 @@ async fn chat(socket: WebSocket, mut ctx: ChatContext) {
         if !matches!(client, ClientMessage::Abort) {
             match ctx.session.now().await {
                 Revalidated::Admin(admin) => {
-                    ctx.caller = RunCaller::user(admin.user().clone().into_user());
+                    ctx.caller = admin.run_caller();
                 }
                 Revalidated::Lost(reason) => {
                     closing = Some(reason);

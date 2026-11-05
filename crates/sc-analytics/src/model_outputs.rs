@@ -158,7 +158,8 @@ async fn render_output(
                     if !decl.optional || include.contains(&decl.name) {
                         // A model's outputs are the admin's: the model
                         // editor is only in the unrestricted Analytics UI.
-                        let admin = sc_dataset::Caller::admin();
+                        let admin =
+                            sc_dataset::Caller::system("analytics: render a model's fit output");
                         view.plot = Some(render_plot(catalog, &admin, &spec).await?);
                     }
                     view.spec = Some(spec);

@@ -79,7 +79,7 @@ impl Action for WriteOrder {
         let id = ctx.setting("id").and_then(Json::as_i64).unwrap_or(1);
         let orders = ctx.catalog.require("orders")?;
         let executor = rows::Executor::of(ctx.transaction());
-        let caller = Principal::new(Role::ADMIN, None).chained(ctx.chain.clone());
+        let caller = Principal::recorded(Role::ADMIN, None).chained(ctx.chain.clone());
         rows::create_row_in(
             ctx.catalog,
             &orders,
@@ -136,7 +136,7 @@ impl Action for WriteAudit {
             .and_then(Json::as_i64)
             .ok_or_else(|| Error::invalid("the event carries no order"))?;
         let audit = ctx.catalog.require("audit")?;
-        let caller = Principal::new(Role::ADMIN, None).chained(ctx.chain.clone());
+        let caller = Principal::recorded(Role::ADMIN, None).chained(ctx.chain.clone());
         rows::create_row_in(
             ctx.catalog,
             &audit,

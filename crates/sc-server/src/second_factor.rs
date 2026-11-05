@@ -61,7 +61,7 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use sc_api::SessionAction;
@@ -71,6 +71,8 @@ use sc_auth::{
     SecondFactorNeeded, SecondFactorProof, User,
 };
 use sc_catalog::Catalog;
+use sc_expr::html::SafeHtml;
+use sc_expr::safe_html;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
@@ -675,7 +677,7 @@ pub(crate) async fn enable(
             };
             let mut out = if fields.form {
                 let page = recovery_codes_page(&codes, &fields.return_to());
-                (cookies.jar, cookies.stale, Html(page)).into_response()
+                (cookies.jar, cookies.stale, crate::html_page::html(page)).into_response()
             } else {
                 (
                     cookies.jar,
@@ -898,24 +900,24 @@ pub(crate) async fn page(
     let Some(sc_auth::PendingChallenge { user: user_id, .. }) = challenge else {
         return html_page(
             "Sign-in expired",
-            &format!(
+            safe_html!(
                 "<h1>This sign-in has expired</h1>\
                  <p>Sign in again to continue.</p>\
                  <p><a class=\"button\" href=\"{}\">Back</a></p>",
-                html_escape(&return_to)
+                SafeHtml::escape(&return_to)
             ),
         );
     };
-    let error = if wrong {
+    let error = SafeHtml::trusted(if wrong {
         "<p class=\"error\" role=\"alert\">That code is not right. Try again.</p>"
     } else {
         ""
-    };
-    let hidden = format!(
+    });
+    let hidden = safe_html!(
         "<input type=\"hidden\" name=\"_csrf\" value=\"{}\">\
          <input type=\"hidden\" name=\"return_to\" value=\"{}\">",
-        html_escape(&csrf),
-        html_escape(&return_to)
+        SafeHtml::escape(&csrf),
+        SafeHtml::escape(&return_to)
     );
     let enabled = match sc_auth::second_factor_enabled(catalog, user_id).await {
         Ok(enabled) => enabled,
@@ -924,15 +926,18 @@ pub(crate) async fn page(
     if enabled {
         return html_page(
             "Two-factor authentication",
-            &format!(
+            safe_html!(
                 "<h1>Two-factor authentication</h1>\
                  <p>Enter the code from your authenticator app, or one of your recovery codes.</p>\
                  {error}\
-                 <form method=\"post\" action=\"{VERIFY_ROUTE}\">{hidden}\
+                 <form method=\"post\" action=\"{verify}\">{hidden}\
                  <label for=\"code\">Code</label>\
                  <input id=\"code\" name=\"code\" autocomplete=\"one-time-code\" \
                   inputmode=\"numeric\" autofocus required>\
-                 <button type=\"submit\">Continue</button></form>"
+                 <button type=\"submit\">Continue</button></form>",
+                error = error,
+                verify = SafeHtml::trusted(VERIFY_ROUTE),
+                hidden = hidden,
             ),
         );
     }
@@ -940,11 +945,15 @@ pub(crate) async fn page(
         Ok(setup) => setup,
         Err(r) => return r,
     };
-    let svg = setup["qr_svg"].as_str().unwrap_or_default();
-    let secret = html_escape(setup["secret"].as_str().unwrap_or_default());
+    // The QR code is an SVG sc-auth's encoder drew from the otpauth URI.
+    let svg = SafeHtml::generated(
+        setup["qr_svg"].as_str().unwrap_or_default().to_owned(),
+        "the two-factor setup QR code (sc-auth totp)",
+    );
+    let secret = SafeHtml::escape(setup["secret"].as_str().unwrap_or_default());
     html_page(
         "Set up two-factor authentication",
-        &format!(
+        safe_html!(
             "<h1>Set up two-factor authentication</h1>\
              <p>Your account needs a code from an authenticator app to sign in. Scan this \
              with the app (Google Authenticator, Microsoft Authenticator, 1Password, …), \
@@ -952,46 +961,60 @@ pub(crate) async fn page(
              <div class=\"qr\">{svg}</div>\
              <p class=\"secret\">Or enter this key by hand: <code>{secret}</code></p>\
              {error}\
-             <form method=\"post\" action=\"{ENABLE_ROUTE}\">{hidden}\
+             <form method=\"post\" action=\"{enable}\">{hidden}\
              <label for=\"code\">Code</label>\
              <input id=\"code\" name=\"code\" autocomplete=\"one-time-code\" \
               inputmode=\"numeric\" autofocus required>\
-             <button type=\"submit\">Turn on and continue</button></form>"
+             <button type=\"submit\">Turn on and continue</button></form>",
+            svg = svg,
+            secret = secret,
+            error = error,
+            enable = SafeHtml::trusted(ENABLE_ROUTE),
+            hidden = hidden,
         ),
     )
 }
 
-fn recovery_codes_page(codes: &[String], return_to: &str) -> String {
-    let items: String = codes
+fn recovery_codes_page(codes: &[String], return_to: &str) -> SafeHtml {
+    let items: SafeHtml = codes
         .iter()
-        .map(|c| format!("<li><code>{}</code></li>", html_escape(c)))
+        .map(|c| safe_html!("<li><code>{}</code></li>", SafeHtml::escape(c)))
         .collect();
     page_html(
         "Recovery codes",
-        &format!(
+        safe_html!(
             "<h1>Two-factor authentication is on</h1>\
              <p>Keep these recovery codes somewhere safe. Each one signs you in once if you \
              lose your phone. They are not shown again.</p>\
              <ul class=\"codes\">{items}</ul>\
-             <p><a class=\"button\" href=\"{}\">Continue</a></p>",
-            html_escape(return_to)
+             <p><a class=\"button\" href=\"{return_to}\">Continue</a></p>",
+            items = items,
+            return_to = SafeHtml::escape(return_to),
         ),
     )
 }
 
-fn html_page(title: &str, body: &str) -> Response {
-    let mut out = (StatusCode::OK, Html(page_html(title, body))).into_response();
+fn html_page(title: &str, body: SafeHtml) -> Response {
+    let mut out = (
+        StatusCode::OK,
+        crate::html_page::html(page_html(title, body)),
+    )
+        .into_response();
     no_store(&mut out);
     out
 }
 
-fn page_html(title: &str, body: &str) -> String {
-    format!(
+/// A page of this module: the title escaped, the body already `SafeHtml`
+/// (TODO-type-hardening H3.7).
+fn page_html(title: &str, body: SafeHtml) -> SafeHtml {
+    safe_html!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>{}</title><style>{PAGE_STYLE}</style></head>\
+         <title>{title}</title><style>{style}</style></head>\
          <body><main>{body}</main></body></html>",
-        html_escape(title)
+        title = SafeHtml::escape(title),
+        style = SafeHtml::trusted(PAGE_STYLE),
+        body = body,
     )
 }
 
@@ -1024,11 +1047,4 @@ fn encode(value: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
-}
-
-fn html_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }

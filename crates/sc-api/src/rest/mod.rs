@@ -59,10 +59,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use sc_auth::{User, authenticate};
-use sc_catalog::{Authority, Catalog, DataFieldKind, FileOnConflict, Principal, Table, Unchecked};
+use sc_catalog::{
+    AdminPrincipal, Authority, Catalog, DataFieldKind, FileOnConflict, Principal, Table, Unchecked,
+};
 use sc_error::{Error, Repr, Result};
 use sc_expr::{JsEvaluator, Operation};
-use sc_files::{FileCaller, validate_file_path};
+use sc_files::validate_file_path;
 use sc_query::Value;
 use sc_types::{Attrs, BasicType, FormField};
 use serde_json::{Value as Json, json};
@@ -1848,11 +1850,14 @@ async fn code_response(
         // The body's `asAdmin()` file is served as the administrator's, who
         // clears every rule (and whose floor is not read); any other as the
         // request's user, through the store's rules.
-        let caller = match file.authority == "admin" {
-            true => FileCaller::new(Role::ADMIN, None),
-            false => file_caller(user),
+        let opened = match file.authority == "admin" {
+            true => {
+                let admin = AdminPrincipal::vouched(None, crate::code_host::CODE_ADMIN_RULE);
+                sc_catalog::open_checked_store(cat, &file.store, &admin).await
+            }
+            false => sc_catalog::open_checked_store(cat, &file.store, &file_caller(user)).await,
         };
-        let Ok(store) = sc_catalog::open_checked_store(cat, &file.store, caller).await else {
+        let Ok(store) = opened else {
             return not_found();
         };
         let Ok(serve) = store.serve(&file.path).await else {
@@ -1891,13 +1896,11 @@ async fn code_response(
     }
 }
 
-/// The caller as a file rule sees them: the role (public when anonymous) and the
-/// user id the owner rule (§2.1) compares with.
-fn file_caller(user: Option<&User>) -> FileCaller {
-    FileCaller::new(
-        user.map_or(Role::PUBLIC, |u| u.role()),
-        user.map(|u| u.id().to_string()),
-    )
+/// The caller a file rule is decided for: the role (public when anonymous) and
+/// the user whose id the owner rule (§2.1) compares with. The store binds it
+/// and reads its own floor (TODO-type-hardening H3.2).
+fn file_caller(user: Option<&User>) -> Principal {
+    ownership::principal_of(user)
 }
 
 /// A short id a failure is logged under and its caller is given, so the two
@@ -1957,7 +1960,7 @@ async fn download_ctx(
     table: &Table,
     field: &str,
     id: &str,
-    caller: &FileCaller,
+    caller: &Principal,
     context: &Principal,
 ) -> Result<ApiResponse> {
     download_inner(
@@ -1976,7 +1979,7 @@ async fn download_inner(
     table: &Table,
     field: &str,
     id: &str,
-    caller: &FileCaller,
+    caller: &Principal,
     context: Unchecked<'_>,
 ) -> Result<ApiResponse> {
     let (store_name, ..) = file_field(table, field)?;
@@ -2027,7 +2030,7 @@ async fn upload_ctx(
     id: &str,
     filename: &str,
     data: Option<bytes::Bytes>,
-    caller: &FileCaller,
+    caller: &Principal,
     context: &Principal,
 ) -> Result<ApiResponse> {
     upload_inner(
@@ -2051,7 +2054,7 @@ async fn upload_inner(
     id: &str,
     filename: &str,
     data: Option<bytes::Bytes>,
-    caller: &FileCaller,
+    caller: &Principal,
     context: Unchecked<'_>,
 ) -> Result<ApiResponse> {
     let (store_name, folder, mime_allow, on_conflict) = file_field(table, field)?;
@@ -2131,9 +2134,9 @@ fn file_field<'t>(
 async fn checked_store(
     cat: &Catalog,
     store: &str,
-    caller: &FileCaller,
+    caller: &Principal,
 ) -> Result<sc_files::CheckedStore> {
-    sc_catalog::open_checked_store(cat, store, caller.clone()).await
+    sc_catalog::open_checked_store(cat, store, caller).await
 }
 
 /// Captured path parameters.

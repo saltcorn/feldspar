@@ -151,7 +151,7 @@ async fn a_map_is_drawn_with_its_domains_and_geometry_kinds() -> Result<()> {
             )
         },
     ]);
-    let drawn = render_map(&cat, &sc_dataset::Caller::admin(), &spec).await?;
+    let drawn = render_map(&cat, &sc_dataset::Caller::system("test"), &spec).await?;
     assert_eq!(drawn.layers.len(), 2);
 
     let regions = &drawn.layers[0];
@@ -194,7 +194,7 @@ async fn a_map_is_drawn_with_its_domains_and_geometry_kinds() -> Result<()> {
     // A layer that cannot be drawn says why, and the others are still drawn.
     let mut broken = spec.clone();
     broken.layers[1].encoding.size = Some(FieldDef::of("name"));
-    let drawn = render_map(&cat, &sc_dataset::Caller::admin(), &broken).await?;
+    let drawn = render_map(&cat, &sc_dataset::Caller::system("test"), &broken).await?;
     assert!(matches!(drawn.layers[0].data, LayerData::Geojson { .. }));
     match &drawn.layers[1].data {
         LayerData::Refused { error } => assert!(error.starts_with("Size on a map needs a number")),
@@ -219,7 +219,7 @@ async fn domains_are_read_over_the_features_with_a_geometry() -> Result<()> {
     );
     let domains = layer_domains(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &req,
         &[
             ("region".into(), Spread::Values),
@@ -240,7 +240,7 @@ async fn domains_are_read_over_the_features_with_a_geometry() -> Result<()> {
     );
     let refused = layer_domains(
         &cat,
-        &sc_dataset::Caller::admin(),
+        &sc_dataset::Caller::system("test"),
         &bad,
         &[("lat".into(), Spread::Range)],
     )

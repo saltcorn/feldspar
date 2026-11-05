@@ -29,16 +29,33 @@ use sc_access::ownership::{RowImage, row_readable_as};
 
 /// Who is reading history: their role and user, and the evaluator a reified
 /// read rule needs.
+///
+/// A view of one caller (TODO-type-hardening H3.4, security review 2026-11
+/// E6): the fields are private, and the role comes from the user, from a
+/// principal whose user it is, or from the administrator's proof — never a
+/// role paired with somebody else's user.
 #[derive(Clone, Copy)]
 pub struct HistoryReader<'a> {
     /// The catalog.
-    pub catalog: &'a Catalog,
+    catalog: &'a Catalog,
     /// The caller's role (public when nobody is signed in).
-    pub role: Role,
+    role: Role,
     /// The caller, when signed in.
-    pub user: Option<&'a User>,
+    user: Option<&'a User>,
     /// For a read rule that needs JavaScript.
-    pub evaluator: Option<&'a Arc<dyn JsEvaluator>>,
+    evaluator: Option<&'a Arc<dyn JsEvaluator>>,
+}
+
+/// Refused unless `user` is `principal`'s own user (or both have none).
+pub(crate) fn same_user(principal: &sc_catalog::Principal, user: Option<&User>) -> Result<()> {
+    let id = user.map(|u| u.id().to_string());
+    if principal.user_id() == id.as_deref() {
+        return Ok(());
+    }
+    Err(Error::msg(
+        "a history reader's user is not its principal's: refusing to read one caller's \
+         history with another's role",
+    ))
 }
 
 /// The most entries of a list one call answers.
@@ -57,6 +74,59 @@ impl<'a> HistoryReader<'a> {
             user,
             evaluator,
         }
+    }
+
+    /// The reader `principal` is, at its role; `user` is its user as loaded.
+    pub fn of(
+        catalog: &'a Catalog,
+        principal: &sc_catalog::Principal,
+        user: Option<&'a User>,
+        evaluator: Option<&'a Arc<dyn JsEvaluator>>,
+    ) -> Result<HistoryReader<'a>> {
+        same_user(principal, user)?;
+        Ok(HistoryReader {
+            catalog,
+            role: principal.role(),
+            user,
+            evaluator,
+        })
+    }
+
+    /// An administrator's reader, from the proof; `user` is the user it acts
+    /// in the name of, as loaded.
+    pub fn admin(
+        catalog: &'a Catalog,
+        admin: &sc_catalog::AdminPrincipal,
+        user: Option<&'a User>,
+        evaluator: Option<&'a Arc<dyn JsEvaluator>>,
+    ) -> Result<HistoryReader<'a>> {
+        HistoryReader::of(catalog, admin.principal(), user, evaluator)
+    }
+
+    /// The reader for the same caller a [`Reverser`](crate::undo::Reverser) is:
+    /// its role and user, as that one was made.
+    pub(crate) fn same_caller(
+        catalog: &'a Catalog,
+        role: Role,
+        user: Option<&'a User>,
+        evaluator: Option<&'a Arc<dyn JsEvaluator>>,
+    ) -> HistoryReader<'a> {
+        HistoryReader {
+            catalog,
+            role,
+            user,
+            evaluator,
+        }
+    }
+
+    /// The role this reader reads at.
+    pub fn role(&self) -> Role {
+        self.role
+    }
+
+    /// The catalog it reads.
+    pub fn catalog(&self) -> &'a Catalog {
+        self.catalog
     }
 
     pub(crate) fn is_admin(&self) -> bool {
@@ -222,8 +292,8 @@ impl<'a> HistoryReader<'a> {
         }
         let rebuilt = history::row_as_of(self.catalog, &table, key, point).await?;
         Ok(json!({
-            "row": rebuilt.row.map(|row| Json::Object(redacted(&table, row))),
-            "removed": Json::Object(redacted(&table, rebuilt.removed)),
+            "row": rebuilt.row.map(|row| redacted(&table, row)),
+            "removed": redacted(&table, rebuilt.removed),
         }))
     }
 
@@ -353,19 +423,20 @@ pub(crate) fn not_found(table: &Table, key: &str) -> Error {
 /// each secret of `table` as its sentinel. The change log records the whole
 /// row, so every history answer goes through this (security review 2026-11,
 /// E1). A column dropped since is kept, for `removed`.
-pub(crate) fn redacted(table: &Table, mut values: Map<String, Json>) -> Map<String, Json> {
-    values.retain(|column, _| !sc_access::user_rows::is_hidden_column(table, column));
-    let mut row = Json::Object(values);
-    sc_catalog::secrets::redact_json(table, &mut row);
-    match row {
-        Json::Object(map) => map,
-        _ => Map::new(),
-    }
+///
+/// An image is a [`RawRow`](history::RawRow), which cannot be serialized; this
+/// is how one becomes an [`ApiRow`](sc_access::ApiRow), which can
+/// (TODO-type-hardening H3.5).
+pub(crate) fn redacted(table: &Table, image: history::RawRow) -> sc_access::ApiRow {
+    sc_access::ApiRow::of_image(table, image)
 }
 
 /// A row image split into the columns `table` still has and those dropped since.
-fn split_removed(table: &Table, values: Map<String, Json>) -> (Json, Json) {
+fn split_removed(table: &Table, values: sc_access::ApiRow) -> (Json, Json) {
     let (mut row, mut removed) = (Map::new(), Map::new());
+    let Json::Object(values) = values.into_json() else {
+        return (Json::Object(row), Json::Object(removed));
+    };
     for (column, value) in values {
         if table.field(&column).is_some() {
             row.insert(column, value);
@@ -398,6 +469,7 @@ fn changeset_json(changeset: &ChangesetRecord, emails: &BTreeMap<Uuid, String>) 
 fn entry_json(table: &Table, entry: &HistoryEntry, emails: &BTreeMap<Uuid, String>) -> Json {
     let old = redacted(table, entry.old_values.clone().unwrap_or_default());
     let new = redacted(table, entry.new_values.clone().unwrap_or_default());
+    let (old, new) = (old.as_map(), new.as_map());
     let mut columns: Vec<&String> = old.keys().chain(new.keys()).collect();
     let position = |c: &str| {
         table

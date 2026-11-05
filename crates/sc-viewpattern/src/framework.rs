@@ -1446,12 +1446,12 @@ impl<'a> ViewerHosts<'a> {
             // leaves unmarked is the viewer's, not the admin's it would be in a
             // code body.
             table: TableHost::new(cat)
-                .caused_by(caller.role, caller.user.clone())
+                .caused_by(caller.role(), caller.user().cloned())
                 .with_evaluator(evaluator)
                 .viewer_only(),
-            files: FileStoreHost::new(cat).caused_by(caller.role, caller.user.as_ref()),
+            files: FileStoreHost::new(cat).caused_by(caller.role(), caller.user()),
             triggers: triggers.map(|d| AppTriggers {
-                inner: TriggerRunHost::new(d, cat).caused_by(caller.role, caller.user.clone()),
+                inner: TriggerRunHost::new(d, cat).caused_by(caller.role(), caller.user().cloned()),
                 declared,
             }),
             module_fns: cat.module_functions(),
@@ -1755,12 +1755,10 @@ pub async fn serve_store_file(
     if !cat.has_file_store(&store_name)? {
         return Ok(AppResponse::not_found());
     }
-    let caller = sc_files::FileCaller::new(
-        user.map_or(Role::PUBLIC, |u| u.role()),
-        user.map(|u| u.id().to_string()),
-    );
-    // Every read checked for the viewer (TODO-code-quality Q3.6).
-    let store = sc_catalog::open_checked_store(cat, &store_name, caller).await?;
+    // Every read checked for the viewer (TODO-code-quality Q3.6), against the
+    // floor the catalog reads (TODO-type-hardening H3.2).
+    let caller = sc_access::principal_of(user);
+    let store = sc_catalog::open_checked_store(cat, &store_name, &caller).await?;
     match store.serve(&path).await {
         Ok(file) => Ok(AppResponse::serve_file(file)),
         Err(_) => Ok(AppResponse::not_found()),

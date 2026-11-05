@@ -83,7 +83,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &name,
                     &optional_str(obj, "database"),
                     &document,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 let rls = catalog.primary_info().capabilities().row_level_security;
@@ -116,7 +116,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &file_name,
                     &bytes,
                     Some(layer.trim()).filter(|l| !l.is_empty()),
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 let rls = catalog.primary_info().capabilities().row_level_security;

@@ -472,8 +472,7 @@ struct QueryGrant {
 impl Live {
     /// Who this connection is, as access is decided.
     fn caller(&self) -> Caller {
-        let user = self.caller.user.as_ref();
-        Caller::new(user.map(|u| u.role()), user.map(|u| u.id()))
+        Caller::of(&sc_access::principal_of(self.caller.user.as_ref()))
     }
 
     /// One message from the client.
@@ -915,7 +914,7 @@ impl Live {
             &self.env.catalog,
             &found,
             key,
-            self.caller().role,
+            self.caller().role(),
             self.caller.user.as_ref(),
             self.env.evaluator.as_ref(),
         )
@@ -1504,7 +1503,7 @@ impl Live {
             &self.env.catalog,
             &found,
             key,
-            self.caller().role,
+            self.caller().role(),
             user,
             self.env.evaluator.as_ref(),
         )

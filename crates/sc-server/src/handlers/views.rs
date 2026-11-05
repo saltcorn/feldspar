@@ -64,7 +64,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // and saves what the store accepts.
                 sc_viewpattern::validate_view(&catalog, &view).await?;
                 if sc_viewpattern::view_runtime().is_ok() {
-                    view_configurer(&catalog, &app, ctx.user(), &apps)
+                    view_configurer(&catalog, &app, &ctx.who, &apps)
                         .await?
                         .check(&view)
                         .await?;
@@ -99,7 +99,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // Refused by the store's sentence before the pattern is asked
                 // anything about a table it may not have.
                 sc_viewpattern::validate_view(&catalog, &view).await?;
-                view.configuration = view_configurer(&catalog, &app, ctx.user(), &apps)
+                view.configuration = view_configurer(&catalog, &app, &ctx.who, &apps)
                     .await?
                     .initial_config(
                         &view.viewpattern,
@@ -149,7 +149,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         app.name
                     )));
                 }
-                let step = view_configurer(&catalog, &app, ctx.user(), &apps)
+                let step = view_configurer(&catalog, &app, &ctx.who, &apps)
                     .await?
                     .step(pattern, table, name, index, &context)
                     .await?;
@@ -177,7 +177,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 {
                     return Err(no_such("view", &app, name));
                 }
-                let references = view_configurer(&catalog, &app, ctx.user(), &apps)
+                let references = view_configurer(&catalog, &app, &ctx.who, &apps)
                     .await?
                     .references(name)
                     .await?;
@@ -318,7 +318,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let columns = required_member(obj, "columns", "the columns the builder wrote")?;
                 let layout = required_member(obj, "layout", "the layout the builder wrote")?;
                 let updates = library_updates_member(obj)?;
-                let configurer = view_configurer(&catalog, &app, ctx.user(), &apps).await?;
+                let configurer = view_configurer(&catalog, &app, &ctx.who, &apps).await?;
                 let step = configurer
                     .step(
                         &view.viewpattern,
@@ -577,7 +577,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                             .map(|v| (key.to_owned(), v.clone()))
                     })
                     .collect();
-                let html = view_configurer(&catalog, &app, ctx.user(), &apps)
+                let html = view_configurer(&catalog, &app, &ctx.who, &apps)
                     .await?
                     .field_preview(table, field, fieldview, &Json::Object(body))
                     .await?;
@@ -597,7 +597,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let obj = require_object(&ctx.body)?;
                 let table = obj.non_empty_str_field("table")?;
                 require_subset_table(&app, table)?;
-                let form = view_configurer(&catalog, &app, ctx.user(), &apps)
+                let form = view_configurer(&catalog, &app, &ctx.who, &apps)
                     .await?
                     .fieldview_config(table, &ctx.body)
                     .await?;
@@ -627,7 +627,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     Some(state @ Json::Object(_)) => state.clone(),
                     Some(_) => return Err(Error::invalid("`state` must be an object")),
                 };
-                let html = view_configurer(&catalog, &app, ctx.user(), &apps)
+                let html = view_configurer(&catalog, &app, &ctx.who, &apps)
                     .await?
                     .view_preview(name, &state)
                     .await?;
@@ -652,7 +652,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 {
                     return Err(no_such("page", &app, name));
                 }
-                let html = view_configurer(&catalog, &app, ctx.user(), &apps)
+                let html = view_configurer(&catalog, &app, &ctx.who, &apps)
                     .await?
                     .page_preview(name)
                     .await?;
@@ -672,7 +672,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let table = ctx.path_param("table")?;
                 let field = ctx.path_param("field")?;
                 require_subset_table(&app, table)?;
-                let values = view_configurer(&catalog, &app, ctx.user(), &apps)
+                let values = view_configurer(&catalog, &app, &ctx.who, &apps)
                     .await?
                     .distinct_values(table, field)
                     .await?;
@@ -719,14 +719,14 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
 async fn view_configurer<'a>(
     catalog: &'a Catalog,
     app: &Application,
-    user: Option<&sc_auth::User>,
+    admin: &crate::admin_session::Admin,
     apps: &AppMounts,
 ) -> Result<sc_viewpattern::Configurer<'a>> {
     sc_viewpattern::Configurer::new(
         sc_viewpattern::view_runtime()?,
         catalog,
         app,
-        user,
+        &admin.principal(),
         apps.triggers().map(|d| d.as_ref()),
     )
     .await

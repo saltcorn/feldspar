@@ -90,12 +90,12 @@ pub async fn set_caller_context(
     // (`NULLIF(current_setting(…), '')`) — so it reaches them as no access.
     //
     // [`SharedTx`]: crate::SharedTx
-    tx.set_local(ROLE_GUC, &context.role.to_string()).await?;
+    tx.set_local(ROLE_GUC, &context.role().to_string()).await?;
     tx.set_local(USER_GUC, context.user_json().as_deref().unwrap_or(""))
         .await?;
     // And the guest session (TODO-payments P1.5), for the same reason: the
     // last writer's must not decide the next writer's `session.id`.
-    tx.set_local(SESSION_GUC, context.session.as_deref().unwrap_or(""))
+    tx.set_local(SESSION_GUC, context.session().unwrap_or(""))
         .await?;
     // The changeset, for the change-log trigger (§14.12), on the same terms:
     // always set, so one writer's changeset is never the next one's.

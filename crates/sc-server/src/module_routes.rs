@@ -120,7 +120,7 @@ pub(crate) async fn route(
         Ok(caller) => caller,
         Err(refused) => return *refused,
     };
-    if declared.api_token && caller.user.is_none() {
+    if declared.api_token && caller.user().is_none() {
         return json_error(StatusCode::UNAUTHORIZED, "Unauthorized");
     }
 

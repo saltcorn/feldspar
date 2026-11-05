@@ -12,7 +12,6 @@
 //! [`IDE_PREFIX`], which is the file-store IDE's own bundle, served admin-only and
 //! under its own Content-Security-Policy (design §12.1).
 
-use sc_types::Role;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,7 +21,7 @@ use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path as AxumPath, Request, State};
 use axum::http::{HeaderValue, StatusCode, Uri, header};
-use axum::response::{AppendHeaders, Html, IntoResponse, Redirect, Response};
+use axum::response::{AppendHeaders, IntoResponse, Redirect, Response};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::Cookie;
 use sc_api::{
@@ -2281,18 +2280,20 @@ async fn serve_static_dir(
     // A caller the application does not let in (TODO F9) is served as nobody:
     // a file open to the public role is part of the sign-in surface (a page
     // and the assets it is drawn with), and every other file is refused.
-    let user = match app_caller(state, &app.app, jar, false).await {
-        Ok(caller) => caller.user,
+    let signed_in = match app_caller(state, &app.app, jar, false).await {
+        Ok(caller) => caller.signed_in,
         Err(rejection) => return *rejection,
     };
-    let caller = sc_files::FileCaller::new(
-        user.as_ref().map_or(Role::PUBLIC, |u| u.role()),
-        user.as_ref().map(|u| u.id().to_string()),
-    );
+    // The viewer, from their session's proof (TODO-type-hardening H3.1).
+    let caller = match &signed_in {
+        Some(user) => sc_catalog::Principal::of(user),
+        None => sc_catalog::Principal::anonymous(),
+    };
 
     // The store with the viewer bound (TODO-code-quality Q3.6): the read is
-    // checked by the store, not by a call made beside it.
-    let store = match sc_catalog::open_checked_store(catalog, &dir.store.0, caller).await {
+    // checked by the store, against the floor the catalog reads (H3.2), not by
+    // a call made beside it.
+    let store = match sc_catalog::open_checked_store(catalog, &dir.store.0, &caller).await {
         Ok(store) => store,
         Err(e) => {
             log_failure("reading a static directory's file store", &e);
@@ -3641,11 +3642,13 @@ async fn serve_builder(
         }
     };
     let user = admin.user().clone().into_user();
+    let admin = crate::admin_session::Admin::from(admin);
     let env = crate::builder::BuilderEnv {
         bundle: state.builder_dir.as_deref().map(PathBuf::as_path),
         apps: &state.apps,
         base_domain: state.base_domain.as_deref().map(String::as_str),
         secure: state.secure_cookies,
+        admin: &admin,
     };
     if crate::builder::is_files_serve_path(uri.path()) {
         return crate::builder::redirect_file(&env, uri, headers).await;
@@ -3680,7 +3683,11 @@ async fn serve_static(state: &AppState, uri: &Uri) -> Response {
             return response;
         }
     }
-    let mut response = (StatusCode::OK, Html(BOOTSTRAP_HTML)).into_response();
+    let mut response = (
+        StatusCode::OK,
+        crate::html_page::html(sc_expr::html::SafeHtml::trusted(BOOTSTRAP_HTML)),
+    )
+        .into_response();
     set_cache_control(&mut response, "/index.html");
     response
 }
@@ -3929,7 +3936,8 @@ async fn fire_login(state: &AppState, user: &User, guest_session: Option<&str>) 
         return;
     };
     let caller = sc_access::principal_of(Some(user));
-    let mut event = sc_action::Event::login(caller.role, caller.user.unwrap_or(Value::Null));
+    let mut event =
+        sc_action::Event::login(caller.role(), caller.user().cloned().unwrap_or(Value::Null));
     if let Some(guest_session) = guest_session {
         event = event.payload(serde_json::json!({ "guest_session": guest_session }));
     }

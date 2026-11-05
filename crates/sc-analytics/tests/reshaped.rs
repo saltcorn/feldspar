@@ -50,7 +50,7 @@ fn table(fx: &Fixture, rows: Vec<FieldDef>, columns: Vec<FieldDef>, cells: Vec<C
 }
 
 async fn tabulate(fx: &Fixture, spec: &TableSpec) -> TableData {
-    match render_table(&fx.cat, &sc_dataset::Caller::admin(), spec)
+    match render_table(&fx.cat, &sc_dataset::Caller::system("test"), spec)
         .await
         .expect("renders")
     {
@@ -62,7 +62,7 @@ async fn tabulate(fx: &Fixture, spec: &TableSpec) -> TableData {
 }
 
 async fn table_refused(fx: &Fixture, spec: &TableSpec) -> String {
-    match render_table(&fx.cat, &sc_dataset::Caller::admin(), spec)
+    match render_table(&fx.cat, &sc_dataset::Caller::system("test"), spec)
         .await
         .expect("answers")
     {

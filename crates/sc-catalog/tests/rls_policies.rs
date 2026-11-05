@@ -127,7 +127,7 @@ async fn run_in_context_sets_the_caller_gucs_a_policy_reads() -> Result<()> {
     ));
 
     // Alice's context: only her row is visible through the SELECT policy.
-    let alice = Principal::new(
+    let alice = Principal::recorded(
         Role::of(80),
         Some(serde_json::json!({ "email": "alice@example.com" })),
     );
@@ -141,7 +141,7 @@ async fn run_in_context_sets_the_caller_gucs_a_policy_reads() -> Result<()> {
 
     // An admin context (role 1) clears the role floor and sees both rows even
     // though the table is FORCE'd.
-    let admin = Principal::anonymous(Role::ADMIN);
+    let admin = Principal::recorded(Role::ADMIN, None);
     let rows = run_in_context(
         &catalog,
         sc_catalog::Unchecked::vouched(&admin, "test"),
@@ -152,7 +152,7 @@ async fn run_in_context_sets_the_caller_gucs_a_policy_reads() -> Result<()> {
 
     // An anonymous context (role 100, no user) sees nothing — the policy fails
     // closed when the user GUC is unset.
-    let anon = Principal::anonymous(Role::PUBLIC);
+    let anon = Principal::anonymous();
     let rows = run_in_context(
         &catalog,
         sc_catalog::Unchecked::vouched(&anon, "test"),
@@ -181,8 +181,8 @@ async fn an_anonymous_context_does_not_own_the_null_owner_rows() -> Result<()> {
         .map_err(|e| sc_error::Error::database(e.to_string()))?;
     let catalog = catalog(&db).await?;
     catalog.reload().await?;
-    let anon = Principal::anonymous(Role::PUBLIC);
-    let alice = Principal::new(
+    let anon = Principal::anonymous();
+    let alice = Principal::recorded(
         Role::of(80),
         Some(serde_json::json!({ "email": "alice@example.com" })),
     );
@@ -369,7 +369,7 @@ async fn the_users_policies_carry_the_self_read() -> Result<()> {
         Select::from(Source::table("users")).columns(vec![Projection::all()]),
     ));
     let count = |id: &str, department: &str| {
-        let caller = Principal::new(
+        let caller = Principal::recorded(
             Role::of(80),
             Some(serde_json::json!({ "id": id, "department": department })),
         );
@@ -398,7 +398,7 @@ async fn the_users_policies_carry_the_self_read() -> Result<()> {
         1
     );
     // Nobody reads nothing.
-    let anon = Principal::anonymous(Role::PUBLIC);
+    let anon = Principal::anonymous();
     let rows = run_in_context(
         &catalog,
         sc_catalog::Unchecked::vouched(&anon, "test"),

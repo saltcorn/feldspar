@@ -67,7 +67,13 @@ struct Access {
 
 impl Access {
     fn of(ctx: &HandlerCtx<AnalyticsCaller>) -> Access {
-        let caller = Caller::of_user(ctx.user());
+        // The administrator's authority from the admin host's proof alone; on
+        // an application's host, even an admin-role user reads as the rule
+        // lets their role read (security review 2026-11 E3, H3.4).
+        let caller = match &ctx.who {
+            AnalyticsCaller::Admin(admin) => Caller::admin(&admin.principal()),
+            AnalyticsCaller::App(user) => Caller::of_user(user.as_deref()),
+        };
         match &ctx.analytics_app {
             Some(app) => Access {
                 caller: app.narrow(caller),

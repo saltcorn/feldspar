@@ -375,7 +375,7 @@ async fn tea_sommelier_grants_tops_up_and_rolls_over_as_the_tutorial_says() -> s
     assert_eq!(account.low_balance_threshold, Some(Decimal::from(20)));
 
     // The agent's model calls take her to 15, below 20: a pack is bought on her saved card, once.
-    let caller = Principal::new(
+    let caller = Principal::recorded(
         Role::of(70),
         Some(json!({ "id": ann_id.to_string(), "email": "ann@example.com", "role": 70 })),
     );

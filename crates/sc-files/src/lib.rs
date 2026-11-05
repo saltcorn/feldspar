@@ -511,7 +511,7 @@ mod tests {
     #[tokio::test]
     async fn build_inputs_are_admin_only_writes() {
         let (_base, store) = temp_store();
-        let staff = FileCaller::new(Role::of(40), Some("u1".into()));
+        let staff = FileCaller::of_principal(Role::of(40), Some("u1".into()));
         for path in [
             "web/package.json",
             "web/Package.JSON",
@@ -532,7 +532,7 @@ mod tests {
                 "{path}"
             );
             assert!(
-                check_write(&store, None, path, &FileCaller::role(Role::ADMIN))
+                check_write(&store, None, path, &FileCaller::at_role(Role::ADMIN))
                     .await
                     .is_ok(),
                 "{path}"
@@ -559,7 +559,7 @@ mod tests {
     #[tokio::test]
     async fn coding_agent_config_is_an_admin_only_write() {
         let (_base, store) = temp_store();
-        let staff = FileCaller::new(Role::of(40), Some("u1".into()));
+        let staff = FileCaller::of_principal(Role::of(40), Some("u1".into()));
         for path in [
             ".claude/settings.json",
             "web/.claude/settings.json",
@@ -574,7 +574,7 @@ mod tests {
             let err = check_write(&store, None, path, &staff).await.unwrap_err();
             assert!(err.to_string().contains("coding agent"), "{path}: {err}");
             assert!(
-                check_write(&store, None, path, &FileCaller::role(Role::ADMIN))
+                check_write(&store, None, path, &FileCaller::at_role(Role::ADMIN))
                     .await
                     .is_ok(),
                 "{path}"
@@ -612,7 +612,7 @@ mod tests {
             .write(&StorePath::from_static("a.txt"), Bytes::from_static(b"a"))
             .await
             .unwrap();
-        let staff = FileCaller::new(Role::of(40), Some("u1".into()));
+        let staff = FileCaller::of_principal(Role::of(40), Some("u1".into()));
         for path in [".git/config", ".git", ".GIT/config"] {
             assert!(
                 check_access(&store, None, path, &staff).await.is_err(),
@@ -625,9 +625,14 @@ mod tests {
             );
         }
         assert!(
-            check_access(&store, None, ".git/config", &FileCaller::role(Role::ADMIN))
-                .await
-                .is_ok()
+            check_access(
+                &store,
+                None,
+                ".git/config",
+                &FileCaller::at_role(Role::ADMIN)
+            )
+            .await
+            .is_ok()
         );
         let names = |v: Vec<VisibleEntry>| v.into_iter().map(|e| e.entry.name).collect::<Vec<_>>();
         assert_eq!(
@@ -636,7 +641,7 @@ mod tests {
         );
         assert_eq!(
             names(
-                list_visible(&store, None, "", &FileCaller::role(Role::ADMIN))
+                list_visible(&store, None, "", &FileCaller::at_role(Role::ADMIN))
                     .await
                     .unwrap()
             ),
@@ -1014,7 +1019,7 @@ mod tests {
                 &store,
                 None,
                 "private/secret.txt",
-                &FileCaller::role(Role::ADMIN)
+                &FileCaller::at_role(Role::ADMIN)
             )
             .await
             .is_ok()
@@ -1024,7 +1029,7 @@ mod tests {
                 &store,
                 None,
                 "private/secret.txt",
-                &FileCaller::role(Role::PUBLIC)
+                &FileCaller::at_role(Role::PUBLIC)
             )
             .await
             .is_err()
@@ -1137,7 +1142,7 @@ mod tests {
         assert_eq!(names, ["open.txt"]);
 
         // An admin sees everything.
-        let admin = access::filter_visible(&store, None, all, &FileCaller::role(Role::ADMIN))
+        let admin = access::filter_visible(&store, None, all, &FileCaller::at_role(Role::ADMIN))
             .await
             .unwrap();
         assert_eq!(admin.len(), 2);
@@ -1167,8 +1172,8 @@ mod tests {
                 .unwrap();
             record_owner(&store, path, owner).await;
         }
-        let a = FileCaller::new(Role::of(80), Some("user-a".into()));
-        let b = FileCaller::new(Role::of(80), Some("user-b".into()));
+        let a = FileCaller::of_principal(Role::of(80), Some("user-a".into()));
+        let b = FileCaller::of_principal(Role::of(80), Some("user-b".into()));
         let anonymous = FileCaller::anonymous();
 
         assert!(check_access(&store, None, "drops/a.png", &a).await.is_ok());
@@ -1186,9 +1191,14 @@ mod tests {
         assert!(check_write(&store, None, "drops/a.png", &a).await.is_ok());
         assert!(check_write(&store, None, "drops/a.png", &b).await.is_err());
         assert!(
-            check_write(&store, None, "drops/a.png", &FileCaller::role(Role::ADMIN))
-                .await
-                .is_ok()
+            check_write(
+                &store,
+                None,
+                "drops/a.png",
+                &FileCaller::at_role(Role::ADMIN)
+            )
+            .await
+            .is_ok()
         );
         // An owned file is the owner's even where the floor is public.
         store
@@ -1241,7 +1251,7 @@ mod tests {
             names(list_visible(&store, None, "drops", &b).await.unwrap()),
             ["b.png"]
         );
-        let c = FileCaller::new(Role::of(80), Some("user-c".into()));
+        let c = FileCaller::of_principal(Role::of(80), Some("user-c".into()));
         assert!(list_visible(&store, None, "drops", &c).await.is_err());
         assert!(
             list_visible(&store, None, "drops", &anonymous)
@@ -1250,7 +1260,7 @@ mod tests {
         );
         assert!(list_visible(&store, None, "nowhere", &c).await.is_err());
         assert_eq!(
-            list_visible(&store, None, "drops", &FileCaller::role(Role::ADMIN))
+            list_visible(&store, None, "drops", &FileCaller::at_role(Role::ADMIN))
                 .await
                 .unwrap()
                 .len(),
@@ -1562,7 +1572,7 @@ mod tests {
         let found = search_store(
             &store,
             None,
-            &FileCaller::role(Role::ADMIN),
+            &FileCaller::at_role(Role::ADMIN),
             &SearchQuery::literal("todo"),
         )
         .await
@@ -1591,7 +1601,7 @@ mod tests {
 
         let mut query = SearchQuery::literal("todo");
         query.dir = "src/deep".to_owned();
-        let found = search_store(&store, None, &FileCaller::role(Role::ADMIN), &query)
+        let found = search_store(&store, None, &FileCaller::at_role(Role::ADMIN), &query)
             .await
             .unwrap();
         let paths: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
@@ -1599,7 +1609,7 @@ mod tests {
 
         let mut query = SearchQuery::literal("todo");
         query.glob = Some("*.ts".to_owned());
-        let found = search_store(&store, None, &FileCaller::role(Role::ADMIN), &query)
+        let found = search_store(&store, None, &FileCaller::at_role(Role::ADMIN), &query)
             .await
             .unwrap();
         let paths: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
@@ -1659,7 +1669,7 @@ mod tests {
         }
         let mut query = SearchQuery::literal("needle");
         query.max_results = 5;
-        let found = search_store(&store, None, &FileCaller::role(Role::ADMIN), &query)
+        let found = search_store(&store, None, &FileCaller::at_role(Role::ADMIN), &query)
             .await
             .unwrap();
         assert_eq!(found.hits.len(), 5);
@@ -1674,7 +1684,7 @@ mod tests {
         let found = find_files(
             &store,
             None,
-            &FileCaller::role(Role::ADMIN),
+            &FileCaller::at_role(Role::ADMIN),
             "",
             "LIST",
             DEFAULT_MAX_FOUND,
@@ -1691,7 +1701,7 @@ mod tests {
         let found = find_files(
             &store,
             None,
-            &FileCaller::role(Role::ADMIN),
+            &FileCaller::at_role(Role::ADMIN),
             "",
             "de",
             DEFAULT_MAX_FOUND,
@@ -1710,7 +1720,7 @@ mod tests {
         let hit = find_files(
             &store,
             None,
-            &FileCaller::role(Role::ADMIN),
+            &FileCaller::at_role(Role::ADMIN),
             "",
             "readme",
             DEFAULT_MAX_FOUND,
@@ -1727,7 +1737,7 @@ mod tests {
         let found = find_files(
             &store,
             None,
-            &FileCaller::role(Role::ADMIN),
+            &FileCaller::at_role(Role::ADMIN),
             "src",
             "ts",
             DEFAULT_MAX_FOUND,
@@ -1739,7 +1749,7 @@ mod tests {
         // Rooted at `src`, so `readme.md` and the dependency tree are outside it.
         assert_eq!(paths, ["src/app.ts", "src/deep/list.tsx"]);
 
-        let found = find_files(&store, None, &FileCaller::role(Role::ADMIN), "", "ts", 1)
+        let found = find_files(&store, None, &FileCaller::at_role(Role::ADMIN), "", "ts", 1)
             .await
             .unwrap();
         assert_eq!(found.entries.len(), 1);
@@ -1748,9 +1758,16 @@ mod tests {
         // A blank search is not "everything": it is a caller with nothing to
         // look for, and a walk of the whole store is not the answer to it.
         assert!(
-            find_files(&store, None, &FileCaller::role(Role::ADMIN), "", "  ", 10)
-                .await
-                .is_err()
+            find_files(
+                &store,
+                None,
+                &FileCaller::at_role(Role::ADMIN),
+                "",
+                "  ",
+                10
+            )
+            .await
+            .is_err()
         );
     }
 

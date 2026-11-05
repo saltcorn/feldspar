@@ -45,7 +45,7 @@ use sc_error::{Error, Result};
 use serde_json::{Map, Value as Json};
 
 use super::json_schema::{json_schema, object_schema, scalar_schema};
-use super::{Area, Grant, ToolContext, require_admin, require_grant};
+use super::{Area, Grant, ToolContext, require_grant};
 use crate::endpoint::{AuthRequirement, Endpoint, PathSegment, QueryParam};
 use crate::provider::ApiRequest;
 use crate::schema::{TypeSchema, ValueType};
@@ -346,7 +346,7 @@ impl Projection {
 /// and could `deleteAgent`, which would make the six flags mean two different
 /// things depending on which tier a tool came from.
 pub fn check_caller(projection: &Projection, ctx: &ToolContext<'_>, grants: &Grants) -> Result<()> {
-    require_admin(ctx.role, projection.name())?;
+    ctx.require_admin(projection.name())?;
     if !projection.auth().admits(ctx.user) {
         return Err(Error::invalid(format!(
             "`{}` is not available to this caller",

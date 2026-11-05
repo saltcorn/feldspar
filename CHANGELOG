@@ -2,6 +2,89 @@
 
 Changes in reverse chronological order.
 
+## Security hardening H3: proof-taking constructors
+
+The third part of `docs/SECURITY_REVIEW_2026-11.md` (§1, §3; TODO-type-hardening H3): functions
+that grant a capability take the proof, not the role number or user it was derived from. No
+change to the wire format or stored data; no migration.
+
+- **`Principal` is made from a proof** (H3.1, review #15). Its fields are private (getters
+  `role()`, `user()`, `chain()`, `app()`, `session()`, `changeset()`) and it has no `Default`.
+  Constructors: `anonymous()` (the public role), `of(&impl VerifiedUser)` (sc-auth's
+  `AuthenticatedUser`, the one implementation), `recorded(role, user)` (a caller a layer above
+  established: `sc_access::principal_of`, an event's cause, a stored run's caller) and the
+  crate-private system principal. A new `AdminPrincipal`, made only by `AdminPrincipal::system(reason)`
+  or `AdminPrincipal::vouched(user, by)`, is what `sc_access::admin_access` and
+  `Unchecked::admin` take (now infallible): an admin role written into a `Principal` meets every
+  floor, as the rule says, but opens no unchecked layer. `admin_caller` in sc-server's handlers
+  takes the handler's `Admin` proof (`Admin::principal()`), so moving one of its lines into a
+  non-admin handler no longer compiles. `Authority::unchecked` for an admin-role caller now says
+  so (`ADMIN_MEETS_EVERY_FLOOR`). The view configurer takes the admin's proof
+  (`Configurer::new(…, &AdminPrincipal, …)`). Tests: `caller::tests::a_principal_comes_from_a_proof_and_only_the_admin_proof_is_unchecked`,
+  two `compile_fail` doctests on `Principal`, `scoped::only_the_system_and_an_administrator_make_an_unchecked_token`.
+- **A file store reads its own floor** (H3.2, review #14). `Catalog::checked_file_store(name, who)`
+  and `open_checked_store(catalog, name, who)` take an authority (`&Principal`,
+  `&AdminPrincipal` or `Authority::system`) and read the store's `min_role` themselves. For a
+  caller below the administrator a definition that cannot be read refuses the binding instead
+  of meaning "no floor"; an administrator, who clears every floor, still gets the store (the
+  floor is only reported). **Fixed:** an agent's file scope (`FileScope::connect`) read the floor
+  with `.ok().flatten()`, which failed open on a database error for a non-admin run; it now
+  reads as the admin-only floor. `FileCaller`'s fields are private and its role-taking constructor is
+  `#[doc(hidden)] of_principal` for `Principal::file_caller` alone; `Catalog::admin_file_store`
+  binds an administrator without a floor read (the language server, the terminal, the upload
+  folder). An agent's file tools bind through `FileScope::bind`. Test:
+  `file_store_live::a_bound_store_reads_its_own_floor_and_fails_closed`.
+- **The admin host takes a `ConsoleAdmin`** (H3.3, review #16). Every `AdminHost` method takes
+  an `sc_catalog::ConsoleAdmin` (`at_console(user, by)` or `system(reason)`; no conversion from
+  an `AdminPrincipal`, since a code body's admin authority is not the console's) instead of an
+  `Option<Uuid>`, and the server loads the named user again and refuses one that is not an
+  enabled administrator. `RunCaller`'s fields are private (`user_ref()`, `role()`, `chain()`,
+  `is_triggered()`, `is_exposed()`), and whether a run holds the server's own tools is an origin
+  that defaults to withheld: only `RunCaller::console(user, proof)` (an admin's console chat, with
+  the session's proof — `AdminSession::run_caller`) and `RunCaller::system()` carry a
+  `ConsoleAdmin`, read with `console_admin()`; `RunCaller::user(admin)` alone no longer gets the
+  shell. `capped_at` replaces struct updates in tests. Tests:
+  `agent_trait::tests::only_a_proven_console_run_holds_the_servers_own_tools`,
+  `admin_applications_api::the_admin_host_refuses_a_proof_for_a_user_who_is_not_an_admin`.
+- **Callers are views of a principal** (H3.4, review #19, Q1.8). `sc_dataset::Caller` has private
+  fields and a `TableScope` (`Every` / `Only`) in place of `tables: None`; only
+  `Caller::system(reason)` and `Caller::admin(&AdminPrincipal)` read with the administrator's
+  authority (`Caller::of_user` and `Caller::of(&Principal)` never do). **Fixed:** on an Analytics
+  application's host an admin-role user read `users.password_hash`, model fit outputs and
+  relations that are not catalog tables; the administrator's reads are now the admin host's
+  alone. `ToolContext.role` is replaced by `admin: Option<ConsoleAdmin>`
+  (`ToolContext::require_admin`). `HistoryReader` and `Reverser` have private fields and are made
+  with `new(user)`, `of(principal, user)` or `admin(&AdminPrincipal, user)`, which refuse a
+  principal paired with another user. `sc_live::access::Caller` is `Caller::of(&Principal)` or
+  `anonymous()`. Tests: `access::tests::a_caller_knows_its_user_and_its_tables`,
+  `history_read::history_is_the_admins_until_opened_and_then_follows_the_read_rule`.
+- **A row leaves the server as an `ApiRow`** (H3.5, review #6). `sc_access::ApiRow` (made by
+  `of`, `of_image`, `of_values`, `shaped`, `own_columns`; no `Deserialize`, `Default` or `From`)
+  drops the columns no API reads and turns each secret into its sentinel; it is what REST's
+  list renders, what the ownership rule's and `Scoped::read`'s JSON rows are, what `api_row` (the
+  live hub) returns and what every history answer is built from. The change log's row images are
+  `sc_catalog::history::RawRow`, which has no `Serialize` (a `compile_fail` doctest says so);
+  `HistoryEntry`'s values, `RowAsOf` and `deleted_image` carry one, and a restore takes the map
+  out only to write it back. Test: `user_rows::tests::an_api_row_never_carries_the_password_hash`.
+- **Module webhooks and services are in the inventory** (H3.6, review E5). They run as
+  `AdminPrincipal::vouched(…, MODULE_WEBHOOK | MODULE_SERVICE)` through
+  `TableHost::for_admin` / `TriggerRunHost::for_admin`; the terminal's store binding is
+  `TERMINAL_ROOT`. The system-authority inventory in `docs/SECURITY_REVIEW_2026-10.md` has a
+  table of every admin proof, and `caller::tests::admin_proofs_are_in_the_inventory` fails when a
+  non-test `AdminPrincipal::vouched/system`, `ConsoleAdmin::at_console/system` or
+  `Caller::system` names a reason the inventory does not list.
+- **HTML pages are `SafeHtml`, LLM keys are `Secret`** (H3.7, review A10). `axum::response::Html`
+  is a disallowed type (`clippy.toml`, `disallowed_types = "deny"`); a page this server builds goes
+  out through `html_page::html(SafeHtml)`. `sc_expr::safe_html!` formats a literal through
+  `concat!` (so no implicit captures) and takes only `SafeHtml` arguments;
+  `SafeHtml::json_in_script` and `SafeHtml::generated(markup, generator)` cover boot JSON and the
+  two-factor QR code. The builder document, the OAuth hand-off page, the two-factor pages and
+  the bootstrap page are built that way (the two-factor pages now also escape `'`). An LLM
+  provider's API key is read with `LlmProviderDef::api_key() -> Secret<String>`; `setting` no
+  longer answers it and `Debug` prints it redacted. Tests:
+  `html::tests::safe_html_interpolates_only_safe_html` (and two `compile_fail` doctests),
+  `def::tests::the_api_key_is_a_secret_and_not_a_setting`.
+
 ## Security hardening H2: sessions and sign-in as types
 
 The second part of `docs/SECURITY_REVIEW_2026-11.md` §2 (TODO-type-hardening H2). Additive storage

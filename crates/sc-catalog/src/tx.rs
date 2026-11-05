@@ -242,7 +242,8 @@ impl SharedTx {
         if self.caller_gucs {
             // The system runs as the admin role with no user (`Authority`).
             let caller = authority.as_principal();
-            let wanted = Applied::Caller(caller.role, caller.user_json(), caller.changeset_json());
+            let wanted =
+                Applied::Caller(caller.role(), caller.user_json(), caller.changeset_json());
             if open.applied != wanted {
                 let tx = open.handle(&self.driver).await?;
                 // Every GUC is spelled out rather than left alone: an unset GUC

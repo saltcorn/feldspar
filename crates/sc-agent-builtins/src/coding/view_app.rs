@@ -311,7 +311,7 @@ async fn preview(application: &str, ctx: &TraitContext<'_>) -> Result<(PreviewIn
 
 /// Whom the run looks at the application as.
 pub(super) async fn viewer(config: &Attrs, ctx: &TraitContext<'_>) -> Result<User> {
-    if let Some(user) = &ctx.caller.user {
+    if let Some(user) = ctx.caller.user_ref() {
         return Ok(user.clone());
     }
     // A visitor who is not signed in is somebody: the configured account is

@@ -696,12 +696,16 @@ async fn attachments(ctx: &ActionContext<'_>) -> Result<Vec<Attachment>> {
             )));
         }
         // The trigger's authority — the administrator's, which clears every
-        // file rule (TODO-code-quality Q3.6).
-        let store = ctx.catalog.checked_file_store(
-            &store.0,
-            None,
-            sc_files::FileCaller::new(sc_types::Role::ADMIN, None),
-        )?;
+        // file rule (TODO-code-quality Q3.6): an attachment is a path the
+        // trigger's configuration names. Listed in the system-authority
+        // inventory.
+        let store = ctx
+            .catalog
+            .checked_file_store(
+                &store.0,
+                sc_catalog::Authority::system("send_email: read a configured attachment"),
+            )
+            .await?;
         let bytes = store
             .read(path)
             .await

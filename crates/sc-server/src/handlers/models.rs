@@ -841,7 +841,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // The admin's own authority — the same the row API grants them —
                 // through the ordinary write path, so the target table's own
                 // triggers fire.
-                let authority = admin_caller(ctx.user());
+                let authority = admin_caller(&ctx.who);
                 let written = sc_api::models::write_posterior(
                     &catalog,
                     &model,

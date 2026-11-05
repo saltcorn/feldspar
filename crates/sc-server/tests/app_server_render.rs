@@ -1058,7 +1058,7 @@ async fn the_ab_workspace_reports_on_the_two_tables_for_its_site() -> sc_error::
     let spec: sc_analytics::plot::TableSpec =
         serde_json::from_value(panel["content"]["spec"].clone()).unwrap();
     let RenderedTable::Table(table) =
-        render_table(&server.catalog, &sc_dataset::Caller::admin(), &spec).await?
+        render_table(&server.catalog, &sc_dataset::Caller::system("test"), &spec).await?
     else {
         panic!("the rates table did not render");
     };

@@ -12,7 +12,6 @@
 //! restart forgets the jobs, and one cut short leaves no tables behind, because
 //! its rows were never committed.
 
-use sc_types::Role;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -161,7 +160,7 @@ impl InstallJobs {
         catalog: Arc<Catalog>,
         key: &str,
         fetch: Arc<dyn Fetch>,
-        context: sc_catalog::Principal,
+        context: sc_catalog::AdminPrincipal,
     ) -> InstallJob {
         let job = {
             let Ok(mut jobs) = self.jobs.lock() else {
@@ -200,7 +199,7 @@ impl InstallJobs {
                 &owned_key,
                 &*fetch,
                 &progress,
-                sc_access::admin_access(&context)?,
+                sc_access::admin_access(&context),
             )
             .await
         });
@@ -278,7 +277,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, fetch: 
                 let key = ctx.path_param("key")?;
                 // An unknown key is a 404 now, not a failed job later.
                 public_datasets::find(key)?;
-                let caller = sc_access::principal_at(Role::ADMIN, ctx.user());
+                let caller = ctx.who.principal();
                 let job = jobs.start(catalog, key, fetch, caller);
                 Ok(HandlerResponse::ok(job.to_json()).with_status(202))
             }

@@ -1200,7 +1200,7 @@ async fn a_callers_write_back_is_held_to_the_callers_own_rights() -> Result<()> 
         .await;
 
     // Caused by a role-40 user.
-    let caller = sc_catalog::Principal::new(
+    let caller = sc_catalog::Principal::recorded(
         Role::of(40),
         Some(json!({
             "id": "6b1c2d64-3f3a-4a52-9a8b-0f4d2b7f1a11",

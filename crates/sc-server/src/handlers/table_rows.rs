@@ -24,7 +24,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &catalog,
                     &table,
                     &query,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 // The data editor is a client like any other: it may write a
@@ -50,7 +50,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &catalog,
                     &table,
                     filter,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 Ok(HandlerResponse::ok(json!({ "count": count })))
@@ -68,7 +68,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &catalog,
                     &table,
                     &ctx.body,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
@@ -91,7 +91,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &table,
                     id,
                     &ctx.body,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
@@ -115,7 +115,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &catalog,
                     &table,
                     id,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 sc_api::metadata_tables::after_row_write(&catalog, &table).await?;
@@ -133,7 +133,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let deleted = rows::delete_all_rows(
                     &catalog,
                     &table,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 if deleted > 0 {
@@ -309,7 +309,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let document = csv_rows::export_table(
                     &catalog,
                     &table,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 // The browser saves the file, so the server says what to call
@@ -338,7 +338,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &catalog,
                     &table,
                     &document,
-                    sc_access::admin_access(&admin_caller(ctx.user()))?,
+                    sc_access::admin_access(&admin_caller(&ctx.who)),
                 )
                 .await?;
                 // An import is row by row, so any row that went in counts.

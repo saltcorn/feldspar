@@ -96,7 +96,12 @@ impl Default for LlmProviderDefId {
 /// it; a provider is reached only through an agent, and it is the *agent* that
 /// carries who may chat with it (§11.2). Putting a floor here as well would be a
 /// second authority over the same question with no way to reconcile them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// **The API key is a [`Secret`](sc_error::Secret)** (security review 2026-11
+/// A10, TODO-type-hardening H3.7): it is read with [`api_key`](Self::api_key),
+/// [`setting`](Self::setting) does not answer it, and `Debug` prints it
+/// redacted. It is still a column of `config`, as it is stored.
+#[derive(Clone, PartialEq, Eq)]
 pub struct LlmProviderDef {
     /// The row's identity.
     pub id: LlmProviderDefId,
@@ -148,8 +153,42 @@ impl LlmProviderDef {
     }
 
     /// The value of a backend setting as text, if it is set and is a string.
+    ///
+    /// Not the API key, which is a [`Secret`](sc_error::Secret) read with
+    /// [`api_key`](Self::api_key).
     pub fn setting(&self, key: &str) -> Option<&str> {
+        if key == CFG_API_KEY {
+            return None;
+        }
         self.config.get(key).and_then(serde_json::Value::as_str)
+    }
+
+    /// The API key, trimmed; empty when none is set. Exposed only where a
+    /// client is built with it.
+    pub fn api_key(&self) -> sc_error::Secret<String> {
+        self.config
+            .get(CFG_API_KEY)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .into()
+    }
+}
+
+impl std::fmt::Debug for LlmProviderDef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut config = self.config.clone();
+        if let Some(key) = config.get_mut(CFG_API_KEY) {
+            *key = serde_json::Value::from("<redacted>");
+        }
+        f.debug_struct("LlmProviderDef")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("description", &self.description)
+            .field("backend", &self.backend)
+            .field("config", &config)
+            .field("attributes", &self.attributes)
+            .finish()
     }
 }
 
@@ -299,7 +338,8 @@ pub fn connect_model(provider: &LlmProviderDef, model: &LlmModelDef) -> Result<C
 
     let capabilities = model.capabilities(&provider.backend);
     let prices = model.prices();
-    let api_key = provider.setting(CFG_API_KEY).unwrap_or_default();
+    let api_key = provider.api_key();
+    let api_key = api_key.expose().as_str();
     let base_url = provider.setting(CFG_BASE_URL).unwrap_or_default();
 
     // Every connected model is wrapped in the call log (§16): this is the one
@@ -350,6 +390,21 @@ mod tests {
 
     fn anthropic(name: &str) -> LlmProviderDef {
         LlmProviderDef::new(name, ANTHROPIC_BACKEND).with(CFG_API_KEY, "sk-x")
+    }
+
+    /// TODO-type-hardening H3.7: the key is a `Secret`, out of `setting` and
+    /// out of `Debug`.
+    #[test]
+    fn the_api_key_is_a_secret_and_not_a_setting() {
+        let def = LlmProviderDef::new("main", ANTHROPIC_BACKEND)
+            .with(CFG_API_KEY, " sk-ant-123 ")
+            .with(CFG_BASE_URL, "https://example.com");
+        assert_eq!(def.setting(CFG_API_KEY), None);
+        assert_eq!(def.setting(CFG_BASE_URL), Some("https://example.com"));
+        assert_eq!(def.api_key().expose(), "sk-ant-123");
+        let debug = format!("{def:?}");
+        assert!(!debug.contains("sk-ant-123"), "{debug}");
+        assert!(debug.contains("<redacted>"), "{debug}");
     }
 
     #[test]

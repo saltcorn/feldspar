@@ -57,23 +57,33 @@ use sc_types::Role;
 /// uploaded it. `user_id` is the account's id as [`FileMeta::owner`] records it
 /// (a UUID's string form); `None` is a caller with no account — anonymous, or a
 /// system run checked at a role — who owns nothing.
+///
+/// The fields are private and there is no public constructor that takes a
+/// role (security review 2026-11 #14, TODO-type-hardening H3.2): a caller is
+/// `sc_catalog::Principal::file_caller`'s view of a principal, or
+/// [`anonymous`](FileCaller::anonymous). A store is bound to one through
+/// `Catalog::checked_file_store`, which reads the store's floor itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileCaller {
     /// The caller's role (`1` admin … `100` public).
-    pub role: Role,
+    role: Role,
     /// The caller's user id, if they are signed in.
-    pub user_id: Option<String>,
+    user_id: Option<String>,
 }
 
 impl FileCaller {
-    /// A caller at `role`, signed in as `user_id` when there is one.
-    pub fn new(role: Role, user_id: Option<String>) -> FileCaller {
+    /// The view of a principal at `role`, signed in as `user_id` when there is
+    /// one. Only `sc_catalog::Principal::file_caller` calls this (sc-files sits
+    /// below sc-catalog, so it cannot name the principal); anything else gets
+    /// a caller from a principal.
+    #[doc(hidden)]
+    pub fn of_principal(role: Role, user_id: Option<String>) -> FileCaller {
         FileCaller { role, user_id }
     }
 
-    /// A caller with no account, checked at `role` alone — anonymous at
-    /// [`Role::PUBLIC`], or a system run at whatever role it was given.
-    pub fn role(role: Role) -> FileCaller {
+    /// A caller with no account, checked at `role` alone.
+    #[cfg(test)]
+    pub(crate) fn at_role(role: Role) -> FileCaller {
         FileCaller {
             role,
             user_id: None,
@@ -82,7 +92,20 @@ impl FileCaller {
 
     /// Nobody: the public role and no account.
     pub fn anonymous() -> FileCaller {
-        FileCaller::role(Role::PUBLIC)
+        FileCaller {
+            role: Role::PUBLIC,
+            user_id: None,
+        }
+    }
+
+    /// The caller's role (`1` admin … `100` public).
+    pub fn role(&self) -> Role {
+        self.role
+    }
+
+    /// The caller's user id, if they are signed in.
+    pub fn user_id(&self) -> Option<&str> {
+        self.user_id.as_deref()
     }
 
     /// Whether this caller has admin authority, which clears every rule.

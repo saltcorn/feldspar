@@ -223,12 +223,23 @@ impl FileScope {
     /// commits, checks). Listed in docs/SECURITY_REVIEW_2026-10.md's inventory.
     pub async fn connect(&self, catalog: &Catalog) -> Result<(Arc<dyn FileStore>, Option<Role>)> {
         let store = catalog.require_file_store(&self.store, AGENT_FILE_SCOPE)?;
-        let floor = load_file_store_by_name(catalog, &self.store)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|def| def.min_role);
+        // An unreadable definition is the admin-only floor, never "no floor",
+        // which would fail open (TODO-type-hardening H3.2): an administrator's
+        // run clears it as before, anybody else's is refused.
+        let floor = match load_file_store_by_name(catalog, &self.store).await {
+            Ok(def) => def.and_then(|def| def.min_role),
+            Err(_) => Some(Role::ADMIN),
+        };
         Ok((store, floor))
+    }
+
+    /// The store with the run's caller bound to it: every operation checks the
+    /// path-cumulative rule against the floor the catalog reads
+    /// (TODO-type-hardening H3.2).
+    pub async fn bind(&self, catalog: &Catalog, caller: &RunCaller) -> Result<CheckedStore> {
+        catalog
+            .checked_file_store(&self.store, &caller.principal())
+            .await
     }
 }
 
@@ -249,9 +260,8 @@ pub async fn open_at(
     ctx: &TraitContext<'_>,
     rel: &str,
 ) -> Result<(CheckedStore, String)> {
-    let (store, floor) = scope.connect(ctx.catalog).await?;
     let path = scope.resolve(rel)?;
-    let store = CheckedStore::new(store, floor, file_caller(ctx.caller));
+    let store = scope.bind(ctx.catalog, ctx.caller).await?;
     store.check_read(&path).await?;
     Ok((store, path))
 }
@@ -263,7 +273,6 @@ pub async fn open_to_write(
     ctx: &TraitContext<'_>,
     rel: &str,
 ) -> Result<(CheckedStore, String)> {
-    let (store, floor) = scope.connect(ctx.catalog).await?;
     let path = scope.resolve(rel)?;
     // Whatever the backend: a repository's `.git` holds commands the server's
     // own `git` runs, so a file written there is a program run as the server.
@@ -297,7 +306,7 @@ pub async fn open_to_write(
             )));
         }
     }
-    let store = CheckedStore::new(store, floor, file_caller(ctx.caller));
+    let store = scope.bind(ctx.catalog, ctx.caller).await?;
     store.check_write(&path).await?;
     Ok((store, path))
 }
@@ -335,10 +344,7 @@ async fn build_output_holding(
 /// A run's caller as a file rule sees them: the role every check runs at, and
 /// the user id the owner rule compares with (none for a system run).
 pub fn file_caller(caller: &RunCaller) -> FileCaller {
-    FileCaller::new(
-        caller.role,
-        caller.user.as_ref().map(|u| u.id().to_string()),
-    )
+    caller.principal().file_caller()
 }
 
 /// The save-and-load check the coding trait makes: the store is one this

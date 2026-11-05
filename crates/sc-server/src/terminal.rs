@@ -396,6 +396,11 @@ fn not_installed(program: &Path) -> String {
     )
 }
 
+/// The system reason the terminal's store is opened under: a shell over the
+/// whole tree, started for the admin session the route admits. Listed in the
+/// system-authority inventory (security review 2026-11, A2).
+const TERMINAL_ROOT: &str = "Claude Code terminal: the store's directory, for an admin session";
+
 /// The directory `dir` of `store` on this server's disk, or why there is none.
 ///
 /// A program in a terminal is over the whole tree, as the language server is,
@@ -407,11 +412,7 @@ fn local_dir(catalog: &Catalog, store: &str, dir: &str) -> Result<PathBuf, Strin
         return Err(format!("the file store {store} is not connected"));
     }
     let handle = catalog
-        .checked_file_store(
-            store,
-            None,
-            sc_files::FileCaller::new(sc_types::Role::ADMIN, None),
-        )
+        .admin_file_store(store, &sc_catalog::AdminPrincipal::system(TERMINAL_ROOT))
         .map_err(failed)?;
     let store_root = handle
         .local_root()
@@ -583,7 +584,9 @@ async fn anthropic_provider(catalog: &Catalog) -> Option<(String, Option<String>
         .iter()
         .filter(|p| p.backend == sc_llm::ANTHROPIC_BACKEND)
         .find_map(|p| {
-            let key = p.setting(sc_llm::CFG_API_KEY)?.trim();
+            // The key's use: the CLI's environment.
+            let key = p.api_key();
+            let key = key.expose().as_str();
             let base = p
                 .setting(sc_llm::CFG_BASE_URL)
                 .map(str::trim)

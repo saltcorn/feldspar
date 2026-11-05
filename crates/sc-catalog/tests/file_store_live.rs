@@ -237,3 +237,60 @@ async fn a_repaired_store_loses_its_recorded_error() -> Result<()> {
     std::fs::remove_dir_all(&dir).ok();
     Ok(())
 }
+
+/// TODO-type-hardening H3.2 (security review 2026-11 #14): a store is bound
+/// from an authority, and the catalog reads the floor itself — the caller
+/// cannot hand in `None` — and a floor it cannot read refuses the binding
+/// rather than reading as "no floor".
+#[tokio::test]
+async fn a_bound_store_reads_its_own_floor_and_fails_closed() -> Result<()> {
+    use sc_catalog::{AdminPrincipal, Authority, Principal};
+    use sc_types::Role;
+    use serde_json::json;
+
+    let db = TestDb::new().await?;
+    let cat = Arc::new(catalog(&db).await?);
+    db.on_teardown(cat.teardown_hook());
+    let (dir, path) = temp_dir("floor");
+    std::fs::write(dir.join("a.txt"), "hello").unwrap();
+    let mut def = FileStoreDef::local("docs", &path);
+    def.min_role = Some(Role::of(40));
+    save_file_store(&cat, &def).await?;
+    connect_all_file_stores(&cat).await?;
+
+    let staff = Principal::recorded(Role::of(40), Some(json!({ "id": "s-1" })));
+    let member = Principal::recorded(Role::of(80), Some(json!({ "id": "m-1" })));
+    let as_staff = cat.checked_file_store("docs", &staff).await?;
+    assert_eq!(as_staff.floor(), Some(Role::of(40)));
+    assert_eq!(as_staff.read("a.txt").await?.as_ref(), b"hello");
+    let as_member = cat.checked_file_store("docs", &member).await?;
+    assert!(as_member.read("a.txt").await.is_err(), "below the floor");
+
+    // An administrator's proof clears the floor, which is still reported.
+    let admin = AdminPrincipal::system("test: an administrator's read");
+    let as_admin = cat.checked_file_store("docs", &admin).await?;
+    assert_eq!(as_admin.floor(), Some(Role::of(40)));
+    assert!(as_admin.caller().is_admin());
+    as_admin.read("a.txt").await?;
+    let as_system = cat
+        .checked_file_store("docs", Authority::system("test: a system read"))
+        .await?;
+    as_system.read("a.txt").await?;
+
+    // A principal whose role says admin binds as one (the rule: an admin role
+    // meets every floor), but only the proof opens the whole tree.
+    assert!(
+        cat.admin_file_store("docs", &admin)?
+            .local_root()?
+            .is_some()
+    );
+    assert!(as_member.local_root().is_err());
+
+    // The floor cannot be read: the binding is refused, not opened floorless.
+    db.execute("ALTER TABLE _fd_file_stores RENAME TO _fd_file_stores_gone")
+        .await?;
+    assert!(cat.checked_file_store("docs", &member).await.is_err());
+
+    std::fs::remove_dir_all(&dir).ok();
+    Ok(())
+}

@@ -114,7 +114,7 @@
 
 use sc_agent::DEFAULT_MAX_DEPTH;
 use sc_agent::{AgentTrait, RunCaller, SessionContext, ToolsContext, TraitCheck, TraitContext};
-use sc_api::mcp::{Area, Areas, ToolContext, ToolSet, arguments, require_admin, require_grant};
+use sc_api::mcp::{Area, Areas, ToolContext, ToolSet, arguments, require_grant};
 use sc_api::schema_edit::{self, Grants};
 use sc_docs::tools::{TOOL_READ_DOCS, TOOL_SEARCH_DOCS};
 use sc_error::{Error, Result};
@@ -411,7 +411,7 @@ impl AgentTrait for AdminCopilot {
         // The schema, the triggers and their code are the application itself, and
         // a triggered run's prompt was written by whoever caused its event:
         // holding role 1 because a trigger fired is not being an admin here.
-        if ctx.caller.triggered {
+        if ctx.caller.is_triggered() {
             return Err(Error::invalid(format!(
                 "`{tool}` is not available to a run a trigger started: the admin copilot \
                  changes the application itself, and this run's prompt came from an event. \
@@ -419,14 +419,14 @@ impl AgentTrait for AdminCopilot {
             )));
         }
         // Nor through an application: its page's script can send the chat.
-        if ctx.caller.exposed {
+        if ctx.caller.is_exposed() {
             return Err(Error::invalid(format!(
                 "`{tool}` is not available to a chat through an application: the admin \
                  copilot changes the application itself, and is used from the admin console"
             )));
         }
         if tool == TOOL_DELEGATE || tool == TOOL_PUBLISH {
-            require_admin(ctx.caller.role, tool)?;
+            tool_context(ctx).require_admin(tool)?;
             if !areas(config).has(Area::Applications) {
                 return Err(Error::invalid(format!(
                     "`{tool}` is switched off for this agent; turn on `{}` in its \
@@ -476,7 +476,7 @@ async fn checklist_tool(
             run: ctx.run.to_string(),
             grant: sc_check::ChecklistGrant::from_attrs(config),
         },
-        role: ctx.caller.role,
+        role: ctx.caller.role(),
     };
     sc_check::tools::call_tool(tool, args, &call).await
 }
@@ -699,9 +699,9 @@ async fn publish_application(args: &Json, ctx: &mut TraitContext<'_>) -> Result<
             ctx.agent
         ))
     })?;
-    let user = ctx.caller.user.as_ref().map(|u| u.id());
+    let admin = tool_context(ctx).require_admin(TOOL_PUBLISH)?.clone();
     // A failed build is news about the application, so it is a result.
-    Ok(match host.build_application(user, app.id.0).await {
+    Ok(match host.build_application(&admin, app.id.0).await {
         Ok(mut body) => {
             let log = body
                 .get("log")
@@ -742,8 +742,8 @@ fn tool_set(config: &Attrs) -> ToolSet {
 fn tool_context<'a>(ctx: &'a TraitContext<'a>) -> ToolContext<'a> {
     ToolContext {
         catalog: ctx.catalog,
-        user: ctx.caller.user.as_ref(),
-        role: ctx.caller.role,
+        user: ctx.caller.user_ref(),
+        admin: ctx.caller.console_admin().cloned(),
         triggers: ctx.triggers,
         actor: ctx.agent,
     }

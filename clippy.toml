@@ -39,3 +39,11 @@ disallowed-methods = [
     # A queue a peer can fill faster than it is drained grows without limit.
     { path = "tokio::sync::mpsc::unbounded_channel", reason = "bound the queue (tokio::sync::mpsc::channel); a producer can outpace the consumer" },
 ]
+
+# Types with a sanctioned replacement (TODO-type-hardening H3.7).
+# `disallowed_types` is denied in the root Cargo.toml.
+disallowed-types = [
+    # A page this server builds goes out as `SafeHtml`, through
+    # `sc-server`'s `html_page::html`: `Html` takes any string.
+    { path = "axum::response::Html", reason = "build the page as sc_expr::html::SafeHtml (safe_html!) and answer it with html_page::html" },
+]

@@ -1278,7 +1278,7 @@ async fn save(ctx: &ToolContext<'_>, app: &Application, out: &mut Json) -> Resul
         out["notes"] = json!(notes);
         return Ok(saved);
     };
-    let user = ctx.user.map(|u| u.id());
+    let user = ctx.require_admin("update_application")?;
     let listed = host.list_applications(user).await?;
     let id = app.id.to_string();
     let mut body = listed

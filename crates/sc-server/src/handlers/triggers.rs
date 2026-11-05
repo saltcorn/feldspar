@@ -181,7 +181,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // admin who pressed the button. A failing action comes back as
                 // an error — a 200 carrying a hidden failure is the thing a
                 // "test this now" button exists to prevent.
-                let caller = admin_caller(ctx.user());
+                let caller = admin_caller(&ctx.who);
                 let result = dispatcher
                     .run_trigger(
                         &catalog,
@@ -207,7 +207,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 let trigger = load_trigger(&catalog, id)
                     .await?
                     .ok_or_else(|| Error::not_found(format!("no trigger with id {id}")))?;
-                let caller = admin_caller(ctx.user());
+                let caller = admin_caller(&ctx.who);
                 // A table trigger has no occurrence of its own when a person
                 // presses a button, so one is borrowed: a row picked at random
                 // from the table it fires on. Read *before* the run and sent
@@ -800,14 +800,14 @@ async fn check_stream_channel(
 async fn random_row(
     catalog: &Catalog,
     table: Option<&str>,
-    caller: &sc_catalog::Principal,
+    caller: &sc_catalog::AdminPrincipal,
 ) -> Result<Option<Json>> {
     let Some(name) = table else {
         return Ok(None);
     };
     let table = catalog.require(name)?;
     let count =
-        rows::count_rows_where(catalog, &table, None, sc_access::admin_access(caller)?).await?;
+        rows::count_rows_where(catalog, &table, None, sc_access::admin_access(caller)).await?;
     if count <= 0 {
         return Ok(None);
     }
@@ -817,7 +817,7 @@ async fn random_row(
     let offset = u64::try_from(uuid::Uuid::new_v4().as_u128() % below).unwrap_or(0);
     let query = rows::RowQuery::new().limit(1).offset(offset);
     let read =
-        rows::list_rows_query(catalog, &table, &query, sc_access::admin_access(caller)?).await?;
+        rows::list_rows_query(catalog, &table, &query, sc_access::admin_access(caller)).await?;
     Ok(match read {
         Json::Array(rows) => rows.into_iter().next(),
         _ => None,

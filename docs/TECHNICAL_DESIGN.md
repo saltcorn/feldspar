@@ -9485,7 +9485,7 @@ pub trait ModelProviderHost: Send + Sync {
 ```
 
 The source compiles the dataset (§14.4) into one query and runs it on the primary database, as
-the admin (`Caller::admin()`): a model is the admin's. A restricted reader's permissions enter
+the admin (`Caller::system(reason)`): a model is the admin's. A restricted reader's permissions enter
 everywhere else the Analytics UI reads (§14.9), and a fit's output data is refused to them. A table's non-stored calculated fields are columns of a dataset over it where
 they become SQL; a provided table (§8.3) cannot be a dataset's base, because a dataset is one
 query. `ModelServices` in `sc-server/src/models.rs` assembles the pieces the way
@@ -11692,11 +11692,14 @@ Neither replaces the other. A self-serve application over `houses` lets a person
 
 #### Reading as the caller (`sc_dataset::access`)
 
-**Who reads** is a `Caller`: a role, the user's fields as an ownership formula's `user` sees them
-(`id`, `role` and every other column), and, in an application, the tables it may read at all
-(`tables`, `None` for every table). `Caller::of_user` is the request's user, or the public role
-for nobody. `Caller::admin()` is the server reading on its own authority. `within(tables)`
-narrows a caller to an application's tables.
+**Who reads** is a `Caller`, a view of the reader's `Principal` (TODO-type-hardening H3.4): its
+role, the user's fields as an ownership formula's `user` sees them (`id`, `role` and every other
+column), and the tables it may name at all (`TableScope::Every`, or `Only` an application's).
+`Caller::of_user` is the request's user, or the public role for nobody, and never the
+administrator's authority, whatever the role. Only `Caller::system(reason)` (the server reading on
+its own authority) and `Caller::admin(&AdminPrincipal)` (the admin host's Analytics UI, from the
+session's proof) read the users table's password hash, a relation that is not a catalog table,
+or a model's fit outputs. `within(tables)` narrows a caller to an application's tables.
 
 **One guard, after the statement is built.** A dataset compiles to one `sc-query` statement
 (§14.4), and that statement may read many tables: the base, a Join's or a Union's other side, a Ⱶ
@@ -11739,7 +11742,7 @@ the base or three joins away, and it appears under the plot that did not draw.
 selection functions of §14.6–§14.7. A plot's rows say where they run (`RowsDb`): on the primary
 database through a `Reader`, or in a fit's private in-memory database.
 
-**Models are the admin's.** A fit, a prediction and the model editor read as `Caller::admin()`.
+**Models are the admin's.** A fit, a prediction and the model editor read as `Caller::system(…)`.
 A fit's outputs come from rows read on the server's authority, which are not narrowed to anyone,
 so a fit's output data or table in a panel is refused to everybody else, with a sentence ("shown
 only in the unrestricted Analytics UI"). The model endpoints are not among an application's at
@@ -12872,7 +12875,7 @@ trigger's action passes it to the writes it makes.
 the rest of its row, and the writer's `user_id` (with `session` only when there is a user). The
 trigger needs all of it, because it writes the `_fd_changesets` row. Most code never handles a
 changeset: one is **ambient** for the task that runs the action (`sc_catalog::changeset::scope`),
-and `Principal::new` picks it up. The server's request middleware sets one for each request,
+and a `Principal` picks it up when it is made. The server's request middleware sets one for each request,
 and so do a CSV import, an MCP tool call, a workflow step (from the run) and a trigger's action
 (from the event). A write to a change-logged table always runs in a caller-context transaction,
 so the GUCs reach the trigger.

@@ -365,28 +365,16 @@ async fn resolve_store(
     name: &str,
     ctx: &crate::handler::HandlerCtx<impl crate::handler::Who>,
 ) -> Result<CheckedStore> {
-    // Read whatever the caller's role: the floor is reported (a file's
-    // effective rule), not only checked.
-    let floor = load_file_store_by_name(catalog, name)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|def| def.min_role);
-    catalog.checked_file_store(name, floor, file_caller(ctx))
-}
-
-/// The caller as a file rule sees them: their role, and the id the owner rule
-/// (§2.1) compares with.
-///
-/// **Admin in practice**, because every file endpoint is `AuthRequirement::admin()`
-/// and an admin clears every rule. The check is wired in regardless: it is correct
-/// by construction, costs nothing, and starts doing real work the moment a
-/// non-admin role can reach a store.
-fn file_caller(ctx: &crate::handler::HandlerCtx<impl crate::handler::Who>) -> sc_files::FileCaller {
-    sc_files::FileCaller::new(
-        sc_auth::role_of(ctx.user()),
-        ctx.user().map(|u| u.id().to_string()),
-    )
+    // The catalog reads the floor whatever the caller's role — it is reported
+    // (a file's effective rule), not only checked — and for a caller below the admin a failure to read it
+    // is an error rather than "no floor" (TODO-type-hardening H3.2).
+    //
+    // The caller is **admin in practice**, because every file endpoint is
+    // `AuthRequirement::admin()` and an admin clears every rule. The check is
+    // wired in regardless: it is correct by construction, and starts doing
+    // real work the moment a non-admin role can reach a store.
+    let caller = sc_access::principal_of(ctx.user());
+    catalog.checked_file_store(name, &caller).await
 }
 
 /// The entry JSON returned after creating a directory.

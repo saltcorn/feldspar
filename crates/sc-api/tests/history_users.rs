@@ -23,7 +23,7 @@ use serde_json::{Value as Json, json};
 const ADMIN: &str = "00000000-0000-4000-8000-0000000000ad";
 
 fn caller() -> Principal {
-    Principal::new(Role::ADMIN, Some(json!({ "id": ADMIN, "role": 1 })))
+    Principal::recorded(Role::ADMIN, Some(json!({ "id": ADMIN, "role": 1 })))
 }
 
 async fn action(f: impl std::future::Future<Output = Result<()>>) -> Result<()> {

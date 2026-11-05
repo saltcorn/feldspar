@@ -1251,31 +1251,47 @@ old `Option<&CallerContext>` with `None` silently failed closed on such a table,
 | sc-workflow `driver.rs` | workflow: record run state |
 | `INTERNAL_TABLES` in the `lib.rs` of sc-action, sc-agent, sc-agent-builtins, sc-analytics, sc-api, sc-app, sc-auth, sc-check, sc-config, sc-dataset, sc-llm, sc-mcp, sc-model, sc-module, sc-stream, sc-viewpattern, sc-workflow | the crate's own tables (`_fd_*`, and `users` for sc-auth and sc-check's check users; sc-analytics' demo dataset; sc-api's change-log user names for the history reader): the one `Unchecked::system` each crate's stores reach `Catalog::primary` with, crate-private (Q3.5) |
 
-**Admin principals.** These run as role 1 but carry a user, for attribution, or are their own
-caller type. They are not yet `Authority::System`:
+**Admin principals (TODO-type-hardening H3.1, H3.3).** A `Principal` whose role is the
+administrator's meets every floor, as the rule says, but it is not the admin proof: the unchecked
+row layer (`sc_access::admin_access`, `Unchecked::admin`), an administrator's file binding and
+`sc_dataset::Caller::admin` take an `sc_catalog::AdminPrincipal`, and the catalog's admin host and
+the administrative tools take an `sc_catalog::ConsoleAdmin`. Each is made only by a named
+constructor with a reason or the check behind it. Find them with
+`grep -rn 'AdminPrincipal::\(vouched\|system\)(\|ConsoleAdmin::\(at_console\|system\)(\|Caller::system(' crates`
+(excluding tests); `admin_proofs_are_in_the_inventory` (sc-catalog `caller.rs`) fails when one
+names a reason this list does not:
 
-- **Admin in the event user's name.** An action's rows: `sc_action::ActionContext::scoped`
-  (`action.rs`), which the row actions (sc-action-builtins `rows_scope.rs`, `insert_row`,
-  `update_rows`, `delete_rows`, `embed_rows`) read and write through. A code body's `asAdmin()`
-  handles: sc-api `code_host/mod.rs` (`admin`, `Actor::Admin`, through a `Scoped`), which a
-  model write-back from a body shares (`models::write_posterior` takes the body's `Scoped`). They
-  write as admin, but the change log and events name the user who caused the run. The admin
-  API's write-back (sc-server `handlers/models.rs`) hands it the signed-in admin's `Scoped`.
-- **An admin's own request at an explicit role.** `sc_access::principal_at(Role::ADMIN, user)` in
-  sc-server `handlers/` (`admin_caller` in `mod.rs`: the admin row endpoints, CSV and geo import
-  / export, a trigger's test run), sc-server `public_datasets.rs`, sc-viewpattern `configure.rs`, sc-api `undo.rs`. A
-  signed-in admin is the caller here, so these are `Caller`.
+| Crate / file | Reason or `by` | What stands behind it |
+|---|---|---|
+| sc-server `admin_session.rs` (`Admin::principal`, `AdminSession::console`) | `ADMIN_SESSION` | `AdminSession::of_request`: admin host, an admin-scope live session, the admin role. `admin_caller` in `handlers/mod.rs` (the admin row endpoints, CSV and geo import / export, a trigger's test run, credits), `public_datasets.rs`, the view configurer (`handlers/views.rs`, `builder.rs`) and the analytics admin host (`analytics.rs`, `Caller::admin`) take it from the handler's `Admin`; a delegated `Admin` names its own `by` (below) |
+| sc-server `mcp.rs` (`ToolContext::admin`) | `MCP_TOKEN` | an administrator's MCP token: minted by an administrator, checked on every request with its user's current role |
+| sc-agent `agent_trait.rs` (`RunCaller::system`) | `SYSTEM_RUN` | an agent run nobody is chatting in that an administrator configured: a `trusted_input` trigger (sc-agent-builtins `run_agent.rs`), the operator's `feldspar eval` (sc-cli). A triggered, exposed or unvouched run has no `ConsoleAdmin`, so the server's own tools are withheld; an admin's console chat is `RunCaller::console` with the session's proof (sc-server `chat.rs`) |
+| sc-action `action.rs` (`ActionContext::scoped`) | `TRIGGER_ACTION_RULE` | admin in the event user's name: a trigger is admin-authored configuration. The row actions (sc-action-builtins `rows_scope.rs`, `insert_row`, `update_rows`, `delete_rows`, `embed_rows`) read and write through it; the change log and events name the user who caused the run |
+| sc-api `code_host/mod.rs` (`admin`, `Actor::Admin`), `code_host/files.rs` (`checked`), `rest/mod.rs` (`code_response`, a file a body serves as admin) | `CODE_ADMIN_RULE` | a code body's undelegated plan or `asAdmin()`: admin-authored configuration, in its event user's name. A model write-back from a body shares the body's `Scoped` |
+| sc-api `undo.rs` (`checking`) | `UNDO_CHECK_READ` | the existing-row reads a restore or an undo makes to decide; the write that follows is the caller's and is checked as theirs |
+| sc-module `webhooks.rs` | `MODULE_WEBHOOK` | an installed module's webhook handler, `{ module, webhook }` as the writes' user; `db` confined to the module's tables (`ScopedTables`, no SQL, no `asUser`); `runTrigger` runs any trigger as admin, as a trigger's own action would (security review 2026-11 E5) |
+| sc-module `services.rs` | `MODULE_SERVICE` | an installed module's service, `{ module, service }` as the writes' user; confined as a webhook is |
+| sc-server `lsp.rs` | `LSP_ROOT` | the IDE language server's store directory, behind the admin session the route admits (`Catalog::admin_file_store`, the only binding `CheckedStore::local_root` answers) |
+| sc-server `terminal.rs` | `TERMINAL_ROOT` | the Claude Code terminal's store directory, behind the admin session the route admits (security review 2026-11 A2) |
+| sc-server `uploads.rs` (`server_store`) | `uploads: the server's temporary upload folder` | resumable uploads' temporary folder (`TEMP_DIR`, admin-only), behind the upload record's application, slot and uploader check |
+| sc-server `translations.rs` | `translations: extract a view's strings` | the translations screen (admin-only) reading a Saltcorn UI view's configuration |
+| sc-model `source.rs` | `model: read its dataset (a fit or a prediction)` | `sc_dataset::Caller::system`: a model reads its training rows on the server's authority; fits are the admin's to start |
+| sc-analytics `model_outputs.rs` | `analytics: render a model's fit output` | `sc_dataset::Caller::system`: a model's outputs are the admin's (the model editor is only in the unrestricted Analytics UI) |
 
-Where one of these reaches the unchecked row layer it goes through `sc_access::admin_access`
-(`Unchecked::admin`), which refuses a principal whose role is not the administrator's.
+The `Authority::system` sites added with them are in the table above's spirit and listed here:
+sc-action-builtins `send_email.rs` (`send_email: read a configured attachment`), sc-module
+`files.rs` (`MODULE_FILE_LABEL`, labelling a file in the module's own area) and sc-backup
+`write.rs` (`backup: read every row of a table under row-level security`, the RLS context of a
+backup's snapshot).
 
 **Unchecked row access (TODO-code-quality Q3.5).** The row layer's operations that do not apply
 a table's floors and ownership formula (`sc_access::rows`), `Catalog::provider`,
 `Catalog::driver_for` and `Catalog::driver_named` take an `sc_catalog::Unchecked`; the catalog's
 `database()` is crate-private (`driver_info` answers the dialect and capabilities, `is_connected`
 whether a connection is up). An `Unchecked` is made by `Unchecked::system(reason)` (the table
-above), `Unchecked::admin(principal)` (an administrator, who meets every floor, so the check
-decides nothing) or `Unchecked::vouched(principal, by)`, where a named check already decided. A
+above), `Unchecked::admin(&AdminPrincipal)` (an administrator's proof — the admin-proof table
+above; an administrator meets every floor, so the check decides nothing) or
+`Unchecked::vouched(principal, by)`, where a named check already decided. A
 caller's rows otherwise go through `sc_access::Scoped`, whose operations are the ownership rule's.
 Find the vouched ones with `grep -rn 'Unchecked::vouched(' crates`:
 
@@ -1303,23 +1319,19 @@ that `check_access` / `check_write` passed for one path, and the only way to tha
 `serve` hands the transport a `ServeFile` whose store is private. Whether a store is connected is
 `has_file_store`. Two kinds of binding decide nothing and are listed here:
 
-- **A store bound to the administrator** (`FileCaller::new(Role::ADMIN, …)`), who clears every
-  rule: a code body's `asAdmin()` file operations (sc-api `code_host/files.rs`, `open`) and the
-  file a body serves as admin (sc-api `rest/mod.rs`, `code_response`); `send_email`'s attachments
-  (sc-action-builtins, the trigger's authority); a module's file surface, confined to its declared
-  areas (sc-module `files.rs`); the server's own temporary folder for resumable uploads (sc-server
-  `uploads.rs`, `server_store`, behind the upload record's application, slot and uploader check);
-  and the IDE's language server (sc-server `lsp.rs`), the only binding `CheckedStore::local_root`
-  answers, behind an admin session.
+- **A store bound to the administrator**, who clears every rule: `Catalog::checked_file_store`
+  with an `AdminPrincipal` or an `Authority::system`, or `Catalog::admin_file_store` (no floor
+  read; the only binding `CheckedStore::local_root` answers). The sites are the admin proofs
+  above (`CODE_ADMIN_RULE`, `LSP_ROOT`, `TERMINAL_ROOT`, the upload folder) and `send_email`'s
+  attachments and a module's file labels. A binding reads its store's floor itself; there is no
+  floor or `FileCaller` a caller can hand in (TODO-type-hardening H3.2).
 - **A drop-box deposit** (`CheckedStore::deposit`): a new file where the caller may not otherwise
   write, because the route's own rule admitted them; replacing a file is a write and is checked.
   The REST provider's `File` upload (the table's write rule, `upload_inner`) and an application's
   upload slots (the slot's floor and hook, sc-server `uploads.rs`).
-- **`sc_dataset::Caller::admin()`**: model fits read their training rows (sc-model `source.rs`,
-  sc-analytics `model_outputs.rs`). The dataset caller is not yet a `Principal` (Q1.8).
-- **`sc_agent::RunCaller::system()`**: trigger-started agent runs (sc-agent-builtins `run_agent.rs`,
-  sc-server `chat.rs`, sc-cli `eval.rs`). The run is marked triggered, so the server's own tools
-  are withheld.
+- **`sc_dataset::Caller::system(reason)`** and **`RunCaller::system()`**: in the admin-proof
+  table above. The dataset caller is a view over a `Principal` (Q1.8, H3.4), and only these and
+  `Caller::admin(&AdminPrincipal)` read with the administrator's authority.
 
 **Admin authority handed to admin handlers without a browser session (Q2).** An admin endpoint's
 handler is called only with an `sc_server::Admin` (`crates/sc-server/src/admin_session.rs`). It
@@ -1330,7 +1342,7 @@ Find them with `grep -rn 'Admin::delegated(' crates`:
 | Crate / file | `by` | The check that stands behind it |
 |---|---|---|
 | sc-server `mcp.rs` (`EndpointTool::call`) | `mcp endpoint tool` | `sc_api::mcp::check_caller`: admin role, the endpoint's own requirement, the tag's grant |
-| sc-server `mcp.rs` (`AdminHandlers::request`, behind every typed `AdminHost` method) | `catalog admin host` | the `sc_app::mcp` admin tools (and `admin_copilot`'s publish) that call `AdminHost` (`require_admin` on the tool surface); the user may be `None` for a system-run tool |
+| sc-server `mcp.rs` (`AdminHandlers::request`, behind every typed `AdminHost` method) | the `ConsoleAdmin`'s own `by` (`ADMIN_SESSION`, `MCP_TOKEN`, `SYSTEM_RUN`) | every `AdminHost` method takes a `ConsoleAdmin` (TODO-type-hardening H3.3), which the `sc_app::mcp` admin tools and `admin_copilot`'s publish get from `ToolContext::require_admin`; the named user is loaded again and must be an enabled administrator. `None` (a system run) only with `ConsoleAdmin::system` |
 
 **Trust-boundary newtypes (TODO-code-quality Q4).** Values that cross a trust boundary are
 types that only a named constructor makes; each constructor below is a promise the type cannot

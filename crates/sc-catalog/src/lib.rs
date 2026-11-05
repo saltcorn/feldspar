@@ -68,10 +68,11 @@ mod tx;
 mod vector;
 mod wakeups;
 
-pub use admin_host::{AdminHost, AdminUser, BackendOperation, NewFileStore, TranslationsOf};
+pub use admin_host::{AdminHost, BackendOperation, NewFileStore, TranslationsOf};
 pub use caller::{
-    Authority, CallingApp, Origin, Principal, SystemReason, TaskScope, UNTRUSTED_ORIGIN, Unchecked,
-    current_origin, is_untrusted_chain, spawn_scoped, untrusted_chain, with_origin,
+    ADMIN_MEETS_EVERY_FLOOR, AdminPrincipal, Authority, CallingApp, ConsoleAdmin, Origin,
+    Principal, SystemReason, TaskScope, UNTRUSTED_ORIGIN, Unchecked, VerifiedUser, current_origin,
+    is_untrusted_chain, spawn_scoped, untrusted_chain, with_origin,
 };
 pub use catalog::{Catalog, CatalogSchema, DriverInfo, ProvidedTableIssue, SchemaStep};
 pub use change_log::{

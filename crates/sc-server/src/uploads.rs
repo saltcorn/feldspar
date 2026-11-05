@@ -34,7 +34,7 @@ use sc_api::AuthRequirement;
 use sc_app::{UploadRecord, UploadRoute, UploadSlot};
 use sc_auth::User;
 use sc_catalog::Catalog;
-use sc_files::{CheckedStore, FileCaller, FileMeta};
+use sc_files::{CheckedStore, FileMeta};
 use serde_json::{Map, Value as Json, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -844,7 +844,10 @@ async fn prepare_temp(store: &CheckedStore, temp_path: &str) -> sc_error::Result
 /// the slot and the uploader all match). TODO-code-quality Q3.6; listed in
 /// docs/SECURITY_REVIEW_2026-10.md's inventory.
 fn server_store(catalog: &Catalog, store: &str) -> sc_error::Result<CheckedStore> {
-    catalog.checked_file_store(store, None, FileCaller::new(Role::ADMIN, None))
+    catalog.admin_file_store(
+        store,
+        &sc_catalog::AdminPrincipal::system("uploads: the server's temporary upload folder"),
+    )
 }
 
 /// The slot's store as the **uploader** reaches it: where the finished file is
@@ -854,11 +857,8 @@ async fn uploader_store(
     store: &str,
     user: Option<&User>,
 ) -> sc_error::Result<CheckedStore> {
-    let caller = FileCaller::new(
-        user.map_or(Role::PUBLIC, |u| u.role()),
-        user.map(|u| u.id().to_string()),
-    );
-    sc_catalog::open_checked_store(catalog, store, caller).await
+    let caller = sc_access::principal_of(user);
+    sc_catalog::open_checked_store(catalog, store, &caller).await
 }
 
 /// Whether an upload's destination is free.
