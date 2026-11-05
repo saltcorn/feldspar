@@ -2,6 +2,29 @@
 
 Changes in reverse chronological order.
 
+## Claude Code is found without a PATH, and can be named in Settings
+
+A server started by systemd or another service manager has a short `PATH`, so Claude Code
+installed in a home directory was reported as "not installed".
+
+- **A new setting**: Settings → Development → **Claude Code executable**, shown while Claude Code
+  in the IDE is on. Saving refuses anything that is not an absolute path to an executable file.
+  Only a changed path is checked, so a program removed after it was saved does not block saving
+  other settings; the panel below says it is gone.
+- **The lookup order** is `--claude-cli`, then that setting, then `claude` on `PATH`, then the
+  usual install locations (`~/.local/bin`, `~/.claude/local`, `~/.npm-global/bin`, `~/.bun/bin`,
+  `~/.volta/bin`, the newest Node under nvm). A path named by the option or the setting is
+  used or refused, never swapped for another `claude`. Existing servers behave as before:
+  `--claude-cli` still comes first.
+- **A Claude Code panel** on the Development tab shows which `claude` runs, how it was found,
+  and what `claude --version` prints, or why none was found.
+- Claude Code starts with its own directory first on `PATH`, so an nvm or npm install finds its
+  `node`.
+- The setting and the panel are translated into the admin UI's languages.
+
+Tests: `crates/sc-server/tests/ide_terminal.rs`, `terminal.rs` and `development.rs` unit tests,
+`ui/admin/src/claudeStatus.test.ts`.
+
 ## Admin UI: a shorter sidebar, one Coding agent link
 
 - **No Home entry.** The logo at the top of the sidebar goes to Home, and says so. All entities

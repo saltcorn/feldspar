@@ -1227,6 +1227,19 @@ async fn the_development_setting_names_claude_and_the_status_says_which() -> Res
     assert_eq!(found["version"], json!("9.9.9 (Claude Code)"));
     assert!(found["problem"].is_null(), "{found}");
 
+    // The program goes away. The form sends the stored path back with every
+    // save, and that must not block saving the rest; a new path is still checked.
+    std::fs::remove_file(&program)?;
+    let (status, body) = save_development(&server, json!({ "claude_code_path": path })).await;
+    assert!(status.is_success(), "{status} {body}");
+    assert!(claude_status(&server).await["version"].is_null());
+    let (status, body) = save_development(
+        &server,
+        json!({ "claude_code_path": "/nonexistent/claude" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
     // The option, when given, comes before the setting.
     let flagged = serve_with(Some(Path::new("/nonexistent/claude")), true).await?;
     set_config(&flagged.catalog, sc_config::CLAUDE_CODE_PATH, json!(path)).await?;

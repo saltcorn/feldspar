@@ -95,8 +95,14 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     );
                 }
                 // The Claude Code executable likewise: refused unless the
-                // server can run it, and stored trimmed, or as nothing.
-                if let Some(Json::String(raw)) = values.get(sc_config::CLAUDE_CODE_PATH) {
+                // server can run it, and stored trimmed, or as nothing. Only a
+                // changed path is checked: the form sends every field back, and
+                // a stored path whose program has since gone must not block a
+                // save of anything else (the Claude Code panel says it is gone).
+                let stored_path = sc_config::claude_code_path_from(&stored);
+                if let Some(Json::String(raw)) = values.get(sc_config::CLAUDE_CODE_PATH)
+                    && stored_path.as_deref() != Some(std::path::Path::new(raw.trim()))
+                {
                     let normalised = sc_config::check_claude_code_path(raw)?;
                     values.insert(
                         sc_config::CLAUDE_CODE_PATH.to_owned(),
