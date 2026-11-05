@@ -1,4 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 
 //! Planning and sessions (coding agent milestone, Phase 9), through whole runs
 //! on the scripted provider, a real `_fd_runs`, a real local store and git:

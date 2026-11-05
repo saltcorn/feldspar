@@ -1,4 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 
 //! `check`, the baseline and the ratchet (coding agent milestone, Phase 6)
 //! against a real local file store, a real application row and stand-in tools,

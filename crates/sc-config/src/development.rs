@@ -39,6 +39,10 @@ pub const MCP_LOOPBACK_ONLY: &str = "mcp_loopback_only";
 /// Whether the file-store IDE may open a terminal running Claude Code on this
 /// server (§12.1, "Claude Code in a terminal tab").
 pub const IDE_TERMINAL_ENABLED: &str = "ide_terminal_enabled";
+/// Whether an IDE save that installs dependencies runs the packages' install
+/// scripts (TODO-type-hardening H4.4). Off: a save installs with
+/// `--ignore-scripts`, and the next Build runs them.
+pub const INSTALL_SCRIPTS_ON_SAVE: &str = "install_scripts_on_save";
 /// The subdomain of the base domain the admin UI is served on. Empty serves it
 /// on the base domain itself.
 pub const ADMIN_SUBDOMAIN: &str = "admin_subdomain";
@@ -108,6 +112,17 @@ pub fn development_section() -> ConfigSection {
                  on this server, in the store's directory, as the server's operating-system \
                  user, and can run any command that user can. Only stores on this machine's \
                  disk can have one.",
+            ),
+            // Off by default (security review 2026-11, C3): every dependency's
+            // `postinstall` is code from the registry, and saving a file is not
+            // a decision to run it as the server's user.
+            ConfigDef::help(
+                FormField::new(INSTALL_SCRIPTS_ON_SAVE, BasicType::Bool)
+                    .label("Run install scripts on save")
+                    .default_value(false),
+                "When a save in the IDE installs dependencies (the first save, or one that \
+                 changed package.json), run the packages' install scripts too. Off, the save \
+                 installs with --ignore-scripts and the next Build installs with them.",
             ),
         ],
     }
@@ -253,6 +268,19 @@ pub fn ide_terminal_enabled_from(config: &Attrs) -> bool {
 /// Whether the IDE may open a Claude Code terminal, out of `_fd_config`.
 pub async fn ide_terminal_enabled(catalog: &Catalog) -> Result<bool> {
     Ok(ide_terminal_enabled_from(
+        &crate::store::all_config(catalog).await?,
+    ))
+}
+
+/// Whether an IDE save's install runs the packages' install scripts, out of a
+/// settings bag. Anything but `true` reads as off.
+pub fn install_scripts_on_save_from(config: &Attrs) -> bool {
+    matches!(config.get(INSTALL_SCRIPTS_ON_SAVE), Some(Json::Bool(true)))
+}
+
+/// [`install_scripts_on_save_from`], out of `_fd_config`.
+pub async fn install_scripts_on_save(catalog: &Catalog) -> Result<bool> {
+    Ok(install_scripts_on_save_from(
         &crate::store::all_config(catalog).await?,
     ))
 }
@@ -424,6 +452,7 @@ mod tests {
                 MCP_ENABLED,
                 MCP_LOOPBACK_ONLY,
                 IDE_TERMINAL_ENABLED,
+                INSTALL_SCRIPTS_ON_SAVE,
             ]
         );
 
@@ -431,6 +460,7 @@ mod tests {
             (MCP_ENABLED, false),
             (MCP_LOOPBACK_ONLY, true),
             (IDE_TERMINAL_ENABLED, false),
+            (INSTALL_SCRIPTS_ON_SAVE, false),
         ] {
             let def = section.fields.iter().find(|def| def.key() == key).unwrap();
             assert_eq!(
@@ -497,6 +527,11 @@ mod tests {
     #[test]
     fn the_ide_terminal_is_off_unless_it_is_exactly_on() {
         assert!(!ide_terminal_enabled_from(&Attrs::new()));
+        assert!(!install_scripts_on_save_from(&Attrs::new()));
+        assert!(install_scripts_on_save_from(&attrs(&[(
+            INSTALL_SCRIPTS_ON_SAVE,
+            Json::Bool(true)
+        )])));
         assert!(ide_terminal_enabled_from(&attrs(&[(
             IDE_TERMINAL_ENABLED,
             json!(true)

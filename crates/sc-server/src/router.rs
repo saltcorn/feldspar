@@ -1023,6 +1023,7 @@ async fn language_server(
     if !upgrade_origin_allowed(&headers) {
         return upgrade_origin_refused();
     }
+    let who = admin.console().spawn_proof();
     language_server_upgrade(
         ws,
         state.apps.catalog(),
@@ -1030,6 +1031,7 @@ async fn language_server(
         Arc::clone(&state.language_server),
         store,
         admin.watch(state.sessions.clone()),
+        who,
     )
     .await
 }

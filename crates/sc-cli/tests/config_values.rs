@@ -8,6 +8,10 @@
 //! the command — the type a terminal's string becomes is the whole of what this
 //! adds, and it happens on the way in.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 
 use std::io::Write;
 use std::process::{Command, Stdio};

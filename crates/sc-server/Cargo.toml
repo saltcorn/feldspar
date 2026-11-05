@@ -22,6 +22,9 @@ default = []
 python = ["sc-python/python-host"]
 
 [dependencies]
+# Every child process — the language server, the terminal (with the `pty`
+# feature, below), the browser probe and watchdog — started the one way (H4).
+sc-proc.workspace = true
 sc-error.workspace = true
 sc-log.workspace = true
 # The client address and the limiter (TODO F4.2–F4.4).
@@ -178,6 +181,7 @@ russh-sftp.workspace = true
 # watch on its directory from `notify` (`terminal_watch.rs`). Unix only:
 # elsewhere the route refuses with a reason.
 [target.'cfg(unix)'.dependencies]
+sc-proc = { workspace = true, features = ["pty"] }
 pty-process.workspace = true
 libc.workspace = true
 notify.workspace = true

@@ -88,14 +88,14 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## H4 — `sc-proc` (§4)
 
-- [ ] H4.1 New crate `sc-proc`: `HostCommand` with `env_clear`, mandatory `Timeout`, sealed
+- [x] H4.1 New crate `sc-proc`: `HostCommand` with `env_clear`, mandatory `Timeout`, sealed
       `SpawnAuthority`, `Operand` (refuses leading `-`, emits `--`), `EnvName`, process group,
       kill-on-drop. `disallowed-methods` for every other spawn.
-- [ ] H4.2 Migrate all 33 spawn sites (table in C-process-exec.md); `Git` builder from
+- [x] H4.2 Migrate all 33 spawn sites (table in C-process-exec.md); `Git` builder from
       `RepoRoot`.
-- [ ] H4.3 `StorePath::host_code_kind()` replaces `is_git_segment` + `controls_build`;
+- [x] H4.3 `StorePath::host_code_kind()` replaces `is_git_segment` + `controls_build`;
       `CheckedStore::write` refuses host-code paths below admin.
-- [ ] H4.4 Build lock released on timeout; quick-save `npm install` runs with
+- [x] H4.4 Build lock released on timeout; quick-save `npm install` runs with
       `--ignore-scripts` unless an admin opted in.
 
 ## H5 — Bounded input and robustness (§5)

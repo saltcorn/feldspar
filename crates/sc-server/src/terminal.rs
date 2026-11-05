@@ -838,8 +838,10 @@ async fn bridge(
         let line = format!("{notice}\r\n");
         let _ = socket.send(Message::Binary(line.into_bytes().into())).await;
     }
+    let who = admin.session().console().spawn_proof();
     let mut session = match pty::spawn(
         &launch.program,
+        &who,
         &launch.args,
         &launch.dir,
         &launch.env,
@@ -1025,22 +1027,25 @@ mod pty {
     /// what it started.
     pub(super) fn spawn(
         program: &Path,
+        who: &sc_proc::AdminProof,
         args: &[OsString],
         dir: &Path,
         env: &[(String, String)],
         size: TerminalSize,
     ) -> pty_process::Result<Session> {
+        let env = env
+            .iter()
+            .map(|(k, v)| {
+                let name = sc_proc::EnvName::new(k.as_str())
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                Ok((name, v.clone()))
+            })
+            .collect::<std::io::Result<Vec<_>>>()?;
         let (pty, pts) = pty_process::open()?;
         pty.resize(pty_process::Size::new(size.rows, size.cols))?;
         // `spawn` takes the terminal's other end and drops the parent's copies,
         // so reading `pty` ends once the child and its descendants let go.
-        let child = pty_process::Command::new(program)
-            .args(args)
-            .current_dir(dir)
-            .env_clear()
-            .envs(env.iter().map(|(k, v)| (k, v)))
-            .kill_on_drop(true)
-            .spawn(pts)?;
+        let child = sc_proc::spawn_on_pty(program, who, args, dir, &env, pts)?;
         let pid = child.id().and_then(|p| libc::pid_t::try_from(p).ok());
         Ok(Session { pty, child, pid })
     }

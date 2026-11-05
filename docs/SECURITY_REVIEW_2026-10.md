@@ -1284,6 +1284,35 @@ sc-action-builtins `send_email.rs` (`send_email: read a configured attachment`),
 `write.rs` (`backup: read every row of a table under row-level security`, the RLS context of a
 backup's snapshot).
 
+**Spawn authorities (TODO-type-hardening H4).** Every program the server starts goes through
+`sc_proc::HostCommand` (or `sc_proc::Git`), which takes a sealed `SpawnAuthority`: an
+`AdminProof`, an `OperatorCli` or a `SystemTask`, and logs it with each spawn. The console's proof
+(`ConsoleAdmin::spawn_proof`) is the usual `AdminProof`: the IDE language server and terminal
+(the route's `AdminSession`), the coding shell and named processes (`permit_shell` returns it),
+the project's scripts, checks and formatter (`coding::host_code_proof`, and `after_tools`), and an
+admin run's feature commit. The rest name a reason, found with
+`grep -rn 'AdminProof::vouched(\|SystemTask::new(\|OperatorCli::new(' crates` (excluding tests);
+`admin_proofs_are_in_the_inventory` checks them too:
+
+| Crate / file | Reason or `by` | What stands behind it |
+|---|---|---|
+| sc-files `git.rs` | `GIT_OPERATION` | a git file-store operation (clone, pull, push, stage, commit, deploy key), reached through the admin file-store route and the administration MCP's store tools |
+| sc-app `build.rs`, `build_cache.rs`, `scaffold/mod.rs` | `APP_BUILD` | an application build: an administrator's Build or IDE save, an admin agent's build or check tool (`coding::is_admin`), the boot rebuild, the CLI; the commands are the administrator's configuration. An IDE save installs with `--ignore-scripts` unless `install_scripts_on_save` is on |
+| sc-module `install.rs` | `MODULE_INSTALL` | `npm install` / `uninstall` of a module: the Modules tab and the admin agent's `install_modules` (`permit_modules`) |
+| sc-python `env.rs` | `PYTHON_INSTALL` | `python -m venv` and `pip` for a Python module, from the same two places |
+| sc-module `install.rs`, sc-python `env.rs` | `Node toolchain probe`, `Python toolchain probe` | `--version` probes for the Modules tab |
+| sc-stan `process.rs` | `a Stan model fit (make, chains, stanc)` | a fit's compile, chains and `stanc`, in a scratch directory; bounded by the fit's own deadline and cancel |
+| sc-agent-builtins `coding/shell.rs` | `container sandbox upkeep` | asking which container runtime is installed, whether the configured image is there, removing a container the run started |
+| sc-agent-builtins `coding/header.rs` | `coding session header: git log` | the session header's `git log` over the scope, for any run (read-only, the program's own arguments) |
+| sc-agent-builtins `coding/snapshot.rs` | `coding shell snapshot: git state` | a shell call's before-and-after git state (read-only) |
+| sc-agent-builtins `coding/commit.rs` | `implement_feature: commit the run's paths` | a feature run with no administrator committing what it changed: git with hooks off, the message after `-m`, the paths after `--` |
+| sc-server `browser/detect.rs`, `browser/driver.rs` | `browser sandbox check`, `browser watchdog` | the boot's sandbox check (a fixed page, a scratch profile); the watchdog that ends the browser after a killed server (`spawn_detached`) |
+| sc-cli `setup.rs`, `eval.rs`, `cmdstan.rs` | `setup`, `eval`, `cmdstan install` | the operator's own CLI; `setup` and `eval` run at the operator's terminal (`operator_terminal`: their environment, stdin and process group) |
+
+The one process not started by `sc-proc` is the headless browser, which chromiumoxide launches
+itself with the server's environment (`browser/driver.rs`, the one `Browser::launch`, allowed by
+name in `clippy.toml`'s list).
+
 **Unchecked row access (TODO-code-quality Q3.5).** The row layer's operations that do not apply
 a table's floors and ownership formula (`sc_access::rows`), `Catalog::provider`,
 `Catalog::driver_for` and `Catalog::driver_named` take an `sc_catalog::Unchecked`; the catalog's

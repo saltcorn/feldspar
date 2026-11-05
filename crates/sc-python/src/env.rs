@@ -47,7 +47,7 @@
 use std::path::{Path, PathBuf};
 
 use sc_error::{Error, Result};
-use tokio::process::Command;
+use sc_proc::{AdminProof, HostCommand, Operand, Program, SystemTask, Timeout};
 
 use crate::{PythonEnv, PythonPackage};
 
@@ -98,7 +98,9 @@ pub struct InstalledDistribution {
 /// [`PythonRuntime::state`](crate::PythonRuntime::state), and the two answers
 /// are independent.
 pub async fn have_python(bin: &Path) -> bool {
-    succeeds(Command::new(bin).arg("--version")).await
+    let mut probe = HostCommand::new(Program::path(bin), &TOOLCHAIN_PROBE, PROBE_TIMEOUT);
+    probe.arg("--version");
+    succeeds(probe).await
 }
 
 /// Whether that interpreter has `pip`.
@@ -108,16 +110,35 @@ pub async fn have_python(bin: &Path) -> bool {
 /// anything, and the sentence an admin needs names the package rather than the
 /// exit code.
 pub async fn have_pip(bin: &Path) -> bool {
-    succeeds(Command::new(bin).args(["-m", "pip", "--version"])).await
+    let mut probe = HostCommand::new(Program::path(bin), &TOOLCHAIN_PROBE, PROBE_TIMEOUT);
+    probe.args(["-m", "pip", "--version"]);
+    succeeds(probe).await
 }
 
-async fn succeeds(command: &mut Command) -> bool {
+async fn succeeds(command: HostCommand) -> bool {
     command
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .output()
         .await
-        .is_ok_and(|status| status.success())
+        .is_ok_and(|output| output.status.success())
+}
+
+/// The server asking which interpreter it has.
+const TOOLCHAIN_PROBE: SystemTask = SystemTask::new("Python toolchain probe");
+
+/// How long a `--version` probe may take.
+const PROBE_TIMEOUT: Timeout = Timeout::secs(30);
+
+/// How long `venv` or a `pip install` may run: a source build of a package
+/// with C extensions takes minutes.
+const INSTALL_TIMEOUT: Timeout = Timeout::minutes(30);
+
+/// On whose authority the Python environment is changed: the Modules tab and
+/// the admin agent's `install_modules` tool, both an administrator's. Listed
+/// in the system-authority inventory.
+const PYTHON_INSTALL: &str = "a Python module install (Modules tab, admin agent install_modules)";
+
+fn install_authority() -> AdminProof {
+    AdminProof::vouched(None, PYTHON_INSTALL)
 }
 
 /// The default environment directory for this machine, or an error saying why
@@ -549,21 +570,21 @@ impl PythonEnvironment {
                     .await
                     .map_err(|e| Error::config(format!("creating {}: {e}", parent.display())))?;
             }
-            let output = Command::new(&self.bin)
-                .arg("-m")
-                .arg("venv")
-                .arg(&self.dir)
-                .output()
-                .await
-                .map_err(|e| {
-                    Error::config(format!(
-                        "could not run `{} -m venv {}`: {e}. Installing a Python module needs \
+            let mut venv = HostCommand::new(
+                Program::path(&self.bin),
+                &install_authority(),
+                INSTALL_TIMEOUT,
+            );
+            venv.args(["-m", "venv"]).positional(Operand::path(&self.dir));
+            let output = venv.output().await.map_err(|e| {
+                Error::config(format!(
+                    "{e} (`{} -m venv {}`). Installing a Python module needs \
                          a Python 3 interpreter on this server's PATH (--python-bin names \
                          which one)",
-                        self.bin.display(),
-                        self.dir.display()
-                    ))
-                })?;
+                    self.bin.display(),
+                    self.dir.display()
+                ))
+            })?;
             if !output.status.success() {
                 // `venv`'s own words: on Debian the useful half of this is
                 // "ensurepip is not available … apt install python3-venv",
@@ -664,20 +685,20 @@ impl PythonEnvironment {
             return Ok(());
         }
         self.unlink_interpreters()?;
-        let output = Command::new(&self.bin)
-            .arg("-m")
-            .arg("venv")
-            .arg("--upgrade")
-            .arg(&self.dir)
-            .output()
-            .await
-            .map_err(|e| {
-                Error::config(format!(
-                    "could not run `{} -m venv --upgrade {}`: {e}",
-                    self.bin.display(),
-                    self.dir.display()
-                ))
-            })?;
+        let mut venv = HostCommand::new(
+            Program::path(&self.bin),
+            &install_authority(),
+            INSTALL_TIMEOUT,
+        );
+        venv.args(["-m", "venv", "--upgrade"])
+            .positional(Operand::path(&self.dir));
+        let output = venv.output().await.map_err(|e| {
+            Error::config(format!(
+                "{e} (`{} -m venv --upgrade {}`)",
+                self.bin.display(),
+                self.dir.display()
+            ))
+        })?;
         if !output.status.success() {
             return Err(Error::config(format!(
                 "could not move this server's Python environment at {} onto {}: {}\n{}",
@@ -758,21 +779,17 @@ impl PythonEnvironment {
         let report = self.dir.join(REPORT_FILE);
         let _ = tokio::fs::remove_file(&report).await;
         let before = self.packages();
+        // The spec is an operand after `--`: `-r /etc/…`, `--index-url` or `-e`
+        // typed as a "package" is refused rather than read as an option
+        // (security review 2026-11, C5).
         let base = ["install", "--disable-pip-version-check", "--no-input"];
-        let mut args: Vec<&str> = base.to_vec();
-        let report_path = report.display().to_string();
-        args.extend(["--report", &report_path, &spec]);
-        let log = match self.pip(&args).await {
+        let log = match self.pip(&base, Some(&report), &spec).await {
             Ok(log) => log,
             // A pip older than 22.2 does not know `--report` and says so before
             // it does anything, so the install is retried without it and the
             // diff below answers what was installed. Any other failure is the
             // install's own and is reported as it stands.
-            Err(e) if e.to_string().contains("--report") => {
-                let mut args: Vec<&str> = base.to_vec();
-                args.push(&spec);
-                self.pip(&args).await?
-            }
+            Err(e) if e.to_string().contains("--report") => self.pip(&base, None, &spec).await?,
             Err(e) => return Err(e),
         };
         let after = self.packages();
@@ -805,26 +822,39 @@ impl PythonEnvironment {
         // pip runs as the environment's own interpreter, which may be the
         // host's `python3` an operator has since removed.
         self.repoint().await?;
-        self.pip(&["uninstall", "--disable-pip-version-check", "-y", name])
-            .await
+        self.pip(
+            &["uninstall", "--disable-pip-version-check", "-y"],
+            None,
+            name,
+        )
+        .await
     }
 
     /// Run pip in this environment, returning its output.
-    async fn pip(&self, args: &[&str]) -> Result<String> {
+    async fn pip(
+        &self,
+        flags: &[&'static str],
+        report: Option<&Path>,
+        package: &str,
+    ) -> Result<String> {
         let python = self.python();
-        let line = format!("{} -m pip {}", python.display(), args.join(" "));
-        let output = Command::new(&python)
-            .arg("-m")
-            .arg("pip")
-            .args(args)
-            .output()
-            .await
-            .map_err(|e| {
-                Error::config(format!(
-                    "could not run `{line}`: {e}. Installing a Python module needs pip in \
+        let mut pip = HostCommand::new(
+            Program::path(&python),
+            &install_authority(),
+            INSTALL_TIMEOUT,
+        );
+        pip.args(["-m", "pip"]).args(flags.iter().copied());
+        if let Some(report) = report {
+            pip.flag_value("--report", report);
+        }
+        pip.operand(Operand::new(package)?);
+        let line = pip.command_line();
+        let output = pip.output().await.map_err(|e| {
+            Error::config(format!(
+                "{e} (`{line}`). Installing a Python module needs pip in \
                      this server's Python environment"
-                ))
-            })?;
+            ))
+        })?;
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         if !output.status.success() {

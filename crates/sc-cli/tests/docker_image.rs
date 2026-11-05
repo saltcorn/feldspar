@@ -14,6 +14,10 @@
 //!
 //!     cargo test -p sc-cli --test it docker_image -- --ignored
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

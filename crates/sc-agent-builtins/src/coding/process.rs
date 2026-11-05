@@ -31,9 +31,14 @@ use sc_types::Attrs;
 use serde_json::{Value as Json, json};
 
 use super::shell::{
-    Capture, Runtime, SHELL_ENV, Sandbox, Spawned, container_run_args, kill_group, lock, sandbox,
-    scope_dir,
+    Capture, Runtime, SANDBOX_UPKEEP, SHELL_ENV, Sandbox, Spawned, container_run, kill_group, lock,
+    sandbox, scope_dir,
 };
+use sc_proc::{AdminProof, HostCommand, Operand, Timeout};
+
+/// A named process lives as long as the run that started it, and is stopped
+/// with it ([`run_ended`]), by `stop`, or by the server's shutdown.
+const RUN_SCOPED: Timeout = Timeout::unbounded("a named process lives as long as its agent run");
 use crate::files::FileScope;
 use sc_api::mcp::arguments;
 
@@ -151,27 +156,25 @@ fn release(ended: RunProcesses) {
         }
     }
     if let Some((runtime, name)) = ended.container {
-        // Detached: this may run in a destructor, with nothing to await on.
-        if let Ok(mut child) = std::process::Command::new(runtime.program())
-            .args(["rm", "-f", &name])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
+        // On a thread of its own: this may run in a destructor, with nothing
+        // to await on.
+        if let Ok(name) = Operand::new(name) {
+            let mut rm = HostCommand::new(runtime.program(), &SANDBOX_UPKEEP, Timeout::secs(60));
+            rm.args(["rm", "-f"]).positional(name);
             std::thread::spawn(move || {
-                let _ = child.wait();
+                let _ = rm.output_blocking();
             });
         }
     }
 }
 
-/// Run one action.
+/// Run one action, on the administrator's authority `who` (`permit_shell`).
 pub async fn call(
     scope: &FileScope,
     config: &Attrs,
     args: &Json,
     ctx: &mut TraitContext<'_>,
+    who: &AdminProof,
 ) -> Result<Json> {
     let args = arguments(args, &[ARG_ACTION, ARG_NAME, ARG_COMMAND])?;
     let action = args.string_arg(ARG_ACTION)?;
@@ -198,7 +201,7 @@ pub async fn call(
                     "`start` needs `{ARG_COMMAND}`: the command to run"
                 )));
             }
-            start(scope, config, ctx, key, &name, &command).await
+            start(scope, config, ctx, key, &name, &command, who).await
         }
         "logs" => {
             let registry = lock(&REGISTRY);
@@ -213,7 +216,7 @@ pub async fn call(
                 output_of(process)
             )))
         }
-        "stop" => stop(key, &name).await,
+        "stop" => stop(key, &name, who).await,
         other => Err(Error::invalid(format!(
             "`{ARG_ACTION}` must be start, stop, logs or list, got `{other}`"
         ))),
@@ -262,6 +265,7 @@ async fn start(
     key: (RunId, String),
     name: &str,
     command: &str,
+    who: &AdminProof,
 ) -> Result<Json> {
     {
         let registry = lock(&REGISTRY);
@@ -283,43 +287,32 @@ async fn start(
     let sandbox = sandbox(config)?;
     let capture = Capture::new(LOG_HEAD_BYTES, LOG_TAIL_BYTES);
     let (spawned, pid_file) = match &sandbox {
-        Sandbox::None => (
-            Spawned::spawn(
-                "bash",
-                &["-c".to_owned(), command.to_owned()],
-                &dir,
-                capture,
-            )?,
-            None,
-        ),
+        Sandbox::None => {
+            let mut bash = HostCommand::new("bash", who, RUN_SCOPED);
+            bash.flag_value("-c", command);
+            (Spawned::spawn(bash, &dir, capture)?, None)
+        }
         Sandbox::Container {
             runtime,
             image,
             network,
         } => {
-            let container = ensure_container(&key, *runtime, image, *network, &dir).await?;
+            let container = ensure_container(&key, *runtime, image, *network, &dir, who).await?;
             let pid_file = format!("/tmp/feldspar-process-{name}.pid");
-            let mut args = vec!["exec".to_owned()];
+            let mut exec = HostCommand::new(runtime.program(), who, RUN_SCOPED);
+            exec.arg("exec");
             for (k, v) in SHELL_ENV {
-                args.push("-e".to_owned());
-                args.push(format!("{k}={v}"));
+                exec.flag_value("-e", format!("{k}={v}"));
             }
             // `setsid` gives the command a process group inside the container,
-            // whose id is written where `stop` reads it.
-            args.extend([
-                container,
-                "setsid".to_owned(),
-                "-w".to_owned(),
-                "bash".to_owned(),
-                "-c".to_owned(),
-                format!("echo $$ > {pid_file}; exec bash -c \"$1\""),
-                "feldspar-process".to_owned(),
-                command.to_owned(),
-            ]);
-            (
-                Spawned::spawn(runtime.program(), &args, &dir, capture)?,
-                Some(pid_file),
-            )
+            // whose id is written where `stop` reads it. The command is the
+            // script's `$1`; one that starts with `-` is refused.
+            exec.positional(Operand::new(container)?)
+                .args(["setsid", "-w", "bash"])
+                .flag_value("-c", format!("echo $$ > {pid_file}; exec bash -c \"$1\""))
+                .arg("feldspar-process")
+                .positional(Operand::new(command)?);
+            (Spawned::spawn(exec, &dir, capture)?, Some(pid_file))
         }
     };
 
@@ -383,22 +376,24 @@ async fn ensure_container(
     image: &str,
     network: bool,
     dir: &Path,
+    who: &AdminProof,
 ) -> Result<String> {
     if let Some((_, name)) = lock(&REGISTRY).get(key).and_then(|r| r.container.clone()) {
         return Ok(name);
     }
     let name = format!("feldspar-run-{}-{}", key.0.0.simple(), key.1);
-    let mut args = container_run_args(runtime, dir, &name, network);
-    args.insert(1, "-d".to_owned());
-    args.extend([image.to_owned(), "sleep".to_owned(), "infinity".to_owned()]);
-    let started = tokio::process::Command::new(runtime.program())
-        .args(&args)
-        .stdin(std::process::Stdio::null())
-        .output();
-    let output = tokio::time::timeout(Duration::from_secs(60), started)
-        .await
-        .map_err(|_| Error::config("the process container did not start within 60 seconds"))?
-        .map_err(|e| Error::config(format!("could not run `{}`: {e}", runtime.program())))?;
+    // `-d`: the container outlives the CLI that started it, and with
+    // `leave_descendants` what the runtime forked to keep it does too.
+    let mut run = HostCommand::new(runtime.program(), who, Timeout::secs(60));
+    container_run(&mut run, runtime, dir, &name, network)?;
+    run.arg("-d")
+        .positional(Operand::new(image)?)
+        .args(["sleep", "infinity"])
+        .leave_descendants();
+    let output = run.output().await.map_err(|e| match e.is_timeout() {
+        true => Error::config("the process container did not start within 60 seconds"),
+        false => Error::config(e.to_string()),
+    })?;
     if !output.status.success() {
         return Err(Error::config(format!(
             "could not start the process container: {}",
@@ -409,7 +404,7 @@ async fn ensure_container(
     Ok(name)
 }
 
-async fn stop(key: (RunId, String), name: &str) -> Result<Json> {
+async fn stop(key: (RunId, String), name: &str, who: &AdminProof) -> Result<Json> {
     let (pgid, pid_file, container, exit) = {
         let registry = lock(&REGISTRY);
         let run = registry.get(&key).ok_or_else(|| unknown(name, &key))?;
@@ -423,19 +418,14 @@ async fn stop(key: (RunId, String), name: &str) -> Result<Json> {
     };
     if lock(&exit).is_none() {
         if let (Some(pid_file), Some((runtime, container))) = (pid_file, container) {
-            let inner = tokio::process::Command::new(runtime.program())
-                .args([
-                    "exec",
-                    &container,
-                    "sh",
-                    "-c",
-                    &format!("kill -KILL -- -$(cat {pid_file})"),
-                ])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-            let _ = tokio::time::timeout(Duration::from_secs(10), inner).await;
+            if let Ok(container) = Operand::new(container) {
+                let mut kill = HostCommand::new(runtime.program(), who, Timeout::secs(10));
+                kill.arg("exec")
+                    .positional(container)
+                    .arg("sh")
+                    .flag_value("-c", format!("kill -KILL -- -$(cat {pid_file})"));
+                let _ = kill.output().await;
+            }
         }
         if let Some(pgid) = pgid {
             kill_group(pgid);

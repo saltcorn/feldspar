@@ -11,6 +11,8 @@ rust-version.workspace = true
 autotests = false
 
 [dependencies]
+# Every child process, started the one way (H4).
+sc-proc.workspace = true
 sc-error.workspace = true
 # The seam this crate implements: `ModelProvider`, and the `Interface` the
 # program parser produces for the host's binder (TODO §4).

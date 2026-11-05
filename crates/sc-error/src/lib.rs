@@ -656,6 +656,10 @@ macro_rules! ensure {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: re-runs the test binary with a backtrace"
+)]
 mod tests {
     use super::*;
     use std::error::Error as _;

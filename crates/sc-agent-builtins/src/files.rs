@@ -287,16 +287,11 @@ pub async fn open_to_write(
     // Astro server entry runs with admin authority on every request) without
     // being built again (security review #16).
     if !crate::coding::is_admin(ctx.caller) {
-        if sc_files::controls_build(&path) {
+        if let Some(kind) = sc_files::StorePath::parse(&path)?.host_code_kind() {
             return Err(Error::invalid(format!(
-                "`{rel}` decides what a build or install runs on the server, so only a run \
-                 whose caller is an administrator may write it"
-            )));
-        }
-        if sc_files::configures_coding_agent(&path) {
-            return Err(Error::invalid(format!(
-                "`{rel}` configures the coding agent an administrator runs on the server, \
-                 so only a run whose caller is an administrator may write it"
+                "`{rel}` decides {}, so only a run whose caller is an administrator may \
+                 write it",
+                kind.decides()
             )));
         }
         if let Some(output) = build_output_holding(ctx.catalog, &scope.store, &path).await? {

@@ -5347,6 +5347,10 @@ pub(super) fn ts_empty(field: &sc_catalog::DataField) -> &'static str {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: type-checks the generated files with the admin UI's tsc"
+)]
 mod tests {
     use super::*;
     use sc_api::{ApiProvider, RestProvider};

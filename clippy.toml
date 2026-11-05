@@ -36,6 +36,16 @@ disallowed-methods = [
     # nobody and lands outside the request's changeset.
     { path = "tokio::spawn", reason = "use sc_catalog::spawn_scoped, which carries the task scope (origin, changeset, outbox) into the task" },
     { path = "tokio::task::spawn", reason = "use sc_catalog::spawn_scoped, which carries the task scope (origin, changeset, outbox) into the task" },
+    # A process is started through `sc-proc` (security review 2026-11 §4;
+    # TODO-type-hardening H4): `sc_proc::HostCommand` clears the environment,
+    # takes a timeout, keeps data out of the option position, gives the child
+    # its own process group and names the authority it runs on; `sc_proc::Git`
+    # names the repository instead of letting git discover one. A test fixture
+    # that starts a program carries an `#[allow]` saying it is one.
+    { path = "std::process::Command::new", reason = "start a process with sc_proc::HostCommand (sc_proc::Git for git): cleared environment, timeout, operands, process group, authority" },
+    { path = "tokio::process::Command::new", reason = "start a process with sc_proc::HostCommand (sc_proc::Git for git): cleared environment, timeout, operands, process group, authority" },
+    { path = "pty_process::Command::new", reason = "start the terminal's program with sc_proc::spawn_on_pty" },
+    { path = "chromiumoxide::Browser::launch", reason = "the browser inherits the server's environment; it is launched in one place (sc-server's browser driver)" },
     # A queue a peer can fill faster than it is drained grows without limit.
     { path = "tokio::sync::mpsc::unbounded_channel", reason = "bound the queue (tokio::sync::mpsc::channel); a producer can outpace the consumer" },
 ]

@@ -24,6 +24,10 @@
 //!   the page used it (an A/B test); the A/B queries the runtime makes run on
 //!   the real host, and the Analytics workspace reports on the two tables.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 
 use sc_api::auth::CSRF_COOKIE;
 use sc_catalog::Authority;

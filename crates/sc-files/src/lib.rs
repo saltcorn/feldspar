@@ -42,7 +42,6 @@ mod checked;
 mod def;
 mod disk;
 mod git;
-pub mod git_command;
 mod local;
 mod paths;
 mod reference;
@@ -54,8 +53,8 @@ mod stream;
 pub mod xattr;
 
 pub use access::{
-    FileCaller, VisibleEntry, check_access, check_write, configures_coding_agent, controls_build,
-    effective_min_role, list_visible, record_owner,
+    FileCaller, VisibleEntry, check_access, check_write, effective_min_role, list_visible,
+    record_owner,
 };
 pub use backend::{
     OperationOutcome, Relocation, backend_config_spec, backend_operations, connect_from_def,
@@ -84,7 +83,7 @@ pub use search::{
 };
 pub use serve::ServeFile;
 pub use store::{CONTENT_TYPE_ATTRIBUTE, Entry, FILENAME_ATTRIBUTE, FileMeta, FileStat, FileStore};
-pub use store_path::{AsStorePath, StorePath, in_git_dir};
+pub use store_path::{AsStorePath, HostCode, StorePath, in_git_dir};
 pub use stream::{BoxAsyncRead, BoxAsyncWrite, READ_CHUNK, read_chunks, read_to_bytes};
 
 #[cfg(test)]
@@ -526,7 +525,13 @@ mod tests {
             "web/node_modules",
             "web/NODE_MODULES./x/index.js",
         ] {
-            assert!(controls_build(path), "{path}");
+            assert!(
+                matches!(
+                    StorePath::parse(path).unwrap().host_code_kind(),
+                    Some(HostCode::PackageManager | HostCode::BuildConfig)
+                ),
+                "{path}"
+            );
             assert!(
                 check_write(&store, None, path, &staff).await.is_err(),
                 "{path}"
@@ -545,7 +550,11 @@ mod tests {
             "docs/package.json.md",
             "web/README.md",
         ] {
-            assert!(!controls_build(path), "{path}");
+            assert_eq!(
+                StorePath::parse(path).unwrap().host_code_kind(),
+                None,
+                "{path}"
+            );
             assert!(
                 check_write(&store, None, path, &staff).await.is_ok(),
                 "{path}"
@@ -569,8 +578,13 @@ mod tests {
             "web/claude.md",
             "web/CLAUDE.local.md",
             "web/.claude",
+            "web/.mcp.json",
         ] {
-            assert!(configures_coding_agent(path), "{path}");
+            assert_eq!(
+                StorePath::parse(path).unwrap().host_code_kind(),
+                Some(HostCode::AgentConfig),
+                "{path}"
+            );
             let err = check_write(&store, None, path, &staff).await.unwrap_err();
             assert!(err.to_string().contains("coding agent"), "{path}: {err}");
             assert!(
@@ -584,8 +598,76 @@ mod tests {
             "web/claude.txt",
             "docs/CLAUDE.md.bak",
             "web/src/claude/x.ts",
+            // Instructions the coding agents keep themselves (`HostCode` docs).
+            "web/AGENTS.md",
         ] {
-            assert!(!configures_coding_agent(path), "{path}");
+            assert_eq!(
+                StorePath::parse(path).unwrap().host_code_kind(),
+                None,
+                "{path}"
+            );
+            assert!(
+                check_write(&store, None, path, &staff).await.is_ok(),
+                "{path}"
+            );
+        }
+    }
+
+    /// Security review 2026-11 C1 (TODO-type-hardening H4.3): below admin, no
+    /// write lays out a bare repository git would discover — a `HEAD` beside
+    /// `objects/` and `refs/` — nor reaches into a `.git`; ordinary files
+    /// named `config`, `objects/…` and `refs/…`, and a `head` directory, stay
+    /// writable.
+    #[tokio::test]
+    async fn git_internals_are_admin_only_writes() {
+        let (_base, store) = temp_store();
+        let staff = FileCaller::of_principal(Role::of(40), Some("u1".into()));
+        for path in [
+            "web/HEAD",
+            "HEAD",
+            "web/.git/config",
+            "web/.git",
+            "a/GIT~1/HEAD",
+        ] {
+            assert_eq!(
+                StorePath::parse(path).unwrap().host_code_kind(),
+                Some(HostCode::GitInternals),
+                "{path}"
+            );
+            let err = check_write(&store, None, path, &staff).await.unwrap_err();
+            assert!(
+                err.to_string().contains("which repository git runs"),
+                "{path}: {err}"
+            );
+            assert!(
+                check_write(&store, None, path, &FileCaller::at_role(Role::ADMIN))
+                    .await
+                    .is_ok(),
+                "{path}"
+            );
+        }
+        // On Linux only the exact spelling; elsewhere `head` is `HEAD` to git.
+        let lower = if cfg!(any(target_os = "macos", windows)) {
+            Some(HostCode::GitInternals)
+        } else {
+            None
+        };
+        assert_eq!(
+            StorePath::parse("web/head").unwrap().host_code_kind(),
+            lower
+        );
+        for path in [
+            "web/config",
+            "web/objects/a.png",
+            "web/refs/x",
+            "web/src/components/head/Meta.astro",
+            "web/HEAD.md",
+        ] {
+            assert_eq!(
+                StorePath::parse(path).unwrap().host_code_kind(),
+                None,
+                "{path}"
+            );
             assert!(
                 check_write(&store, None, path, &staff).await.is_ok(),
                 "{path}"

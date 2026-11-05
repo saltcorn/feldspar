@@ -25,6 +25,8 @@ name = "feldspar"
 path = "src/main.rs"
 
 [dependencies]
+# Every child process, started the one way (H4).
+sc-proc.workspace = true
 sc-error.workspace = true
 sc-log.workspace = true
 sc-server.workspace = true

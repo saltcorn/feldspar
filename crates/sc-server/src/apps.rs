@@ -1331,8 +1331,10 @@ pub async fn build_and_mount(apps: &AppMounts, app: Application) -> Result<sc_ap
 }
 
 /// [`build_and_mount`], or with `quick` the dev loop's build
-/// ([`sc_app::build_application_quick`]): no install, no regenerated client, no
-/// prerendering — what the IDE runs on save.
+/// ([`sc_app::build_application_quick`]): no regenerated client, no
+/// prerendering, and an install only when the manifests changed, without the
+/// packages' install scripts unless the Development setting says to run them
+/// — what the IDE runs on save.
 pub async fn build_and_mount_with(
     apps: &AppMounts,
     app: Application,
@@ -1359,7 +1361,11 @@ pub async fn build_and_mount_with(
     }
     let source = app_source_from_config(&app.framework)?;
     let report = if quick {
-        sc_app::build_application_quick(catalog, &app, &source, apps.triggers()).await?
+        let scripts = match sc_config::install_scripts_on_save(catalog).await? {
+            true => sc_app::InstallScripts::Run,
+            false => sc_app::InstallScripts::Skip,
+        };
+        sc_app::build_application_quick(catalog, &app, &source, apps.triggers(), scripts).await?
     } else {
         build_application(catalog, &app, &source, apps.triggers()).await?
     };

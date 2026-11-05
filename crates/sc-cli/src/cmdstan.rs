@@ -199,8 +199,9 @@ pub async fn install(version: Option<Version>, dir: Option<PathBuf>, jobs: u32) 
         ),
         InstallEvent::Output(line) => eprintln!("  | {line}"),
     };
+    let operator = sc_proc::OperatorCli::new("cmdstan install");
     let installed = tokio::select! {
-        installed = sc_stan::cmdstan::install(&options, &mut on) => installed?,
+        installed = sc_stan::cmdstan::install(&options, &operator, &mut on) => installed?,
         _ = tokio::signal::ctrl_c() => {
             return Err(Error::config("interrupted; the partial install was removed"));
         }

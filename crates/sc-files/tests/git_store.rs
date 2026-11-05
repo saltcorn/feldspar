@@ -9,6 +9,10 @@
 //! the key is generated in the right shape and with the right permissions, which
 //! is the half that is ours rather than OpenSSH's.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

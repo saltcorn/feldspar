@@ -19,6 +19,11 @@ members = [
     # one SSRF rule, `PublicAddr`, and the HTTP client that connects to one.
     # Layer 0: it knows addresses and `reqwest`, nothing of the catalog.
     "crates/sc-net",
+    # The one way to start a host process (security review 2026-11 §4,
+    # TODO-type-hardening H4): a cleared environment, a timeout, operands
+    # that cannot be options, its own process group, and the authority it
+    # runs on. Layer 0: `sc-files` runs git, and it is below the catalog.
+    "crates/sc-proc",
     # The documentation agents read (`search_docs`, `read_docs`): `docs/`'s
     # tutorials and references and the admin UI's help topics (v1's
     # `help/*.tmd`, markdown templates filled in with what a screen is about),
@@ -176,6 +181,7 @@ sc-config-file = { path = "crates/sc-config-file" }
 # the *link*, not of any caller.
 sc-dns = { path = "crates/sc-dns" }
 sc-net = { path = "crates/sc-net" }
+sc-proc = { path = "crates/sc-proc" }
 sc-query = { path = "crates/sc-query" }
 # `default-features = false` at the workspace level so members choose: the
 # catalog takes the parse/validate/translate half only; the server adds

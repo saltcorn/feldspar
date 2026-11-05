@@ -511,6 +511,13 @@ impl ConsoleAdmin {
     pub fn vouched_by(&self) -> &'static str {
         self.admin.vouched_by()
     }
+
+    /// This administrator's authority to run a program on the server
+    /// (TODO-type-hardening H4.1): what `sc_proc::HostCommand::new` takes for
+    /// the shell, a build, an install.
+    pub fn spawn_proof(&self) -> sc_proc::AdminProof {
+        sc_proc::AdminProof::vouched(self.user_id().map(|id| id.to_string()), self.vouched_by())
+    }
 }
 
 impl std::ops::Deref for AdminPrincipal {
@@ -841,12 +848,17 @@ mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let inventory = std::fs::read_to_string(root.join("docs/SECURITY_REVIEW_2026-10.md"))
             .expect("the inventory");
-        const MAKERS: [&str; 5] = [
+        // And the spawn authorities (TODO-type-hardening H4.1): who a program
+        // the server starts runs for.
+        const MAKERS: [&str; 8] = [
             "AdminPrincipal::vouched(",
             "AdminPrincipal::system(",
             "ConsoleAdmin::at_console(",
             "ConsoleAdmin::system(",
             "Caller::system(",
+            "AdminProof::vouched(",
+            "SystemTask::new(",
+            "OperatorCli::new(",
         ];
         let mut missing = Vec::new();
         let mut sources = vec![root.join("crates")];
@@ -911,7 +923,7 @@ mod tests {
     fn reason_in(maker: &str, args: &str) -> Option<String> {
         // The reason is the last argument of a two-argument maker.
         let last = match maker {
-            "AdminPrincipal::vouched(" | "ConsoleAdmin::at_console(" => {
+            "AdminPrincipal::vouched(" | "ConsoleAdmin::at_console(" | "AdminProof::vouched(" => {
                 let mut depth = 0i32;
                 let mut split = None;
                 for (i, c) in args.char_indices() {

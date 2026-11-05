@@ -315,6 +315,10 @@ pub fn recorded_dir(prefix: Option<&str>, subdir: &str, dist: &std::path::Path) 
 }
 
 /// Run `npm <args>` in `dir`, failing the build loudly on any error.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "build script: npm builds the admin UI at compile time, on the build machine"
+)]
 fn run<const N: usize>(dir: &std::path::Path, args: [&str; N]) {
     let status = Command::new("npm")
         .args(args)

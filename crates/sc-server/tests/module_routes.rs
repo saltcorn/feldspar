@@ -6,6 +6,10 @@
 //! Needs `npm`, which is what installs the fixture module, and skips without
 //! it, as `module_seams.rs` does.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 
 use std::collections::HashMap;
 use std::path::PathBuf;

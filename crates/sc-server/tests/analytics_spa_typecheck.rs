@@ -5,6 +5,10 @@
 //! toolchain has not been installed under `ui/analytics`, so a Rust-only
 //! checkout stays green; run it after `npm ci` there.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::path::PathBuf;
 use std::process::Command;
 

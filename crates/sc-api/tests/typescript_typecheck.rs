@@ -21,6 +21,10 @@
 //! cargo test -p sc-api --test typescript_typecheck
 //! ```
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

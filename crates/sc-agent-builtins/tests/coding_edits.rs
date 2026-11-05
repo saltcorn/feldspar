@@ -1,4 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 
 //! The edit engine (coding agent milestone, Phase 5) against a real local file
 //! store, one run's trait state carried from call to call as the loop carries it:

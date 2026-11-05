@@ -567,11 +567,13 @@ async fn init_git_repo(source: &AppSource, project_path: Option<&std::path::Path
         // build (§13.3), which the build step says better than this could.
         return Ok(false);
     };
-    let output = sc_files::git_command::command_without_repository(path)
-        .arg("init")
-        .arg("--quiet")
-        .output()
-        .await;
+    let mut init = sc_proc::Git::without_repository(
+        path,
+        &crate::build::build_authority(),
+        sc_proc::Timeout::secs(60),
+    );
+    init.args(["init", "--quiet"]);
+    let output = init.output().await;
     match output {
         Ok(out) if out.status.success() => Ok(true),
         Ok(out) => {

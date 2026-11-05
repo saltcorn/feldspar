@@ -11,6 +11,10 @@
 //! `FELDSPAR_OS_RELEASE`, and a machine missing a tool with a `PATH` of links
 //! that leaves it out.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

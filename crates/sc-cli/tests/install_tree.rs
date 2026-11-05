@@ -10,6 +10,10 @@
 //! tests may well have some.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

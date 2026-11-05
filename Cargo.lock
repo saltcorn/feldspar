@@ -9096,6 +9096,7 @@ dependencies = [
  "sc-log",
  "sc-mcp",
  "sc-net",
+ "sc-proc",
  "sc-query",
  "sc-repomap",
  "sc-test-harness",
@@ -9196,6 +9197,7 @@ dependencies = [
  "sc-expr",
  "sc-files",
  "sc-i18n",
+ "sc-proc",
  "sc-query",
  "sc-stream",
  "sc-test-harness",
@@ -9304,6 +9306,7 @@ dependencies = [
  "sc-expr",
  "sc-files",
  "sc-log",
+ "sc-proc",
  "sc-query",
  "sc-test-harness",
  "sc-types",
@@ -9382,6 +9385,7 @@ dependencies = [
  "sc-migrate",
  "sc-module",
  "sc-net",
+ "sc-proc",
  "sc-python",
  "sc-query",
  "sc-server",
@@ -9585,6 +9589,7 @@ dependencies = [
  "mime_guess",
  "regex-lite",
  "sc-error",
+ "sc-proc",
  "sc-types",
  "serde",
  "serde_json",
@@ -9758,6 +9763,7 @@ dependencies = [
  "sc-live",
  "sc-log",
  "sc-model",
+ "sc-proc",
  "sc-query",
  "sc-stream",
  "sc-test-harness",
@@ -9780,6 +9786,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-proc"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "pty-process",
+ "sc-error",
+ "sc-log",
+ "tokio",
+]
+
+[[package]]
 name = "sc-python"
 version = "0.1.0"
 dependencies = [
@@ -9797,6 +9814,7 @@ dependencies = [
  "sc-files",
  "sc-model",
  "sc-module",
+ "sc-proc",
  "sc-query",
  "sc-test-harness",
  "sc-types",
@@ -9897,6 +9915,7 @@ dependencies = [
  "sc-model",
  "sc-module",
  "sc-net",
+ "sc-proc",
  "sc-python",
  "sc-query",
  "sc-ratelimit",
@@ -9933,6 +9952,7 @@ dependencies = [
  "sc-files",
  "sc-model",
  "sc-net",
+ "sc-proc",
  "sc-types",
  "serde",
  "serde_json",

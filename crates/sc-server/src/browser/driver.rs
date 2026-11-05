@@ -322,7 +322,15 @@ impl ChromiumDriver {
                 uuid::Uuid::new_v4().simple()
             ));
             let config = self.launch_config(&profile)?;
-            let (mut browser, mut handler) = Browser::launch(config).await.map_err(|e| {
+            // The one spawn not made with `sc_proc`: chromiumoxide starts the
+            // browser itself, with this process's environment (security
+            // review 2026-11, C3; listed in the system-authority inventory).
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "chromiumoxide starts the browser itself; this is the one place it does"
+            )]
+            let launched = Browser::launch(config).await;
+            let (mut browser, mut handler) = launched.map_err(|e| {
                 Error::config(format!(
                     "the browser at `{}` did not start: {e}",
                     self.config.executable.display()
@@ -651,14 +659,25 @@ fn watchdog(browser: u32, profile: &std::path::Path) -> Option<std::process::Chi
         server = std::process::id(),
         profile = profile.display().to_string().replace('\'', ""),
     );
-    std::process::Command::new("sh")
-        .args(["-c", &script])
-        .stdin(std::process::Stdio::null())
+    // Meant to outlive this process — it is what cleans up after a server
+    // that was killed — so detached: not killed with the server, nor when the
+    // handle is dropped. Its script holds only pids and a path from this
+    // process.
+    let mut watchdog = sc_proc::HostCommand::new(
+        "sh",
+        &BROWSER_WATCHDOG,
+        sc_proc::Timeout::unbounded("ends when the server or the browser does"),
+    );
+    watchdog
+        .flag_value("-c", &script)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()
+        .stderr(std::process::Stdio::null());
+    watchdog.spawn_detached().ok()
 }
+
+/// The browser's watchdog, the server's own.
+#[cfg(unix)]
+const BROWSER_WATCHDOG: sc_proc::SystemTask = sc_proc::SystemTask::new("browser watchdog");
 
 #[cfg(not(unix))]
 fn watchdog(_browser: u32, _profile: &std::path::Path) -> Option<std::process::Child> {

@@ -19,6 +19,10 @@
 //! `npm test` in `plugins/imap` (`test/mirror.test.mjs`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 
 #[cfg(feature = "deno-host")]
 mod deno {

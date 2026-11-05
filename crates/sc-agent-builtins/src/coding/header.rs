@@ -30,11 +30,11 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::process::Stdio;
 use std::time::Duration;
 
 use sc_agent::SessionContext;
 use sc_files::check_access;
+use sc_proc::{Git, Operand, RepoRoot, SystemTask, Timeout};
 use sc_types::Attrs;
 
 use super::assets;
@@ -173,42 +173,40 @@ async fn git_log(scope: &FileScope, cx: &SessionContext<'_>) -> Option<String> {
     if !dir.is_dir() {
         return None;
     }
-    let top = git(&dir, &["rev-parse", "--show-toplevel"]).await?;
-    let top = Path::new(top.trim()).canonicalize().ok()?;
+    // The work tree is the one `.git` names, which is what `git rev-parse
+    // --show-toplevel` would say once git is told where it is.
+    let top = RepoRoot::enclosing(&dir)?.path().canonicalize().ok()?;
     if !top.starts_with(store_dir.canonicalize().ok()?) {
         return None;
     }
-    let count = format!("-{GIT_LOG_ENTRIES}");
-    let log = git(
-        &dir,
-        &[
-            "log",
-            &count,
-            "--no-merges",
-            "--date=short",
-            "--pretty=format:%h %ad %s",
-            "--",
-            ".",
-        ],
-    )
-    .await?;
+    let mut log = git_in(&dir)?;
+    log.arg("log")
+        .flag_value("-n", Operand::number(GIT_LOG_ENTRIES as u64).as_os_str())
+        .args(["--no-merges", "--date=short", "--pretty=format:%h %ad %s"])
+        .operand(Operand::path("."));
+    let log = stdout(log).await?;
     let log = log.trim();
     (!log.is_empty()).then(|| format!("<git_log>\n{log}\n</git_log>"))
 }
 
-/// A git command's stdout in `dir`, when it succeeds in time.
-async fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    // Against the work tree's own repository, never one git discovers from
-    // `dir`, which a user below admin may write (security review 2026-11, #1).
-    let work_tree = sc_files::git_command::work_tree_of(dir)?;
-    let run = sc_files::git_command::command(&work_tree)
-        .current_dir(dir)
-        .args(["-c", "core.quotepath=false"])
-        .args(args)
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .output();
-    let output = tokio::time::timeout(GIT_TIMEOUT, run).await.ok()?.ok()?;
+/// Who reads the session header's git facts: the server, for any run (a
+/// non-admin's and a triggered one's included) — read-only queries whose
+/// arguments are the program's own.
+const SESSION_HEADER: SystemTask = SystemTask::new("coding session header: git log");
+
+/// `git` in `dir`, against the work tree's own repository, never one git
+/// discovers from `dir`, which a user below admin may write (security review
+/// 2026-11, #1). `None` outside any work tree.
+fn git_in(dir: &Path) -> Option<Git> {
+    let repo = RepoRoot::enclosing(dir)?;
+    let mut git = Git::new(&repo, &SESSION_HEADER, Timeout::after(GIT_TIMEOUT));
+    git.cwd(dir).args(["-c", "core.quotepath=false"]);
+    Some(git)
+}
+
+/// A git command's stdout, when it succeeds in time.
+async fn stdout(git: Git) -> Option<String> {
+    let output = git.output().await.ok()?;
     if !output.status.success() {
         return None;
     }

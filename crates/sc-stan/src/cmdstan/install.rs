@@ -27,7 +27,8 @@ use tokio::io::AsyncWriteExt;
 
 use super::discover::{CmdStan, Source};
 use super::version::{MIN_VERSION, Version};
-use crate::process::{KillGroupOnDrop, TAIL_LINES, forward_lines};
+use crate::process::{TAIL_LINES, forward_lines};
+use sc_proc::{HostCommand, Operand, OperatorCli, Timeout};
 
 /// GitHub's description of CmdStan's latest release; its `tag_name` is the
 /// version.
@@ -159,8 +160,12 @@ pub async fn latest_release() -> Result<Version> {
 
 /// Download, unpack and build a CmdStan release (see the module
 /// documentation). `on` hears what it is doing.
+///
+/// The operator's alone (`feldspar cmdstan install`): `operator` is the CLI's
+/// authority for the `tar` and `make` it runs.
 pub async fn install(
     options: &InstallOptions,
+    operator: &OperatorCli,
     on: &mut (dyn FnMut(InstallEvent<'_>) + Send),
 ) -> Result<Installed> {
     if options.jobs == 0 {
@@ -205,12 +210,12 @@ pub async fn install(
     download(&url, &tarball, on).await?;
 
     on(InstallEvent::Unpacking);
-    unpack(&tarball, &staging, &target).await?;
+    unpack(&tarball, &staging, &target, operator).await?;
     let _ = std::fs::remove_file(&tarball);
     let _ = std::fs::remove_dir_all(&staging);
 
     on(InstallEvent::Building { jobs: options.jobs });
-    build(&target, options.jobs, on).await?;
+    build(&target, options.jobs, operator, on).await?;
 
     let found = CmdStan::at(&target, Source::Default)?;
     if let Some(missing) = found.build_products().into_iter().find(|p| !p.is_file()) {
@@ -285,14 +290,16 @@ async fn download(
 /// With the system `tar`: a machine that can build CmdStan has one, and the
 /// build itself shells out to `curl` and `make` in the same spirit. Unpacking
 /// beside the target and renaming means `target` only ever appears whole.
-async fn unpack(tarball: &Path, staging: &Path, target: &Path) -> Result<()> {
+async fn unpack(
+    tarball: &Path,
+    staging: &Path,
+    target: &Path,
+    operator: &OperatorCli,
+) -> Result<()> {
     std::fs::create_dir_all(staging).with_context(|| format!("creating {}", staging.display()))?;
-    let output = tokio::process::Command::new("tar")
-        .arg("-xzf")
-        .arg(tarball)
-        .arg("-C")
-        .arg(staging)
-        .kill_on_drop(true)
+    let mut tar = HostCommand::new("tar", operator, Timeout::minutes(10));
+    tar.flag_value("-xzf", tarball).flag_value("-C", staging);
+    let output = tar
         .output()
         .await
         .context("running `tar` to unpack the CmdStan release")?;
@@ -324,29 +331,31 @@ async fn unpack(tarball: &Path, staging: &Path, target: &Path) -> Result<()> {
     clippy::disallowed_methods,
     reason = "unbounded: the lines a child process prints, read as they arrive; the child's run is bounded by its timeout"
 )]
-async fn build(dir: &Path, jobs: u32, on: &mut (dyn FnMut(InstallEvent<'_>) + Send)) -> Result<()> {
-    let mut command = tokio::process::Command::new("make");
+async fn build(
+    dir: &Path,
+    jobs: u32,
+    operator: &OperatorCli,
+    on: &mut (dyn FnMut(InstallEvent<'_>) + Send),
+) -> Result<()> {
+    // An hour: building CmdStan with one job on a small machine takes most of
+    // one; Ctrl-C (the CLI's) stops it sooner.
+    let mut command = HostCommand::new("make", operator, Timeout::minutes(90));
     command
         .arg("build")
-        .arg(format!("-j{jobs}"))
-        .current_dir(dir)
-        .stdin(std::process::Stdio::null())
+        .flag_value("-j", Operand::number(u64::from(jobs)).as_os_str())
+        .cwd(dir)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    #[cfg(unix)]
-    command.process_group(0);
+        .stderr(std::process::Stdio::piped());
     let mut child = command
         .spawn()
         .context("running `make build` in the CmdStan directory (is `make` on the PATH?)")?;
-    let _group = KillGroupOnDrop(child.id());
 
     // Both streams into one channel, in the order the lines arrive.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    if let Some(stdout) = child.stdout.take() {
+    if let Some(stdout) = child.take_stdout() {
         forward_lines(stdout, tx.clone());
     }
-    if let Some(stderr) = child.stderr.take() {
+    if let Some(stderr) = child.take_stderr() {
         forward_lines(stderr, tx.clone());
     }
     drop(tx);
@@ -451,14 +460,20 @@ mod tests {
             root: root.clone(),
             jobs: 1,
         };
-        let err = install(&old, &mut quiet).await.unwrap_err().to_string();
+        let err = install(&old, &OperatorCli::new("test"), &mut quiet)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("2.32.2") && err.contains("too old"), "{err}");
         let zero = InstallOptions {
             version: Some(v("2.40.0")),
             jobs: 0,
             ..old
         };
-        let err = install(&zero, &mut quiet).await.unwrap_err().to_string();
+        let err = install(&zero, &OperatorCli::new("test"), &mut quiet)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("--jobs"), "{err}");
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
         std::fs::remove_dir_all(&root).unwrap();
@@ -479,7 +494,10 @@ mod tests {
         // Something is there, but it is not a built CmdStan: refused, and kept.
         std::fs::create_dir_all(target.join("bin")).unwrap();
         std::fs::write(target.join("makefile"), "CMDSTAN_VERSION := 2.40.0\n").unwrap();
-        let err = install(&options, &mut on).await.unwrap_err().to_string();
+        let err = install(&options, &OperatorCli::new("test"), &mut on)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("already exists") && err.contains("remove it"),
             "{err}"
@@ -491,7 +509,9 @@ mod tests {
         for product in existing.build_products() {
             std::fs::write(product, "").unwrap();
         }
-        let installed = install(&options, &mut on).await.unwrap();
+        let installed = install(&options, &OperatorCli::new("test"), &mut on)
+            .await
+            .unwrap();
         assert!(matches!(installed, Installed::Already(_)), "{installed:?}");
         assert_eq!(installed.cmdstan().dir, target);
         assert_eq!(heard, 0, "nothing was downloaded or built");

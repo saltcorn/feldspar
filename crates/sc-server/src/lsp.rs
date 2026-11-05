@@ -47,7 +47,6 @@ use futures::{SinkExt, StreamExt};
 use sc_catalog::Catalog;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// The route the IDE opens its language-server socket on. `{store}` is the store
@@ -177,6 +176,7 @@ pub(crate) async fn language_server_upgrade(
     program: Arc<PathBuf>,
     store: String,
     session: crate::admin_session::AdminWatch,
+    who: sc_proc::AdminProof,
 ) -> axum::response::Response {
     // Both questions are answered before the upgrade, so a refusal costs no
     // process and no socket beyond the one it is reported on.
@@ -187,7 +187,7 @@ pub(crate) async fn language_server_upgrade(
                 // Held open only while the admin session lasts (#42's class):
                 // its end drops the bridge, which kills the process.
                 return ws.on_upgrade(move |socket| {
-                    session.guard(bridge(socket, program, root, store, permit))
+                    session.guard(bridge(socket, program, root, store, permit, who))
                 });
             }
             Err(_) => format!(
@@ -243,8 +243,9 @@ async fn bridge(
     root: PathBuf,
     store: String,
     permit: OwnedSemaphorePermit,
+    who: sc_proc::AdminProof,
 ) {
-    let mut child = match spawn_language_server(&program, &root) {
+    let mut child = match spawn_language_server(&program, &root, &who) {
         Ok(child) => child,
         Err(e) => {
             eprintln!("feldspar: language server for {store}: {e}");
@@ -259,7 +260,7 @@ async fn bridge(
     let server_root = format!("file://{}", root.display());
 
     let (mut stdin, stdout, stderr) =
-        match (child.stdin.take(), child.stdout.take(), child.stderr.take()) {
+        match (child.take_stdin(), child.take_stdout(), child.take_stderr()) {
             (Some(i), Some(o), Some(e)) => (i, o, e),
             _ => {
                 eprintln!("feldspar: language server for {store}: no pipes on the child process");
@@ -337,17 +338,25 @@ async fn bridge(
 /// project's TypeScript more closely: whoever may edit the store may write that
 /// file, and it would run as the server's operating-system user the next time
 /// an admin opened the IDE (security review #16).
-fn spawn_language_server(program: &Path, root: &Path) -> std::io::Result<Child> {
-    let mut command = Command::new(program);
+fn spawn_language_server(
+    program: &Path,
+    root: &Path,
+    who: &sc_proc::AdminProof,
+) -> Result<sc_proc::Child, sc_proc::ProcError> {
+    let mut command = sc_proc::HostCommand::new(
+        sc_proc::Program::path(program),
+        who,
+        sc_proc::Timeout::unbounded("a language server lives as long as its socket"),
+    );
+    // A belt to the braces of the explicit kill above: if this task is
+    // cancelled rather than run to its end, the child (its process group)
+    // still goes when it is dropped.
     command
         .arg("--stdio")
-        .current_dir(root)
-        .stdin(Stdio::piped())
+        .cwd(root)
+        .stdin_piped()
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // A belt to the braces of the explicit kill above: if this task is
-        // cancelled rather than run to its end, the child still goes.
-        .kill_on_drop(true);
+        .stderr(Stdio::piped());
     command.spawn()
 }
 

@@ -36,6 +36,8 @@ deno-host = [
 ]
 
 [dependencies]
+# `npm` for module installs, started the one way (H4).
+sc-proc.workspace = true
 # A target operation's files arrive base64-encoded, since a keystore is bytes
 # and a module's answer crosses from its JavaScript into Rust as JSON text.
 base64.workspace = true

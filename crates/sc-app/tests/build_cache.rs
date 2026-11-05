@@ -7,6 +7,10 @@
 //! generated client: it is emitted before every build, so it must come out
 //! byte-identical from an unchanged schema, or the cache would never hit.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixture: starts the programs a test drives (the server binary, git, npm, a browser) directly"
+)]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

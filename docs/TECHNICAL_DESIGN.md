@@ -71,6 +71,10 @@ feldspar/
 │  │                              #    `is_public`, `PublicAddr`, the SSRF resolver and the
 │  │                              #    `PublicClient` the agent's http trait, `fetch` and MCP
 │  │                              #    send with; an SMTP override's pinned address
+│  ├─ sc-proc/                    # 0. the one way to start a host process: `HostCommand`
+│  │                              #    (cleared environment, mandatory timeout, operands that
+│  │                              #    cannot be options, own process group, a sealed spawn
+│  │                              #    authority) and `Git` over a `RepoRoot`
 │  ├─ sc-ratelimit/               # 3. in-memory token-bucket rate limiter keyed by string,
 │  │                              #    and the client-IP rule (queries, logins, code bodies)
 │  ├─ sc-i18n/                    # 0. Locale, negotiation, the Catalog, the message format,
@@ -309,6 +313,8 @@ graph TD
   server --> ratelimit
   python --> expr
   files --> types["sc-types"]
+  files --> proc["sc-proc"]
+  proc --> log
   types --> query
   types --> i18n["sc-i18n"]
   i18n --> error
@@ -326,6 +332,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-config-file` | `sc-error` |
 | `sc-dns` | `sc-error` |
 | `sc-net` | `sc-error` |
+| `sc-proc` | `sc-error` `sc-log` |
 | `sc-ratelimit` | `sc-types` |
 | `sc-query` | `sc-error` |
 | `sc-repomap` | — (nothing in the workspace) |
@@ -337,8 +344,8 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-db-sqlite` | `sc-db` `sc-error` `sc-log` `sc-query` |
 | `sc-migrate` | `sc-db` `sc-error` `sc-query` |
 | `sc-expr` | `sc-error` `sc-query` `sc-ratelimit` `sc-types` |
-| `sc-files` | `sc-error` `sc-types` |
-| `sc-catalog` | `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-query` `sc-types` |
+| `sc-files` | `sc-error` `sc-proc` `sc-types` |
+| `sc-catalog` | `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-proc` `sc-query` `sc-types` |
 | `sc-config` | `sc-catalog` `sc-db` `sc-error` `sc-i18n` `sc-log` `sc-query` `sc-types` |
 | `sc-email` | `sc-catalog` `sc-config` `sc-error` `sc-net` |
 | `sc-auth` | `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
@@ -350,21 +357,21 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-model` | `sc-catalog` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-query` `sc-types` |
 | `sc-analytics` | `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-db-sqlite` `sc-error` `sc-model` `sc-query` `sc-types` |
 | `sc-stream` | `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-query` `sc-types` |
-| `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-net` `sc-types` |
+| `sc-stan` | `sc-catalog` `sc-error` `sc-files` `sc-model` `sc-net` `sc-proc` `sc-types` |
 | `sc-agent` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-llm` `sc-log` `sc-query` `sc-types` |
 | `sc-workflow` | `sc-action` `sc-agent` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-types` |
 | `sc-api` | `sc-access` `sc-action` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-model` `sc-query` `sc-ratelimit` `sc-types` |
-| `sc-app` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-stream` `sc-types` |
+| `sc-app` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-proc` `sc-query` `sc-stream` `sc-types` |
 | `sc-live` | `sc-access` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-stream` `sc-types` |
 | `sc-action-builtins` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-config` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-net` `sc-query` `sc-types` |
 | `sc-viewpattern` | `sc-access` `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-types` |
-| `sc-module` | `sc-access` `sc-action` `sc-action-builtins` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
-| `sc-python` | `sc-action` `sc-action-builtins` `sc-catalog` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-types` |
+| `sc-module` | `sc-access` `sc-action` `sc-action-builtins` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-proc` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
+| `sc-python` | `sc-action` `sc-action-builtins` `sc-catalog` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-proc` `sc-types` |
 | `sc-check` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
-| `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-query` `sc-repomap` `sc-types` |
+| `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-proc` `sc-query` `sc-repomap` `sc-types` |
 | `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-net` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-net` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-net` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
+| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:
 
@@ -7214,7 +7221,9 @@ command and install step are started with. That is where a toolchain goes, and a
 from its **own settings**: `plugins/react-native` has an Android SDK and a JDK directory on the
 Modules tab, and its `frameworks` export is a function of them. Saving the settings reloads the
 module and so the declaration. A blank value is left out rather than set empty, so an unconfigured
-module falls back to the server's environment. A target also declares `requires`: what the machine must have before it can
+module falls back to the server's environment (for the variables a requirement names and the
+usual toolchain ones — `JAVA_HOME`, `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `ANDROID_NDK_HOME`,
+`GRADLE_USER_HOME`, `GRADLE_OPTS`, `DEVELOPER_DIR` — and no others). A target also declares `requires`: what the machine must have before it can
 build. Each entry is one of `{ env, directory }` (a variable the build sees is set, and is a
 directory), `{ command, dir_env }` (a program is on the build's `PATH`, or in the directory the
 optional `dir_env` variable names, which the build is expected to put on its own `PATH`) and
@@ -8235,6 +8244,21 @@ has to fit on a 1 GB machine. For the same reason a build command of exactly
 `pre`/`post` hooks, `node_modules/.bin` on `PATH` and the `npm_lifecycle_*` variables, but
 without an `npm` process holding ~60 MB for the length of the build. Anything else goes to npm
 as written.
+
+Every step a build starts is an `sc_proc::HostCommand` (security review 2026-11 §4,
+TODO-type-hardening H4): a **cleared environment** (`sc_proc::BASE_ENV` — the path, the locale,
+the home and temporary directories, proxies and certificate bundles — not the server's database
+URL, passwords or `FELDSPAR_*` settings; a target adds its toolchain's and its requirements'
+variables, then its own `env`), and a **time limit**: 20 minutes for the install, 20 for the
+bundler (all of an npm script's steps together), 15 for a type check, 2 hours for a native
+target. At the limit the step's whole process group is killed and the build fails saying so,
+which releases `BUILD_LOCK`: a bundler left in watch mode or an install waiting on a dead
+registry no longer holds every build, check and IDE save until a restart. An npm script's
+`node_modules/.bin` search stops at the store's root. An **IDE save** that installs (the first
+save, or one that changed a manifest) runs the package manager with `--ignore-scripts` (npm,
+pnpm, yarn and bun; another installer is not run on a save), unless the Development setting
+`install_scripts_on_save` is on; such an install is stamped as one without scripts, so the next
+Build installs again with them, and a save after a Build has nothing to install.
 
 #### Analytics: part of the Analytics UI as an application
 

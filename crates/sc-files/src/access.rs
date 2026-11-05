@@ -45,7 +45,7 @@
 //! floor is not enough to overwrite or delete somebody else's upload.
 
 use crate::store::{FileMeta, FileStore};
-use crate::store_path::{AsStorePath, StorePath};
+use crate::store_path::{AsStorePath, HostCode, StorePath};
 use sc_error::{Error, Result};
 use sc_types::Role;
 
@@ -225,10 +225,11 @@ pub async fn check_access(
 /// deleting or moving every file in it, so one that holds somebody else's file
 /// is refused exactly as that file would be.
 ///
-/// Below admin, a file that decides what a build runs ([`controls_build`]) is
-/// refused whatever the floor: an admin's next build or check runs it as the
-/// server's operating-system user. So is one that configures Claude Code
-/// ([`configures_coding_agent`]): the admin's terminal starts in a store.
+/// Below admin, a file that becomes code the server runs
+/// ([`StorePath::host_code_kind`](crate::StorePath::host_code_kind): a build's
+/// or a package manager's instructions, git's internals, Claude Code's
+/// configuration) is refused whatever the floor: an admin's next build, check,
+/// `git` command or terminal runs it as the server's operating-system user.
 pub async fn check_write(
     store: &dyn FileStore,
     store_min_role: Option<Role>,
@@ -240,11 +241,8 @@ pub async fn check_write(
     if caller.is_admin() {
         return Ok(());
     }
-    if controls_build(path.as_str()) {
-        return Err(build_input_refused(path.as_str()));
-    }
-    if configures_coding_agent(path.as_str()) {
-        return Err(agent_config_refused(path.as_str()));
+    if let Some(kind) = path.host_code_kind() {
+        return Err(host_code_refused(path.as_str(), kind));
     }
     let meta = store.get_meta(path).await.unwrap_or_default();
     let permitted = match &meta.owner {
@@ -262,95 +260,11 @@ pub async fn check_write(
     Ok(())
 }
 
-/// The files a JavaScript build or install reads as *instructions*, not as
-/// source: `package.json` (its scripts), lockfiles (where packages come from),
-/// the package managers' rc files (`script-shell`, registries), bundler and tool
-/// configs (`vite.config.js`, `astro.config.mjs`, `.postcssrc.js`: code the
-/// bundler runs), and anything under `node_modules` (the packages themselves,
-/// `.bin` included).
-///
-/// Whoever may write one of these decides what runs at the next `npm install`,
-/// build or check, and those run as the server's operating-system user — so
-/// below admin they are refused on every write route (security review #16).
-/// Matched on any segment, in any case, with trailing dots and spaces ignored,
-/// as [`in_git_dir`](crate::in_git_dir) is. A directory that merely *contains*
-/// one is not matched: moving it keeps the names inside, and no new file can be
-/// given one of these names below admin.
-pub fn controls_build(path: &str) -> bool {
-    const FILES: [&str; 14] = [
-        "package.json",
-        "package-lock.json",
-        "npm-shrinkwrap.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "pnpm-workspace.yaml",
-        "bun.lock",
-        "bun.lockb",
-        "deno.json",
-        "deno.jsonc",
-        ".npmrc",
-        ".yarnrc",
-        ".yarnrc.yml",
-        ".pnpmfile.cjs",
-    ];
-    const CONFIG_EXTS: [&str; 7] = ["js", "cjs", "mjs", "ts", "cts", "mts", "json"];
-    let segments: Vec<String> = path
-        .split(['/', '\\'])
-        .map(|s| s.trim_end_matches(['.', ' ']).to_ascii_lowercase())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let Some(name) = segments.last() else {
-        return false;
-    };
-    if segments.iter().any(|s| s == "node_modules") || FILES.contains(&name.as_str()) {
-        return true;
-    }
-    // `<tool>.config.<ext>` and `<tool>.config.<variant>.<ext>` (`vite.config.ts`,
-    // `vite.config.prod.ts`), and a tool's rc file in code (`.postcssrc.js`).
-    let Some((stem, ext)) = name.rsplit_once('.') else {
-        return false;
-    };
-    CONFIG_EXTS.contains(&ext)
-        && (stem.split('.').skip(1).any(|part| part == "config")
-            || (stem.starts_with('.') && stem.ends_with("rc")))
-}
-
-/// The files Claude Code reads from the directory it starts in as its own
-/// configuration: anything under `.claude` (`settings.json` hooks run shell
-/// commands, `permissions.allow` grants tools, plus commands, agents and
-/// skills), and the `CLAUDE.md` / `CLAUDE.local.md` instructions.
-///
-/// The admin's terminal starts Claude Code in an app's source directory or a
-/// store's root, as the server's operating-system user, so whoever writes one
-/// of these decides what runs there — below admin they are refused on every
-/// write route (security review 2026-11, #2). Matched as [`controls_build`]
-/// matches: any segment, any case, trailing dots and spaces ignored.
-pub fn configures_coding_agent(path: &str) -> bool {
-    let segments: Vec<String> = path
-        .split(['/', '\\'])
-        .map(|s| s.trim_end_matches(['.', ' ']).to_ascii_lowercase())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let Some(name) = segments.last() else {
-        return false;
-    };
-    // `.claude.` trims to `.claude` too.
-    segments.iter().any(|s| s == ".claude") || name == "claude.md" || name == "claude.local.md"
-}
-
-/// The refusal [`check_write`] gives a coding agent's configuration.
-fn agent_config_refused(path: &str) -> Error {
+/// The refusal [`check_write`] gives a path that becomes code the server runs.
+fn host_code_refused(path: &str, kind: HostCode) -> Error {
     Error::auth(format!(
-        "only an administrator may write {path:?}: it configures the coding agent an \
-         administrator runs on the server"
-    ))
-}
-
-/// The refusal [`check_write`] gives a build input.
-fn build_input_refused(path: &str) -> Error {
-    Error::auth(format!(
-        "only an administrator may write {path:?}: it decides what a build or install \
-         runs on the server"
+        "only an administrator may write {path:?}: it decides {}",
+        kind.decides()
     ))
 }
 

@@ -1,35 +1,37 @@
 //! The child processes a fit starts — `make` for a compile, the compiled model
-//! once per chain — and the three things every one of them gets (TODO §13):
+//! once per chain — and the three things every one of them gets (TODO §13),
+//! all of them now [`sc_proc::HostCommand`]'s (TODO-type-hardening H4.2):
 //!
-//! - **a scrubbed environment**: `PATH`, `HOME`, `TMPDIR` and CmdStan's own
+//! - **a scrubbed environment**: [`sc_proc::BASE_ENV`] and CmdStan's own
 //!   variables, nothing else, so a model never sees the server's secrets;
 //! - **a process group of its own**, killed as a whole — `make` is a tree of
 //!   compilers, and killing the leader alone leaves them running;
-//! - **death with the server**: `kill_on_drop`, a group kill when the handle is
-//!   dropped, and on Linux `PR_SET_PDEATHSIG`, so a server that dies takes its
-//!   chains with it rather than leaving them sampling for an hour into a
-//!   directory nobody will read.
+//! - **death with the server**: the group is killed when the
+//!   [`sc_proc::Child`] is dropped, and on Linux `PR_SET_PDEATHSIG`, so a
+//!   server that dies takes its chains with it rather than leaving them
+//!   sampling for an hour into a directory nobody will read.
 //!
 //! And [`Watch`]: what stops a running child early — a cancel, read from the
 //! fit's context, or the fit's deadline — polled while its output is read.
-//!
-//! May use `unsafe` (the workspace denies it) for the two `libc` calls a child
-//! process needs and std has no safe form of: `prctl(PR_SET_PDEATHSIG)` in
-//! `pre_exec`, and `killpg`.
-#![allow(unsafe_code)]
 
 use std::collections::VecDeque;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use sc_proc::{HostCommand, Program, SystemTask, Timeout};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-/// The variables a child keeps from the server's environment. `CXX` is the
-/// operator's choice of compiler (the one `feldspar cmdstan status` reports),
-/// not an admin's: nothing an admin configures reaches a child's environment
-/// or command line.
-const KEPT_ENV: [&str; 5] = ["PATH", "HOME", "TMPDIR", "CMDSTAN", "CXX"];
+/// On whose authority a fit's programs run: the server's, compiling and
+/// sampling a Stan program into a scratch directory. Nothing an admin
+/// configures reaches a child's environment or command line; `CXX` is the
+/// operator's choice of compiler (the one `feldspar cmdstan status` reports).
+pub(crate) const FIT: SystemTask = SystemTask::new("a Stan model fit (make, chains, stanc)");
+
+/// A fit's child is bounded by its [`Watch`] — the fit's deadline and its
+/// cancel — rather than by a timeout of its own.
+pub(crate) const BOUNDED_BY_WATCH: Timeout =
+    Timeout::unbounded("bounded by the fit's Watch: its deadline and its cancel");
 
 /// How often a running child is checked for a cancel or the deadline.
 pub(crate) const POLL: Duration = Duration::from_millis(100);
@@ -38,64 +40,18 @@ pub(crate) const POLL: Duration = Duration::from_millis(100);
 pub(crate) const TAIL_LINES: usize = 40;
 
 /// A command for `program`, configured as every child of a fit is: scrubbed
-/// environment, no stdin, both streams piped, its own process group, killed
-/// on drop and, on Linux, when the server dies.
-pub(crate) fn command(program: &Path) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(program);
+/// environment plus CmdStan's variables, no stdin, both streams piped, its own
+/// process group.
+pub(crate) fn command(program: &Path) -> HostCommand {
+    let mut command = HostCommand::new(Program::path(program), &FIT, BOUNDED_BY_WATCH);
     command
-        .env_clear()
-        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    for var in KEPT_ENV {
-        if let Some(value) = std::env::var_os(var) {
-            command.env(var, value);
-        }
-    }
-    // CmdStan's own variables (`STAN_THREADS`, `STAN_NUM_THREADS`, …).
-    for (var, value) in std::env::vars_os() {
-        if var.to_string_lossy().starts_with("STAN_") {
-            command.env(var, value);
-        }
-    }
-    #[cfg(unix)]
-    command.process_group(0);
-    #[cfg(target_os = "linux")]
-    // SAFETY: `prctl` is async-signal-safe, which is all a `pre_exec` closure
-    // may call.
-    unsafe {
-        command.pre_exec(|| {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-            Ok(())
-        });
-    }
+        .inherit(sc_proc::env_name!("CMDSTAN"))
+        .inherit(sc_proc::env_name!("CXX"))
+        // CmdStan's own variables (`STAN_THREADS`, `STAN_NUM_THREADS`, …).
+        .inherit_prefix("STAN_");
     command
-}
-
-/// Kills the process group led by the given process when dropped. After the
-/// group has exited normally the signal finds nothing, which is harmless.
-pub(crate) struct KillGroupOnDrop(pub(crate) Option<u32>);
-
-impl KillGroupOnDrop {
-    /// Kill the group now.
-    pub(crate) fn kill(&self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.0.and_then(|pid| libc::pid_t::try_from(pid).ok()) {
-            // SAFETY: `killpg` takes plain integers and has no memory effects;
-            // `pid` leads the group because the child was spawned with
-            // `process_group(0)`.
-            unsafe {
-                libc::killpg(pid, libc::SIGKILL);
-            }
-        }
-    }
-}
-
-impl Drop for KillGroupOnDrop {
-    fn drop(&mut self) {
-        self.kill();
-    }
 }
 
 /// Every line `stream` produces, sent to `tx` as it arrives.
@@ -123,13 +79,13 @@ pub(crate) fn forward_lines(
     reason = "unbounded: the lines a child process prints, read as they arrive; the child's run is bounded by its timeout"
 )]
 pub(crate) fn output_lines(
-    child: &mut tokio::process::Child,
+    child: &mut sc_proc::Child,
 ) -> tokio::sync::mpsc::UnboundedReceiver<String> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    if let Some(stdout) = child.stdout.take() {
+    if let Some(stdout) = child.take_stdout() {
         forward_lines(stdout, tx.clone());
     }
-    if let Some(stderr) = child.stderr.take() {
+    if let Some(stderr) = child.take_stderr() {
         forward_lines(stderr, tx);
     }
     rx
