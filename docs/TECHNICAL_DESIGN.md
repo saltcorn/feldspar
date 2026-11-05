@@ -1631,7 +1631,7 @@ whose damage is invisible in the schema afterwards — is reported back to the m
 access settings, and may turn RLS on, but on a table with RLS only a person, in the admin UI or
 with the CLI, may change them.)
 
-### 7.3a Formula additions, and RLS as a hard boundary (TODO-type-hardening H7)
+### 7.3a Formula additions, and RLS as a hard boundary (TODO-type-hardening H7, H8)
 
 **Status: design, not yet built.** This comes from the November 2026 security review
 ([SECURITY_REVIEW_2026-11.md](./SECURITY_REVIEW_2026-11.md)).
@@ -1833,7 +1833,7 @@ its rules changed:
 - DDL in a custom SQL query or `db.sql()` that disables or reshapes policies:
   `ALTER TABLE … DISABLE | NO FORCE ROW LEVEL SECURITY`, and `CREATE`, `ALTER` or
   `DROP POLICY` (a new permissive `USING (true)` policy widens just as well). This is refused
-  by the same statement check that refuses `set_config` (H7.9).
+  by the same statement check that refuses `set_config` (H8.3).
 - An import or restore that agents can start (application import, partial restore, app sync)
   that would replace an RLS table's metadata with `rls_enabled: false`.
 
@@ -1872,7 +1872,7 @@ the event, its row and the caller (`user` in the code) are as before.
 
 **Only a person approves it.** An agent, an MCP client or a code body may set it, which records
 a request, but the trigger keeps running at the cause's authority until a person approves it.
-A person is an admin in a browser session or an operator with the CLI, as in H7.11. The admin
+A person is an admin in a browser session or an operator with the CLI, as in H8.5. The admin
 UI's triggers list shows every trigger that runs as system and every pending request, with the
 code to read. An agent that sets it is told: *"`<trigger>` will run as system once a person
 approves it in the admin UI. Until then it runs as the user who caused it."*
@@ -1945,7 +1945,7 @@ for (const u of await db.users.where({ wants_reminders: true }).rows()) {
 - **Not checked today.** `load_named_user` (`sc-api/src/code_host/mod.rs`) loads any user
   without comparing it to the cause, on the reasoning that a body "already runs as admin".
   That no longer holds in a code query, which defaults to the caller: a query that passes a
-  request-supplied id to `forUser` would run as that user, an admin included. H7.8 closes it.
+  request-supplied id to `forUser` would run as that user, an admin included. H8.2 closes it.
 
 ### 7.4 Roles (`_fd_roles`)
 
