@@ -9598,6 +9598,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-http"
+version = "0.1.0"
+dependencies = [
+ "http",
+]
+
+[[package]]
 name = "sc-i18n"
 version = "0.1.0"
 dependencies = [
@@ -9760,6 +9767,7 @@ dependencies = [
  "sc-error",
  "sc-expr",
  "sc-files",
+ "sc-http",
  "sc-live",
  "sc-log",
  "sc-model",
@@ -9906,6 +9914,7 @@ dependencies = [
  "sc-error",
  "sc-expr",
  "sc-files",
+ "sc-http",
  "sc-i18n",
  "sc-live",
  "sc-llm",
@@ -10035,6 +10044,7 @@ dependencies = [
  "sc-error",
  "sc-expr",
  "sc-files",
+ "sc-http",
  "sc-i18n",
  "sc-query",
  "sc-test-harness",

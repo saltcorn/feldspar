@@ -1551,32 +1551,11 @@ fn body_json(body: &RequestBody) -> Json {
 /// Where a form post that names `redirect` goes: the path, if it is one on this
 /// application, else `/`. An absolute URL, a protocol-relative `//host` and a
 /// backslash trick are all refused — v1's `safe_redirect` rule, because the
-/// value is whatever was in the query.
-///
-/// What is kept is encoded as Express's `res.redirect` encodes a `Location`
-/// (`encodeurl`): a space or a non-ASCII character becomes its `%XX`, and an
-/// escape already there is left alone — the query decoded `%20` into the space
-/// this puts back.
+/// value is whatever was in the query — and what is kept is encoded as
+/// Express's `res.redirect` encodes a `Location`: the one rule of
+/// [`sc_http::RedirectTarget`] (security review 2026-11 D6).
 fn safe_redirect(redirect: Option<&str>) -> String {
-    match redirect {
-        Some(path)
-            if path.starts_with('/')
-                && !path.starts_with("//")
-                && !path.contains('\\')
-                && !path.chars().any(char::is_control) =>
-        {
-            let mut out = String::with_capacity(path.len());
-            for byte in path.bytes() {
-                if byte <= b' ' || byte >= 0x7f || b"\"<>^`{|}".contains(&byte) {
-                    out.push_str(&format!("%{byte:02X}"));
-                } else {
-                    out.push(char::from(byte));
-                }
-            }
-            out
-        }
-        _ => "/".to_owned(),
-    }
+    sc_http::RedirectTarget::or_root(redirect).into_string()
 }
 
 /// A JSON response under `status`.

@@ -7,7 +7,7 @@ use super::*;
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
-    reg.register_admin("listFields", {
+    reg.handle(sc_api::handler_ids::LIST_FIELDS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -32,7 +32,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listInboundKeys", {
+    reg.handle(sc_api::handler_ids::LIST_INBOUND_KEYS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -51,7 +51,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createField", {
+    reg.handle(sc_api::handler_ids::CREATE_FIELD, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -96,7 +96,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateField", {
+    reg.handle(sc_api::handler_ids::UPDATE_FIELD, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -170,7 +170,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteField", {
+    reg.handle(sc_api::handler_ids::DELETE_FIELD, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -196,7 +196,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listConstraints", {
+    reg.handle(sc_api::handler_ids::LIST_CONSTRAINTS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -211,7 +211,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createConstraint", {
+    reg.handle(sc_api::handler_ids::CREATE_CONSTRAINT, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -248,7 +248,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteConstraint", {
+    reg.handle(sc_api::handler_ids::DELETE_CONSTRAINT, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -269,7 +269,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listFieldTypes", {
+    reg.handle(sc_api::handler_ids::LIST_FIELD_TYPES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();

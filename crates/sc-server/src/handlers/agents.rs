@@ -13,7 +13,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // registry the chat socket runs with, and the list carries the reason a
     // stored agent is not usable beside it — because editing it is the repair.
 
-    reg.register_admin("listAgents", {
+    reg.handle(sc_api::handler_ids::LIST_AGENTS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |_ctx| {
@@ -42,7 +42,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createAgent", {
+    reg.handle(sc_api::handler_ids::CREATE_AGENT, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -57,7 +57,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateAgent", {
+    reg.handle(sc_api::handler_ids::UPDATE_AGENT, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -83,7 +83,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteAgent", {
+    reg.handle(sc_api::handler_ids::DELETE_AGENT, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -104,7 +104,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listAgentTraits", {
+    reg.handle(sc_api::handler_ids::LIST_AGENT_TRAITS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -129,7 +129,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listRuns", {
+    reg.handle(sc_api::handler_ids::LIST_RUNS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -145,7 +145,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getRun", {
+    reg.handle(sc_api::handler_ids::GET_RUN, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -159,7 +159,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getRunPart", {
+    reg.handle(sc_api::handler_ids::GET_RUN_PART, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -174,7 +174,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getRunDiff", {
+    reg.handle(sc_api::handler_ids::GET_RUN_DIFF, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -191,7 +191,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteRun", {
+    reg.handle(sc_api::handler_ids::DELETE_RUN, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();

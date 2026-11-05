@@ -24,6 +24,11 @@ members = [
     # that cannot be options, its own process group, and the authority it
     # runs on. Layer 0: `sc-files` runs git, and it is below the catalog.
     "crates/sc-proc",
+    # Values that go into an HTTP response header, each made by one rule
+    # (security review 2026-11 D6, D7; TODO-type-hardening H6.3): a
+    # same-origin `RedirectTarget` and a `DownloadName`. Layer 0: the server,
+    # the module runtime and the v1 view runtime all redirect.
+    "crates/sc-http",
     # The documentation agents read (`search_docs`, `read_docs`): `docs/`'s
     # tutorials and references and the admin UI's help topics (v1's
     # `help/*.tmd`, markdown templates filled in with what a screen is about),
@@ -182,6 +187,7 @@ sc-config-file = { path = "crates/sc-config-file" }
 sc-dns = { path = "crates/sc-dns" }
 sc-net = { path = "crates/sc-net" }
 sc-proc = { path = "crates/sc-proc" }
+sc-http = { path = "crates/sc-http" }
 sc-query = { path = "crates/sc-query" }
 # `default-features = false` at the workspace level so members choose: the
 # catalog takes the parse/validate/translate half only; the server adds
@@ -480,6 +486,9 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 # workbench, bridged to a `typescript-language-server` process on the server.
 axum = { version = "0.8", features = ["macros", "ws"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
+# `HeaderValue`, for `sc-http`'s header-safe values. The version axum and
+# reqwest already bring in.
+http = "1"
 # A cookie's `Max-Age` is a `time::Duration` (the `cookie` crate's own type,
 # which `axum-extra` does not re-export). Already in the tree through `cookie`.
 time = "0.3"

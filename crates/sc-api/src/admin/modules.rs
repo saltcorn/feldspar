@@ -21,7 +21,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     //   `listModules` never fails because one module is broken.
 
     set.register(
-        Endpoint::new("listModules", Method::Get, api().lit("modules"))
+        Endpoint::new(ids::LIST_MODULES, Method::Get, api().lit("modules"))
             .output(TypeSchema::struct_of([
                 StructField::new("modules", TypeSchema::array(module_schema())),
                 // Where packages are installed on this server, and whether the
@@ -77,8 +77,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                  Python code can use.",
                 )
                 .in_area(Area::Modules),
-            )
-            .auth(AuthRequirement::admin()),
+            ),
     );
 
     // **Install**: `npm install` in the modules root, then load. The body is the
@@ -91,7 +90,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // language comes from the catalog, and so do the permissions the module is
     // granted — the card printed them beside the button.
     set.register(
-        Endpoint::new("installModule", Method::Post, api().lit("modules"))
+        Endpoint::new(ids::INSTALL_MODULE, Method::Post, api().lit("modules"))
             .input(TypeSchema::struct_of([
                 StructField::new("source", TypeSchema::text()),
                 StructField::new("location", TypeSchema::text()),
@@ -119,8 +118,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 )
                 .in_area(Area::Modules)
                 .needs(Grant::Create),
-            )
-            .auth(AuthRequirement::admin()),
+            ),
     );
 
     // **Configure**: the module's own settings, the object v1's `actions(cfg)`
@@ -134,7 +132,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // when the module is loaded — this endpoint is the one way that reloads.
     set.register(
         Endpoint::new(
-            "updateModule",
+            ids::UPDATE_MODULE,
             Method::Put,
             api().lit("modules").param("id", ValueType::Uuid),
         )
@@ -160,21 +158,19 @@ pub(super) fn register(set: &mut EndpointSet) {
             )
             .in_area(Area::Modules)
             .needs(Grant::Edit),
-        )
-        .auth(AuthRequirement::admin()),
+        ),
     );
 
     set.register(
         Endpoint::new(
-            "deleteModule",
+            ids::DELETE_MODULE,
             Method::Delete,
             api().lit("modules").param("id", ValueType::Uuid),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // **Reload**: re-read every installed package and rebuild the action set.
@@ -185,12 +181,15 @@ pub(super) fn register(set: &mut EndpointSet) {
     // Its own path rather than `modules/reload`, which would sit where an id
     // goes.
     set.register(
-        Endpoint::new("reloadModules", Method::Post, api().lit("modules-reload"))
-            .output(TypeSchema::struct_of([StructField::new(
-                "modules",
-                TypeSchema::int(),
-            )]))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::RELOAD_MODULES,
+            Method::Post,
+            api().lit("modules-reload"),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "modules",
+            TypeSchema::int(),
+        )])),
     );
 }
 

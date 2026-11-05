@@ -75,6 +75,9 @@ feldspar/
 │  │                              #    (cleared environment, mandatory timeout, operands that
 │  │                              #    cannot be options, own process group, a sealed spawn
 │  │                              #    authority) and `Git` over a `RepoRoot`
+│  ├─ sc-http/                    # 0. values that go into a response header, each made by
+│  │                              #    one rule: a same-origin `RedirectTarget` and a
+│  │                              #    `DownloadName` for `Content-Disposition`
 │  ├─ sc-ratelimit/               # 3. in-memory token-bucket rate limiter keyed by string,
 │  │                              #    and the client-IP rule (queries, logins, code bodies)
 │  ├─ sc-i18n/                    # 0. Locale, negotiation, the Catalog, the message format,
@@ -254,6 +257,7 @@ graph TD
   coreact --> api["sc-api"]
   backup --> module["sc-module"]
   viewpattern["sc-viewpattern"] --> app
+  viewpattern --> http["sc-http"]
   server --> model["sc-model"]
   backup --> analytics["sc-analytics"]
   cli --> analytics
@@ -333,6 +337,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-dns` | `sc-error` |
 | `sc-net` | `sc-error` |
 | `sc-proc` | `sc-error` `sc-log` |
+| `sc-http` | — (nothing in the workspace) |
 | `sc-ratelimit` | `sc-types` |
 | `sc-query` | `sc-error` |
 | `sc-repomap` | — (nothing in the workspace) |
@@ -364,13 +369,13 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-app` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-proc` `sc-query` `sc-stream` `sc-types` |
 | `sc-live` | `sc-access` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-log` `sc-query` `sc-stream` `sc-types` |
 | `sc-action-builtins` | `sc-access` `sc-action` `sc-api` `sc-auth` `sc-catalog` `sc-config` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-model` `sc-net` `sc-query` `sc-types` |
-| `sc-viewpattern` | `sc-access` `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-query` `sc-types` |
-| `sc-module` | `sc-access` `sc-action` `sc-action-builtins` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-log` `sc-model` `sc-proc` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
+| `sc-viewpattern` | `sc-access` `sc-action` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-http` `sc-i18n` `sc-query` `sc-types` |
+| `sc-module` | `sc-access` `sc-action` `sc-action-builtins` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-http` `sc-log` `sc-model` `sc-proc` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` |
 | `sc-python` | `sc-action` `sc-action-builtins` `sc-catalog` `sc-error` `sc-expr` `sc-model` `sc-module` `sc-proc` `sc-types` |
 | `sc-check` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-query` `sc-types` `sc-viewpattern` |
 | `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-proc` `sc-query` `sc-repomap` `sc-types` |
 | `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-net` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
+| `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-http` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
 
 Four things the graph is worth reading for:

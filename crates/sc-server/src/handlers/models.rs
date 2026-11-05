@@ -18,7 +18,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // is a spawned job (§8) — so the handler that starts one answers as soon as
     // the row exists and the screen polls it.
 
-    reg.register_admin("listModelProviders", {
+    reg.handle(sc_api::handler_ids::LIST_MODEL_PROVIDERS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -114,7 +114,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("previewDataset", {
+    reg.handle(sc_api::handler_ids::PREVIEW_DATASET, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -167,7 +167,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listModels", {
+    reg.handle(sc_api::handler_ids::LIST_MODELS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -198,7 +198,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getModel", {
+    reg.handle(sc_api::handler_ids::GET_MODEL, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -221,7 +221,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("saveModel", {
+    reg.handle(sc_api::handler_ids::SAVE_MODEL, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -268,7 +268,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("cloneModel", {
+    reg.handle(sc_api::handler_ids::CLONE_MODEL, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -290,7 +290,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("modelUsage", {
+    reg.handle(sc_api::handler_ids::MODEL_USAGE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -304,7 +304,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("patchModelViewState", {
+    reg.handle(sc_api::handler_ids::PATCH_MODEL_VIEW_STATE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -327,7 +327,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteModel", {
+    reg.handle(sc_api::handler_ids::DELETE_MODEL, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -349,7 +349,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("fitModel", {
+    reg.handle(sc_api::handler_ids::FIT_MODEL, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -377,7 +377,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listModelInstances", {
+    reg.handle(sc_api::handler_ids::LIST_MODEL_INSTANCES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -394,7 +394,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getModelInstance", {
+    reg.handle(sc_api::handler_ids::GET_MODEL_INSTANCE, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -440,7 +440,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteModelInstance", {
+    reg.handle(sc_api::handler_ids::DELETE_MODEL_INSTANCE, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -457,7 +457,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("activateModelInstance", {
+    reg.handle(sc_api::handler_ids::ACTIVATE_MODEL_INSTANCE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -480,7 +480,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("predictRows", {
+    reg.handle(sc_api::handler_ids::PREDICT_ROWS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -557,7 +557,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // reading of the request and the two things only a server can do — read a
     // model's datasets through the row layer, and start or stop a job.
 
-    reg.register_admin("getProgramInterface", {
+    reg.handle(sc_api::handler_ids::GET_PROGRAM_INTERFACE, {
         let apps = apps.clone();
         move |ctx| {
             let apps = apps.clone();
@@ -602,7 +602,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("previewModelData", {
+    reg.handle(sc_api::handler_ids::PREVIEW_MODEL_DATA, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -627,7 +627,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("suggestBindings", {
+    reg.handle(sc_api::handler_ids::SUGGEST_BINDINGS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -648,7 +648,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("compileModel", {
+    reg.handle(sc_api::handler_ids::COMPILE_MODEL, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -686,7 +686,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("cancelModelFit", {
+    reg.handle(sc_api::handler_ids::CANCEL_MODEL_FIT, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -719,7 +719,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getModelDraws", {
+    reg.handle(sc_api::handler_ids::GET_MODEL_DRAWS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -771,7 +771,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getPosteriorSummary", {
+    reg.handle(sc_api::handler_ids::GET_POSTERIOR_SUMMARY, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -792,7 +792,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("downloadModelRun", {
+    reg.handle(sc_api::handler_ids::DOWNLOAD_MODEL_RUN, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -811,13 +811,15 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 Ok(HandlerResponse::download(crate::handler::Download {
                     body: crate::handler::DownloadBody::Bytes(Bytes::from(bytes)),
                     content_type: "application/zip".to_owned(),
-                    filename: crate::posterior::run_filename(&model, &instance),
+                    filename: Some(sc_http::DownloadName::sanitised(
+                        &crate::posterior::run_filename(&model, &instance),
+                    )),
                 }))
             }
         }
     });
 
-    reg.register_admin("writePosterior", {
+    reg.handle(sc_api::handler_ids::WRITE_POSTERIOR, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();

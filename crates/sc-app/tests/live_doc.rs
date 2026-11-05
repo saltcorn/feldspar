@@ -490,7 +490,7 @@ fn query_client(streams: &[StreamExport]) -> String {
     let mut set = EndpointSet::new();
     set.register(
         Endpoint::new(
-            "openNote",
+            sc_api::HandlerId::<sc_api::SignedIn>::new("openNote"),
             Method::Post,
             PathSpec::root().lit("/api").lit("/open-note"),
         )

@@ -1,0 +1,16 @@
+[package]
+name = "sc-http"
+description = "Values that go into an HTTP response header: a same-origin `RedirectTarget` and a `DownloadName` (layer 0)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# `HeaderValue`: both types convert to one that cannot fail to parse.
+http.workspace = true
+
+[lints]
+workspace = true

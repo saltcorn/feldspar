@@ -43,9 +43,8 @@
 //! lists the endpoints grouped by domain.
 
 use crate::auth::{credentials_schema, user_row_schema, user_summary_schema};
-use crate::endpoint::{
-    AuthRequirement, Endpoint, EndpointSet, McpTag, Method, PathSpec, QueryParam,
-};
+use crate::endpoint::{Endpoint, EndpointSet, McpTag, Method, PathSpec, QueryParam};
+use crate::handler_ids as ids;
 use crate::mcp::{Area, Grant};
 use crate::schema::{StructField, TypeSchema, ValueType};
 
@@ -737,7 +736,7 @@ mod tests {
         for projection in Projection::all(&admin_endpoints()) {
             assert_eq!(
                 projection.auth(),
-                &AuthRequirement::admin(),
+                &crate::AuthRequirement::admin(),
                 "`{}` is projected as an MCP tool and must be admin-only",
                 projection.name()
             );

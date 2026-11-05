@@ -14,10 +14,9 @@ pub(super) fn register(set: &mut EndpointSet) {
     // definition as text, for a search that looks inside it (secrets masked,
     // as the per-kind lists mask them).
     set.register(
-        Endpoint::new("listEntities", Method::Get, api().lit("entities"))
+        Endpoint::new(ids::LIST_ENTITIES, Method::Get, api().lit("entities"))
             .query([QueryParam::new("deep", ValueType::Bool)])
-            .output(TypeSchema::array(entity_schema()))
-            .auth(AuthRequirement::admin()),
+            .output(TypeSchema::array(entity_schema())),
     );
 }
 

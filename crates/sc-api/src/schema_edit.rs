@@ -2879,13 +2879,13 @@ impl Plan {
             };
             let was = self.was_rls.get(name).copied().unwrap_or(false);
             if table.rls_enabled {
-                steps.push(SchemaStep::Sql(enable_rls_sql(
-                    dialect,
-                    &self.projection,
-                    table,
-                )?));
+                steps.push(SchemaStep::Sql(sc_query::TrustedSql::composed(
+                    enable_rls_sql(dialect, &self.projection, table)?,
+                )));
             } else if was {
-                steps.push(SchemaStep::Sql(disable_rls_sql(dialect, name)));
+                steps.push(SchemaStep::Sql(sc_query::TrustedSql::composed(
+                    disable_rls_sql(dialect, name),
+                )));
                 self.applied.notes.push(format!(
                     "row-level security is no longer enforced on `{name}`: its policies \
                      were dropped, and the database now returns every row of it to any \
@@ -2907,16 +2907,21 @@ impl Plan {
                     ChangeLogFeature::History
                 };
                 let pk = sc_catalog::change_log_key(catalog, table, feature)?;
-                steps.push(SchemaStep::Sql(sc_catalog::enable_change_log_sql(
-                    dialect, table, &pk,
+                steps.push(SchemaStep::Sql(sc_query::TrustedSql::composed(
+                    sc_catalog::enable_change_log_sql(dialect, table, &pk),
                 )));
             } else if self.was_logged.contains(name) {
-                steps.push(SchemaStep::Sql(sc_catalog::disable_change_log_sql(
-                    dialect, name,
+                steps.push(SchemaStep::Sql(sc_query::TrustedSql::composed(
+                    sc_catalog::disable_change_log_sql(dialect, name),
                 )));
             }
         }
-        steps.extend(self.change_log_edits.iter().cloned().map(SchemaStep::Sql));
+        steps.extend(
+            self.change_log_edits
+                .iter()
+                .cloned()
+                .map(|sql| SchemaStep::Sql(sc_query::TrustedSql::composed(sql))),
+        );
         Ok(steps)
     }
 }
@@ -3575,25 +3580,12 @@ fn vector_storage(name: &str, given: u32, attributes: &Attrs) -> Result<BasicTyp
 /// TypeScript, in REST paths and in a model's tool arguments, and a name that
 /// needs quoting in one of those is a bug waiting somewhere else.
 pub(crate) fn check_identifier(name: &str, what: &str) -> Result<()> {
-    if name.is_empty() {
-        return Err(Error::invalid(format!("a {what} needs a name")));
-    }
-    if name.len() > 63 {
-        return Err(Error::invalid(format!(
-            "{what} name `{name}` is longer than the 63 characters a database identifier allows"
-        )));
-    }
-    let mut chars = name.chars();
-    let first = chars.next().unwrap_or_default();
-    if !(first.is_ascii_alphabetic() || first == '_')
-        || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
-        return Err(Error::invalid(format!(
-            "{what} name `{name}` must start with a letter or underscore and contain \
-             only letters, digits and underscores"
-        )));
-    }
-    Ok(())
+    // The one rule for a name this program is about to create
+    // ([`sc_query::Ident::new`], security review 2026-11 §7), with the
+    // sentences this check has always given.
+    sc_query::Ident::new(name)
+        .map(drop)
+        .map_err(|e| Error::invalid(e.sentence(what)))
 }
 
 /// Refuse what a [`Secret`](DataFieldKind::Secret) field cannot be: a key, unique, a

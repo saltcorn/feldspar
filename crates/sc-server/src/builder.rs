@@ -87,7 +87,7 @@ pub(crate) fn register_status_handler(
     bundle: Option<std::path::PathBuf>,
 ) {
     let bundle = std::sync::Arc::new(bundle);
-    handlers.register_admin("builderStatus", move |_ctx| {
+    handlers.handle(sc_api::handler_ids::BUILDER_STATUS, move |_ctx| {
         let bundle = bundle.clone();
         async move {
             let available = built_bundle(bundle.as_deref()).is_some();

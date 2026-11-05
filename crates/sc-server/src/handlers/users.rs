@@ -7,7 +7,7 @@ use super::*;
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
-    reg.register_admin("listRoles", {
+    reg.handle(sc_api::handler_ids::LIST_ROLES, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -18,7 +18,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createRole", {
+    reg.handle(sc_api::handler_ids::CREATE_ROLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -33,7 +33,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("setRoleSecondFactor", {
+    reg.handle(sc_api::handler_ids::SET_ROLE_SECOND_FACTOR, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -80,7 +80,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteRole", {
+    reg.handle(sc_api::handler_ids::DELETE_ROLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -95,7 +95,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listUsers", {
+    reg.handle(sc_api::handler_ids::LIST_USERS, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -127,7 +127,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createUser", {
+    reg.handle(sc_api::handler_ids::CREATE_USER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -156,7 +156,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateUser", {
+    reg.handle(sc_api::handler_ids::UPDATE_USER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -203,7 +203,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // the effective one, every grant the user has had, and lets an admin add a
     // time-limited one by hand or revoke one — a subscription's included, which
     // the provider's next renewal would put back.
-    reg.register_admin("listUserRoleGrants", {
+    reg.handle(sc_api::handler_ids::LIST_USER_ROLE_GRANTS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -223,7 +223,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("grantUserRole", {
+    reg.handle(sc_api::handler_ids::GRANT_USER_ROLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -268,7 +268,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("revokeUserRoleGrant", {
+    reg.handle(sc_api::handler_ids::REVOKE_USER_ROLE_GRANT, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -294,7 +294,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // LLM credits (TODO-payments P6.2). Every answer is the whole view — the
     // balance, the buckets and the latest entries — so the page redraws from
     // what the server now holds rather than guessing at what changed.
-    reg.register_admin("getUserCredits", {
+    reg.handle(sc_api::handler_ids::GET_USER_CREDITS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -305,7 +305,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("grantUserCredits", {
+    reg.handle(sc_api::handler_ids::GRANT_USER_CREDITS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -349,7 +349,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("setUserCreditThreshold", {
+    reg.handle(sc_api::handler_ids::SET_USER_CREDIT_THRESHOLD, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -370,7 +370,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteUser", {
+    reg.handle(sc_api::handler_ids::DELETE_USER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -392,7 +392,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("setUserDisabled", {
+    reg.handle(sc_api::handler_ids::SET_USER_DISABLED, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -415,7 +415,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("forceLogoutUser", {
+    reg.handle(sc_api::handler_ids::FORCE_LOGOUT_USER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -434,7 +434,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("becomeUser", {
+    reg.handle(sc_api::handler_ids::BECOME_USER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -467,7 +467,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("resetUserSecondFactor", {
+    reg.handle(sc_api::handler_ids::RESET_USER_SECOND_FACTOR, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -488,7 +488,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("setRandomPassword", {
+    reg.handle(sc_api::handler_ids::SET_RANDOM_PASSWORD, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -521,7 +521,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // that runs as somebody else hands out their authority without their
     // knowledge.
 
-    reg.register_admin("listApiTokens", {
+    reg.handle(sc_api::handler_ids::LIST_API_TOKENS, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -536,7 +536,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createApiToken", {
+    reg.handle(sc_api::handler_ids::CREATE_API_TOKEN, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -601,7 +601,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("revokeApiToken", {
+    reg.handle(sc_api::handler_ids::REVOKE_API_TOKEN, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();

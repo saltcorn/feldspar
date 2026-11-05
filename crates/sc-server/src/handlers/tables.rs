@@ -8,7 +8,7 @@ use super::*;
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
-    reg.register_admin("listTables", {
+    reg.handle(sc_api::handler_ids::LIST_TABLES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -25,7 +25,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createTable", {
+    reg.handle(sc_api::handler_ids::CREATE_TABLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -61,7 +61,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createTableFromCsv", {
+    reg.handle(sc_api::handler_ids::CREATE_TABLE_FROM_CSV, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -96,7 +96,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createTableFromGeoFile", {
+    reg.handle(sc_api::handler_ids::CREATE_TABLE_FROM_GEO_FILE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -130,7 +130,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("dropTable", {
+    reg.handle(sc_api::handler_ids::DROP_TABLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -168,7 +168,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("renameTable", {
+    reg.handle(sc_api::handler_ids::RENAME_TABLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -194,7 +194,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateTable", {
+    reg.handle(sc_api::handler_ids::UPDATE_TABLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -233,7 +233,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listMetadataTables", {
+    reg.handle(sc_api::handler_ids::LIST_METADATA_TABLES, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -244,7 +244,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createMetadataTable", {
+    reg.handle(sc_api::handler_ids::CREATE_METADATA_TABLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -263,7 +263,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listTableProviders", {
+    reg.handle(sc_api::handler_ids::LIST_TABLE_PROVIDERS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -288,7 +288,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createProvidedTable", {
+    reg.handle(sc_api::handler_ids::CREATE_PROVIDED_TABLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -317,7 +317,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateProvidedTable", {
+    reg.handle(sc_api::handler_ids::UPDATE_PROVIDED_TABLE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -358,7 +358,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteTableSettings", {
+    reg.handle(sc_api::handler_ids::DELETE_TABLE_SETTINGS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -375,7 +375,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listOrphanTableSettings", {
+    reg.handle(sc_api::handler_ids::LIST_ORPHAN_TABLE_SETTINGS, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();

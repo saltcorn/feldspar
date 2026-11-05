@@ -44,7 +44,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // decision it is.
     set.register(
         Endpoint::new(
-            "listModelProviders",
+            ids::LIST_MODEL_PROVIDERS,
             Method::Get,
             api().lit("model-providers"),
         )
@@ -60,8 +60,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("providers", TypeSchema::array(model_provider_schema())),
             StructField::new("builtins_compiled_out", TypeSchema::bool()),
             StructField::new("notice", TypeSchema::optional(TypeSchema::text())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // Validate a dataset and show what it answers: the column types, and the
@@ -75,7 +74,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // refuse the answer they came for.
     set.register(
         Endpoint::new(
-            "previewDataset",
+            ids::PREVIEW_DATASET,
             Method::Post,
             api().lit("model-datasets").lit("preview"),
         )
@@ -91,25 +90,22 @@ pub(super) fn register(set: &mut EndpointSet) {
             // absent primary key reads perfectly well and cannot be fitted (§5),
             // and the builder should say so while it is still being built.
             StructField::new("split_error", TypeSchema::optional(TypeSchema::text())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     set.register(
-        Endpoint::new("listModels", Method::Get, api().lit("models"))
+        Endpoint::new(ids::LIST_MODELS, Method::Get, api().lit("models"))
             .query([QueryParam::new("table", ValueType::Text)])
-            .output(TypeSchema::array(model_schema()))
-            .auth(AuthRequirement::admin()),
+            .output(TypeSchema::array(model_schema())),
     );
 
     set.register(
         Endpoint::new(
-            "getModel",
+            ids::GET_MODEL,
             Method::Get,
             api().lit("models").param("id", ValueType::Uuid),
         )
-        .output(model_schema())
-        .auth(AuthRequirement::admin()),
+        .output(model_schema()),
     );
 
     // One endpoint for create and replace, rather than the `POST`/`PUT` pair the
@@ -119,10 +115,9 @@ pub(super) fn register(set: &mut EndpointSet) {
     // in the body is what says which: absent is a new model, present is that one
     // replaced.
     set.register(
-        Endpoint::new("saveModel", Method::Post, api().lit("models"))
+        Endpoint::new(ids::SAVE_MODEL, Method::Post, api().lit("models"))
             .input(model_input_schema())
-            .output(model_schema())
-            .auth(AuthRequirement::admin()),
+            .output(model_schema()),
     );
 
     // A copy of a model under a new name — the given one, or "… (copy)" —
@@ -131,7 +126,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // A3.4–A3.5: the model list's Clone).
     set.register(
         Endpoint::new(
-            "cloneModel",
+            ids::CLONE_MODEL,
             Method::Post,
             api()
                 .lit("models")
@@ -142,8 +137,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             "name",
             TypeSchema::optional(TypeSchema::text()),
         )]))
-        .output(model_schema())
-        .auth(AuthRequirement::admin()),
+        .output(model_schema()),
     );
 
     // What refers to a model by name (analytics TODO A3.5): the calculated
@@ -154,7 +148,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // since each of them reports the missing model by name when it next runs.
     set.register(
         Endpoint::new(
-            "modelUsage",
+            ids::MODEL_USAGE,
             Method::Get,
             api()
                 .lit("models")
@@ -183,8 +177,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 "workspaces",
                 TypeSchema::array(crate::analytics::workspace_use_schema()),
             ),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // A model's **view state** (analytics TODO A3.4): the dictionary the
@@ -198,7 +191,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // the view state as it now is; `getModel` answers it too.
     set.register(
         Endpoint::new(
-            "patchModelViewState",
+            ids::PATCH_MODEL_VIEW_STATE,
             Method::Patch,
             api()
                 .lit("models")
@@ -212,8 +205,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "view_state",
             TypeSchema::json(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // Deleting a model takes its instances with it, and that is the difference
@@ -222,15 +214,14 @@ pub(super) fn register(set: &mut EndpointSet) {
     // without the dataset they were fitted over.
     set.register(
         Endpoint::new(
-            "deleteModel",
+            ids::DELETE_MODEL,
             Method::Delete,
             api().lit("models").param("id", ValueType::Uuid),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // **Start** a fit (§8). It answers the instance as soon as the row exists,
@@ -246,7 +237,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // Python call mid-flight is not something the host can do.
     set.register(
         Endpoint::new(
-            "fitModel",
+            ids::FIT_MODEL,
             Method::Post,
             api().lit("models").param("id", ValueType::Uuid).lit("fit"),
         )
@@ -254,21 +245,19 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("name", TypeSchema::optional(TypeSchema::text())),
             StructField::new("description", TypeSchema::optional(TypeSchema::text())),
         ]))
-        .output(model_instance_schema())
-        .auth(AuthRequirement::admin()),
+        .output(model_instance_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "listModelInstances",
+            ids::LIST_MODEL_INSTANCES,
             Method::Get,
             api()
                 .lit("models")
                 .param("id", ValueType::Uuid)
                 .lit("instances"),
         )
-        .output(TypeSchema::array(model_instance_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(model_instance_schema())),
     );
 
     // The instance in full: the parameter blocks, the metrics per split, the
@@ -276,25 +265,23 @@ pub(super) fn register(set: &mut EndpointSet) {
     // parameters of forty fits are not something a list should carry.
     set.register(
         Endpoint::new(
-            "getModelInstance",
+            ids::GET_MODEL_INSTANCE,
             Method::Get,
             api().lit("model-instances").param("id", ValueType::Uuid),
         )
-        .output(model_instance_detail_schema())
-        .auth(AuthRequirement::admin()),
+        .output(model_instance_detail_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "deleteModelInstance",
+            ids::DELETE_MODEL_INSTANCE,
             Method::Delete,
             api().lit("model-instances").param("id", ValueType::Uuid),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // At most one instance per model is **active**, and that is what lets a
@@ -303,15 +290,14 @@ pub(super) fn register(set: &mut EndpointSet) {
     // Activating one deactivates whichever was.
     set.register(
         Endpoint::new(
-            "activateModelInstance",
+            ids::ACTIVATE_MODEL_INSTANCE,
             Method::Post,
             api()
                 .lit("model-instances")
                 .param("id", ValueType::Uuid)
                 .lit("activate"),
         )
-        .output(model_instance_schema())
-        .auth(AuthRequirement::admin()),
+        .output(model_instance_schema()),
     );
 
     // Apply a fit to rows, in row order. Either a named `instance` or a `model`
@@ -328,22 +314,25 @@ pub(super) fn register(set: &mut EndpointSet) {
     // Admin only, like everything else on this API: an application-facing
     // prediction endpoint is named under *Carried past this milestone*.
     set.register(
-        Endpoint::new("predictRows", Method::Post, api().lit("model-predictions"))
-            .input(TypeSchema::struct_of([
-                StructField::new("model", TypeSchema::optional(TypeSchema::uuid())),
-                StructField::new("instance", TypeSchema::optional(TypeSchema::uuid())),
-                StructField::new(
-                    "rows",
-                    TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
-                ),
-                StructField::new("filter", TypeSchema::optional(TypeSchema::text())),
-            ]))
-            .output(TypeSchema::struct_of([
-                StructField::new("instance", TypeSchema::uuid()),
-                StructField::new("outcome", TypeSchema::json()),
-                StructField::new("predictions", TypeSchema::array(prediction_schema())),
-            ]))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::PREDICT_ROWS,
+            Method::Post,
+            api().lit("model-predictions"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("model", TypeSchema::optional(TypeSchema::uuid())),
+            StructField::new("instance", TypeSchema::optional(TypeSchema::uuid())),
+            StructField::new(
+                "rows",
+                TypeSchema::optional(TypeSchema::array(TypeSchema::json())),
+            ),
+            StructField::new("filter", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .output(TypeSchema::struct_of([
+            StructField::new("instance", TypeSchema::uuid()),
+            StructField::new("outcome", TypeSchema::json()),
+            StructField::new("predictions", TypeSchema::array(prediction_schema())),
+        ])),
     );
 
     // What a Bayesian model needs beyond the model screens' endpoints (Stan TODO
@@ -360,7 +349,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // "Check program" button exists to show them.
     set.register(
         Endpoint::new(
-            "getProgramInterface",
+            ids::GET_PROGRAM_INTERFACE,
             Method::Get,
             api().lit("model-programs"),
         )
@@ -373,8 +362,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("warnings", TypeSchema::optional(TypeSchema::text())),
             StructField::new("notice", TypeSchema::optional(TypeSchema::text())),
             StructField::new("error", TypeSchema::optional(TypeSchema::text())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // **Preview data** (§18): the model as the form holds it, bound as far as it
@@ -383,7 +371,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // need not be saved, and usually is not yet.
     set.register(
         Endpoint::new(
-            "previewModelData",
+            ids::PREVIEW_MODEL_DATA,
             Method::Post,
             api().lit("model-data").lit("preview"),
         )
@@ -395,8 +383,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             // variable stopped it, which is then in `errors`.
             StructField::new("report", TypeSchema::optional(TypeSchema::json())),
             StructField::new("errors", TypeSchema::array(TypeSchema::text())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // **Bind automatically** (§18): a binding for each data variable the model
@@ -405,7 +392,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // only its empty rows.
     set.register(
         Endpoint::new(
-            "suggestBindings",
+            ids::SUGGEST_BINDINGS,
             Method::Post,
             api().lit("model-bindings").lit("suggest"),
         )
@@ -413,8 +400,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("bindings", TypeSchema::json()),
             StructField::new("reasons", TypeSchema::json()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // Warm the compile cache without fitting (§13). It waits for the compile —
@@ -422,7 +408,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // compile error is shown where the button was pressed.
     set.register(
         Endpoint::new(
-            "compileModel",
+            ids::COMPILE_MODEL,
             Method::Post,
             api()
                 .lit("models")
@@ -433,8 +419,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("key", TypeSchema::text()),
             StructField::new("cached", TypeSchema::bool()),
             StructField::new("cmdstan", TypeSchema::text()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // Ask a running fit to stop (§13). It sets `cancel_requested` on the row,
@@ -443,15 +428,14 @@ pub(super) fn register(set: &mut EndpointSet) {
     // fit cannot be stopped, and for a fit that has already finished.
     set.register(
         Endpoint::new(
-            "cancelModelFit",
+            ids::CANCEL_MODEL_FIT,
             Method::Post,
             api()
                 .lit("model-instances")
                 .param("id", ValueType::Uuid)
                 .lit("cancel"),
         )
-        .output(model_instance_schema())
-        .auth(AuthRequirement::admin()),
+        .output(model_instance_schema()),
     );
 
     // One variable's draws, columnar and labelled (§16): per chain, one array
@@ -461,7 +445,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // numbers is refused with the arithmetic, which `thin` is for.
     set.register(
         Endpoint::new(
-            "getModelDraws",
+            ids::GET_MODEL_DRAWS,
             Method::Get,
             api()
                 .lit("model-instances")
@@ -485,8 +469,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("names", TypeSchema::array(TypeSchema::text())),
             StructField::new("thin", TypeSchema::int()),
             StructField::new("chains", TypeSchema::array(TypeSchema::json())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // The §15 summary of any variable, computed now from its stored draws —
@@ -494,7 +477,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // draws were not kept, the stored table answers (`source: "stored"`).
     set.register(
         Endpoint::new(
-            "getPosteriorSummary",
+            ids::GET_POSTERIOR_SUMMARY,
             Method::Get,
             api()
                 .lit("model-instances")
@@ -513,8 +496,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("names", TypeSchema::array(TypeSchema::text())),
             StructField::new("keys", TypeSchema::array(TypeSchema::json())),
             StructField::new("rows", TypeSchema::array(TypeSchema::json())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // The run as a zip (§16): the raw CmdStan run directory when the model
@@ -524,15 +506,14 @@ pub(super) fn register(set: &mut EndpointSet) {
     // links to the path rather than calling the client.
     set.register(
         Endpoint::new(
-            "downloadModelRun",
+            ids::DOWNLOAD_MODEL_RUN,
             Method::Get,
             api()
                 .lit("model-instances")
                 .param("id", ValueType::Uuid)
                 .lit("run"),
         )
-        .output(TypeSchema::json())
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::json()),
     );
 
     // Write one variable's summary into rows (§16), through the row layer:
@@ -541,7 +522,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // code body's model handle makes (`sc_api::models::write_posterior`).
     set.register(
         Endpoint::new(
-            "writePosterior",
+            ids::WRITE_POSTERIOR,
             Method::Post,
             api()
                 .lit("model-instances")
@@ -563,8 +544,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("table", TypeSchema::text()),
             StructField::new("instance", TypeSchema::text()),
             StructField::new("written", TypeSchema::int()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 }
 

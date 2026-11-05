@@ -117,9 +117,9 @@ pub async fn bootstrap_change_log(catalog: &Catalog) -> Result<()> {
         // Its own DDL on SQLite, for `AUTOINCREMENT`: `seq` is the watermark
         // there, and must never be given out twice.
         catalog
-            .apply_schema_batch(&[SchemaStep::Sql(
+            .apply_schema_batch(&[SchemaStep::Sql(sc_query::TrustedSql::composed(
                 crate::change_log_sqlite::changes_table_sql(),
-            )])
+            ))])
             .await?;
         catalog.reload().await?;
     }
@@ -138,7 +138,7 @@ pub async fn bootstrap_change_log(catalog: &Catalog) -> Result<()> {
         record_function_sql()
     };
     catalog
-        .apply_schema_batch(&[SchemaStep::Sql(format!(
+        .apply_schema_batch(&[SchemaStep::Sql(sc_query::TrustedSql::composed(format!(
             "CREATE INDEX IF NOT EXISTS {by_tx} ON {table} (txid, seq);\n\
              CREATE INDEX IF NOT EXISTS {by_row} ON {table} (table_name, row_key, txid);\n\
              CREATE UNIQUE INDEX IF NOT EXISTS {entry} ON {table} (changeset, table_name, row_key);\n\
@@ -149,7 +149,7 @@ pub async fn bootstrap_change_log(catalog: &Catalog) -> Result<()> {
             by_tx = dialect.quote_ident("_fd_changes_txid"),
             by_row = dialect.quote_ident("_fd_changes_row"),
             entry = dialect.quote_ident("_fd_changes_entry"),
-        ))])
+        )))])
         .await
 }
 

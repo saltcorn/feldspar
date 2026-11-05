@@ -38,7 +38,7 @@ use sc_backup::codec::{
 
 /// Register `listEntities` on `reg`.
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: Arc<AppMounts>) {
-    reg.register_admin("listEntities", {
+    reg.handle(sc_api::handler_ids::LIST_ENTITIES, {
         move |ctx| {
             let catalog = catalog.clone();
             let apps = apps.clone();

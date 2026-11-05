@@ -8,7 +8,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use sc_api::{AuthRequirement, Endpoint, EndpointSet, Method, PathSpec};
+use sc_api::{Endpoint, EndpointSet, Method, PathSpec};
 use sc_auth::{SessionStore, User};
 use sc_server::{
     ANALYTICS_CONTENT_SECURITY_POLICY, HandlerRegistry, SESSION_COOKIE, ServerConfig,
@@ -19,10 +19,11 @@ use uuid::Uuid;
 
 fn endpoints() -> EndpointSet {
     let mut set = EndpointSet::new();
-    set.register(
-        Endpoint::new("ping", Method::Get, PathSpec::root().lit("api/ping"))
-            .auth(AuthRequirement::Public),
-    );
+    set.register(Endpoint::new(
+        sc_api::HandlerId::<sc_api::Anyone>::new("ping"),
+        Method::Get,
+        PathSpec::root().lit("api/ping"),
+    ));
     set
 }
 

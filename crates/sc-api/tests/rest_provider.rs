@@ -238,11 +238,14 @@ async fn custom_routes_are_typed_but_stubbed() -> Result<()> {
     let user = admin()?;
 
     let api = provider(&cat)?.with_custom_route(
-        Endpoint::new("search", Method::Post, PathSpec::root().lit("api/search"))
-            .input(TypeSchema::json())
-            .output(TypeSchema::json())
-            .auth(sc_api::AuthRequirement::admin())
-            .handler(HandlerRef::Custom("select * from posts".to_owned())),
+        Endpoint::new(
+            sc_api::HandlerId::<sc_api::AdminOnly>::new("search"),
+            Method::Post,
+            PathSpec::root().lit("api/search"),
+        )
+        .input(TypeSchema::json())
+        .output(TypeSchema::json())
+        .handler(HandlerRef::Custom("select * from posts".to_owned())),
     );
 
     // The route is part of the contract...

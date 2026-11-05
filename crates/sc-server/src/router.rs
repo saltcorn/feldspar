@@ -39,16 +39,14 @@ use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Pr
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
-use crate::admin_host::HANDOFF_ROUTE;
 use crate::admin_session::{AdminSession, Caller, Who};
 use crate::apps::{AppMounts, MountedApp, subdomain_in};
-use crate::chat::{AGENT_CHAT_ROUTE, agent_chat_upgrade};
+use crate::chat::agent_chat_upgrade;
 use crate::config::ServerConfig;
-use crate::fit_progress::{FIT_PROGRESS_ROUTE, fit_progress_upgrade};
+use crate::fit_progress::fit_progress_upgrade;
 use crate::handler::{HandlerCtx, HandlerRegistry, HandlerResponse};
-use crate::lsp::{LSP_ROUTE, ServerSlots, language_server_upgrade, server_slots};
-use crate::mcp::MCP_ROUTE;
-use crate::observe::{STREAM_OBSERVE_ROUTE, stream_observe_upgrade};
+use crate::lsp::{ServerSlots, language_server_upgrade, server_slots};
+use crate::observe::stream_observe_upgrade;
 use crate::security::{
     ANALYTICS_CONTENT_SECURITY_POLICY, AnonymousCaller, CONTENT_SECURITY_POLICY, CsrfPolicy,
     GUEST_COOKIE, IDE_CONTENT_SECURITY_POLICY, PREVIEW_COOKIE, SESSION_COOKIE,
@@ -56,8 +54,8 @@ use crate::security::{
     upgrade_origin_allowed, upgrade_origin_refused,
 };
 use crate::terminal::{
-    SessionTokens, TERMINAL_ROUTE, TerminalHost, TerminalQuery, TerminalSlots, loopback_origin,
-    terminal_slots, terminal_upgrade,
+    SessionTokens, TerminalHost, TerminalQuery, TerminalSlots, loopback_origin, terminal_slots,
+    terminal_upgrade,
 };
 use sc_api::auth::CSRF_HEADER;
 use sc_backup::{BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE};
@@ -72,7 +70,7 @@ use sc_backup::{BACKUP_CREATE_ROUTE, BACKUP_UPLOAD_ROUTE};
 /// answering `None` (it has no `OptionalFromRequestParts` impl). So this wraps
 /// it: extracted from the parts, *before* the body is read, which is the one
 /// ordering rule an upgrade has.
-struct MaybeUpgrade(Option<axum::extract::ws::WebSocketUpgrade>);
+pub(crate) struct MaybeUpgrade(Option<axum::extract::ws::WebSocketUpgrade>);
 
 impl<S: Send + Sync> axum::extract::FromRequestParts<S> for MaybeUpgrade {
     type Rejection = std::convert::Infallible;
@@ -327,208 +325,10 @@ pub fn build_router_with_apps(
     // every `fs` a run is handed starts from them (TODO F2.8).
     sc_api::code_host::set_file_limits(config.code_max_file_bytes, config.code_max_copy_bytes);
 
-    let app = Router::new()
-        // Operational health check: a fixed, unauthenticated route (outside the
-        // typed API) so a CLI smoke test, load balancer, or orchestrator can
-        // confirm the process is up. It takes precedence over the SPA fallback.
-        .route("/health", axum::routing::get(health))
-        // Binary file upload, deliberately **outside** the typed `EndpointSet`.
-        //
-        // The endpoint model is JSON-only — `TypeSchema` is
-        // `Value`/`Struct`/`Array`/`Optional` and `HandlerResponse` carries
-        // `Json` — so a raw body cannot be described by it. `writeFile`'s base64
-        // path stays for small files and remains in the generated TypeScript
-        // client; this exists for the ones that should not be held in memory
-        // twice and inflated by a third to cross the wire.
-        //
-        // The cost, accepted knowingly: this is the first admin operation absent
-        // from the generated client, so the SPA hand-writes this one call. It
-        // therefore has to do for itself everything `dispatch` does for a typed
-        // endpoint — session lookup and the admin check — which is why the auth
-        // is repeated here rather than inherited. CSRF is *not* repeated: the
-        // middleware wraps every route including this one.
-        .route("/upload/{store}/{*path}", axum::routing::post(upload))
-        // …and its mirror: a store file as itself, for the file manager's
-        // Download. `readFile` answers base64 inside JSON, which a browser has
-        // to hold twice and decode by hand — fine for a source file, hopeless
-        // for a 100 MB APK. A plain `GET`, so a link downloads it; it reads
-        // nothing it does not check access to, as `readFile` does.
-        .route("/download/{store}/{*path}", axum::routing::get(download))
-        // Backup and restore, **outside** the typed `EndpointSet` for the same
-        // reason the upload above is: one route's response is a file and the
-        // other's request is one, and a `TypeSchema` has no bytes shape. Both
-        // still dispatch through the handler registry, so both are behind the
-        // same session lookup, the same admin check and the same CSRF middleware
-        // as every typed endpoint — the auth is repeated here rather than
-        // inherited because `dispatch` is what usually applies it.
-        //
-        // The *choice* of what to back up and what to restore travels as JSON
-        // through typed endpoints (`getBackupOptions`, `restoreBackup`); only the
-        // archive itself comes through here.
-        .route(BACKUP_CREATE_ROUTE, axum::routing::post(create_backup))
-        .route(BACKUP_UPLOAD_ROUTE, axum::routing::post(upload_backup))
-        // The file-store IDE's language server (design §12.1). A real route
-        // rather than a branch of the fallback, because a WebSocket upgrade is
-        // not a request the fallback's `Bytes` body could survive: it has to be
-        // extracted before the body is touched.
-        .route(LSP_ROUTE, axum::routing::get(language_server))
-        // Claude Code in an IDE terminal tab (§12.1): the language server's
-        // sibling, an upgrade for the same reason.
-        .route(TERMINAL_ROUTE, axum::routing::get(ide_terminal))
-        // The admin chat socket (§11.4). A real route for the same reason the
-        // language server's is: an upgrade cannot survive the fallback's `Bytes`
-        // body, and a chat turn is bidirectional in a way the typed endpoint
-        // model has no shape for.
-        .route(AGENT_CHAT_ROUTE, axum::routing::get(agent_chat))
-        // A stream's Observe socket (TODO "Streams" §9). The third route that
-        // is an upgrade rather than a typed endpoint, for the reason the other
-        // two are: an `EndpointSet` is a typed request/response model and a
-        // socket has no shape in it. It sits on `/api/streams/{id}/observe`,
-        // beside the stream endpoints rather than under `/admin`, because it is
-        // the same resource the CRUD endpoints address — and axum matches this
-        // literal route ahead of the `dispatch` fallback the rest of `/api`
-        // goes through.
-        .route(STREAM_OBSERVE_ROUTE, axum::routing::get(stream_observe))
-        // A fit's progress, pushed to the model editor (analytics TODO A3.3).
-        // An upgrade for the reason the Observe socket's is.
-        .route(FIT_PROGRESS_ROUTE, axum::routing::get(fit_progress))
-        // The administration MCP server (§13.6). A real route rather than a
-        // typed endpoint for the reason the upload and backup routes are:
-        // JSON-RPC over a raw body is not a shape `TypeSchema` describes.
-        //
-        // It authenticates by `Authorization: Bearer` and by **nothing else** —
-        // a session cookie on this route is ignored, not accepted — which is
-        // what makes it safe to exempt from the CSRF middleware below, and is
-        // the whole of the confused-deputy story rather than belt-and-braces.
-        .route(MCP_ROUTE, axum::routing::post(crate::mcp::mcp))
-        // The installation's MCP servers, forwarded for the IDE's Claude Code
-        // sessions (§12.1): an open terminal's session token and nothing else,
-        // so it is exempt from the CSRF check as `/mcp` is.
-        .route(
-            crate::mcp_proxy::MCP_PROXY_ROUTE,
-            axum::routing::any(crate::mcp_proxy::mcp_proxy),
-        )
-        // A build host's agent (`TODO-build-hosts.md`): by its bearer token and
-        // nothing else, so it is exempt from the CSRF check as `/mcp` is.
-        .route(
-            crate::build_agent::BUILD_AGENT_HEARTBEAT_ROUTE,
-            axum::routing::post(crate::build_agent::heartbeat),
-        )
-        .route(
-            crate::build_agent::BUILD_AGENT_CLAIM_ROUTE,
-            axum::routing::post(crate::build_agent::claim),
-        )
-        .route(
-            "/build-agent/jobs/{id}/project",
-            axum::routing::get(crate::build_agent::project),
-        )
-        .route(
-            "/build-agent/jobs/{id}/log",
-            axum::routing::post(crate::build_agent::log),
-        )
-        .route(
-            "/build-agent/jobs/{id}/artifact",
-            axum::routing::post(crate::build_agent::artifact),
-        )
-        .route(
-            "/build-agent/jobs/{id}/failed",
-            axum::routing::post(crate::build_agent::failed),
-        )
-        // The far end of moving the admin UI to its own subdomain (Settings →
-        // Development): a single-use token from the old host becomes a session
-        // here, so following the move does not mean logging in again. A real
-        // route because its answer is a cookie and a redirect, not JSON.
-        .route(HANDOFF_ROUTE, axum::routing::get(admin_handoff))
-        // Signing in with an external identity provider (Settings →
-        // Authentication): redirects and a cookie, on every host, so real
-        // routes rather than typed endpoints (`crate::oauth`).
-        .route(
-            crate::oauth::PROVIDERS_ROUTE,
-            axum::routing::get(crate::oauth::providers),
-        )
-        .route(
-            crate::oauth::START_ROUTE,
-            axum::routing::get(crate::oauth::start),
-        )
-        .route(
-            crate::oauth::CALLBACK_ROUTE,
-            axum::routing::get(crate::oauth::callback),
-        )
-        .route(
-            crate::oauth::COMPLETE_ROUTE,
-            axum::routing::get(crate::oauth::complete),
-        )
-        // Two-factor authentication (design §7.2): the challenge a sign-in is
-        // given in place of a session, and an account's own setup, on every
-        // host as the OAuth routes are (`crate::second_factor`).
-        .route(
-            crate::second_factor::STATUS_ROUTE,
-            axum::routing::get(crate::second_factor::status),
-        )
-        .route(
-            crate::second_factor::SETUP_ROUTE,
-            axum::routing::post(crate::second_factor::setup),
-        )
-        .route(
-            crate::second_factor::ENABLE_ROUTE,
-            axum::routing::post(crate::second_factor::enable),
-        )
-        .route(
-            crate::second_factor::VERIFY_ROUTE,
-            axum::routing::post(crate::second_factor::verify),
-        )
-        .route(
-            crate::second_factor::DISABLE_ROUTE,
-            axum::routing::post(crate::second_factor::disable),
-        )
-        .route(
-            crate::second_factor::RECOVERY_CODES_ROUTE,
-            axum::routing::post(crate::second_factor::recovery_codes),
-        )
-        .route(
-            crate::second_factor::PAGE_ROUTE,
-            axum::routing::get(crate::second_factor::page),
-        )
-        // Module webhooks (TODO-payments P1.1): a provider's events, on every
-        // host as the OAuth routes are. A route of their own because the
-        // answer is whatever the module says, bytes and all, and with a body
-        // limit of their own: an unauthenticated caller is held to 1 MiB.
-        .route(
-            crate::webhooks::HOOK_ROUTE,
-            axum::routing::on(
-                axum::routing::MethodFilter::GET.or(axum::routing::MethodFilter::POST),
-                crate::webhooks::hook,
-            )
-            .layer(axum::extract::DefaultBodyLimit::max(
-                sc_module::WEBHOOK_MAX_BODY,
-            )),
-        )
-        .route(
-            crate::webhooks::HOOK_REST_ROUTE,
-            axum::routing::on(
-                axum::routing::MethodFilter::GET.or(axum::routing::MethodFilter::POST),
-                crate::webhooks::hook_rest,
-            )
-            .layer(axum::extract::DefaultBodyLimit::max(
-                sc_module::WEBHOOK_MAX_BODY,
-            )),
-        )
-        // v1 plugin routes: on the admin host, as the person calling, with
-        // the webhook's body limit (`crate::module_routes`).
-        .route(
-            crate::module_routes::ROUTE,
-            axum::routing::on(
-                axum::routing::MethodFilter::GET.or(axum::routing::MethodFilter::POST),
-                crate::module_routes::route,
-            )
-            .layer(axum::extract::DefaultBodyLimit::max(
-                sc_module::WEBHOOK_MAX_BODY,
-            )),
-        )
-        .route(
-            crate::oauth::CONSENT_ROUTE,
-            axum::routing::get(crate::oauth::consent),
-        )
+    // Every route outside the typed endpoint set, each with how it
+    // authenticates, is in `crate::raw_routes` (H6.1): this mounts exactly
+    // those, and a test holds the list to a pinned copy.
+    let app = crate::raw_routes::mount(Router::new())
         .fallback(dispatch)
         // Explicit rather than axum's implicit 2 MiB (TODO F2.5): every `Bytes`
         // extractor above reads at most `--max-request-body`. The fallback reads
@@ -778,7 +578,7 @@ pub(crate) async fn spool_body(
 
 /// The operational health check. Always `200 {"status":"ok"}`; reaching it at
 /// all is the signal that the server booted and is accepting requests.
-async fn health() -> Response {
+pub(crate) async fn health() -> Response {
     (StatusCode::OK, Json(serde_json::json!({ "status": "ok" }))).into_response()
 }
 
@@ -795,7 +595,7 @@ async fn health() -> Response {
 /// `EndpointSet` does not also mean routing around the access model. All this
 /// function adds is the plumbing dispatch would otherwise have done — session
 /// lookup, the admin check, and reading the body.
-async fn upload(
+pub(crate) async fn upload(
     State(state): State<AppState>,
     admin: AdminSession,
     jar: CookieJar,
@@ -860,7 +660,7 @@ async fn upload(
 
 /// Serve one store file as a download (`GET /download/{store}/{*path}`), behind
 /// the same session lookup and admin check as the typed endpoints.
-async fn download(
+pub(crate) async fn download(
     State(state): State<AppState>,
     admin: AdminSession,
     jar: CookieJar,
@@ -908,7 +708,7 @@ async fn download(
 /// the half the endpoint model cannot describe. The work is the `createBackup`
 /// handler's: it holds the catalog, it persists the selection, and it is where an
 /// admin-only check has already been applied by the time the bytes exist.
-async fn create_backup(
+pub(crate) async fn create_backup(
     State(state): State<AppState>,
     admin: AdminSession,
     jar: CookieJar,
@@ -971,7 +771,7 @@ async fn create_backup(
 /// chosen from it. That is one upload rather than two — the alternative, sending
 /// the file again with the choice, means a browser holding a large archive twice
 /// and an admin waiting for it twice.
-async fn upload_backup(
+pub(crate) async fn upload_backup(
     State(state): State<AppState>,
     admin: AdminSession,
     jar: CookieJar,
@@ -1035,7 +835,7 @@ async fn upload_backup(
 /// alone — so the handshake's `Origin` is checked instead
 /// ([`upgrade_origin_allowed`]): `SameSite=Strict` keeps a cross-*site* page's
 /// cookie off the request, but not a sibling subdomain's.
-async fn language_server(
+pub(crate) async fn language_server(
     State(state): State<AppState>,
     admin: AdminSession,
     headers: axum::http::HeaderMap,
@@ -1065,7 +865,7 @@ async fn language_server(
 /// upgrade and the handshake's `Origin` must be this host's own. The socket
 /// holds the session, so a sign-out, a disabled account or a demotion closes
 /// it and ends the program (#42).
-async fn ide_terminal(
+pub(crate) async fn ide_terminal(
     State(state): State<AppState>,
     admin: AdminSession,
     headers: axum::http::HeaderMap,
@@ -1099,7 +899,7 @@ async fn ide_terminal(
 /// two facts apply: a failed handshake carries no readable body, so the auth
 /// refusal is the one answered with a status; and the handshake's `Origin` must
 /// be this host's own ([`upgrade_origin_allowed`]).
-async fn agent_chat(
+pub(crate) async fn agent_chat(
     State(state): State<AppState>,
     admin: AdminSession,
     headers: axum::http::HeaderMap,
@@ -1132,7 +932,7 @@ async fn agent_chat(
 /// stream support, no such stream, not running here — is a close frame instead
 /// (see [`crate::observe`]). The handshake's `Origin` must be this host's own
 /// ([`upgrade_origin_allowed`]).
-async fn stream_observe(
+pub(crate) async fn stream_observe(
     State(state): State<AppState>,
     // This is a real axum route, so it wins over the fallback every
     // application's request goes through — including an app whose API is
@@ -1178,7 +978,7 @@ async fn stream_observe(
 /// `GET /api/model-instances/{id}/progress`: a fit's progress socket
 /// (analytics TODO A3.3). Admin only, decided before the upgrade as the
 /// Observe socket's is.
-async fn fit_progress(
+pub(crate) async fn fit_progress(
     State(state): State<AppState>,
     // An application's request on a path spelled like this one is not a fit's
     // (applications have no model editor): the `AdminSession` refuses it.
@@ -1589,7 +1389,7 @@ fn moved_admin_redirect(
 ///
 /// A token that is spent, expired or for another host is not an error page — it
 /// is the login screen, which is where the admin would have been without one.
-async fn admin_handoff(
+pub(crate) async fn admin_handoff(
     State(state): State<AppState>,
     uri: Uri,
     headers: axum::http::HeaderMap,
@@ -3095,17 +2895,13 @@ async fn apply_response(
         if let Ok(value) = HeaderValue::from_str(&file.content_type) {
             out.headers_mut().insert(header::CONTENT_TYPE, value);
         }
-        // The filename is server-built (a timestamp and the host's own name), so
-        // it needs no escaping beyond the quotes — but it is still checked rather
-        // than trusted, because a header value that will not parse must not take
-        // the download with it.
         // A download with no name is not for saving (a map's vector tile), so
-        // it is not marked as an attachment.
-        if !file.filename.is_empty()
-            && let Ok(value) =
-                HeaderValue::from_str(&format!("attachment; filename=\"{}\"", file.filename))
-        {
-            out.headers_mut().insert(header::CONTENT_DISPOSITION, value);
+        // it is not marked as an attachment. A name is a `DownloadName`, so it
+        // renders as a header whatever it was built from (security review
+        // 2026-11 D7): no quote or CR/LF of its can reach the header.
+        if let Some(name) = &file.filename {
+            out.headers_mut()
+                .insert(header::CONTENT_DISPOSITION, name.header_value(true));
         }
         return out;
     }

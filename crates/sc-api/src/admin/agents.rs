@@ -17,18 +17,17 @@ pub(super) fn register(set: &mut EndpointSet) {
     // this model describes request/response pairs.
 
     set.register(
-        Endpoint::new("listAgents", Method::Get, api().lit("agents"))
+        Endpoint::new(ids::LIST_AGENTS, Method::Get, api().lit("agents"))
             .output(TypeSchema::array(agent_schema()))
             .mcp(
                 "List the configured agents: what each is called, which LLM \
                  provider and model it runs on, its system prompt, the traits it \
                  carries with their configuration, and who may reach it.",
-            )
-            .auth(AuthRequirement::admin()),
+            ),
     );
 
     set.register(
-        Endpoint::new("createAgent", Method::Post, api().lit("agents"))
+        Endpoint::new(ids::CREATE_AGENT, Method::Post, api().lit("agents"))
             .input(agent_input_schema())
             .output(agent_schema())
             .mcp(
@@ -39,13 +38,12 @@ pub(super) fn register(set: &mut EndpointSet) {
                  with.",
                 )
                 .needs(Grant::Create),
-            )
-            .auth(AuthRequirement::admin()),
+            ),
     );
 
     set.register(
         Endpoint::new(
-            "updateAgent",
+            ids::UPDATE_AGENT,
             Method::Put,
             api().lit("agents").param("id", ValueType::Uuid),
         )
@@ -58,13 +56,12 @@ pub(super) fn register(set: &mut EndpointSet) {
                  sending only the part you meant to alter.",
             )
             .needs(Grant::Edit),
-        )
-        .auth(AuthRequirement::admin()),
+        ),
     );
 
     set.register(
         Endpoint::new(
-            "deleteAgent",
+            ids::DELETE_AGENT,
             Method::Delete,
             api().lit("agents").param("id", ValueType::Uuid),
         )
@@ -78,8 +75,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                  name and outlives the agent deliberately.",
             )
             .needs(Grant::Drop),
-        )
-        .auth(AuthRequirement::admin()),
+        ),
     );
 
     // The registered traits with the configuration each declares, so the agent
@@ -89,20 +85,23 @@ pub(super) fn register(set: &mut EndpointSet) {
     // admin about to save two traits whose names would collide is better told
     // what they are called than left to discover it from the refusal.
     set.register(
-        Endpoint::new("listAgentTraits", Method::Get, api().lit("agent-traits"))
-            .output(TypeSchema::array(agent_trait_info_schema()))
-            // Tagged (§13.6) for the reason `listFieldTypes` is: it is the
-            // declaration `createAgent` is written against, and it also names
-            // the tools each trait will offer, which is what a collision check
-            // needs.
-            .mcp(
-                "List the agent traits this installation registers — the \
+        Endpoint::new(
+            ids::LIST_AGENT_TRAITS,
+            Method::Get,
+            api().lit("agent-traits"),
+        )
+        .output(TypeSchema::array(agent_trait_info_schema()))
+        // Tagged (§13.6) for the reason `listFieldTypes` is: it is the
+        // declaration `createAgent` is written against, and it also names
+        // the tools each trait will offer, which is what a collision check
+        // needs.
+        .mcp(
+            "List the agent traits this installation registers — the \
                  capabilities an agent can be given — each with the \
                  configuration form it declares and the tools it will offer. \
                  This is what `createAgent` and `updateAgent` configure traits \
                  against.",
-            )
-            .auth(AuthRequirement::admin()),
+        ),
     );
 
     // A chat session **is** a run (§11.4), so the history the chat panel shows
@@ -112,7 +111,7 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "listRuns",
+            ids::LIST_RUNS,
             Method::Get,
             api().lit("agent-runs").param("agent", ValueType::Text),
         )
@@ -122,13 +121,12 @@ pub(super) fn register(set: &mut EndpointSet) {
              trigger-driven run are both runs. Runs are keyed by the agent's \
              **name**, not its id. Use this and then `getRun` to find out what an \
              agent actually did.",
-        )
-        .auth(AuthRequirement::admin()),
+        ),
     );
 
     set.register(
         Endpoint::new(
-            "getRun",
+            ids::GET_RUN,
             Method::Get,
             api().lit("runs").param("id", ValueType::Uuid),
         )
@@ -137,15 +135,14 @@ pub(super) fn register(set: &mut EndpointSet) {
             "Read one run in full: its state, its messages, every tool call it \
              made and what came back. This is where to look when an agent or a \
              workflow did not do what was expected.",
-        )
-        .auth(AuthRequirement::admin()),
+        ),
     );
 
     // One display part a run's tool showed the person (TODO-agent-skills AS6.3):
     // rows as `data`, an image or a clip as `content_base64`.
     set.register(
         Endpoint::new(
-            "getRunPart",
+            ids::GET_RUN_PART,
             Method::Get,
             api()
                 .lit("runs")
@@ -153,8 +150,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("parts")
                 .param("part", ValueType::Uuid),
         )
-        .output(run_part_schema())
-        .auth(AuthRequirement::admin()),
+        .output(run_part_schema()),
     );
 
     // What a coding run changed, as a diff over the store — the run's own
@@ -163,25 +159,23 @@ pub(super) fn register(set: &mut EndpointSet) {
     // store holds now, so it works on every store backend, git or not.
     set.register(
         Endpoint::new(
-            "getRunDiff",
+            ids::GET_RUN_DIFF,
             Method::Get,
             api().lit("runs").param("id", ValueType::Uuid).lit("diff"),
         )
-        .output(run_diff_schema())
-        .auth(AuthRequirement::admin()),
+        .output(run_diff_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "deleteRun",
+            ids::DELETE_RUN,
             Method::Delete,
             api().lit("runs").param("id", ValueType::Uuid),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 }
 

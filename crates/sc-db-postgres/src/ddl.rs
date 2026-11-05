@@ -16,7 +16,7 @@
 
 use sc_db::{ColumnDef, ColumnGenerator, CommentTarget, IndexOn, SchemaChange};
 use sc_error::{Error, Result};
-use sc_query::SqlDialect;
+use sc_query::{Ident, QuotedIdent, SqlDialect};
 
 use crate::dialect::PgDialect;
 
@@ -40,13 +40,12 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
                     )));
                 }
             }
-            let mut items: Vec<String> = columns.iter().map(|c| column_def(dialect, c)).collect();
+            let mut items: Vec<String> = columns
+                .iter()
+                .map(|c| column_def(dialect, c))
+                .collect::<Result<_>>()?;
             if !primary_key.is_empty() {
-                let cols = primary_key
-                    .iter()
-                    .map(|c| dialect.quote_ident(c))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let cols = quoted_list(dialect, primary_key)?;
                 items.push(format!("PRIMARY KEY ({cols})"));
             }
             // `UNLOGGED` is honoured rather than checked: the driver advertises
@@ -55,7 +54,7 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
             format!(
                 "CREATE {}TABLE {} ({})",
                 if *unlogged { "UNLOGGED " } else { "" },
-                dialect.quote_ident(name),
+                q(dialect, name)?,
                 items.join(", ")
             )
         }
@@ -63,14 +62,14 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
             format!(
                 "DROP TABLE {}{}",
                 if_exists_clause(*if_exists),
-                dialect.quote_ident(name)
+                q(dialect, name)?
             )
         }
         SchemaChange::AddColumn { table, column } => {
             format!(
                 "ALTER TABLE {} ADD COLUMN {}",
-                dialect.quote_ident(table),
-                column_def(dialect, column)
+                q(dialect, table)?,
+                column_def(dialect, column)?
             )
         }
         SchemaChange::DropColumn {
@@ -80,43 +79,63 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
         } => {
             format!(
                 "ALTER TABLE {} DROP COLUMN {}{}",
-                dialect.quote_ident(table),
+                q(dialect, table)?,
                 if_exists_clause(*if_exists),
-                dialect.quote_ident(column)
+                q(dialect, column)?
             )
         }
         SchemaChange::RenameTable { from, to } => {
-            // The primary key's constraint is named `<table>_pkey` and does not
-            // follow the table, and `SetPrimaryKey` drops it by that name: so it
-            // is renamed too, when there is one by the old name.
+            // The primary key's constraint is named after the table and does
+            // not follow it. Renamed too — to the name Postgres would give it
+            // now (D3) — when it still has a name Postgres gave it after the old
+            // one: `Ident::derived`, or the 63 bytes a rename before this
+            // version kept of `<from>_pkey`. A key somebody named themselves,
+            // or one whose new name is taken, keeps its name: `SetPrimaryKey`
+            // finds a key by what it is, so nothing depends on the name.
+            let from_ident = Ident::existing(from)?;
+            let to_ident = Ident::existing(to)?;
+            let quoted_to = dialect.quote(&to_ident);
+            let to_pkey = to_ident.derived("pkey");
+            let legacy = Ident::existing(&format!("{from}_pkey"))?.as_postgres_keeps_it();
+            let block = format!(
+                "DECLARE pk record; BEGIN \
+                 SELECT c.conname INTO pk FROM pg_constraint c \
+                 WHERE c.conrelid = to_regclass({to_lit}) AND c.contype = 'p' \
+                 AND c.conname IN ({derived_lit}, {legacy_lit}) AND c.conname <> {target_lit}; \
+                 IF FOUND AND to_regclass({target_rel_lit}) IS NULL THEN \
+                 EXECUTE format('ALTER TABLE %s RENAME CONSTRAINT %I TO %I', {to_lit}, \
+                 pk.conname, {target_lit}); END IF; END",
+                to_lit = quote_string(quoted_to.as_str()),
+                derived_lit = quote_string(from_ident.derived("pkey").as_str()),
+                legacy_lit = quote_string(legacy.as_str()),
+                target_lit = quote_string(to_pkey.as_str()),
+                target_rel_lit = quote_string(dialect.quote(&to_pkey).as_str()),
+            );
             format!(
-                "ALTER TABLE {} RENAME TO {}; DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_constraint \
-                 WHERE conname = {} AND conrelid = to_regclass({})) THEN \
-                 ALTER TABLE {} RENAME CONSTRAINT {} TO {}; END IF; END $$",
-                dialect.quote_ident(from),
-                dialect.quote_ident(to),
-                dialect.quote_literal(&format!("{from}_pkey")),
-                dialect.quote_literal(&dialect.quote_ident(to)),
-                dialect.quote_ident(to),
-                dialect.quote_ident(&format!("{from}_pkey")),
-                dialect.quote_ident(&format!("{to}_pkey")),
+                "ALTER TABLE {} RENAME TO {quoted_to}; {}",
+                q(dialect, from)?,
+                do_block(&block)
             )
         }
         SchemaChange::RenameColumn { table, from, to } => {
             format!(
                 "ALTER TABLE {} RENAME COLUMN {} TO {}",
-                dialect.quote_ident(table),
-                dialect.quote_ident(from),
-                dialect.quote_ident(to)
+                q(dialect, table)?,
+                q(dialect, from)?,
+                q(dialect, to)?
             )
         }
         SchemaChange::SetPrimaryKey { table, columns } => {
             // Two statements, because a table may already have a key and
-            // Postgres has no `ALTER PRIMARY KEY`. The old constraint is dropped
-            // by the name Postgres gives every primary key it creates —
-            // `<table>_pkey` — which is what `ADD PRIMARY KEY` below will name
-            // the new one, so the pair is stable under repetition. `IF EXISTS`
-            // covers the ordinary case of a table that has no key yet.
+            // Postgres has no `ALTER PRIMARY KEY`. The old key is found by what
+            // it is (`contype = 'p'`) rather than by name (security review
+            // 2026-11 D3): Postgres names a key `<table>_pkey` with the *table
+            // name* cut to fit 63 bytes, adds a number when that name is taken,
+            // and the name stays behind when the table is renamed — so a name
+            // computed here is a guess, and a wrong guess left the old key in
+            // place and failed the `ADD` with "multiple primary keys". Finding
+            // none is the ordinary case of a table that has no key yet. The new
+            // key is named by Postgres, by its rule.
             //
             // The columns are also made `NOT NULL`: Postgres does this itself
             // when adding a primary key, but only in the sense of rejecting the
@@ -126,23 +145,23 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
             // **No columns means no key**: the drop alone. That is the state a
             // table is created in and the state it returns to when the last key
             // field stops being one, so it has to be expressible.
-            let quoted_table = dialect.quote_ident(table);
-            let mut sql = format!(
-                "ALTER TABLE {quoted_table} DROP CONSTRAINT IF EXISTS {}",
-                dialect.quote_ident(&format!("{table}_pkey"))
-            );
+            let quoted_table = q(dialect, table)?;
+            let table_lit = quote_string(quoted_table.as_str());
+            let mut sql = do_block(&format!(
+                "DECLARE pk record; BEGIN \
+                 FOR pk IN SELECT c.conname FROM pg_constraint c \
+                 WHERE c.conrelid = to_regclass({table_lit}) AND c.contype = 'p' \
+                 LOOP EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', {table_lit}, pk.conname); \
+                 END LOOP; END"
+            ));
             if !columns.is_empty() {
                 for column in columns {
                     sql.push_str(&format!(
                         "; ALTER TABLE {quoted_table} ALTER COLUMN {} SET NOT NULL",
-                        dialect.quote_ident(column)
+                        q(dialect, column)?
                     ));
                 }
-                let cols = columns
-                    .iter()
-                    .map(|c| dialect.quote_ident(c))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let cols = quoted_list(dialect, columns)?;
                 sql.push_str(&format!(
                     "; ALTER TABLE {quoted_table} ADD PRIMARY KEY ({cols})"
                 ));
@@ -154,8 +173,8 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
             column,
             generator,
         } => {
-            let quoted_table = dialect.quote_ident(table);
-            let quoted_column = dialect.quote_ident(column);
+            let quoted_table = q(dialect, table)?;
+            let quoted_column = q(dialect, column)?;
             // A column has one generator, never both kinds, so every change
             // starts by taking away whichever it has. **Identity first**:
             // Postgres refuses `DROP DEFAULT` on an identity column outright
@@ -186,7 +205,7 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
                     sql.push_str(&format!(
                         "; SELECT setval(pg_get_serial_sequence({}, {}), \
                          coalesce(max({quoted_column}), 0) + 1, false) FROM {quoted_table}",
-                        quote_string(&quoted_table),
+                        quote_string(quoted_table.as_str()),
                         quote_string(column)
                     ));
                 }
@@ -207,8 +226,8 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
         } => {
             format!(
                 "ALTER TABLE {} ALTER COLUMN {} {} NOT NULL",
-                dialect.quote_ident(table),
-                dialect.quote_ident(column),
+                q(dialect, table)?,
+                q(dialect, column)?,
                 if *nullable { "DROP" } else { "SET" }
             )
         }
@@ -228,18 +247,18 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
             // `to_regclass` resolves the quoted table name through the
             // connection's `search_path`, exactly as the `ALTER TABLE` beside it
             // does.
-            let quoted_table = dialect.quote_ident(table);
-            let mut sql = format!(
-                "DO $sc$ DECLARE fk record; BEGIN \
+            let quoted_table = q(dialect, table)?;
+            let mut sql = do_block(&format!(
+                "DECLARE fk record; BEGIN \
                  FOR fk IN SELECT c.conname FROM pg_constraint c \
                  JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1] \
                  WHERE c.conrelid = to_regclass({table_lit}) AND c.contype = 'f' \
                  AND array_length(c.conkey, 1) = 1 AND a.attname = {column_lit} \
                  LOOP EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', {table_lit}, fk.conname); \
-                 END LOOP; END $sc$",
-                table_lit = quote_string(&quoted_table),
+                 END LOOP; END",
+                table_lit = quote_string(quoted_table.as_str()),
                 column_lit = quote_string(column),
-            );
+            ));
             if let Some(target) = references {
                 // Declared as `column_def` declares one — deferrable, checked
                 // immediately — so a key repointed here is the same key a field
@@ -248,9 +267,9 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
                 sql.push_str(&format!(
                     "; ALTER TABLE {quoted_table} ADD FOREIGN KEY ({}) REFERENCES {} ({}) \
                      DEFERRABLE INITIALLY IMMEDIATE",
-                    dialect.quote_ident(column),
-                    dialect.quote_ident(&target.table),
-                    dialect.quote_ident(&target.column),
+                    q(dialect, column)?,
+                    q(dialect, &target.table)?,
+                    q(dialect, &target.column)?,
                 ));
             }
             sql
@@ -267,9 +286,9 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
             }
             format!(
                 "ALTER TABLE {} ADD CONSTRAINT {} UNIQUE ({})",
-                dialect.quote_ident(table),
-                dialect.quote_ident(name),
-                quoted_list(dialect, columns)
+                q(dialect, table)?,
+                q(dialect, name)?,
+                quoted_list(dialect, columns)?
             )
         }
         SchemaChange::DropConstraint {
@@ -279,9 +298,9 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
         } => {
             format!(
                 "ALTER TABLE {} DROP CONSTRAINT {}{}",
-                dialect.quote_ident(table),
+                q(dialect, table)?,
                 if_exists_clause(*if_exists),
-                dialect.quote_ident(name)
+                q(dialect, name)?
             )
         }
         SchemaChange::CreateIndex {
@@ -305,7 +324,7 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
                             "index `{name}` on `{table}` names no columns"
                         )));
                     }
-                    quoted_list(dialect, columns)
+                    quoted_list(dialect, columns)?
                 }
                 // Parenthesised: Postgres requires an index expression to be,
                 // unless it is a bare function call — and "unless" is not a rule
@@ -314,15 +333,15 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
             };
             format!(
                 "CREATE INDEX {} ON {}{using} ({target})",
-                dialect.quote_ident(name),
-                dialect.quote_ident(table),
+                q(dialect, name)?,
+                q(dialect, table)?,
             )
         }
         SchemaChange::DropIndex { name, if_exists } => {
             format!(
                 "DROP INDEX {}{}",
                 if_exists_clause(*if_exists),
-                dialect.quote_ident(name)
+                q(dialect, name)?
             )
         }
         SchemaChange::SetComment { target, comment } => {
@@ -334,17 +353,13 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
                 None => "NULL".to_owned(),
             };
             let what = match target {
-                CommentTarget::Constraint { table, name } => format!(
-                    "CONSTRAINT {} ON {}",
-                    dialect.quote_ident(name),
-                    dialect.quote_ident(table)
-                ),
-                CommentTarget::Index { name } => format!("INDEX {}", dialect.quote_ident(name)),
-                CommentTarget::Trigger { table, name } => format!(
-                    "TRIGGER {} ON {}",
-                    dialect.quote_ident(name),
-                    dialect.quote_ident(table)
-                ),
+                CommentTarget::Constraint { table, name } => {
+                    format!("CONSTRAINT {} ON {}", q(dialect, name)?, q(dialect, table)?)
+                }
+                CommentTarget::Index { name } => format!("INDEX {}", q(dialect, name)?),
+                CommentTarget::Trigger { table, name } => {
+                    format!("TRIGGER {} ON {}", q(dialect, name)?, q(dialect, table)?)
+                }
             };
             format!("COMMENT ON {what} IS {text}")
         }
@@ -352,13 +367,21 @@ pub fn render(dialect: &PgDialect, change: &SchemaChange) -> Result<String> {
     Ok(sql)
 }
 
+/// `name` quoted for Postgres, through [`Ident`] (security review 2026-11
+/// §7): every name this renderer writes is checked once, here. A name the
+/// database already has passes ([`Ident::existing`]); one that no database
+/// can hold (a NUL) is refused rather than sent.
+fn q(dialect: &PgDialect, name: &str) -> Result<QuotedIdent> {
+    Ok(dialect.quote(&Ident::existing(name)?))
+}
+
 /// A comma-separated list of quoted identifiers.
-fn quoted_list(dialect: &PgDialect, items: &[String]) -> String {
-    items
+fn quoted_list(dialect: &PgDialect, items: &[String]) -> Result<String> {
+    Ok(items
         .iter()
-        .map(|c| dialect.quote_ident(c))
-        .collect::<Vec<_>>()
-        .join(", ")
+        .map(|c| q(dialect, c).map(|q| q.to_string()))
+        .collect::<Result<Vec<_>>>()?
+        .join(", "))
 }
 
 /// A SQL string literal holding `value` — for the places a name is passed as
@@ -368,10 +391,16 @@ fn quote_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+/// `DO <tag> body <tag>`, with a dollar-quote tag that does not occur in
+/// `body` ([`TrustedSql::do_block`](sc_query::TrustedSql::do_block), D4).
+fn do_block(body: &str) -> String {
+    sc_query::TrustedSql::do_block(body).as_str().to_owned()
+}
+
 /// Render one column definition:
 /// `"name" type [NOT NULL] [DEFAULT … | GENERATED …] [UNIQUE] [REFERENCES "t" ("c")]`.
-fn column_def(dialect: &PgDialect, col: &ColumnDef) -> String {
-    let mut s = dialect.quote_ident(&col.name);
+fn column_def(dialect: &PgDialect, col: &ColumnDef) -> Result<String> {
+    let mut s = q(dialect, &col.name)?.to_string();
     s.push(' ');
     s.push_str(&col.sql_type);
     if !col.nullable {
@@ -394,9 +423,9 @@ fn column_def(dialect: &PgDialect, col: &ColumnDef) -> String {
         // explicitly rather than left implicit: the goals require keys onto
         // non-primary-key columns, and the implicit form always means the PK.
         s.push_str(" REFERENCES ");
-        s.push_str(&dialect.quote_ident(&target.table));
+        s.push_str(q(dialect, &target.table)?.as_str());
         s.push_str(" (");
-        s.push_str(&dialect.quote_ident(&target.column));
+        s.push_str(q(dialect, &target.column)?.as_str());
         s.push(')');
         // **Deferrable, checked immediately by default.** Every write behaves
         // exactly as it did — a bad key is refused at the statement, with the
@@ -410,7 +439,7 @@ fn column_def(dialect: &PgDialect, col: &ColumnDef) -> String {
         // rather than something asked for per table.
         s.push_str(" DEFERRABLE INITIALLY IMMEDIATE");
     }
-    s
+    Ok(s)
 }
 
 /// `"IF EXISTS "` or `""`.
@@ -579,16 +608,20 @@ mod tests {
 
     #[test]
     fn a_primary_key_can_be_set_on_a_table_that_has_none() {
-        // Three statements in one: a table created without a key (which is every
-        // table, per the goals) has no constraint to drop, and the columns are
-        // made NOT NULL so the introspected column matches the declared field.
+        // Three steps in one: the key the table has (none, for a table created
+        // without one — which is every table, per the goals) is dropped by what
+        // it is, the columns are made NOT NULL so the introspected column
+        // matches the declared field, and Postgres names the new key.
         let change = SchemaChange::SetPrimaryKey {
             table: "invoice".into(),
             columns: vec!["id".into()],
         };
         assert_eq!(
             render_ok(&change),
-            "ALTER TABLE \"invoice\" DROP CONSTRAINT IF EXISTS \"invoice_pkey\"; \
+            "DO $sc$ DECLARE pk record; BEGIN FOR pk IN SELECT c.conname FROM pg_constraint c \
+             WHERE c.conrelid = to_regclass('\"invoice\"') AND c.contype = 'p' \
+             LOOP EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', '\"invoice\"', pk.conname); \
+             END LOOP; END $sc$; \
              ALTER TABLE \"invoice\" ALTER COLUMN \"id\" SET NOT NULL; \
              ALTER TABLE \"invoice\" ADD PRIMARY KEY (\"id\")"
         );
@@ -607,10 +640,54 @@ mod tests {
             table: "member".into(),
             columns: Vec::new(),
         };
-        assert_eq!(
-            render_ok(&change),
-            "ALTER TABLE \"member\" DROP CONSTRAINT IF EXISTS \"member_pkey\""
+        let sql = render_ok(&change);
+        assert!(
+            sql.starts_with("DO $sc$") && sql.ends_with("END $sc$"),
+            "{sql}"
         );
+        assert!(!sql.contains("ADD PRIMARY KEY"), "{sql}");
+    }
+
+    /// The key is never dropped by a name computed here (D3): for a 59–63
+    /// byte table name, `<table>_pkey` is not the name Postgres gave it.
+    #[test]
+    fn the_key_is_found_by_what_it_is_not_by_a_computed_name() {
+        let table = format!("{}_with_a_long_name", "t".repeat(45));
+        let sql = render_ok(&SchemaChange::SetPrimaryKey {
+            table: table.clone(),
+            columns: vec!["id".into()],
+        });
+        assert!(!sql.contains("_pkey"), "{sql}");
+        assert!(sql.contains("c.contype = 'p'"), "{sql}");
+    }
+
+    /// Identifiers are quoted through `Ident`: an embedded quote is doubled, a
+    /// `$` cannot end a `DO` block early, and a NUL is refused rather than sent.
+    #[test]
+    fn names_are_quoted_and_a_dollar_tag_in_one_cannot_end_the_block() {
+        let sql = render_ok(&SchemaChange::DropColumn {
+            table: "Order \"Lines\"".into(),
+            column: "a\"b".into(),
+            if_exists: true,
+        });
+        assert_eq!(
+            sql,
+            "ALTER TABLE \"Order \"\"Lines\"\"\" DROP COLUMN IF EXISTS \"a\"\"b\""
+        );
+        let sql = render_ok(&SchemaChange::SetPrimaryKey {
+            table: "x$sc$y".into(),
+            columns: Vec::new(),
+        });
+        assert!(sql.starts_with("DO $sc1$ "), "{sql}");
+        assert!(sql.ends_with(" $sc1$"), "{sql}");
+        let refused = render(
+            &PgDialect::new(),
+            &SchemaChange::DropTable {
+                name: "a\0b".into(),
+                if_exists: false,
+            },
+        );
+        assert!(refused.is_err());
     }
 
     #[test]
@@ -818,13 +895,40 @@ mod tests {
             to: "titles".into(),
         });
         assert!(
-            sql.starts_with("ALTER TABLE \"books\" RENAME TO \"titles\";"),
+            sql.starts_with("ALTER TABLE \"books\" RENAME TO \"titles\"; DO $sc$"),
+            "{sql}"
+        );
+        // Renamed when it has the name Postgres gave it after the old table.
+        assert!(
+            sql.contains(
+                "c.conname IN ('books_pkey', 'books_pkey') AND c.conname <> 'titles_pkey'"
+            ),
             "{sql}"
         );
         assert!(
             sql.contains(
-                "ALTER TABLE \"titles\" RENAME CONSTRAINT \"books_pkey\" TO \"titles_pkey\""
+                "EXECUTE format('ALTER TABLE %s RENAME CONSTRAINT %I TO %I', '\"titles\"', \
+                 pk.conname, 'titles_pkey')"
             ),
+            "{sql}"
+        );
+
+        // A long name: Postgres' name for the key (the table name cut to 58
+        // bytes) and the 63 bytes an earlier rename kept of `<from>_pkey`.
+        let from = "f".repeat(60);
+        let to = "g".repeat(62);
+        let sql = render_ok(&SchemaChange::RenameTable {
+            from: from.clone(),
+            to: to.clone(),
+        });
+        let derived = format!("{}_pkey", "f".repeat(58));
+        let legacy = format!("{from}_pk");
+        assert!(
+            sql.contains(&format!("IN ('{derived}', '{legacy}')")),
+            "{sql}"
+        );
+        assert!(
+            sql.contains(&format!("'{}_pkey')", "g".repeat(58))),
             "{sql}"
         );
     }

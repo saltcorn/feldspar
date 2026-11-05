@@ -22,7 +22,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // What this server has to offer, plus the selection the admin last made — so
     // the dialog opens on their tuned choice rather than on everything, and on
     // *everything* the first time.
-    reg.register_admin("getBackupOptions", {
+    reg.handle(sc_api::handler_ids::GET_BACKUP_OPTIONS, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -43,7 +43,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // than by a save button of its own: the admin's answer to "what should a backup
     // include" is exactly the backup they just took, and a screen that made them
     // state it twice would drift.
-    reg.register_admin("createBackup", {
+    reg.handle(sc_api::handler_ids::CREATE_BACKUP, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -82,7 +82,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         spool, len,
                     )?),
                     content_type: "application/zip".to_owned(),
-                    filename: backup_filename(),
+                    filename: Some(sc_http::DownloadName::sanitised(&backup_filename())),
                 }))
             }
         }
@@ -94,7 +94,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // the same and answered with `locked` and its `id`, and the dialog asks
     // for the password and hands it to `unlockBackup`, which answers what this
     // would have.
-    reg.register_admin("uploadBackup", {
+    reg.handle(sc_api::handler_ids::UPLOAD_BACKUP, {
         let pending = pending.clone();
         move |ctx| {
             let pending = pending.clone();
@@ -123,7 +123,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // The password of an uploaded, protected backup: checked against the file,
     // held with it for the restore, and answered with what the file holds. A
     // wrong password is refused and the file stays, so the admin can try again.
-    reg.register_admin("unlockBackup", {
+    reg.handle(sc_api::handler_ids::UNLOCK_BACKUP, {
         let pending = pending.clone();
         move |ctx| {
             let pending = pending.clone();
@@ -150,7 +150,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("restoreBackup", {
+    reg.handle(sc_api::handler_ids::RESTORE_BACKUP, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         let pending = pending.clone();
@@ -209,7 +209,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // reaches the destination (`check`), which for SFTP is also when the
     // server's host key is learnt and recorded.
 
-    reg.register_admin("listBackupSchedules", {
+    reg.handle(sc_api::handler_ids::LIST_BACKUP_SCHEDULES, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -227,7 +227,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createBackupSchedule", {
+    reg.handle(sc_api::handler_ids::CREATE_BACKUP_SCHEDULE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -254,7 +254,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateBackupSchedule", {
+    reg.handle(sc_api::handler_ids::UPDATE_BACKUP_SCHEDULE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -295,7 +295,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteBackupSchedule", {
+    reg.handle(sc_api::handler_ids::DELETE_BACKUP_SCHEDULE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -317,7 +317,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getClearAllPreview", {
+    reg.handle(sc_api::handler_ids::GET_CLEAR_ALL_PREVIEW, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -329,7 +329,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("clearAll", {
+    reg.handle(sc_api::handler_ids::CLEAR_ALL, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {

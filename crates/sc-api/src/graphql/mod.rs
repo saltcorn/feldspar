@@ -153,33 +153,37 @@ impl GraphqlProvider {
 
         let mut endpoints = EndpointSet::new();
         endpoints.register(
-            Endpoint::new(QUERY_ENDPOINT, Method::Post, PathSpec::root().lit(&mount))
-                .input(TypeSchema::struct_of([
-                    StructField::new("query", TypeSchema::text()),
-                    StructField::new("variables", TypeSchema::optional(TypeSchema::json())),
-                    StructField::new("operationName", TypeSchema::optional(TypeSchema::text())),
-                ]))
-                .output(TypeSchema::json())
-                // The endpoint is open because the *rows* are gated: a table's
-                // role floor and its ownership formula decide at resolve time,
-                // exactly as they do for a REST table with a formula. An
-                // endpoint-level gate here would be a second, coarser rule that
-                // disagreed with the first.
-                .auth(AuthRequirement::Public)
-                .handler(HandlerRef::named(QUERY_ENDPOINT)),
+            // `Public` because the *rows* are gated: a table's role floor and
+            // its ownership formula decide at resolve time, exactly as they do
+            // for a REST table with a formula. An endpoint-level gate here
+            // would be a second, coarser rule that disagreed with the first.
+            Endpoint::projected(
+                QUERY_ENDPOINT,
+                Method::Post,
+                PathSpec::root().lit(&mount),
+                AuthRequirement::Public,
+            )
+            .input(TypeSchema::struct_of([
+                StructField::new("query", TypeSchema::text()),
+                StructField::new("variables", TypeSchema::optional(TypeSchema::json())),
+                StructField::new("operationName", TypeSchema::optional(TypeSchema::text())),
+            ]))
+            .output(TypeSchema::json())
+            .handler(HandlerRef::named(QUERY_ENDPOINT)),
         );
         endpoints.register(
-            Endpoint::new(
+            // `Public`: introspection is on, so the SDL is not a secret being
+            // kept — it describes the tables the application already exposes
+            // over REST.
+            Endpoint::projected(
                 SCHEMA_ENDPOINT,
                 Method::Get,
                 PathSpec::root().lit(&mount).lit(SCHEMA_SEGMENT),
+                AuthRequirement::Public,
             )
             // The SDL is text, not JSON — it is what a build feeds `gql.tada`
             // and what a developer reads.
             .binary_output()
-            // Introspection is on, so the SDL is not a secret being kept: it
-            // describes the tables the application already exposes over REST.
-            .auth(AuthRequirement::Public)
             .handler(HandlerRef::named(SCHEMA_ENDPOINT)),
         );
 

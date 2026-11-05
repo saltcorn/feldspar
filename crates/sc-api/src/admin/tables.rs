@@ -9,13 +9,12 @@ use super::*;
 #[allow(clippy::too_many_lines)]
 pub(super) fn register(set: &mut EndpointSet) {
     set.register(
-        Endpoint::new("listTables", Method::Get, api().lit("tables"))
-            .output(TypeSchema::array(table_schema()))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::LIST_TABLES, Method::Get, api().lit("tables"))
+            .output(TypeSchema::array(table_schema())),
     );
 
     set.register(
-        Endpoint::new("createTable", Method::Post, api().lit("tables"))
+        Endpoint::new(ids::CREATE_TABLE, Method::Post, api().lit("tables"))
             .input(TypeSchema::struct_of([
                 StructField::new("name", TypeSchema::text()),
                 // Which database to create it in (§5.0). Optional, and empty
@@ -24,8 +23,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 // connections existed keeps working unchanged.
                 StructField::new("database", TypeSchema::optional(TypeSchema::text())),
             ]))
-            .output(table_schema())
-            .auth(AuthRequirement::admin()),
+            .output(table_schema()),
     );
 
     // Create a table **from a CSV file**: the fields deduced from the header and
@@ -36,7 +34,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // create can do.
     set.register(
         Endpoint::new(
-            "createTableFromCsv",
+            ids::CREATE_TABLE_FROM_CSV,
             Method::Post,
             api().lit("tables").lit("csv"),
         )
@@ -49,8 +47,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("table", table_schema()),
             StructField::new("inserted", TypeSchema::int()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // Create a table **from a geographic file** (analytics TODO A5.2): GeoJSON,
@@ -59,7 +56,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // `layer` picks one of several Shapefiles in a zip or tables in a package.
     set.register(
         Endpoint::new(
-            "createTableFromGeoFile",
+            ids::CREATE_TABLE_FROM_GEO_FILE,
             Method::Post,
             api().lit("tables").lit("geo"),
         )
@@ -74,8 +71,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("table", table_schema()),
             StructField::new("inserted", TypeSchema::int()),
             StructField::new("warnings", TypeSchema::array(TypeSchema::text())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // Set a table's configuration: the `_fd_tables` overlay fields, and only
@@ -86,13 +82,12 @@ pub(super) fn register(set: &mut EndpointSet) {
     // change with references to chase and is deliberately not offered.
     set.register(
         Endpoint::new(
-            "updateTable",
+            ids::UPDATE_TABLE,
             Method::Put,
             api().lit("tables").param("table", ValueType::Text),
         )
         .input(table_settings_schema())
-        .output(table_schema())
-        .auth(AuthRequirement::admin()),
+        .output(table_schema()),
     );
 
     // Drop a table: its columns, its rows and its overlay row. Distinct from
@@ -105,15 +100,14 @@ pub(super) fn register(set: &mut EndpointSet) {
     // be able to do something the admin UI cannot.
     set.register(
         Endpoint::new(
-            "dropTable",
+            ids::DROP_TABLE,
             Method::Delete,
             api().lit("tables").param("table", ValueType::Text),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "dropped",
             TypeSchema::text(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // Rename a table: the table page's "Rename table". The rows, fields and
@@ -123,7 +117,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // chiefly that code naming the old name was not rewritten.
     set.register(
         Endpoint::new(
-            "renameTable",
+            ids::RENAME_TABLE,
             Method::Post,
             api()
                 .lit("tables")
@@ -137,8 +131,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("table", table_schema()),
             StructField::new("notes", TypeSchema::array(TypeSchema::text())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     //
@@ -149,17 +142,16 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "listMetadataTables",
+            ids::LIST_METADATA_TABLES,
             Method::Get,
             api().lit("metadata-tables"),
         )
-        .output(TypeSchema::array(TypeSchema::text()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(TypeSchema::text())),
     );
 
     set.register(
         Endpoint::new(
-            "createMetadataTable",
+            ids::CREATE_METADATA_TABLE,
             Method::Post,
             api().lit("tables").lit("metadata"),
         )
@@ -167,8 +159,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             "name",
             TypeSchema::text(),
         )]))
-        .output(table_schema())
-        .auth(AuthRequirement::admin()),
+        .output(table_schema()),
     );
 
     //
@@ -189,7 +180,7 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "listTableProviders",
+            ids::LIST_TABLE_PROVIDERS,
             Method::Get,
             api().lit("table-providers"),
         )
@@ -204,13 +195,12 @@ pub(super) fn register(set: &mut EndpointSet) {
              spreadsheet, a view over other tables). Each carries the \
              configuration it needs, which is what `edit_schema`'s \
              `create_provided_table` operation must be given.",
-        )
-        .auth(AuthRequirement::admin()),
+        ),
     );
 
     set.register(
         Endpoint::new(
-            "createProvidedTable",
+            ids::CREATE_PROVIDED_TABLE,
             Method::Post,
             api().lit("tables").lit("provided"),
         )
@@ -223,13 +213,12 @@ pub(super) fn register(set: &mut EndpointSet) {
             // dialog may create the table first and configure it after.
             StructField::new("configuration", TypeSchema::optional(TypeSchema::json())),
         ]))
-        .output(table_schema())
-        .auth(AuthRequirement::admin()),
+        .output(table_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "updateProvidedTable",
+            ids::UPDATE_PROVIDED_TABLE,
             Method::Put,
             api()
                 .lit("tables")
@@ -240,8 +229,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             "configuration",
             TypeSchema::json(),
         )]))
-        .output(table_schema())
-        .auth(AuthRequirement::admin()),
+        .output(table_schema()),
     );
 
     // Forget a table's configuration, returning it to the closed default. Also
@@ -250,7 +238,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // to exist.
     set.register(
         Endpoint::new(
-            "deleteTableSettings",
+            ids::DELETE_TABLE_SETTINGS,
             Method::Delete,
             api()
                 .lit("tables")
@@ -260,8 +248,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // Stored settings whose table is not in the database. These are deliberately
@@ -271,12 +258,11 @@ pub(super) fn register(set: &mut EndpointSet) {
     // "invisible and inexplicable".
     set.register(
         Endpoint::new(
-            "listOrphanTableSettings",
+            ids::LIST_ORPHAN_TABLE_SETTINGS,
             Method::Get,
             api().lit("table-settings").lit("orphans"),
         )
-        .output(TypeSchema::array(orphan_table_settings_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(orphan_table_settings_schema())),
     );
 }
 

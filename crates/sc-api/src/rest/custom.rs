@@ -843,10 +843,14 @@ pub fn custom_endpoint(mount: &str, query: &CustomQuery) -> Endpoint {
         ))
     };
 
-    let mut endpoint = Endpoint::new(&query.name, query.method, path)
-        .output(output)
-        .auth(AuthRequirement::MinRole(query.min_role))
-        .handler(HandlerRef::Custom(query.name.clone()));
+    let mut endpoint = Endpoint::projected(
+        &query.name,
+        query.method,
+        path,
+        AuthRequirement::MinRole(query.min_role),
+    )
+    .output(output)
+    .handler(HandlerRef::Custom(query.name.clone()));
     if query.body_type == BodyType::Bytes {
         // The body is the bytes (`Blob | ArrayBuffer | Uint8Array`), and the
         // declared parameters travel in the query string.

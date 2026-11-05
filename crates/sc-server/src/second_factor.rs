@@ -152,7 +152,7 @@ pub(crate) async fn challenge_for(
             jar,
             Redirect::to(&format!(
                 "{PAGE_ROUTE}?return_to={}",
-                encode(&crate::oauth::safe_return_to(Some(return_to)))
+                encode(crate::oauth::safe_return_to(Some(return_to)).as_str())
             )),
         )
             .into_response(),
@@ -240,7 +240,7 @@ impl Fields {
     }
 
     fn return_to(&self) -> String {
-        crate::oauth::safe_return_to(self.text("return_to"))
+        crate::oauth::safe_return_to(self.text("return_to")).into_string()
     }
 }
 
@@ -881,7 +881,7 @@ pub(crate) async fn page(
             .find(|(k, _)| k == name)
             .map(|(_, v)| v.as_str())
     };
-    let return_to = crate::oauth::safe_return_to(get("return_to"));
+    let return_to = crate::oauth::safe_return_to(get("return_to")).into_string();
     let wrong = get("error").is_some();
     let csrf = csrf
         .map(|Extension(CsrfToken(token))| token)

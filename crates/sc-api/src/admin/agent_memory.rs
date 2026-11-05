@@ -13,7 +13,7 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "listAgentMemories",
+            ids::LIST_AGENT_MEMORIES,
             Method::Get,
             api().lit("agent-memories"),
         )
@@ -24,21 +24,19 @@ pub(super) fn register(set: &mut EndpointSet) {
             QueryParam::new("search", ValueType::Text),
             QueryParam::new("limit", ValueType::Int),
         ])
-        .output(TypeSchema::array(agent_memory_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(agent_memory_schema())),
     );
 
     set.register(
         Endpoint::new(
-            "deleteAgentMemory",
+            ids::DELETE_AGENT_MEMORY,
             Method::Delete,
             api().lit("agent-memories").param("id", ValueType::Int),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 }
 

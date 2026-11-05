@@ -23,40 +23,33 @@ pub(super) fn register(set: &mut EndpointSet) {
     // `application` is an application's id, or `none` for the checklists with
     // no application; absent lists them all.
     set.register(
-        Endpoint::new("listChecklists", Method::Get, api().lit("checklists"))
+        Endpoint::new(ids::LIST_CHECKLISTS, Method::Get, api().lit("checklists"))
             .query([QueryParam::new("application", ValueType::Text)])
-            .output(TypeSchema::array(checklist_summary_schema()))
-            .auth(AuthRequirement::admin()),
+            .output(TypeSchema::array(checklist_summary_schema())),
     );
     set.register(
-        Endpoint::new("createChecklist", Method::Post, api().lit("checklists"))
+        Endpoint::new(ids::CREATE_CHECKLIST, Method::Post, api().lit("checklists"))
             .input(checklist_input_schema(true))
-            .output(checklist_detail_schema())
-            .auth(AuthRequirement::admin()),
+            .output(checklist_detail_schema()),
     );
     set.register(
-        Endpoint::new("getChecklist", Method::Get, checklist_id())
-            .output(checklist_detail_schema())
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::GET_CHECKLIST, Method::Get, checklist_id())
+            .output(checklist_detail_schema()),
     );
     set.register(
-        Endpoint::new("updateChecklist", Method::Put, checklist_id())
+        Endpoint::new(ids::UPDATE_CHECKLIST, Method::Put, checklist_id())
             .input(checklist_input_schema(false))
-            .output(checklist_detail_schema())
-            .auth(AuthRequirement::admin()),
+            .output(checklist_detail_schema()),
     );
     set.register(
-        Endpoint::new("deleteChecklist", Method::Delete, checklist_id())
-            .output(TypeSchema::struct_of([StructField::new(
-                "deleted",
-                TypeSchema::bool(),
-            )]))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::DELETE_CHECKLIST, Method::Delete, checklist_id()).output(
+            TypeSchema::struct_of([StructField::new("deleted", TypeSchema::bool())]),
+        ),
     );
     // A new step at the end, or before the step `before` names.
     set.register(
         Endpoint::new(
-            "addChecklistStep",
+            ids::ADD_CHECKLIST_STEP,
             Method::Post,
             checklist_id().lit("steps"),
         )
@@ -68,12 +61,11 @@ pub(super) fn register(set: &mut EndpointSet) {
                     TypeSchema::optional(TypeSchema::uuid()),
                 )]),
         ))
-        .output(checklist_step_schema())
-        .auth(AuthRequirement::admin()),
+        .output(checklist_step_schema()),
     );
     set.register(
         Endpoint::new(
-            "reorderChecklistSteps",
+            ids::REORDER_CHECKLIST_STEPS,
             Method::Put,
             checklist_id().lit("order"),
         )
@@ -81,45 +73,48 @@ pub(super) fn register(set: &mut EndpointSet) {
             "order",
             TypeSchema::array(TypeSchema::uuid()),
         )]))
-        .output(checklist_detail_schema())
-        .auth(AuthRequirement::admin()),
+        .output(checklist_detail_schema()),
     );
     set.register(
-        Endpoint::new("runChecklist", Method::Post, checklist_id().lit("run"))
-            .output(checklist_run_schema())
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::RUN_CHECKLIST, Method::Post, checklist_id().lit("run"))
+            .output(checklist_run_schema()),
     );
     set.register(
-        Endpoint::new("listChecklistRuns", Method::Get, checklist_id().lit("runs"))
-            .query([QueryParam::new("limit", ValueType::Int)])
-            .output(TypeSchema::array(checklist_run_schema()))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::LIST_CHECKLIST_RUNS,
+            Method::Get,
+            checklist_id().lit("runs"),
+        )
+        .query([QueryParam::new("limit", ValueType::Int)])
+        .output(TypeSchema::array(checklist_run_schema())),
     );
     // Every enabled checklist of an application (`application`: its id), the
     // ones with none (`none`), or all of them (absent).
     set.register(
-        Endpoint::new("runChecklists", Method::Post, api().lit("checklist-runs"))
-            .input(TypeSchema::struct_of([StructField::new(
-                "application",
-                TypeSchema::optional(TypeSchema::text()),
-            )]))
-            .output(TypeSchema::array(checklist_run_schema()))
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::RUN_CHECKLISTS,
+            Method::Post,
+            api().lit("checklist-runs"),
+        )
+        .input(TypeSchema::struct_of([StructField::new(
+            "application",
+            TypeSchema::optional(TypeSchema::text()),
+        )]))
+        .output(TypeSchema::array(checklist_run_schema())),
     );
     set.register(
         Endpoint::new(
-            "getChecklistRun",
+            ids::GET_CHECKLIST_RUN,
             Method::Get,
             api().lit("checklist-runs").param("id", ValueType::Uuid),
         )
-        .output(checklist_run_schema())
-        .auth(AuthRequirement::admin()),
+        .output(checklist_run_schema()),
     );
     // A screenshot a run kept (C2.5), by the path its step result names, as
     // base64 for the run detail to show inline.
     set.register(
         Endpoint::new(
-            "getChecklistScreenshot",
+            ids::GET_CHECKLIST_SCREENSHOT,
             Method::Get,
             api().lit("checklist-screenshots"),
         )
@@ -127,74 +122,68 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("content_type", TypeSchema::text()),
             StructField::new("data", TypeSchema::text()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
     set.register(
-        Endpoint::new("updateChecklistStep", Method::Put, step_id())
+        Endpoint::new(ids::UPDATE_CHECKLIST_STEP, Method::Put, step_id())
             .input(TypeSchema::struct_of(checklist_step_input_fields()))
-            .output(checklist_step_schema())
-            .auth(AuthRequirement::admin()),
+            .output(checklist_step_schema()),
     );
     // Rejecting an agent's unaccepted step is deleting it: a tombstone.
     set.register(
-        Endpoint::new("deleteChecklistStep", Method::Delete, step_id())
-            .output(TypeSchema::struct_of([StructField::new(
-                "deleted",
-                TypeSchema::bool(),
-            )]))
-            .auth(AuthRequirement::admin()),
-    );
-    set.register(
-        Endpoint::new("acceptChecklistStep", Method::Post, step_id().lit("accept"))
-            .output(checklist_step_schema())
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::DELETE_CHECKLIST_STEP, Method::Delete, step_id()).output(
+            TypeSchema::struct_of([StructField::new("deleted", TypeSchema::bool())]),
+        ),
     );
     set.register(
         Endpoint::new(
-            "acceptChecklistProposal",
+            ids::ACCEPT_CHECKLIST_STEP,
+            Method::Post,
+            step_id().lit("accept"),
+        )
+        .output(checklist_step_schema()),
+    );
+    set.register(
+        Endpoint::new(
+            ids::ACCEPT_CHECKLIST_PROPOSAL,
             Method::Post,
             proposal_id().lit("accept"),
         )
-        .output(checklist_detail_schema())
-        .auth(AuthRequirement::admin()),
+        .output(checklist_detail_schema()),
     );
     set.register(
         Endpoint::new(
-            "rejectChecklistProposal",
+            ids::REJECT_CHECKLIST_PROPOSAL,
             Method::Post,
             proposal_id().lit("reject"),
         )
-        .output(checklist_detail_schema())
-        .auth(AuthRequirement::admin()),
+        .output(checklist_detail_schema()),
     );
     // The step types a checklist may use; with `application` (an id) the ones
     // an application's checklist may, else the ones a data-only one may.
     set.register(
         Endpoint::new(
-            "listChecklistStepTypes",
+            ids::LIST_CHECKLIST_STEP_TYPES,
             Method::Get,
             api().lit("checklist-step-types"),
         )
         .query([QueryParam::new("application", ValueType::Text)])
-        .output(TypeSchema::array(checklist_step_type_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(checklist_step_type_schema())),
     );
     // The starter checklists an application's framework offers it (C3.6) and
     // it does not have yet; creating one is a click, never automatic.
     set.register(
         Endpoint::new(
-            "listChecklistStarters",
+            ids::LIST_CHECKLIST_STARTERS,
             Method::Get,
             api().lit("checklist-starters"),
         )
         .query([QueryParam::new("application", ValueType::Uuid)])
-        .output(TypeSchema::array(checklist_starter_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(checklist_starter_schema())),
     );
     set.register(
         Endpoint::new(
-            "createChecklistStarter",
+            ids::CREATE_CHECKLIST_STARTER,
             Method::Post,
             api().lit("checklist-starters"),
         )
@@ -202,15 +191,14 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("application", TypeSchema::uuid()),
             StructField::new("name", TypeSchema::text()),
         ]))
-        .output(checklist_detail_schema())
-        .auth(AuthRequirement::admin()),
+        .output(checklist_detail_schema()),
     );
     // Make a user a check user — one a checklist may run as, signed in by the
     // runner without a password (C1.5) — or stop it being one. An admin's
     // alone; no agent tool reaches it.
     set.register(
         Endpoint::new(
-            "setCheckUser",
+            ids::SET_CHECK_USER,
             Method::Put,
             api()
                 .lit("users")
@@ -224,14 +212,13 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("id", TypeSchema::uuid()),
             StructField::new("check_user", TypeSchema::bool()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
     // Every user with whether it is a check user, for the `run_as` picker: a
     // person may run a checklist as anybody, an agent only as a check user.
     set.register(
         Endpoint::new(
-            "listChecklistUsers",
+            ids::LIST_CHECKLIST_USERS,
             Method::Get,
             api().lit("checklist-users"),
         )
@@ -240,8 +227,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("email", TypeSchema::text()),
             StructField::new("role", TypeSchema::int()),
             StructField::new("check_user", TypeSchema::bool()),
-        ])))
-        .auth(AuthRequirement::admin()),
+        ]))),
     );
 }
 

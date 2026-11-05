@@ -7,7 +7,7 @@ use super::*;
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
-    reg.register_admin("browseFiles", {
+    reg.handle(sc_api::handler_ids::BROWSE_FILES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -30,7 +30,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("findFiles", {
+    reg.handle(sc_api::handler_ids::FIND_FILES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -60,7 +60,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listStoreFiles", {
+    reg.handle(sc_api::handler_ids::LIST_STORE_FILES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -89,7 +89,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("searchFiles", {
+    reg.handle(sc_api::handler_ids::SEARCH_FILES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -150,7 +150,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("readFile", {
+    reg.handle(sc_api::handler_ids::READ_FILE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -176,7 +176,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("writeFile", {
+    reg.handle(sc_api::handler_ids::WRITE_FILE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -195,7 +195,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("makeDirectory", {
+    reg.handle(sc_api::handler_ids::MAKE_DIRECTORY, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -212,7 +212,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteFile", {
+    reg.handle(sc_api::handler_ids::DELETE_FILE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -227,7 +227,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("renameFile", {
+    reg.handle(sc_api::handler_ids::RENAME_FILE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -250,7 +250,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // (the endpoint model has no bytes shape), but registered here like any
     // other handler so it reaches the same catalog and the same access rule.
     // Routing around the `EndpointSet` must not mean routing around those.
-    reg.register_admin("uploadFile", {
+    reg.handle(sc_api::handler_ids::UPLOAD_FILE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -270,7 +270,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
 
     // The bytes of one file, as a download (the `/download/{store}/{*path}`
     // route): what the file manager's Download fetches, however large.
-    reg.register_admin("downloadFile", {
+    reg.handle(sc_api::handler_ids::DOWNLOAD_FILE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -288,7 +288,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getFileMeta", {
+    reg.handle(sc_api::handler_ids::GET_FILE_META, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -304,7 +304,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("setFileMeta", {
+    reg.handle(sc_api::handler_ids::SET_FILE_META, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();

@@ -100,13 +100,13 @@ pub async fn bootstrap_model_draws(catalog: &Catalog) -> Result<Table> {
         .await?;
     let dialect = catalog.primary_dialect();
     catalog
-        .apply_schema_batch(&[SchemaStep::Sql(format!(
+        .apply_schema_batch(&[SchemaStep::Sql(sc_query::TrustedSql::composed(format!(
             "CREATE INDEX IF NOT EXISTS {} ON {} ({}, {})",
             dialect.quote_ident(DRAWS_INDEX),
             dialect.quote_ident(DRAWS_TABLE),
             dialect.quote_ident(COL_INSTANCE),
             dialect.quote_ident(COL_VARIABLE),
-        ))])
+        )))])
         .await?;
     Ok(table)
 }

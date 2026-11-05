@@ -20,7 +20,7 @@ const DEFAULT_LIMIT: u64 = 200;
 const MAX_LIMIT: u64 = 1000;
 
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
-    reg.register_admin("listAgentMemories", {
+    reg.handle(sc_api::handler_ids::LIST_AGENT_MEMORIES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -59,7 +59,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register_admin("deleteAgentMemory", {
+    reg.handle(sc_api::handler_ids::DELETE_AGENT_MEMORY, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();

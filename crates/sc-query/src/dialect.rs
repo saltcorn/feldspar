@@ -36,6 +36,13 @@ pub trait SqlDialect {
     /// embedded double quote.
     fn quote_ident(&self, ident: &str) -> String;
 
+    /// Quote a checked [`Ident`](crate::Ident) — the typed way into SQL text,
+    /// and the one the DDL renderers use (security review 2026-11 §7). The
+    /// text is [`quote_ident`](Self::quote_ident)'s.
+    fn quote(&self, ident: &crate::Ident) -> crate::QuotedIdent {
+        crate::QuotedIdent::quoted(self.quote_ident(ident.as_str()))
+    }
+
     /// The placeholder text for the `position`-th bind parameter (1-based).
     /// Postgres renders `$1`, `$2`, …; a `?`-style dialect ignores `position`.
     fn placeholder(&self, position: usize) -> String;

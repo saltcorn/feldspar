@@ -9,15 +9,14 @@ use super::*;
 pub(super) fn register(set: &mut EndpointSet) {
     set.register(
         Endpoint::new(
-            "listFields",
+            ids::LIST_FIELDS,
             Method::Get,
             api()
                 .lit("tables")
                 .param("table", ValueType::Text)
                 .lit("fields"),
         )
-        .output(TypeSchema::array(field_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(field_schema())),
     );
 
     // The other half of the fields screen: not what this table points at, but
@@ -28,7 +27,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // rule: a table's key onto itself is already in its own field list.
     set.register(
         Endpoint::new(
-            "listInboundKeys",
+            ids::LIST_INBOUND_KEYS,
             Method::Get,
             api()
                 .lit("tables")
@@ -38,13 +37,12 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::array(TypeSchema::struct_of([
             StructField::new("table", TypeSchema::text()),
             StructField::new("field", TypeSchema::text()),
-        ])))
-        .auth(AuthRequirement::admin()),
+        ]))),
     );
 
     set.register(
         Endpoint::new(
-            "createField",
+            ids::CREATE_FIELD,
             Method::Post,
             api()
                 .lit("tables")
@@ -52,8 +50,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("fields"),
         )
         .input(create_field_schema())
-        .output(field_schema())
-        .auth(AuthRequirement::admin()),
+        .output(field_schema()),
     );
 
     // Overlay edits: label, description, rich type, kind parameters,
@@ -63,7 +60,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // `unique` or the storage SQL type.
     set.register(
         Endpoint::new(
-            "updateField",
+            ids::UPDATE_FIELD,
             Method::Put,
             api()
                 .lit("tables")
@@ -72,8 +69,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .param("field", ValueType::Text),
         )
         .input(field_settings_schema())
-        .output(field_schema())
-        .auth(AuthRequirement::admin()),
+        .output(field_schema()),
     );
 
     // Drop a field: the column, its data and its overlay row. Refused by name
@@ -82,7 +78,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // which the database would otherwise refuse with an error nobody can act on.
     set.register(
         Endpoint::new(
-            "deleteField",
+            ids::DELETE_FIELD,
             Method::Delete,
             api()
                 .lit("tables")
@@ -93,8 +89,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "dropped",
             TypeSchema::text(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     //
@@ -105,20 +100,19 @@ pub(super) fn register(set: &mut EndpointSet) {
     // which is also exactly what the database would do.
     set.register(
         Endpoint::new(
-            "listConstraints",
+            ids::LIST_CONSTRAINTS,
             Method::Get,
             api()
                 .lit("tables")
                 .param("table", ValueType::Text)
                 .lit("constraints"),
         )
-        .output(TypeSchema::array(constraint_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(constraint_schema())),
     );
 
     set.register(
         Endpoint::new(
-            "createConstraint",
+            ids::CREATE_CONSTRAINT,
             Method::Post,
             api()
                 .lit("tables")
@@ -126,13 +120,12 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("constraints"),
         )
         .input(create_constraint_schema())
-        .output(constraint_schema())
-        .auth(AuthRequirement::admin()),
+        .output(constraint_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "deleteConstraint",
+            ids::DELETE_CONSTRAINT,
             Method::Delete,
             api()
                 .lit("tables")
@@ -143,15 +136,14 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "dropped",
             TypeSchema::text(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // The registered field types (basic, rich) and kinds (Key, File) with their
     // attribute specs, so the field editor can render a form for a type it knows
     // nothing about — the same contract `listFrameworks` has (§13.3).
     set.register(
-        Endpoint::new("listFieldTypes", Method::Get, api().lit("field-types"))
+        Endpoint::new(ids::LIST_FIELD_TYPES, Method::Get, api().lit("field-types"))
             .output(TypeSchema::array(field_type_schema()))
             // Tagged (§13.6): the vocabulary `edit_schema` writes fields in.
             // A model that guesses at a rich type's name spends a turn being
@@ -161,8 +153,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                  types, the rich types a module registered, and the `Key` and \
                  `File` kinds — each with the attributes it accepts. This is the \
                  vocabulary `edit_schema` writes a field in.",
-            )
-            .auth(AuthRequirement::admin()),
+            ),
     );
 }
 

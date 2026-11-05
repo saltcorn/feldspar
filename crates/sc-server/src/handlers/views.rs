@@ -12,7 +12,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // renders from, so a save or a delete is live on the app's next request with
     // no build and no remount (TODO "Saltcorn UI" §1, §4).
 
-    reg.register_admin("listViews", {
+    reg.handle(sc_api::handler_ids::LIST_VIEWS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -26,7 +26,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getView", {
+    reg.handle(sc_api::handler_ids::GET_VIEW, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -41,7 +41,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("saveView", {
+    reg.handle(sc_api::handler_ids::SAVE_VIEW, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -77,7 +77,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createView", {
+    reg.handle(sc_api::handler_ids::CREATE_VIEW, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -115,7 +115,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("viewConfigStep", {
+    reg.handle(sc_api::handler_ids::VIEW_CONFIG_STEP, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -162,7 +162,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("viewReferences", {
+    reg.handle(sc_api::handler_ids::VIEW_REFERENCES, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -209,7 +209,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteView", {
+    reg.handle(sc_api::handler_ids::DELETE_VIEW, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -227,7 +227,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listPages", {
+    reg.handle(sc_api::handler_ids::LIST_PAGES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -241,7 +241,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getPage", {
+    reg.handle(sc_api::handler_ids::GET_PAGE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -256,7 +256,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("savePage", {
+    reg.handle(sc_api::handler_ids::SAVE_PAGE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -279,7 +279,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deletePage", {
+    reg.handle(sc_api::handler_ids::DELETE_PAGE, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -301,7 +301,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // and that it is a layout; then every check `saveView` makes runs over the
     // merged configuration, and the view and its library edits are written in
     // one transaction.
-    reg.register_admin("saveViewLayout", {
+    reg.handle(sc_api::handler_ids::SAVE_VIEW_LAYOUT, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -354,7 +354,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
 
     // A page's layout, replacing the page's: checked as a page is, and written
     // with its library edits in one transaction.
-    reg.register_admin("savePageLayout", {
+    reg.handle(sc_api::handler_ids::SAVE_PAGE_LAYOUT, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -375,7 +375,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("pageReferences", {
+    reg.handle(sc_api::handler_ids::PAGE_REFERENCES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -406,7 +406,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // reloads; `getLibraryItem` reads the row, because a placed instance must
     // start from the latest layout.
 
-    reg.register_admin("listLibrary", {
+    reg.handle(sc_api::handler_ids::LIST_LIBRARY, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -428,7 +428,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("getLibraryItem", {
+    reg.handle(sc_api::handler_ids::GET_LIBRARY_ITEM, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -443,7 +443,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createLibraryItem", {
+    reg.handle(sc_api::handler_ids::CREATE_LIBRARY_ITEM, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -469,7 +469,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("saveLibraryItem", {
+    reg.handle(sc_api::handler_ids::SAVE_LIBRARY_ITEM, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -495,7 +495,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("saveLibraryUpdates", {
+    reg.handle(sc_api::handler_ids::SAVE_LIBRARY_UPDATES, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -512,7 +512,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteLibraryItem", {
+    reg.handle(sc_api::handler_ids::DELETE_LIBRARY_ITEM, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -554,7 +554,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // subset, a view or page of the application — is checked here first, so a
     // refusal names it rather than failing inside v1's code.
 
-    reg.register_admin("builderFieldPreview", {
+    reg.handle(sc_api::handler_ids::BUILDER_FIELD_PREVIEW, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -586,7 +586,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("builderFieldviewConfigForm", {
+    reg.handle(sc_api::handler_ids::BUILDER_FIELDVIEW_CONFIG_FORM, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -606,7 +606,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("builderViewPreview", {
+    reg.handle(sc_api::handler_ids::BUILDER_VIEW_PREVIEW, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -636,7 +636,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("builderPagePreview", {
+    reg.handle(sc_api::handler_ids::BUILDER_PAGE_PREVIEW, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -661,7 +661,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("builderDistinctValues", {
+    reg.handle(sc_api::handler_ids::BUILDER_DISTINCT_VALUES, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -685,7 +685,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // runtime's manifest only describes its entries. A server with no view
     // runtime running (built without the bundle) still lists the names, since
     // they are still what a view may be saved with.
-    reg.register_admin("listViewPatterns", |_ctx| async move {
+    reg.handle(sc_api::handler_ids::LIST_VIEW_PATTERNS, |_ctx| async move {
         let manifests = match sc_viewpattern::view_runtime() {
             Ok(runtime) => runtime.patterns().await.unwrap_or_default(),
             Err(_) => Vec::new(),

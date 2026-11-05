@@ -15,7 +15,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // the record is serialised, rather than in the screen — a second reader added
     // later gets the same treatment without having to know it needs it (§11.1).
 
-    reg.register_admin("listLlmProviders", {
+    reg.handle(sc_api::handler_ids::LIST_LLM_PROVIDERS, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -31,7 +31,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createLlmProvider", {
+    reg.handle(sc_api::handler_ids::CREATE_LLM_PROVIDER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -52,7 +52,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateLlmProvider", {
+    reg.handle(sc_api::handler_ids::UPDATE_LLM_PROVIDER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -80,7 +80,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("setDefaultLlmProvider", {
+    reg.handle(sc_api::handler_ids::SET_DEFAULT_LLM_PROVIDER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -99,7 +99,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteLlmProvider", {
+    reg.handle(sc_api::handler_ids::DELETE_LLM_PROVIDER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -119,7 +119,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listLlmProviderBackends", {
+    reg.handle(sc_api::handler_ids::LIST_LLM_PROVIDER_BACKENDS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -142,7 +142,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // secret, so nothing is redacted here; what a listed model carries beside
     // its row is what its blank settings resolve to.
 
-    reg.register_admin("listLlmModels", {
+    reg.handle(sc_api::handler_ids::LIST_LLM_MODELS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -158,7 +158,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createLlmModel", {
+    reg.handle(sc_api::handler_ids::CREATE_LLM_MODEL, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -171,7 +171,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateLlmModel", {
+    reg.handle(sc_api::handler_ids::UPDATE_LLM_MODEL, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -220,7 +220,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteLlmModel", {
+    reg.handle(sc_api::handler_ids::DELETE_LLM_MODEL, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -241,7 +241,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listLlmModelSettings", {
+    reg.handle(sc_api::handler_ids::LIST_LLM_MODEL_SETTINGS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -266,7 +266,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // Asks the host which models it serves. Like a test, a host that cannot
     // answer is a 200 with `ok: false`: the refusal *is* the answer, and "type
     // the name instead" is what the admin needs to read.
-    reg.register_admin("fetchLlmModels", {
+    reg.handle(sc_api::handler_ids::FETCH_LLM_MODELS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -311,7 +311,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // refusing is the answer to the question that was asked — "does this work?"
     // — and an error response would make the UI show it as a broken request
     // rather than as the diagnostic it is.
-    reg.register_admin("testLlmModel", {
+    reg.handle(sc_api::handler_ids::TEST_LLM_MODEL, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();

@@ -32,8 +32,8 @@ const DEFAULT_RUNS: u64 = 50;
 #[allow(clippy::too_many_lines)]
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: Arc<AppMounts>) {
     macro_rules! handler {
-        ($name:literal, |$ctx:ident, $catalog:ident, $registry:ident, $apps:ident| $body:expr) => {
-            reg.register_admin($name, {
+        ($id:ident, |$ctx:ident, $catalog:ident, $registry:ident, $apps:ident| $body:expr) => {
+            reg.handle(sc_api::handler_ids::$id, {
                 let catalog = catalog.clone();
                 let apps = apps.clone();
                 move |$ctx: HandlerCtx<Admin>| {
@@ -52,7 +52,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         };
     }
 
-    handler!("listChecklists", |ctx, catalog, registry, apps| {
+    handler!(LIST_CHECKLISTS, |ctx, catalog, registry, apps| {
         let scope = scope(ctx.query_get("application"))?;
         let mut out = Vec::new();
         for checklist in store::list_checklists(&catalog, scope).await? {
@@ -78,7 +78,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         Json::Array(out)
     });
 
-    handler!("createChecklist", |ctx, catalog, registry, apps| {
+    handler!(CREATE_CHECKLIST, |ctx, catalog, registry, apps| {
         let input = checklist_input(&ctx.body)?;
         let steps = match ctx.body.get("steps") {
             None | Some(Json::Null) => Vec::new(),
@@ -97,23 +97,23 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         detail(&catalog, checklist.id).await?
     });
 
-    handler!("getChecklist", |ctx, catalog, registry, apps| {
+    handler!(GET_CHECKLIST, |ctx, catalog, registry, apps| {
         detail(&catalog, id(&ctx, "id")?).await?
     });
 
-    handler!("updateChecklist", |ctx, catalog, registry, apps| {
+    handler!(UPDATE_CHECKLIST, |ctx, catalog, registry, apps| {
         let id = id(&ctx, "id")?;
         let input = checklist_input(&ctx.body)?;
         edit::update_checklist(&catalog, &registry, &editor(&ctx)?, id, input).await?;
         detail(&catalog, id).await?
     });
 
-    handler!("deleteChecklist", |ctx, catalog, registry, apps| {
+    handler!(DELETE_CHECKLIST, |ctx, catalog, registry, apps| {
         edit::delete_checklist(&catalog, &editor(&ctx)?, id(&ctx, "id")?).await?;
         json!({ "deleted": true })
     });
 
-    handler!("addChecklistStep", |ctx, catalog, registry, apps| {
+    handler!(ADD_CHECKLIST_STEP, |ctx, catalog, registry, apps| {
         let checklist = id(&ctx, "id")?;
         let mut body = ctx.body.clone();
         let before = match body.as_object_mut().and_then(|o| o.remove("before")) {
@@ -144,7 +144,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         step.to_json()
     });
 
-    handler!("reorderChecklistSteps", |ctx, catalog, registry, apps| {
+    handler!(REORDER_CHECKLIST_STEPS, |ctx, catalog, registry, apps| {
         let checklist = id(&ctx, "id")?;
         let order =
             sc_check::model::parse_ids(ctx.body.get("order").unwrap_or(&Json::Null), "order")?;
@@ -160,7 +160,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         detail(&catalog, checklist).await?
     });
 
-    handler!("runChecklist", |ctx, catalog, registry, apps| {
+    handler!(RUN_CHECKLIST, |ctx, catalog, registry, apps| {
         let checklist = store::require_checklist(&catalog, id(&ctx, "id")?).await?;
         let run = with_env(&catalog, &registry, &apps, |env| async move {
             sc_check::run_checklist(&env, &checklist, "manual").await
@@ -169,7 +169,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         run.to_json()
     });
 
-    handler!("listChecklistRuns", |ctx, catalog, registry, apps| {
+    handler!(LIST_CHECKLIST_RUNS, |ctx, catalog, registry, apps| {
         let checklist = id(&ctx, "id")?;
         let limit = match ctx.query_get("limit") {
             None | Some("") => DEFAULT_RUNS,
@@ -182,7 +182,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         Json::Array(runs.iter().map(|r| r.to_json()).collect())
     });
 
-    handler!("runChecklists", |ctx, catalog, registry, apps| {
+    handler!(RUN_CHECKLISTS, |ctx, catalog, registry, apps| {
         let scope = scope(ctx.body.get("application").and_then(Json::as_str))?;
         let runs = with_env(&catalog, &registry, &apps, |env| async move {
             sc_check::run_checklists(&env, scope, "manual").await
@@ -191,7 +191,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         Json::Array(runs.iter().map(|r| r.to_json()).collect())
     });
 
-    handler!("getChecklistRun", |ctx, catalog, registry, apps| {
+    handler!(GET_CHECKLIST_RUN, |ctx, catalog, registry, apps| {
         let id = id(&ctx, "id")?;
         store::load_run(&catalog, id)
             .await?
@@ -199,25 +199,25 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
             .to_json()
     });
 
-    handler!("updateChecklistStep", |ctx, catalog, registry, apps| {
+    handler!(UPDATE_CHECKLIST_STEP, |ctx, catalog, registry, apps| {
         let draft = StepDraft::from_json(&ctx.body)?;
         edit::edit_step(&catalog, &registry, &editor(&ctx)?, id(&ctx, "id")?, draft)
             .await?
             .to_json()
     });
 
-    handler!("deleteChecklistStep", |ctx, catalog, registry, apps| {
+    handler!(DELETE_CHECKLIST_STEP, |ctx, catalog, registry, apps| {
         edit::remove_step(&catalog, &registry, &editor(&ctx)?, id(&ctx, "id")?).await?;
         json!({ "deleted": true })
     });
 
-    handler!("acceptChecklistStep", |ctx, catalog, registry, apps| {
+    handler!(ACCEPT_CHECKLIST_STEP, |ctx, catalog, registry, apps| {
         edit::accept_step(&catalog, &editor(&ctx)?, id(&ctx, "id")?)
             .await?
             .to_json()
     });
 
-    handler!("acceptChecklistProposal", |ctx, catalog, registry, apps| {
+    handler!(ACCEPT_CHECKLIST_PROPOSAL, |ctx, catalog, registry, apps| {
         let id = id(&ctx, "id")?;
         let proposal = store::load_proposal(&catalog, id)
             .await?
@@ -226,7 +226,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         detail(&catalog, proposal.checklist).await?
     });
 
-    handler!("rejectChecklistProposal", |ctx, catalog, registry, apps| {
+    handler!(REJECT_CHECKLIST_PROPOSAL, |ctx, catalog, registry, apps| {
         let id = id(&ctx, "id")?;
         let proposal = store::load_proposal(&catalog, id)
             .await?
@@ -235,7 +235,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         detail(&catalog, proposal.checklist).await?
     });
 
-    handler!("getChecklistScreenshot", |ctx, catalog, registry, apps| {
+    handler!(GET_CHECKLIST_SCREENSHOT, |ctx, catalog, registry, apps| {
         use base64::Engine as _;
         let path = ctx
             .query_get("path")
@@ -248,7 +248,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         })
     });
 
-    handler!("listChecklistStepTypes", |ctx, catalog, registry, apps| {
+    handler!(LIST_CHECKLIST_STEP_TYPES, |ctx, catalog, registry, apps| {
         let application = match ctx.query_get("application").map(str::trim) {
             None | Some("" | "none") => None,
             Some(raw) => Some(
@@ -266,7 +266,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         )
     });
 
-    handler!("listChecklistStarters", |ctx, catalog, registry, apps| {
+    handler!(LIST_CHECKLIST_STARTERS, |ctx, catalog, registry, apps| {
         let app = application(&catalog, ctx.query_get("application")).await?;
         Json::Array(
             sc_check::starters(&catalog, &app)
@@ -277,7 +277,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         )
     });
 
-    handler!("createChecklistStarter", |ctx, catalog, registry, apps| {
+    handler!(CREATE_CHECKLIST_STARTER, |ctx, catalog, registry, apps| {
         let app = application(&catalog, ctx.body.get("application").and_then(Json::as_str)).await?;
         let name = ctx
             .body
@@ -289,7 +289,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         detail(&catalog, checklist.id).await?
     });
 
-    handler!("setCheckUser", |ctx, catalog, registry, apps| {
+    handler!(SET_CHECK_USER, |ctx, catalog, registry, apps| {
         let on = ctx
             .body
             .get("check_user")
@@ -299,7 +299,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, apps: A
         json!({ "id": user.id().to_string(), "check_user": user.is_check_user() })
     });
 
-    handler!("listChecklistUsers", |ctx, catalog, registry, apps| {
+    handler!(LIST_CHECKLIST_USERS, |ctx, catalog, registry, apps| {
         let mut select = Select::from(Source::table(USERS_TABLE)).columns(vec![Projection::all()]);
         select.order = vec![OrderBy::asc(Expr::col(COL_EMAIL))];
         let rows = catalog

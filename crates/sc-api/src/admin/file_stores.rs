@@ -22,40 +22,40 @@ pub(super) fn register(set: &mut EndpointSet) {
     // is currently connected and, if not, why. A store whose directory has been
     // unmounted must still be listed and editable: editing it is the repair.
     set.register(
-        Endpoint::new("listFileStores", Method::Get, api().lit("file-stores"))
-            .output(TypeSchema::array(file_store_schema()))
-            .auth(AuthRequirement::admin()),
-    );
-
-    set.register(
-        Endpoint::new("createFileStore", Method::Post, api().lit("file-stores"))
-            .input(file_store_input_schema())
-            .output(file_store_schema())
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::LIST_FILE_STORES, Method::Get, api().lit("file-stores"))
+            .output(TypeSchema::array(file_store_schema())),
     );
 
     set.register(
         Endpoint::new(
-            "updateFileStore",
+            ids::CREATE_FILE_STORE,
+            Method::Post,
+            api().lit("file-stores"),
+        )
+        .input(file_store_input_schema())
+        .output(file_store_schema()),
+    );
+
+    set.register(
+        Endpoint::new(
+            ids::UPDATE_FILE_STORE,
             Method::Put,
             api().lit("file-stores").param("id", ValueType::Uuid),
         )
         .input(file_store_input_schema())
-        .output(file_store_schema())
-        .auth(AuthRequirement::admin()),
+        .output(file_store_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "deleteFileStore",
+            ids::DELETE_FILE_STORE,
             Method::Delete,
             api().lit("file-stores").param("id", ValueType::Uuid),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // The registered backends with their settings spec, so the create/edit form
@@ -63,12 +63,11 @@ pub(super) fn register(set: &mut EndpointSet) {
     // `listFrameworks` makes for frameworks (§13.3).
     set.register(
         Endpoint::new(
-            "listFileStoreBackends",
+            ids::LIST_FILE_STORE_BACKENDS,
             Method::Get,
             api().lit("file-store-backends"),
         )
-        .output(TypeSchema::array(backend_info_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(backend_info_schema())),
     );
 
     // Some backends offer *acts* as well as settings — a git store generates a
@@ -91,7 +90,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // config with the operation's changes merged in, for the form to adopt.
     set.register(
         Endpoint::new(
-            "runBackendOperation",
+            ids::RUN_BACKEND_OPERATION,
             Method::Post,
             api()
                 .lit("file-store-backends")
@@ -108,8 +107,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             StructField::new("config", TypeSchema::json()),
             StructField::new("output", TypeSchema::text()),
             StructField::new("data", TypeSchema::optional(TypeSchema::json())),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // **Instance scope** — runs against a saved store, addressed by id like the
@@ -122,7 +120,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // and cloning it is the operation that would otherwise be unreachable.
     set.register(
         Endpoint::new(
-            "runFileStoreOperation",
+            ids::RUN_FILE_STORE_OPERATION,
             Method::Post,
             api()
                 .lit("file-stores")
@@ -143,8 +141,7 @@ pub(super) fn register(set: &mut EndpointSet) {
             // which cannot list changed files from a paragraph of prose (§12.1).
             StructField::new("data", TypeSchema::optional(TypeSchema::json())),
             StructField::new("connected", TypeSchema::bool()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 }
 

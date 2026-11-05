@@ -245,7 +245,7 @@ fn failed_now(key: &str, error: &str) -> InstallJob {
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, fetch: Arc<dyn Fetch>) {
     let jobs = InstallJobs::default();
 
-    reg.register_admin("listPublicDatasets", {
+    reg.handle(sc_api::handler_ids::LIST_PUBLIC_DATASETS, {
         let catalog = catalog.clone();
         let jobs = jobs.clone();
         move |_ctx| {
@@ -266,7 +266,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, fetch: 
         }
     });
 
-    reg.register_admin("installPublicDataset", {
+    reg.handle(sc_api::handler_ids::INSTALL_PUBLIC_DATASET, {
         let catalog = catalog.clone();
         let jobs = jobs.clone();
         move |ctx| {
@@ -284,7 +284,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>, fetch: 
         }
     });
 
-    reg.register_admin("getPublicDatasetInstall", {
+    reg.handle(sc_api::handler_ids::GET_PUBLIC_DATASET_INSTALL, {
         let jobs = jobs.clone();
         move |ctx| {
             let jobs = jobs.clone();

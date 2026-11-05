@@ -12,40 +12,40 @@ pub(super) fn register(set: &mut EndpointSet) {
     // sentinel, and a save that sends the sentinel back keeps what is stored.
 
     set.register(
-        Endpoint::new("listMcpServers", Method::Get, api().lit("mcp-servers"))
-            .output(TypeSchema::array(mcp_server_schema()))
-            .auth(AuthRequirement::admin()),
-    );
-
-    set.register(
-        Endpoint::new("createMcpServer", Method::Post, api().lit("mcp-servers"))
-            .input(TypeSchema::Struct(mcp_server_fields()))
-            .output(mcp_server_schema())
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::LIST_MCP_SERVERS, Method::Get, api().lit("mcp-servers"))
+            .output(TypeSchema::array(mcp_server_schema())),
     );
 
     set.register(
         Endpoint::new(
-            "updateMcpServer",
+            ids::CREATE_MCP_SERVER,
+            Method::Post,
+            api().lit("mcp-servers"),
+        )
+        .input(TypeSchema::Struct(mcp_server_fields()))
+        .output(mcp_server_schema()),
+    );
+
+    set.register(
+        Endpoint::new(
+            ids::UPDATE_MCP_SERVER,
             Method::Put,
             api().lit("mcp-servers").param("id", ValueType::Uuid),
         )
         .input(TypeSchema::Struct(mcp_server_fields()))
-        .output(mcp_server_schema())
-        .auth(AuthRequirement::admin()),
+        .output(mcp_server_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "deleteMcpServer",
+            ids::DELETE_MCP_SERVER,
             Method::Delete,
             api().lit("mcp-servers").param("id", ValueType::Uuid),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // **Test.** Connects to the server the body describes (a saved one's
@@ -53,24 +53,27 @@ pub(super) fn register(set: &mut EndpointSet) {
     // reports them, or the server's own refusal as `ok: false`: the refusal is
     // the answer to "does this work?".
     set.register(
-        Endpoint::new("testMcpServer", Method::Post, api().lit("mcp-server-test"))
-            .input(TypeSchema::Struct({
-                let mut fields = vec![StructField::new(
-                    "id",
-                    TypeSchema::optional(TypeSchema::uuid()),
-                )];
-                fields.extend(mcp_server_fields());
-                fields
-            }))
-            .output(mcp_server_test_schema())
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(
+            ids::TEST_MCP_SERVER,
+            Method::Post,
+            api().lit("mcp-server-test"),
+        )
+        .input(TypeSchema::Struct({
+            let mut fields = vec![StructField::new(
+                "id",
+                TypeSchema::optional(TypeSchema::uuid()),
+            )];
+            fields.extend(mcp_server_fields());
+            fields
+        }))
+        .output(mcp_server_test_schema()),
     );
 
     // A saved server's tools: the cached listing, or a fresh one with
     // `refresh`. A server that cannot be reached is `ok: false`, as for Test.
     set.register(
         Endpoint::new(
-            "listMcpServerTools",
+            ids::LIST_MCP_SERVER_TOOLS,
             Method::Get,
             api()
                 .lit("mcp-servers")
@@ -78,8 +81,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 .lit("tools"),
         )
         .query([QueryParam::new("refresh", ValueType::Bool)])
-        .output(mcp_server_test_schema())
-        .auth(AuthRequirement::admin()),
+        .output(mcp_server_test_schema()),
     );
 }
 

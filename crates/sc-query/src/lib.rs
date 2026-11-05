@@ -16,6 +16,7 @@
 
 mod dialect;
 mod expr;
+mod ident;
 mod named;
 pub mod search;
 mod statement;
@@ -24,6 +25,7 @@ pub mod vector;
 
 pub use dialect::{SqlDialect, default_bin_op, render_policy_expr};
 pub use expr::{BinOp, CaseArm, ColRef, Expr, InSet, JsonStep, UnOp};
+pub use ident::{Ident, IdentError, MAX_IDENT_BYTES, QuotedIdent};
 pub use named::{NamedSql, rewrite_named_params};
 pub use search::{Fts5Index, TextSearch, WebQuery, text_search_document};
 pub use statement::{

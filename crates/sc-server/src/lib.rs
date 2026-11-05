@@ -84,6 +84,7 @@ mod modules;
 mod oauth;
 mod observe;
 mod posterior;
+mod raw_routes;
 mod reload;
 mod requests;
 mod restore_host;
@@ -121,6 +122,7 @@ pub use oauth::{
     COMPLETE_ROUTE as OAUTH_COMPLETE_ROUTE, CONSENT_ROUTE as OAUTH_CONSENT_ROUTE,
     PROVIDERS_ROUTE as OAUTH_PROVIDERS_ROUTE,
 };
+pub use raw_routes::{RouteAuth, raw_routes};
 pub use second_factor::{
     CHALLENGE_COOKIE as SECOND_FACTOR_COOKIE, DISABLE_ROUTE as SECOND_FACTOR_DISABLE_ROUTE,
     ENABLE_ROUTE as SECOND_FACTOR_ENABLE_ROUTE, PAGE_ROUTE as SECOND_FACTOR_PAGE_ROUTE,

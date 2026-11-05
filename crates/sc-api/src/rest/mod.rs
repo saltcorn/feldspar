@@ -478,44 +478,54 @@ impl RestProvider {
         // have some way to stop being anonymous. Public-role browsing still works
         // without ever calling these.
         endpoints.register(
-            Endpoint::new(LOGIN, Method::Post, path_at(&mount).lit("login"))
-                .input(credentials_schema())
-                .output(user_summary_schema())
-                // The only public endpoint: it is what turns an anonymous caller
-                // into an authenticated one.
-                .auth(AuthRequirement::Public),
+            // The only public endpoint: it is what turns an anonymous caller
+            // into an authenticated one.
+            Endpoint::projected(
+                LOGIN,
+                Method::Post,
+                path_at(&mount).lit("login"),
+                AuthRequirement::Public,
+            )
+            .input(credentials_schema())
+            .output(user_summary_schema()),
         );
+        endpoints.register(Endpoint::projected(
+            LOGOUT,
+            Method::Post,
+            path_at(&mount).lit("logout"),
+            AuthRequirement::LoggedIn,
+        ));
         endpoints.register(
-            Endpoint::new(LOGOUT, Method::Post, path_at(&mount).lit("logout"))
-                .auth(AuthRequirement::LoggedIn),
-        );
-        endpoints.register(
-            Endpoint::new(WHOAMI, Method::Get, path_at(&mount).lit("whoami"))
-                .output(user_summary_schema())
-                .auth(AuthRequirement::LoggedIn),
+            Endpoint::projected(
+                WHOAMI,
+                Method::Get,
+                path_at(&mount).lit("whoami"),
+                AuthRequirement::LoggedIn,
+            )
+            .output(user_summary_schema()),
         );
         // A forgotten password, and the link that sets one (`password`). Public
         // for `login`'s reason: they are how somebody who cannot sign in gets
         // back to being able to.
         endpoints.register(
-            Endpoint::new(
+            Endpoint::projected(
                 FORGOT_PASSWORD,
                 Method::Post,
                 path_at(&mount).lit("forgot-password"),
+                AuthRequirement::Public,
             )
             .input(password::forgot_password_schema())
-            .output(password::ok_schema())
-            .auth(AuthRequirement::Public),
+            .output(password::ok_schema()),
         );
         endpoints.register(
-            Endpoint::new(
+            Endpoint::projected(
                 SET_PASSWORD,
                 Method::Post,
                 path_at(&mount).lit("set-password"),
+                AuthRequirement::Public,
             )
             .input(password::set_password_schema())
-            .output(user_summary_schema())
-            .auth(AuthRequirement::Public),
+            .output(user_summary_schema()),
         );
 
         // The tables as a *generated consumer* sees them (§13.1): the row shapes
@@ -573,24 +583,32 @@ impl RestProvider {
             resource.ops.create = Some(op_name("create", name));
             add(
                 RestOp::List,
-                Endpoint::new(op_name("list", name), Method::Get, collection())
-                    // What a read may say about itself, typed into the client so
-                    // nobody has to write a `fetch` beside it (§13.1). The
-                    // filters are the honest exception: `?published=gte.2020` is
-                    // a *string vocabulary* keyed by column, so it is typed as
-                    // one rather than as a shape it does not have.
-                    .query(list_query_params(table))
-                    .output(TypeSchema::array(TypeSchema::json()))
-                    .auth(read.clone())
-                    .handler(HandlerRef::named(op_name("list", name))),
+                Endpoint::projected(
+                    op_name("list", name),
+                    Method::Get,
+                    collection(),
+                    read.clone(),
+                )
+                // What a read may say about itself, typed into the client so
+                // nobody has to write a `fetch` beside it (§13.1). The
+                // filters are the honest exception: `?published=gte.2020` is
+                // a *string vocabulary* keyed by column, so it is typed as
+                // one rather than as a shape it does not have.
+                .query(list_query_params(table))
+                .output(TypeSchema::array(TypeSchema::json()))
+                .handler(HandlerRef::named(op_name("list", name))),
             );
             add(
                 RestOp::Create,
-                Endpoint::new(op_name("create", name), Method::Post, collection())
-                    .input(TypeSchema::json())
-                    .output(TypeSchema::json())
-                    .auth(write.clone())
-                    .handler(HandlerRef::named(op_name("create", name))),
+                Endpoint::projected(
+                    op_name("create", name),
+                    Method::Post,
+                    collection(),
+                    write.clone(),
+                )
+                .input(TypeSchema::json())
+                .output(TypeSchema::json())
+                .handler(HandlerRef::named(op_name("create", name))),
             );
 
             // Row-addressing endpoints need exactly one primary-key column to
@@ -610,18 +628,21 @@ impl RestProvider {
 
             add(
                 RestOp::Update,
-                Endpoint::new(op_name("update", name), Method::Put, item())
+                Endpoint::projected(op_name("update", name), Method::Put, item(), write.clone())
                     .input(TypeSchema::json())
                     .output(TypeSchema::json())
-                    .auth(write.clone())
                     .handler(HandlerRef::named(op_name("update", name))),
             );
             add(
                 RestOp::Delete,
-                Endpoint::new(op_name("delete", name), Method::Delete, item())
-                    .output(TypeSchema::json())
-                    .auth(write.clone())
-                    .handler(HandlerRef::named(op_name("delete", name))),
+                Endpoint::projected(
+                    op_name("delete", name),
+                    Method::Delete,
+                    item(),
+                    write.clone(),
+                )
+                .output(TypeSchema::json())
+                .handler(HandlerRef::named(op_name("delete", name))),
             );
 
             // A `File` field's bytes (§4), addressed **by table, row id and
@@ -647,26 +668,30 @@ impl RestProvider {
                     RestOp::Download {
                         field: field.clone(),
                     },
-                    Endpoint::new(op_name("download", &scoped), Method::Get, file_item())
-                        .binary_output()
-                        .auth(read.clone())
-                        .handler(HandlerRef::named(op_name("download", &scoped))),
+                    Endpoint::projected(
+                        op_name("download", &scoped),
+                        Method::Get,
+                        file_item(),
+                        read.clone(),
+                    )
+                    .binary_output()
+                    .handler(HandlerRef::named(op_name("download", &scoped))),
                 );
                 add(
                     RestOp::Upload {
                         field: field.clone(),
                     },
-                    Endpoint::new(
+                    Endpoint::projected(
                         op_name("upload", &scoped),
                         Method::Post,
                         // The filename is a path parameter, so it is one
                         // segment by construction — a nested or traversing
                         // destination cannot even be expressed in the URL.
                         file_item().param("filename", ValueType::Text),
+                        write.clone(),
                     )
                     .binary_input()
                     .output(TypeSchema::json())
-                    .auth(write.clone())
                     .handler(HandlerRef::named(op_name("upload", &scoped))),
                 );
             }
@@ -682,22 +707,34 @@ impl RestProvider {
         if tables.iter().any(Table::sync_enabled) {
             let sync_path = || path_at(&mount).lit(SYNC_SEGMENT);
             endpoints.register(
-                Endpoint::new(SYNC_REGISTER, Method::Post, sync_path().lit("register"))
-                    .input(crate::sync::register_input_schema())
-                    .output(crate::sync::register_output_schema())
-                    .auth(AuthRequirement::LoggedIn),
+                Endpoint::projected(
+                    SYNC_REGISTER,
+                    Method::Post,
+                    sync_path().lit("register"),
+                    AuthRequirement::LoggedIn,
+                )
+                .input(crate::sync::register_input_schema())
+                .output(crate::sync::register_output_schema()),
             );
             endpoints.register(
-                Endpoint::new(SYNC_PULL, Method::Post, sync_path().lit("pull"))
-                    .input(crate::sync::pull_input_schema())
-                    .output(crate::sync::pull_output_schema())
-                    .auth(AuthRequirement::LoggedIn),
+                Endpoint::projected(
+                    SYNC_PULL,
+                    Method::Post,
+                    sync_path().lit("pull"),
+                    AuthRequirement::LoggedIn,
+                )
+                .input(crate::sync::pull_input_schema())
+                .output(crate::sync::pull_output_schema()),
             );
             endpoints.register(
-                Endpoint::new(SYNC_PUSH, Method::Post, sync_path().lit("push"))
-                    .input(crate::sync::push_input_schema())
-                    .output(crate::sync::push_output_schema())
-                    .auth(AuthRequirement::LoggedIn),
+                Endpoint::projected(
+                    SYNC_PUSH,
+                    Method::Post,
+                    sync_path().lit("push"),
+                    AuthRequirement::LoggedIn,
+                )
+                .input(crate::sync::push_input_schema())
+                .output(crate::sync::push_output_schema()),
             );
         }
 
@@ -710,19 +747,17 @@ impl RestProvider {
             let name = op_name("run", &trigger.name);
             trigger_routes.insert(name.clone(), trigger.name.clone());
             endpoints.register(
-                Endpoint::new(
+                Endpoint::projected(
                     name.clone(),
                     Method::Post,
                     path_at(&mount).lit(ACTIONS_SEGMENT).lit(&trigger.name),
+                    AuthRequirement::MinRole(trigger.min_role.unwrap_or(Role::ADMIN)),
                 )
                 // The posted body *is* the event's payload, whatever shape the
                 // action's configuration reads out of it, so it is typed as
                 // json rather than as a struct nobody could derive.
                 .input(TypeSchema::json())
                 .output(TypeSchema::json())
-                .auth(AuthRequirement::MinRole(
-                    trigger.min_role.unwrap_or(Role::ADMIN),
-                ))
                 .handler(HandlerRef::named(name)),
             );
         }
@@ -782,12 +817,16 @@ impl RestProvider {
             self.signup_role = Some(role);
             return self;
         }
-        let signup = Endpoint::new(SIGNUP, Method::Post, path_at(&self.mount).lit(SIGNUP))
-            .input(credentials_schema())
-            .output(user_summary_schema())
-            // Public for the reason `login` is: it is how a caller who has no
-            // account stops being anonymous.
-            .auth(AuthRequirement::Public);
+        // Public for the reason `login` is: it is how a caller who has no
+        // account stops being anonymous.
+        let signup = Endpoint::projected(
+            SIGNUP,
+            Method::Post,
+            path_at(&self.mount).lit(SIGNUP),
+            AuthRequirement::Public,
+        )
+        .input(credentials_schema())
+        .output(user_summary_schema());
         self.register_auth_endpoint(signup);
         self.signup_role = Some(role);
         self
@@ -808,16 +847,16 @@ impl RestProvider {
         if self.guest_session_days.is_none() || self.endpoints.find(GUEST_SESSION).is_some() {
             return self;
         }
-        let start = Endpoint::new(
+        let start = Endpoint::projected(
             GUEST_SESSION,
             Method::Post,
             path_at(&self.mount).lit(GUEST_SESSION_SEGMENT),
+            AuthRequirement::Public,
         )
         .output(TypeSchema::struct_of([StructField::new(
             "id",
             TypeSchema::text(),
-        )]))
-        .auth(AuthRequirement::Public);
+        )]));
         self.register_auth_endpoint(start);
         self
     }
@@ -831,10 +870,14 @@ impl RestProvider {
             return self;
         };
         if self.endpoints.find(INVITE).is_none() {
-            let invite = Endpoint::new(INVITE, Method::Post, path_at(&self.mount).lit(INVITE))
-                .input(password::invite_schema())
-                .output(password::invite_output_schema())
-                .auth(AuthRequirement::MinRole(min_role));
+            let invite = Endpoint::projected(
+                INVITE,
+                Method::Post,
+                path_at(&self.mount).lit(INVITE),
+                AuthRequirement::MinRole(min_role),
+            )
+            .input(password::invite_schema())
+            .output(password::invite_output_schema());
             self.register_auth_endpoint(invite);
         }
         self
@@ -853,25 +896,25 @@ impl RestProvider {
             return self;
         }
         if self.endpoints.find(VERIFY_EMAIL).is_none() {
-            let verify_email = Endpoint::new(
+            let verify_email = Endpoint::projected(
                 VERIFY_EMAIL,
                 Method::Post,
                 path_at(&self.mount).lit("verify-email"),
+                AuthRequirement::Public,
             )
-            .input(verify::verify_email_schema())
-            .output(verify::verify_output_schema())
             // Public for `set-password`'s reason: the token is the credential.
-            .auth(AuthRequirement::Public);
+            .input(verify::verify_email_schema())
+            .output(verify::verify_output_schema());
             self.register_auth_endpoint(verify_email);
         }
         if self.endpoints.find(RESEND_VERIFICATION).is_none() {
-            let resend = Endpoint::new(
+            let resend = Endpoint::projected(
                 RESEND_VERIFICATION,
                 Method::Post,
                 path_at(&self.mount).lit("resend-verification"),
+                AuthRequirement::LoggedIn,
             )
-            .output(verify::resend_output_schema())
-            .auth(AuthRequirement::LoggedIn);
+            .output(verify::resend_output_schema());
             self.register_auth_endpoint(resend);
         }
         self
@@ -2920,10 +2963,14 @@ mod tests {
     fn custom_routes_are_projected_and_typed() {
         let p = RestProvider::project("/api", &[table("posts", AccessRules::default())])
             .with_custom_route(
-                Endpoint::new("search", Method::Post, PathSpec::root().lit("api/search"))
-                    .input(TypeSchema::json())
-                    .output(TypeSchema::json())
-                    .handler(HandlerRef::Custom("select 1".to_owned())),
+                Endpoint::new(
+                    crate::HandlerId::<crate::SignedIn>::new("search"),
+                    Method::Post,
+                    PathSpec::root().lit("api/search"),
+                )
+                .input(TypeSchema::json())
+                .output(TypeSchema::json())
+                .handler(HandlerRef::Custom("select 1".to_owned())),
             );
         // The custom route is part of the contract even though it is stubbed.
         assert_eq!(p.endpoints().len(), AUTH_ENDPOINT_COUNT + 4 + 1);

@@ -17,7 +17,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // does not exist yet.
     set.register(
         Endpoint::new(
-            "getHelp",
+            ids::GET_HELP,
             Method::Get,
             api().lit("help").param("topic", ValueType::Text),
         )
@@ -28,8 +28,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([
             StructField::new("title", TypeSchema::text()),
             StructField::new("html", TypeSchema::text()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // The `_fd_config` values an admin edits (§9, §13.5). Two endpoints, and
@@ -44,19 +43,17 @@ pub(super) fn register(set: &mut EndpointSet) {
     // defaults a cleared box fell back to, and the sentinel standing in for a
     // secret it must not be handed back.
     set.register(
-        Endpoint::new("getSettings", Method::Get, api().lit("settings"))
-            .output(settings_schema())
-            .auth(AuthRequirement::admin()),
+        Endpoint::new(ids::GET_SETTINGS, Method::Get, api().lit("settings"))
+            .output(settings_schema()),
     );
 
     set.register(
-        Endpoint::new("updateSettings", Method::Post, api().lit("settings"))
+        Endpoint::new(ids::UPDATE_SETTINGS, Method::Post, api().lit("settings"))
             .input(TypeSchema::struct_of([StructField::new(
                 "values",
                 TypeSchema::json(),
             )]))
-            .output(settings_schema())
-            .auth(AuthRequirement::admin()),
+            .output(settings_schema()),
     );
 
     // OAuth 2.0 providers people sign in with, on the admin UI and in
@@ -67,17 +64,16 @@ pub(super) fn register(set: &mut EndpointSet) {
 
     set.register(
         Endpoint::new(
-            "listOAuthProviders",
+            ids::LIST_O_AUTH_PROVIDERS,
             Method::Get,
             api().lit("oauth-providers"),
         )
-        .output(TypeSchema::array(oauth_provider_schema()))
-        .auth(AuthRequirement::admin()),
+        .output(TypeSchema::array(oauth_provider_schema())),
     );
 
     set.register(
         Endpoint::new(
-            "getOAuthProviderSpec",
+            ids::GET_O_AUTH_PROVIDER_SPEC,
             Method::Get,
             api().lit("oauth-provider-spec"),
         )
@@ -86,43 +82,39 @@ pub(super) fn register(set: &mut EndpointSet) {
             // The path a provider must be told to send the browser back to, on
             // the admin UI's own host (the screen adds its origin).
             StructField::new("callback_path", TypeSchema::text()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     set.register(
         Endpoint::new(
-            "createOAuthProvider",
+            ids::CREATE_O_AUTH_PROVIDER,
             Method::Post,
             api().lit("oauth-providers"),
         )
         .input(oauth_provider_input_schema())
-        .output(oauth_provider_schema())
-        .auth(AuthRequirement::admin()),
+        .output(oauth_provider_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "updateOAuthProvider",
+            ids::UPDATE_O_AUTH_PROVIDER,
             Method::Put,
             api().lit("oauth-providers").param("name", ValueType::Text),
         )
         .input(oauth_provider_input_schema())
-        .output(oauth_provider_schema())
-        .auth(AuthRequirement::admin()),
+        .output(oauth_provider_schema()),
     );
 
     set.register(
         Endpoint::new(
-            "deleteOAuthProvider",
+            ids::DELETE_O_AUTH_PROVIDER,
             Method::Delete,
             api().lit("oauth-providers").param("name", ValueType::Text),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "deleted",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // Where the admin UI is served, and whether a browser can follow it there
@@ -136,7 +128,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // the CA last said (or why the pasted certificate does not do).
     set.register(
         Endpoint::new(
-            "getAdminAddress",
+            ids::GET_ADMIN_ADDRESS,
             Method::Get,
             api().lit("settings").lit("admin-address"),
         )
@@ -152,8 +144,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                     StructField::new("message", TypeSchema::optional(TypeSchema::text())),
                 ])),
             ),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // A single-use token that signs the admin in on the admin UI's current host
@@ -162,15 +153,14 @@ pub(super) fn register(set: &mut EndpointSet) {
     // port the browser already uses.
     set.register(
         Endpoint::new(
-            "createAdminHandoff",
+            ids::CREATE_ADMIN_HANDOFF,
             Method::Post,
             api().lit("settings").lit("admin-address").lit("handoff"),
         )
         .output(TypeSchema::struct_of([
             StructField::new("host", TypeSchema::text()),
             StructField::new("path", TypeSchema::text()),
-        ]))
-        .auth(AuthRequirement::admin()),
+        ])),
     );
 
     // Send one message through the **stored** email settings (§18.2).
@@ -187,7 +177,7 @@ pub(super) fn register(set: &mut EndpointSet) {
     // person guaranteed to be able to check whether it arrived.
     set.register(
         Endpoint::new(
-            "sendTestEmail",
+            ids::SEND_TEST_EMAIL,
             Method::Post,
             api().lit("settings").lit("email").lit("test"),
         )
@@ -198,8 +188,7 @@ pub(super) fn register(set: &mut EndpointSet) {
         .output(TypeSchema::struct_of([StructField::new(
             "sent_to",
             TypeSchema::text(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // **Python, as this process has it** (design §15; TODO "The Python code
@@ -211,8 +200,8 @@ pub(super) fn register(set: &mut EndpointSet) {
     // whichever state it is in, because which one is true depends on how this
     // binary was built and how it was started.
     set.register(
-        Endpoint::new("getPythonStatus", Method::Get, api().lit("python"))
-            .output(TypeSchema::struct_of([
+        Endpoint::new(ids::GET_PYTHON_STATUS, Method::Get, api().lit("python")).output(
+            TypeSchema::struct_of([
                 StructField::new("state", TypeSchema::text()),
                 StructField::new("version", TypeSchema::optional(TypeSchema::text())),
                 StructField::new("explanation", TypeSchema::text()),
@@ -245,8 +234,8 @@ pub(super) fn register(set: &mut EndpointSet) {
                 // crash the server rather than fail to import — so it is left
                 // off `sys.path` and this says so, naming both versions.
                 StructField::new("env_error", TypeSchema::optional(TypeSchema::text())),
-            ]))
-            .auth(AuthRequirement::admin()),
+            ]),
+        ),
     );
 
     // **Settings → System**: which feldspar this is and what it is doing to
@@ -254,8 +243,8 @@ pub(super) fn register(set: &mut EndpointSet) {
     // `scripts/build-static.sh`; a reading this platform cannot take is null.
     // Read-only, except for the restart beside it.
     set.register(
-        Endpoint::new("getSystemInfo", Method::Get, api().lit("system"))
-            .output(TypeSchema::struct_of([
+        Endpoint::new(ids::GET_SYSTEM_INFO, Method::Get, api().lit("system")).output(
+            TypeSchema::struct_of([
                 StructField::new("version", TypeSchema::text()),
                 // `feldspar --version`'s line, for a bug report.
                 StructField::new("version_line", TypeSchema::text()),
@@ -307,8 +296,8 @@ pub(super) fn register(set: &mut EndpointSet) {
                         StructField::new("available_bytes", TypeSchema::int()),
                     ])),
                 ),
-            ]))
-            .auth(AuthRequirement::admin()),
+            ]),
+        ),
     );
 
     // Exit the process, always, for whatever manages it to start it again
@@ -317,15 +306,14 @@ pub(super) fn register(set: &mut EndpointSet) {
     // stopped. The answer comes back before the exit.
     set.register(
         Endpoint::new(
-            "restartServer",
+            ids::RESTART_SERVER,
             Method::Post,
             api().lit("system").lit("restart"),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "restarting",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 }
 

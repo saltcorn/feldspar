@@ -398,12 +398,9 @@ pub fn create_constraint_steps(
             })]
         }
         ConstraintKind::FullTextSearch { language } if dialect.is_sqlite() => {
-            vec![SchemaStep::Sql(fts5_create_sql(
-                dialect,
-                table,
-                &constraint.name,
-                language,
-            )?)]
+            vec![SchemaStep::Sql(sc_query::TrustedSql::composed(
+                fts5_create_sql(dialect, table, &constraint.name, language)?,
+            ))]
         }
         ConstraintKind::FullTextSearch { language } => {
             vec![SchemaStep::Change(SchemaChange::CreateIndex {
@@ -414,17 +411,14 @@ pub fn create_constraint_steps(
             })]
         }
         ConstraintKind::Formula { formula } => {
-            vec![SchemaStep::Sql(row_constraint_sql(
-                dialect, projection, table, constraint, formula,
-            )?)]
+            vec![SchemaStep::Sql(sc_query::TrustedSql::composed(
+                row_constraint_sql(dialect, projection, table, constraint, formula)?,
+            ))]
         }
         ConstraintKind::VectorIndex { field } => {
-            vec![SchemaStep::Sql(vector_index_sql(
-                dialect,
-                table,
-                &constraint.name,
-                field,
-            )?)]
+            vec![SchemaStep::Sql(sc_query::TrustedSql::composed(
+                vector_index_sql(dialect, table, &constraint.name, field)?,
+            ))]
         }
     };
     if let Some(meta) = constraint.meta() {
@@ -454,7 +448,10 @@ pub fn drop_constraint_steps(
         // An FTS5 table is not an index and keeps its comment in a table of the
         // driver's, which a dropped virtual table does not take with it.
         ConstraintKind::FullTextSearch { .. } if dialect.is_sqlite() => vec![
-            SchemaStep::Sql(fts5_drop_sql(dialect, &constraint.name)),
+            SchemaStep::Sql(sc_query::TrustedSql::composed(fts5_drop_sql(
+                dialect,
+                &constraint.name,
+            ))),
             SchemaStep::Change(SchemaChange::SetComment {
                 target: constraint.comment_target(table_name),
                 comment: None,
@@ -470,13 +467,15 @@ pub fn drop_constraint_steps(
         }
         // The function goes with the trigger, or a re-created constraint of the
         // same name would silently keep the *old* formula's body.
-        ConstraintKind::Formula { .. } => vec![SchemaStep::Sql(format!(
-            "DROP TRIGGER IF EXISTS {trigger} ON {table};\n\
+        ConstraintKind::Formula { .. } => {
+            vec![SchemaStep::Sql(sc_query::TrustedSql::composed(format!(
+                "DROP TRIGGER IF EXISTS {trigger} ON {table};\n\
              DROP FUNCTION IF EXISTS {function}();\n",
-            trigger = dialect.quote_ident(&constraint.name),
-            table = dialect.quote_ident(table_name),
-            function = dialect.quote_ident(&function_name(&constraint.name)),
-        ))],
+                trigger = dialect.quote_ident(&constraint.name),
+                table = dialect.quote_ident(table_name),
+                function = dialect.quote_ident(&function_name(&constraint.name)),
+            )))]
+        }
     }
 }
 
@@ -1100,7 +1099,7 @@ mod tests {
         .message("we don't work for free");
         let steps = create_constraint_steps(&Pg, &projection, &table, &constraint).expect("steps");
         let sql = match &steps[0] {
-            SchemaStep::Sql(sql) => sql.clone(),
+            SchemaStep::Sql(sql) => sql.as_str().to_owned(),
             other => panic!("expected generated SQL, got {other:?}"),
         };
 
@@ -1160,6 +1159,7 @@ mod tests {
         let SchemaStep::Sql(sql) = &steps[0] else {
             panic!("expected generated SQL")
         };
+        let sql = sql.as_str();
         assert!(
             sql.contains("row constraint `sc_ck_employees_paid` on `employees` is not satisfied"),
             "{sql}"
@@ -1203,6 +1203,7 @@ mod tests {
         let SchemaStep::Sql(sql) = &steps[0] else {
             panic!("expected generated SQL")
         };
+        let sql = sql.as_str();
         assert!(sql.contains("DROP TRIGGER IF EXISTS \"sc_ck_employees_paid\" ON \"employees\""));
         assert!(sql.contains("DROP FUNCTION IF EXISTS \"sc_ck_employees_paid_fn\"()"));
     }

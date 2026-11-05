@@ -8,8 +8,8 @@ use super::*;
 pub(super) fn register(set: &mut EndpointSet) {
     // Whether any user exists yet — drives the create-first-user screen.
     set.register(
-        Endpoint::new("authStatus", Method::Get, api().lit("auth/status"))
-            .output(TypeSchema::struct_of([
+        Endpoint::new(ids::AUTH_STATUS, Method::Get, api().lit("auth/status")).output(
+            TypeSchema::struct_of([
                 StructField::new("any_user_exists", TypeSchema::bool()),
                 // Whether creating the first user needs the setup link's token
                 // (`first_user_token` or `FELDSPAR_FIRST_USER_TOKEN`); only ever true
@@ -28,48 +28,51 @@ pub(super) fn register(set: &mut EndpointSet) {
                 // onboarding dialogs: true for an admin until anyone finishes
                 // or skips them (`finishOnboarding`), false otherwise.
                 StructField::new("onboarding_pending", TypeSchema::bool()),
-            ]))
-            .auth(AuthRequirement::Public),
+            ]),
+        ),
     );
 
     // The first-run onboarding is done — finished or skipped — so it is not
     // shown again, to this admin or any other.
     set.register(
         Endpoint::new(
-            "finishOnboarding",
+            ids::FINISH_ONBOARDING,
             Method::Post,
             api().lit("onboarding/finish"),
         )
         .output(TypeSchema::struct_of([StructField::new(
             "done",
             TypeSchema::bool(),
-        )]))
-        .auth(AuthRequirement::admin()),
+        )])),
     );
 
     // Create the very first (admin) user. Only valid while no user exists, and
     // when the installation has a first-user token, only with it (`403` else).
     set.register(
-        Endpoint::new("createFirstUser", Method::Post, api().lit("first-user"))
-            .input(TypeSchema::struct_of([
-                StructField::new("email", TypeSchema::text()),
-                StructField::new("password", TypeSchema::text()),
-                StructField::new("token", TypeSchema::optional(TypeSchema::text())),
-            ]))
-            .output(user_summary_schema())
-            .auth(AuthRequirement::Public),
+        Endpoint::new(
+            ids::CREATE_FIRST_USER,
+            Method::Post,
+            api().lit("first-user"),
+        )
+        .input(TypeSchema::struct_of([
+            StructField::new("email", TypeSchema::text()),
+            StructField::new("password", TypeSchema::text()),
+            StructField::new("token", TypeSchema::optional(TypeSchema::text())),
+        ]))
+        .output(user_summary_schema()),
     );
 
     set.register(
-        Endpoint::new("login", Method::Post, api().lit("login"))
+        Endpoint::new(ids::LOGIN, Method::Post, api().lit("login"))
             .input(credentials_schema())
-            .output(user_summary_schema())
-            .auth(AuthRequirement::Public),
+            .output(user_summary_schema()),
     );
 
-    set.register(
-        Endpoint::new("logout", Method::Post, api().lit("logout")).auth(AuthRequirement::LoggedIn),
-    );
+    set.register(Endpoint::new(
+        ids::LOGOUT,
+        Method::Post,
+        api().lit("logout"),
+    ));
 }
 
 /// The body of a user create or edit — the same shape for both, since a user

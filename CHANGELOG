@@ -2,6 +2,120 @@
 
 Changes in reverse chronological order.
 
+## Security hardening H6: typed endpoints and identifiers
+
+The sixth part of `docs/SECURITY_REVIEW_2026-11.md` (§7, §8; area reports D2–D7 and E4;
+TODO-type-hardening H6): who may call an endpoint is its handler id's type, every route outside
+the typed endpoint set is listed with how it authenticates, DDL names go through an `Ident`, and
+a redirect target and a download name are each made by one rule. No change to the wire format,
+the generated clients or stored data; no migration.
+
+- **Endpoints declare authority in their type** (H6.1, E4):
+  - `sc_api::Auth`, a sealed trait with four markers — `Anyone` (`Public`), `SignedIn`
+    (`LoggedIn`), `AdminOnly` and `AnalyticsUi` (both `admin()`) — and `HandlerId<A>`, a typed
+    handler name. `sc_api::handler_ids` holds one `HandlerId` for each of the 319 built-in
+    handlers (the 315 typed endpoints' and the four the upload, download and backup routes
+    dispatch to): the one list to read for every handler's authority.
+  - `Endpoint::new(HandlerId<A>, method, path)` takes its name and its `AuthRequirement` from the
+    id. The `LoggedIn` default and the `.auth()` setter are gone, so an endpoint cannot be
+    declared without saying who may call it. An endpoint an application's API provider projects
+    from configuration (REST tables at their floors, custom queries at their `min_role`, sign-up,
+    invite, GraphQL) states its requirement as data with `Endpoint::projected(name, method, path,
+    auth)`; the provider enforces it, as before.
+  - `sc-server`'s `HandlerRegistry::handle(id, handler)` replaces `register`,
+    `register_signed_in`, `register_admin` and `register_analytics`: the gate, and what the
+    handler is handed (`Caller`, `AuthenticatedUser`, `Admin`, `AnalyticsCaller`), come from the
+    id's type through the new `Gated` trait. An endpoint and its handler share one const, so they
+    cannot disagree; `check_gates` now requires the gate's requirement to *equal* the endpoint's
+    (`Gate::requirement`), which still refuses at startup a handler registered under a second id
+    of the same name and another type. Every existing registration already matched its
+    declaration; every endpoint keeps the requirement it had.
+  - The raw routes: `sc-server`'s `raw_routes::RAW_ROUTES` lists the 34 routes outside the
+    endpoint set with their methods and a `RouteAuth` (`AdminSession`, `McpToken`,
+    `TerminalToken`, `BuildHostToken`, `OwnSession`, `SessionOrChallenge`, `Challenge`,
+    `OAuthFlow`, `HandoffToken`, `ModuleVerifies`, `ScopedSession`, `HostSession`, `Public`),
+    building on H2.1's scoped session extractors. The router mounts exactly that list
+    (`raw_routes::mount`); `sc_server::raw_routes()` reads it. Tests
+    (`tests/raw_routes.rs`): `every_raw_route_is_registered_with_how_it_authenticates` (the list
+    against a pinned copy, so a new route fails until it is classified),
+    `no_route_is_mounted_outside_the_registry` (no `.route(` with a path anywhere else in
+    `src/`), and `a_route_that_needs_a_caller_refuses_an_anonymous_one` (against a real server:
+    every `AdminSession`, token and own-session route answers an anonymous request 401/403, and
+    every route answers 405 to a method it does not list). Also
+    `handler_ids::tests::the_admin_set_is_admin_but_for_the_sign_in_plumbing`;
+    `router::an_admin_endpoint_cannot_be_served_by_an_open_handler` now registers the open
+    handler under a `HandlerId<Anyone>`.
+  - Deviation from the review's sketch: `Endpoint` stays one (serialized, runtime-registered)
+    struct rather than `Endpoint<A>`; the type parameter is on its constructor and on the
+    `HandlerId`, which is where a declaration and its handler meet.
+- **Identifiers** (H6.2, D2–D5):
+  - `sc_query::Ident`: `Ident::new` for a name this program creates (non-empty, at most 63
+    bytes, `[A-Za-z_][A-Za-z0-9_]*` — the schema editor's rule; `check_identifier` now calls it,
+    with the same messages), `Ident::existing` for a name a database already has or stored data
+    carries (anything but a NUL: quotes, spaces, `$`, non-ASCII and, on SQLite, any length are
+    kept), no `Display`. It serializes as its text and deserializes through `existing`.
+    `SqlDialect::quote(&Ident) -> QuotedIdent` is the typed way into SQL text.
+  - Both DDL renderers (`sc-db-postgres`, `sc-db-sqlite`) quote every name through
+    `Ident::existing` and `quote`: a quote is doubled as before, a NUL is refused rather than
+    sent. The catalog's table map is keyed by `Ident`; a stored provided-table row whose name
+    has a NUL is reported as a provided-table issue instead of loaded (no database can hold one).
+  - `SchemaStep::Sql` carries a `TrustedSql` (was `String`), like `Statement::Raw`: the
+    places that build one say `TrustedSql::composed` (D2). New `TrustedSql::do_block(body)` wraps
+    PL/pgSQL in a dollar-quote tag that does not occur in the body (`$sc$`, else `$sc1$`, …), so
+    a name with `$sc$` in it cannot end the block (D4); the Postgres renderer's blocks and the
+    CSV/geo import's sequence advance use it. That sequence advance also quoted a table name
+    twice (`%I` over an already-doubled `"`), wrong for a name with a quote in it; it now passes
+    the quoted name as `%s` (D4).
+  - **Primary-key names** (D3). `Ident::derived(label)` is Postgres' `makeObjectName`: the
+    *table name* cut at a character boundary so `<name>_pkey` fits 63 bytes. `SetPrimaryKey`
+    used to drop `"<table>_pkey"` by name, which for a 59–63 byte table name (or a key Postgres
+    numbered, `<table>_pkey1`, because the name was taken, or a key left named after a table that
+    was renamed) is not the key's name, so the old key stayed and `ADD PRIMARY KEY` failed with
+    "multiple primary keys". It now drops the key found by `contype = 'p'`, whatever it is
+    called, and lets Postgres name the new one. `RenameTable` renames the key to the derived
+    name of the new table when it still has a name Postgres gave it after the old one (the
+    derived name, or the first 63 bytes of `<from>_pkey` an earlier rename left), and leaves it
+    alone when that name is taken. Existing databases need nothing: their keys are found by
+    type, and their names are kept. Tests against a real Postgres (`sc-db-postgres`'s
+    `pkey_names`): `the_derived_key_name_is_the_one_postgres_gives` (short, 58, 59 and 63 bytes,
+    a two-byte character at the cut), `the_key_of_a_long_named_table_can_be_replaced`,
+    `a_rename_takes_the_key_name_along_whatever_its_length` (including a key an earlier version
+    left at 63 bytes of `<from>_pkey`), `a_numbered_key_and_a_taken_name_are_handled`,
+    `a_name_with_quotes_and_a_dollar_tag_is_quoted`; unit tests in `ident.rs` and both
+    renderers (`names_are_quoted_and_a_dollar_tag_in_one_cannot_end_the_block`,
+    `the_key_is_found_by_what_it_is_not_by_a_computed_name`,
+    `names_are_quoted_through_ident_and_a_nul_is_refused`).
+  - Not done here: `SchemaChange`'s and `ColumnDef`'s name fields, the ≈550 `table: &str` /
+    column `&str` parameters and the 163 `quote_ident(&str)` calls outside the DDL renderers stay
+    `String`/`&str` (the first is part of stored and serialized change sets; the rest is the
+    follow-on the review describes). `IndexOn::Expression` and `ColumnGenerator::Default` still
+    carry `String` fragments.
+- **One redirect target and one download name** (H6.3, D6, D7): a new layer-0 crate, `sc-http`.
+  - `RedirectTarget::parse` / `or_root`: a path on this host — one leading `/` not followed by
+    `/` or `\`, no `\` anywhere, no control character — percent-encoded the way Express's
+    `res.redirect` encodes a `Location`; `with_param` adds a query parameter before the fragment;
+    it converts to a `HeaderValue` that cannot fail. It replaces `sc-server`'s `safe_return_to`
+    rule (the identity-provider flow's and the second factor's `return_to`, now typed in the
+    flow state), `sc-module`'s `is_local_path` (`ConsentFlow::return_to` is a `RedirectTarget`)
+    and `sc-viewpattern`'s `safe_redirect` rule. Behaviour: a backslash later in a `return_to`
+    is now refused too (it went to `/`, or the consent request is refused, as for any other
+    off-site target), what is kept is encoded, and a v1 `redirect` with surrounding whitespace is
+    trimmed rather than sent to `/`. Tests: `sc-http`'s
+    `an_off_site_target_is_refused` (`//evil`, `/\evil`, `https:`, `javascript:`, a tab, CR/LF,
+    NUL), `what_is_kept_is_encoded_for_the_header`, `a_param_goes_before_the_fragment`;
+    `consent::tests::return_to_is_a_path_here`.
+  - `DownloadName::sanitised`: CR, LF, other control characters and `/` `\` become `_`, an empty
+    name is `download`; `disposition` renders RFC 6266 with an RFC 5987 `filename*` (the
+    rendering `file_response` already had, unchanged for an ordinary name). A backup, posterior
+    or tile `Download` carries an `Option<DownloadName>`, so the router's
+    `Content-Disposition` is `attachment; filename="…"; filename*=UTF-8''…` and can carry no
+    quote or `;` of the name's (was `attachment; filename="{name}"`; the admin and Analytics
+    SPAs read the `filename="…"` part, which comes first as before). Tests: `sc-http`'s
+    `a_download_name_cannot_break_out_of_the_header`, `a_download_name_has_no_path`,
+    `an_ordinary_name_renders_as_it_did`; `file_response::tests::a_hostile_name_is_sanitised_in_the_header`.
+- `docs/TECHNICAL_DESIGN.md` §2 lists `sc-http` in the crate tree, the diagram and the
+  dependency table.
+
 ## Security hardening H5: bounded input and robustness
 
 The fifth part of `docs/SECURITY_REVIEW_2026-11.md` (§5; area report F, F-3 to F-11, F-14;

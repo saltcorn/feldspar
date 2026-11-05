@@ -6,7 +6,7 @@ use super::*;
 pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     let catalog = state.catalog.clone();
 
-    reg.register_admin("listCodeLibraries", {
+    reg.handle(sc_api::handler_ids::LIST_CODE_LIBRARIES, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -17,7 +17,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createCodeLibrary", {
+    reg.handle(sc_api::handler_ids::CREATE_CODE_LIBRARY, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -32,7 +32,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateCodeLibrary", {
+    reg.handle(sc_api::handler_ids::UPDATE_CODE_LIBRARY, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -51,7 +51,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteCodeLibrary", {
+    reg.handle(sc_api::handler_ids::DELETE_CODE_LIBRARY, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();

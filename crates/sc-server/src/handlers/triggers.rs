@@ -13,7 +13,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // registry the dispatcher runs — and then reloads the live set, so the list
     // an admin is looking at is the set that will fire.
 
-    reg.register_admin("listTriggers", {
+    reg.handle(sc_api::handler_ids::LIST_TRIGGERS, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |_ctx| {
@@ -54,7 +54,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("createTrigger", {
+    reg.handle(sc_api::handler_ids::CREATE_TRIGGER, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -92,7 +92,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("updateTrigger", {
+    reg.handle(sc_api::handler_ids::UPDATE_TRIGGER, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -139,7 +139,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("deleteTrigger", {
+    reg.handle(sc_api::handler_ids::DELETE_TRIGGER, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -162,7 +162,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("runTrigger", {
+    reg.handle(sc_api::handler_ids::RUN_TRIGGER, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -195,7 +195,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("testRunTrigger", {
+    reg.handle(sc_api::handler_ids::TEST_RUN_TRIGGER, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -261,7 +261,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listActions", {
+    reg.handle(sc_api::handler_ids::LIST_ACTIONS, {
         let apps = apps.clone();
         let catalog = catalog.clone();
         move |ctx| {
@@ -332,7 +332,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // listed and still editable — with its issues beside it, because editing it
     // is the repair — and what it cannot do is start a run.
 
-    reg.register_admin("getWorkflow", {
+    reg.handle(sc_api::handler_ids::GET_WORKFLOW, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -376,7 +376,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("saveWorkflow", {
+    reg.handle(sc_api::handler_ids::SAVE_WORKFLOW, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -420,7 +420,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
     // not a deletion of the versions in between — a run suspended on any of them
     // still has to be able to load the one it is pinned to tomorrow, which is
     // the whole reason the table is append-only (decision 2).
-    reg.register_admin("revertWorkflow", {
+    reg.handle(sc_api::handler_ids::REVERT_WORKFLOW, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -467,7 +467,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("listWorkflowRuns", {
+    reg.handle(sc_api::handler_ids::LIST_WORKFLOW_RUNS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -495,7 +495,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("resumeRun", {
+    reg.handle(sc_api::handler_ids::RESUME_RUN, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {
@@ -532,7 +532,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("cancelRun", {
+    reg.handle(sc_api::handler_ids::CANCEL_RUN, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -556,7 +556,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
         }
     });
 
-    reg.register_admin("retryRun", {
+    reg.handle(sc_api::handler_ids::RETRY_RUN, {
         let catalog = catalog.clone();
         let apps = apps.clone();
         move |ctx| {

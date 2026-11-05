@@ -19,9 +19,10 @@
 //!   endpoint tools and the catalog's admin host), which have run their own
 //!   admin check ([`Admin::delegated`]; listed in the security review's
 //!   system-authority inventory). The handler registry only calls a handler
-//!   registered with [`register_admin`](crate::HandlerRegistry::register_admin)
-//!   with one, and the router refuses to start when an admin endpoint names a
-//!   handler that was registered any other way.
+//!   registered under a `HandlerId<AdminOnly>`
+//!   ([`handle`](crate::HandlerRegistry::handle)) with one, and the router
+//!   refuses to start when an admin endpoint names a handler that was
+//!   registered any other way.
 //! - [`Caller`] is what the dispatcher resolved a request to before the
 //!   handler's gate narrows it: nobody, a signed-in user
 //!   ([`AuthenticatedUser`]), or admin authority.

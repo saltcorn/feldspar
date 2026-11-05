@@ -26,6 +26,8 @@ python = ["sc-python/python-host"]
 # feature, below), the browser probe and watchdog — started the one way (H4).
 sc-proc.workspace = true
 sc-error.workspace = true
+# A redirect target and a download name, each made by one rule (H6.3).
+sc-http.workspace = true
 sc-log.workspace = true
 # The client address and the limiter (TODO F4.2–F4.4).
 sc-ratelimit.workspace = true

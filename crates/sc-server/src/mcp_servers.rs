@@ -26,7 +26,7 @@ use crate::handler::{HandlerRegistry, HandlerResponse};
 const MCP_TRAIT: &str = "mcp_server";
 
 pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
-    reg.register_admin("listMcpServers", {
+    reg.handle(sc_api::handler_ids::LIST_MCP_SERVERS, {
         let catalog = catalog.clone();
         move |_ctx| {
             let catalog = catalog.clone();
@@ -44,7 +44,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register_admin("createMcpServer", {
+    reg.handle(sc_api::handler_ids::CREATE_MCP_SERVER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -56,7 +56,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register_admin("updateMcpServer", {
+    reg.handle(sc_api::handler_ids::UPDATE_MCP_SERVER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -90,7 +90,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register_admin("deleteMcpServer", {
+    reg.handle(sc_api::handler_ids::DELETE_MCP_SERVER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -108,7 +108,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
 
     // A structurally wrong definition is an ordinary error (the admin's typo);
     // a server that refuses or cannot be reached is a 200 with `ok: false`.
-    reg.register_admin("testMcpServer", {
+    reg.handle(sc_api::handler_ids::TEST_MCP_SERVER, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();
@@ -136,7 +136,7 @@ pub(crate) fn register(reg: &mut HandlerRegistry, catalog: Arc<Catalog>) {
         }
     });
 
-    reg.register_admin("listMcpServerTools", {
+    reg.handle(sc_api::handler_ids::LIST_MCP_SERVER_TOOLS, {
         let catalog = catalog.clone();
         move |ctx| {
             let catalog = catalog.clone();

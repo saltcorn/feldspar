@@ -108,10 +108,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## H6 — Typed endpoints and identifiers (§7, §8)
 
-- [ ] H6.1 `Endpoint<A: Auth>` with no default; `HandlerId<A>`; registry and test for raw routes.
-- [ ] H6.2 `Ident` newtype at the DDL renderer and catalog maps; `SchemaStep::Sql(TrustedSql)`;
+- [x] H6.1 `Endpoint<A: Auth>` with no default; `HandlerId<A>`; registry and test for raw routes.
+- [x] H6.2 `Ident` newtype at the DDL renderer and catalog maps; `SchemaStep::Sql(TrustedSql)`;
       `{table}_pkey` derived by Postgres' rule (D3).
-- [ ] H6.3 One `RedirectTarget` (D6) and one `DownloadName` (D7).
+- [x] H6.3 One `RedirectTarget` (D6) and one `DownloadName` (D7).
 
 ## H7 — Ownership formula additions (TECHNICAL_DESIGN §7.3a)
 
