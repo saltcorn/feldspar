@@ -2818,7 +2818,7 @@ impl Plan {
             let Some(table) = self.projection.get(name) else {
                 continue;
             };
-            validate_ownership(catalog, &self.projection, table)?;
+            notes.extend(validate_ownership(catalog, &self.projection, table)?);
         }
         for name in &self.change_log_dirty {
             let Some(table) = self.projection.get(name) else {
@@ -3086,7 +3086,7 @@ fn validate_ownership(
     catalog: &Catalog,
     projection: &SchemaProjection,
     table: &Table,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let source = table
         .ownership
         .as_ref()
@@ -3107,7 +3107,7 @@ fn validate_ownership(
                 table.name
             )));
         }
-        return Ok(());
+        return Ok(Vec::new());
     }
     let formula = sc_expr::Formula::parse(&source)
         .map_err(|e| Error::invalid(format!("table `{}`: {e}", table.name)))?;
@@ -3115,6 +3115,13 @@ fn validate_ownership(
     let analysis = formula
         .validate(&shape, &table.name)
         .map_err(|e| Error::invalid(format!("table `{}`: {e}", table.name)))?;
+    // `_request` only as `column === _request.key` on a unique column
+    // (TODO-type-hardening H7.5); what is merely unwise is a warning.
+    let warnings = sc_expr::check_request_uses(&formula, &shape, &table.name)?
+        .warnings
+        .into_iter()
+        .map(|w| format!("table `{}`: {w}", table.name))
+        .collect::<Vec<_>>();
     // An **ownership** formula may not call a module function at all, hoistable
     // or not (§4b). `JsEvaluator`'s contract is that `Err` is deny, so a rule
     // calling `geocode_lat` turns a Nominatim outage into "nobody may read
@@ -3142,7 +3149,7 @@ fn validate_ownership(
         )));
     }
     if !table.rls_enabled {
-        return Ok(());
+        return Ok(warnings);
     }
     if !catalog.primary_info().capabilities().row_level_security {
         return Err(Error::invalid(
@@ -3172,7 +3179,24 @@ fn validate_ownership(
             )));
         }
     }
-    Ok(())
+    // A formula that reads `old` has its proposed-row check in a trigger over
+    // `NEW` and `OLD` (TODO-type-hardening H7.4), which must translate too.
+    if analysis.uses(sc_expr::Ambient::Old)
+        && let Err(e) = sc_expr::translate_update_check(
+            &formula,
+            &sc_expr::Env::new(&env).with_calc(&calc),
+            &shape,
+            &table.name,
+            "new",
+            "old",
+        )
+    {
+        return Err(Error::invalid(format!(
+            "table `{}`: cannot enable row-level security: {e}",
+            table.name
+        )));
+    }
+    Ok(warnings)
 }
 
 /// Validate a field's default-value expression against a projected schema: it
@@ -3197,9 +3221,14 @@ fn validate_default_expression(
     }
     let formula = sc_expr::Formula::parse(expression)
         .map_err(|e| Error::invalid(format!("default value of `{table}.{name}`: {e}")))?;
-    formula
+    let analysis = formula
         .validate(shape, table)
         .map_err(|e| Error::invalid(format!("default value of `{table}.{name}`: {e}")))?;
+    if analysis.uses(sc_expr::Ambient::Old) || analysis.uses(sc_expr::Ambient::Request) {
+        return Err(Error::invalid(format!(
+            "default value of `{table}.{name}`: a default cannot use `old` or `_request`"
+        )));
+    }
     Ok(())
 }
 
@@ -3314,10 +3343,14 @@ fn validate_calc_expression(
     let analysis = formula
         .validate(shape, table)
         .map_err(|e| Error::invalid(format!("calculated field `{table}.{field}`: {e}")))?;
-    if analysis.uses_caller() || !analysis.flags.is_empty() {
+    if analysis.uses_caller()
+        || !analysis.flags.is_empty()
+        || analysis.uses(sc_expr::Ambient::Old)
+        || analysis.uses(sc_expr::Ambient::Request)
+    {
         return Err(Error::invalid(format!(
             "calculated field `{table}.{field}`: a calculated field cannot use `user`, \
-             `session` or the operation flags"
+             `session`, `old`, `_request` or the operation flags"
         )));
     }
     Ok(analysis)

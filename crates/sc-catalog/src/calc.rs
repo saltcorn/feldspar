@@ -77,13 +77,17 @@ pub(crate) fn merge_calc_fields(
                             issues.push(issue(&table.name, name, &e.to_string()));
                         }
                         Ok(analysis) => {
-                            if analysis.uses_caller() || !analysis.flags.is_empty() {
+                            if analysis.uses_caller()
+                                || !analysis.flags.is_empty()
+                                || analysis.uses(sc_expr::Ambient::Old)
+                                || analysis.uses(sc_expr::Ambient::Request)
+                            {
                                 invalid.insert(name.clone());
                                 issues.push(issue(
                                     &table.name,
                                     name,
-                                    "a calculated field cannot use `user`, `session` or the \
-                                     operation flags",
+                                    "a calculated field cannot use `user`, `session`, `old`, \
+                                     `_request` or the operation flags",
                                 ));
                             }
                         }

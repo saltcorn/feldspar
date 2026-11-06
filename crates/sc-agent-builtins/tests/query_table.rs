@@ -76,6 +76,8 @@ async fn the_tool_describes_the_table_it_is_configured_against() -> Result<()> {
         .collect();
     assert_eq!(order, vec!["id", "title", "pages", "owner", "notes"]);
     assert_eq!(props["limit"]["maximum"], json!(50));
+    // No formula reads `_request` here, so there is nothing to present.
+    assert!(props.get("request").is_none(), "{props}");
     Ok(())
 }
 
@@ -420,5 +422,36 @@ async fn an_agent_answers_a_question_about_its_table_through_a_whole_run() -> Re
     let result: Json = serde_json::from_str(&result).unwrap();
     assert_eq!(titles(&result), ["Ilium", "Dune"]);
     assert!(!result["rows"][0].as_object().unwrap().contains_key("owner"));
+    Ok(())
+}
+
+/// TODO-type-hardening H7.6: on a table whose formula reads `_request`, the
+/// tool offers `request` with the keys the formula reads, and a read presents
+/// what the model passes there — the share a user gave it the code of, and no
+/// other.
+#[tokio::test]
+async fn the_request_argument_presents_what_the_formula_reads() -> Result<()> {
+    let env = Env::with_schema(
+        "CREATE TABLE books (id bigint primary key, title text, code text UNIQUE); \
+         INSERT INTO books VALUES (1, 'Dune', 'c1'), (2, 'Emma', 'c2');",
+    )
+    .await?;
+    env.own("books", "_read && code === _request.code").await?;
+    let cfg = books();
+    let tool = &env.tools("query_table", &cfg)[0];
+    assert_eq!(
+        tool.parameters["properties"]["request"]["properties"],
+        json!({ "code": { "type": "string" } }),
+        "{}",
+        tool.parameters
+    );
+
+    let ada = RunCaller::user(reader("ada@example.com"));
+    let shared = query(&env, &cfg, json!({ "request": { "code": "c2" } }), &ada).await?;
+    assert_eq!(titles(&shared), ["Emma"]);
+    let nothing = query(&env, &cfg, json!({}), &ada).await?;
+    assert_eq!(nothing["count"], json!(0));
+    let refused = query(&env, &cfg, json!({ "request": { "code": 2 } }), &ada).await;
+    assert!(refused.is_err(), "{refused:?}");
     Ok(())
 }

@@ -134,10 +134,26 @@ impl AgentTrait for QueryTable {
         let ceiling = max_rows(config, DEFAULT_MAX_ROWS as u64).unwrap_or(DEFAULT_MAX_ROWS as u64);
         let searchable = searchable(&table, &visible);
         let shown = shows_results(config).unwrap_or(false);
+        let mut schema = parameters(&table, &visible, ceiling, searchable);
+        let keys = request_keys(catalog, &table);
+        if !keys.is_empty() {
+            let properties: Map<String, Json> = keys
+                .iter()
+                .map(|k| (k.clone(), json!({ "type": "string" })))
+                .collect();
+            schema["properties"][ARG_REQUEST] = json!({
+                "type": "object",
+                "properties": properties,
+                "additionalProperties": false,
+                "description":
+                    "Values the user gave you that this table's rules accept as proof of \
+                     access (a share link's token). Pass on only what the user gave you.",
+            });
+        }
         vec![ToolSpec::new(
             name,
             describe(&table, &visible, ceiling, searchable, shown),
-            parameters(&table, &visible, ceiling, searchable),
+            schema,
         )]
     }
 
@@ -174,7 +190,13 @@ impl AgentTrait for QueryTable {
         }
         let query = query.order_by(order).limit(limit.saturating_add(1));
         let me = ctx.principal();
-        let found = ctx.scoped(&me).read(&table, &query).await?;
+        // What the model presents, and only that: a value the person typed
+        // into the chat, passed on (TODO-type-hardening H7.6).
+        let origin = sc_catalog::Origin {
+            request: presented(&args)?,
+            ..sc_catalog::current_origin()
+        };
+        let found = sc_catalog::with_origin(origin, ctx.scoped(&me).read(&table, &query)).await?;
 
         let mut rows: Vec<Json> = found.as_array().cloned().unwrap_or_default();
         let more = rows.len() as u64 > limit;
@@ -372,18 +394,53 @@ const ARG_DESCENDING: &str = "descending";
 const ARG_LIMIT: &str = "limit";
 /// A full-text search phrase (AS7.2).
 const ARG_SEARCH: &str = "search";
+/// Values presented to the table's ownership formula as `_request`
+/// (TODO-type-hardening H7.6): a share link's token.
+const ARG_REQUEST: &str = "request";
 
 /// Every argument this tool takes — so one it does not is refused **by name**.
 /// `search` is in the list even where the schema does not offer it, so that a
 /// model guessing it is told why it is not available rather than that it is
 /// unknown.
-const ARGUMENTS: [&str; 5] = [
+const ARGUMENTS: [&str; 6] = [
     ARG_WHERE,
     ARG_ORDER_BY,
     ARG_DESCENDING,
     ARG_LIMIT,
     ARG_SEARCH,
+    ARG_REQUEST,
 ];
+
+/// The `_request` keys the table's ownership formula reads, which the tool
+/// then offers as `request`. Empty when it reads none.
+fn request_keys(catalog: &sc_catalog::Catalog, table: &Table) -> Vec<String> {
+    let (Some(formula), Ok(shape)) = (table.ownership.as_ref(), catalog.schema_shape()) else {
+        return Vec::new();
+    };
+    sc_expr::check_request_uses(formula, &shape, &table.name)
+        .map(|uses| uses.keys.into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// The `request` argument as presented values.
+fn presented(args: &Map<String, Json>) -> Result<sc_expr::RequestValues> {
+    let Some(value) = args.get(ARG_REQUEST).filter(|v| !v.is_null()) else {
+        return Ok(sc_expr::RequestValues::default());
+    };
+    let Json::Object(map) = value else {
+        return Err(Error::invalid(
+            "`request` is an object of strings, as { \"token\": \"…\" }",
+        ));
+    };
+    let mut pairs = Vec::with_capacity(map.len());
+    for (key, value) in map {
+        let Json::String(value) = value else {
+            return Err(Error::invalid(format!("`request.{key}` must be a string")));
+        };
+        pairs.push((key.clone(), value.clone()));
+    }
+    sc_expr::RequestValues::new(pairs)
+}
 
 /// The `limit`, clamped to the configured ceiling.
 ///

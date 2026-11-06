@@ -38,6 +38,19 @@ pub struct SchemaShape {
     /// Empty by default, which is a server with no modules: a formula naming
     /// `md_to_html` there is the unknown identifier it has always been.
     pub module_functions: BTreeMap<String, Vec<String>>,
+    /// Whether `old` is in scope as **the formula's own row before an update**
+    /// (an ownership formula, TODO-type-hardening H7.3): `old.x` is checked
+    /// against the fields of the table the formula is validated for, and reads
+    /// null wherever no existing row is bound. The catalog's shape sets it.
+    ///
+    /// An explicit `old` in [`ambient`](SchemaShape::ambient) (a trigger's
+    /// event row) wins over this, and a field called `old` wins over both, so a
+    /// table that has one keeps reading it.
+    pub old_row: bool,
+    /// Whether `_request` — the values a caller presented — is in scope (an
+    /// ownership formula, TODO-type-hardening H7.5). The catalog's shape sets
+    /// it; the formulas that are not ownership formulas refuse `_request`.
+    pub request: bool,
 }
 
 impl Default for SchemaShape {
@@ -59,6 +72,8 @@ impl Default for SchemaShape {
                 ),
             ]),
             module_functions: BTreeMap::new(),
+            old_row: false,
+            request: false,
         }
     }
 }
@@ -109,6 +124,56 @@ pub struct RowsOf {
 pub struct FieldShape {
     /// `Some` when this is a Key field a Ⱶ-path may traverse.
     pub key: Option<KeyShape>,
+    /// What kind of value the column holds, when the caller knows
+    /// (TODO-type-hardening H7.2): what lets `created_at.getTime()` and
+    /// `due <= new Date()` translate. [`FieldKind::Unknown`] translates nothing
+    /// that depends on the kind, so the formula falls back to the evaluator.
+    pub kind: FieldKind,
+    /// Whether the column is unique on its own (a `UNIQUE` column or a
+    /// one-column unique constraint): what lets `token === _request.token`
+    /// reach one row and no more (TODO-type-hardening H7.5).
+    pub unique: bool,
+    /// Whether the column is part of the primary key.
+    pub primary_key: bool,
+    /// Whether the database numbers the column itself (an identity).
+    pub identity: bool,
+    /// Whether the column's default is random (`gen_random_uuid()`), so a
+    /// token in it is not one a user chose.
+    pub random_default: bool,
+}
+
+/// The kind of value a field holds, as far as a formula's translation needs
+/// to know it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FieldKind {
+    /// Not declared by the caller.
+    #[default]
+    Unknown,
+    /// A calendar date (`date`): the instant of its UTC midnight, as
+    /// JavaScript's `new Date("2024-05-06")` is.
+    Date,
+    /// An instant (`timestamptz`).
+    Timestamp,
+    /// A whole number (`int2`/`int4`/`int8`).
+    Integer,
+    /// Any other number (`float8`, `numeric`).
+    Number,
+    /// Text.
+    Text,
+    /// Anything else: a boolean, a UUID, JSON, bytes, a geometry.
+    Other,
+}
+
+impl FieldKind {
+    /// Whether a value of this kind is a point in time.
+    pub fn is_temporal(self) -> bool {
+        matches!(self, FieldKind::Date | FieldKind::Timestamp)
+    }
+
+    /// Whether a value of this kind is a number.
+    pub fn is_numeric(self) -> bool {
+        matches!(self, FieldKind::Integer | FieldKind::Number)
+    }
 }
 
 /// Where a Key field points: the link a Ⱶ-path segment follows.
@@ -186,6 +251,51 @@ impl SchemaShape {
         self.ambient.contains_key(&ambient)
     }
 
+    /// Put `old` in scope as the formula's own row before an update (see
+    /// [`old_row`](SchemaShape::old_row)).
+    #[must_use]
+    pub fn with_old_row(mut self) -> SchemaShape {
+        self.old_row = true;
+        self
+    }
+
+    /// Put `_request` in scope (see [`request`](SchemaShape::request)).
+    #[must_use]
+    pub fn with_request(mut self) -> SchemaShape {
+        self.request = true;
+        self
+    }
+
+    /// Whether `ambient` is in scope for a formula on `table`: declared, `old`
+    /// as that table's previous row when the table has no field `old`, or
+    /// `_request` where the shape puts it in scope.
+    pub fn declares_ambient_on(&self, table: &str, ambient: Ambient) -> bool {
+        self.declares_ambient(ambient)
+            || self.old_row_on(table) && ambient == Ambient::Old
+            || self.request_on(table) && ambient == Ambient::Request
+    }
+
+    /// Whether `_request` is in scope on `table`: the shape says so and no
+    /// field of the table is called `_request`.
+    pub fn request_on(&self, table: &str) -> bool {
+        self.request
+            && !self
+                .tables
+                .get(table)
+                .is_some_and(|t| t.fields.contains_key(Ambient::Request.as_str()))
+    }
+
+    /// Whether `old` on `table` is that table's previous row — the shape says
+    /// so, nothing declares `old` otherwise, and no field shadows it.
+    pub fn old_row_on(&self, table: &str) -> bool {
+        self.old_row
+            && !self.declares_ambient(Ambient::Old)
+            && !self
+                .tables
+                .get(table)
+                .is_some_and(|t| t.fields.contains_key(Ambient::Old.as_str()))
+    }
+
     /// The declared fields of `ambient`, or `None` when it is out of scope or its
     /// fields are unknown — either way, there is nothing to check a member
     /// against.
@@ -223,6 +333,35 @@ impl TableShape {
     /// Add a plain (non-key) field.
     pub fn field(mut self, name: impl Into<String>) -> TableShape {
         self.fields.insert(name.into(), FieldShape::default());
+        self
+    }
+
+    /// Add a plain field of a known [`FieldKind`].
+    pub fn typed_field(mut self, name: impl Into<String>, kind: FieldKind) -> TableShape {
+        self.fields.insert(
+            name.into(),
+            FieldShape {
+                kind,
+                ..FieldShape::default()
+            },
+        );
+        self
+    }
+
+    /// Declare the kind of a field already added (a Key field's own column).
+    pub fn with_kind(mut self, name: &str, kind: FieldKind) -> TableShape {
+        if let Some(field) = self.fields.get_mut(name) {
+            field.kind = kind;
+        }
+        self
+    }
+
+    /// Change a field already added, for the properties without a builder of
+    /// their own (`unique`, `primary_key`, `identity`, `random_default`).
+    pub fn with_field(mut self, name: &str, change: impl FnOnce(&mut FieldShape)) -> TableShape {
+        if let Some(field) = self.fields.get_mut(name) {
+            change(field);
+        }
         self
     }
 
@@ -264,6 +403,7 @@ impl TableShape {
                     target_table: target_table.into(),
                     target_field: target_field.into(),
                 }),
+                ..FieldShape::default()
             },
         );
         self

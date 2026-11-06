@@ -1510,14 +1510,8 @@ impl RestProvider {
                         let mut changes = std::collections::BTreeMap::new();
                         changes.insert(field.clone(), Value::Text(path));
                         let merged = ownership::merged_row(&table, &existing, &changes);
-                        if !ownership::row_allowed(
-                            cat,
-                            &table,
-                            f,
-                            Operation::Update,
-                            user,
-                            evaluator,
-                            &merged,
+                        if !ownership::update_allowed(
+                            cat, &table, f, user, evaluator, &existing, &merged,
                         )
                         .await?
                         {

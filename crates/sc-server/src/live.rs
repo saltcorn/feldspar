@@ -270,6 +270,9 @@ async fn serve_in(socket: WebSocket, env: LiveEnv, caller: LiveCaller) {
     // replaced at every re-read of the session.
     connection.set_user(caller.user.clone());
     connection.set_guest_session(caller.guest.as_ref().map(|g| g.public_id.clone()));
+    // What the upgrade request presented in headers, until a `present` frame
+    // replaces it (TODO-type-hardening H7.6).
+    connection.set_request(caller.origin.request.clone());
     let now = std::time::Instant::now();
     let mut live = Live {
         subs: SubscriptionSet::new(limits.max_subscriptions),
@@ -306,21 +309,27 @@ async fn serve_in(socket: WebSocket, env: LiveEnv, caller: LiveCaller) {
             _ = status.tick() => Event::Status,
             _ = ping.tick() => Event::Ping,
         };
+        // Every read below is decided inside the origin with what the
+        // connection presents now (TODO-type-hardening H7.6).
+        let origin = sc_catalog::Origin {
+            request: live.connection.request(),
+            ..sc_catalog::current_origin()
+        };
         let frames = match event {
             Event::Closed(reason) => break Some(reason),
             Event::Incoming(None | Some(Err(_)) | Some(Ok(Message::Close(_)))) => break None,
             Event::Incoming(Some(Ok(message))) => {
                 heard = Instant::now();
-                live.receive(message).await
+                sc_catalog::with_origin(origin, live.receive(message)).await
             }
             Event::Delivery(delivery) => live.deliver(&delivery),
             Event::Lagged => live.lagged(),
-            Event::Touched => live.touched().await,
-            Event::Recheck => match live.recheck().await {
+            Event::Touched => sc_catalog::with_origin(origin, live.touched()).await,
+            Event::Recheck => match sc_catalog::with_origin(origin, live.recheck()).await {
                 Ok(frames) => frames,
                 Err(reason) => break Some(reason),
             },
-            Event::Status => live.status_pass().await,
+            Event::Status => sc_catalog::with_origin(origin, live.status_pass()).await,
             Event::Presence => live.presence_news(),
             Event::Docs => live.doc_news(),
             Event::PresenceFlush => {
@@ -548,8 +557,42 @@ impl Live {
             ClientFrame::Publish { sub, value } => self.publish(sub, value),
             ClientFrame::Presence { sub, state } => self.set_presence(sub, state),
             ClientFrame::DocUpdate { sub, update } => self.doc_update(sub, &update),
+            ClientFrame::Present { values } => self.present(values),
             ClientFrame::Ping => vec![ServerFrame::Pong],
         }
+    }
+
+    /// A `present` frame: the values every later read of this connection
+    /// presents as `_request`, counted against the address's limit as a
+    /// request presenting them is (TODO-type-hardening H7.6).
+    fn present(&mut self, values: std::collections::BTreeMap<String, String>) -> Vec<ServerFrame> {
+        let values = match sc_expr::RequestValues::new(values) {
+            Ok(values) => values,
+            Err(e) => {
+                return vec![FrameError::invalid(None, sc_error::format_chain(&e)).frame()];
+            }
+        };
+        if !values.is_empty()
+            && let Some(ip) = self.env.client_ip
+            && let Err(limited) = sc_ratelimit::global().hit(
+                &format!("presented:{ip}"),
+                crate::router::PRESENTED_VALUES_RATE,
+            )
+        {
+            return vec![
+                FrameError::new(
+                    None,
+                    ErrorCode::RateLimited,
+                    format!(
+                        "too many values presented from this address; retry in {} s",
+                        limited.retry_after_secs()
+                    ),
+                )
+                .frame(),
+            ];
+        }
+        self.connection.set_request(values);
+        Vec::new()
     }
 
     /// Open a subscription: the rules that do not depend on the stream, then

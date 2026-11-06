@@ -1645,7 +1645,8 @@ with the CLI, may change them.)
 
 ### 7.3a Formula additions, and RLS as a hard boundary (TODO-type-hardening H7, H8)
 
-**Status: design, not yet built.** This comes from the November 2026 security review
+**Status: the formula additions (H7) are built, each with an "As built" note below; RLS as a
+hard boundary (H8) is design, not yet built.** This comes from the November 2026 security review
 ([SECURITY_REVIEW_2026-11.md](./SECURITY_REVIEW_2026-11.md)).
 
 **Why.** Coding agents are told to build applications from custom queries rather than the
@@ -1691,6 +1692,23 @@ RLS policy. The additions:
 
   Anything else is untranslatable, as today.
 
+**As built (H7.2).** The translator learns a column's kind from the schema shape
+(`sc_expr::FieldKind`, filled by the catalog from the field's SQL type). A comparison is a
+comparison of instants exactly when one side *constructs* one (`new Date(…)`); two date columns,
+or a date column and a string, keep the translation they had. Time is spelled through four
+functions in `sc_query::time` that the renderer writes per backend: an instant, a calendar date
+as its UTC midnight (what JavaScript's `new Date("2024-05-06")` is, whatever the session's time
+zone), whole epoch milliseconds (`floor`ed, as a `Date` truncates microseconds), and an instant
+from milliseconds. On SQLite they are `strftime`/`julianday` over the driver's fixed-width UTC
+text. Two numeric literals fold (`Date.now() - 15*60e3` is one bound number). On the evaluator,
+the instant is `FormulaCall::now`, bound as `__scNow`; `.getTime()` and `new Date(x)` go through
+frozen helpers that read the ISO text a date column is bound as, and give `null` for `null` as SQL
+does (`new Date(null)` was 1970 before), and a comparison or `===` with a `new Date(…)` side
+compares times. The runtime read uses one instant for its SQL predicate and every row it
+evaluates, and a calculated-field read one for its projections and its after-read fields.
+`set_caller_context` sets `sc.now` (RFC 3339, microseconds) with the role and user, and
+`clear_caller_context` empties it.
+
 ```js
 published_at <= new Date()                                                  // embargo
 _update && owner === user.id && created_at.getTime() > Date.now() - 15*60e3 // 15-minute edit window
@@ -1716,6 +1734,35 @@ _update && owner === user.id && credits === old.credits
   to enable RLS for a formula that uses `old`, under the existing rule that RLS is refused for a
   formula the database cannot honour. A later version can emit a `BEFORE UPDATE` trigger that
   evaluates the formula over `OLD` and `NEW` under the same GUCs.
+
+**As built (H7.3), with one deviation.** In the *existing-row* check of an update, `old` is the
+existing row too, not `null`: the check asks whether the row, unchanged, may be updated, so
+`status === old.status` holds there. With `old` null, the first example above would refuse every
+update at the existing-row check (`"submitted" === null`), before the proposed row is looked at.
+`old` is `null` in `_read`, `_insert` and `_delete`. So:
+
+- The catalog's shape declares `old` as the formula's own previous row (`SchemaShape::old_row`),
+  checked against the table's fields on save (`old.titel` is refused). A field called `old` wins,
+  so a table that has one keeps reading it. Calculated fields, row constraints and default values
+  refuse `old`.
+- Translated, `old.x` in an update's predicate is the row's own column (the `UPDATE`'s `WHERE`
+  reads the existing row), and a literal `null` in every other operation. The evaluator binds
+  `old` to the existing row's stored columns in both checks of an update, and to `null` where no
+  row is bound.
+- The proposed-row check runs on the evaluator, as it did, with `old` bound (`sc_access::
+  ownership::update_allowed`, used by the row layer, `write_as` and the REST upload). Instead
+  of correlating `old` in the `UPDATE`, the guard pins every `old.x` the formula reads to the
+  value the check saw (`update_guard`): a concurrent change to one of them makes the write miss,
+  the not-found it would have been had it come second.
+- **Under RLS (H7.4).** The `UPDATE` policy keeps the existing-row check (`USING`, where `old.x`
+  is the row's own column) and has `WITH CHECK (true)`; the proposed-row check is a generated
+  `BEFORE UPDATE` trigger, `sc_owner_update_old`, whose PL/pgSQL function
+  (`_fd_owner_old_<table>`, hashed when that passes 63 bytes) evaluates the role floor OR the
+  formula over `NEW` with `old.x` read from `OLD` (`sc_expr::translate_update_check`), under the
+  same GUCs, and raises SQLSTATE `42501` as a policy does. Its dollar-quote tag is chosen so no
+  string in the formula contains it. `enable_rls_sql` always drops the trigger and function first
+  and recreates them only for a formula that reads `old`; `disable_rls_sql` drops them. Enabling
+  RLS also requires the trigger's check to translate.
 
 #### Presented values: `_request`
 
@@ -1774,6 +1821,52 @@ per-IP limit whenever they present a value. This is automatic, with no setting.
 
 **Not in the first version:** looking up a hashed token. A Secret field uses a salted hash,
 which cannot be looked up; this would need a keyed, deterministic hash.
+
+**As built (H7.5).** `_request` is an ambient object (`sc_expr::Ambient::Request`), in scope where
+the catalog's shape says so (`SchemaShape::request`, like `old`), and refused by calculated fields,
+row constraints and default values. `sc_expr::RequestValues` is the one way to hold presented
+values: it checks the key syntax and the limit of 8, drops empty values, and its `Debug` prints
+keys only. The values ride on `sc_catalog::Origin::request` and from there on `Principal`; an
+event rebuilds its origin from what it stores, so a presented value never reaches a stored run
+or a cascade. Translated, `column === _request.key` is `CAST(column AS text) = <value>` (no cast
+on a text column) with the value bound, or read from `sc.request.<key>` in a policy, so an
+absent value (`NULL`) matches nothing and a value that is not a valid UUID is a mismatch rather
+than an error; the evaluator binds `_request` as an object of strings (`{}` when nothing was
+presented). `sc_expr::check_request_uses` is the shape check, run by the schema editor on save
+(a column without a random default is returned as a note) and by `Catalog::reload` on load
+(a formula that fails it is cleared and grants nothing, as any invalid formula). The reload
+records the keys formulas read in a process-wide set, and `set_caller_context` sets
+`sc.request.<key>` for each of them every time (`clear_caller_context` empties them). A shared
+transaction re-applies the caller GUCs when the guest session or the presented values change,
+not only the role, user and changeset — which also closes the same gap for `sc.session`.
+
+**The channels, as built (H7.6).**
+- **HTTP** (REST, GraphQL, sync, custom queries, any `fetch`): the app router reads every
+  `X-Sc-Request-<key>` header into the request's origin; a name that is not a key, a value that
+  is not text or more than 8 values is a `400`. A response to a request that presented a value is
+  `Cache-Control: private, no-store`. The generated client's `ClientOptions.request` sends the
+  headers on every call (`presenting` wraps its `fetch`), and passes them to the live connection.
+- **Rate limit**: a request presenting a value counts against `presented:<ip>`,
+  `PRESENTED_VALUES_RATE` (120 a minute), with no setting; past it, a `429` with `Retry-After`.
+  It counts every presenting request rather than only those that reach a `_request` formula,
+  since the transport is where the address is known and a client presents values for nothing
+  else.
+- **Code API**: `.withRequest({ token })` on a query, sent as the plan's `request`; the host runs
+  that call inside an origin presenting exactly those values, so a body never presents what the
+  request it runs inside presented unless it passes the value on.
+- **GraphQL**: a `request: JSON` argument on every root query and mutation field (`_request`
+  beside a primary key called `request`), applied to that field's own reads and writes; nested
+  fields present what the HTTP request did.
+- **Live**: a client frame, `{"type":"present","values":{…}}`, replaces what the connection
+  presents, counted against the same per-address limit; the generated client sends it each time
+  the socket opens. The values live on the connection's `CallerCell`, so the frame loop decides
+  every read, re-check and stream query inside an origin carrying them, and a `table_changes`
+  fan-out asks each verdict with them (its verdict cache is keyed by them too). An upgrade
+  request's headers seed them. Sync's pull and push are HTTP, so the header is its channel.
+- **Agents and MCP**: the administration MCP server's callers are administrators, who meet every
+  floor, so a presented value decides nothing there. An agent acting for a user does: the
+  `query_table` tool offers a `request` argument listing the keys the table's formula reads, and
+  `call_api` passes `X-Sc-Request-*` in its `headers`.
 
 #### RLS as a hard boundary
 

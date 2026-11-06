@@ -996,6 +996,18 @@ impl Connection {
         self.caller.set_guest_session(session);
     }
 
+    /// Set the values the connection presents to ownership formulas
+    /// (TODO-type-hardening H7.6): what every verdict for it reads as
+    /// `_request`, here and in a `table_changes` fan-out.
+    pub fn set_request(&self, values: sc_expr::RequestValues) {
+        self.caller.set_request(values);
+    }
+
+    /// The values the connection presents.
+    pub fn request(&self) -> sc_expr::RequestValues {
+        self.caller.request()
+    }
+
     /// What resolves when the hub closes this connection — a session end.
     /// Owned separately from the connection, so a socket's loop can wait on it
     /// beside everything else the connection is doing.

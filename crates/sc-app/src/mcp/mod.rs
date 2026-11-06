@@ -475,7 +475,14 @@ fn save_description(grants: &Grants) -> String {
            it runs **as the caller**, so the table's role rules and ownership \
            formula apply exactly as they would on a row API. `db.asAdmin()` reads and \
            writes every row regardless — use it only where the query must, and say \
-           why in its description.\n\
+           why in its description. Before reaching for it, state the rule in the \
+           table's ownership formula instead: sharing with a group is a Ↄ \
+           aggregation (`sharesↃdocument.some(s => s.shared_with === user.id)`), an \
+           append-only table is both floors admin with `_insert && owner === user.id`, \
+           and a deny that binds every role but admin is both floors admin with the \
+           roles in the formula (`_update && user.role <= 40 && status !== \"closed\"`). \
+           A share link is `_read && token === _request.token` over a unique token column, \
+           and a code query reads it with `db.<table>.withRequest({{ token }})`.\n\
          - **The statement is prepared against the database.** A query that will \
            not prepare comes back with the database's own message and nothing is \
            saved; one that will is stored with the columns the database says it \

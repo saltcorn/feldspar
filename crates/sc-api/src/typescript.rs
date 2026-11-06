@@ -135,6 +135,19 @@ function csrfToken(): string | undefined {{
   return rememberedCsrf;
 }}
 
+/** `fetchImpl`, sending `values` as `X-Sc-Request-<key>` headers on every
+ * request: what a table's ownership formula reads as `_request` (a share
+ * link's token). Headers rather than the query string, so a token stays out of
+ * logs and history. */
+export function presenting(fetchImpl: typeof fetch, values: Record<string, string> | undefined): typeof fetch {{
+  if (!values || Object.keys(values).length === 0) return fetchImpl;
+  return ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {{
+    const headers = new Headers(init?.headers);
+    for (const [key, value] of Object.entries(values)) headers.set("x-sc-request-" + key, value);
+    return fetchImpl(input, {{ ...init, headers }});
+  }}) as typeof fetch;
+}}
+
 /** `fetchImpl`, remembering the CSRF token each response names — how a client
  * with no `document.cookie` learns what its next write must echo.
  *
@@ -1034,9 +1047,9 @@ pub fn generate_app_client(
     // an API of nothing else needs none of the fetch helpers.
     let fetches = set.iter().any(|ep| !ep.stream_output);
     if fetches {
-        values.extend(["clientError", "requestHeaders", "trackCsrf"]);
+        values.extend(["clientError", "presenting", "requestHeaders", "trackCsrf"]);
     } else if !uploads.is_empty() || !agents.is_empty() {
-        values.push("trackCsrf");
+        values.extend(["presenting", "trackCsrf"]);
     }
     if !uploads.is_empty() {
         values.push("upload");
@@ -1392,14 +1405,17 @@ pub fn generate_app_client(
     // An application that exposes only streams never calls `fetch`, and an
     // unused binding is a `noUnusedLocals` error in somebody else's project.
     if fetches || !uploads.is_empty() || !agents.is_empty() {
-        out.push_str("  const doFetch = trackCsrf(options.fetch ?? fetch);\n");
+        out.push_str(
+            "  const doFetch = trackCsrf(presenting(options.fetch ?? fetch, options.request));\n",
+        );
     }
     // One connection for every stream, opened on the first `subscribe`: a page
     // that never subscribes never connects.
     if let Some(stream) = streams.first() {
         let _ = writeln!(
             out,
-            "  const connection = new LiveConnection(liveUrl(baseUrl, \"{}\"), options.live);",
+            "  const connection = new LiveConnection(liveUrl(baseUrl, \"{}\"), \
+             {{ request: options.request, ...options.live }});",
             stream.path,
         );
     }
@@ -2775,6 +2791,9 @@ export interface ClientOptions {
   baseUrl?: string;
   /** Fetch implementation to use (defaults to global `fetch`). */
   fetch?: typeof fetch;
+  /** Values every request presents to the tables' ownership formulas as `_request`
+   * (`{ token }` from a share link), and the live connection too. */
+  request?: Record<string, string>;
   /** How the live connection behaves, for an application that exposes streams. */
   live?: LiveOptions;
 }
@@ -3090,6 +3109,9 @@ export interface LiveOptions {
   maxDelay?: number;
   /** The least time between two presence states sent, in milliseconds (the latest wins). */
   presenceInterval?: number;
+  /** Values the connection presents to ownership formulas as `_request`, sent as a
+   * `present` frame each time it opens. */
+  request?: Record<string, string>;
 }
 
 /** The live socket's URL: `path` on the client's base URL, as `ws:` or `wss:`. */
@@ -3545,6 +3567,9 @@ export class LiveConnection {
       this.opened = true;
       this.attempt = 0;
       this.setStatus("open");
+      if (this.options.request && Object.keys(this.options.request).length > 0) {
+        this.send({ type: "present", values: this.options.request });
+      }
       this.entries.forEach((entry, sub) => {
         entry.ready = false;
         // A document waits for its next `doc_sync` before it edits again.

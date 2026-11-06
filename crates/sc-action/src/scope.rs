@@ -434,6 +434,7 @@ impl EventBindings {
             row: row.clone(),
             user: self.user.clone(),
             ambient: self.ambient.clone(),
+            now: chrono::Utc::now(),
         }
     }
 }
@@ -534,9 +535,11 @@ pub async fn render_event_template(
     // correlates on has to agree with the database (a uuid compared as text is
     // a SQL error, not a mismatch).
     let bindings = ctx.bind_values(|ambient, field, json| match ambient {
-        Ambient::User | Ambient::Payload | Ambient::Context | Ambient::Session => {
-            value_from_json(json)
-        }
+        Ambient::User
+        | Ambient::Payload
+        | Ambient::Context
+        | Ambient::Session
+        | Ambient::Request => value_from_json(json),
         Ambient::Row | Ambient::Old => typed_value(table.as_ref(), field, json),
     });
     // The bare scope is the event's row, so `{{ id }}` is the row this template
@@ -671,6 +674,7 @@ mod tests {
             .from_origin(sc_catalog::Origin {
                 app: None,
                 session: Some("gs_1".into()),
+                ..sc_catalog::Origin::default()
             });
         assert_eq!(
             EventBindings::of(&guest).ambient[&Ambient::Session]

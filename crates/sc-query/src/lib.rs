@@ -20,6 +20,7 @@ mod ident;
 mod named;
 pub mod search;
 mod statement;
+pub mod time;
 mod value;
 pub mod vector;
 

@@ -11,6 +11,8 @@ rust-version.workspace = true
 autotests = false
 
 [dependencies]
+# The statement's instant a formula's `new Date()` reads (TODO-type-hardening H7.2).
+chrono = { workspace = true }
 sc-error.workspace = true
 sc-catalog.workspace = true
 # Ownership formulas are translated here; the V8 engine behind the reified

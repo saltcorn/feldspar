@@ -8964,6 +8964,7 @@ dependencies = [
 name = "sc-access"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "sc-auth",
  "sc-catalog",
  "sc-db",
@@ -9558,6 +9559,7 @@ dependencies = [
  "argon2 0.5.3",
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "deno_core",
  "getrandom 0.3.4",
  "hmac 0.12.1",
@@ -9575,6 +9577,7 @@ dependencies = [
  "swc_ecma_parser 42.0.0",
  "tokio",
  "tokio-postgres",
+ "uuid",
 ]
 
 [[package]]

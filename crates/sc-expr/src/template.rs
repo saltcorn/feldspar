@@ -853,6 +853,7 @@ mod render_tests {
             row: row.clone(),
             user: None,
             ambient: AmbientValues::new(),
+            now: chrono::Utc::now(),
         }
     }
 

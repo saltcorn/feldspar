@@ -811,6 +811,7 @@ pub(crate) async fn fill_defaults(
             // this insert runs inside, so a basket's `session_id` can default
             // to `session.id`.
             ambient: sc_expr::session_ambient(sc_catalog::current_origin().session.as_deref()),
+            now: chrono::Utc::now(),
         };
         let json = evaluator
             .eval_value(call)

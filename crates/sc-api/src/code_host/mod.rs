@@ -999,7 +999,17 @@ impl CodeHost for TableHost<'_> {
             return history::answer(self, request).await;
         }
         let plan: Plan = serde_json::from_value(request).map_err(refuse)?;
-        self.run(&plan).await
+        // The values this terminal presents, and no others: the plan's own
+        // `.withRequest(…)`, or nothing (TODO-type-hardening H7.6).
+        let presented = match &plan.request {
+            Some(values) => sc_expr::RequestValues::new(values.iter())?,
+            None => sc_expr::RequestValues::default(),
+        };
+        let origin = sc_catalog::Origin {
+            request: presented,
+            ..sc_catalog::current_origin()
+        };
+        sc_catalog::with_origin(origin, self.run(&plan)).await
     }
 }
 

@@ -917,6 +917,18 @@ pub fn validate_formula(
              is checked the same way on every write.",
         ));
     }
+    if analysis.uses(sc_expr::Ambient::Request) {
+        return Err(Error::invalid(
+            "a row constraint cannot use `_request`: it is checked by the database, which \
+             has no request. Put the rule in the table's ownership formula instead.",
+        ));
+    }
+    if analysis.uses(sc_expr::Ambient::Old) {
+        return Err(Error::invalid(
+            "a row constraint cannot use `old`: it is checked on the row as it is written. \
+             Put a rule about how a row may change in the table's ownership formula instead.",
+        ));
+    }
     Ok(())
 }
 
@@ -1217,6 +1229,9 @@ mod tests {
         assert!(err.to_string().contains("user"), "{err}");
         let err = validate_formula(&projection, "employees", "_insert || salary > 0").unwrap_err();
         assert!(err.to_string().contains("_insert"), "{err}");
+        // TODO-type-hardening H7.3: `old` is an update's, not a constraint's.
+        let err = validate_formula(&projection, "employees", "salary >= old.salary").unwrap_err();
+        assert!(err.to_string().contains("`old`"), "{err}");
     }
 
     #[test]

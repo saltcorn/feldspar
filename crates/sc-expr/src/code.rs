@@ -853,6 +853,7 @@ Object.defineProperty(globalThis, "__scMakeDb", {
       if (state.aggregate.length) p.aggregate = state.aggregate;
       if (state.limit !== null) p.limit = state.limit;
       if (state.offset !== null) p.offset = state.offset;
+      if (state.request !== null) p.request = state.request;
       return Object.assign(p, extra || {});
     };
     // A whole table rewritten or emptied is not something an omitted call
@@ -1006,6 +1007,25 @@ Object.defineProperty(globalThis, "__scMakeDb", {
       offset: (n) => derive({ offset: n }),
       asUser: () => derive({ authority: "user" }),
       asAdmin: () => derive({ authority: "admin" }),
+      // The values this query presents to the table's ownership formula as
+      // `_request` (TODO-type-hardening H7.6): `{ token }` reaches the row
+      // whose `token === _request.token`. Strings only; the host checks the
+      // names.
+      withRequest: (values) => {
+        if (values === null || typeof values !== "object" || Array.isArray(values)) {
+          throw new Error("withRequest() takes an object of strings, e.g. { token: query.token }");
+        }
+        const request = {};
+        for (const key of Object.keys(values)) {
+          const v = values[key];
+          if (v === null || v === undefined) continue;
+          if (typeof v !== "string") {
+            throw new Error("withRequest(): `" + key + "` must be a string");
+          }
+          request[key] = v;
+        }
+        return derive({ request: request });
+      },
 
       rows: () => read(),
       iter: (batchSize) => iterate(batchSize),
@@ -1062,7 +1082,7 @@ Object.defineProperty(globalThis, "__scMakeDb", {
     query({
       table: name, authority: authority,
       where: [], select: [], order: [], group: [], having: [], aggregate: [],
-      limit: null, offset: null,
+      limit: null, offset: null, request: null,
     });
   // `db.sql(text, params, options)`: the body's own SQL. The authority is the
   // handle's, unless the options object says otherwise — `{ asUser: true }` is

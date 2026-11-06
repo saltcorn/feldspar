@@ -17,3 +17,7 @@ mod parity;
 mod parity_agg;
 #[path = "parity_calc.rs"]
 mod parity_calc;
+#[path = "parity_request.rs"]
+mod parity_request;
+#[path = "parity_time.rs"]
+mod parity_time;

@@ -525,6 +525,16 @@ impl<'a, D: SqlDialect + ?Sized> Renderer<'a, D> {
             }
             Expr::Unary { op, e } => self.unary(*op, e),
             Expr::Func { name, args } => {
+                // A time function (`crate::time`) is spelled per backend.
+                if let Some(f) = crate::time::TimeFn::of(name)
+                    && let [arg] = args.as_slice()
+                {
+                    let (before, after) = f.template(self.dialect.is_sqlite());
+                    self.push(&before);
+                    self.expr(arg)?;
+                    self.push(after);
+                    return Ok(());
+                }
                 // The function name is structural (from the AST), not user data.
                 self.push(self.dialect.function_name(name));
                 self.push("(");

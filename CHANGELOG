@@ -2,6 +2,155 @@
 
 Changes in reverse chronological order.
 
+## Security hardening H7: ownership formula additions
+
+The seventh part of `docs/SECURITY_REVIEW_2026-11.md` (TECHNICAL_DESIGN §7.3a;
+TODO-type-hardening H7): the ownership formula states the common cases that drove application
+code to `asAdmin()`. No new configuration fields.
+
+- **What the formula already expresses, documented** (H7.1): `docs/tutorial-ownership.md`
+  gains "Step 4b — Three rules that need no code": rows shared with a group (a `Ↄ` aggregation
+  over a `shares` table), append-only tables (both floors admin, `_insert && owner ===
+  user.email`, whose create answers with the key only) and a deny that binds every role but
+  admin (floors admin, `user.role` in the formula). The same three, shorter, are in the agent
+  guidance: `code_api_js.md`'s "Choosing where logic goes" and `save_query`'s "Whose rows it
+  sees" (`sc-app/src/mcp/mod.rs`). Test (`sc-server` `ownership_enforcement.rs`):
+  `an_insert_only_formula_appends_and_answers_with_the_key_only` — a member's create answers
+  `{ "id" }` only, a row in someone else's name is refused, and the member can neither list,
+  update nor delete what they appended.
+- **Time in formulas** (H7.2): `new Date()` and `Date.now()` are one instant per statement,
+  and `new Date(…)`, `.getTime()`, millisecond arithmetic and comparisons translate, so an
+  embargo (`published_at <= new Date()`) and an edit window (`created_at.getTime() > Date.now()
+  - 15*60e3`) are SQL on the runtime path and can be RLS policies.
+  - `sc_query::time`: `instant`, `date_instant`, `epoch_ms`, `from_epoch_ms`, rendered per
+    backend (Postgres casts, `AT TIME ZONE 'UTC'` and `EXTRACT(EPOCH …)`; SQLite `strftime` and
+    `julianday` over its fixed-width UTC text). A calendar date is its UTC midnight.
+  - `sc_expr::FieldKind` on `FieldShape` (`TableShape::typed_field`, `with_kind`), filled by the
+    catalog from each field's SQL type. `Env::with_now`/`Env::now`, and `NOW_GUC` (`sc.now`),
+    which `set_caller_context` sets and `clear_caller_context` empties. Two numeric literals in
+    arithmetic fold into one.
+  - `FormulaCall::now` (a new required field): the evaluator binds it as `__scNow`;
+    `new Date()` renders as `new Date(__scNow)`, `Date.now()` as `__scNow`, and `.getTime()`,
+    `new Date(x)` and comparisons with a constructed `Date` through two frozen helpers that read
+    the ISO text date columns are bound as. **Behaviour change**: on the evaluator, `new
+    Date(null)` is now `null` (it was the 1970 epoch), and `x.getTime()` of a date column's text
+    or of `null` is its milliseconds or `null` (it threw), so both evaluators agree.
+  - The runtime read decides its SQL predicate and every row it evaluates at one instant, and a
+    calculated-field read its projections and after-read fields at another (`CalcPlan::now`).
+  - Tests: `sc-expr` `parity_time.rs` decides an embargo, an edit window, whole milliseconds,
+    `new Date(<ms>)`, equality with a constructed date and a calendar date three ways — the
+    runtime SQL with a bound instant, the RLS SQL under `sc.now`/`sc.user` GUCs (on sessions in
+    two time zones far from UTC), and V8 — and checks that a text column, `new Date(<text>)`,
+    arithmetic on an instant and `new Date(y, m)` are untranslatable; `sc-query`
+    `time::tests` pin both spellings; `sc-access` `time_sqlite.rs` runs an embargo and an edit
+    window on SQLite with no evaluator; `sc-server` `rls_enforcement.rs`
+    `an_embargo_and_an_edit_window_hold_with_rls_and_without` runs both through the app's REST
+    API with RLS on and off.
+- **`old` in an update** (H7.3): an ownership formula compares the proposed row with the stored
+  one — a status that only moves forward, a column nobody may edit.
+  - `SchemaShape::old_row` (`with_old_row`, `declares_ambient_on`, `old_row_on`): the catalog's
+    shape declares `old` as the formula's own previous row, validated against the table's
+    fields. A field called `old` still wins. Calculated fields, row constraints and default
+    values refuse `old`.
+  - Translated, `old.x` is the row's own column in an update's predicate and `null` in every
+    other operation; the evaluator binds `old` to `null` where nothing is bound.
+  - `sc_access::ownership::update_allowed` decides the proposed row with `old` bound to the
+    stored row; the row layer, `write_as` and the REST upload use it. `update_guard` adds to the
+    UPDATE's `WHERE` a pin of every `old.x` the formula read to the value the check saw.
+  - **Deviation from §7.3a**: `old` is the stored row in the existing-row check of an update
+    too, not `null`. With `null`, the design's own transition example refused every update
+    before the proposed row was looked at. TECHNICAL_DESIGN §7.3a says so.
+  - Tests: `sc-server` `ownership_enforcement.rs` `old_decides_how_an_update_may_change_the_row`
+    (draft → submitted allowed, submitted → draft refused, a frozen title, `old` null in a read,
+    `old.titel` refused on save); `sc-expr`
+    `old_is_the_stored_row_in_an_update_and_null_elsewhere`; `sc-catalog` constraint tests
+    (`old` refused in a row constraint).
+- **`old` under RLS** (H7.4): with RLS on, the `UPDATE` policy checks the stored row (`USING`,
+  `WITH CHECK (true)`) and a generated `BEFORE UPDATE` trigger, `sc_owner_update_old`, checks
+  the proposed row with `old` read from `OLD`: its PL/pgSQL function `_fd_owner_old_<table>`
+  (hashed past 63 bytes) evaluates the write floor OR the formula
+  (`sc_expr::translate_update_check`) under the caller GUCs and raises `42501`, which the row
+  layer reports as not found, as for a policy. The function's dollar-quote tag is one the body
+  does not contain. `enable_rls_sql` drops and recreates the pair; `disable_rls_sql` drops it.
+  Enabling RLS requires the trigger's check to translate. Tests: `sc-server`
+  `rls_enforcement.rs` `old_is_enforced_by_a_trigger_under_rls` (a status transition and a
+  frozen title with RLS on and off, a `"$fd$"` literal in the formula, the trigger and function
+  gone when the formula stops reading `old`); `sc-catalog`
+  `rls::tests::a_long_table_name_gets_its_own_trigger_function`.
+
+- **Presented values, `_request`** (H7.5): an ownership formula can grant the row whose secret
+  the caller presents, `_read && token === _request.token`, and nothing else.
+  - `sc_expr::Ambient::Request` (`_request`); `SchemaShape::request` (`with_request`,
+    `request_on`), set on the catalog's shape. Calculated fields, row constraints and defaults
+    refuse it.
+  - `sc_expr::RequestValues`: keys `[a-z][a-z0-9_]{0,31}`, at most 8, an empty value absent,
+    `Debug` without values. `request_guc(key)` names `sc.request.<key>`.
+  - Translated, `column === _request.key` is a plain `=` against the column as text: an absent
+    value matches nothing, not even a null column. The evaluator binds `_request` (`{}` when
+    nothing was presented).
+  - `sc_expr::check_request_uses`: `_request.<key>` only as one side of `===` with a column of
+    the table or one a Ⱶ path reaches; the column unique, not the primary key, not an integer
+    or identity. Everything else is refused with its reason (`!==`, `==`, `user`, `old`, a
+    literal, another presented value, a condition, arithmetic, `_request` itself, a computed
+    key, more than 8 keys). A column without a random default (`gen_random_uuid()`) is a
+    warning, which the schema editor returns among its notes. `Catalog::reload` runs the check
+    too and clears a formula that fails it. `FieldShape` gains `unique`, `primary_key`,
+    `identity` and `random_default`, filled by the catalog.
+  - `sc_catalog::Origin::request` and `Principal::request` carry the values in memory;
+    `Event::origin` leaves them out. `sc-access` binds them for every ownership check.
+  - `set_caller_context` sets `sc.request.<key>` for every key any loaded formula reads, empty
+    when not presented; `clear_caller_context` empties them.
+  - **Fix**: `SharedTx` re-applies the caller GUCs when the guest session or the presented
+    values differ from the last writer's, not only the role, user and changeset. Two anonymous
+    writers with different guest sessions on one transaction used to share the first one's
+    `sc.session`.
+  - Tests: `sc-expr` `request::tests` (the values' rules; every accepted and refused shape) and
+    `parity_request.rs` (runtime SQL, RLS SQL under `sc.request.*` and V8 agree, on a text and a
+    UUID column, absent and empty values, `!`); `sc-catalog` `rls_policies.rs`
+    `a_presented_value_reaches_the_policy_and_does_not_carry_over` (through a policy, across two
+    writers on one shared transaction, and a stored formula over a non-unique column cleared on
+    load).
+
+- **How a caller presents a value** (H7.6):
+  - **HTTP**: `X-Sc-Request-<key>` headers on any app request (`sc-server` `router.rs`
+    `presented_values`); a bad name, a non-text value or more than 8 is a `400`. A response to a
+    request that presented a value is `Cache-Control: private, no-store`.
+  - **Rate limit**: a presenting request counts against `presented:<ip>` at
+    `PRESENTED_VALUES_RATE`, 120 a minute, automatically; past it a `429` with `Retry-After`.
+  - **Generated client**: `ClientOptions.request` (sent as headers on every call, through the new
+    runtime `presenting` wrapper) and `LiveOptions.request` (a `present` frame each time the
+    socket opens). The four admin clients are regenerated (`emit_admin_client`); they gain the
+    import and the option, nothing else.
+  - **Code API**: `db.<table>.withRequest({ … })`, sent as the plan's new `request` field; the
+    host runs the call in an origin presenting exactly those values.
+  - **GraphQL**: a `request: JSON` argument on every root query and mutation field
+    (`resolve::presenting`). The schema gains the argument (`snapshots/*.graphql` updated);
+    nothing else changes.
+  - **Live**: a `present` client frame (`sc_live::ClientFrame::Present`); `CallerCell` and
+    `Connection` carry the values (`set_request`, `request`, `origin`), the socket's loop decides
+    every event inside an origin with them, and the `table_changes` fan-out asks each verdict with
+    them.
+  - **Agents**: `query_table` offers a `request` argument with the keys the table's formula
+    reads, and presents what the model passes; `call_api`'s `headers` already reach the router.
+    The administration MCP server's callers are administrators, whose floors decide before any
+    formula, so its tools take no such argument.
+  - The share example in `code_api_js.md` no longer uses `asAdmin()`: a share link is the
+    formula plus `createClient({ request: { token } })`, and a password-protected share is a
+    query reading the row with `withRequest`. `docs/tutorial-ownership.md` has a "share link"
+    rule, and `save_api_query`'s guidance points at it.
+  - Tests: `sc-server` `ownership_enforcement.rs`
+    `a_presented_token_reaches_its_row_and_no_other` (the header, with RLS off and on: the row
+    with the token, nothing without, a wrong token, a non-UUID, `private, no-store`, a `400` for a
+    bad name and for nine values, a non-unique column refused on save) and `router::tests::
+    presented_values_come_from_headers_and_are_rate_limited`; `sc-api` `code_host_as_user.rs`
+    `with_request_presents_a_token_to_the_ownership_formula` (through the real code runtime, and
+    not inherited from the request's origin) and `graphql_authz.rs`
+    `a_root_fields_request_argument_presents_a_token` (RLS off and on, `_by_pk`, a non-string
+    value refused); `sc-live` `readers.rs`
+    `each_connection_is_sent_the_row_its_presented_code_reaches` and the `present` frame in the
+    protocol tests; `sc-agent-builtins` `query_table.rs`
+    `the_request_argument_presents_what_the_formula_reads`.
+
 ## Security hardening H6: typed endpoints and identifiers
 
 The sixth part of `docs/SECURITY_REVIEW_2026-11.md` (§7, §8; area reports D2–D7 and E4;

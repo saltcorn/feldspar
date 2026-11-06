@@ -15,7 +15,15 @@ that can express it:
 1. **A table with access rules**: a minimum role to read and to write, and an **ownership
    formula** (`user_id == user.id`) so each user reads and changes only their own rows. The
    app's generated client then works with no server code, and the server enforces the rules for
-   every caller. Do not make tables admin-only and wrap them in code queries.
+   every caller. Do not make tables admin-only and wrap them in code queries. Rules that seem
+   to need `asAdmin()` are usually formulas:
+   - *Shared with a group*: `owner === user.id || sharesↃdocument.some(s => s.shared_with ===
+     user.id)` (`Ↄ` reads the rows of `shares` whose `document` key points at this row).
+   - *Append-only* (a log, form submissions): both floors admin, formula
+     `_insert && owner === user.id`. The insert's response then carries only the new key.
+   - *A deny that binds every role but admin* ("no edits once closed"): floors admin, and the
+     whole rule in the formula, roles included: `_read && user.role <= 40 || _update &&
+     user.role <= 40 && status !== "closed"`.
 2. **A File field** on that table for uploads: stored, served and access-checked with its row.
    For a large file (over the 2 MB request limit) or one with no row, give the application an
    **upload slot** (`update_application`'s `uploads`): resumable, streamed to disk, owned by
@@ -110,33 +118,39 @@ return response({ body: pngBytes, headers: { "content-type": "image/png" } });
 return response({ file: fs("files").open(path), filename: "report.pdf", download: true });
 ```
 
-Brute force against that password is stopped by **`ratelimit`** below — per share, which no
-per-IP limit can express.
+**A share link needs no code.** A row that whoever holds its secret may read, and nobody may
+list, is an ownership formula over a value the caller presents. Give the table a token column
+(`uuid`, unique, default `gen_random_uuid()`) and the formula `_read && token === _request.token`.
+The page presents the token, never in the URL's query string:
+`createClient({ request: { token } })` sends it as the header `X-Sc-Request-Token` on every call
+(and on the live socket), so `api.listShares()` answers that one row, and a File field on it is
+served by the row's file route under the same rule. `_request.<key>` may only be compared, with
+`===`, with a unique column that is not the primary key and not a number; the server refuses
+anything else when the formula is saved. Requests that present a value are rate-limited per
+address, automatically, and answered `Cache-Control: private, no-store`.
 
-This is how to write **any download rule** the store's role + owner rule cannot: a
-password-protected share, an expiring link, a revocable one, a quota, an audit log. The query
-is a GET (so links and `<video>` work), its `min_role` decides who may call it, and its code
-decides the rest — on every request, so each Range request of a video re-checks the share:
+**A code query presents values with `.withRequest({ … })`.** Code needs to check something a
+formula cannot — a password — but it still reads the row as the caller, presenting the token it
+was given, so the table's rule decides which row and no `asAdmin()` is needed. A query presents
+only what it passes; it does not inherit what its own request presented.
 
 ```js
-// GET /share, params token (text) and password (text, optional), min_role 100, response_type bytes
+// GET /share, params token (text) and password (text, optional), min_role 100.
+// `shares` has the ownership formula `_read && token === _request.token`.
 ratelimit.check("share:" + query.token, { max: 5, window: "15m" }); // 6th try in 15 min: 429
-// The token and password are the check, so the share and its file are read as the server:
-// whoever holds the link may read neither themselves.
-const share = await db.asAdmin().shares.where({ token: query.token }).first();
+const share = await db.shares.withRequest({ token: query.token }).first();
 if (!share) throw httpError(404, "no such share");
 if (!(await crypto.password.verify(query.password ?? "", share.password_hash))) {
   throw httpError(403, "wrong password");
 }
-return response({ file: fs("files").asAdmin().open(share.path), filename: share.original_name,
-                  download: true, headers: { "cache-control": "private, no-store" } });
+return { title: share.title, body: share.body };
 ```
 
-A password in a URL lands in logs and history; where that matters, POST the password to a query
-that stores a short-lived token in a table and have the GET take the token. A handle opened as the
-caller — the default in a query, or `fs(s).asUser()` — is also checked against the caller when
-served (a file they may not read is a 404); one opened with `fs(s).asAdmin()` is not — the
-query's own code is the check.
+Brute force against the password is stopped by **`ratelimit`** — per share, which no per-IP
+limit can express. A password in a URL lands in logs and history; where that matters, POST the
+password instead. A file handle a query opens as the caller — the default in a query, or
+`fs(s).asUser()` — is also checked against the caller when served (a file they may not read is a
+404); one opened with `fs(s).asAdmin()` is not, and the query's own code is then the check.
 
 **The owner rule, under the caller's authority.** A file's recorded owner may always read it,
 and so may anyone whose role clears the `minRole` of the store, the file and every folder on its
@@ -178,7 +192,8 @@ throw, and the page is told the stream is unavailable.
 ```js
 // POST /open-pad, params token (text), password (text, optional), min_role 100, response_type stream
 ratelimit.check("pad:" + body.token, { max: 5, window: "15m" });
-const link = await db.share_links.where({ token: body.token }).first();
+// `share_links` has the ownership formula `_read && token === _request.token`.
+const link = await db.share_links.withRequest({ token: body.token }).first();
 if (!link || new Date(link.expires_at) < new Date()) return null;
 if (link.password_hash && !(await crypto.password.verify(body.password ?? "", link.password_hash))) {
   return null;
@@ -234,7 +249,8 @@ whole chain.
 
 Chain methods: `.where(cond)` (repeated calls AND), `.select(...cols)`, `.orderBy(col,
 "asc"|"desc")`, `.limit(n)`, `.offset(n)`, `.groupBy(...cols)`, `.aggregate({ n: "count()",
-total: "sum(amount)" })`, `.having(cond)`, `.asUser()`, `.asAdmin()`.
+total: "sum(amount)" })`, `.having(cond)`, `.asUser()`, `.asAdmin()`, `.withRequest({ token })` (values presented to the
+table's ownership formula as `_request`).
 
 Read terminals: `.rows()`, `.first()` (row or `null`), `.get(id)` (row by primary key, or
 `null`), `.exists()`, `.count()`, `.sum(col)`, `.avg(col)`, `.min(col)`, `.max(col)`,

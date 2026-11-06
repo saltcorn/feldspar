@@ -9,6 +9,7 @@
 //!   {"type":"publish",     "sub":"s2", "value": {...}}
 //!   {"type":"presence",    "sub":"s2", "state": {...}}
 //!   {"type":"doc_update",  "sub":"s3", "update": "<base64>"}
+//!   {"type":"present",     "values": {"token": "…"}}
 //!   {"type":"ping"}
 //!
 //! server → client
@@ -139,6 +140,16 @@ pub enum ClientFrame {
         /// The Yjs update, base64.
         update: String,
     },
+    /// Present `values` to ownership formulas as `_request` for everything
+    /// this connection reads from now on, replacing what it presented before
+    /// (TODO-type-hardening H7.6): a share link's token for a row topic. A
+    /// header cannot be set on a browser's socket, and a query string ends up
+    /// in logs. Silent when accepted; an `invalid` error otherwise.
+    Present {
+        /// Name → value; an empty value is absent.
+        #[serde(default)]
+        values: std::collections::BTreeMap<String, String>,
+    },
     /// Are you there? Answered with `pong`.
     Ping,
 }
@@ -152,13 +163,14 @@ fn empty_object() -> Json {
 }
 
 /// Every `type` a client may send — what an unknown one is told it is not.
-const CLIENT_TYPES: [&str; 7] = [
+const CLIENT_TYPES: [&str; 8] = [
     "subscribe",
     "open",
     "unsubscribe",
     "publish",
     "presence",
     "doc_update",
+    "present",
     "ping",
 ];
 
@@ -214,7 +226,7 @@ impl ClientFrame {
             | ClientFrame::Publish { sub, .. }
             | ClientFrame::Presence { sub, .. }
             | ClientFrame::DocUpdate { sub, .. } => Some(sub),
-            ClientFrame::Ping => None,
+            ClientFrame::Present { .. } | ClientFrame::Ping => None,
         }
     }
 }
@@ -510,6 +522,9 @@ mod tests {
                 sub: "s3".to_owned(),
                 update: "AAEC".to_owned(),
             },
+            ClientFrame::Present {
+                values: std::collections::BTreeMap::from([("token".to_owned(), "t".to_owned())]),
+            },
             ClientFrame::Ping,
         ];
         for frame in frames {
@@ -531,6 +546,13 @@ mod tests {
             }
         );
         assert_eq!(frame(json!({ "type": "ping" })).unwrap(), ClientFrame::Ping);
+        // TODO-type-hardening H7.6: what the connection presents as `_request`.
+        assert_eq!(
+            frame(json!({ "type": "present", "values": { "token": "t" } })).unwrap(),
+            ClientFrame::Present {
+                values: std::collections::BTreeMap::from([("token".to_owned(), "t".to_owned())]),
+            }
+        );
         // A row's key is often an integer; `7` and `"7"` are one topic.
         let ClientFrame::Subscribe { topic, .. } =
             frame(json!({ "type": "subscribe", "sub": "s", "stream": "b", "topic": 7 })).unwrap()

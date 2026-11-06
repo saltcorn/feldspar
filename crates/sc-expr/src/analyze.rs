@@ -95,17 +95,27 @@ pub enum Ambient {
     /// null at run time — and there is no token to read: what a table stores and
     /// a formula sees is the public id, never the cookie.
     Session,
+    /// `_request` — the values the caller **presented** with this request
+    /// (TODO-type-hardening H7.5, TECHNICAL_DESIGN §7.3a): a share link's
+    /// token, an invitation code. Always an object, of strings; a key the
+    /// caller did not present is `undefined`, and equals nothing.
+    ///
+    /// In scope only for an ownership formula, and there only as one side of
+    /// `column === _request.key` ([`check_request_uses`](crate::check_request_uses)):
+    /// it is caller-controlled, and sits next to the trusted `user`.
+    Request,
 }
 
 impl Ambient {
     /// Every ambient object, in scope-declaration order.
-    pub const ALL: [Ambient; 6] = [
+    pub const ALL: [Ambient; 7] = [
         Ambient::User,
         Ambient::Row,
         Ambient::Old,
         Ambient::Payload,
         Ambient::Context,
         Ambient::Session,
+        Ambient::Request,
     ];
 
     /// The ambient objects every formula has, because every formula has a
@@ -124,6 +134,7 @@ impl Ambient {
             Ambient::Payload => "payload",
             Ambient::Context => "context",
             Ambient::Session => "session",
+            Ambient::Request => "_request",
         }
     }
 
@@ -535,12 +546,12 @@ impl Formula {
         let free = self.free_vars();
         let mut analysis = Analysis::default();
         for (amb, props) in &free.ambient_props {
-            if shape.declares_ambient(*amb) {
+            if shape.declares_ambient_on(table, *amb) {
                 analysis.ambient.entry(*amb).or_default().props = props.clone();
             }
         }
         for amb in &free.ambient_dynamic {
-            if shape.declares_ambient(*amb) {
+            if shape.declares_ambient_on(table, *amb) {
                 analysis.ambient.entry(*amb).or_default().dynamic = true;
             }
         }
@@ -582,7 +593,7 @@ impl Formula {
             if let Some(flag) = OpFlag::from_ident(ident) {
                 analysis.flags.insert(flag);
             } else if let Some(amb) =
-                Ambient::from_ident(ident).filter(|amb| shape.declares_ambient(*amb))
+                Ambient::from_ident(ident).filter(|amb| shape.declares_ambient_on(table, *amb))
             {
                 analysis.ambient.entry(amb).or_default();
             } else if table_shape.fields.contains_key(ident) {
@@ -635,9 +646,13 @@ impl Formula {
         // stands for, where the caller has declared them. An undeclared field set
         // means "the caller does not know", which skips the check rather than
         // rejecting every access.
+        // `old` as this table's previous row has this table's fields.
+        let own_fields: BTreeSet<String> = table_shape.fields.keys().cloned().collect();
         for (amb, use_) in &analysis.ambient {
-            let Some(fields) = shape.ambient_field_set(*amb) else {
-                continue;
+            let fields = match shape.ambient_field_set(*amb) {
+                Some(fields) => fields,
+                None if *amb == Ambient::Old && shape.old_row_on(table) => &own_fields,
+                None => continue,
             };
             for prop in &use_.props {
                 if !fields.contains(prop) {

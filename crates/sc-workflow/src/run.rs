@@ -421,6 +421,7 @@ mod tests {
                     scheme: Some("myshop".into()),
                 }),
                 session: Some("gs_1".into()),
+                ..sc_catalog::Origin::default()
             })
     }
 

@@ -1097,10 +1097,18 @@ async fn dispatch(
         Resolved::App(app) => {
             let csrf = csrf.map(|axum::Extension(token)| token.0);
             let anonymous = anonymous.is_some();
+            // The values the request presents to ownership formulas, from its
+            // `X-Sc-Request-<key>` headers (TODO-type-hardening H7.6).
+            let presented = match presented_values(&headers, client_ip) {
+                Ok(presented) => presented,
+                Err(response) => return *response,
+            };
+            let private = !presented.is_empty();
             // Everything the request does runs inside its origin: the events it
             // raises carry the application (TODO-payments P1.3).
-            let origin = request_origin(&state, &app, &headers);
-            return sc_catalog::with_origin(
+            let mut origin = request_origin(&state, &app, &headers);
+            origin.request = presented;
+            let response = sc_catalog::with_origin(
                 origin,
                 dispatch_app(
                     &state, &app, method, &uri, &headers, jar, csrf, anonymous, client_ip, ws,
@@ -1108,6 +1116,11 @@ async fn dispatch(
                 ),
             )
             .await;
+            return if private {
+                no_store(response)
+            } else {
+                response
+            };
         }
         // A run's preview, asked for without that run's session: the answer is
         // the one a host that serves nothing gets, so a preview shows nobody
@@ -2618,6 +2631,72 @@ fn app_request(
     Ok(req)
 }
 
+/// The header prefix a request presents a value to ownership formulas with:
+/// `X-Sc-Request-Token: …` is `_request.token` (TODO-type-hardening H7.6).
+/// A header rather than the query string, so a token stays out of access logs,
+/// browser history and `Referer`.
+pub const REQUEST_HEADER_PREFIX: &str = "x-sc-request-";
+
+/// How many requests presenting a value one address may make: automatic, with
+/// no setting, so a share link's token cannot be guessed at speed. Generous
+/// beside a token's 122 random bits, and beside a page that presents its
+/// token with each of a dozen calls.
+pub const PRESENTED_VALUES_RATE: sc_ratelimit::Rate = sc_ratelimit::Rate {
+    max: 120,
+    window: std::time::Duration::from_secs(60),
+};
+
+/// The values a request presents, from its `X-Sc-Request-<key>` headers, or
+/// the response refusing it: a name or a value that is not one (`400`), or
+/// one request too many from this address (`429`).
+fn presented_values(
+    headers: &axum::http::HeaderMap,
+    client_ip: Option<std::net::IpAddr>,
+) -> Result<sc_expr::RequestValues, Box<Response>> {
+    let mut pairs = Vec::new();
+    for (name, value) in headers {
+        let Some(key) = name.as_str().strip_prefix(REQUEST_HEADER_PREFIX) else {
+            continue;
+        };
+        let Ok(value) = value.to_str() else {
+            return Err(Box::new(json_error(
+                StatusCode::BAD_REQUEST,
+                format!("the `{}` header is not text", name.as_str()),
+            )));
+        };
+        pairs.push((key.to_owned(), value.to_owned()));
+    }
+    let presented = sc_expr::RequestValues::new(pairs)
+        .map_err(|e| Box::new(json_error(StatusCode::BAD_REQUEST, e.to_string())))?;
+    if !presented.is_empty()
+        && let Some(ip) = client_ip
+        && let Err(limited) =
+            sc_ratelimit::global().hit(&format!("presented:{ip}"), PRESENTED_VALUES_RATE)
+    {
+        let secs = limited.retry_after_secs();
+        let mut response = json_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("too many requests presenting a value from this address; retry in {secs} s"),
+        );
+        if let Ok(value) = HeaderValue::from_str(&secs.to_string()) {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        return Err(Box::new(response));
+    }
+    Ok(presented)
+}
+
+/// `response` marked for nobody's cache but the caller's: it was computed
+/// with a value the caller presented, so a shared cache must not hand it to
+/// someone who did not.
+fn no_store(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response
+}
+
 /// The attribute naming the URL scheme an application's native apps open
 /// (`myshop`), which an event's `app.scheme` reports (TODO-payments P1.3).
 pub const URL_SCHEME_ATTRIBUTE: &str = "url_scheme";
@@ -2648,6 +2727,7 @@ fn request_origin(
             scheme,
         }),
         session: None,
+        request: sc_expr::RequestValues::default(),
     }
 }
 
@@ -3797,6 +3877,39 @@ mod tests {
             .await
             .expect("read body");
         serde_json::from_slice(&bytes).expect("body is JSON")
+    }
+
+    /// TODO-type-hardening H7.6: the `X-Sc-Request-<key>` headers are the
+    /// presented values, by lower-cased name; requests presenting one are
+    /// limited per address, and a request presenting none is not counted.
+    #[test]
+    fn presented_values_come_from_headers_and_are_rate_limited() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-sc-request-token", HeaderValue::from_static("abc"));
+        headers.insert("x-other", HeaderValue::from_static("ignored"));
+        let ip: std::net::IpAddr = "203.0.113.71".parse().unwrap();
+        let values = presented_values(&headers, Some(ip)).expect("presented");
+        assert_eq!(values.get("token"), Some("abc"));
+        assert_eq!(values.keys().count(), 1);
+
+        let quiet = axum::http::HeaderMap::new();
+        for _ in 0..PRESENTED_VALUES_RATE.max * 2 {
+            assert!(presented_values(&quiet, Some(ip)).is_ok());
+        }
+        for _ in 1..PRESENTED_VALUES_RATE.max {
+            assert!(presented_values(&headers, Some(ip)).is_ok());
+        }
+        let refused = presented_values(&headers, Some(ip)).expect_err("one too many");
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(refused.headers().contains_key(header::RETRY_AFTER));
+        // Another address is counted on its own.
+        let other: std::net::IpAddr = "203.0.113.72".parse().unwrap();
+        assert!(presented_values(&headers, Some(other)).is_ok());
+
+        let mut bad = axum::http::HeaderMap::new();
+        bad.insert("x-sc-request-no-dash", HeaderValue::from_static("v"));
+        let refused = presented_values(&bad, None).expect_err("bad name");
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

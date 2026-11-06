@@ -174,13 +174,13 @@ pub async fn update(
     // the row out of the caller's ownership.
     let changes = rows::coerce_row_values(table, body)?;
     let merged = ownership::merged_row(table, &existing, &changes);
-    if !ownership::row_allowed(
+    if !ownership::update_allowed(
         cat,
         table,
         f,
-        Operation::Update,
         caller.user,
         caller.evaluator,
+        &existing,
         &merged,
     )
     .await?
@@ -191,7 +191,7 @@ pub async fn update(
     }
     // The translated predicate rides in the UPDATE's WHERE when it can, closing
     // the check-to-write race.
-    let guard = ownership::write_guard(cat, table, f, Operation::Update, caller.user)?;
+    let guard = ownership::update_guard(cat, table, f, caller.user, &existing)?;
     Ok(Ok(rows::update_row_guarded_in(
         cat,
         table,

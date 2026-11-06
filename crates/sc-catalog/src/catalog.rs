@@ -555,6 +555,17 @@ impl Catalog {
                 // that validated yesterday would start calling a module today.
                 // Cleared, like any other invalid rule, so it grants nothing.
                 Ok(analysis) => {
+                    // `_request` only as `column === _request.key`
+                    // (TODO-type-hardening H7.5): checked on save, and here for
+                    // a formula that came in another way (a restore). The keys
+                    // it reads are the GUCs `set_caller_context` sets.
+                    match sc_expr::check_request_uses(formula, &shape, &table.name) {
+                        Err(e) => {
+                            ownership_errors.push((id.clone(), e.to_string()));
+                            continue;
+                        }
+                        Ok(uses) => crate::rls::note_request_keys(uses.keys),
+                    }
                     if let Some(call) = analysis.first_module_call() {
                         ownership_errors.push((
                             id.clone(),
@@ -2077,6 +2088,38 @@ impl Catalog {
 pub(crate) const USERS_TABLE: &str = "users";
 pub(crate) const USERS_PASSWORD_COLUMN: &str = "password_hash";
 
+/// The [`sc_expr::FieldKind`] of a field, from its type's SQL spelling (a rich
+/// type stores as one of the basic ones): what lets a formula's time and
+/// number constructs translate (TODO-type-hardening H7.2). A calculated field
+/// is left [`Unknown`](sc_expr::FieldKind::Unknown): it has no column, and its
+/// definition is inlined where it is read.
+fn field_kind(field: &DataField) -> sc_expr::FieldKind {
+    use sc_expr::FieldKind;
+    if field.is_calc() {
+        return FieldKind::Unknown;
+    }
+    match field.base.type_.sql_type() {
+        "date" => FieldKind::Date,
+        "timestamptz"
+        | "timestamp"
+        | "timestamp with time zone"
+        | "timestamp without time zone" => FieldKind::Timestamp,
+        "int2" | "int4" | "int8" | "smallint" | "integer" | "bigint" => FieldKind::Integer,
+        "float4" | "float8" | "real" | "double precision" | "numeric" => FieldKind::Number,
+        "text" | "varchar" | "bpchar" | "character varying" => FieldKind::Text,
+        _ => FieldKind::Other,
+    }
+}
+
+/// Whether a column default makes a value nobody chose: a random UUID or
+/// random bytes.
+fn is_random_default(sql: &str) -> bool {
+    let sql = sql.to_ascii_lowercase();
+    ["gen_random_uuid", "uuid_generate_v4", "gen_random_bytes"]
+        .iter()
+        .any(|f| sql.contains(f))
+}
+
 /// Project a table cache into the [`sc_expr::SchemaShape`] formula validation
 /// and translation consume.
 fn schema_shape_of(map: &HashMap<sc_query::Ident, Table>) -> sc_expr::SchemaShape {
@@ -2095,7 +2138,11 @@ fn schema_shape_of(map: &HashMap<sc_query::Ident, Table>) -> sc_expr::SchemaShap
 pub(crate) fn schema_shape_of_tables<'a>(
     tables: impl Iterator<Item = &'a Table>,
 ) -> sc_expr::SchemaShape {
-    let mut shape = sc_expr::SchemaShape::new();
+    // `old` is an ownership formula's own row before an update
+    // (TODO-type-hardening H7.3); the formulas that have no update refuse it.
+    // `_request` is an ownership formula's presented values (H7.5); the
+    // formulas that are not ownership formulas refuse it too.
+    let mut shape = sc_expr::SchemaShape::new().with_old_row().with_request();
     let mut users: Option<&Table> = None;
     for table in tables {
         if table.name == USERS_TABLE {
@@ -2124,7 +2171,19 @@ pub(crate) fn schema_shape_of_tables<'a>(
                     ..
                 } => table_shape.key_field(&field.base.name, target_table, &target_field.0),
                 _ => table_shape.field(&field.base.name),
-            };
+            }
+            .with_kind(&field.base.name, field_kind(field))
+            .with_field(&field.base.name, |shape| {
+                // What `column === _request.key` needs of the column
+                // (TODO-type-hardening H7.5).
+                shape.unique = table.is_unique(&field.base.name);
+                shape.primary_key = field.primary_key;
+                shape.identity = matches!(field.generated, Some(sc_db::ColumnGenerator::Identity));
+                shape.random_default = matches!(
+                    &field.generated,
+                    Some(sc_db::ColumnGenerator::Default(sql)) if is_random_default(sql)
+                );
+            });
         }
         // A single-column primary key lets aggregations over this table as a
         // child (Phase 7) count rows and break `maxBy`/`minBy` ties; a composite

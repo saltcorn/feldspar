@@ -31,6 +31,8 @@ eval = [
 # always-on API — consumers below the server hold `Arc<dyn JsEvaluator>`
 # without linking an engine.
 async-trait = { workspace = true }
+# The statement's instant (`new Date()`, `Date.now()`; TODO-type-hardening H7.2).
+chrono = { workspace = true }
 deno_core = { workspace = true, optional = true }
 # 128 bits per run token: the only thing separating two resident runs' authority
 # on one isolate, so it wants the operating system's entropy and not a counter.
@@ -61,6 +63,7 @@ base64.workspace = true
 sc-test-harness = { workspace = true }
 sc-db-postgres = { workspace = true }
 tokio-postgres = { workspace = true }
+uuid = { workspace = true }
 
 [lints]
 workspace = true

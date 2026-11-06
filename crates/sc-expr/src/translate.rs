@@ -48,6 +48,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use chrono::{DateTime, Utc};
 use sc_error::Error;
 use sc_query::{
     BinOp as QBinOp, Expr as QExpr, InSet, OrderBy, Projection, Select, Source, UnOp as QUnOp,
@@ -73,6 +74,16 @@ pub const USER_GUC: &str = "sc.user";
 /// it, as plain text. Unset or `''` reads as `NULL`, so a policy over it fails
 /// closed for everybody without one.
 pub const SESSION_GUC: &str = "sc.session";
+
+/// The GUC that carries the statement's instant in [`UserEnv::Guc`] mode
+/// (TODO-type-hardening H7.2): `new Date()` and `Date.now()` in an RLS policy
+/// read it, as RFC 3339 text. `set_caller_context` sets it with the role and the
+/// user, so every statement on a shared transaction gets its own; unset or `''`
+/// reads as `NULL`, and a comparison with it grants nothing.
+///
+/// Not SQL's `now()`: inside a shared transaction that is the transaction's
+/// start, and the runtime path binds the statement's instant instead.
+pub const NOW_GUC: &str = "sc.now";
 
 /// The access operation a formula is being translated for. Chooses the value
 /// of each operation flag (`_write` is true for everything but [`Read`]).
@@ -207,16 +218,36 @@ pub struct Env<'a> {
     user: &'a UserEnv,
     ambient: &'a AmbientValues,
     calc: &'a CalcFields,
+    /// The statement's instant: what `new Date()` and `Date.now()` mean
+    /// (TODO-type-hardening H7.2). Bound as a parameter under
+    /// [`UserEnv::Inline`]; under [`UserEnv::Guc`] the policy reads
+    /// [`NOW_GUC`] instead and this is unused.
+    now: DateTime<Utc>,
 }
 
 impl<'a> Env<'a> {
-    /// The caller's environment, with no ambient row and nothing to inline.
+    /// The caller's environment, with no ambient row and nothing to inline,
+    /// at the current instant.
     pub fn new(user: &'a UserEnv) -> Env<'a> {
         Env {
             user,
             ambient: &EMPTY_AMBIENT,
             calc: &EMPTY_CALC,
+            now: Utc::now(),
         }
+    }
+
+    /// Fix the statement's instant. A caller that may also fall back to the
+    /// evaluator for the same statement passes the same instant to
+    /// [`FormulaCall::now`](crate::FormulaCall::now), so the two paths agree.
+    pub fn with_now(mut self, now: DateTime<Utc>) -> Env<'a> {
+        self.now = now;
+        self
+    }
+
+    /// The statement's instant.
+    pub fn now(&self) -> DateTime<Utc> {
+        self.now
     }
 
     /// Put the triggering event's `row`/`old` in scope, inlined as literals.
@@ -304,7 +335,31 @@ pub fn translate_rooted(
 ) -> Result<QExpr, TranslateError> {
     let mut tr = translator(env, shape, table)?;
     tr.root = root;
+    tr.op = Some(op);
     let folded = fold(formula.ast(), op, &mut Vec::new());
+    tr.predicate(&folded)
+}
+
+/// Translate the **proposed-row check of an update** for a row trigger
+/// (TODO-type-hardening H7.4): the formula's own row read through `new_alias`
+/// (the trigger's `NEW`) and `old.x` through `old_alias` (its `OLD`).
+///
+/// A policy sees one row, so a formula that compares the proposed row with the
+/// stored one cannot be a `WITH CHECK`; `sc-catalog` puts this in a
+/// `BEFORE UPDATE` trigger instead, under the same GUCs as the policies.
+pub fn translate_update_check(
+    formula: &Formula,
+    env: &Env<'_>,
+    shape: &SchemaShape,
+    table: &str,
+    new_alias: &str,
+    old_alias: &str,
+) -> Result<QExpr, TranslateError> {
+    let mut tr = translator(env, shape, table)?;
+    tr.root = new_alias;
+    tr.old_root = Some(old_alias);
+    tr.op = Some(Operation::Update);
+    let folded = fold(formula.ast(), Operation::Update, &mut Vec::new());
     tr.predicate(&folded)
 }
 
@@ -360,6 +415,8 @@ fn translator<'a>(
         root: table,
         aliases: 0,
         child_scopes: Vec::new(),
+        op: None,
+        old_root: None,
     })
 }
 
@@ -410,6 +467,8 @@ pub fn join_path_expr_rooted(
         root: root_alias,
         aliases: 0,
         child_scopes: Vec::new(),
+        op: None,
+        old_root: None,
     };
     tr.join_value_rooted(root_alias, root_table, ident)
 }
@@ -511,6 +570,15 @@ struct Translator<'a> {
     env: &'a Env<'a>,
     shape: &'a SchemaShape,
     table: &'a str,
+    /// The operation a predicate is translated for (`None` in value
+    /// position). On an update, `old` as the formula's own previous row is the
+    /// row being updated, read through [`root`](Self::root)
+    /// (TODO-type-hardening H7.3).
+    op: Option<Operation>,
+    /// Where `old` as the stored row is read from, when that is not
+    /// [`root`](Self::root): the `OLD` record of an update trigger, whose
+    /// `NEW` is the root ([`translate_update_check`]).
+    old_root: Option<&'a str>,
     /// How the formula's own row is **named** in SQL: the table itself, or the
     /// alias it was given by the query the predicate is being embedded in (see
     /// [`translate_rooted`]). Every reference to a column of this row — a bare
@@ -640,6 +708,25 @@ impl<'a> Translator<'a> {
                 }
                 Ok(QExpr::unary(null_op, self.value(other)?))
             }
+            // `column === _request.key`: equal to a value the caller presented,
+            // so an absent one (NULL) equals nothing — not even a null column,
+            // as `undefined === null` is false (TODO-type-hardening H7.5).
+            _ if self.request_key_of(l).is_some() || self.request_key_of(r).is_some() => {
+                let (key, column) = match self.request_key_of(l) {
+                    Some(key) => (key, r),
+                    None => (self.request_key_of(r).unwrap_or_default(), l),
+                };
+                let presented = self.ambient_field(Ambient::Request, key);
+                let mut value = self.value(column)?;
+                if self.column_kind(column) != Some(crate::FieldKind::Text) {
+                    value = QExpr::Cast {
+                        expr: Box::new(value),
+                        type_name: "text".into(),
+                    };
+                }
+                let equal = QExpr::binary(QBinOp::Eq, value, presented);
+                Ok(if negated { not_pred(equal) } else { equal })
+            }
             _ if self.ambient_of(l).or(self.ambient_of(r)).is_some() => {
                 let amb = self
                     .ambient_of(l)
@@ -649,6 +736,13 @@ impl<'a> Translator<'a> {
                     "comparing the `{amb}` object itself (compare one of its fields)"
                 ))
             }
+            // `due === new Date(…)`: equal instants, which JavaScript's `===`
+            // on two `Date` objects is not (the evaluator compares their time).
+            _ if self.constructs_time(l) || self.constructs_time(r) => Ok(QExpr::binary(
+                distinct_op,
+                self.instant(l)?,
+                self.instant(r)?,
+            )),
             _ => {
                 let compared = QExpr::binary(distinct_op, self.value(l)?, self.value(r)?);
                 Ok(self.caller_guarded(&[l, r], compared, negated))
@@ -686,6 +780,19 @@ impl<'a> Translator<'a> {
             })
     }
 
+    /// The key of `_request.<key>`, when `ast` is that and `_request` is in
+    /// scope.
+    fn request_key_of<'b>(&self, ast: &'b Ast) -> Option<&'b str> {
+        match ast {
+            Ast::Member {
+                obj,
+                prop: MemberProp::Static(key),
+                ..
+            } if self.ambient_of(obj) == Some(Ambient::Request) => Some(key),
+            _ => None,
+        }
+    }
+
     /// The caller object (`user`/`session`) `ast` reads a field of, if it is a
     /// direct member access on one.
     fn caller_field_of(&self, ast: &Ast) -> Option<Ambient> {
@@ -700,6 +807,9 @@ impl<'a> Translator<'a> {
     /// Ordered comparisons translate operand-for-operand and keep SQL's null
     /// semantics: a null operand yields SQL `NULL`, which grants nothing.
     fn comparison(&mut self, op: QBinOp, l: &Ast, r: &Ast) -> Result<QExpr, TranslateError> {
+        if self.constructs_time(l) || self.constructs_time(r) {
+            return Ok(QExpr::binary(op, self.instant(l)?, self.instant(r)?));
+        }
         let (l, r) = (self.value(l)?, self.value(r)?);
         if let (QExpr::Lit(a), QExpr::Lit(b)) = (&l, &r)
             && let Some(verdict) = fold_comparison(op, a, b)
@@ -794,7 +904,193 @@ impl<'a> Translator<'a> {
                 }],
                 else_result: Some(Box::new(self.value(alt)?)),
             }),
+            // Milliseconds (TODO-type-hardening H7.2): `Date.now()` and
+            // `<instant>.getTime()` are numbers, so `+ - * /` and the
+            // comparisons apply to them as they are.
+            _ if self.is_date_now(ast) => Ok(self.now_ms()),
+            _ if self.get_time_of(ast).is_some() => {
+                let of = self.get_time_of(ast).unwrap_or(ast);
+                if matches!(of, Ast::NewDate(args) if args.is_empty())
+                    && let UserEnv::Inline(_) = self.env.user
+                {
+                    return Ok(self.now_ms());
+                }
+                Ok(sc_query::time::epoch_ms(self.instant(of)?))
+            }
             other => untranslatable(describe(other)),
+        }
+    }
+
+    // ---- time (TODO-type-hardening H7.2) -----------------------------------
+
+    /// Whether `ast` is `Date.now()`, the global's (no field called `Date`).
+    fn is_date_now(&self, ast: &Ast) -> bool {
+        matches!(ast, Ast::Call { callee, args, .. }
+            if args.is_empty()
+                && matches!(&**callee, Ast::Member { obj, prop: MemberProp::Static(m), .. }
+                    if m == "now" && matches!(&**obj, Ast::Ident(d) if d == "Date"))
+                && !self.is_own_field("Date"))
+    }
+
+    /// The instant `ast` reads the milliseconds of, when it is
+    /// `<instant>.getTime()`.
+    fn get_time_of<'b>(&self, ast: &'b Ast) -> Option<&'b Ast> {
+        match ast {
+            Ast::Call { callee, args, .. } if args.is_empty() => match &**callee {
+                Ast::Member {
+                    obj,
+                    prop: MemberProp::Static(m),
+                    ..
+                } if m == "getTime" && self.is_instant(obj) => Some(obj),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Whether `name` is a field of the formula's own table (which shadows a
+    /// global of the same name).
+    fn is_own_field(&self, name: &str) -> bool {
+        self.shape
+            .tables
+            .get(self.table)
+            .is_some_and(|t| t.fields.contains_key(name))
+    }
+
+    /// Whether `ast` *constructs* time — a `new Date(…)` — which is what makes a
+    /// comparison a comparison of instants. Comparing two date columns, or one
+    /// with a string, keeps the translation it always had.
+    fn constructs_time(&self, ast: &Ast) -> bool {
+        matches!(ast, Ast::NewDate(_)) && self.is_instant(ast)
+    }
+
+    /// The [`FieldKind`](crate::FieldKind) of a column `ast` reads: a field of
+    /// this table, a Ⱶ-path's last field, or a child row's field inside an
+    /// aggregation arrow.
+    fn column_kind(&self, ast: &Ast) -> Option<crate::FieldKind> {
+        let field_of = |table: &str, field: &str| -> Option<crate::FieldKind> {
+            if field.contains(JOIN) {
+                return self.join_target_kind(table, field);
+            }
+            Some(self.shape.tables.get(table)?.fields.get(field)?.kind)
+        };
+        match ast {
+            Ast::Ident(name)
+                if self.ambient_named(name).is_none() && !self.env.calc.contains_key(name) =>
+            {
+                field_of(self.table, name)
+            }
+            Ast::Member {
+                obj,
+                prop: MemberProp::Static(field),
+                ..
+            } => {
+                let (_, table) = self.child_alias_of(obj)?;
+                field_of(&table, field)
+            }
+            _ => None,
+        }
+    }
+
+    /// The kind of the field a Ⱶ-path on `table` ends at.
+    fn join_target_kind(&self, table: &str, ident: &str) -> Option<crate::FieldKind> {
+        let segments: Vec<&str> = ident.split(JOIN).collect();
+        let (last, links) = segments.split_last()?;
+        let mut current = table.to_owned();
+        for link in links {
+            let key = self
+                .shape
+                .tables
+                .get(&current)?
+                .fields
+                .get(*link)?
+                .key
+                .as_ref()?;
+            current = key.target_table.clone();
+        }
+        Some(self.shape.tables.get(&current)?.fields.get(*last)?.kind)
+    }
+
+    /// Whether `ast` is an instant the translation can spell: a date or
+    /// timestamp column, `new Date()`, or `new Date(x)` of an instant or of a
+    /// number of milliseconds.
+    fn is_instant(&self, ast: &Ast) -> bool {
+        match ast {
+            Ast::NewDate(args) => match args.as_slice() {
+                [] => true,
+                [x] => self.is_instant(x) || self.is_number(x),
+                _ => false,
+            },
+            other => self
+                .column_kind(other)
+                .is_some_and(crate::FieldKind::is_temporal),
+        }
+    }
+
+    /// Whether `ast` is known to be a number: a numeric literal or column, a
+    /// time in milliseconds, or arithmetic over those.
+    fn is_number(&self, ast: &Ast) -> bool {
+        match ast {
+            Ast::Num(_) => true,
+            Ast::Unary {
+                op: UnaryOp::Neg,
+                expr,
+            } => self.is_number(expr),
+            Ast::Binary {
+                op: BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div,
+                l,
+                r,
+            } => self.is_number(l) && self.is_number(r),
+            _ if self.is_date_now(ast) || self.get_time_of(ast).is_some() => true,
+            other => self
+                .column_kind(other)
+                .is_some_and(crate::FieldKind::is_numeric),
+        }
+    }
+
+    /// `ast` as an instant in SQL (see `sc_query::time`), or untranslatable
+    /// when it is not one.
+    fn instant(&mut self, ast: &Ast) -> Result<QExpr, TranslateError> {
+        match ast {
+            Ast::NewDate(args) => match args.as_slice() {
+                [] => Ok(self.now_instant()),
+                [x] if self.is_instant(x) => self.instant(x),
+                [x] if self.is_number(x) => Ok(sc_query::time::from_epoch_ms(self.value(x)?)),
+                _ => untranslatable(
+                    "`new Date(…)` of something that is not a date or a number of milliseconds",
+                ),
+            },
+            other => match self.column_kind(other) {
+                Some(crate::FieldKind::Date) => {
+                    Ok(sc_query::time::date_instant(self.value(other)?))
+                }
+                Some(crate::FieldKind::Timestamp) => {
+                    Ok(sc_query::time::instant(self.value(other)?))
+                }
+                _ => untranslatable(format!(
+                    "comparing a date with {} (compare it with a date column or `new Date(…)`)",
+                    describe(other)
+                )),
+            },
+        }
+    }
+
+    /// `new Date()`: the statement's instant, bound — or, in a policy, read
+    /// from [`NOW_GUC`].
+    fn now_instant(&self) -> QExpr {
+        match self.env.user {
+            UserEnv::Inline(_) => {
+                sc_query::time::instant(QExpr::Lit(Value::Timestamp(self.env.now)))
+            }
+            UserEnv::Guc { .. } => sc_query::time::instant(guc_text(NOW_GUC)),
+        }
+    }
+
+    /// `Date.now()`: the statement's instant in milliseconds.
+    fn now_ms(&self) -> QExpr {
+        match self.env.user {
+            UserEnv::Inline(_) => QExpr::Lit(Value::Int(self.env.now.timestamp_millis())),
+            UserEnv::Guc { .. } => sc_query::time::epoch_ms(self.now_instant()),
         }
     }
 
@@ -858,7 +1154,16 @@ impl<'a> Translator<'a> {
     }
 
     fn arithmetic(&mut self, op: QBinOp, l: &Ast, r: &Ast) -> Result<QExpr, TranslateError> {
-        Ok(QExpr::binary(op, self.value(l)?, self.value(r)?))
+        let (l, r) = (self.value(l)?, self.value(r)?);
+        // Two numbers known now (`Date.now() - 15*60e3`, inlined) are one
+        // number: `$1 - $2 * $3` is three parameters Postgres has nothing to
+        // type by.
+        if let (QExpr::Lit(a), QExpr::Lit(b)) = (&l, &r)
+            && let Some(folded) = fold_arithmetic(op, a, b)
+        {
+            return Ok(QExpr::Lit(folded));
+        }
+        Ok(QExpr::binary(op, l, r))
     }
 
     /// `l + r` where one side is a string: SQL's `||` over each side as text. A
@@ -1277,9 +1582,15 @@ impl<'a> Translator<'a> {
         }
     }
 
-    /// [`ambient_of`](Translator::ambient_of) for a bare identifier.
+    /// [`ambient_of`](Translator::ambient_of) for a bare identifier. `old` is
+    /// also in scope as the formula's own previous row where the shape says so
+    /// (TODO-type-hardening H7.3), and null unless the env binds it.
     fn ambient_named(&self, name: &str) -> Option<Ambient> {
-        Ambient::from_ident(name).filter(|amb| self.env.in_scope(*amb))
+        Ambient::from_ident(name).filter(|amb| {
+            self.env.in_scope(*amb)
+                || *amb == Ambient::Old && self.shape.old_row_on(self.table)
+                || *amb == Ambient::Request && self.shape.request_on(self.table)
+        })
     }
 
     /// The user field→type map when this object renders as a **GUC read** rather
@@ -1297,9 +1608,23 @@ impl<'a> Translator<'a> {
         ambient == Ambient::Session && matches!(self.env.user, UserEnv::Guc { .. })
     }
 
+    /// Whether `old` here is the row an update is about to change, read from
+    /// its columns: an update's predicate, on the formula's own row, with no
+    /// `old` bound by the env (TODO-type-hardening H7.3). Elsewhere it is null.
+    fn old_is_the_stored_row(&self, ambient: Ambient) -> bool {
+        ambient == Ambient::Old
+            && self.op == Some(Operation::Update)
+            && !self.env.ambient.contains_key(&Ambient::Old)
+            && self.shape.old_row_on(self.table)
+    }
+
     /// Bare `user`/`row`/`old` as a condition: object-or-null, so truthy ⇔
     /// present (for `user`, ⇔ logged in).
     fn ambient_truthy(&self, ambient: Ambient) -> QExpr {
+        // `_request` is always an object, empty when nothing was presented.
+        if self.old_is_the_stored_row(ambient) || ambient == Ambient::Request {
+            return QExpr::lit(true);
+        }
         if self.session_guc(ambient) {
             return QExpr::unary(QUnOp::IsNotNull, session_guc_raw());
         }
@@ -1311,6 +1636,9 @@ impl<'a> Translator<'a> {
 
     /// `user === null` (and the same for `row`/`old`).
     fn ambient_is_null(&self, ambient: Ambient) -> QExpr {
+        if self.old_is_the_stored_row(ambient) || ambient == Ambient::Request {
+            return QExpr::lit(false);
+        }
         if self.session_guc(ambient) {
             return QExpr::unary(QUnOp::IsNull, session_guc_raw());
         }
@@ -1324,6 +1652,14 @@ impl<'a> Translator<'a> {
     /// values (null when the object is null or has no such field), or the cast
     /// JSON extraction from the GUC for an RLS policy's `user`.
     fn ambient_field(&self, ambient: Ambient, field: &str) -> QExpr {
+        if self.old_is_the_stored_row(ambient) {
+            return QExpr::qcol(self.old_root.unwrap_or(self.root), field);
+        }
+        // A presented value: bound, or in a policy the `sc.request.<key>` GUC;
+        // absent is NULL either way (TODO-type-hardening H7.5).
+        if ambient == Ambient::Request && matches!(self.env.user, UserEnv::Guc { .. }) {
+            return guc_text(&crate::request_guc(field));
+        }
         if self.session_guc(ambient) {
             // `session` has one field, its id, which is the whole GUC.
             return match field {
@@ -1363,6 +1699,17 @@ impl<'a> Translator<'a> {
     /// the env declares boolean (null-safe `IS NOT DISTINCT FROM TRUE`, so a
     /// missing user or field is false, as JS truthiness of `undefined` is).
     fn ambient_field_truthy(&self, ambient: Ambient, field: &str) -> Result<QExpr, TranslateError> {
+        if ambient == Ambient::Request {
+            return untranslatable(format!(
+                "`_request.{field}` as a condition (compare it with a column)"
+            ));
+        }
+        if self.old_is_the_stored_row(ambient) {
+            return untranslatable(
+                "a bare `old` field as a condition (write an explicit comparison, \
+                 e.g. `old.x === true`)",
+            );
+        }
         if self.session_guc(ambient) {
             // An id is truthy exactly when there is one: it is never `''`,
             // which the GUC read folds to null anyway.
@@ -1429,6 +1776,45 @@ fn session_guc_raw() -> QExpr {
             QExpr::lit(""),
         ],
     }
+}
+
+/// `NULLIF(current_setting('<name>', true), '')` — a custom GUC's text, or
+/// `NULL` when it is unset or empty ([`guc_raw`]'s `NULLIF`, for its reason).
+fn guc_text(name: &str) -> QExpr {
+    QExpr::Func {
+        name: "NULLIF".into(),
+        args: vec![
+            QExpr::Func {
+                name: "current_setting".into(),
+                args: vec![QExpr::lit(name), QExpr::lit(true)],
+            },
+            QExpr::lit(""),
+        ],
+    }
+}
+
+/// Arithmetic on two numeric literals, decided here as JavaScript decides it
+/// (on doubles), or `None` when that is not a finite number SQL would agree
+/// with (a division by zero, which JavaScript answers `Infinity`).
+fn fold_arithmetic(op: QBinOp, a: &Value, b: &Value) -> Option<Value> {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "JavaScript numbers are doubles; the fold computes as the formula would"
+    )]
+    let num = |v: &Value| match v {
+        Value::Int(i) => Some(*i as f64),
+        Value::Float(f) => Some(*f),
+        _ => None,
+    };
+    let (x, y) = (num(a)?, num(b)?);
+    let result = match op {
+        QBinOp::Add => x + y,
+        QBinOp::Sub => x - y,
+        QBinOp::Mul => x * y,
+        QBinOp::Div if y != 0.0 => x / y,
+        _ => return None,
+    };
+    result.is_finite().then(|| num_value(result))
 }
 
 /// Accumulate a child predicate onto whatever was already there.
@@ -1709,6 +2095,60 @@ mod tests {
         );
         let (sql, _) = where_sql_ambient("session !== null", &policy, &AmbientValues::new());
         assert!(sql.contains("IS NOT NULL") || sql.contains("NOT"), "{sql}");
+    }
+
+    /// TODO-type-hardening H7.3: on a shape whose `old` is the formula's own
+    /// previous row, `old.x` is checked against the table's fields, reads the
+    /// row being updated in an update's predicate, and is null elsewhere. A
+    /// field called `old` still wins.
+    #[test]
+    fn old_is_the_stored_row_in_an_update_and_null_elsewhere() {
+        let shape = shape().with_old_row();
+        let anon = UserEnv::Inline(None);
+        let sql = |src: &str, op: Operation| {
+            let formula = Formula::parse(src).unwrap();
+            formula.validate(&shape, "books").unwrap();
+            let pred = translate(&formula, op, &Env::new(&anon), &shape, "books").unwrap();
+            let stmt: Statement = Select::from(Source::table("books")).filter(pred).into();
+            Pg.render(&stmt).unwrap()
+        };
+        let (update, binds) = sql("title === old.title", Operation::Update);
+        assert!(
+            update.ends_with("(\"books\".\"title\" IS NOT DISTINCT FROM \"books\".\"title\")"),
+            "{update}"
+        );
+        assert!(binds.is_empty(), "{binds:?}");
+        let (read, binds) = sql("title === old.title", Operation::Read);
+        assert!(read.ends_with("IS NOT DISTINCT FROM $1)"), "{read}");
+        assert_eq!(binds, vec![Value::Null]);
+        let (_, binds) = sql("old === null", Operation::Delete);
+        assert_eq!(binds, vec![Value::Bool(true)]);
+        let (_, binds) = sql("old === null", Operation::Update);
+        assert_eq!(binds, vec![Value::Bool(false)]);
+
+        let err = Formula::parse("title === old.titel")
+            .unwrap()
+            .validate(&shape, "books")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("titel"), "{err}");
+        // Without the shape's say-so, `old` is the unknown identifier it was.
+        assert!(
+            Formula::parse("title === old.title")
+                .unwrap()
+                .validate(&self::shape(), "books")
+                .is_err()
+        );
+        // A table with a field called `old` keeps reading it.
+        let shadowed = shape
+            .clone()
+            .table("legacy", TableShape::new().field("old").field("title"));
+        let analysis = Formula::parse("old === title")
+            .unwrap()
+            .validate(&shadowed, "legacy")
+            .unwrap();
+        assert!(analysis.fields.contains("old"), "{analysis:?}");
+        assert!(!analysis.uses(Ambient::Old));
     }
 
     #[test]

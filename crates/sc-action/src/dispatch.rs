@@ -1157,9 +1157,11 @@ async fn only_if_selects(
             // Neither the caller nor the payload is typed here: neither ever
             // correlates a prefetch (and the payload has no columns to be typed
             // against at all).
-            Ambient::User | Ambient::Payload | Ambient::Context | Ambient::Session => {
-                value_from_json(json)
-            }
+            Ambient::User
+            | Ambient::Payload
+            | Ambient::Context
+            | Ambient::Session
+            | Ambient::Request => value_from_json(json),
             Ambient::Row | Ambient::Old => typed_value(table.as_ref(), field, json),
         }
     });

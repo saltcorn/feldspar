@@ -138,6 +138,12 @@ pub struct Plan {
     /// An insert's row(s), or an update's assignments (phase 3).
     #[serde(default)]
     pub values: Option<Json>,
+    /// The values this terminal presents to the table's ownership formula as
+    /// `_request` — `.withRequest({ token })` (TODO-type-hardening H7.6). Only
+    /// these: a body never presents what the request that started it did,
+    /// unless it passes the value on.
+    #[serde(default)]
+    pub request: Option<BTreeMap<String, String>>,
 }
 
 /// The **other** thing a terminal may send: SQL the code body wrote itself

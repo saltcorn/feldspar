@@ -110,6 +110,7 @@ pub async fn admit(
             row: BTreeMap::new(),
             user: user.as_ref().map(user_values),
             ambient: Default::default(),
+            now: chrono::Utc::now(),
         };
         if !evaluator.eval(call).await.unwrap_or(false) {
             return Admission::Refused;

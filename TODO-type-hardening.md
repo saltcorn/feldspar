@@ -119,24 +119,24 @@ Goal: the ownership formula states the common cases that drive application code 
 `asAdmin()` today: time, state transitions (`old`) and secret-token access (`_request`). No new
 configuration fields.
 
-- [ ] H7.1 Document what is already expressible (group sharing via Ↄ, append-only via `_insert`,
+- [x] H7.1 Document what is already expressible (group sharing via Ↄ, append-only via `_insert`,
       deny-above-the-floor via floor = admin plus `user.role` in the formula) in the ownership
       tutorial and in the agent-facing guidance (`sc-app/src/mcp/mod.rs`, `code_api_js.md`).
       Test: an insert-only table's insert response does not return the row.
-- [ ] H7.2 Time: one instant per statement for `new Date()` / `Date.now()` (a bound parameter;
+- [x] H7.2 Time: one instant per statement for `new Date()` / `Date.now()` (a bound parameter;
       the `sc.now` GUC under RLS); translate date columns, `new Date(…)`, `.getTime()`,
       millisecond arithmetic and comparisons. Parity tests across the evaluator, SQL and RLS
       paths, including an edit window and an embargo.
-- [ ] H7.3 `old` in the proposed-row check of an update: `null` elsewhere; translated as the
+- [x] H7.3 `old` in the proposed-row check of an update: `null` elsewhere; translated as the
       existing row's column; bound in the reified check. Enabling RLS is refused for a formula
       that uses `old`. Tests: a status transition and a frozen column.
-- [ ] H7.4 `old` under RLS: a generated `BEFORE UPDATE` trigger over `OLD`/`NEW`.
-- [ ] H7.5 `_request`: the environment (key syntax, at most 8 keys, absent ≠ null) on all
+- [x] H7.4 `old` under RLS: a generated `BEFORE UPDATE` trigger over `OLD`/`NEW`.
+- [x] H7.5 `_request`: the environment (key syntax, at most 8 keys, absent ≠ null) on all
       three paths; the `sc.request.<key>` GUCs, all set every time by `set_caller_context`; the
       save-time shape check (only `col === _request.k`, column unique, not the key, not
       integer or sequence; anything else refused with its reason); a warning for a column
       without a random default.
-- [ ] H7.6 `_request` channels: the `X-Sc-Request-<key>` header (REST, fetch),
+- [x] H7.6 `_request` channels: the `X-Sc-Request-<key>` header (REST, fetch),
       `.withRequest({…})` in the code API, GraphQL's `request` argument, live and sync
       connection parameters, an MCP argument. `Cache-Control: private, no-store` on responses
       computed with one. An automatic per-IP rate limit. Rewrite the share example in

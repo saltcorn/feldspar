@@ -448,9 +448,12 @@ impl Event {
 
     /// Where the event came from, to run its trigger's action inside.
     pub fn origin(&self) -> Origin {
+        // Not the presented values (TODO-type-hardening H7.5): the event does
+        // not keep them, so a stored run never holds a token.
         Origin {
             app: self.app.clone(),
             session: self.session.clone(),
+            ..Origin::default()
         }
     }
 

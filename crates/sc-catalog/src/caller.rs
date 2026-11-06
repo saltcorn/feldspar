@@ -107,6 +107,10 @@ pub struct Origin {
     /// The **public id** of the caller's guest session — what a formula sees
     /// as `session.id` and a table stores. Never the cookie's token.
     pub session: Option<String>,
+    /// The values the caller presented with this request — what an ownership
+    /// formula sees as `_request` (TODO-type-hardening H7.5). In memory only:
+    /// an event rebuilds its origin from what it stores, which is not these.
+    pub request: sc_expr::RequestValues,
 }
 
 tokio::task_local! {
@@ -229,6 +233,9 @@ pub struct Principal {
     /// The guest session's public id, if the caller has one — what the
     /// `sc.session` GUC carries.
     session: Option<String>,
+    /// The values the caller presented — what the `sc.request.<key>` GUCs
+    /// carry (TODO-type-hardening H7.5).
+    request: sc_expr::RequestValues,
     /// The changeset this write belongs to. `None` lets the change-log trigger
     /// mint one of its own (`source = 'sql'`), as for a write from outside.
     changeset: Option<Arc<Changeset>>,
@@ -253,6 +260,7 @@ impl Principal {
             chain: Vec::new(),
             app: None,
             session: None,
+            request: sc_expr::RequestValues::default(),
             changeset: changeset::current(),
         }
     }
@@ -310,6 +318,11 @@ impl Principal {
         self.session.as_deref()
     }
 
+    /// The values the caller presented with the request.
+    pub fn request(&self) -> &sc_expr::RequestValues {
+        &self.request
+    }
+
     /// The changeset this write belongs to.
     pub fn changeset(&self) -> Option<&Arc<Changeset>> {
         self.changeset.as_ref()
@@ -335,6 +348,7 @@ impl Principal {
     pub fn from_origin(mut self, origin: Origin) -> Principal {
         self.app = origin.app;
         self.session = origin.session;
+        self.request = origin.request;
         self
     }
 
@@ -348,6 +362,7 @@ impl Principal {
         Origin {
             app: self.app.clone(),
             session: self.session.clone(),
+            request: self.request.clone(),
         }
     }
 
@@ -779,6 +794,7 @@ mod tests {
         let origin = Origin {
             app: None,
             session: Some("guest-1".into()),
+            ..Origin::default()
         };
         let cs = Arc::new(Changeset::new(crate::changeset::ChangesetSource::Request));
         let caller = Principal::recorded(Role::of(40), None)
