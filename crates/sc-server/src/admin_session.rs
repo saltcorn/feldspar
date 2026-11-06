@@ -133,6 +133,15 @@ impl AdminSession {
         &self.user
     }
 
+    /// The proof that a **person** is making a change (TODO-type-hardening
+    /// H8.5, §7.3a): what changing a row-level-security table's access rules
+    /// and approving a trigger to run as system take, through
+    /// `sc_catalog::Editor::Person`. Only a browser session on the admin host
+    /// makes one; an MCP token or an in-process tool layer does not.
+    pub fn person(&self) -> sc_catalog::Person {
+        sc_catalog::Person::in_admin_session(self.user.id(), ADMIN_SESSION)
+    }
+
     /// The proof that this administrator is at the console
     /// (TODO-type-hardening H3.3): what an agent run started from the console
     /// (`RunCaller::console`) and the catalog's admin host take.
@@ -396,6 +405,17 @@ impl Admin {
             Via::Delegated { by, .. } => by,
         };
         sc_catalog::AdminPrincipal::vouched(self.user().map(User::fields_json), by)
+    }
+
+    /// Who is making a change with this authority (TODO-type-hardening H8.5):
+    /// a person for a browser session, delegated (named by the layer that
+    /// vouched) for anything else — an MCP client's endpoint tool, the
+    /// catalog's admin host.
+    pub fn editor(&self) -> sc_catalog::Editor {
+        match &self.0 {
+            Via::Session(session) => sc_catalog::Editor::Person(session.person()),
+            Via::Delegated { by, .. } => sc_catalog::Editor::Delegated(by),
+        }
     }
 
     /// The browser session behind this authority, when it is one.

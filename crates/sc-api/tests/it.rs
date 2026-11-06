@@ -21,6 +21,8 @@ mod calc_fields;
 mod code_host_as_user;
 #[path = "code_host_reads.rs"]
 mod code_host_reads;
+#[path = "code_host_rls_boundary.rs"]
+mod code_host_rls_boundary;
 #[path = "code_host_sql.rs"]
 mod code_host_sql;
 #[path = "code_host_writes.rs"]

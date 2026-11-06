@@ -630,8 +630,15 @@ async fn a_backup_carries_the_libraries_to_a_second_installation() -> sc_error::
         code_libraries: true,
         ..sc_backup::Selection::default()
     };
-    let report =
-        sc_backup::restore_backup(&second.catalog, &second.apps, &archive, None, &only).await?;
+    let report = sc_backup::restore_backup(
+        &second.catalog,
+        &second.apps,
+        &archive,
+        None,
+        &only,
+        sc_catalog::Editor::Operator(sc_catalog::Operator::at_cli("a test's restore")),
+    )
+    .await?;
     let text = format!("{report:?}");
     assert!(text.contains("its code was kept"), "{text}");
     let restored = sc_catalog::list_code_libraries(&second.catalog).await?;
@@ -672,13 +679,11 @@ async fn the_mcp_tools_need_their_grants_and_refuse_a_syntax_error() -> sc_error
         create: false,
         edit: false,
         drop: false,
-        access_changes: false,
     };
     let all = Grants {
         create: true,
         edit: true,
         drop: true,
-        access_changes: true,
     };
     let save = tool("save_code_library");
     let delete = tool("delete_code_library");

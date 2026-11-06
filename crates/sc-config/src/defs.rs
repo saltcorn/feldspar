@@ -92,6 +92,17 @@ pub const STARTUP_HISTORY: &str = "startup_history";
 /// How many days of [`STARTUP_HISTORY`] are kept.
 pub const STARTUP_HISTORY_DAYS: i64 = 7;
 
+/// Notices for the administrators, newest last: a JSON list of `{ id, title,
+/// lines, created_at }` the server writes about something an administrator
+/// should read once (the row-level-security upgrade report,
+/// TODO-type-hardening H8.6), shown in the admin UI until dismissed.
+pub const ADMIN_NOTICES: &str = "admin_notices";
+
+/// Whether the row-level-security upgrade report (TODO-type-hardening H8.6) has
+/// been made: it runs on the first start of a version that makes RLS a hard
+/// boundary, and never again.
+pub const RLS_BOUNDARY_REPORTED: &str = "rls_boundary_reported";
+
 /// Which LLM provider is the installation's default, by id: the one a new
 /// application's builder agent, a translation and an eval call when nothing
 /// names a provider.
@@ -166,6 +177,14 @@ pub fn internal_defs() -> &'static [ConfigDef] {
             ConfigDef::new(
                 FormField::new(DEFAULT_LLM_PROVIDER, sc_types::BasicType::Text)
                     .label("Default LLM provider"),
+            ),
+            ConfigDef::new(
+                FormField::new(ADMIN_NOTICES, sc_types::BasicType::Json)
+                    .label("Notices for the administrators"),
+            ),
+            ConfigDef::new(
+                FormField::new(RLS_BOUNDARY_REPORTED, sc_types::BasicType::Bool)
+                    .label("Row-level security upgrade report made"),
             ),
             ConfigDef::new(
                 FormField::new(ONBOARDING_DONE, sc_types::BasicType::Bool)

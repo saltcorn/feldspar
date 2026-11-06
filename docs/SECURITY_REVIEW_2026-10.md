@@ -1257,7 +1257,7 @@ row layer (`sc_access::admin_access`, `Unchecked::admin`), an administrator's fi
 `sc_dataset::Caller::admin` take an `sc_catalog::AdminPrincipal`, and the catalog's admin host and
 the administrative tools take an `sc_catalog::ConsoleAdmin`. Each is made only by a named
 constructor with a reason or the check behind it. Find them with
-`grep -rn 'AdminPrincipal::\(vouched\|system\)(\|ConsoleAdmin::\(at_console\|system\)(\|Caller::system(' crates`
+`grep -rn 'AdminPrincipal::\(vouched\|system\)(\|Principal::elevated(\|with_system_cause(\|ConsoleAdmin::\(at_console\|system\)(\|Caller::system(' crates`
 (excluding tests); `admin_proofs_are_in_the_inventory` (sc-catalog `caller.rs`) fails when one
 names a reason this list does not:
 
@@ -1266,8 +1266,10 @@ names a reason this list does not:
 | sc-server `admin_session.rs` (`Admin::principal`, `AdminSession::console`) | `ADMIN_SESSION` | `AdminSession::of_request`: admin host, an admin-scope live session, the admin role. `admin_caller` in `handlers/mod.rs` (the admin row endpoints, CSV and geo import / export, a trigger's test run, credits), `public_datasets.rs`, the view configurer (`handlers/views.rs`, `builder.rs`) and the analytics admin host (`analytics.rs`, `Caller::admin`) take it from the handler's `Admin`; a delegated `Admin` names its own `by` (below) |
 | sc-server `mcp.rs` (`ToolContext::admin`) | `MCP_TOKEN` | an administrator's MCP token: minted by an administrator, checked on every request with its user's current role |
 | sc-agent `agent_trait.rs` (`RunCaller::system`) | `SYSTEM_RUN` | an agent run nobody is chatting in that an administrator configured: a `trusted_input` trigger (sc-agent-builtins `run_agent.rs`), the operator's `feldspar eval` (sc-cli). A triggered, exposed or unvouched run has no `ConsoleAdmin`, so the server's own tools are withheld; an admin's console chat is `RunCaller::console` with the session's proof (sc-server `chat.rs`) |
-| sc-action `action.rs` (`ActionContext::scoped`) | `TRIGGER_ACTION_RULE` | admin in the event user's name: a trigger is admin-authored configuration. The row actions (sc-action-builtins `rows_scope.rs`, `insert_row`, `update_rows`, `delete_rows`, `embed_rows`) read and write through it; the change log and events name the user who caused the run |
-| sc-api `code_host/mod.rs` (`admin`, `Actor::Admin`), `code_host/files.rs` (`checked`), `rest/mod.rs` (`code_response`, a file a body serves as admin) | `CODE_ADMIN_RULE` | a code body's undelegated plan or `asAdmin()`: admin-authored configuration, in its event user's name. A model write-back from a body shares the body's `Scoped` |
+| sc-action `action.rs` (`ActionContext::scoped`, `Principal::elevated`) | `TRIGGER_ACTION_RULE` | admin in the event user's name: a trigger is admin-authored configuration. The row actions (sc-action-builtins `rows_scope.rs`, `insert_row`, `update_rows`, `delete_rows`, `embed_rows`) read and write through it; the change log and events name the user who caused the run. Elevated over the event's caller (TODO-type-hardening H8.1), so on a table with row-level security the policies read the cause, and an event its write raises is caused by the cause |
+| sc-catalog `caller.rs` (`Principal::system_for_trigger`) | `SYSTEM_TRIGGER_RULE` | a trigger a person approved to run as system (TODO-type-hardening H8.10): built only from an `ApprovedTrigger`, which only an approval whose hash matches the trigger's current configuration makes (`Trigger::system_state`, `TriggerDispatcher::system_state`). Its own statements see the system on RLS tables; its writes' events are still caused by the original cause. **Every approved trigger is an entry of this inventory**: `listTriggers` marks them (`system_state: approved`), with the approver and time |
+| sc-action `action.rs` (`ActionContext::caller`, `with_system_cause`) | `NO_HUMAN_CAUSE` | an event with no human cause (`Event::system`): a scheduled or startup trigger, a stream element, a write or a run at the server's own authority. Its caller is nobody at the public role, caused by the system, so an action's admin authority over it is the system's on an RLS table too (§7.3a, H8.7) |
+| sc-api `code_host/mod.rs` (`admin`, `Actor::Admin`), `code_host/files.rs` (`checked`), `rest/mod.rs` (`code_response`, a file a body serves as admin) | `CODE_ADMIN_RULE` | a code body's undelegated plan or `asAdmin()`: admin-authored configuration, in its event user's name, elevated over the body's caller (`Principal::elevated`, H8.1), so an RLS table's policies read the cause. A model write-back from a body shares the body's `Scoped` |
 | sc-api `undo.rs` (`checking`) | `UNDO_CHECK_READ` | the existing-row reads a restore or an undo makes to decide; the write that follows is the caller's and is checked as theirs |
 | sc-module `webhooks.rs` | `MODULE_WEBHOOK` | an installed module's webhook handler, `{ module, webhook }` as the writes' user; `db` confined to the module's tables (`ScopedTables`, no SQL, no `asUser`); `runTrigger` runs any trigger as admin, as a trigger's own action would (security review 2026-11 E5) |
 | sc-module `services.rs` | `MODULE_SERVICE` | an installed module's service, `{ module, service }` as the writes' user; confined as a webhook is |
@@ -1283,6 +1285,21 @@ sc-action-builtins `send_email.rs` (`send_email: read a configured attachment`),
 `files.rs` (`MODULE_FILE_LABEL`, labelling a file in the module's own area) and sc-backup
 `write.rs` (`backup: read every row of a table under row-level security`, the RLS context of a
 backup's snapshot).
+
+**People (TODO-type-hardening H8.5, H8.10).** On a table with row-level security only a person
+changes its access settings, disables RLS or drops it, and only a person approves a trigger to
+run as system (TECHNICAL_DESIGN §7.3a). The proof is an `sc_catalog::Editor` built from a
+`Person` or an `Operator`; `Editor::Delegated` (an MCP client, an agent's `edit_schema`, an
+endpoint called by an in-process tool layer through `Admin::delegated`) cannot make the
+`RlsTableAccess` the change needs. Find the makers with
+`grep -rn 'Person::in_admin_session(\|Operator::at_cli(' crates` (excluding tests);
+`admin_proofs_are_in_the_inventory` checks them too:
+
+| Crate / file | Reason or `by` | What stands behind it |
+|---|---|---|
+| sc-server `admin_session.rs` (`AdminSession::person`, `Admin::editor`) | `ADMIN_SESSION` | a browser's admin session on the admin host (`AdminSession::of_request`); a delegated `Admin` is `Editor::Delegated` with its own `by` |
+| sc-cli `commands/backup.rs` | `restore` | the operator restoring a backup with `feldspar restore` on the server |
+| sc-cli `commands/trigger.rs` | `trigger approve-system` | the operator approving a trigger's current configuration to run as system, with `feldspar trigger approve-system NAME` on the server (it prints what it approves) |
 
 **Spawn authorities (TODO-type-hardening H4).** Every program the server starts goes through
 `sc_proc::HostCommand` (or `sc_proc::Git`), which takes a sealed `SpawnAuthority`: an

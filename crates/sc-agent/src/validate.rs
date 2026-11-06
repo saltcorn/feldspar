@@ -214,7 +214,13 @@ pub async fn validate_trait(
     enabled: &EnabledTrait,
 ) -> Result<()> {
     let trait_ = registry.require(enabled.trait_.trim())?;
-    validate_attrs(&trait_.config_spec(), &enabled.config)?;
+    // A retired setting is ignored, not refused, so a configuration saved when
+    // it existed still loads.
+    let mut current = enabled.config.clone();
+    for key in trait_.retired_settings() {
+        current.remove(*key);
+    }
+    validate_attrs(&trait_.config_spec(), &current)?;
     trait_
         .validate_config(&TraitCheck {
             catalog,

@@ -136,8 +136,8 @@ impl<'a> TriggerRunHost<'a> {
     /// chain that led here: `caused_by` and `chained` in one.
     #[must_use]
     pub fn for_caller(mut self, caller: &Principal) -> TriggerRunHost<'a> {
-        self.caller = Principal::recorded(caller.role(), caller.user().cloned())
-            .chained(caller.chain().to_vec());
+        // The caller itself, so its cause travels (TODO-type-hardening H8.1).
+        self.caller = caller.clone();
         self
     }
 
@@ -198,15 +198,15 @@ impl<'a> TriggerRunHost<'a> {
             // The event's own caller, which is what both of these run as: the
             // admin's authority is the *trigger's*, and the run still carries
             // who caused it.
-            Authority::Default | Authority::Admin | Authority::User => (
-                Principal::recorded(self.caller.role(), self.caller.user().cloned())
-                    .in_current_origin(),
-                None,
-            ),
+            Authority::Default | Authority::Admin | Authority::User => {
+                (self.caller.clone().in_current_origin(), None)
+            }
             Authority::Public => (Principal::anonymous(), None),
+            // Never more than the cause (TODO-type-hardening H8.2).
             Authority::Named(id) => {
                 let user = super::load_named_user(self.catalog, id).await?;
-                let caller = sc_access::ownership::principal_at(user.role(), Some(&user));
+                let caller =
+                    Principal::narrowed(&self.caller, user.role(), Some(user.fields_json()))?;
                 (caller, Some(user))
             }
         };
@@ -284,6 +284,18 @@ impl TriggerHost for TriggerRunHost<'_> {
     async fn run(&self, request: Json) -> Result<Json> {
         let mut request: Request = serde_json::from_value(request)
             .map_err(|e| Error::invalid(format!("this trigger run is not one: {e}")))?;
+        // An explicit `asAdmin()` on a trigger whose table has row-level
+        // security is refused, as it is on the table (TODO-type-hardening H8.2).
+        if matches!(request.authority, Authority::Admin)
+            && let Ok(triggers) = self.dispatcher.triggers()
+            && let Some(table) = triggers
+                .all()
+                .iter()
+                .find(|t| t.name == request.trigger.trim())
+                .and_then(|t| t.channel.clone())
+        {
+            super::refuse_admin_on_rls(self.catalog, &table)?;
+        }
         request.authority = request.authority.resolve(&self.default_authority);
         self.run_one(request).await
     }

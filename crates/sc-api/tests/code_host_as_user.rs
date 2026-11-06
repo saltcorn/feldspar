@@ -231,16 +231,22 @@ async fn a_delegated_read_of_an_rls_table_sees_what_the_policies_allow() -> Resu
     .await?;
     assert_eq!(titles(&rows), vec!["Emma", "Ubik"]);
 
-    // And the admin's own path still reads the whole table: `Role::ADMIN` clears
+    // The body's default authority is admin in bob's name, and on a table
+    // with row-level security nothing elevates (TODO-type-hardening H8.1): the
+    // policies read bob, so it sees his rows too and no more.
+    let unmarked = json!({
+        "op": "select", "table": "books",
+        "select": ["title"], "order": [ { "field": "id" } ],
+    });
+    let all = ask(&host, unmarked.clone()).await?;
+    assert_eq!(titles(&all), vec!["Emma", "Ubik"]);
+    // An administrator's run still reads the whole table: `Role::ADMIN` clears
     // the policy's role floor, as the admin API's row editor does.
-    let all = ask(
-        &host,
-        json!({
-            "op": "select", "table": "books",
-            "select": ["title"], "order": [ { "field": "id" } ],
-        }),
-    )
-    .await?;
+    let admin = TableHost::new(&cat).caused_by(
+        Role::ADMIN,
+        Some(json!({ "id": uuid::Uuid::new_v4().to_string(), "role": 1, "email": "root@example.com" })),
+    );
+    let all = ask(&admin, unmarked).await?;
     assert_eq!(all.as_array().map(Vec::len), Some(4));
     Ok(())
 }

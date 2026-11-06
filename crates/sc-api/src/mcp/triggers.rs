@@ -47,7 +47,7 @@ use sc_error::{Error, Result};
 use sc_types::{Attrs, FormField, merge_secrets};
 use serde_json::{Map, Value as Json, json};
 
-use crate::schema_edit::{GRANT_ACCESS_CHANGES, GRANT_CREATE, GRANT_DROP, GRANT_EDIT, Grants};
+use crate::schema_edit::{GRANT_CREATE, GRANT_DROP, GRANT_EDIT, Grants};
 
 use super::{AdminTool, Area, TOOL_DESCRIBE_CODE_API, ToolContext, optional_role, require_grant};
 
@@ -178,10 +178,13 @@ const ARG_ONLY_IF: &str = "only_if";
 const ARG_CONFIGURATION: &str = "configuration";
 const ARG_MIN_ROLE: &str = "min_role";
 const ARG_ENABLED: &str = "enabled";
+/// Whether the trigger asks to run as system (TODO-type-hardening H8.10):
+/// an agent may set it, and it stays a pending request until a person approves.
+const ARG_RUNS_AS_SYSTEM: &str = "runs_as_system";
 
 /// The arguments [`save`] accepts, which is also the order the description walks
 /// them in.
-const SAVE_ARGS: [&str; 11] = [
+const SAVE_ARGS: [&str; 12] = [
     ARG_NAME,
     ARG_DESCRIPTION,
     ARG_WHEN,
@@ -191,6 +194,7 @@ const SAVE_ARGS: [&str; 11] = [
     ARG_CONFIGURATION,
     ARG_MIN_ROLE,
     ARG_ENABLED,
+    ARG_RUNS_AS_SYSTEM,
     ATTR_MINUTE,
     ATTR_HOUR,
 ];
@@ -320,6 +324,10 @@ fn trigger_json(
         json!(trigger.min_role.unwrap_or(Role::ADMIN)),
     );
     out.insert("enabled".to_owned(), json!(trigger.is_enabled()));
+    out.insert(
+        ARG_RUNS_AS_SYSTEM.to_owned(),
+        json!(trigger.runs_as_system()),
+    );
     for key in [ATTR_MINUTE, ATTR_HOUR, ATTR_DAY_OF_WEEK] {
         if let Some(value) = trigger.attributes.get(key) {
             out.insert(key.to_owned(), value.clone());
@@ -518,17 +526,14 @@ fn save_description(grants: &Grants) -> String {
                            refuse every call. Say so rather than retrying."
             .to_owned(),
     };
-    let access = match grants.access_changes {
-        true => format!(
-            "You may set `{ARG_MIN_ROLE}`, which decides who can run the trigger \
-             through the API. That changes what users of this deployment can \
-             reach, so say plainly what you are about to do before you do it."
-        ),
-        false => format!(
-            "You may **not** set `{ARG_MIN_ROLE}`; a call naming it is refused. \
-             Without it a trigger is admin-only, which is the safe default."
-        ),
-    };
+    // No grant decides it (TODO-type-hardening H8.9): an exposed trigger is
+    // rate- and spending-capped (security review #22).
+    let access = format!(
+        "You may set `{ARG_MIN_ROLE}`, which decides who can run the trigger \
+         through the API; without it a trigger is admin-only, the safe default. \
+         That changes what users of this deployment can reach, so say plainly what \
+         you are about to do before you do it."
+    );
     format!(
         "Create a trigger, or change the one that already has this name — the \
          name is the identity, so saving under a name that exists **edits that \
@@ -634,6 +639,17 @@ fn save_parameters() -> Json {
                     "Whether the trigger fires. Set it false to switch one off \
                      without losing its configuration.",
             },
+            ARG_RUNS_AS_SYSTEM: {
+                "type": "boolean",
+                "description":
+                    "Ask for the trigger's action to run at system authority, on \
+                     tables with row-level security too, even when a user's event \
+                     fires it — for logic that needs more than its user may do (stock \
+                     a shop's order decrements, seats a booking recounts). Only a \
+                     person approves it, in the admin UI; until then it runs as the \
+                     user who caused it, and any later change to its code needs \
+                     approving again.",
+            },
             ATTR_MINUTE: {
                 "type": "integer",
                 "description":
@@ -676,13 +692,6 @@ async fn save(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Jso
         false => require_grant(grants.edit, "change an existing trigger", GRANT_EDIT)?,
         true => require_grant(grants.create, "create a trigger", GRANT_CREATE)?,
     }
-    if args.contains_key(ARG_MIN_ROLE) {
-        require_grant(
-            grants.access_changes,
-            "set who may run a trigger",
-            GRANT_ACCESS_CHANGES,
-        )?;
-    }
 
     let mut notes: Vec<String> = Vec::new();
     let trigger = build(ctx.catalog, dispatcher, &name, existing, &args, &mut notes)?;
@@ -695,16 +704,33 @@ async fn save(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Jso
     // make that a lie. Any application exposing a trigger is re-projected by the
     // dispatcher's observer, so an endpoint appears with it.
     dispatcher.reload(ctx.catalog).await?;
+    // An agent never approves (TODO-type-hardening H8.10): asking to run as
+    // system, or changing a trigger that does, leaves a request a person has to
+    // approve, and the model is told so in words it can pass on.
+    let system = dispatcher.system_state(ctx.catalog, &trigger).await?;
+    if matches!(system, sc_action::SystemState::Pending) {
+        notes.push(pending_system_note(&trigger.name));
+    }
 
     Ok(json!({
         "saved": trigger.name,
         "created": creating,
+        "system": system.as_str(),
         // The whole trigger as it now stands, not an echo of what was sent: an
         // edit merged into what was stored, and the difference between the two
         // is exactly what the model has to be able to report back.
         "trigger": trigger_json(ctx.catalog, &dispatcher.registry(), &trigger, None),
         "notes": notes,
     }))
+}
+
+/// What an agent is told when a trigger it saved asks to run as system and no
+/// person has approved its current configuration (TODO-type-hardening H8.10).
+pub fn pending_system_note(trigger: &str) -> String {
+    format!(
+        "`{trigger}` will run as system once a person approves it in the admin UI. Until then \
+         it runs as the user who caused it."
+    )
 }
 
 /// The trigger to save: the stored one with the given changes applied, or a new
@@ -841,6 +867,9 @@ fn build(
     }
     if let Some(enabled) = args.optional_bool(ARG_ENABLED)? {
         trigger.set_enabled(enabled);
+    }
+    if let Some(on) = args.optional_bool(ARG_RUNS_AS_SYSTEM)? {
+        trigger.set_runs_as_system(on);
     }
     for key in [ATTR_MINUTE, ATTR_HOUR, ATTR_DAY_OF_WEEK] {
         match args.get(key) {
@@ -1044,7 +1073,8 @@ mod tests {
     fn the_descriptions_say_what_the_grants_do_not_allow() {
         let text = save_description(&Grants::none());
         assert!(text.contains("neither create nor change"), "{text}");
-        assert!(text.contains("may **not** set"), "{text}");
+        // Who may run it is set without a grant of its own (H8.9).
+        assert!(!text.contains("allow_access_changes"), "{text}");
         let text = save_description(&Grants::all());
         assert!(text.contains("create triggers and change"), "{text}");
 

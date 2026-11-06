@@ -151,7 +151,7 @@ pub(super) async fn answer(host: &TableHost<'_>, request: Json) -> Result<Json> 
                 Error::invalid("writePosterior() takes what to write: a variable and statistics")
             })?;
             let write = PosteriorWrite::from_json(spec)?;
-            let actor = host.actor(&plan.authority).await?;
+            let actor = host.actor_on(&plan.authority, model.table()).await?;
             crate::models::write_posterior(catalog, &model, &instance, &write, &host.scope(&actor))
                 .await
         }

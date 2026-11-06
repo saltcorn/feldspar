@@ -253,9 +253,11 @@ interface ScQuery<Row, Col extends string> {
   groupBy(...fields: Col[]): ScQuery<Row, Col>;
   limit(n: number): ScQuery<Row, Col>;
   offset(n: number): ScQuery<Row, Col>;
-  /** Run what follows as the person who caused the event: their ownership rule
-   * decides every row, and a write they may not make is a catchable error. */
-  asUser(): ScQuery<Row, Col>;
+  /** Run what follows as the person who caused the event — or, given an id or a
+   * user row, as that user, which is allowed only when they hold no more
+   * authority than whoever caused the run: their ownership rule decides every
+   * row, and a write they may not make is a catchable error. */
+  asUser(user?: string | { id: string }): ScQuery<Row, Col>;
   /** Run what follows as the server (the default). */
   asAdmin(): ScQuery<Row, Col>;
 
@@ -551,9 +553,10 @@ declare class ScFileStore {
   open(path: string): ScFile;
   dir(path: string): ScDir;
   readonly root: ScDir;
-  /** Delegate everything that follows to the person who caused the event, at
-   * which point the store's floor and every directory's \`min_role\` decide. */
-  asUser(): ScFileStore;
+  /** Delegate everything that follows to the person who caused the event (or to
+   * the named user), at which point the store's floor and every directory's
+   * \`min_role\` decide. */
+  asUser(user?: string | { id: string }): ScFileStore;
   /** Act as the server (the default). */
   asAdmin(): ScFileStore;
 }
@@ -587,9 +590,10 @@ interface ScTrigger {
    * returned, or \`null\` when its \`only if\` declined. Nothing passed is an
    * empty payload. */
   run(payload?: any): Promise<any>;
-  /** Run it on behalf of whoever caused this event, at which point the
-   * trigger's own \`min_role\` decides and a refusal is a catchable error. */
-  asUser(): ScTrigger;
+  /** Run it on behalf of whoever caused this event (or of the named user), at
+   * which point the trigger's own \`min_role\` decides and a refusal is a
+   * catchable error. */
+  asUser(user?: string | { id: string }): ScTrigger;
   /** Run it as the server (the default): a trigger is server-side
    * configuration, so no floor is consulted. */
   asAdmin(): ScTrigger;
@@ -742,8 +746,8 @@ interface ScModel {
     instance: string;
     written: number;
   }>;
-  /** The same handle, writing back as the event's caller. */
-  asUser(): ScModel;
+  /** The same handle, writing back as the event's caller (or the named user). */
+  asUser(user?: string | { id: string }): ScModel;
   /** The same handle, writing back as the trigger — the default. */
   asAdmin(): ScModel;
 }
@@ -907,8 +911,10 @@ export function tableDeclarations(tables: TableInfo[]): string {
       `   * event**. \`{ asUser: true }\` (or \`db.asUser().sql(…)\`) runs it at the\n` +
       `   * caller's role and user, which is what row-level security reads. */\n` +
       `  sql(sql: string, params?: ScValue[], options?: ScSqlOptions): Promise<ScRow[]>;\n` +
-      `  /** Delegate everything that follows to the person who caused the event. */\n` +
-      `  asUser(): ScDb;\n` +
+      `  /** Delegate everything that follows to the person who caused the event, or\n` +
+      `   * to the named user (an id or a user row), who may hold no more authority\n` +
+      `   * than whoever caused the run. */\n` +
+      `  asUser(user?: string | { id: string }): ScDb;\n` +
       `  /** Act as the server (the default). */\n` +
       `  asAdmin(): ScDb;\n${properties}\n}\n`,
   );

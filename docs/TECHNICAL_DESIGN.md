@@ -376,7 +376,7 @@ The complete direct dependencies, in layer order (dev-dependencies excluded):
 | `sc-agent-builtins` | `sc-access` `sc-action` `sc-agent` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-check` `sc-db` `sc-docs` `sc-error` `sc-expr` `sc-files` `sc-llm` `sc-log` `sc-mcp` `sc-net` `sc-proc` `sc-query` `sc-repomap` `sc-types` |
 | `sc-backup` | `sc-access` `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-catalog` `sc-config` `sc-dataset` `sc-db` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-model` `sc-module` `sc-net` `sc-query` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
 | `sc-server` | `sc-access` `sc-action` `sc-action-builtins` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-dataset` `sc-db` `sc-db-postgres` `sc-docs` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-http` `sc-i18n` `sc-live` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-model` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-ratelimit` `sc-stan` `sc-stream` `sc-types` `sc-viewpattern` `sc-workflow` |
-| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` |
+| `sc-cli` | `sc-action` `sc-agent` `sc-agent-builtins` `sc-analytics` `sc-api` `sc-app` `sc-auth` `sc-backup` `sc-catalog` `sc-check` `sc-config` `sc-config-file` `sc-dataset` `sc-db` `sc-db-postgres` `sc-db-sqlite` `sc-dns` `sc-email` `sc-error` `sc-expr` `sc-files` `sc-i18n` `sc-llm` `sc-log` `sc-mcp` `sc-migrate` `sc-module` `sc-net` `sc-proc` `sc-python` `sc-query` `sc-server` `sc-stan` `sc-types` `sc-viewpattern` `sc-workflow` |
 
 Four things the graph is worth reading for:
 
@@ -1627,26 +1627,38 @@ the cycle named — Postgres would otherwise raise `infinite recursion detected 
 at query time.
 
 **Who may *write* these rules.** The four settings above — `min_role_read`, `min_role_write`,
-`ownership_formula` and `rls_enabled` — are set by an admin through `updateTable` (§13.1) and,
-since the agents milestone, by an **agent** carrying the `admin_copilot` trait (§11.3). A
-reader of this section must not have to infer that from §11, so it is stated here with its two
-conditions: the agent's `allow_access_changes` grant must be on — it is **off by default**, and
-it is a separate grant from `allow_drop` because a drop announces itself while a widened role
-floor does not — and the **run's caller must be role 1**, checked in the tool before anything
+`ownership_formula` and `rls_enabled` — are set by an admin through `updateTable` (§13.1) and by
+an **agent**: one carrying the `admin_copilot` trait (§11.3), or an MCP client with the
+administration server's `edit_schema` (§13.6). Row-level security is the one lever (§7.3a,
+TODO-type-hardening H8.5, H8.9):
+
+- On a table **without** RLS the settings are an agent's to change, and an agent may turn RLS
+  **on** (refused unless the formula translates for all four operations).
+- On a table **with** RLS only a **person** changes them: an administrator in a browser session
+  on the admin host, or the operator with the CLI on the server. An agent's batch that would
+  change a floor, the formula, `rls_enabled` or the history floor — stricter or looser — or
+  drop the table is refused with *"`<table>` has row-level security, so its access rules can
+  only be changed by a person in the admin UI. Tell the user what change you need and why."*,
+  which never suggests turning RLS off. A setting sent with the value it already has changes
+  nothing and is not refused.
+- The type: `schema_edit::ApplyOptions::editor` is an `sc_catalog::Editor` — `Person` (made only
+  by sc-server's `AdminSession::person`), `Operator` (made only by the CLI, `Operator::at_cli`)
+  or `Delegated` (everything else, the default) — and only the first two give the
+  `RlsTableAccess` such a change needs. `Admin::editor` is `Person` for a browser session and
+  `Delegated` for an endpoint an in-process tool layer calls (`Admin::delegated`), so the admin
+  UI's handlers serve both.
+
+The **run's caller must be role 1** for an agent's tools, checked in the tool before anything
 else, because a schema has no ownership formula to fall back on and an agent exposed to a
-role-80 user through a chat view must not become the table editor. This does not widen anyone's
-authority: the caller is already an admin, and an admin sets these through `updateTable` today.
-What it changes is the *speed* at which they can be set, which is why enabling RLS is refused
-unless the formula translates for all four operations, and why disabling it — the one operation
-whose damage is invisible in the schema afterwards — is reported back to the model in words.
-(§7.3a replaces this. The `allow_access_changes` grant goes away. Agents may change a table's
-access settings, and may turn RLS on, but on a table with RLS only a person, in the admin UI or
-with the CLI, may change them.)
+role-80 user through a chat view must not become the table editor. There is no
+`allow_access_changes` grant any more: grants on agents are options nobody keeps track of, and a
+stored configuration or token that carries the key keeps loading, the key ignored.
 
 ### 7.3a Formula additions, and RLS as a hard boundary (TODO-type-hardening H7, H8)
 
-**Status: the formula additions (H7) are built, each with an "As built" note below; RLS as a
-hard boundary (H8) is design, not yet built.** This comes from the November 2026 security review
+**Status: the formula additions (H7) and RLS as a hard boundary (H8) are built, each with an
+"As built" note below, except the unforgeable caller settings (H8.4), which are designed and not
+built.** This comes from the November 2026 security review
 ([SECURITY_REVIEW_2026-11.md](./SECURITY_REVIEW_2026-11.md)).
 
 **Why.** Coding agents are told to build applications from custom queries rather than the
@@ -1905,9 +1917,59 @@ but agents author them too, and a statement could call
 `set_config('sc.role', '1', true)` itself. So:
 - At save time, and again at run time, the statement is parsed and refused if it calls
   `set_config`, is a `SET`, `RESET` or `DO`, or creates or replaces a function or procedure.
-- A later, stronger version makes the GUCs unforgeable. The policies would read the caller
-  through a `SECURITY DEFINER` function that checks a per-transaction MAC, keyed by a secret the
-  statement's database role cannot read.
+- A later, stronger version makes the GUCs unforgeable (H8.4, designed below, not built).
+
+**As built (H8.3).** `sc_query::check_admin_sql` is the check: a scanner, not a parser, that
+knows every way SQL hides text (literals, `E'…'`, dollar quotes, quoted identifiers, nested
+comments; a `U&` Unicode-escaped name is refused outright) and refuses `set_config`,
+`pg_settings`, the functions that run SQL text (`query_to_xml` and kin, `dblink`), `SET`,
+`RESET`, `DO`, creating, altering or dropping a function or procedure, and `ALTER ROLE | USER |
+DATABASE | SYSTEM`, in every statement of the text. It runs when a custom SQL query is saved,
+each time it runs, and each time a `db.sql()` runs. With H8.5 it also refuses the statements
+that reshape RLS (below).
+
+**Unforgeable caller settings (H8.4, design).** H8.3 closes the textual routes. What remains is
+whatever it cannot see: a function created before the check existed, an extension's, a surface
+added later, a scanner mistake. The stronger version makes the settings worthless to forge.
+
+- **Two roles.** `R`, the login role the server connects as, owns the application's tables and
+  runs every statement, as today. `G`, a `NOLOGIN` role, owns a schema `sc_guard` holding one
+  table, `sc_guard.secret(key bytea)`, readable by `G` alone, and the guard functions. `R` is not
+  a member of `G` and cannot `SET ROLE` to it. Creating `G` needs `CREATEROLE` (or a superuser),
+  which `R` must not have, so it is an operator's step, not a bootstrap or a migration:
+  `feldspar db harden-rls --admin-url <a privileged connection>` creates `G`, the schema, the
+  secret (32 random bytes) and the functions, then regenerates every RLS table's policies in one
+  transaction. The secret is also written to the server's configuration file (never to the
+  database), because the server computes the MAC.
+- **The MAC.** `set_caller_context` reads the transaction's id once (`pg_current_xact_id()`, one
+  round trip per caller-context transaction) and sets, beside the settings it sets today,
+  `sc.mac` = HMAC-SHA256(secret, xid ‖ role ‖ user ‖ session ‖ presented values ‖ now ‖
+  changeset). Binding the transaction id means a MAC read in one transaction is useless in
+  another. Within one transaction a statement only ever runs after its own writer's settings
+  were applied (`SharedTx` re-applies them per writer), so it can read only the identity it
+  already has.
+- **The guard functions.** `sc_guard.caller_role()`, `caller_user()`, `caller_session()`,
+  `caller_request(key)` and `caller_now()`: `SECURITY DEFINER`, `STABLE`, `SET search_path =
+  sc_guard, pg_temp`. Each recomputes the MAC from the current settings with the secret (the
+  built-in `sha256()` composes HMAC, so `pgcrypto` is not required) and answers the value, or
+  `NULL` — no access — when the MAC is missing or wrong. A statement that sets `sc.role` itself
+  cannot produce the matching `sc.mac` without the secret, which `R` cannot read.
+- **The policies.** With the guard provisioned (recorded in `_fd_config`, and checked at
+  startup), `enable_rls_sql` emits `(SELECT sc_guard.caller_role())` and its siblings where it
+  emits `NULLIF(current_setting('sc.role', true), '')::int` today. The scalar subquery has no
+  outer reference, so Postgres evaluates it once per statement (an InitPlan), not once per row.
+  The `old` trigger of H7.4 reads the same functions.
+- **Startup self-check.** The server verifies that `sc_guard.caller_role` exists and that `R`
+  **cannot** `SELECT` from `sc_guard.secret`; if it can, guarded mode is refused and the System
+  tab and the log say why. Without the guard the server runs as today (GUC policies plus H8.3),
+  and the System tab says which mode is in force.
+- **Limits.** A superuser or `BYPASSRLS` login role still defeats every policy (§7.3's
+  operational requirement). Rotating the secret is `harden-rls --rotate`, which rewrites both
+  copies in one step and needs a restart.
+
+Not built in H8: it needs a database role the server's own role cannot create, so it is a
+deployment step every installation would have to take, and it cannot be exercised on a test
+database whose role lacks `CREATEROLE`. H8.3's check is the boundary until it is.
 
 **On an RLS table, only a person changes who may access it.** A person is an admin in a browser
 session (an `AdminSession`, not `Admin::delegated`), or an operator with the CLI on the server.
@@ -1947,6 +2009,29 @@ its rules changed:
 build the `RlsTableAccess` value that changing an RLS table's access settings, disabling RLS
 or dropping an RLS table requires, so a new agent-facing path cannot get around the rule by
 forgetting a check.
+
+**As built (H8.1, H8.2, H8.5, H8.8).**
+- `sc_catalog::Cause` is carried by every `Principal`; `Principal::elevated(&cause, reason)`
+  keeps it, and `set_caller_context` writes `policy_role` / `policy_user` (the cause's for an
+  elevated principal). An event records `event_role` / `event_user` — the same, except for an
+  approved trigger (below) — and `Event::system` marks one with no human cause: a scheduled or
+  startup trigger's, a **stream element's** (a subscription is configuration, and nobody sent
+  the element), and a run or write at `Authority::System`. Its caller is nobody at the public
+  role with a system cause (`Principal::with_system_cause`), so `asUser()` there is still the
+  public role. `Principal::capped_at` caps the cause too, so an application's maximum role holds
+  under elevation.
+- The code host refuses an explicit `asAdmin()` on `db`, `trigger(…)` (a trigger whose table has
+  RLS) and a model's write-back; `fs` reaches no table and is unchanged. Row history, read from
+  the change log past the policies, is read as the cause on an RLS table.
+- `Principal::narrowed(&cause, role, user)` keeps the cause's chain and changeset; from there
+  its cause is the **named user** (a deviation from "keeps the cause": what the policies read and
+  what an event its write raises is caused by are that user's, and the check against the
+  original cause is made when it is narrowed). `asUser(id)` takes an id or a user row on `db`, a
+  query, `db.sql()`, a store, a model and a trigger.
+- A delegated editor's change to an RLS table's settings is refused only when it **differs**
+  from the stored value, so the admin form's whole-object save of an unchanged rule is not a
+  change; `history_min_role` counts as an access setting. `clear_all` and
+  `forget_table_settings` take the editor too.
 
 **No permission grants for agents.** This rule replaces the `allow_access_changes` grant
 (admin_copilot, MCP tokens, `feldspar mcp-token`). Grants on agents are options nobody keeps
@@ -2006,6 +2091,16 @@ bootstrap. A backup restore by a person keeps approvals. An application import, 
 or app sync that an agent starts drops them, which leaves the request pending. Each approved
 trigger is an entry in the system-authority inventory (SECURITY_REVIEW_2026-10.md).
 
+**As built (H8.10).** The setting is the trigger attribute `runs_as_system`; the approval is
+three columns `save_trigger` never writes, and `Trigger::configuration_hash` covers the event,
+table, `only_if`, body, action and configuration, and a workflow's current definition without its
+version number. `Principal::system_for_trigger` is admin authority whose policy identity is the
+system (`sc.role` 1, no `sc.user`) while `user` and the events its writes raise stay the cause's.
+A code body's `db` and `fs` act at it through `acting_as`; a workflow run records the hash it
+started approved for, and its steps run as system while the approval is still for it. The admin
+API's `approveTriggerSystem` / `revokeTriggerSystem` and `feldspar trigger approve-system |
+revoke-system` approve and revoke; an admin session's edit of an approved trigger re-approves it.
+
 **What RLS does not promise.** It protects the rows of the table it is on, not information
 derived from them. A scheduled job, or an approved trigger, with system authority can still copy
 rows into a table without RLS. That is visible, central configuration, approved by a person, not
@@ -2020,6 +2115,13 @@ There is no setting to restore the old behaviour. On the first start after upgra
 lists in the admin notices and the log every code body, custom query and trigger that touches an
 RLS table at elevated authority, found statically from the code and from the trigger
 definitions. The CHANGELOG states the change.
+
+**As built (H8.6).** `sc_server::report_rls_elevation`, run once by `serve`
+(`RLS_BOUNDARY_REPORTED`), lists each trigger a user's event fires whose table has RLS or whose
+code names an RLS table, and each trigger, custom code query and code library that says
+`asAdmin()` and names one. It is a reading of the text, so it errs towards listing. The admin
+notices it writes are new: `ADMIN_NOTICES`, `listAdminNotices` / `dismissAdminNotice`, and a
+banner above every admin screen.
 
 **Scheduled and startup triggers run at system authority** (decided). The rule is "never more
 than the cause", and a job with no caller has no one whose authority it could exceed. Running
@@ -5368,9 +5470,10 @@ and one refusal.
   seam — the shape `TableEvents` already has — that the server registers at boot and
   `schema_edit` notifies after a successful batch. The handlers' own `refresh_table` calls are
   gone rather than double-firing beside it.
-- **It names no table, and is scoped by what it may do.** Four grants — `allow_create`,
-  `allow_edit`, `allow_drop` and `allow_access_changes`, the last two off by default — are
-  checkboxes on **one** trait rather than four traits, because the operations share a batch:
+- **It names no table, and is scoped by what it may do.** Three grants — `allow_create`,
+  `allow_edit` and `allow_drop`, the last off by default — are checkboxes on **one** trait rather
+  than three traits (a fourth, `allow_access_changes`, was retired by TODO-type-hardening H8.9:
+  row-level security, not a grant, decides who may change a table's access rules, §7.3a), because the operations share a batch:
   creating `matters` with a key to an existing `clients` is a create *and* an edit, and a batch
   that half-applied for want of a grant is the state the transaction exists to avoid. A batch
   containing an ungranted operation is refused whole, naming the operation and the checkbox.
@@ -5459,11 +5562,11 @@ and one line, then one action's full settings, resolved for the table the trigge
 
 Four more decisions in that half:
 
-- **The four grants cover both halves.** Creating a table and creating a trigger are both
+- **The grants cover both halves.** Creating a table and creating a trigger are both
   `allow_create`; deleting a trigger is `allow_drop`; and a trigger's `min_role` — which decides
-  who may `POST /actions/{name}` — is an **access rule**, so it needs `allow_access_changes`
-  exactly as a table's role floors do. A second set of checkboxes would have been four more
-  decisions for the admin, on the same question, with the same right answers.
+  who may `POST /actions/{name}` — is set with the edit that saves the trigger (it needed
+  `allow_access_changes` until H8.9). A second set of checkboxes would have been more decisions
+  for the admin, on the same question, with the same right answers.
 - **`save_trigger` takes one trigger, not a list.** The schema editor takes a list because tables
   are *connected*; triggers are not — two of them are two independent rows, nothing in one
   resolves against the other — so a batch would buy an all-or-nothing guarantee nobody needs while
@@ -5488,8 +5591,8 @@ Four more decisions in that half:
 `describe_applications`, `save_api_query` and `delete_api_query` (§13.4). An application record
 carries a subdomain, a framework and its settings, a table subset, file stores, exposed triggers,
 static directories and a CSP; **one** of those is the agent's to write and the rest are not
-(since amended: `update_application` changes the connected tables, the static directories and,
-behind `allow_access_changes`, the CSP — see the creating-an-application part below). A
+(since amended: `update_application` changes the connected tables, the static directories and
+the CSP — see the creating-an-application part below). A
 framework's `store` and `source` say where somebody's code lives, a CSP is a security boundary, a
 subdomain is a DNS record somebody else configured — none of them is *building*, and all of them
 are the kind of setting whose damage is invisible from the transcript. A custom SQL query is the
@@ -5517,12 +5620,12 @@ Four decisions in that part:
   its definition. The **mount** is not touched — a mounted app's providers are built from its
   record at mount time — so the tool result says the endpoint is served from the app's next build
   rather than letting the model report a live endpoint that is not answering yet.
-- **The four grants cover this part too**, exactly as they cover the triggers: adding a query is
-  `allow_create`, changing one is `allow_edit`, deleting one is `allow_drop`, and a query's
-  `min_role` — which decides who may call the endpoint — is `allow_access_changes`. A query with
-  no stated floor is admin-only, which is §13.4's own rule rather than a new one.
+- **The grants cover this part too**, exactly as they cover the triggers: adding a query is
+  `allow_create`, changing one is `allow_edit` (its `min_role`, which decides who may call the
+  endpoint, included since H8.9), deleting one is `allow_drop`. A query with no stated floor is
+  admin-only, which is §13.4's own rule rather than a new one.
 
-**Two areas, on top of the four grants.** The grants answer *what may this agent do*; the areas
+**Two areas, on top of the grants.** The grants answer *what may this agent do*; the areas
 answer *to which of the three* — `allow_triggers` and `allow_applications`, both on by default,
 each removing its tools from the model's list when it is off rather than leaving them there to be
 refused. That asymmetry with the grants is deliberate: a grant must stay *visible*, because a model
@@ -5895,8 +5998,9 @@ as the caller (`RunCaller::user`), capped at the application's `max_role`, so ow
 RLS apply to what the agent does exactly as to the page's own requests. People who are not signed
 in are refused unless the exposure says `anonymous`. That takes **two** opt-ins: the agent's
 `min_role` must be public (100), and the application must say so. The admin API and the MCP tool
-refuse an anonymous exposure of a non-public agent when it is saved (`check_exposed_agents`), and
-the MCP tool also requires `allow_access_changes`, as it does for a public trigger. An anonymous run
+refuse an anonymous exposure of a non-public agent when it is saved (`check_exposed_agents`); an
+exposed agent has rate and spending caps (security review #22), and since H8.9 no further grant is
+asked for, as none is for a public trigger. An anonymous run
 is `RunCaller::anonymous()`: no user, the public role. It is never the system caller, which is admin.
 
 **Transport: SSE over `POST`, not the admin chat's WebSocket.** A turn is one message up and a
@@ -6792,8 +6896,8 @@ whether the admin's form, the CLI or a coding agent's `create_application` made 
 has no argument for it at all). An app reaches its data through custom queries (§13.4), one
 endpoint per thing a page does, which in JavaScript or Python run **as the caller** by default
 (§10.1, "Authority"); a row API is turned on per table, afterwards, only when somebody wants
-generic row access — `update_application`'s `api_tables` (which also needs
-`allow_access_changes`), `feldspar app api-tables`, or the form's checkbox.
+generic row access — `update_application`'s `api_tables` (an edit), `feldspar app api-tables`,
+or the form's checkbox.
 
 **An application is created and configured in the admin UI — never in Rust code and never
 by a CLI flag.** The admin picks the framework, fills in that framework's settings (a React
@@ -9254,8 +9358,9 @@ of those endpoints are the SPA's own plumbing.
   and it is the sibling of the TypeScript generator's type mapping (§13.1). A tag declares the
   grant a change needs (`.needs(Grant::…)`), and may declare a second (`.and_needs(…)`), checked
   in order so a refusal names the first flag missing. **Roles and accounts** are tier 2 since
-  TODO F1.9: `listRoles` and `listUsers` read; `createRole` and `setUserDisabled` need
-  `allow_access_changes`; `deleteRole` and `deleteUser` need it *and* `allow_drop`. The last
+  TODO F1.9: `listRoles` and `listUsers` read; `createRole` needs `allow_create` and
+  `setUserDisabled` `allow_edit` (both needed `allow_access_changes` until TODO-type-hardening
+  H8.9); `deleteRole` and `deleteUser` need `allow_drop`. The last
   enabled admin cannot be disabled or deleted by anyone (`sc_auth::refuse_last_admin`, inside
   `delete_user` and `set_user_disabled`, so the CLI's `delete-user` and `modify-user
   --disabled` are held to it too), and a token cannot disable or delete the admin it runs as.
@@ -9416,8 +9521,9 @@ leave its static directories and CSP for a person, so the line drawn above moved
   connected. It is only an edit because a mount is not a grant: every file is still served
   through `sc_files::check_access` as the request's user.
 - **`csp`** (`{ "frame-ancestors": ["'self'", "https://other.example.com"], "img-src": null }`)
-  replaces or removes single directives and keeps the rest. A CSP is a security boundary, so it
-  needs `allow_access_changes`, the grant that guards roles. Names must be lower-case letters
+  replaces or removes single directives and keeps the rest. A CSP is a security boundary; it needs
+  `allow_edit` (it needed `allow_access_changes` until H8.9), and the tool's description tells the
+  model to say what it widens and why. Names must be lower-case letters
   and `-`. A source must be one printable word with no `;` or `,`, because the policy goes into
   a header verbatim.
 
@@ -9429,7 +9535,8 @@ so they get their own tool rather than an `update_application` section: no argum
 (with each provider's settings), `save` creates or changes by name (only the keys given, with
 `configuration` merged key by key), and `delete` removes, refused while a trigger listens or an
 application exposes the stream. Creating needs `allow_create`, changing `allow_edit`, deleting
-`allow_drop`, and `min_role` needs `allow_access_changes`. Writes go through `saveStream` and
+`allow_drop`; `min_role` is part of the change (it needed `allow_access_changes` until H8.9).
+Writes go through `saveStream` and
 `deleteStream` over the `AdminHost`, so the supervisor reloads and the stream flows at once.
 
 As `edit_schema` checks a grant per operation, this checks one per section, all before anything

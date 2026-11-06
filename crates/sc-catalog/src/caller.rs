@@ -239,6 +239,143 @@ pub struct Principal {
     /// The changeset this write belongs to. `None` lets the change-log trigger
     /// mint one of its own (`source = 'sql'`), as for a write from outside.
     changeset: Option<Arc<Changeset>>,
+    /// Whose authority this work began with (TODO-type-hardening H8.1,
+    /// §7.3a): the most a table with row-level security grants it, and what
+    /// [`narrowed`](Principal::narrowed) is checked against. A caller's own
+    /// role and user for a principal made from one; the system for the
+    /// server's own and for a scheduled trigger's caller.
+    cause: Cause,
+    /// Why this principal's role was raised above its cause's, when it was
+    /// ([`Principal::elevated`]). The row layer then checks the raised role,
+    /// and an RLS policy reads the cause ([`policy_role`](Principal::policy_role)).
+    elevated: Option<&'static str>,
+    /// Whether an RLS policy reads **the system** for this principal although
+    /// its cause is a caller: a trigger a person approved to run as system
+    /// ([`Principal::system_for_trigger`], TODO-type-hardening H8.10). What its
+    /// writes' events are caused by is still the cause, so elevation does not
+    /// cascade.
+    system_policy: bool,
+}
+
+/// A trigger a person approved to run as system, **for its current
+/// configuration** (TODO-type-hardening H8.10, §7.3a): the only input to
+/// [`Principal::system_for_trigger`]. It exists only when the hash recorded with
+/// the approval equals the hash of the configuration the trigger has now
+/// ([`verified`](ApprovedTrigger::verified)), so a change the person did not
+/// approve leaves nothing to build one from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovedTrigger {
+    name: String,
+}
+
+impl ApprovedTrigger {
+    /// The approval of trigger `name`, if `approved` — the hash stored with it —
+    /// is `current`, the hash of its configuration now.
+    pub fn verified(name: &str, approved: Option<&str>, current: &str) -> Option<ApprovedTrigger> {
+        let approved = approved?;
+        // Not secret, but compared in full either way.
+        (approved.len() == current.len()
+            && approved
+                .bytes()
+                .zip(current.bytes())
+                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                == 0)
+            .then(|| ApprovedTrigger {
+                name: name.to_owned(),
+            })
+    }
+
+    /// The trigger's name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// What stands behind an approved trigger's system authority: a person
+/// approved this trigger's current configuration to run as system
+/// (TODO-type-hardening H8.10). Listed in the system-authority inventory.
+pub const SYSTEM_TRIGGER_RULE: &str = "a trigger a person approved to run as system";
+
+/// Whose authority a piece of work began with (TODO-type-hardening H8.1,
+/// §7.3a): a caller's role and user, or the system's.
+///
+/// On a table with row-level security nothing elevates: a statement runs with
+/// the authority of the work's cause, never more. So the cause travels on the
+/// [`Principal`] of everything done on its behalf, an action's admin authority
+/// in its event's user's name ([`Principal::elevated`]) included, and
+/// `set_caller_context` writes it to the `sc.role` and `sc.user` settings the
+/// policies read.
+///
+/// There is no public way to say "the system" but the inventoried
+/// [`Principal::with_system_cause`]: a principal is caused by the caller it was
+/// made from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cause(CauseKind);
+
+#[derive(Debug, Clone, PartialEq)]
+enum CauseKind {
+    /// No person: the server's own work, and a trigger with no human cause (a
+    /// scheduled or startup trigger, a stream element).
+    System,
+    /// A caller: the role they were served at, and their fields.
+    Caller { role: Role, user: Option<Json> },
+}
+
+impl Cause {
+    /// Whether the cause is the system rather than a caller.
+    pub fn is_system(&self) -> bool {
+        matches!(self.0, CauseKind::System)
+    }
+
+    /// The role the cause holds: the admin's for the system.
+    pub fn role(&self) -> Role {
+        match &self.0 {
+            CauseKind::System => Role::ADMIN,
+            CauseKind::Caller { role, .. } => *role,
+        }
+    }
+
+    /// The cause's user fields, or `None` for the system and for nobody.
+    pub fn user(&self) -> Option<&Json> {
+        match &self.0 {
+            CauseKind::System => None,
+            CauseKind::Caller { user, .. } => user.as_ref(),
+        }
+    }
+
+    /// The cause's user id, as the user object carries it.
+    pub fn user_id(&self) -> Option<&str> {
+        self.user()?.get("id")?.as_str()
+    }
+
+    /// Whether a user at `role` with `user_id` holds no more authority than
+    /// this cause (§7.3a, "Acting as a named user"): the cause is the system or
+    /// an administrator, who may name anyone; or it is that same user, at a
+    /// role at least as high a number.
+    pub fn admits(&self, role: Role, user_id: Option<&str>) -> bool {
+        // The public role with nobody in it is less than anybody.
+        if self.role().is_admin() || (role.is_public() && user_id.is_none()) {
+            return true;
+        }
+        match (self.user_id(), user_id) {
+            (Some(own), Some(named)) => own == named && !role.outranks(self.role()),
+            _ => false,
+        }
+    }
+
+    /// A short phrase naming the cause, for an error message.
+    pub fn describe(&self) -> String {
+        match &self.0 {
+            CauseKind::System => "the system".to_owned(),
+            CauseKind::Caller { role, .. } if role.is_public() && self.user().is_none() => {
+                "the public role".to_owned()
+            }
+            CauseKind::Caller { role, .. } => match self.user_id() {
+                Some(id) => format!("user `{id}` (role {role})"),
+                None => format!("role {role}"),
+            },
+        }
+    }
 }
 
 /// A signed-in user whose credential was verified: what [`Principal::of`]
@@ -255,6 +392,12 @@ pub trait VerifiedUser {
 impl Principal {
     fn build(role: Role, user: Option<Json>) -> Principal {
         Principal {
+            cause: Cause(CauseKind::Caller {
+                role,
+                user: user.clone(),
+            }),
+            elevated: None,
+            system_policy: false,
             role,
             user,
             chain: Vec::new(),
@@ -290,7 +433,160 @@ impl Principal {
 
     /// The server's own principal: the admin role and no user.
     pub(crate) fn system() -> Principal {
-        Principal::build(Role::ADMIN, None)
+        Principal {
+            cause: Cause(CauseKind::System),
+            ..Principal::build(Role::ADMIN, None)
+        }
+    }
+
+    /// **Admin authority in `cause`'s name** (TODO-type-hardening H8.1,
+    /// §7.3a): what a trigger's action and a code body run as by default. The
+    /// row layer checks it as the administrator it is, so on a table without
+    /// row-level security it reaches every row, as it always has; it keeps
+    /// `cause`'s cause, and on a table with row-level security the policies
+    /// read that, so there it sees exactly what its cause sees.
+    ///
+    /// `reason` names the rule that stands behind the raised role, and is in
+    /// the system-authority inventory. The user, the chain and the changeset
+    /// are `cause`'s; the origin is the task's, as it always was.
+    pub fn elevated(cause: &Principal, reason: &'static str) -> AdminPrincipal {
+        let mut principal = Principal::build(Role::ADMIN, cause.user.clone()).in_current_origin();
+        principal.chain = cause.chain.clone();
+        principal.changeset = cause.changeset.clone();
+        principal.cause = cause.cause.clone();
+        principal.elevated = Some(reason);
+        AdminPrincipal {
+            principal,
+            by: reason,
+        }
+    }
+
+    /// **`cause` narrowed to the user at `role` with `user`'s fields**
+    /// (TODO-type-hardening H8.8, §7.3a, "Acting as a named user"): what
+    /// `asUser(id)` and `forUser` act as. The named user's principal, with
+    /// `cause`'s chain and changeset, in the task's origin; the policies read the named user,
+    /// and the named user is the cause of what it does from here.
+    ///
+    /// Refused, on every table, when the named user holds more authority than
+    /// the cause: only the system or an administrator may name somebody else,
+    /// and a role-80 caller may name only themselves.
+    pub fn narrowed(
+        cause: &Principal,
+        role: Role,
+        user: Option<Json>,
+    ) -> sc_error::Result<Principal> {
+        let named = Principal::build(role, user);
+        if !cause.cause.admits(role, named.user_id()) {
+            return Err(sc_error::Error::auth(format!(
+                "{} may not act as {}: a code body may act as a named user only when that user \
+                 holds no more authority than whoever caused the run, and only the system or an \
+                 administrator may name somebody else",
+                cause.cause.describe(),
+                named.cause.describe(),
+            )));
+        }
+        // From here the work is the named user's: their role and user are what
+        // the policies read, what an event their write raises is caused by,
+        // and the most anything elevated over them may see.
+        let mut named = named.in_current_origin();
+        named.chain = cause.chain.clone();
+        named.changeset = cause.changeset.clone();
+        Ok(named)
+    }
+
+    /// **System authority for an approved trigger's own statements**
+    /// (TODO-type-hardening H8.10, §7.3a, "Triggers that run as system"): the
+    /// admin role, and on a table with row-level security the system's — every
+    /// row, as a scheduled trigger reads them. `user` is still `cause`'s, so the
+    /// code sees who caused it, and an event its writes raise is still caused by
+    /// `cause`, so the triggers that fires keep the original cause: one approved
+    /// trigger cannot lend its authority to a chain of unapproved ones.
+    ///
+    /// Only an [`ApprovedTrigger`] makes one, and only a matching approval makes
+    /// that.
+    pub fn system_for_trigger(cause: &Principal, approved: &ApprovedTrigger) -> AdminPrincipal {
+        let _ = approved.name();
+        let mut admin = Principal::elevated(cause, SYSTEM_TRIGGER_RULE);
+        admin.principal.system_policy = true;
+        admin
+    }
+
+    /// The same caller, caused by **the system** rather than by themselves
+    /// (TODO-type-hardening H8.1): a scheduled or startup trigger's caller,
+    /// which carries nobody (so `asUser()` there is the public role) but whose
+    /// work has no human cause, so its admin authority is the system's on a
+    /// table with row-level security too (§7.3a, decided in H8.7). `reason`
+    /// is in the system-authority inventory.
+    #[must_use]
+    pub fn with_system_cause(mut self, _reason: &'static str) -> Principal {
+        self.cause = Cause(CauseKind::System);
+        self
+    }
+
+    /// Whose authority this work began with.
+    pub fn cause(&self) -> &Cause {
+        &self.cause
+    }
+
+    /// Why this principal's role was raised above its cause's, if it was.
+    pub fn elevated_by(&self) -> Option<&'static str> {
+        self.elevated
+    }
+
+    /// The role an RLS policy sees for this principal: the system's (the
+    /// admin's) for an approved trigger ([`system_for_trigger`]), its cause's
+    /// when it was [`elevated`](Principal::elevated), its own otherwise. What the
+    /// `sc.role` setting carries.
+    ///
+    /// [`system_for_trigger`]: Principal::system_for_trigger
+    pub fn policy_role(&self) -> Role {
+        match self.system_policy {
+            true => Role::ADMIN,
+            false => self.event_role(),
+        }
+    }
+
+    /// The user an RLS policy sees for this principal, on
+    /// [`policy_role`](Principal::policy_role)'s terms: nobody for the system.
+    pub fn policy_user(&self) -> Option<&Json> {
+        match self.system_policy {
+            true => None,
+            false => self.event_user(),
+        }
+    }
+
+    /// The role an event this principal's write raises is caused by: its
+    /// cause's when it was elevated (an approved trigger's included, so
+    /// elevation does not cascade), its own otherwise.
+    pub fn event_role(&self) -> Role {
+        match self.elevated {
+            Some(_) => self.cause.role(),
+            None => self.role,
+        }
+    }
+
+    /// The user an event this principal's write raises is caused by, on
+    /// [`event_role`](Principal::event_role)'s terms.
+    pub fn event_user(&self) -> Option<&Json> {
+        match self.elevated {
+            Some(_) => self.cause.user(),
+            None => self.user.as_ref(),
+        }
+    }
+
+    /// Whether this work's cause is the system: the server's own work, or work
+    /// elevated over a cause with no person behind it. What an event this
+    /// principal causes is marked with (`sc_action::Event::system`): a scheduled
+    /// trigger's caller carries nobody at the public role, but a trigger it
+    /// runs is caused by the system too.
+    pub fn event_is_system(&self) -> bool {
+        self.cause.is_system()
+    }
+
+    /// Whether an RLS policy reads the system for this principal because a
+    /// person approved the trigger it runs for ([`Principal::system_for_trigger`]).
+    pub fn runs_as_approved_system(&self) -> bool {
+        self.system_policy
     }
 
     /// The caller's role (public when anonymous).
@@ -340,6 +636,13 @@ impl Principal {
     pub fn capped_at(mut self, ceiling: Role) -> Principal {
         if !ceiling.meets(self.role) {
             self.role = ceiling;
+        }
+        // The cause too, or work elevated over this caller would find the
+        // uncapped role again on a table with row-level security.
+        if let CauseKind::Caller { role, .. } = &mut self.cause.0
+            && !ceiling.meets(*role)
+        {
+            *role = ceiling;
         }
         self
     }
@@ -394,9 +697,10 @@ impl Principal {
             .unwrap_or_default()
     }
 
-    /// The user's fields as the JSON text the `sc.user` GUC carries.
+    /// The user's fields as the JSON text the `sc.user` GUC carries: the
+    /// [`policy_user`](Principal::policy_user)'s.
     pub(crate) fn user_json(&self) -> Option<String> {
-        self.user.as_ref().map(Json::to_string)
+        self.policy_user().map(Json::to_string)
     }
 }
 
@@ -866,7 +1170,11 @@ mod tests {
             .expect("the inventory");
         // And the spawn authorities (TODO-type-hardening H4.1): who a program
         // the server starts runs for.
-        const MAKERS: [&str; 8] = [
+        const MAKERS: [&str; 12] = [
+            "Person::in_admin_session(",
+            "Operator::at_cli(",
+            "Principal::elevated(",
+            "with_system_cause(",
             "AdminPrincipal::vouched(",
             "AdminPrincipal::system(",
             "ConsoleAdmin::at_console(",
@@ -939,7 +1247,11 @@ mod tests {
     fn reason_in(maker: &str, args: &str) -> Option<String> {
         // The reason is the last argument of a two-argument maker.
         let last = match maker {
-            "AdminPrincipal::vouched(" | "ConsoleAdmin::at_console(" | "AdminProof::vouched(" => {
+            "AdminPrincipal::vouched("
+            | "Person::in_admin_session("
+            | "Principal::elevated("
+            | "ConsoleAdmin::at_console("
+            | "AdminProof::vouched(" => {
                 let mut depth = 0i32;
                 let mut split = None;
                 for (i, c) in args.char_indices() {

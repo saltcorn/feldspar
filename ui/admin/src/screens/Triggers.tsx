@@ -17,10 +17,18 @@
 //     back is the result, or the failure, and what a code body **printed** on
 //     its way to either — which is the answer to the next question, and the one
 //     a hosted deployment has no terminal to read off.
+//   - A trigger may **run as system** (TODO-type-hardening H8.10, §7.3a): its
+//     action's own statements then run at system authority, on tables with
+//     row-level security too, even when a user's event fires it. Anybody —
+//     an agent included — may ask for that; only a person approves it, here,
+//     for the code the trigger has now. So the list marks every trigger that
+//     runs as system and every one waiting for approval, and approving shows
+//     the code and says what approving takes on.
 
 import { useEffect, useState } from "react";
 import Alert from "react-bootstrap/Alert";
 import Button from "react-bootstrap/Button";
+import Modal from "react-bootstrap/Modal";
 import Table from "react-bootstrap/Table";
 
 import { api, errorMessage } from "../api";
@@ -115,6 +123,8 @@ export function Triggers() {
   const [ran, setRan] = useState<TestRunOutcome | null>(null);
   /** The trigger a test run is in flight for, so its own button says so. */
   const [running, setRunning] = useState<string | null>(null);
+  /** The trigger whose approval to run as system is being read, if any. */
+  const [approving, setApproving] = useState<TriggerItem | null>(null);
 
   const load = async () => {
     try {
@@ -175,8 +185,40 @@ export function Triggers() {
     }
   };
 
+  /** Approve a trigger's current code to run as system. The server refuses
+   * anything but a person's admin session, and binds the approval to this
+   * configuration: a later change makes it lapse. */
+  const approve = async (trigger: TriggerItem) => {
+    setError(null);
+    try {
+      await api.approveTriggerSystem(trigger.id);
+      setApproving(null);
+      await load();
+    } catch (err) {
+      setError(errorMessage(err, "Could not approve the trigger."));
+    }
+  };
+
+  /** Withdraw the approval: it runs as the user who caused it again. */
+  const revoke = async (trigger: TriggerItem) => {
+    setError(null);
+    try {
+      await api.revokeTriggerSystem(trigger.id);
+      await load();
+    } catch (err) {
+      setError(errorMessage(err, "Could not revoke the approval."));
+    }
+  };
+
   return (
     <>
+      {approving && (
+        <ApproveSystemModal
+          trigger={approving}
+          onApprove={() => void approve(approving)}
+          onClose={() => setApproving(null)}
+        />
+      )}
       <PageHeader
         pretitle="Automation"
         title={t("Triggers")}
@@ -298,6 +340,24 @@ export function Triggers() {
                           <T text="Test run" />
                         )}
                       </Button>
+                      {trigger.system_state === "pending" && (
+                        <Button
+                          size="sm"
+                          variant="outline-warning"
+                          onClick={() => setApproving(trigger)}
+                        >
+                          <T text="Approve…" />
+                        </Button>
+                      )}
+                      {trigger.system_state === "approved" && (
+                        <Button
+                          size="sm"
+                          variant="outline-secondary"
+                          onClick={() => void revoke(trigger)}
+                        >
+                          <T text="Revoke" />
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="outline-danger"
@@ -365,9 +425,92 @@ export function TestRunToast({
   );
 }
 
+/** The code a person is asked to approve: a code body's source, or the
+ * action's whole configuration. A workflow's steps are on its canvas. */
+export function approvalText(trigger: TriggerItem): string {
+  if (trigger.body === "workflow") return "";
+  const config = (trigger.configuration ?? {}) as Record<string, unknown>;
+  if (typeof config.code === "string") return config.code;
+  return JSON.stringify(config, null, 2);
+}
+
+/** Approving a trigger to run as system: what it runs, and what the approver
+ * takes on (§7.3a, "What the approver takes on"). */
+function ApproveSystemModal({
+  trigger,
+  onApprove,
+  onClose,
+}: {
+  trigger: TriggerItem;
+  onApprove: () => void;
+  onClose: () => void;
+}) {
+  const { t } = useT();
+  const code = approvalText(trigger);
+  return (
+    <Modal show onHide={onClose} centered size="lg">
+      <Modal.Header closeButton>
+        <Modal.Title>
+          {t('Approve "{name}" to run as system', { name: trigger.name })}
+        </Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        <p>
+          <T text="Its action will run at system authority — every row, tables with row-level security included — even when a user's event fires it. Triggers it causes still run as that user." />
+        </p>
+        <p>
+          <T text="It runs on input the user controls: the row they wrote, a button's arguments. Its code is the only check on that input. Whatever it returns to the caller, or writes where the caller can read it, is disclosed on purpose." />
+        </p>
+        <p className="text-muted small">
+          <T text="The approval is for the code below. Any later change to it, except one you make here, makes the approval lapse." />
+        </p>
+        {trigger.body === "workflow" ? (
+          <p>
+            <a href={`#/triggers/${encodeURIComponent(trigger.id)}/workflow`}>
+              <T text="Read its workflow steps" />
+            </a>
+          </p>
+        ) : (
+          <>
+            <div className="text-muted small mb-1">{trigger.action}</div>
+            <pre className="small text-break text-pre-wrap app-outcome-log">{code}</pre>
+          </>
+        )}
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="secondary" onClick={onClose}>
+          <T text="Cancel" />
+        </Button>
+        <Button variant="warning" onClick={onApprove}>
+          <T text="Approve to run as system" />
+        </Button>
+      </Modal.Footer>
+    </Modal>
+  );
+}
+
 /** Usable, switched off, or broken with the reason — the state that makes a
- * trigger that is not firing fixable instead of merely puzzling. */
+ * trigger that is not firing fixable instead of merely puzzling — and whether
+ * it runs as system or is waiting for a person to approve that. */
 function StatusCell({ trigger }: { trigger: TriggerItem }) {
+  return (
+    <>
+      <UsableBadge trigger={trigger} />
+      {trigger.system_state === "approved" && (
+        <div className="mt-1">
+          <StatusBadge tone="blue"><T text="Runs as system" /></StatusBadge>
+        </div>
+      )}
+      {trigger.system_state === "pending" && (
+        <div className="mt-1">
+          <StatusBadge tone="yellow"><T text="Awaiting approval to run as system" /></StatusBadge>
+        </div>
+      )}
+    </>
+  );
+}
+
+function UsableBadge({ trigger }: { trigger: TriggerItem }) {
   if (trigger.error) {
     return (
       <>

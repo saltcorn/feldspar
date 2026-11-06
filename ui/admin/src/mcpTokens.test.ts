@@ -83,18 +83,6 @@ const traits = [
         show_if: [],
       },
       {
-        name: "allow_access_changes",
-        label: "May change access rules (roles, ownership formula, row-level security)",
-        type: "bool",
-        required: false,
-        default: false,
-        options: [],
-        multiline: false,
-        secret: false,
-        create_only: false,
-        show_if: [],
-      },
-      {
         name: "allow_triggers",
         label: "May work on triggers",
         type: "bool",
@@ -133,7 +121,6 @@ function token(overrides: Partial<ApiToken> = {}): ApiToken {
       allow_create: true,
       allow_edit: true,
       allow_drop: false,
-      allow_access_changes: false,
       allow_triggers: true,
       allow_applications: true,
     },
@@ -177,7 +164,6 @@ describe("the grant checkboxes", () => {
       allow_create: true,
       allow_edit: true,
       allow_drop: true,
-      allow_access_changes: true,
       allow_triggers: true,
       allow_applications: true,
       allow_modules: true,
@@ -202,7 +188,7 @@ describe("minting", () => {
     expect(mintProblem({ ...form, expiresInDays: "" })).toBeNull();
   });
 
-  it("sends all eight flags explicitly, whichever are ticked", () => {
+  it("sends all seven flags explicitly, whichever are ticked", () => {
     const form = {
       label: "  claude-code on my laptop  ",
       grants: { allow_create: true, allow_triggers: true },
@@ -215,7 +201,6 @@ describe("minting", () => {
         allow_create: true,
         allow_edit: false,
         allow_drop: false,
-        allow_access_changes: false,
         allow_triggers: true,
         allow_applications: false,
         allow_modules: false,
@@ -292,7 +277,7 @@ describe("the token list", () => {
     expect(grantedKeys(all)).not.toContain("allow_drop");
     expect(grantedKeys(all)).toContain("allow_modules");
     expect(holdsAll(token())).toBe(false);
-    expect(shortGrantLabel("allow_access_changes")).toBe("access changes");
+    expect(shortGrantLabel("allow_applications")).toBe("applications");
   });
 
   it("says nothing rather than something wrong about a token never used", () => {

@@ -64,7 +64,7 @@ export type GrantUserCreditsResponse = { balance: string; available: string; deb
 export type SetUserCreditThresholdRequest = { threshold?: string | null };
 export type SetUserCreditThresholdResponse = { balance: string; available: string; debt: string; next_expiry?: string | null; low_balance_threshold?: string | null; buckets: Array<{ id: string; amount: string; remaining: string; kind: string; source: string; key: string; expires_at?: string | null; note?: string | null; created_at: string; live: boolean }>; entries: Array<{ id: string; kind: string; amount: string; balance: string; source: string; key: string; run?: string | null; agent?: string | null; model?: string | null; input_tokens?: number | null; output_tokens?: number | null; cost?: string | null; note?: string | null; created_at: string }> };
 export type ListApiTokensResponse = Array<{ id: string; user_id: string; label: string; grants: unknown; created_at: string; expires_at?: string | null; last_used_at?: string | null; revoked_at?: string | null; live: boolean }>;
-export type CreateApiTokenRequest = { label: string; grants?: { allow_create?: boolean | null; allow_edit?: boolean | null; allow_drop?: boolean | null; allow_access_changes?: boolean | null; allow_triggers?: boolean | null; allow_applications?: boolean | null; allow_modules?: boolean | null; allow_history?: boolean | null; allow_all?: boolean | null } | null; expires_in_days?: number | null };
+export type CreateApiTokenRequest = { label: string; grants?: { allow_create?: boolean | null; allow_edit?: boolean | null; allow_drop?: boolean | null; allow_triggers?: boolean | null; allow_applications?: boolean | null; allow_modules?: boolean | null; allow_history?: boolean | null; allow_all?: boolean | null } | null; expires_in_days?: number | null };
 export type CreateApiTokenResponse = { token: { id: string; user_id: string; label: string; grants: unknown; created_at: string; expires_at?: string | null; last_used_at?: string | null; revoked_at?: string | null; live: boolean }; secret: string };
 export type RevokeApiTokenResponse = { revoked: boolean };
 export type ListFieldsResponse = Array<{ name: string; label: string; description: string; sql_type: string; type: string; nullable: boolean; required: boolean; unique: boolean; primary_key: boolean; generated: boolean; default_expression: string; kind: unknown; attributes: unknown }>;
@@ -333,12 +333,16 @@ export type GetInstanceTranslationsResponse = unknown;
 export type SaveInstanceTranslationsRequest = { messages: unknown };
 export type SaveInstanceTranslationsResponse = unknown;
 export type TranslateInstanceMissingResponse = unknown;
-export type ListTriggersResponse = Array<{ id: string; name: string; description: string; when: string; channel?: string | null; only_if?: string | null; body?: string | null; action?: string | null; configuration?: unknown | null; min_role?: number | null; enabled: boolean; minute?: number | null; hour?: number | null; day_of_week?: number | null; error?: string | null; last_run_at?: string | null; workflow_version?: number | null; workflow_steps?: number | null }>;
-export type CreateTriggerRequest = { name: string; description: string; when: string; channel?: string | null; only_if?: string | null; body?: string | null; action?: string | null; configuration?: unknown | null; min_role?: number | null; enabled: boolean; minute?: number | null; hour?: number | null; day_of_week?: number | null };
-export type CreateTriggerResponse = { id: string; name: string; description: string; when: string; channel?: string | null; only_if?: string | null; body?: string | null; action?: string | null; configuration?: unknown | null; min_role?: number | null; enabled: boolean; minute?: number | null; hour?: number | null; day_of_week?: number | null; error?: string | null; last_run_at?: string | null; workflow_version?: number | null; workflow_steps?: number | null };
-export type UpdateTriggerRequest = { name: string; description: string; when: string; channel?: string | null; only_if?: string | null; body?: string | null; action?: string | null; configuration?: unknown | null; min_role?: number | null; enabled: boolean; minute?: number | null; hour?: number | null; day_of_week?: number | null };
-export type UpdateTriggerResponse = { id: string; name: string; description: string; when: string; channel?: string | null; only_if?: string | null; body?: string | null; action?: string | null; configuration?: unknown | null; min_role?: number | null; enabled: boolean; minute?: number | null; hour?: number | null; day_of_week?: number | null; error?: string | null; last_run_at?: string | null; workflow_version?: number | null; workflow_steps?: number | null };
+export type ListTriggersResponse = Array<{ id: string; name: string; description: string; when: string; channel?: string | null; only_if?: string | null; body?: string | null; action?: string | null; configuration?: unknown | null; min_role?: number | null; enabled: boolean; runs_as_system?: boolean | null; minute?: number | null; hour?: number | null; day_of_week?: number | null; error?: string | null; last_run_at?: string | null; workflow_version?: number | null; workflow_steps?: number | null; system_approval?: { hash: string; by?: string | null; at: string } | null; system_state?: string | null }>;
+export type CreateTriggerRequest = { name: string; description: string; when: string; channel?: string | null; only_if?: string | null; body?: string | null; action?: string | null; configuration?: unknown | null; min_role?: number | null; enabled: boolean; runs_as_system?: boolean | null; minute?: number | null; hour?: number | null; day_of_week?: number | null };
+export type CreateTriggerResponse = { id: string; name: string; description: string; when: string; channel?: string | null; only_if?: string | null; body?: string | null; action?: string | null; configuration?: unknown | null; min_role?: number | null; enabled: boolean; runs_as_system?: boolean | null; minute?: number | null; hour?: number | null; day_of_week?: number | null; error?: string | null; last_run_at?: string | null; workflow_version?: number | null; workflow_steps?: number | null; system_approval?: { hash: string; by?: string | null; at: string } | null; system_state?: string | null };
+export type UpdateTriggerRequest = { name: string; description: string; when: string; channel?: string | null; only_if?: string | null; body?: string | null; action?: string | null; configuration?: unknown | null; min_role?: number | null; enabled: boolean; runs_as_system?: boolean | null; minute?: number | null; hour?: number | null; day_of_week?: number | null };
+export type UpdateTriggerResponse = { id: string; name: string; description: string; when: string; channel?: string | null; only_if?: string | null; body?: string | null; action?: string | null; configuration?: unknown | null; min_role?: number | null; enabled: boolean; runs_as_system?: boolean | null; minute?: number | null; hour?: number | null; day_of_week?: number | null; error?: string | null; last_run_at?: string | null; workflow_version?: number | null; workflow_steps?: number | null; system_approval?: { hash: string; by?: string | null; at: string } | null; system_state?: string | null };
 export type DeleteTriggerResponse = { deleted: boolean };
+export type ApproveTriggerSystemResponse = { id: string; name: string; description: string; when: string; channel?: string | null; only_if?: string | null; body?: string | null; action?: string | null; configuration?: unknown | null; min_role?: number | null; enabled: boolean; runs_as_system?: boolean | null; minute?: number | null; hour?: number | null; day_of_week?: number | null; error?: string | null; last_run_at?: string | null; workflow_version?: number | null; workflow_steps?: number | null; system_approval?: { hash: string; by?: string | null; at: string } | null; system_state?: string | null };
+export type RevokeTriggerSystemResponse = { id: string; name: string; description: string; when: string; channel?: string | null; only_if?: string | null; body?: string | null; action?: string | null; configuration?: unknown | null; min_role?: number | null; enabled: boolean; runs_as_system?: boolean | null; minute?: number | null; hour?: number | null; day_of_week?: number | null; error?: string | null; last_run_at?: string | null; workflow_version?: number | null; workflow_steps?: number | null; system_approval?: { hash: string; by?: string | null; at: string } | null; system_state?: string | null };
+export type ListAdminNoticesResponse = Array<{ id: string; title: string; lines: Array<string>; created_at: string }>;
+export type DismissAdminNoticeResponse = { dismissed: boolean };
 export type RunTriggerRequest = unknown;
 export type RunTriggerResponse = { result: unknown };
 export type TestRunTriggerRequest = unknown;
@@ -756,6 +760,10 @@ export interface ApiClient {
   createTrigger(body: CreateTriggerRequest): Promise<CreateTriggerResponse>;
   updateTrigger(id: string, body: UpdateTriggerRequest): Promise<UpdateTriggerResponse>;
   deleteTrigger(id: string): Promise<DeleteTriggerResponse>;
+  approveTriggerSystem(id: string): Promise<ApproveTriggerSystemResponse>;
+  revokeTriggerSystem(id: string): Promise<RevokeTriggerSystemResponse>;
+  listAdminNotices(): Promise<ListAdminNoticesResponse>;
+  dismissAdminNotice(id: string): Promise<DismissAdminNoticeResponse>;
   runTrigger(id: string, body: RunTriggerRequest): Promise<RunTriggerResponse>;
   testRunTrigger(id: string, body: TestRunTriggerRequest): Promise<TestRunTriggerResponse>;
   listActions(query?: ListActionsQuery): Promise<ListActionsResponse>;
@@ -2860,6 +2868,38 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("deleteTrigger", res);
       return (await res.json()) as DeleteTriggerResponse;
+    },
+    async approveTriggerSystem(id) {
+      const res = await doFetch(`${baseUrl}/api/triggers/${encodeURIComponent(id)}/system-approval`, {
+        method: "POST",
+        headers: requestHeaders("POST", false),
+      });
+      if (!res.ok) throw await clientError("approveTriggerSystem", res);
+      return (await res.json()) as ApproveTriggerSystemResponse;
+    },
+    async revokeTriggerSystem(id) {
+      const res = await doFetch(`${baseUrl}/api/triggers/${encodeURIComponent(id)}/system-approval`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("revokeTriggerSystem", res);
+      return (await res.json()) as RevokeTriggerSystemResponse;
+    },
+    async listAdminNotices() {
+      const res = await doFetch(`${baseUrl}/api/admin-notices`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("listAdminNotices", res);
+      return (await res.json()) as ListAdminNoticesResponse;
+    },
+    async dismissAdminNotice(id) {
+      const res = await doFetch(`${baseUrl}/api/admin-notices/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: requestHeaders("DELETE", false),
+      });
+      if (!res.ok) throw await clientError("dismissAdminNotice", res);
+      return (await res.json()) as DismissAdminNoticeResponse;
     },
     async runTrigger(id, body) {
       const res = await doFetch(`${baseUrl}/api/triggers/${encodeURIComponent(id)}/run`, {

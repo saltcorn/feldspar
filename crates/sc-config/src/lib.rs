@@ -66,9 +66,10 @@ pub use authentication::{
     shared_session_cookie, shared_session_cookie_from,
 };
 pub use defs::{
-    BACKUP_INCLUDE, BACKUP_SCHEDULE_STATUS, BACKUP_SCHEDULES, ConfigDef, ConfigSection,
-    DEFAULT_LLM_PROVIDER, ONBOARDING_DONE, STARTUP_HISTORY, STARTUP_HISTORY_DAYS, config_sections,
-    config_spec, definition, hidden_sections, internal_defs, known_keys,
+    ADMIN_NOTICES, BACKUP_INCLUDE, BACKUP_SCHEDULE_STATUS, BACKUP_SCHEDULES, ConfigDef,
+    ConfigSection, DEFAULT_LLM_PROVIDER, ONBOARDING_DONE, RLS_BOUNDARY_REPORTED, STARTUP_HISTORY,
+    STARTUP_HISTORY_DAYS, config_sections, config_spec, definition, hidden_sections, internal_defs,
+    known_keys,
 };
 pub use development::{
     ADMIN_SUBDOMAIN, DevelopmentSettings, IDE_TERMINAL_ENABLED, LOG_SQL, LOG_VERBOSITY,

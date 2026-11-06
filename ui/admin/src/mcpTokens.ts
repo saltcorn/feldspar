@@ -41,21 +41,24 @@ export const MCP_ENABLED = "mcp_enabled";
 /** The agent trait whose configuration form these grants are (§11.3). */
 export const ADMIN_COPILOT = "admin_copilot";
 
-/** The eight flags a token carries, in the order an admin ticks them: four
+/** The seven flags a token carries, in the order an admin ticks them: three
  * grants — what it may *do* — then four areas, which say what it may do it *to*.
- * A fresh token has all eight (`sc_api::mcp::token_flags_from_submitted`). */
+ * A fresh token has all seven (`sc_api::mcp::token_flags_from_submitted`).
+ *
+ * There is no access-changes grant (TODO-type-hardening H8.9): on a table with
+ * row-level security only a person changes its access rules, and any other
+ * table's are an agent's to change. */
 export const GRANT_KEYS = [
   "allow_create",
   "allow_edit",
   "allow_drop",
-  "allow_access_changes",
   "allow_triggers",
   "allow_applications",
   "allow_modules",
   "allow_history",
 ] as const;
 
-/** The key a token stores to hold every grant — the eight above and any a later
+/** The key a token stores to hold every grant — the seven above and any a later
  * version adds (`sc_api::mcp::ALLOW_ALL`). A token's own key; the copilot has no
  * such checkbox. */
 export const ALLOW_ALL = "allow_all";
@@ -72,7 +75,6 @@ export const FALLBACK_GRANT_FIELDS: FieldSpec[] = [
   { name: "allow_create", label: "May create", default: true },
   { name: "allow_edit", label: "May change what is there", default: true },
   { name: "allow_drop", label: "May drop and delete", default: false },
-  { name: "allow_access_changes", label: "May change access rules", default: false },
   { name: "allow_triggers", label: "May work on triggers", default: true },
   { name: "allow_applications", label: "May work on applications", default: true },
   {
@@ -95,7 +97,7 @@ export const FALLBACK_GRANT_FIELDS: FieldSpec[] = [
 
 /** The grant checkboxes, taken from the copilot's own configuration form.
  *
- * The eight of `GRANT_KEYS`, in that order, each with the label and default the
+ * The seven of `GRANT_KEYS`, in that order, each with the label and default the
  * server declared for it. A key the trait does not declare falls back to its own
  * entry above rather than disappearing: a token missing a checkbox would be a
  * token minted with a flag nobody was asked about. */

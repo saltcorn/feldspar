@@ -54,6 +54,7 @@ sc-agent.workspace = true
 # The trigger dispatcher `serve` starts its schedulers with, named in the
 # service set `serve` and `restore` share.
 sc-action.workspace = true
+sc-workflow.workspace = true
 # The Analytics UI's tables and the demo data (analytics TODO A1).
 sc-dataset.workspace = true
 sc-analytics.workspace = true

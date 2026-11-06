@@ -399,10 +399,19 @@ async fn furnish(server: &mut Server) -> sc_error::Result<()> {
                 "configuration": { "code": "row.title" },
                 "min_role": null,
                 "enabled": true,
+                "runs_as_system": true,
             })),
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
+    // Approved by the person at the console (TODO-type-hardening H8.10), which
+    // a restore that person makes keeps.
+    let id = body["id"].as_str().expect("the trigger's id").to_owned();
+    let (status, body) = server
+        .client
+        .send("POST", &format!("/api/triggers/{id}/system-approval"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     let (certificate, private_key) = self_signed();
     let (status, body) = server
@@ -765,6 +774,9 @@ async fn a_backup_restores_into_a_second_installation() -> sc_error::Result<()> 
     // here, and it fires on the table that was restored beside it.
     assert_eq!(trigger["error"], Value::Null);
     assert_eq!(trigger["channel"], json!("books"));
+    // A person restored it, so its approval to run as system came with it, for
+    // the same configuration (TODO-type-hardening H8.10).
+    assert_eq!(trigger["system_state"], json!("approved"), "{trigger}");
 
     // The private key travelled — a backup that redacted it would restore a server
     // that cannot serve HTTPS — and it is *stored*, not merely echoed.

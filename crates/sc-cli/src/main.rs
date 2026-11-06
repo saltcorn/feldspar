@@ -29,6 +29,7 @@ use commands::migrate::migrate_command;
 use commands::module::module_command;
 use commands::python::python_command;
 use commands::serve::serve_command;
+use commands::trigger::trigger_command;
 use commands::users::{add_user_command, delete_user_command, modify_user_command, role_command};
 use sc_error::Result;
 
@@ -104,6 +105,7 @@ async fn run(args: &[String]) -> Result<()> {
         Some("cmdstan") => cmdstan_command(&args[1..]).await,
         Some("python") => python_command(&args[1..]).await,
         Some("demo") => demo_command(&args[1..]).await,
+        Some("trigger") => trigger_command(&args[1..]).await,
         // The profile is the file the binary was built with, so the one a
         // container is run under always matches the image it runs.
         // The build's version, commit and build time — the System tab's line.
@@ -180,7 +182,6 @@ fn print_usage() {
     );
     eprintln!("                      [--allow-drop|--no-allow-drop]");
     eprintln!("                      [--checklists none|append|full]");
-    eprintln!("                      [--allow-access-changes|--no-allow-access-changes]");
     eprintln!("                      [--allow-triggers|--no-allow-triggers]");
     eprintln!("                      [--allow-applications|--no-allow-applications]");
     eprintln!("                      [--allow-modules|--no-allow-modules]");
@@ -188,6 +189,8 @@ fn print_usage() {
     eprintln!(
         "  feldspar mcp-token create --label TEXT --email EMAIL --routes-only [--expires-in-days N]"
     );
+    eprintln!("  feldspar trigger approve-system|revoke-system NAME [database flags]");
+    eprintln!("                      (approve a trigger's current code to run as system)");
     eprintln!("                      (module routes only, as a user of any role)");
     eprintln!("  feldspar mcp-token list [--json] [database flags]");
     eprintln!("  feldspar build-agent --server URL [--token-file PATH] [--workspace DIR]");

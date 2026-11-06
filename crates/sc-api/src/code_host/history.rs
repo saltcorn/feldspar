@@ -101,7 +101,11 @@ pub(super) async fn answer(host: &TableHost<'_>, request: Json) -> Result<Json> 
             WHATS.join(", ")
         )));
     }
-    let actor = host.actor(&plan.authority).await?;
+    // Row history is read from the change log, past the table's policies, so
+    // on a table with row-level security an admin actor reads it as its cause
+    // (TODO-type-hardening H8.2).
+    let actor = host.actor_on(&plan.authority, &plan.table).await?;
+    let actor = host.as_cause_on(actor, &plan.table)?;
     let evaluator = host.evaluator.as_ref();
     // Views of the actor (TODO-type-hardening H3.4): the admin's from its
     // proof, in the event's user's name; a delegated caller's from its

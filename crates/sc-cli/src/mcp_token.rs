@@ -2,7 +2,7 @@
 //! bearer tokens (design §13.6), from a terminal.
 //!
 //! The same three things the **Settings → Development** panel does, over the
-//! same `sc_auth::tokens` functions, with the same seven grants (and
+//! same `sc_auth::tokens` functions, with the same seven flags (and
 //! `allow_all`, which holds every grant a later version adds) read and written
 //! through `sc_api::mcp` — so a token minted here is indistinguishable from one
 //! minted at the screen, and is listed and revoked there like any other.
@@ -53,7 +53,14 @@ pub struct CreateArgs {
     /// `--routes-only`: a token for module routes and nothing else
     /// ([`sc_auth::GRANT_ROUTES_ONLY`]), which may run as a user of any role.
     pub routes_only: bool,
+    /// What the operator should be told about the arguments: a retired flag
+    /// that was accepted and ignored.
+    pub warnings: Vec<String>,
 }
+
+/// The flag of the retired access-changes grant (TODO-type-hardening H8.9),
+/// still accepted so a script that passes it keeps working.
+const RETIRED_ACCESS_FLAG: &str = "--allow-access-changes";
 
 /// Parse `mcp-token create`'s flags. Unknown ones are refused by name.
 pub fn parse_create(args: &[String]) -> Result<CreateArgs> {
@@ -65,8 +72,17 @@ pub fn parse_create(args: &[String]) -> Result<CreateArgs> {
     let mut name = None;
     let mut grants = Attrs::new();
     let mut routes_only = false;
+    let mut warnings = Vec::new();
     let mut it = args.iter();
     'args: while let Some(arg) = it.next() {
+        if arg == RETIRED_ACCESS_FLAG || *arg == format!("--no-{}", &RETIRED_ACCESS_FLAG[2..]) {
+            warnings.push(format!(
+                "{arg} is deprecated and ignored: there is no access-changes grant any more. \
+                 A table with row-level security has access rules only a person changes; \
+                 any other table's are an agent's to change (TECHNICAL_DESIGN §7.3a)"
+            ));
+            continue;
+        }
         if arg == "--admin" {
             admin = true;
             continue;
@@ -186,6 +202,7 @@ pub fn parse_create(args: &[String]) -> Result<CreateArgs> {
         url,
         name: name.unwrap_or_else(|| "feldspar".to_owned()),
         routes_only,
+        warnings,
     })
 }
 
@@ -315,14 +332,31 @@ mod tests {
         assert_eq!(stored["allow_triggers"], Json::Bool(false));
         assert_eq!(stored["allow_create"], Json::Bool(true));
         assert_eq!(stored["allow_edit"], Json::Bool(true));
-        assert_eq!(stored["allow_access_changes"], Json::Bool(true));
+        assert!(stored.get("allow_access_changes").is_none(), "retired");
         assert_eq!(stored["allow_applications"], Json::Bool(true));
         assert_eq!(stored["allow_modules"], Json::Bool(true));
         assert_eq!(
             describe_grants(&stored),
-            "allow_create allow_edit allow_drop allow_access_changes \
-             allow_applications allow_modules allow_history"
+            "allow_create allow_edit allow_drop allow_applications allow_modules \
+             allow_history"
         );
+    }
+
+    /// TODO-type-hardening H8.9: the retired flag is accepted, with a
+    /// deprecation warning, and stores nothing.
+    #[test]
+    fn the_retired_access_flag_is_accepted_with_a_warning_and_ignored() {
+        for flag in ["--allow-access-changes", "--no-allow-access-changes"] {
+            let parsed = parse_create(&args(&["--label", "old script", "--admin", flag])).unwrap();
+            assert_eq!(parsed.warnings.len(), 1, "{flag}");
+            assert!(
+                parsed.warnings[0].contains("deprecated"),
+                "{:?}",
+                parsed.warnings
+            );
+            let stored = normalised_grants(&parsed.grants).unwrap();
+            assert!(stored.get("allow_access_changes").is_none());
+        }
     }
 
     #[test]
@@ -341,8 +375,8 @@ mod tests {
         assert_eq!(stored["allow_modules"], Json::Bool(true));
         assert_eq!(
             describe_grants(&stored),
-            "allow_all allow_create allow_edit allow_access_changes allow_triggers \
-             allow_applications allow_modules allow_history"
+            "allow_all allow_create allow_edit allow_triggers allow_applications \
+             allow_modules allow_history"
         );
         // Without it, nothing claims the grants a later version adds.
         let plain = parse_create(&args(&["--label", "x", "--admin"])).unwrap();

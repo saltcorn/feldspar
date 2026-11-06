@@ -59,9 +59,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use sc_auth::{User, authenticate};
-use sc_catalog::{
-    AdminPrincipal, Authority, Catalog, DataFieldKind, FileOnConflict, Principal, Table, Unchecked,
-};
+use sc_catalog::{Authority, Catalog, DataFieldKind, FileOnConflict, Principal, Table, Unchecked};
 use sc_error::{Error, Repr, Result};
 use sc_expr::{JsEvaluator, Operation};
 use sc_files::validate_file_path;
@@ -1889,7 +1887,10 @@ async fn code_response(
         // request's user, through the store's rules.
         let opened = match file.authority == "admin" {
             true => {
-                let admin = AdminPrincipal::vouched(None, crate::code_host::CODE_ADMIN_RULE);
+                let admin = sc_catalog::Principal::elevated(
+                    &file_caller(user),
+                    crate::code_host::CODE_ADMIN_RULE,
+                );
                 sc_catalog::open_checked_store(cat, &file.store, &admin).await
             }
             false => sc_catalog::open_checked_store(cat, &file.store, &file_caller(user)).await,

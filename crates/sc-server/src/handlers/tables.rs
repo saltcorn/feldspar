@@ -160,7 +160,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     &[schema_edit::Operation::DropTable {
                         table: table.clone(),
                     }],
-                    &schema_edit::ApplyOptions::default(),
+                    &schema_edit::ApplyOptions::by(ctx.who.editor()),
                 )
                 .await?;
                 Ok(HandlerResponse::ok(json!({ "dropped": table })))
@@ -219,7 +219,10 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         table: table.name.clone(),
                         settings,
                     }],
-                    &schema_edit::ApplyOptions::default(),
+                    // A person in the admin UI may change an RLS table's
+                    // access rules; an MCP client's endpoint tool, calling
+                    // this same handler, may not (TODO-type-hardening H8.5).
+                    &schema_edit::ApplyOptions::by(ctx.who.editor()),
                 )
                 .await?;
                 let rls = catalog.primary_info().capabilities().row_level_security;
@@ -369,7 +372,8 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                 // policies a forgotten `rls_enabled` had turned on is the schema
                 // editor's rule, not this handler's.
                 let name = ctx.path_param("table")?.to_owned();
-                let deleted = schema_edit::forget_table_settings(&catalog, &name).await?;
+                let deleted =
+                    schema_edit::forget_table_settings(&catalog, &name, &ctx.who.editor()).await?;
                 Ok(HandlerResponse::ok(json!({ "deleted": deleted })))
             }
         }

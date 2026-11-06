@@ -683,20 +683,22 @@ mod tests {
         // Building writes the generated client and replaces what a subdomain
         // serves: a change to what is there, whatever the method reads as.
         assert_eq!(grant_of("buildApplication"), Some(Grant::Edit));
-        // Roles and accounts are access (TODO F1.9); deleting one is a deletion
-        // as well.
+        // Roles and accounts (TODO F1.9) need no access grant since
+        // TODO-type-hardening H8.9: creating is creating, disabling is an edit,
+        // and deleting still needs `allow_drop`. The last enabled admin is
+        // protected by `sc_auth::refuse_last_admin`, not by a grant.
         let also_of = |name: &str| {
             set.find(name)
                 .and_then(|e| e.mcp.as_ref())
                 .and_then(|t| t.also)
         };
+        assert_eq!(grant_of("createRole"), Some(Grant::Create));
+        assert_eq!(grant_of("setUserDisabled"), Some(Grant::Edit));
+        assert_eq!(grant_of("deleteRole"), Some(Grant::Drop));
+        assert_eq!(grant_of("deleteUser"), Some(Grant::Drop));
         for name in ["createRole", "setUserDisabled", "deleteRole", "deleteUser"] {
-            assert_eq!(grant_of(name), Some(Grant::AccessChanges), "{name}");
+            assert_eq!(also_of(name), None, "{name}");
         }
-        assert_eq!(also_of("createRole"), None);
-        assert_eq!(also_of("setUserDisabled"), None);
-        assert_eq!(also_of("deleteRole"), Some(Grant::Drop));
-        assert_eq!(also_of("deleteUser"), Some(Grant::Drop));
 
         for read_only in [
             "listAgents",

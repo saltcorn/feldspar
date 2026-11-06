@@ -19,11 +19,11 @@
 //!
 //! ## Grants
 //!
-//! Creating a stream needs `allow_create`, changing one `allow_edit`, deleting
-//! one `allow_drop`, and setting `min_role` — who may observe it — needs
-//! `allow_access_changes`, as a query's `min_role` does. Every grant and every
-//! stream is checked before anything is written, so a refused item changes
-//! nothing.
+//! Creating a stream needs `allow_create`, changing one `allow_edit` (its
+//! `min_role`, who may observe it, included: TODO-type-hardening H8.9 retired
+//! the separate access grant) and deleting one `allow_drop`. Every grant and
+//! every stream is checked before anything is written, so a refused item
+//! changes nothing.
 //!
 //! ## Through the admin's own save
 //!
@@ -39,8 +39,8 @@ use sc_types::ArgsExt;
 use std::sync::Arc;
 
 use sc_api::mcp::{
-    AdminTool, Area, GRANT_ACCESS_CHANGES, GRANT_CREATE, GRANT_DROP, GRANT_EDIT, ToolContext,
-    arguments, optional_role, require_grant, setting_json,
+    AdminTool, Area, GRANT_CREATE, GRANT_DROP, GRANT_EDIT, ToolContext, arguments, optional_role,
+    require_grant, setting_json,
 };
 use sc_api::schema_edit::Grants;
 use sc_catalog::Catalog;
@@ -108,9 +108,6 @@ fn edit_description(registry: &StreamRegistry, grants: &Grants) -> String {
     }
     if !grants.drop {
         refused.push("delete one (`allow_drop`)");
-    }
-    if !grants.access_changes {
-        refused.push("set `min_role` (`allow_access_changes`)");
     }
     let refused = match refused.is_empty() {
         true => String::new(),
@@ -377,11 +374,6 @@ async fn plan_save(
     if item.contains_key(ARG_MIN_ROLE) {
         let role = optional_role(item, ARG_MIN_ROLE)?;
         if role != stream.min_role {
-            require_grant(
-                grants.access_changes,
-                "set who may observe a stream",
-                GRANT_ACCESS_CHANGES,
-            )?;
             stream.min_role = role;
         }
     }
@@ -553,10 +545,7 @@ mod tests {
         assert!(all.contains("`table_changes`"), "{all}");
         assert!(!all.contains("You may **not**"), "{all}");
         let none = edit_description(&registry, &Grants::none());
-        assert!(
-            none.contains("set `min_role` (`allow_access_changes`)"),
-            "{none}"
-        );
+        assert!(!none.contains("allow_access_changes"), "retired: {none}");
         assert!(none.contains("delete one (`allow_drop`)"), "{none}");
     }
 }

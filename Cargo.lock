@@ -9000,6 +9000,7 @@ dependencies = [
  "sc-types",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "uuid",
 ]
@@ -9394,6 +9395,7 @@ dependencies = [
  "sc-test-harness",
  "sc-types",
  "sc-viewpattern",
+ "sc-workflow",
  "serde",
  "serde_json",
  "tokio",

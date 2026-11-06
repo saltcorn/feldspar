@@ -16,4 +16,5 @@ pub(crate) mod migrate;
 pub(crate) mod module;
 pub(crate) mod python;
 pub(crate) mod serve;
+pub(crate) mod trigger;
 pub(crate) mod users;

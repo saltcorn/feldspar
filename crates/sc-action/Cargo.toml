@@ -48,6 +48,7 @@ serde = { workspace = true }
 # UTC instants: a periodic trigger's due-time arithmetic and its `last_run_at`
 # (§10.2, decision 6). No timezone database — everything is UTC by decision.
 chrono.workspace = true
+sha2.workspace = true
 # `_fd_triggers` is stored metadata, so this crate speaks the query language and
 # reads rows back out of the driver (§9's storage pattern, as `file_stores` does).
 sc-query.workspace = true

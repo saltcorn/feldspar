@@ -252,7 +252,7 @@ impl SharedTx {
             // The system runs as the admin role with no user (`Authority`).
             let caller = authority.as_principal();
             let wanted = Applied::Caller(
-                caller.role(),
+                caller.policy_role(),
                 caller.user_json(),
                 caller.changeset_json(),
                 caller.session().map(str::to_owned),

@@ -81,6 +81,7 @@ pub async fn clear_all(
     catalog: &Catalog,
     apps: &AppMounts,
     delete_from_disk: &[String],
+    editor: sc_catalog::Editor,
 ) -> Result<ClearReport> {
     let mut report = ClearReport::default();
     // Read before the rows go: the definitions say where each store is on disk,
@@ -91,7 +92,14 @@ pub async fn clear_all(
         .await
         .unwrap_or_default();
 
-    let dropped = drop_user_tables(catalog).await? + drop_core_tables(catalog).await?;
+    // A table with row-level security is dropped only by a person or the
+    // operator (TODO-type-hardening H8.5): refused whole, before anything goes.
+    if editor.rls_table_access().is_none()
+        && let Some(table) = catalog.tables()?.into_iter().find(|t| t.rls_enabled)
+    {
+        return Err(sc_query::rls_refusal(&table.name));
+    }
+    let dropped = drop_user_tables(catalog, editor).await? + drop_core_tables(catalog).await?;
     report.cleared.push(match dropped {
         0 => "no tables to drop".to_owned(),
         1 => "dropped 1 table".to_owned(),
@@ -213,7 +221,7 @@ pub async fn clear_all(
 /// dropped once nothing else points at it, so the batch is ordered: a table
 /// goes once every table referencing it has gone, and a key round a cycle is
 /// dropped as a field first.
-async fn drop_user_tables(catalog: &Catalog) -> Result<usize> {
+async fn drop_user_tables(catalog: &Catalog, editor: sc_catalog::Editor) -> Result<usize> {
     let tables = catalog.tables()?;
     let (mut remaining, kept): (Vec<Table>, Vec<Table>) =
         tables.into_iter().partition(is_user_table);
@@ -272,7 +280,7 @@ async fn drop_user_tables(catalog: &Catalog) -> Result<usize> {
         remaining = held;
     }
     if !ops.is_empty() {
-        schema_edit::apply(catalog, &ops, &ApplyOptions::default()).await?;
+        schema_edit::apply(catalog, &ops, &ApplyOptions::by(editor)).await?;
     }
     Ok(count)
 }

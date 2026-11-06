@@ -40,7 +40,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                      decides what its users may reach, so say plainly what you are \
                      creating it for.",
                 )
-                .needs(Grant::AccessChanges),
+                .needs(Grant::Create),
             ),
     );
 
@@ -82,8 +82,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                 "Delete a role by its number. Refused for a built-in role and for one \
                  a user still holds — move those users first.",
             )
-            .needs(Grant::AccessChanges)
-            .and_needs(Grant::Drop),
+            .needs(Grant::Drop),
         ),
     );
 
@@ -146,8 +145,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                  `setUserDisabled`, which keeps the row and everything that names it. \
                  Refused for your own account and for the last enabled admin.",
             )
-            .needs(Grant::AccessChanges)
-            .and_needs(Grant::Drop),
+            .needs(Grant::Drop),
         ),
     );
 
@@ -172,7 +170,7 @@ pub(super) fn register(set: &mut EndpointSet) {
                  its row stays. Refused for your own account and for the last \
                  enabled admin.",
             )
-            .needs(Grant::AccessChanges),
+            .needs(Grant::Edit),
         ),
     );
 

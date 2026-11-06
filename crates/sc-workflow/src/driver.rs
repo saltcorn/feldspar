@@ -123,6 +123,39 @@ pub struct Driver<'a> {
     clock: &'a dyn Clock,
 }
 
+impl Driver<'_> {
+    /// Whether `run`'s steps run as system (TODO-type-hardening H8.10): it
+    /// started approved ([`ATTR_SYSTEM`](crate::run::ATTR_SYSTEM)), and its
+    /// trigger's approval is still the one for that configuration. A person
+    /// revoking it, or approving a later version instead, ends it for the
+    /// steps still to come.
+    fn system_approval(&self, run: &Run) -> Result<Option<sc_catalog::ApprovedTrigger>> {
+        let Some(Json::String(hash)) = run.attributes.get(crate::run::ATTR_SYSTEM) else {
+            return Ok(None);
+        };
+        let triggers = self.dispatcher.triggers()?;
+        let Some(trigger) = triggers.all().iter().find(|t| {
+            t.id.to_string()
+                == run
+                    .attributes
+                    .get(crate::run::ATTR_WORKFLOW)
+                    .and_then(Json::as_str)
+                    .unwrap_or_default()
+        }) else {
+            return Ok(None);
+        };
+        if !trigger.runs_as_system() {
+            return Ok(None);
+        }
+        let approved = trigger.system_approval.as_ref().map(|a| a.hash.as_str());
+        Ok(sc_catalog::ApprovedTrigger::verified(
+            &trigger.name,
+            approved,
+            hash,
+        ))
+    }
+}
+
 impl<'a> Driver<'a> {
     /// A driver over `catalog`, running steps through `dispatcher`.
     pub fn new(
@@ -171,6 +204,7 @@ impl<'a> Driver<'a> {
         let mut state = run_state(run)?;
         let event = run_event(run)?;
         let chain = run_chain(run);
+        let system = self.system_approval(run)?;
         let started_at = self.clock.now();
         let spent = state.steps_taken();
 
@@ -254,7 +288,16 @@ impl<'a> Driver<'a> {
                     let attempt = state.attempt();
                     serviced = Some((state.steps_taken(), step.clone(), attempt));
                     let outcome = self
-                        .run_action(&event, &chain, &step, &action, &configuration, &state, &tx)
+                        .run_action(
+                            &event,
+                            &chain,
+                            &step,
+                            &action,
+                            &configuration,
+                            &state,
+                            &tx,
+                            system.clone(),
+                        )
                         .await;
                     match outcome {
                         Ok((value, context)) => {
@@ -441,6 +484,7 @@ impl<'a> Driver<'a> {
         configuration: &Attrs,
         state: &WorkflowRun,
         tx: &SharedTx,
+        system: Option<sc_catalog::ApprovedTrigger>,
     ) -> Result<(Json, Attrs)> {
         let registry = self.dispatcher.registry();
         let action = registry.require(action.trim())?;
@@ -458,7 +502,8 @@ impl<'a> Driver<'a> {
             // triggers its writes fire write — commits with this step's advance
             // or is rolled back with it (decision 6).
             .with_transaction(tx.clone())
-            .with_run_context(state.context().clone());
+            .with_run_context(state.context().clone())
+            .with_system_approval(system);
         if let Some(evaluator) = &services.evaluator {
             ctx = ctx.with_evaluator(evaluator);
         }
@@ -619,6 +664,19 @@ pub async fn start_run(
     .map_err(|e| Error::invalid(format!("trigger `{}`: {e}", trigger.name)))?;
     let state = WorkflowRun::new(&workflow);
     let mut run = crate::run::new_run(trigger, workflow.version, event, chain, &state);
+    // Approved by a person to run as system, for this definition
+    // (TODO-type-hardening H8.10)? The run remembers the hash it was approved
+    // for, and its steps run as system while the approval is still for it.
+    if let Some(approved) = dispatcher.system_state(catalog, trigger).await?.approved() {
+        let hash = dispatcher.configuration_hash(catalog, trigger).await?;
+        run.attributes
+            .insert(crate::run::ATTR_SYSTEM.to_owned(), Json::String(hash));
+        sc_log::log_info!(
+            "workflow `{}`: run {} runs as system",
+            approved.name(),
+            run.id
+        );
+    }
     sc_agent::save_run(catalog, &run).await?;
     sc_log::log_info!(
         "workflow `{}`: started run {} on version {}",

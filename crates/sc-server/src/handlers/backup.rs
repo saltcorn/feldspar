@@ -186,6 +186,7 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                     file.path(),
                     password.as_deref(),
                     &selection,
+                    ctx.who.editor(),
                 )
                 .await?;
                 // A restore can create tables and stores an application's API is
@@ -349,8 +350,13 @@ pub(super) fn register(reg: &mut HandlerRegistry, state: &HandlerState) {
                         ));
                     }
                 };
-                let report =
-                    crate::clear_all::clear_all(&catalog, &apps, &delete_from_disk).await?;
+                let report = crate::clear_all::clear_all(
+                    &catalog,
+                    &apps,
+                    &delete_from_disk,
+                    ctx.who.editor(),
+                )
+                .await?;
                 // Every account is gone, the caller's included, so every session
                 // goes too: the next status says no user exists and the admin UI
                 // shows the create-first-user screen.

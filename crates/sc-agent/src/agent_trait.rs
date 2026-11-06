@@ -61,6 +61,16 @@ pub trait AgentTrait: Send + Sync {
     /// The configuration this trait takes, as form fields.
     fn config_spec(&self) -> Vec<FormField>;
 
+    /// Settings this trait **used to** take and no longer reads: a stored
+    /// configuration carrying one keeps loading, and the value is ignored
+    /// (`admin_copilot`'s `allow_access_changes`, TODO-type-hardening H8.9).
+    /// They are left out before the configuration is checked against
+    /// [`config_spec`](AgentTrait::config_spec), which refuses a key it does not
+    /// declare.
+    fn retired_settings(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Check a configuration beyond what [`config_spec`](AgentTrait::config_spec)
     /// can express — the part only this trait knows: that a table it names exists
     /// and can be addressed by primary key, that a trigger it exposes is real,

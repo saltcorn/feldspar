@@ -1152,6 +1152,10 @@ pub(crate) fn statement(cat: &Catalog, plan: &SqlPlan) -> Result<Statement> {
             named.statements
         )));
     }
+    // Nothing that forges the caller context or reshapes row-level security
+    // (TODO-type-hardening H8.3, H8.5). The text exists only now, so this is
+    // where it is read.
+    sc_query::check_admin_sql(&plan.sql, "this `db.sql()` statement")?;
     if let Some(name) = named.params.first() {
         return Err(Error::invalid(format!(
             "`db.sql()` binds its parameters by position, so `:{name}` is not one of them; \

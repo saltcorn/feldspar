@@ -1591,8 +1591,8 @@ fonts, and `blob:` images and media (object URLs from \
 API. To widen one directive, use the administration MCP tool \
 `update_application` with a `csp` section (`{ \"img-src\": [\"'self'\", \
 \"data:\", \"blob:\", \"https://tiles.example.com\"] }`, the whole new \
-list) — it needs the `allow_access_changes` grant, because a CSP is a security \
-boundary. `describe_applications` shows the current policy.\n";
+list) — a CSP is a security boundary, so say what you widen and why. \
+`describe_applications` shows the current policy.\n";
 
 /// `` `a`, `b` and `c` `` — the app's table names, for a sentence.
 fn names_list(tables: &[Table]) -> String {
@@ -6017,7 +6017,7 @@ export function Board({ id }: { id: number }) {
             "Never hand-write base64",
             "## The Content-Security-Policy",
             "`update_application` with a `csp` section",
-            "allow_access_changes",
+            "a CSP is a security boundary",
             "blob:",
             // TODO F2.9–F2.11: uploads, bytes, files and the share pattern.
             "api.uploads.<slot>(file",

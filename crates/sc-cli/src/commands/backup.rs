@@ -7,6 +7,11 @@ use sc_server::{ServerConfig, ServiceManager};
 
 use super::serve::{Services, install_services, serving_defaults};
 
+/// The operator restoring a backup at the CLI: a person, who may restore the
+/// access settings of a table with row-level security (TODO-type-hardening
+/// H8.5). Listed in the system-authority inventory.
+const RESTORE: sc_catalog::Operator = sc_catalog::Operator::at_cli("restore");
+
 /// The FILE a `backup` or `restore` names, which comes first, and the
 /// arguments after it.
 pub(crate) fn file_argument(
@@ -227,8 +232,15 @@ pub(crate) async fn restore_command(args: &[String]) -> Result<()> {
             .unwrap_or("at an unrecorded time"),
     );
     let selection = sc_backup::Selection::everything(&contents);
-    let report =
-        sc_backup::restore_backup(&catalog, &apps, &file, password.as_deref(), &selection).await?;
+    let report = sc_backup::restore_backup(
+        &catalog,
+        &apps,
+        &file,
+        password.as_deref(),
+        &selection,
+        sc_catalog::Editor::Operator(RESTORE),
+    )
+    .await?;
     for line in &report.restored {
         println!("restored {line}");
     }

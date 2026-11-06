@@ -27,8 +27,9 @@
 //! author with their book count". So that is what this file offers to write.
 //! The connected tables, the static directories and the CSP are changed by
 //! `update_application` beside it, because an external agent building an app
-//! needs them too; its CSP section is behind `allow_access_changes`, since a
-//! CSP is a security boundary.
+//! needs them too. (Its CSP section was behind the `allow_access_changes` grant
+//! until TODO-type-hardening H8.9 retired it; row-level security is the one
+//! lever that keeps agents off access rules, §7.3a.)
 //!
 //! ## The same save path as everything else
 //!
@@ -71,7 +72,7 @@ use std::sync::Arc;
 use sc_api::mcp::{
     AdminTool, Area, Areas, ToolContext, ToolSet, arguments, optional_role, require_grant,
 };
-use sc_api::schema_edit::{GRANT_ACCESS_CHANGES, GRANT_CREATE, GRANT_DROP, GRANT_EDIT, Grants};
+use sc_api::schema_edit::{GRANT_CREATE, GRANT_DROP, GRANT_EDIT, Grants};
 use sc_api::{CustomParam, CustomQuery, Method, ValueType};
 use sc_catalog::Catalog;
 use sc_error::{Error, Result};
@@ -437,18 +438,12 @@ fn save_description(grants: &Grants) -> String {
                            every call. Say so rather than retrying."
             .to_owned(),
     };
-    let access = match grants.access_changes {
-        true => format!(
-            "You may set `{ARG_MIN_ROLE}` (or `{ARG_PUBLIC}: true`, the same as \
-             `{ARG_MIN_ROLE}: 100`), which decides who may call the endpoint. That changes what users of this deployment can reach, so \
-             say plainly what you are about to do before you do it."
-        ),
-        false => format!(
-            "You may **not** set `{ARG_MIN_ROLE}` or `{ARG_PUBLIC}`; a call naming \
-             either is refused. \
-             Without it a query is admin-only, which is the safe default."
-        ),
-    };
+    let access = format!(
+        "You may set `{ARG_MIN_ROLE}` (or `{ARG_PUBLIC}: true`, the same as \
+         `{ARG_MIN_ROLE}: 100`), which decides who may call the endpoint; without it a \
+         query is admin-only, the safe default. That changes what users of this \
+         deployment can reach, so say plainly what you are about to do before you do it."
+    );
     format!(
         "Add a custom SQL query to an application's API, or change the one that \
          already has this name — the name is the identity within that API, so \
@@ -725,13 +720,6 @@ async fn save(ctx: &ToolContext<'_>, grants: &Grants, args: &Json) -> Result<Jso
             GRANT_EDIT,
         )?,
         None => require_grant(grants.create, "add a custom SQL query", GRANT_CREATE)?,
-    }
-    if args.contains_key(ARG_MIN_ROLE) || args.contains_key(ARG_PUBLIC) {
-        require_grant(
-            grants.access_changes,
-            "set who may call a custom SQL query",
-            GRANT_ACCESS_CHANGES,
-        )?;
     }
 
     let query = build(&name, existing.map(|i| &queries[i]), &args)?;
@@ -1396,7 +1384,8 @@ mod tests {
     fn the_descriptions_say_what_the_grants_do_not_allow() {
         let text = save_description(&Grants::none());
         assert!(text.contains("neither add nor change"), "{text}");
-        assert!(text.contains("may **not** set"), "{text}");
+        // Who may call it is set without a grant of its own (H8.9).
+        assert!(!text.contains("allow_access_changes"), "{text}");
         let text = save_description(&Grants::all());
         assert!(text.contains("add queries and change"), "{text}");
 

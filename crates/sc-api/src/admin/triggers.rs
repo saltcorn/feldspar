@@ -60,6 +60,65 @@ pub(super) fn register(set: &mut EndpointSet) {
         )])),
     );
 
+    // Approve a trigger to run as system, for its current configuration
+    // (TODO-type-hardening H8.10, §7.3a) — and revoke that. Only a person
+    // approves: the handler refuses anything but an admin's browser session,
+    // and neither is an MCP tool, so an agent that asks (`runs_as_system`)
+    // leaves a pending request for a person to approve here.
+    set.register(
+        Endpoint::new(
+            ids::APPROVE_TRIGGER_SYSTEM,
+            Method::Post,
+            api()
+                .lit("triggers")
+                .param("id", ValueType::Uuid)
+                .lit("system-approval"),
+        )
+        .output(trigger_schema()),
+    );
+    set.register(
+        Endpoint::new(
+            ids::REVOKE_TRIGGER_SYSTEM,
+            Method::Delete,
+            api()
+                .lit("triggers")
+                .param("id", ValueType::Uuid)
+                .lit("system-approval"),
+        )
+        .output(trigger_schema()),
+    );
+
+    // Notices for the administrators (TODO-type-hardening H8.6): what the
+    // server tells them once — the row-level-security upgrade report first —
+    // shown until one of them dismisses it.
+    let notice = || {
+        TypeSchema::struct_of([
+            StructField::new("id", TypeSchema::text()),
+            StructField::new("title", TypeSchema::text()),
+            StructField::new("lines", TypeSchema::array(TypeSchema::text())),
+            StructField::new("created_at", TypeSchema::text()),
+        ])
+    };
+    set.register(
+        Endpoint::new(
+            ids::LIST_ADMIN_NOTICES,
+            Method::Get,
+            api().lit("admin-notices"),
+        )
+        .output(TypeSchema::array(notice())),
+    );
+    set.register(
+        Endpoint::new(
+            ids::DISMISS_ADMIN_NOTICE,
+            Method::Delete,
+            api().lit("admin-notices").param("id", ValueType::Text),
+        )
+        .output(TypeSchema::struct_of([StructField::new(
+            "dismissed",
+            TypeSchema::bool(),
+        )])),
+    );
+
     // Run one trigger now — the admin's "test this now". The posted body is the
     // event's payload and the action's result comes back; an action that fails
     // comes back as an **error**, not a 200 carrying a failure nobody reads.
@@ -407,6 +466,22 @@ fn trigger_schema() -> TypeSchema {
         "workflow_steps",
         TypeSchema::optional(TypeSchema::int()),
     ));
+    // A person's approval to run as system, and whether it is for the
+    // configuration the trigger has now (TODO-type-hardening H8.10): `off`,
+    // `pending` (asks, and is not approved for what it is now) or `approved`.
+    // Read-only: only `approveTriggerSystem` writes an approval.
+    fields.push(StructField::new(
+        "system_approval",
+        TypeSchema::optional(TypeSchema::struct_of([
+            StructField::new("hash", TypeSchema::text()),
+            StructField::new("by", TypeSchema::optional(TypeSchema::uuid())),
+            StructField::new("at", TypeSchema::timestamp()),
+        ])),
+    ));
+    fields.push(StructField::new(
+        "system_state",
+        TypeSchema::optional(TypeSchema::text()),
+    ));
     TypeSchema::Struct(fields)
 }
 
@@ -439,6 +514,10 @@ fn trigger_fields() -> Vec<StructField> {
         StructField::new("configuration", TypeSchema::optional(TypeSchema::json())),
         StructField::new("min_role", TypeSchema::optional(TypeSchema::int())),
         StructField::new("enabled", TypeSchema::bool()),
+        // Whether it asks to run as system (TODO-type-hardening H8.10). A
+        // setting, not the approval: it elevates nothing until a person
+        // approves the trigger's configuration.
+        StructField::new("runs_as_system", TypeSchema::optional(TypeSchema::bool())),
         // The periodic timing (§10.2), null on the kinds that have none. Three
         // flat fields rather than a nested object: each is one number, each is
         // one input in the form, and a kind that does not use one refuses it —

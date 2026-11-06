@@ -2,6 +2,272 @@
 
 Changes in reverse chronological order.
 
+## Security hardening H8: RLS as a hard boundary
+
+The eighth part of `docs/SECURITY_REVIEW_2026-11.md` (TECHNICAL_DESIGN §7.3a;
+TODO-type-hardening H8): on a table with row-level security nothing elevates — no `asAdmin()`,
+no implicit admin authority, no forged caller context — and only a person changes its access
+rules or approves a trigger to run as system.
+
+**Behaviour change, on purpose.** On an instance that combines RLS tables with code that
+elevates: a trigger's or code body's default admin authority now sees, on an RLS table, what its
+cause sees; and an explicit `asAdmin()` over an RLS table is an error. Tables without RLS are
+unchanged. There is no setting to restore the old behaviour (§7.3a, "Compatibility").
+
+- **RLS takes the cause's authority** (H8.1).
+  - `sc_catalog::Cause` (a caller's role and user, or the system) is carried by every
+    `Principal` (`Principal::cause`). `Principal::elevated(&cause, reason)` is admin authority in
+    the cause's name that keeps the cause; it replaces `AdminPrincipal::vouched` with
+    `TRIGGER_ACTION_RULE` (`ActionContext::scoped`, the trigger default and the built-in row
+    actions) and with `CODE_ADMIN_RULE` (the code host's `db`, `fs` and `trigger`, and a file a
+    body serves as admin). Elevating an elevated principal does not stack, and
+    `Principal::capped_at` (an application's maximum role) caps the cause too.
+  - `set_caller_context` (and a shared transaction's re-apply check) writes
+    `Principal::policy_role` / `policy_user` to `sc.role` / `sc.user`: an elevated principal's
+    cause's, anyone else's own. The row layer still checks the elevated role, so tables without
+    RLS are read and written as before.
+  - `Event::caused_by` records the policy role and user, so a cascade started by a user stays
+    that user's at every level. `Event::system` (new, `Event::by_system`) marks an event with no
+    human cause — `Event::startup`, `Event::stream`, a run or a write at `Authority::System` (the
+    scheduler's) — and `ActionContext::caller` gives its caller a system cause
+    (`Principal::with_system_cause(NO_HUMAN_CAUSE)`), so a scheduled trigger's admin authority is
+    the system's on RLS tables (H8.7); `asUser()` there is still the public role. A workflow run
+    keeps the flag (`StoredEvent::system`, absent in older runs). A stream element's triggers are
+    treated as scheduled ones: the subscription is configuration, and nobody sent the element.
+  - Code hosts keep the caller they are handed (`TableHost`, `FileStoreHost`,
+    `TriggerRunHost::for_caller` clone it) so its cause reaches the elevation.
+  - Inventory: `Principal::elevated(` and `with_system_cause(` are makers checked by
+    `admin_proofs_are_in_the_inventory`; `NO_HUMAN_CAUSE` is listed in
+    `docs/SECURITY_REVIEW_2026-10.md`.
+  - Tests (`sc-action-builtins` `rls_cause.rs`, real Postgres policies and V8): a code action run
+    by a role-80 user reads only that user's rows from an RLS table while an admin's run reads
+    all of them; a scheduled trigger (the scheduler's `Authority::system` call) reads all of
+    them; a three-trigger cascade started by a user on a `spawn_scoped` task reads only that
+    user's rows at its last step; and the value type (no stacking, the capped cause).
+  - Existing tests that pinned the old behaviour now pin the new one: `code_host_as_user.rs`
+    `a_delegated_read_of_an_rls_table_sees_what_the_policies_allow` and `code_host_sql.rs`
+    `a_delegated_statement_runs_where_the_policies_can_see_it` /
+    `both_spellings_of_delegation_reach_the_same_statement` (a body's default authority over an
+    RLS table sees its caller's rows; an administrator's run sees all of them).
+- **`asAdmin()` on an RLS table, and named users** (H8.2).
+  - An explicit `asAdmin()` over a table with RLS is refused, naming the table and saying to use
+    `asUser(id)` instead: `db` reads, writes and aggregates and `db.x.history(…)`
+    (`TableHost::actor_on`), `trigger(name).asAdmin()` when the trigger's table has RLS
+    (`TriggerRunHost`), and a model's `writePosterior` into an RLS table. A body's *default*
+    authority is not refused; it is the elevation of H8.1. A view's host (`viewer_only`) maps
+    `asAdmin()` to the viewer, as before, and is not refused. `fs` reaches no table, so it is
+    unchanged; `db.sql()` names no table to refuse and runs at the cause's settings (H8.3
+    checks its text).
+  - Row history over an RLS table, read at a body's default admin authority, is read as the
+    cause (`TableHost::as_cause_on`): the change log is past the table's policies.
+  - `forUser` / `{ "user": id }` (`Authority::Named`) on `db` and `trigger(…)` goes through
+    `Principal::narrowed`, which refuses a named user with more authority than the cause, on
+    every table: the system or an administrator may name anyone; anyone else only themselves
+    (`Cause::admits`). `load_named_user` no longer stands alone.
+  - Tests: `sc-api` `code_host_rls_boundary.rs` — `asAdmin()` refused for a role-80 caller, an
+    administrator and a scheduled trigger alike, on a read and a write, while the default reads
+    the cause's rows and `asAdmin()` over a table without RLS still works; a role-80 caller
+    naming the administrator (on tables with and without RLS) or another user is refused, naming
+    herself is her view, an administrator may name anyone. `sc-action-builtins` `rls_cause.rs`
+    `as_admin_on_an_rls_table_is_refused_by_every_surface_of_a_body` (`db.asAdmin()`,
+    `db.books.asAdmin()`, `trigger(…).asAdmin()`, through V8).
+  - `sc-api` `v1_table_writes.rs`: the v1 helper's host is caused by an administrator, as its
+    comment always said, since a host with no caller is the public role and may name nobody.
+- **Statements cannot forge the caller context** (H8.3).
+  - `sc_query::check_admin_sql` reads admin-authored SQL with a scanner that knows every way SQL
+    hides text (literals, `E'…'` backslash escapes, dollar quotes, quoted identifiers, nested
+    comments; a `U&` Unicode-escaped name is refused outright) and refuses a statement that calls
+    `set_config`, names `pg_settings`, calls a function that runs SQL text (`query_to_xml` and
+    kin, `dblink`), is a `SET`, `RESET` or `DO`, creates, alters or drops a function or a
+    procedure, or alters a role, user, database or the system. With H8.5 it also refuses
+    reshaping row-level security (below).
+  - Checked when a custom SQL query is saved (`check_sql`, so `validate_custom_queries` and an
+    application save), again each time it runs (`prepare`: a query stored before the check, or
+    restored, is read there too), and each time a body's `db.sql()` runs (`plan::statement`).
+    **Behaviour change**: a stored custom query holding one of these no longer runs, and an
+    application holding one cannot be saved until it is removed.
+  - Tests: `sc-query` `guard::tests` (the CTE of the TODO, eight spellings of `set_config`,
+    `SET`/`RESET`/`DO`/functions/`ALTER ROLE`, ordinary SQL and text that only mentions the words
+    accepted, every statement read); `sc-api` `code_host_rls_boundary.rs`
+    `db_sql_that_sets_the_caller_context_is_refused_and_runs_nothing` (five forms through the
+    code host, and the policies still hold afterwards) and
+    `a_custom_sql_query_that_sets_the_caller_context_is_refused_on_save`.
+- **Unforgeable caller settings: designed, not built** (H8.4). TECHNICAL_DESIGN §7.3a now
+  describes it: a `NOLOGIN` guard role owning a secret and `SECURITY DEFINER` functions that
+  check a per-transaction HMAC (bound to the transaction id) of the caller settings, which
+  `set_caller_context` would set; policies reading `(SELECT sc_guard.caller_role())` (an
+  InitPlan, once per statement); provisioning by an operator command with a privileged
+  connection; a startup self-check. It is not built because it needs a role the server's own
+  database role cannot create (`CREATEROLE`, which neither this machine's test role nor a typical
+  deployment's has), so it is a deployment decision; H8.3's statement check is the boundary
+  until then.
+- **On an RLS table, only a person changes who may access it** (H8.5).
+  - `sc_catalog::Editor` (`editor.rs`): `Person` (an administrator in a browser session; made only
+    by sc-server's `AdminSession::person`), `Operator` (the CLI; `Operator::at_cli`) or
+    `Delegated` (anything else, and the default). Only the first two give the `RlsTableAccess`
+    that changing an RLS table's access settings, disabling RLS or dropping an RLS table needs.
+    Both makers are inventoried and checked by `admin_proofs_are_in_the_inventory`.
+  - `schema_edit::ApplyOptions::editor` (`ApplyOptions::by(editor)`): an `alter_table` on a table
+    that has RLS now (before the batch) whose `min_role_read`, `min_role_write`,
+    `ownership_formula`, `rls_enabled` or `history_min_role` differs from the stored value, and a
+    `drop_table` of such a table, are refused for a delegated editor with
+    `sc_query::rls_refusal`: "`<table>` has row-level security, so its access rules can only be
+    changed by a person in the admin UI. Tell the user what change you need and why."
+    (`sc_query::PERSON_ONLY`). Enabling RLS, columns, rows, queries and code stay open; a value
+    re-sent unchanged (the admin form's whole-object `PUT`) is not a change.
+    `forget_table_settings` (which drops the policies) takes the editor too.
+  - Who is who: `Admin::editor` is `Person` for a browser session and `Delegated` for an endpoint
+    reached through `Admin::delegated` (the catalog's admin host, an MCP endpoint tool), and the
+    table handlers (`updateTable`, `dropTable`, `deleteTableSettings`) and `clearAll` pass it; the
+    MCP and `admin_copilot` `edit_schema` is `Delegated`; `restore_backup` takes the editor (the
+    CLI's `feldspar restore` is `Operator`, the restore endpoint the session's), so an
+    agent-started partial restore does not change an existing RLS table's access settings (the
+    refusal is in the report). There is no application import or app sync yet (TODO-app-sync is
+    unbuilt); they will take the same editor. `clear_all` is refused whole for a delegated editor
+    when any table has RLS.
+  - Custom SQL and `db.sql()`: H8.3's statement check also refuses `ALTER TABLE … DISABLE | NO
+    FORCE ROW LEVEL SECURITY`, `… DISABLE TRIGGER`, `DROP TRIGGER` and `CREATE | ALTER | DROP
+    POLICY`, with the same reply naming the table, for everyone (a person changes RLS in the
+    admin UI, not from a query).
+  - The `edit_schema` tool's description says it: agents may set access rules and turn RLS on;
+    once on, a table's access rules are a person's; do not ask for RLS to be turned off.
+    TECHNICAL_DESIGN §7.3's "Who may write these rules" is rewritten.
+  - Tests: `sc-server` `mcp_server.rs` `on_an_rls_table_only_a_person_changes_who_may_access_it` —
+    through MCP, enabling RLS succeeds; changing the formula, raising a floor, `rls_enabled:
+    false` and dropping the table are each refused with the reply; a custom query running `ALTER
+    TABLE notes DISABLE ROW LEVEL SECURITY` is refused on save with it; adding a column succeeds;
+    then the same changes, and the drop, succeed through the admin session. `sc-catalog`
+    `editor::tests`; `sc-agent-builtins` `admin_copilot.rs`
+    `enabling_row_level_security_makes_two_callers_read_differently` now shows the agent refused
+    and the operator turning RLS off (with the "no longer enforced" note).
+- **Upgrade report** (H8.6). On the first start of this version (`serve`, before the startup
+  triggers), `sc_server::report_rls_elevation` reads the code and the trigger definitions and
+  lists, in the log and in an admin notice, every place the behaviour change reaches: each
+  trigger a user's event fires whose table has RLS or whose code names an RLS table (its default
+  admin authority there now sees what its cause sees; it may be approved to run as system), and
+  each trigger, custom code query or code library that says `asAdmin()` and names an RLS table
+  (now refused). Scheduled, startup and stream triggers still run as system and are not listed;
+  SQL custom queries run at their caller's settings and are not listed. It is a reading of the
+  text (`db.t`, `.t` after `asAdmin()`, `"t"`), so it errs towards listing. It runs once
+  (`sc_config::RLS_BOUNDARY_REPORTED`), and an instance with no RLS table gets no notice.
+  - Admin notices, new: `sc_config::ADMIN_NOTICES` holds them; `sc_server::{add_notice,
+    list_notices, dismiss_notice}`; the admin API's `listAdminNotices` (`GET
+    /api/admin-notices`) and `dismissAdminNotice` (`DELETE /api/admin-notices/{id}`); the admin
+    UI shows them above every screen until dismissed (`ui/admin/src/AdminNotices.tsx`).
+  - Tests: `sc-server` `mcp_server.rs`
+    `the_upgrade_report_lists_what_elevated_over_an_rls_table_once` (an insert trigger on an RLS
+    table is listed for its default authority and its `asAdmin()`, a daily one and an unrelated
+    one are not; a second run adds nothing; the notice is read and dismissed through the admin
+    API), and `notices::tests`.
+- **Triggers that run as system** (H8.10, §7.3a).
+  - The setting: `sc_action::ATTR_RUNS_AS_SYSTEM` (`Trigger::runs_as_system`,
+    `set_runs_as_system`), sparse in the trigger's attributes; the admin API's trigger body and
+    the MCP `save_trigger` tool take `runs_as_system`. It elevates nothing by itself.
+  - The approval: three nullable columns on `_fd_triggers` (`system_approved_hash`,
+    `system_approved_by`, `system_approved_at`; the bootstrap adds them, no migration), read into
+    `Trigger::system_approval` and never written by `save_trigger`. `Trigger::configuration_hash`
+    is SHA-256 over the event, table, `only_if`, body, action and configuration (the code), and
+    for a workflow the current definition without its version number
+    (`WorkflowEngine::fingerprint`, `sc_workflow::workflow_fingerprint` / `approval_hash`).
+    `Trigger::system_state(hash)` / `TriggerDispatcher::system_state` answer `Off`, `Pending` or
+    `Approved(ApprovedTrigger)`; `sc_catalog::ApprovedTrigger::verified` exists only when the
+    stored hash is the current one, so any change the person did not approve makes it lapse.
+  - Only a person approves: `sc_action::approve_system_trigger(catalog, &Editor, id, hash)`
+    refuses a delegated editor. The admin API's `approveTriggerSystem` /
+    `revokeTriggerSystem` (`POST` / `DELETE /api/triggers/{id}/system-approval`, not MCP tools)
+    and `feldspar trigger approve-system|revoke-system NAME` (it prints what it approves and what
+    approving takes on) are the two ways. An admin session's `updateTrigger` of a trigger that
+    was approved re-approves it for what it now is; anybody else's edit lets it lapse; turning the
+    setting off forgets the approval. An agent's `save_trigger` that leaves it pending answers
+    `system: "pending"` and the note "`<trigger>` will run as system once a person approves it in
+    the admin UI. Until then it runs as the user who caused it."
+  - Running: `Principal::system_for_trigger(&cause, &ApprovedTrigger)` (`SYSTEM_TRIGGER_RULE`)
+    is the only way to build the trigger's elevated principal. Its statements see the system on
+    RLS tables (`policy_role` admin, no `sc.user`), while `user` in the code is the cause's and
+    the events its writes raise are caused by the cause (`Principal::event_role` /
+    `event_user`, now distinct from the policy identity), so elevation does not cascade.
+    `fire_trigger_with` hands an approved trigger's context `with_system_approval`;
+    `ActionContext::admin_principal` is that principal, used by the row actions and, through
+    `TableHost::acting_as` / `FileStoreHost::acting_as`, by a code body's `db` and `fs`. A
+    trigger run directly (`trigger(name).run()`) is elevated only if it is itself approved. A
+    workflow run records the hash it started approved for (`ATTR_SYSTEM`), and its steps run as
+    system while the trigger's approval is still for that hash.
+  - Restores: the backup carries the approval (`trigger_json`'s `system_approval`); a person's
+    restore (`Editor::is_person`) writes it back (`restore_system_approval`), an agent's leaves
+    the request pending.
+  - Admin UI (`Triggers.tsx`, `TriggerForm.tsx`): the list marks "Runs as system" and "Awaiting
+    approval to run as system" (`system_state`); Approve… opens a dialog with the code (or a link
+    to the workflow's steps) and what approving takes on (input the user controls, deliberate
+    disclosure); Revoke withdraws it; the form has the "Run as system" switch and sends it back
+    on every save (the update is a whole-object `PUT`). Strings are translated into the five
+    shipped locales. The inventory (`docs/SECURITY_REVIEW_2026-10.md`) lists
+    `SYSTEM_TRIGGER_RULE` and the CLI's operator; approved triggers are listed by `listTriggers`.
+  - Tests: `sc-action-builtins` `rls_cause.rs`
+    `an_approved_trigger_reads_every_row_and_lapses_when_its_code_changes` — pending, a trigger
+    fired by a role-80 user's insert reads that user's rows at every level and a delegated
+    editor's approval is refused; approved, it reads every row while the trigger its write fires
+    still reads only that user's; after an edit that is not a person's re-approval, it is pending
+    and reads that user's rows again. `sc-server` `mcp_server.rs`
+    `only_a_person_approves_a_trigger_to_run_as_system` — an agent asks and is told it is pending,
+    a person approves in the admin session, a person's edit keeps the approval, the agent's edit
+    makes it lapse, revoking clears it. `backup_api.rs`: a person's restore keeps an approval.
+  - `sc-cli` depends on `sc-workflow` now (the CLI's approval hash), recorded in
+    TECHNICAL_DESIGN §2's crate table; `repo_hygiene.rs` pins §11.3's reworded "The grants cover
+    both halves". `sc-action` `store::tests::columns_and_values_stay_in_step` asserts that the
+    approval columns, like `last_run_at`, are not written by a save.
+- **`asUser(id)` in the code API** (H8.8). `.asUser(id)` — an id or a user row — on `db`, a
+  table, one query, `db.sql()` (through `db.asUser(id).sql(…)`), a store (`fs(s).asUser(id)`), a
+  model and a trigger handle sends the plan's `{ "user": id }` (the prelude's `userAuthority`);
+  `asUser()` with no argument is still the event's caller. The host narrows to the named user
+  with `Principal::narrowed` (H8.2), so it is refused when that user holds more authority than
+  whoever caused the run, and the statement runs at the named user's `sc.role` / `sc.user`. The
+  file host, which refused a named user before, now serves it as a delegated caller on a host of
+  its own for that request; a file a body serves (`response({ file })`) opened `asUser(id)` is
+  served as the request's user, never as the admin. `code_api_js.md` documents RLS's "nothing
+  elevates" and the per-user loop (the nightly reminder); the IDE's code types
+  (`ui/admin/src/codeTypes.ts`) take the optional argument.
+  - **Deviation**: §7.3a has the narrowed principal "keep the cause". It keeps the cause's chain
+    and changeset; its *cause* becomes the named user, since from there the work is theirs (what
+    the policies read, what an event its write raises is caused by). The check against the
+    original cause is made when it is narrowed, which is the only place it is needed.
+  - Tests: `sc-api` `code_host_rls_boundary.rs`
+    `a_scheduled_trigger_reads_one_users_rows_through_as_user` (through V8: the system's view,
+    then one user's by id and by row, and `db.asUser(bob).sql(…)` at bob's settings) and
+    `a_role_80_callers_as_user_of_an_admin_is_refused_on_every_surface` (`db`, `db.sql()`, `fs`;
+    naming herself is allowed).
+- **The `allow_access_changes` grant is retired** (H8.9). Every surface it guarded is open to
+  agents; H8.5 alone limits them, for RLS tables.
+  - `schema_edit::Grants` has three fields (`access_changes` removed). `GRANT_ACCESS_CHANGES` stays
+    as the retired key's name; `FLAG_KEYS` has seven keys; `grants_from_attrs`,
+    `flags_to_attrs` and `token_flags_from_submitted` no longer read or write it. A stored token
+    or `admin_copilot` configuration that carries it keeps loading, ignored:
+    `AgentTrait::retired_settings` (new, default empty; `admin_copilot` names the key) is removed
+    before `validate_trait` checks a configuration against its spec, which would otherwise refuse
+    the unknown key. `mcp::Grant::AccessChanges` stays for endpoint sets that name it, held by
+    everyone, and no endpoint uses it.
+  - Now open: a query's and a stream's `min_role` (`save_api_query`, `edit_streams`), a trigger's
+    `min_role` (`save_trigger`), `update_application`'s `api_tables`, public triggers and
+    signed-out agents (`allow_edit`, as the rest of the section), its `csp` and `access` sections
+    (`allow_edit`). Roles and accounts: `createRole` needs `allow_create`, `setUserDisabled`
+    `allow_edit`, `deleteRole` and `deleteUser` `allow_drop` only; the last enabled admin is still
+    protected by `sc_auth::refuse_last_admin`.
+  - `feldspar mcp-token create` accepts `--allow-access-changes` / `--no-allow-access-changes` with
+    a deprecation warning and stores nothing (`CreateArgs::warnings`); the help no longer lists
+    it. The tool descriptions, the agent skill (`sc-app/src/skill.rs`), the scaffold's CSP note,
+    `admin_copilot`'s form and the admin UI's token checkboxes (`ui/admin/src/mcpTokens.ts`) drop
+    it; the four generated admin clients are regenerated (the token grants' schema). The
+    TECHNICAL_DESIGN mentions in §7.3, §11.3, §13 and §15 are updated.
+  - Tests: `sc-server` `mcp_server.rs` `roles_and_accounts_need_no_access_grant_and_deleting_needs_drop`
+    (a token minted with the old flag off creates a role and disables an account; `deleteUser`
+    and `deleteRole` are refused without `allow_drop` and succeed with it; the last admin holds),
+    the stream and trigger-exposure tests set `min_role` and expose a public trigger without the
+    grant; `sc-agent-builtins` `admin_copilot.rs`
+    `a_configuration_with_the_retired_access_grant_still_loads` (and a typo'd key is still
+    refused), `admin_copilot_apps.rs` (a query's `min_role` and `public`, an application's CSP and
+    a row API with the default grants), `admin_copilot_triggers.rs`; `sc-cli`
+    `the_retired_access_flag_is_accepted_with_a_warning_and_ignored`; `sc-api` grant tests;
+    `ui/admin` `mcpTokens.test.ts`.
+
 ## Security hardening H7: ownership formula additions
 
 The seventh part of `docs/SECURITY_REVIEW_2026-11.md` (TECHNICAL_DESIGN §7.3a;

@@ -60,10 +60,14 @@
 //! trigger and a custom SQL query are all [`CFG_ALLOW_CREATE`]; deleting a trigger
 //! or a query is [`CFG_ALLOW_DROP`] alongside dropping a table; and a trigger's
 //! `min_role` — which decides who may `POST /actions/{name}` — and a query's,
-//! which decides who may call its endpoint, are **access rules**, so they need
-//! [`CFG_ALLOW_ACCESS`] exactly as a table's role floors do. A second and a third
-//! set of checkboxes would have been eight more decisions for the admin to make,
-//! on the same question, with the same right answers.
+//! which decides who may call its endpoint, are edits like any other. (They
+//! needed an `allow_access_changes` checkbox until TODO-type-hardening H8.9
+//! retired it: grants on agents are options nobody keeps track of, and on a
+//! table with row-level security only a person changes the access rules, §7.3a.
+//! A stored configuration that has the key keeps loading; it is ignored —
+//! [`AgentTrait::retired_settings`].) A second and a third set of checkboxes
+//! would have been more decisions for the admin to make, on the same question,
+//! with the same right answers.
 //!
 //! ## The two areas, which are the other question
 //!
@@ -196,9 +200,8 @@ pub const CFG_ALLOW_CREATE: &str = schema_edit::GRANT_CREATE;
 pub const CFG_ALLOW_EDIT: &str = schema_edit::GRANT_EDIT;
 /// May drop tables and fields, and delete triggers. Off by default.
 pub const CFG_ALLOW_DROP: &str = schema_edit::GRANT_DROP;
-/// May write the access rules of §7.3, and a trigger's `min_role`. Off by
-/// default, and above `allow_drop` — a drop announces itself and a widened role
-/// floor does not.
+/// The key of the retired access-changes checkbox (TODO-type-hardening H8.9):
+/// a stored configuration that carries it still loads, and it is ignored.
 pub const CFG_ALLOW_ACCESS: &str = schema_edit::GRANT_ACCESS_CHANGES;
 
 /// Whether the trigger half is offered at all. On by default.
@@ -295,13 +298,6 @@ impl AgentTrait for AdminCopilot {
             FormField::new(CFG_ALLOW_DROP, BasicType::Bool)
                 .label("May drop tables and fields, and delete triggers and custom SQL queries")
                 .default_value(false),
-            FormField::new(CFG_ALLOW_ACCESS, BasicType::Bool)
-                .label(
-                    "May change access rules (roles, ownership formula, row-level \
-                     security, a trigger's minimum role, who may call a custom \
-                     SQL query)",
-                )
-                .default_value(false),
             FormField::new(CFG_ALLOW_TRIGGERS, BasicType::Bool)
                 .label("May work on triggers")
                 .default_value(true),
@@ -331,6 +327,10 @@ impl AgentTrait for AdminCopilot {
     /// grants bound the **writing** tools only, and an agent with none of them is
     /// a read-only describer of the schema and the triggers, which is a thing an
     /// admin may deliberately want.
+    fn retired_settings(&self) -> &'static [&'static str] {
+        &[CFG_ALLOW_ACCESS]
+    }
+
     async fn validate_config(&self, check: &TraitCheck<'_>) -> Result<()> {
         // The same six keys asked the same question a token's grants are asked
         // (§13.6): one validator, because there is one vocabulary.
@@ -776,15 +776,18 @@ mod tests {
     }
 
     #[test]
-    fn dropping_and_access_changes_are_off_unless_asked_for() {
-        // An empty configuration is the safe one: it can build, it cannot
-        // destroy, and it cannot widen anybody's access.
+    fn dropping_is_off_unless_asked_for_and_the_access_grant_is_ignored() {
+        // An empty configuration is the safe one: it can build and it cannot
+        // destroy.
         let g = grants(&Attrs::new());
         assert!(g.create && g.edit);
-        assert!(!g.drop && !g.access_changes);
+        assert!(!g.drop);
 
+        // A configuration saved with the retired checkbox reads the same as one
+        // without it (TODO-type-hardening H8.9).
         let g = grants(&config(&[(CFG_ALLOW_DROP, true), (CFG_ALLOW_ACCESS, true)]));
-        assert!(g.drop && g.access_changes);
+        assert_eq!(g, grants(&config(&[(CFG_ALLOW_DROP, true)])));
+        assert_eq!(AdminCopilot.retired_settings(), &[CFG_ALLOW_ACCESS]);
 
         let g = grants(&config(&[
             (CFG_ALLOW_CREATE, false),

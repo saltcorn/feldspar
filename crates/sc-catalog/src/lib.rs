@@ -41,6 +41,7 @@ mod code_libraries;
 mod constraint;
 mod db_connections;
 mod edited;
+mod editor;
 mod events;
 mod field;
 mod field_meta;
@@ -71,9 +72,10 @@ mod wakeups;
 
 pub use admin_host::{AdminHost, BackendOperation, NewFileStore, TranslationsOf};
 pub use caller::{
-    ADMIN_MEETS_EVERY_FLOOR, AdminPrincipal, Authority, CallingApp, ConsoleAdmin, Origin,
-    Principal, SystemReason, TaskScope, UNTRUSTED_ORIGIN, Unchecked, VerifiedUser, current_origin,
-    is_untrusted_chain, spawn_scoped, untrusted_chain, with_origin,
+    ADMIN_MEETS_EVERY_FLOOR, AdminPrincipal, ApprovedTrigger, Authority, CallingApp, Cause,
+    ConsoleAdmin, Origin, Principal, SYSTEM_TRIGGER_RULE, SystemReason, TaskScope,
+    UNTRUSTED_ORIGIN, Unchecked, VerifiedUser, current_origin, is_untrusted_chain, spawn_scoped,
+    untrusted_chain, with_origin,
 };
 pub use catalog::{Catalog, CatalogSchema, DriverInfo, ProvidedTableIssue, SchemaStep};
 pub use change_log::{
@@ -103,6 +105,7 @@ pub use db_connections::{
 pub use edited::{
     COL_UPDATED_AT, TABLE_EDITS_TABLE, touch_tables, updated_at_by, updated_at_field, updated_now,
 };
+pub use editor::{Editor, Operator, Person, RlsTableAccess};
 pub use events::{LIVE_EVENTS, TRIGGER_EVENTS, TableEvents, TableWrite, WriteOp};
 pub use field::{
     DataField, DataFieldKind, DbId, FieldId, FileOnConflict, FileOnDelete, FileStoreId,

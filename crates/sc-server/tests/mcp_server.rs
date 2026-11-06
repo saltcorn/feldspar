@@ -1284,12 +1284,13 @@ async fn call_tool(router: &Router, token: &str, name: &str, arguments: Value) -
     (result["isError"] == json!(true), value)
 }
 
-/// The role and account tools are offered, each refusal names the grant it
-/// lacks, deleting needs `allow_drop` as well as `allow_access_changes`, and
+/// The role and account tools are offered and need no access grant
+/// (TODO-type-hardening H8.9 retired it): a token minted without it creates a
+/// role and disables an account; deleting either still needs `allow_drop`; and
 /// the admin the token runs as cannot disable or delete themselves — the last
-/// admin there is.
+/// admin there is (`sc_auth::refuse_last_admin`).
 #[tokio::test]
-async fn roles_and_accounts_are_tools_behind_the_access_and_drop_grants() -> sc_error::Result<()> {
+async fn roles_and_accounts_need_no_access_grant_and_deleting_needs_drop() -> sc_error::Result<()> {
     let Harness {
         mut client,
         router,
@@ -1298,24 +1299,15 @@ async fn roles_and_accounts_are_tools_behind_the_access_and_drop_grants() -> sc_
         ..
     } = setup().await?;
     enable_mcp(&catalog, true).await?;
+    // Minted the way an old script mints: the retired flag is accepted and
+    // ignored.
     let plain = mint(
         &mut client,
-        "no access",
+        "no access, no drop",
         json!({ "allow_access_changes": false, "allow_drop": false }),
     )
     .await;
-    let access = mint(
-        &mut client,
-        "access",
-        json!({ "allow_access_changes": true, "allow_drop": false }),
-    )
-    .await;
-    let both = mint(
-        &mut client,
-        "access and drop",
-        json!({ "allow_access_changes": true, "allow_drop": true }),
-    )
-    .await;
+    let drop = mint(&mut client, "drop", json!({ "allow_drop": true })).await;
 
     let (status, listed) = McpRequest::new(
         &plain,
@@ -1348,26 +1340,16 @@ async fn roles_and_accounts_are_tools_behind_the_access_and_drop_grants() -> sc_
     let admin_id = users[0]["id"].as_str().expect("the admin's id").to_owned();
     assert!(!users.to_string().contains("password_hash"), "{users}");
 
-    // Creating a role is an access change.
+    // Creating a role needs no access grant.
     let editor = json!({ "role": 40, "name": "Editor", "description": "Edits" });
-    let (failed, text) = call_tool(&router, &plain, "createRole", editor.clone()).await;
-    assert!(
-        failed && text.to_string().contains("allow_access_changes"),
-        "{text}"
-    );
-    let (failed, created) = call_tool(&router, &access, "createRole", editor).await;
+    let (failed, created) = call_tool(&router, &plain, "createRole", editor).await;
     assert!(!failed, "{created}");
     assert!(sc_auth::load_role(&catalog, Role::of(40)).await?.is_some());
 
-    // Deleting one is an access change *and* a deletion, and each refusal names
-    // the flag that is missing.
+    // Deleting one still needs `allow_drop`, and the refusal names it.
     let (failed, text) = call_tool(&router, &plain, "deleteRole", json!({ "role": 40 })).await;
-    assert!(
-        failed && text.to_string().contains("allow_access_changes"),
-        "{text}"
-    );
-    let (failed, text) = call_tool(&router, &access, "deleteRole", json!({ "role": 40 })).await;
     assert!(failed && text.to_string().contains("allow_drop"), "{text}");
+    assert!(!text.to_string().contains("allow_access_changes"), "{text}");
 
     // An account to act on.
     let (status, made) = client
@@ -1380,20 +1362,9 @@ async fn roles_and_accounts_are_tools_behind_the_access_and_drop_grants() -> sc_
     assert_eq!(status, StatusCode::CREATED, "{made}");
     let ed = made["user"]["id"].as_str().unwrap().to_owned();
 
-    let (failed, text) = call_tool(
-        &router,
-        &plain,
-        "setUserDisabled",
-        json!({ "id": ed, "disabled": true }),
-    )
-    .await;
-    assert!(
-        failed && text.to_string().contains("allow_access_changes"),
-        "{text}"
-    );
     let (failed, row) = call_tool(
         &router,
-        &access,
+        &plain,
         "setUserDisabled",
         json!({ "id": ed, "disabled": true }),
     )
@@ -1406,18 +1377,18 @@ async fn roles_and_accounts_are_tools_behind_the_access_and_drop_grants() -> sc_
         "disabled"
     );
 
-    let (failed, text) = call_tool(&router, &access, "deleteUser", json!({ "id": ed })).await;
+    let (failed, text) = call_tool(&router, &plain, "deleteUser", json!({ "id": ed })).await;
     assert!(failed && text.to_string().contains("allow_drop"), "{text}");
-    let (failed, text) = call_tool(&router, &both, "deleteUser", json!({ "id": ed })).await;
+    let (failed, text) = call_tool(&router, &drop, "deleteUser", json!({ "id": ed })).await;
     assert!(!failed, "{text}");
-    let (failed, text) = call_tool(&router, &both, "deleteRole", json!({ "role": 40 })).await;
+    let (failed, text) = call_tool(&router, &drop, "deleteRole", json!({ "role": 40 })).await;
     assert!(!failed, "{text}");
 
     // The only admin — the one this token runs as — cannot be disabled or
     // deleted through it.
     let (failed, text) = call_tool(
         &router,
-        &both,
+        &drop,
         "setUserDisabled",
         json!({ "id": admin_id, "disabled": true }),
     )
@@ -1426,7 +1397,7 @@ async fn roles_and_accounts_are_tools_behind_the_access_and_drop_grants() -> sc_
         failed && text.to_string().contains("cannot disable"),
         "{text}"
     );
-    let (failed, text) = call_tool(&router, &both, "deleteUser", json!({ "id": admin_id })).await;
+    let (failed, text) = call_tool(&router, &drop, "deleteUser", json!({ "id": admin_id })).await;
     assert!(
         failed && text.to_string().contains("cannot delete"),
         "{text}"
@@ -1443,8 +1414,8 @@ async fn roles_and_accounts_are_tools_behind_the_access_and_drop_grants() -> sc_
 /// `edit_schema`, a `document` stream on it made with `edit_streams` — flowing
 /// at once, because the save goes through the admin's own `saveStream` — and
 /// the stream exposed on the app with `update_application`. Setting who may
-/// observe it needs `allow_access_changes`; deleting it needs `allow_drop` and
-/// is refused while an application still exposes it.
+/// observe it needs no grant of its own; deleting it needs `allow_drop` and is
+/// refused while an application still exposes it.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn a_document_stream_is_created_exposed_and_deleted_over_mcp() -> sc_error::Result<()> {
@@ -1515,20 +1486,10 @@ async fn a_document_stream_is_created_exposed_and_deleted_over_mcp() -> sc_error
         "configuration": { "table": "notes", "field": "body" },
         "min_role": 80,
     }] });
-    // `min_role` is an access rule: refused whole without the grant.
-    let (error, refused) = call_tool(&router, &builder, "edit_streams", note_body.clone()).await;
-    assert!(error, "{refused}");
-    assert!(
-        refused.to_string().contains("allow_access_changes"),
-        "{refused}"
-    );
-    assert!(
-        sc_stream::load_stream_by_name(&catalog, "note_body")
-            .await?
-            .is_none()
-    );
+    // `min_role` needs no grant of its own (TODO-type-hardening H8.9): the
+    // builder's token, minted with the retired flag off, may set it.
 
-    let (error, created) = call_tool(&router, &admin, "edit_streams", note_body).await;
+    let (error, created) = call_tool(&router, &builder, "edit_streams", note_body).await;
     assert!(!error, "{created}");
     assert_eq!(created["created"], json!(["note_body"]), "{created}");
     assert_eq!(created["streams"][0]["min_role"], json!(80), "{created}");
@@ -1820,7 +1781,7 @@ async fn the_history_tools_are_offered_only_to_a_token_given_allow_history() -> 
 /// `none` trigger made with `save_trigger`, exposed with `update_application`'s
 /// `triggers` section, and `api.run<Name>()` in the generated client at once —
 /// with no one ticking a box. A trigger with an event, or one that does not
-/// exist, is refused by name; a public one needs `allow_access_changes`; and
+/// exist, is refused by name; a public one needs no grant of its own; and
 /// removing one takes the method back out of the client.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
@@ -1962,18 +1923,11 @@ async fn a_trigger_is_exposed_on_an_app_and_removed_over_mcp() -> sc_error::Resu
             "{text}"
         );
     }
-    // A public trigger opens a route to signed-out callers.
+    // A public trigger opens a route to signed-out callers. It needs no grant
+    // of its own (TODO-type-hardening H8.9): an exposed trigger meets rate and
+    // spending caps (security review #22).
     let public = json!({ "application": "shop", "triggers": { "add": ["open_door"] } });
-    let (error, refused) = call_tool(&router, &builder, "update_application", public.clone()).await;
-    assert!(
-        error && refused.to_string().contains("allow_access_changes"),
-        "{refused}"
-    );
-    let stored = sc_app::load_application_by_subdomain(&catalog, "shop")
-        .await?
-        .unwrap();
-    assert_eq!(stored.triggers.len(), 2);
-    let (error, opened) = call_tool(&router, &admin, "update_application", public).await;
+    let (error, opened) = call_tool(&router, &builder, "update_application", public).await;
     assert!(!error, "{opened}");
     assert_eq!(opened["triggers"][2]["min_role"], json!(100), "{opened}");
 
@@ -2084,5 +2038,363 @@ async fn a_unique_field_is_described_as_unique_after_a_reload() -> sc_error::Res
     assert_eq!(rest("sku"), json!(true), "{listed}");
     assert_eq!(rest("plain"), json!(true), "{listed}");
     assert_eq!(rest("a"), json!(false), "{listed}");
+    Ok(())
+}
+
+// --- row-level security: only a person changes the access rules (H8.5) -------
+
+/// What every agent-facing refusal of a change to an RLS table's access rules
+/// ends with (TODO-type-hardening H8.5, §7.3a).
+fn person_only(table: &str) -> String {
+    format!(
+        "`{table}` has row-level security, so its access rules can only be changed by a \
+         person in the admin UI. Tell the user what change you need and why."
+    )
+}
+
+/// The whole contract of H8.5, through the administration MCP server and the
+/// admin session side by side: an agent may turn RLS on and may add a column,
+/// and once it is on it may not change the formula, raise a floor, turn RLS off,
+/// drop the table or reshape its policies from a custom query — each refused
+/// with the one reply — while a person in the admin UI may do all of them.
+#[tokio::test]
+async fn on_an_rls_table_only_a_person_changes_who_may_access_it() -> sc_error::Result<()> {
+    let Harness {
+        mut client,
+        router,
+        catalog,
+        apps,
+        _db,
+    } = setup().await?;
+    enable_mcp(&catalog, true).await?;
+    let token = mint(
+        &mut client,
+        "an agent with every grant",
+        json!({
+            "allow_create": true, "allow_edit": true, "allow_drop": true,
+            "allow_access_changes": true, "allow_applications": true,
+        }),
+    )
+    .await;
+    let created = edit_schema(
+        &router,
+        &token,
+        json!([{
+            "op": "create_table",
+            "table": "notes",
+            "fields": [
+                { "name": "id", "type": "int", "primary_key": true },
+                { "name": "owner", "type": "text" },
+            ],
+        }]),
+    )
+    .await;
+    assert_eq!(created["isError"], json!(false), "{created}");
+
+    // Enabling RLS through MCP succeeds.
+    let enabled = edit_schema(
+        &router,
+        &token,
+        json!([{
+            "op": "alter_table", "table": "notes",
+            "ownership_formula": "owner === user.email", "rls_enabled": true,
+        }]),
+    )
+    .await;
+    assert_eq!(enabled["isError"], json!(false), "{enabled}");
+    catalog.reload().await?;
+    assert!(catalog.require("notes")?.rls_enabled);
+
+    // Now each change to its access rules is refused, with the one reply.
+    for (what, op) in [
+        (
+            "changing the formula",
+            json!({ "op": "alter_table", "table": "notes", "ownership_formula": "true" }),
+        ),
+        (
+            "raising a floor",
+            json!({ "op": "alter_table", "table": "notes", "min_role_read": 1, "min_role_write": 40 }),
+        ),
+        (
+            "turning RLS off",
+            json!({ "op": "alter_table", "table": "notes", "rls_enabled": false }),
+        ),
+        (
+            "dropping the table",
+            json!({ "op": "drop_table", "table": "notes" }),
+        ),
+    ] {
+        let refused = edit_schema(&router, &token, json!([op])).await;
+        assert_eq!(refused["isError"], json!(true), "{what}: {refused}");
+        let text = refused["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(text.contains(&person_only("notes")), "{what}: {text}");
+    }
+    // A custom query that reshapes the policies is refused on save.
+    mount_shop(&catalog, &apps, &["notes"]).await?;
+    let (failed, text) = call_tool(
+        &router,
+        &token,
+        "save_api_query",
+        json!({
+            "application": "shop", "name": "unlock", "path": "/unlock", "method": "POST",
+            "code": "ALTER TABLE notes DISABLE ROW LEVEL SECURITY",
+        }),
+    )
+    .await;
+    assert!(
+        failed && text.to_string().contains(&person_only("notes")),
+        "{text}"
+    );
+
+    // Columns stay open: adding one through MCP succeeds.
+    let added = edit_schema(
+        &router,
+        &token,
+        json!([{ "op": "add_field", "table": "notes", "field": "body", "type": "text" }]),
+    )
+    .await;
+    assert_eq!(added["isError"], json!(false), "{added}");
+    catalog.reload().await?;
+    let notes = catalog.require("notes")?;
+    assert!(notes.rls_enabled, "nothing above turned it off");
+    assert_eq!(
+        notes.ownership.as_ref().map(|f| f.source()),
+        Some("owner === user.email")
+    );
+
+    // A person in the admin UI makes the same changes.
+    let settings = |formula: &str, read: u8, rls: bool| {
+        json!({
+            "label": "", "description": "", "min_role_read": read, "min_role_write": 1,
+            "ownership_formula": formula, "rls_enabled": rls, "sync_enabled": false,
+        })
+    };
+    let (status, body) = client
+        .send("PUT", "/api/tables/notes", Some(settings("true", 1, true)))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the formula, from a session: {body}"
+    );
+    let (status, body) = client
+        .send(
+            "PUT",
+            "/api/tables/notes",
+            Some(settings("true", 40, false)),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a floor and RLS off, from a session: {body}"
+    );
+    let (status, body) = client
+        .send("PUT", "/api/tables/notes", Some(settings("true", 40, true)))
+        .await;
+    assert_eq!(status, StatusCode::OK, "RLS back on: {body}");
+    let (status, body) = client.send("DELETE", "/api/tables/notes", None).await;
+    assert_eq!(status, StatusCode::OK, "dropped by a person: {body}");
+    catalog.reload().await?;
+    assert!(catalog.get("notes")?.is_none());
+    Ok(())
+}
+
+// --- triggers that run as system (TODO-type-hardening H8.10) ------------------
+
+/// The trigger as the admin list shows it.
+async fn listed_trigger(client: &mut Client, name: &str) -> Value {
+    let (status, list) = client.send("GET", "/api/triggers", None).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    list.as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == json!(name))
+        .cloned()
+        .unwrap_or_else(|| panic!("no trigger `{name}` in {list}"))
+}
+
+/// An agent may ask for a trigger to run as system and is told it waits for a
+/// person; a person approves it in the admin session; a person's edit keeps
+/// the approval and an agent's makes it lapse.
+#[tokio::test]
+async fn only_a_person_approves_a_trigger_to_run_as_system() -> sc_error::Result<()> {
+    let Harness {
+        mut client,
+        router,
+        catalog,
+        _db,
+        ..
+    } = setup().await?;
+    enable_mcp(&catalog, true).await?;
+    let token = mint(&mut client, "agent", json!({})).await;
+
+    let (failed, saved) = call_tool(
+        &router,
+        &token,
+        "save_trigger",
+        json!({
+            "name": "recount", "when": "none", "action": "run_js_code",
+            "configuration": { "code": "return 1;" }, "runs_as_system": true,
+        }),
+    )
+    .await;
+    assert!(!failed, "{saved}");
+    assert_eq!(saved["system"], json!("pending"), "{saved}");
+    assert!(
+        saved["notes"].to_string().contains(
+            "`recount` will run as system once a person approves it in the admin UI. Until \
+             then it runs as the user who caused it."
+        ),
+        "{saved}"
+    );
+    let listed = listed_trigger(&mut client, "recount").await;
+    assert_eq!(listed["system_state"], json!("pending"), "{listed}");
+    let id = listed["id"].as_str().unwrap().to_owned();
+
+    // A person approves it, from the admin session.
+    let (status, approved) = client
+        .send("POST", &format!("/api/triggers/{id}/system-approval"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{approved}");
+    assert_eq!(approved["system_state"], json!("approved"), "{approved}");
+    assert!(approved["system_approval"]["by"].is_string(), "{approved}");
+
+    // The person edits its code in the admin UI: still approved, for the new
+    // code.
+    let mut edited = listed_trigger(&mut client, "recount").await;
+    edited["configuration"] = json!({ "code": "return 2;" });
+    let (status, body) = client
+        .send("PUT", &format!("/api/triggers/{id}"), Some(edited))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        listed_trigger(&mut client, "recount").await["system_state"],
+        json!("approved")
+    );
+
+    // The agent edits it: the approval is for the person's code, so it lapses.
+    let (failed, saved) = call_tool(
+        &router,
+        &token,
+        "save_trigger",
+        json!({ "name": "recount", "configuration": { "code": "return 3;" } }),
+    )
+    .await;
+    assert!(!failed, "{saved}");
+    assert_eq!(saved["system"], json!("pending"), "{saved}");
+    assert_eq!(
+        listed_trigger(&mut client, "recount").await["system_state"],
+        json!("pending")
+    );
+
+    // Revoking narrows, and leaves the request standing.
+    let (status, revoked) = client
+        .send(
+            "DELETE",
+            &format!("/api/triggers/{id}/system-approval"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{revoked}");
+    assert!(revoked["system_approval"].is_null(), "{revoked}");
+    Ok(())
+}
+
+// --- the row-level-security upgrade report (TODO-type-hardening H8.6) ---------
+
+/// On the first start the report lists what elevated over an RLS table — a
+/// trigger a user's event fires on one, `asAdmin()` code naming one — in an
+/// admin notice; a second start adds nothing; and the notice can be dismissed.
+#[tokio::test]
+async fn the_upgrade_report_lists_what_elevated_over_an_rls_table_once() -> sc_error::Result<()> {
+    let Harness {
+        mut client,
+        router,
+        catalog,
+        apps,
+        _db,
+    } = setup().await?;
+    enable_mcp(&catalog, true).await?;
+    let token = mint(&mut client, "agent", json!({})).await;
+    let created = edit_schema(
+        &router,
+        &token,
+        json!([
+            {
+                "op": "create_table", "table": "notes",
+                "fields": [
+                    { "name": "id", "type": "int", "primary_key": true },
+                    { "name": "owner", "type": "text" },
+                ],
+            },
+            {
+                "op": "alter_table", "table": "notes",
+                "ownership_formula": "owner === user.email", "rls_enabled": true,
+            },
+        ]),
+    )
+    .await;
+    assert_eq!(created["isError"], json!(false), "{created}");
+    for (name, when, code) in [
+        (
+            "count_notes",
+            "insert",
+            "return (await db.asAdmin().notes.rows()).length;",
+        ),
+        (
+            "nightly",
+            "daily",
+            "return (await db.asAdmin().notes.rows()).length;",
+        ),
+        ("unrelated", "none", "return 1;"),
+    ] {
+        let mut trigger = json!({
+            "name": name, "when": when, "action": "run_js_code",
+            "configuration": { "code": code },
+        });
+        if when == "insert" {
+            trigger["table"] = json!("notes");
+        }
+        let (failed, saved) = call_tool(&router, &token, "save_trigger", trigger).await;
+        assert!(!failed, "{saved}");
+    }
+    let dispatcher = apps.triggers().cloned().expect("a dispatcher");
+
+    sc_server::report_rls_elevation(&catalog, &dispatcher).await?;
+    let (status, notices) = client.send("GET", "/api/admin-notices", None).await;
+    assert_eq!(status, StatusCode::OK, "{notices}");
+    let notices = notices.as_array().unwrap().clone();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0]["title"], json!(sc_server::RLS_REPORT_TITLE));
+    let lines = notices[0]["lines"].to_string();
+    // The insert trigger on `notes`, twice over: its default authority and its
+    // `asAdmin()`. The scheduled one still runs as system and is not listed,
+    // nor is the trigger that never names the table.
+    assert!(
+        lines.contains("trigger `count_notes` runs at admin authority"),
+        "{lines}"
+    );
+    assert!(
+        lines.contains("trigger `count_notes`'s code says `asAdmin()`"),
+        "{lines}"
+    );
+    assert!(
+        !lines.contains("nightly") && !lines.contains("unrelated"),
+        "{lines}"
+    );
+
+    // Once: the second start reports nothing new.
+    sc_server::report_rls_elevation(&catalog, &dispatcher).await?;
+    let (_, again) = client.send("GET", "/api/admin-notices", None).await;
+    assert_eq!(again.as_array().map(Vec::len), Some(1), "{again}");
+
+    let id = notices[0]["id"].as_str().unwrap();
+    let (status, body) = client
+        .send("DELETE", &format!("/api/admin-notices/{id}"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, after) = client.send("GET", "/api/admin-notices", None).await;
+    assert_eq!(after, json!([]));
     Ok(())
 }

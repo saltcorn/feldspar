@@ -81,6 +81,7 @@ mod mcp_servers;
 mod models;
 mod module_routes;
 mod modules;
+mod notices;
 mod oauth;
 mod observe;
 mod posterior;
@@ -222,6 +223,10 @@ pub use models::{
     ModelServices, StanSettings, install_model_host, install_models, install_models_with,
 };
 pub use modules::ModuleServices;
+pub use notices::{
+    AdminNotice, RLS_REPORT_TITLE, add_notice, dismiss_notice, list_notices, report_rls_elevation,
+    rls_elevation_report,
+};
 pub use observe::STREAM_OBSERVE_ROUTE;
 pub use reload::{ReloadReport, reload_all, spawn_sighup_reload};
 pub use requests::{AppRequests, MAX_RESPONSE_BYTES, install_app_requests};

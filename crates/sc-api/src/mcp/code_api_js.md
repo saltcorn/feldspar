@@ -249,7 +249,7 @@ whole chain.
 
 Chain methods: `.where(cond)` (repeated calls AND), `.select(...cols)`, `.orderBy(col,
 "asc"|"desc")`, `.limit(n)`, `.offset(n)`, `.groupBy(...cols)`, `.aggregate({ n: "count()",
-total: "sum(amount)" })`, `.having(cond)`, `.asUser()`, `.asAdmin()`, `.withRequest({ token })` (values presented to the
+total: "sum(amount)" })`, `.having(cond)`, `.asUser()` (or `.asUser(id)`, one named user), `.asAdmin()`, `.withRequest({ token })` (values presented to the
 table's ownership formula as `_request`).
 
 Read terminals: `.rows()`, `.first()` (row or `null`), `.get(id)` (row by primary key, or
@@ -289,9 +289,9 @@ the caller's read floor (admin-only unless its roles say otherwise) is refused o
 call throws ``you may not read `t` ``, and a query that lets that escape answers **403** with that
 message. `.asAdmin()` (on `db`, a table, one query, a store, a model or a trigger) acts as the
 server instead — every row, no rules — so use it only where the query must, and never on a
-value the caller chose without checking it. In a **trigger** (and a server-rendered page) the
-default is the other way round: it acts as the server, and `.asUser()` acts as the event's
-user.
+value the caller chose without checking it; on a table with row-level security it is refused
+(below). In a **trigger** (and a server-rendered page) the default is the other way round: it
+acts as the server, and `.asUser()` acts as the event's user.
 
 **Each handle has its own authority.** `db.asAdmin()` covers `db` and nothing else: `fs(...)`,
 `models` and `trigger(...)` still act as the caller, so `trigger("notify_admin").run()` after
@@ -307,6 +307,33 @@ const m = (await models.get("churn")).asAdmin();           // a model handle (it
 
 A `try { … } catch {}` around one of these hides a refusal completely, so test a query as a
 non-admin user with the role real users have; as admin every check passes.
+
+**Tables with row-level security: nothing elevates.** On a table with RLS every statement runs
+with the authority of whoever caused the work: the user whose request or write started it (and
+every trigger that cascades from it), the public role for an anonymous request, everything for
+a scheduled or startup trigger. A trigger's or code body's default "act as the server" sees
+exactly that there, and `.asAdmin()` on such a table (or on a trigger whose table has it) throws
+``` `t` has row-level security, so `asAdmin()` cannot reach it ```. Do not look for a way round
+it: state the rule in the table's ownership formula, or ask the person for a trigger that runs
+as system. Tables without RLS behave as above.
+
+**Acting as one user: `asUser(id)`.** `.asUser(id)` — an id, or the user's row — on `db`, a
+table, one query, a store, a model or a trigger acts as that user, the tables' rules deciding,
+row-level security included. It is allowed only when that user holds no more authority than
+whoever caused the run: a scheduled trigger or an administrator may name anyone; anybody else
+only themselves (`asUser(<an admin's id>)` from a role-80 user's request throws). A job that
+acts on each user's behalf should, so the rules decide what each one gets — the nightly
+reminder:
+
+```js
+// A daily trigger: its default authority is the system's.
+for (const u of await db.users.where({ wants_reminders: true }).rows()) {
+  const overdue = await db.tasks.asUser(u.id).where({ done: false }).rows(); // u's own view
+  if (overdue.length > 0) {
+    await trigger("send_reminder").asUser(u).run({ count: overdue.length });
+  }
+}
+```
 
 For what the chain cannot say, raw SQL with `$1` binds, answering the rows:
 

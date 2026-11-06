@@ -261,6 +261,13 @@ pub struct Event {
     /// of the triggers it fires join: the user's edit and its trigger's
     /// follow-up are one action. `None` for an event no changeset led to.
     pub changeset: Option<Arc<Changeset>>,
+    /// Whether the event has **no human cause** (TODO-type-hardening H8.1,
+    /// §7.3a): a scheduled or startup trigger's, a stream element's, a write
+    /// or a run at the server's own authority. Its triggers' admin authority is
+    /// then the system's on a table with row-level security as well; anything
+    /// else's is its caller's there. `role` and `user` are still public and
+    /// nobody, which is what a formula and `asUser()` see.
+    pub system: bool,
 }
 
 impl Event {
@@ -279,6 +286,7 @@ impl Event {
             app: None,
             session: None,
             changeset: None,
+            system: false,
         }
     }
 
@@ -295,7 +303,7 @@ impl Event {
     /// The **`startup`** event: the server finished coming up. No caller, no
     /// channel, nothing to carry — it happened, once.
     pub fn startup() -> Event {
-        Event::new(EventKind::Startup)
+        Event::new(EventKind::Startup).by_system()
     }
 
     /// The **`error`** event: an [`Error`] became a response (§16).
@@ -363,6 +371,7 @@ impl Event {
         )
         .caller(failed.role, failed.user.clone())
         .from_origin(failed.origin());
+        event.system = failed.system;
         if let Json::Object(payload) = &mut event.payload {
             payload.insert("trigger".to_owned(), Json::from(trigger));
             payload.insert("event".to_owned(), Json::from(failed.kind.as_str()));
@@ -392,7 +401,13 @@ impl Event {
     /// There is **no row**: a stream element is not a row of anything, so
     /// `row` and `old` are out of scope and `only_if` reads `payload`.
     pub fn stream(stream: impl Into<String>, envelope: Json) -> Event {
-        Event::new(EventKind::Stream).on(stream).payload(envelope)
+        // No person sent it: the element arrived on a subscription an
+        // administrator configured, so its triggers run at system authority,
+        // as a scheduled trigger's do (§7.3a).
+        Event::new(EventKind::Stream)
+            .on(stream)
+            .payload(envelope)
+            .by_system()
     }
 
     /// Set the channel — the table name, for a table event.
@@ -429,13 +444,27 @@ impl Event {
     /// Set everything about who caused this event from the caller context of
     /// the write or the run that raised it: the role, the user, the chain, the
     /// application, the guest session and the changeset.
+    ///
+    /// The role and user are the caller's cause's ([`Principal::event_role`],
+    /// TODO-type-hardening H8.1): a write made at a trigger's admin authority in
+    /// its cause's name raises an event caused by that cause, so a cascade
+    /// started by a user stays that user's — through a trigger approved to run
+    /// as system too (H8.10), whose authority does not cascade.
     pub fn caused_by(mut self, caller: &Principal) -> Event {
-        self.role = caller.role();
-        self.user = caller.user().cloned();
+        self.role = caller.event_role();
+        self.user = caller.event_user().cloned();
+        self.system = caller.event_is_system();
         self.chain = caller.chain().to_vec();
         self.app = caller.app().cloned();
         self.session = caller.session().map(str::to_owned);
         self.changeset = caller.changeset().cloned();
+        self
+    }
+
+    /// Mark the event as having no human cause ([`system`](Event::system)).
+    #[must_use]
+    pub fn by_system(mut self) -> Event {
+        self.system = true;
         self
     }
 

@@ -90,7 +90,11 @@ pub async fn set_caller_context(
     // (`NULLIF(current_setting(…), '')`) — so it reaches them as no access.
     //
     // [`SharedTx`]: crate::SharedTx
-    tx.set_local(ROLE_GUC, &context.role().to_string()).await?;
+    // The **policy** role and user (TODO-type-hardening H8.1): an elevated
+    // principal's cause's, so on a table with row-level security nothing
+    // elevates, whichever path the statement took.
+    tx.set_local(ROLE_GUC, &context.policy_role().to_string())
+        .await?;
     tx.set_local(USER_GUC, context.user_json().as_deref().unwrap_or(""))
         .await?;
     // And the guest session (TODO-payments P1.5), for the same reason: the

@@ -145,19 +145,20 @@ async fn a_token_is_minted_once_listed_without_its_secret_and_revoked_in_place()
     // rather than in it: the token object is the same shape the list is made of.
     assert!(!minted["token"].to_string().contains(secret));
 
-    // The eight flags, all of them, whatever the body left out. A stored `grants`
+    // The seven flags, all of them, whatever the body left out. A stored `grants`
     // records what was agreed to; a sparse one would re-read itself against
     // tomorrow's defaults.
     let grants = minted["token"]["grants"].as_object().unwrap();
-    // Eight flags, `allow_all`, and the checklists grant, which the body did
+    // Seven flags, `allow_all`, and the checklists grant, which the body did
     // not ask for either — written down as `append`, never `full`.
-    assert_eq!(grants.len(), 10, "{grants:?}");
+    assert_eq!(grants.len(), 9, "{grants:?}");
     assert_eq!(grants["checklists"], json!("append"));
     assert_eq!(grants["allow_all"], json!(false));
     assert_eq!(grants["allow_create"], json!(true)); // the default, written down
     assert_eq!(grants["allow_drop"], json!(false));
-    // A token is granted what the mint did not mention.
-    assert_eq!(grants["allow_access_changes"], json!(true));
+    // A token is granted what the mint did not mention; the retired
+    // access-changes grant is not written at all (TODO-type-hardening H8.9).
+    assert!(grants.get("allow_access_changes").is_none(), "{grants:?}");
     assert_eq!(grants["allow_modules"], json!(true));
     assert_eq!(grants["allow_history"], json!(true));
     assert_eq!(grants["allow_triggers"], json!(true));

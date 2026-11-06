@@ -197,6 +197,14 @@ pub trait FileUrls: Send + Sync {
 /// event's user's name (§10.2). Listed in the system-authority inventory.
 pub const TRIGGER_ACTION_RULE: &str = "a trigger's action (admin-authored configuration)";
 
+/// Why an event with no human cause ([`Event::system`]) is caused by the
+/// system: a scheduled or startup trigger, a stream element, or a write or a
+/// run at the server's own authority has no caller whose authority it could
+/// exceed (§7.3a, decided in TODO-type-hardening H8.7). Listed in the
+/// system-authority inventory.
+pub const NO_HUMAN_CAUSE: &str =
+    "an event with no human cause (scheduled, startup, stream, system)";
+
 /// Everything one action run has access to.
 ///
 /// Borrowed rather than owned (hence the lifetime): a run is a single `await` on
@@ -318,6 +326,11 @@ pub struct ActionContext<'a> {
     /// use, which is inside the event's origin and changeset (the dispatcher
     /// enters both around `Action::run`).
     principal: std::sync::OnceLock<AdminPrincipal>,
+    /// A person's approval of this trigger to run as system, matching its
+    /// current configuration (TODO-type-hardening H8.10): when there is one,
+    /// [`scoped`](ActionContext::scoped) and the code body's handles act at
+    /// system authority, RLS tables included.
+    system: Option<sc_catalog::ApprovedTrigger>,
 }
 
 impl<'a> ActionContext<'a> {
@@ -352,6 +365,7 @@ impl<'a> ActionContext<'a> {
             application: None,
             as_caller: false,
             principal: std::sync::OnceLock::new(),
+            system: None,
         }
     }
 
@@ -366,11 +380,14 @@ impl<'a> ActionContext<'a> {
     /// archetype of what a trigger exists to write. The event's user still
     /// travels, so an RLS policy that reads `user` and the event the write
     /// raises both see who caused it.
+    ///
+    /// **Except on a table with row-level security** (TODO-type-hardening H8.1,
+    /// §7.3a): the authority is [`Principal::elevated`] over the event's
+    /// [`caller`](ActionContext::caller), so the policies there read the cause —
+    /// the user whose write fired it, or the system for a scheduled trigger —
+    /// and nothing elevates.
     pub fn scoped(&self) -> Scoped<'_> {
-        let principal = self.principal.get_or_init(|| {
-            AdminPrincipal::vouched(self.event.user.clone(), TRIGGER_ACTION_RULE)
-                .chained(self.chain.clone())
-        });
+        let principal = self.admin_principal();
         let scoped = Scoped::new(self.catalog, Authority::from(principal))
             .in_executor(Executor::of(self.tx.clone()));
         match self.evaluator {
@@ -379,14 +396,50 @@ impl<'a> ActionContext<'a> {
         }
     }
 
+    /// The admin authority this action's own statements run under: elevated
+    /// over the event's caller, or — for a trigger a person approved to run as
+    /// system — the system's on RLS tables too (TODO-type-hardening H8.10).
+    /// Its writes raise events caused by the caller either way.
+    pub fn admin_principal(&self) -> &AdminPrincipal {
+        self.principal.get_or_init(|| match &self.system {
+            Some(approved) => Principal::system_for_trigger(&self.caller(), approved),
+            None => Principal::elevated(&self.caller(), TRIGGER_ACTION_RULE),
+        })
+    }
+
+    /// Whether this action runs as system, approved by a person.
+    pub fn runs_as_system(&self) -> bool {
+        self.system.is_some()
+    }
+
+    /// Run as system: a person's approval of this trigger for its current
+    /// configuration, or `None` for the cause's authority.
+    #[must_use]
+    pub fn with_system_approval(
+        mut self,
+        approved: Option<sc_catalog::ApprovedTrigger>,
+    ) -> ActionContext<'a> {
+        self.system = approved;
+        self
+    }
+
     /// The event's **caller**, as a principal: the role the event was served at
     /// and the user, with the chain that led here — who a delegated operation
     /// (`asUser()`, `undo`) acts as. Built from the event rather than read from
     /// `event.role` / `event.user` at each call site.
+    ///
+    /// An event with no human cause ([`Event::system`]) — a scheduled or
+    /// startup trigger's — carries nobody at the public role, and its cause is
+    /// the system (TODO-type-hardening H8.1): `asUser()` there is the public
+    /// role, and the action's admin authority is the system's.
     pub fn caller(&self) -> Principal {
-        Principal::recorded(self.event.role, self.event.user.clone())
+        let caller = Principal::recorded(self.event.role, self.event.user.clone())
             .chained(self.chain.clone())
-            .in_current_origin()
+            .in_current_origin();
+        match self.event.system {
+            true => caller.with_system_cause(NO_HUMAN_CAUSE),
+            false => caller,
+        }
     }
 
     /// Supply the JavaScript engine (the server's one isolate, §7.3).

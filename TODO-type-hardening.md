@@ -147,23 +147,26 @@ Goal: on a table with RLS, nothing elevates: no `asAdmin()`, no implicit admin a
 forged context. Only a person changes its access rules or approves a trigger to run as system.
 Agents lose their permission grant.
 
-- [ ] H8.1 RLS takes the cause's authority: `Principal` carries its cause;
+- [x] H8.1 RLS takes the cause's authority: `Principal` carries its cause;
       `Principal::elevated(&cause, reason)` replaces the admin principals (`AdminPrincipal::vouched` with
       `CODE_ADMIN_RULE` / `TRIGGER_ACTION_RULE` since H3.1, formerly `Principal::new(Role::ADMIN, user)`) in the
       code host, `ActionContext::scoped` and the trigger default; `set_caller_context` writes
       the cause's role and user. Tests: a code action run by a role-80 user reads only that
       user's rows from an RLS table; a scheduled trigger reads all of them; a cascade started
       by a user stays that user across `spawn_scoped`.
-- [ ] H8.2 Explicit `asAdmin()` on an RLS table (db, fs-backed rows, `trigger`, `models`) is
+- [x] H8.2 Explicit `asAdmin()` on an RLS table (db, fs-backed rows, `trigger`, `models`) is
       refused with an error naming the table; `forUser` / `Authority::Named` is refused when
       the named user has more authority than the cause (on every table, not only RLS).
-- [ ] H8.3 Custom SQL and `db.sql()` cannot forge the context: parse and refuse `set_config`,
+- [x] H8.3 Custom SQL and `db.sql()` cannot forge the context: parse and refuse `set_config`,
       `SET`, `RESET`, `DO`, `CREATE [OR REPLACE] FUNCTION|PROCEDURE`, at save and at run.
       Test: `WITH x AS (SELECT set_config('sc.role','1',true)) SELECT * FROM t, x` is refused.
-- [ ] H8.4 Unforgeable caller GUCs: the policies read the caller through a `SECURITY DEFINER`
+- [~] H8.4 Unforgeable caller GUCs: the policies read the caller through a `SECURITY DEFINER`
       function that checks a per-transaction MAC keyed by a secret the statement's role cannot
       read (design first; may need its own database role).
-- [ ] H8.5 On an RLS table, only a person changes who may access it (§7.3a). Agents may turn
+      Design written (TECHNICAL_DESIGN §7.3a, "Unforgeable caller settings"). Not built: it
+      needs a second database role the server's own role cannot create (no `CREATEROLE` here or
+      on a typical deployment), so it waits on a decision about that operator step.
+- [x] H8.5 On an RLS table, only a person changes who may access it (§7.3a). Agents may turn
       RLS **on**. Once it is on, coding agents (Claude Code in the IDE, the in-app coding
       agent), MCP clients, `admin_copilot` and code bodies may not change the table's access
       settings at all, stricter or looser. Refused paths:
@@ -189,19 +192,19 @@ Agents lose their permission grant.
       custom query running `ALTER TABLE t DISABLE ROW LEVEL SECURITY` are each refused with
       the reply above; the same changes through an admin session succeed; enabling RLS
       through MCP succeeds; adding a column to an RLS table through MCP succeeds.
-- [ ] H8.6 Upgrade report: on first start, list in the admin notices and the log every code
+- [x] H8.6 Upgrade report: on first start, list in the admin notices and the log every code
       body, custom query and trigger that reaches an RLS table at elevated authority (a static
       scan of the code for `asAdmin()` and table names, plus each trigger's table). CHANGELOG
       entry for the behaviour change.
 - [x] H8.7 Decided: scheduled and startup triggers run at system authority on RLS tables, and
       may narrow themselves to a named user (§7.3a).
-- [ ] H8.8 `asUser(id)` in the native code API (`db`, `fs`, `trigger`, `models`), sent as the
+- [x] H8.8 `asUser(id)` in the native code API (`db`, `fs`, `trigger`, `models`), sent as the
       plan's `{ "user": id }`; `Principal::narrowed(&cause, user)` keeps the cause and
       `set_caller_context` writes the named user. Document the per-user loop (the nightly
       reminder) in `code_api_js.md`. Tests: a scheduled trigger reads only user U's rows of an
       RLS table through `asUser(U)`; a role-80 caller's `asUser(<admin id>)` is refused (with
       H8.2).
-- [ ] H8.9 Remove the `allow_access_changes` grant (§7.3a); H8.5 replaces it for tables. Today
+- [x] H8.9 Remove the `allow_access_changes` grant (§7.3a); H8.5 replaces it for tables. Today
       it guards more than tables. Decided: every surface it guards becomes open to agents, and
       only H8.5 limits them:
 
@@ -221,7 +224,7 @@ Agents lose their permission grant.
       §11.3, §13, §15). Tests: an old token or configuration with the field loads; an agent
       without any grant can set a query's `min_role`, change an application's CSP and create a
       role; `deleteUser` through MCP succeeds with `allow_drop` and is refused without it.
-- [ ] H8.10 Triggers that run as system (§7.3a, "Triggers that run as system"):
+- [x] H8.10 Triggers that run as system (§7.3a, "Triggers that run as system"):
       - A **runs as system** setting on triggers. When it is on and approved, the trigger's
         action runs at system authority on every table, RLS ones included. Its own statements
         only: cascaded triggers keep the original cause, and a directly called trigger is

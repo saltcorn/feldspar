@@ -234,6 +234,38 @@ impl WorkflowEngine for WorkflowEngineTask {
             state: run.state.as_str().to_owned(),
         })
     }
+
+    /// The current version's whole definition, as its canonical JSON text: an
+    /// approval to run as system covers exactly these steps (TODO-type-hardening
+    /// H8.10), and saving a new version makes it lapse.
+    async fn fingerprint(&self, catalog: &Catalog, trigger: &Trigger) -> Result<Option<String>> {
+        workflow_fingerprint(catalog, trigger).await
+    }
+}
+
+/// A trigger's current workflow definition as an approval to run as system is
+/// bound to it (TODO-type-hardening H8.10): its canonical JSON, without its
+/// version number — a restore saves the same steps as a version of its own,
+/// and the steps are what the person approved. `None` for a trigger with no
+/// workflow.
+pub async fn workflow_fingerprint(catalog: &Catalog, trigger: &Trigger) -> Result<Option<String>> {
+    if trigger.body != sc_action::TriggerBody::Workflow {
+        return Ok(None);
+    }
+    Ok(crate::versions::current_workflow(catalog, trigger.id)
+        .await?
+        .map(|mut workflow| {
+            workflow.version = 0;
+            serde_json::to_string(&workflow).unwrap_or_default()
+        }))
+}
+
+/// The hash an approval of `trigger` to run as system is bound to, with no
+/// dispatcher at hand (the CLI): [`Trigger::configuration_hash`] over its
+/// [`workflow_fingerprint`].
+pub async fn approval_hash(catalog: &Catalog, trigger: &Trigger) -> Result<String> {
+    let fingerprint = workflow_fingerprint(catalog, trigger).await?;
+    Ok(trigger.configuration_hash(fingerprint.as_deref()))
 }
 
 /// When a run leased until `until` should be renewed, given a lease of `lease`.

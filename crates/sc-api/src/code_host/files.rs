@@ -169,6 +169,9 @@ pub struct FileStoreHost<'a> {
     /// trigger, the caller's for a body answering a request
     /// ([`defaulting_to`](FileStoreHost::defaulting_to)).
     default_authority: Authority,
+    /// The admin authority to act at in place of elevating over the caller
+    /// (TODO-type-hardening H8.10; see `TableHost::acting_as`).
+    admin: Option<AdminPrincipal>,
 }
 
 impl<'a> FileStoreHost<'a> {
@@ -184,7 +187,16 @@ impl<'a> FileStoreHost<'a> {
             bound: Mutex::new(BTreeMap::new()),
             urls: None,
             default_authority: Authority::Admin,
+            admin: None,
         }
+    }
+
+    /// Act at `admin`'s authority where an operation is the admin's (see
+    /// `TableHost::acting_as`).
+    #[must_use]
+    pub fn acting_as(mut self, admin: AdminPrincipal) -> FileStoreHost<'a> {
+        self.admin = Some(admin);
+        self
     }
 
     /// Run an operation that names no authority under `authority` rather than
@@ -217,7 +229,8 @@ impl<'a> FileStoreHost<'a> {
     /// role, and its user's id — [`caused_by`](FileStoreHost::caused_by)'s pair.
     #[must_use]
     pub fn for_caller(mut self, caller: &Principal) -> FileStoreHost<'a> {
-        self.principal = Principal::recorded(caller.role(), caller.user().cloned());
+        // The caller itself, so its cause travels (TODO-type-hardening H8.1).
+        self.principal = caller.clone();
         self.caller = self.principal.file_caller();
         self
     }
@@ -256,8 +269,10 @@ impl<'a> FileStoreHost<'a> {
         }
         let store = match authority.is_admin() {
             true => {
-                let admin =
-                    AdminPrincipal::vouched(self.principal.user().cloned(), super::CODE_ADMIN_RULE);
+                let admin = match &self.admin {
+                    Some(admin) => admin.clone(),
+                    None => Principal::elevated(&self.principal, super::CODE_ADMIN_RULE),
+                };
                 self.catalog.checked_file_store(name, &admin).await?
             }
             false => {
@@ -508,16 +523,29 @@ impl FileHost for FileStoreHost<'_> {
             ))
         })?;
         req.authority = req.authority.resolve(&self.default_authority);
-        let answer = self.run(&req).await;
-        // A refusal is the body's to catch, and cleanup code catches it without
-        // a word — a delete that left somebody else's upload behind, a shared
-        // file that stopped updating. The server log says so either way.
-        if let Err(err) = &answer
-            && let Some(warning) = refusal_warning(&req, &self.caller, err)
-        {
-            eprintln!("{warning}");
+        // `asUser(id)` (TODO-type-hardening H8.8): the named user, narrowed
+        // from this run's caller — refused when they hold more authority than
+        // whoever caused the run — and then exactly a delegated operation, as
+        // that user, on a host of its own for this one request.
+        if let Authority::Named(id) = &req.authority {
+            let user = super::load_named_user(self.catalog, id).await?;
+            let named =
+                Principal::narrowed(&self.principal, user.role(), Some(user.fields_json()))?;
+            let host = FileStoreHost {
+                catalog: self.catalog,
+                caller: named.file_caller(),
+                principal: named,
+                max_bytes: self.max_bytes,
+                max_copy_bytes: self.max_copy_bytes,
+                bound: Mutex::new(BTreeMap::new()),
+                urls: self.urls.clone(),
+                default_authority: Authority::User,
+                admin: None,
+            };
+            req.authority = Authority::User;
+            return host.files_resolved(req).await;
         }
-        answer
+        self.files_resolved(req).await
     }
 
     fn store_names(&self) -> Vec<String> {
@@ -530,16 +558,30 @@ impl FileHost for FileStoreHost<'_> {
 }
 
 impl FileStoreHost<'_> {
+    /// [`files`](FileHost::files) once the authority is the admin's or a
+    /// delegated caller's.
+    async fn files_resolved(&self, req: FileRequest) -> Result<Json> {
+        let answer = self.run(&req).await;
+        // A refusal is the body's to catch, and cleanup code catches it without
+        // a word — a delete that left somebody else's upload behind, a shared
+        // file that stopped updating. The server log says so either way.
+        if let Err(err) = &answer
+            && let Some(warning) = refusal_warning(&req, &self.caller, err)
+        {
+            eprintln!("{warning}");
+        }
+        answer
+    }
+
     /// Answer one operation.
     async fn run(&self, req: &FileRequest) -> Result<Json> {
-        // Two of the four authorities, and the other two refused by name. `fs`
-        // offers `asAdmin()` and `asUser()` and nothing else, so `public` and a
-        // named user can only arrive from a guest that built the request itself
-        // — and this surface has no rule to apply them with: its access check
-        // reads *this run's* role (§10.1's file rule), which is not the role
-        // either of them means. Answering them as the run's own caller would be
-        // a body asking to be treated as somebody smaller and being treated as
-        // itself, which is the failure principle 5 exists to prevent.
+        // Two of the four authorities; a named user (`asUser(id)`) arrives here
+        // as a delegated caller of a host of its own (`files`), and `public` is
+        // refused by name. `fs` offers no `public`, so it can only arrive from a
+        // guest that built the request itself — and answering it as the run's
+        // own caller would be a body asking to be treated as somebody smaller and
+        // being treated as itself, which is the failure principle 5 exists to
+        // prevent.
         if !matches!(req.authority, Authority::Admin | Authority::User) {
             return Err(Error::invalid(format!(
                 "`{}` is not an authority the file surface carries: a file operation is the \
