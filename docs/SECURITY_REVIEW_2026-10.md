@@ -1323,6 +1323,7 @@ admin run's feature commit. The rest name a reason, found with
 | sc-agent-builtins `coding/header.rs` | `coding session header: git log` | the session header's `git log` over the scope, for any run (read-only, the program's own arguments) |
 | sc-agent-builtins `coding/snapshot.rs` | `coding shell snapshot: git state` | a shell call's before-and-after git state (read-only) |
 | sc-agent-builtins `coding/commit.rs` | `implement_feature: commit the run's paths` | a feature run with no administrator committing what it changed: git with hooks off, the message after `-m`, the paths after `--` |
+| sc-server `terminal.rs` | `Claude Code version probe` | `claude --version` for the Development tab's status of the executable it found, with the terminal's environment |
 | sc-server `browser/detect.rs`, `browser/driver.rs` | `browser sandbox check`, `browser watchdog` | the boot's sandbox check (a fixed page, a scratch profile); the watchdog that ends the browser after a killed server (`spawn_detached`) |
 | sc-cli `setup.rs`, `eval.rs`, `cmdstan.rs` | `setup`, `eval`, `cmdstan install` | the operator's own CLI; `setup` and `eval` run at the operator's terminal (`operator_terminal`: their environment, stdin and process group) |
 

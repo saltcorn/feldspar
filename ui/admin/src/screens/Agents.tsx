@@ -85,7 +85,7 @@ export function Agents() {
   return (
     <>
       <PageHeader
-        pretitle="Agents"
+        pretitle={t("Automation")}
         title={t("Agents")}
         actions={
           <>

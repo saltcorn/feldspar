@@ -557,5 +557,7 @@
   "your account may not use this application": "Ihr Konto darf diese Anwendung nicht verwenden",
   "Claude Code in the IDE": "Claude Code in der IDE",
   "Let an admin open Claude Code in a terminal tab of the file-store IDE. It runs on this server, in the store's directory, as the server's operating-system user, and can run any command that user can. Only stores on this machine's disk can have one.": "Erlaubt einem Admin, Claude Code in einem Terminal-Tab der Dateispeicher-IDE zu öffnen. Es läuft auf diesem Server, im Verzeichnis des Speichers, als Betriebssystembenutzer des Servers, und kann jeden Befehl ausführen, den dieser Benutzer ausführen kann. Nur Speicher auf der Festplatte dieses Rechners können eines haben.",
+  "Claude Code executable": "Claude-Code-Programm",
+  "The full path of the claude program, such as /home/me/.local/bin/claude. Leave empty to look for it on the server's PATH and in the usual install locations. The server's --claude-cli option, when given, comes first.": "Der vollständige Pfad des Programms claude, etwa /home/me/.local/bin/claude. Leer lassen, um es im PATH des Servers und an den üblichen Installationsorten zu suchen. Die Server-Option --claude-cli hat, wenn angegeben, Vorrang.",
   "—": "—"
 }

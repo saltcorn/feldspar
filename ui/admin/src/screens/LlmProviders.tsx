@@ -104,7 +104,7 @@ export function LlmProviders() {
   return (
     <>
       <PageHeader
-        pretitle="Agents"
+        pretitle={t("Automation")}
         title={t("LLM providers")}
         actions={
           <Button onClick={() => navigate("/llm-providers/new")}>

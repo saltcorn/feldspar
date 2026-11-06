@@ -48,7 +48,7 @@ import {
   toBase64,
   type NewTableForm,
 } from "../newTable";
-import { roleLabel, useRoles } from "../roles";
+import { roleLabel, roleName, useRoles } from "../roles";
 import { SettingsFields, buildConfig, initialValues } from "../settings";
 import { T, useT } from "../i18n";
 
@@ -183,7 +183,7 @@ export function Tables() {
   return (
     <>
       <PageHeader
-        pretitle="Data"
+        pretitle={t("Data")}
         title={t("Tables")}
         actions={
           <>
@@ -320,8 +320,8 @@ export function Tables() {
                       </StatusBadge>
                     )}
                   </td>
-                  <td>{roleLabel(table.min_role_read, roles)}</td>
-                  <td>{roleLabel(table.min_role_write, roles)}</td>
+                  <td>{roleName(table.min_role_read, roles)}</td>
+                  <td>{roleName(table.min_role_write, roles)}</td>
                   <td className="text-end">
                     <Button
                       size="sm"

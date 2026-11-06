@@ -261,6 +261,7 @@ pub const CREATE_ADMIN_HANDOFF: HandlerId<AdminOnly> = HandlerId::new("createAdm
 pub const SEND_TEST_EMAIL: HandlerId<AdminOnly> = HandlerId::new("sendTestEmail");
 pub const GET_PYTHON_STATUS: HandlerId<AdminOnly> = HandlerId::new("getPythonStatus");
 pub const GET_SYSTEM_INFO: HandlerId<AdminOnly> = HandlerId::new("getSystemInfo");
+pub const GET_CLAUDE_CODE_STATUS: HandlerId<AdminOnly> = HandlerId::new("getClaudeCodeStatus");
 pub const RESTART_SERVER: HandlerId<AdminOnly> = HandlerId::new("restartServer");
 
 // --- `admin::streams` ---

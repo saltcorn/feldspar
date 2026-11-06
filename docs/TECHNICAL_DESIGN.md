@@ -6122,6 +6122,17 @@ generated typed client (§13.1), so the API and the UI cannot drift.
   its canvas must render under the subdomain's stylesheets rather than Tabler, it expects a v1
   page around it, and a CSP belongs to a route. The fourth bundle (§13.3, "The builder").
 
+**Navigation.** The sidebar groups the installation's screens under the headings an admin looks
+for — Data (All entities, Tables, Files, Streams), Automation (Triggers, Agents), Insights
+(Analytics), Administration (Users, Settings) — and below them the Applications section, about
+the one application picked there. There is no Home entry: the logo at the top goes home. A screen's header pre-title is its
+group's name, so the header says where the screen is. The start page is **Home**: what needs
+attention (enabled triggers with a problem, failing scheduled backups, failed checklist runs, a
+nearly full disk), the applications, counts of each kind of entity, recent edits, the server's
+health, and a getting-started list that stays until its steps are done. It is assembled from the
+lists the other screens already use rather than from an endpoint of its own, and a list that does
+not load leaves its card empty rather than reporting that all is well.
+
 The XSS-safety story is now the ordinary React one — values are escaped by the framework and
 `dangerouslySetInnerHTML` is banned by lint — pairing with the structural SQL-injection
 safety in `sc-query` (§4).
@@ -6499,8 +6510,8 @@ with **Claude Code**, and they have been driving it against this server from a t
 own, connected over the administration MCP server (§13.6). That works, but it takes setup: mint a
 token, write an MCP config, start the CLI in the right directory (which is not the repository
 root when the store is a git repository holding several apps), and tell it which parts of the
-tree are generated. This section turns all of that into **one click**: **Build with Claude**
-opens the IDE with Claude Code already running in a terminal tab, in the application's source
+tree are generated. This section turns all of that into **one click**: the sidebar's **Coding agent**
+link opens the IDE with Claude Code already running in a terminal tab, in the application's source
 directory, connected to this server.
 
 The model is the Home Assistant "Claude Terminal" add-on: a web terminal with the CLI inside,
@@ -6516,9 +6527,13 @@ VS Code's integrated terminal is one more `monaco-vscode-api` override, and the 
 `FileStore::local_path` exactly as the language server and a framework's build are. A store
 with no local path gets no terminal, and the link to it says why.
 
-**How it is opened.** Wherever the admin UI links an application to the IDE ("Edit code" in the
-application sidebar, "(edit code)" in the applications list), a **Build with Claude** link sits
-beside it: `ideUrl(store)` plus `&app=<name>&claude=1`. When the workbench is up, `main.ts` reads
+**How it is opened.** The application sidebar has one **Coding agent** link, which opens either
+Claude Code or a new chat with the application's built-in coding agent (§11). Which one is the
+application's `coding_agent` attribute (`"claude"` or `"agent"`, set under Application settings,
+read only by the admin UI); Claude Code can be chosen only where it can start. With no choice,
+or a choice that cannot be followed, it is Claude Code where Claude Code can start, else the
+built-in agent. The applications list keeps a "(build with Claude)" link beside "(edit code)".
+The Claude Code link is `ideUrl(store)` plus `&app=<name>&claude=1`. When the workbench is up, `main.ts` reads
 `claude=1`, opens a terminal named "Claude · <app>" as a tab in the editor area rather than in
 the small bottom panel, and removes the parameter with `history.replaceState` so a reload does
 not open a second one. A status-bar item in the IDE opens another session at any time, including
@@ -10746,8 +10761,8 @@ frames. It sends `{"type":"ready","element_type":…,"status":…}`, replays the
 envelopes *this process* saw) so a screen opened on a slow stream is not blank and says that is
 what it is doing, then `element`, `lagged` and `status` frames.
 
-The admin UI is a **Streams** entry in the Data Layer section of the sidebar, between Triggers and
-Files — a stream is a source of events, so it belongs beside the thing that listens to them rather
+The admin UI is a **Streams** entry in the sidebar's Data group, last of it and directly above
+Triggers — a stream is a source of events, so it belongs beside the thing that listens to them rather
 than beside the models. Behind it are exactly the three screens GOALS lists: a list (name,
 provider, status, elements, last element; New at the top; Edit, Observe and Delete per row), a form
 (name, description, provider picker, the provider's spec-rendered settings, `min_role`, enabled),

@@ -158,7 +158,7 @@ export function StreamForm({ streamId }: { streamId?: string }) {
   if (loadError) {
     return (
       <>
-        <PageHeader pretitle="Dataflows" title={t("Stream")} />
+        <PageHeader pretitle={t("Data")} title={t("Stream")} />
         <PageBody>
           <Alert variant="danger">{loadError}</Alert>
         </PageBody>
@@ -177,7 +177,7 @@ export function StreamForm({ streamId }: { streamId?: string }) {
   return (
     <>
       <PageHeader
-        pretitle="Dataflows"
+        pretitle={t("Data")}
         title={streamId ? name || "Stream" : "New stream"}
         actions={
           <Button variant="outline-secondary" href="#/streams">

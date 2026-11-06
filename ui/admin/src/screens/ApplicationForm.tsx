@@ -36,6 +36,13 @@ import type {
   ListTriggersResponse,
 } from "../client";
 import { navigate } from "../App";
+import {
+  builderAgentFor,
+  claudeAvailable,
+  selectedCodingAgent,
+  withCodingAgent,
+  type CodingAgentChoice,
+} from "../appNav";
 import { IconArrowLeft } from "../icons";
 import { PageBody, PageHeader, PublicBadge } from "../layout";
 import { isPublic, useRoles } from "../roles";
@@ -248,6 +255,12 @@ export function ApplicationForm({
   const [guestDays, setGuestDays] = useState("30");
   // Run the application's checklists after each build (TODO-checklists C4.3).
   const [checkAfterBuild, setCheckAfterBuild] = useState(false);
+  // Which coding agent the sidebar's "Coding agent" link opens (UX1.5): always
+  // a named one, starting on the one the link opens now; `null` when neither
+  // can be chosen.
+  const [codingAgent, setCodingAgent] = useState<CodingAgentChoice | null>(null);
+  // The application's built-in coding agent, by name, if it has one.
+  const [builderAgent, setBuilderAgent] = useState<string | null>(null);
 
   // Load the frameworks (always) and, when editing, the app to prefill.
   useEffect(() => {
@@ -282,10 +295,8 @@ export function ApplicationForm({
           .then(cspSuggestionsOf, () => [] as CspSuggestion[]);
         // A server without agents answers with an error: the picker is empty,
         // and an application that already exposes one keeps it.
-        const agentNames = await api
-          .listAgents()
-          .then((list) => list.map((a) => a.name))
-          .catch(() => [] as string[]);
+        const agentList = await api.listAgents().catch(() => []);
+        const agentNames = agentList.map((a) => a.name);
         let existing: AppItem | undefined;
         if (appId) {
           existing = (await api.listApplications()).find((a) => a.id === appId);
@@ -330,6 +341,9 @@ export function ApplicationForm({
           const attributes = attributesOf(existing.attributes);
           setGuestSessions(attributes.guest_sessions === true);
           setCheckAfterBuild(attributes.check_after_build === true);
+          const builder = builderAgentFor(existing, agentList);
+          setBuilderAgent(builder);
+          setCodingAgent(selectedCodingAgent(existing, builder));
           if (typeof attributes.guest_session_days === "number") {
             setGuestDays(String(attributes.guest_session_days));
           }
@@ -432,13 +446,16 @@ export function ApplicationForm({
         csp: csp.trim() ? textToCsp(csp) : undefined,
         // What is stored is kept — the form edits one attribute of the bag —
         // with the content-security suggestions switched on.
-        attributes: {
-          ...attributesOf(stored?.attributes),
-          csp_sources: cspSources,
-          guest_sessions: guestSessions,
-          guest_session_days: Number.parseInt(guestDays, 10) || 30,
-          check_after_build: checkAfterBuild,
-        },
+        attributes: withCodingAgent(
+          {
+            ...attributesOf(stored?.attributes),
+            csp_sources: cspSources,
+            guest_sessions: guestSessions,
+            guest_session_days: Number.parseInt(guestDays, 10) || 30,
+            check_after_build: checkAfterBuild,
+          },
+          codingAgent,
+        ),
         min_role: minRole,
         max_role: maxRole,
         access_if: accessIf.trim(),
@@ -511,7 +528,7 @@ export function ApplicationForm({
   return (
     <>
       <PageHeader
-        pretitle="Deploy"
+        pretitle={t("Applications")}
         title={appId ? "Edit application" : "New application"}
         actions={
           <Button
@@ -1229,6 +1246,33 @@ export function ApplicationForm({
                 />
               </Form.Text>
             </Form.Group>
+
+            {stored && codingAgent && (
+              <Form.Group className="mb-3" controlId="appCodingAgent">
+                <Form.Label>{t("Coding agent")}</Form.Label>
+                <Form.Select
+                  value={codingAgent}
+                  onChange={(e) => setCodingAgent(e.target.value as CodingAgentChoice)}
+                >
+                  <option value="claude" disabled={!claudeAvailable(stored)}>
+                    {claudeAvailable(stored)
+                      ? t("Claude Code")
+                      : t("Claude Code (cannot start here)")}
+                  </option>
+                  <option value="agent" disabled={!builderAgent}>
+                    {builderAgent
+                      ? t("Built-in coding agent ({name})", { name: builderAgent })
+                      : t("Built-in coding agent (none yet)")}
+                  </option>
+                </Form.Select>
+                <Form.Text muted>
+                  <T text="What the sidebar's Coding agent link opens: Claude Code in the IDE's terminal, in this application's directory, or a new chat with the application's built-in coding agent." />
+                  {!claudeAvailable(stored) && stored.claude.reason && (
+                    <> {t("Claude Code: {reason}.", { reason: stored.claude.reason })}</>
+                  )}
+                </Form.Text>
+              </Form.Group>
+            )}
 
             <Form.Group className="mb-3" controlId="appCheckAfterBuild">
               <Form.Check

@@ -90,7 +90,7 @@ export function FileStores() {
   return (
     <>
       <PageHeader
-        pretitle="Storage"
+        pretitle={t("Data")}
         title={t("File stores")}
         actions={
           <Button onClick={() => navigate("/file-stores/new")}>

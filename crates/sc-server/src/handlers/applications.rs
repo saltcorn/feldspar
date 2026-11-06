@@ -1319,8 +1319,12 @@ pub(crate) async fn list_all_applications(
     let catalog = state.catalog;
     let apps = list_applications(&catalog).await?;
     let hosts = sc_app::list_build_hosts(&catalog).await?;
-    let claude =
-        crate::terminal::claude_unavailable(&catalog, &state.apps.claude_cli(), &apps).await;
+    let claude = crate::terminal::claude_unavailable(
+        &catalog,
+        state.apps.claude_cli().as_deref().map(|p| p.as_path()),
+        &apps,
+    )
+    .await;
     let out: Vec<Json> = apps
         .iter()
         .zip(claude)

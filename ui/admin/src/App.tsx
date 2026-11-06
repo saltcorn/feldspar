@@ -13,7 +13,7 @@
 // already owns the DOM, so vendoring a second script to add one class would buy
 // nothing.
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Spinner from "react-bootstrap/Spinner";
 
 import { api } from "./api";
@@ -32,6 +32,7 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconFolder,
+  IconList,
   IconLogout,
   IconMoon,
   IconRobot,
@@ -48,6 +49,7 @@ import { LocalePicker } from "./screens/LocalePicker";
 import { AgentChat } from "./screens/AgentChat";
 import { AgentForm } from "./screens/AgentForm";
 import { Entities } from "./screens/Entities";
+import { Home } from "./screens/Home";
 import { AgentRuns } from "./screens/AgentRuns";
 import { AgentMemory } from "./screens/AgentMemory";
 import { Agents } from "./screens/Agents";
@@ -89,7 +91,7 @@ import { TriggerForm } from "./screens/TriggerForm";
 import { Users } from "./screens/Users";
 import { WorkflowEditor } from "./screens/WorkflowEditor";
 import { WorkflowRuns } from "./screens/WorkflowRuns";
-import { T, useT } from "./i18n";
+import { T, useT, type Translator } from "./i18n";
 import { modelRedirect } from "./modelRedirect";
 import { Onboarding } from "./onboarding/Onboarding";
 
@@ -98,7 +100,7 @@ export type CurrentUser = NonNullable<AuthStatusResponse["current_user"]>;
 
 /** Subscribe to `location.hash`, normalised to a path like `/tables`. */
 function useHashRoute(): string {
-  const read = () => window.location.hash.replace(/^#/, "") || "/entities";
+  const read = () => window.location.hash.replace(/^#/, "") || "/home";
   const [route, setRoute] = useState(read);
   useEffect(() => {
     const onChange = () => setRoute(read());
@@ -204,17 +206,37 @@ export function App() {
 type NavItem = {
   href: string;
   label: string;
+  /** The sidebar heading it sits under; entries of one group are adjacent. */
+  group: NavGroup;
   icon: ReactNode;
   /** Route prefixes that light this entry up. */
   matches: string[];
 };
 
-/** The Data Layer section of the sidebar: the installation's shared furniture.
- * Applications are the other section, and are not entries here — that section is
- * about one application at a time, picked in the sidebar (`AppSidebar.tsx`). */
+/** The headings the installation's entries are grouped under, in sidebar
+ * order. They are also the pre-titles of the screens in each group, so the
+ * header says where a screen is in the sidebar. */
+export type NavGroup = "Data" | "Automation" | "Insights" | "Administration";
+
+/** The installation's entries in the sidebar: its shared furniture, under
+ * their group headings. Applications are the other section, and are not
+ * entries here — that section is about one application at a time, picked in
+ * the sidebar (`AppSidebar.tsx`). */
 export const NAV: NavItem[] = [
+  // No Home entry: the logo at the top of the sidebar is the way home, and an
+  // entry for it would be one more row in a sidebar that is already tall.
+  {
+    // The index of everything, Saltcorn 1's start page; Home is now the start.
+    // First of Data, as the list of everything the other entries hold.
+    href: "#/entities",
+    group: "Data",
+    label: "All entities",
+    icon: <IconList />,
+    matches: ["/entities"],
+  },
   {
     href: "#/tables",
+    group: "Data",
     label: "Tables",
     icon: <IconTable />,
     // The database connections list is part of this section rather than one of
@@ -226,18 +248,32 @@ export const NAV: NavItem[] = [
   },
   {
     href: "#/file-stores",
+    group: "Data",
     label: "Files",
     icon: <IconFolder />,
     matches: ["/file-stores", "/files"],
   },
   {
+    href: "#/streams",
+    group: "Data",
+    label: "Streams",
+    icon: <IconBroadcast />,
+    // Last of Data, directly above Triggers, and that is the argument (§9): a
+    // stream is a *source of events*, so it sits next to the thing that listens
+    // to them. Everything above it in Data is at rest — a table has rows, a
+    // file has bytes — and a stream is the one entry that moves on its own.
+    matches: ["/streams"],
+  },
+  {
     href: "#/triggers",
-    label: "Actions",
+    group: "Automation",
+    label: "Triggers",
     icon: <IconBolt />,
     matches: ["/triggers"],
   },
   {
     href: "#/agents",
+    group: "Automation",
     label: "Agents",
     icon: <IconRobot />,
     // The providers list is part of this section rather than one of its own: an
@@ -254,23 +290,14 @@ export const NAV: NavItem[] = [
     // a table, and the section it belongs to is the one about answering
     // questions rather than the one about storing rows.
     href: "/analytics/",
+    group: "Insights",
     label: "Analytics",
     icon: <IconChartHistogram />,
     matches: [],
   },
   {
-    href: "#/streams",
-    label: "Streams",
-    icon: <IconBroadcast />,
-    // Between Triggers and Files, and that is the argument (§9): a stream is a
-    // *source of events*, so it belongs beside the thing that listens to them
-    // rather than beside the models. Everything above it in this section is at
-    // rest — a table has rows, a file has bytes — and a stream is the one entry
-    // that moves on its own.
-    matches: ["/streams"],
-  },
-  {
     href: "#/users",
+    group: "Administration",
     label: "Users",
     icon: <IconUsers />,
     // Roles hang off this section rather than standing beside it, the way LLM
@@ -280,6 +307,7 @@ export const NAV: NavItem[] = [
   },
   {
     href: "#/settings",
+    group: "Administration",
     label: "Settings",
     icon: <IconSettings />,
     // Last, and one entry however many sections it grows: settings are about
@@ -291,6 +319,47 @@ export const NAV: NavItem[] = [
     matches: ["/settings", "/code-libraries", "/translations", "/checklists", "/checklist-runs"],
   },
 ];
+
+/** A group heading in the reader's language. Spelled out so the extractor
+ * sees each literal. */
+export function groupLabel(group: NavGroup, t: Translator["t"]): string {
+  switch (group) {
+    case "Data":
+      return t("Data");
+    case "Automation":
+      return t("Automation");
+    case "Insights":
+      return t("Insights");
+    case "Administration":
+      return t("Administration");
+  }
+}
+
+/** An entry's label in the reader's language, for the same reason. */
+function navLabel(label: string, t: Translator["t"]): string {
+  switch (label) {
+    case "All entities":
+      return t("All entities");
+    case "Tables":
+      return t("Tables");
+    case "Files":
+      return t("Files");
+    case "Streams":
+      return t("Streams");
+    case "Triggers":
+      return t("Triggers");
+    case "Agents":
+      return t("Agents");
+    case "Analytics":
+      return t("Analytics");
+    case "Users":
+      return t("Users");
+    case "Settings":
+      return t("Settings");
+    default:
+      return label;
+  }
+}
 
 /** The authenticated admin shell: Tabler's vertical layout around the screen. */
 function Shell({
@@ -392,11 +461,26 @@ function Shell({
           {/* No `navbar-brand-autodark` here: that class flips a monochrome
               logo to white for a dark sidebar, and this one has its own
               colours to keep. */}
-          <div className="navbar-brand">
+          {/* The fold switch sits beside the logo, at the top, so it is on
+              screen however long the sidebar grows: at its foot it was below
+              the fold of a folded sidebar, which then had no visible way back.
+              Folded, the rail is too narrow for the two side by side, so they
+              stack. It is only offered on `lg` and up: below that the sidebar
+              is a drawer, which has no width to give back. It is deliberately
+              *not* Tabler's `sidebar-folded` toggle button: Tabler styles that
+              one as the pin of a hover-unfolding rail, hiding it outright in a
+              `navbar-folded` sidebar. */}
+          <div
+            className={`navbar-brand d-flex align-items-center ${
+              folded ? "flex-lg-column gap-2" : "justify-content-between flex-lg-fill"
+            }`}
+          >
             <a
-              href="#/entities"
+              href="#/home"
               className="d-flex align-items-center gap-2"
-              aria-label={t("Saltcorn")}
+              // The sidebar has no Home entry: this is the way home, and says so.
+              aria-label={t("Home")}
+              title={t("Home")}
             >
               <div className="d-flex">
                 <SaltcornLogo />
@@ -409,6 +493,20 @@ function Shell({
                 </div>
               </div>
             </a>
+            <button
+              type="button"
+              className="btn btn-icon btn-ghost-secondary d-none d-lg-inline-flex"
+              onClick={toggleFolded}
+              aria-pressed={folded}
+              aria-label={folded ? t("Expand the sidebar") : t("Fold the sidebar")}
+              title={folded ? t("Expand the sidebar") : t("Fold the sidebar")}
+            >
+              {folded ? (
+                <IconChevronRight className="icon-2" />
+              ) : (
+                <IconChevronLeft className="icon-2" />
+              )}
+            </button>
           </div>
           {/* On a narrow screen the collapse is shut by default, so the account
               controls sit in this always-visible row instead of at the foot of
@@ -448,45 +546,19 @@ function Shell({
             <ul className="navbar-nav pt-lg-3">
               {/* Tabler's section titles: folded to a rail, each becomes a short
                   rule between the groups of icons. */}
-              <li className="nav-section-title"><T text="Data Layer" /></li>
-              {NAV.map((item) => (
-                <NavLink key={item.href} item={item} route={route} folded={folded} />
+              {NAV.map((item, n) => (
+                <Fragment key={item.href}>
+                  {item.group !== NAV[n - 1]?.group && (
+                    <li className="nav-section-title">{groupLabel(item.group, t)}</li>
+                  )}
+                  <NavLink item={item} route={route} folded={folded} />
+                </Fragment>
               ))}
               <li className="nav-section-title"><T text="Applications" /></li>
               <ApplicationsNav route={route} folded={folded} />
             </ul>
             {/* The nav list above is `flex-grow: 1` in a column collapse, so
-                everything below it settles at the bottom of the sidebar.
-
-                The fold switch is only offered on `lg` and up: below that the
-                sidebar is a drawer, which has no width to give back. It is
-                deliberately *not* Tabler's `sidebar-folded` toggle
-                button: Tabler styles that one as the pin of a hover-unfolding
-                rail, hiding it outright in a `navbar-folded` sidebar — which
-                would leave a folded sidebar with no way to unfold it. */}
-            {/* Folded, the `px-3` that gives these room beside a label is wider
-                than a 4rem rail can spare, so they centre instead. That is a
-                class swap here rather than a rule in `admin.css`: Bootstrap's
-                spacing utilities are `!important`. */}
-            <div
-              className={`d-none d-lg-flex pb-2 ${folded ? "justify-content-center px-0" : "justify-content-end px-3"
-                }`}
-            >
-              <button
-                type="button"
-                className="btn btn-icon btn-ghost-secondary"
-                onClick={toggleFolded}
-                aria-pressed={folded}
-                aria-label={folded ? "Expand the sidebar" : "Fold the sidebar"}
-                title={folded ? "Expand the sidebar" : "Fold the sidebar"}
-              >
-                {folded ? (
-                  <IconChevronRight className="icon-2" />
-                ) : (
-                  <IconChevronLeft className="icon-2" />
-                )}
-              </button>
-            </div>
+                everything below it settles at the bottom of the sidebar. */}
             <div
               className={`d-none d-lg-block py-3 border-top ${folded ? "px-0" : "px-3"
                 }`}
@@ -562,7 +634,9 @@ function NavLink({
   route: string;
   folded: boolean;
 }) {
+  const { t } = useT();
   const active = item.matches.some((prefix) => route.startsWith(prefix));
+  const label = navLabel(item.label, t);
   return (
     <li className={active ? "nav-item active" : "nav-item"}>
       <a
@@ -572,12 +646,12 @@ function NavLink({
         // Folded, the icon is all there is to go on, so the name becomes the
         // hover label. Unfolded it is already on screen and a tooltip would
         // only repeat it.
-        title={folded ? item.label : undefined}
+        title={folded ? label : undefined}
       >
         <span className="nav-link-icon d-md-none d-lg-inline-block">
           {item.icon}
         </span>
-        <span className="nav-link-title">{item.label}</span>
+        <span className="nav-link-title">{label}</span>
       </a>
     </li>
   );
@@ -630,6 +704,10 @@ function Screen({ route, user }: { route: string; user: CurrentUser }) {
   // Routes are matched on their path; a query is what a screen is opened with
   // (the builder's way back to `views/:name?step=n`).
   const { path, query } = splitRoute(route);
+  // `#/` as well as no hash: both are the start page.
+  if (path === "/home" || path === "/") {
+    return <Home />;
+  }
   if (path === "/entities") {
     return <Entities />;
   }

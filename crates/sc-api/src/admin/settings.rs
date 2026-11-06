@@ -300,6 +300,26 @@ pub(super) fn register(set: &mut EndpointSet) {
         ),
     );
 
+    // Settings → Development: which Claude Code the IDE's terminal would run
+    // (`--claude-cli`, the setting, `PATH`, the usual install locations), and
+    // what its `--version` says — or why there is none.
+    set.register(
+        Endpoint::new(
+            ids::GET_CLAUDE_CODE_STATUS,
+            Method::Get,
+            api().lit("development").lit("claude"),
+        )
+        .output(TypeSchema::struct_of([
+            // Whether "Claude Code in the IDE" is on.
+            StructField::new("enabled", TypeSchema::bool()),
+            StructField::new("path", TypeSchema::optional(TypeSchema::text())),
+            // How it was found: option, setting, path or usual.
+            StructField::new("source", TypeSchema::optional(TypeSchema::text())),
+            StructField::new("version", TypeSchema::optional(TypeSchema::text())),
+            StructField::new("problem", TypeSchema::optional(TypeSchema::text())),
+        ])),
+    );
+
     // Exit the process, always, for whatever manages it to start it again
     // (`Restart=on-failure` under systemd, `restart: unless-stopped` under
     // Docker). Nothing is checked first: with no manager, the server stays

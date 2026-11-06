@@ -219,6 +219,8 @@ async fn every_entity_is_listed_with_when_it_was_last_saved() -> sc_error::Resul
     assert_eq!(greet["runnable"], json!(true));
     let docs = entity(&list, "file_store", "docs");
     assert_eq!(docs["details"][0], json!("local"));
+    // No floor on a file store is public, named as the role is named (not "public").
+    assert_eq!(docs["access"], json!("Public"));
     // A shallow listing carries no definitions.
     assert!(
         list.as_array()

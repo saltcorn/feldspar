@@ -983,6 +983,78 @@ Fixes for the live findings of `docs/SECURITY_REVIEW_2026-11.md` (TODO-type-hard
   accounts without one (not the admin's making the change), and so does moving an account to
   such a role. An admin who sets their own password in the users screen is signed out.
 
+## Claude Code is found without a PATH, and can be named in Settings
+
+A server started by systemd or another service manager has a short `PATH`, so Claude Code
+installed in a home directory was reported as "not installed".
+
+- **A new setting**: Settings → Development → **Claude Code executable**, shown while Claude Code
+  in the IDE is on. Saving refuses anything that is not an absolute path to an executable file.
+  Only a changed path is checked, so a program removed after it was saved does not block saving
+  other settings; the panel below says it is gone.
+- **The lookup order** is `--claude-cli`, then that setting, then `claude` on `PATH`, then the
+  usual install locations (`~/.local/bin`, `~/.claude/local`, `~/.npm-global/bin`, `~/.bun/bin`,
+  `~/.volta/bin`, the newest Node under nvm). A path named by the option or the setting is
+  used or refused, never swapped for another `claude`. Existing servers behave as before:
+  `--claude-cli` still comes first.
+- **A Claude Code panel** on the Development tab shows which `claude` runs, how it was found,
+  and what `claude --version` prints, or why none was found.
+- Claude Code starts with its own directory first on `PATH`, so an nvm or npm install finds its
+  `node`.
+- The setting and the panel are translated into the admin UI's languages.
+- On merging into the type-hardening branch: `claude --version` runs through
+  `sc_proc::HostCommand` on a `Claude Code version probe` `SystemTask` (listed in the
+  system-authority inventory), and `getClaudeCodeStatus` is a typed
+  `handler_ids::GET_CLAUDE_CODE_STATUS` (`AdminOnly`); the wire name is unchanged.
+
+Tests: `crates/sc-server/tests/ide_terminal.rs`, `terminal.rs` and `development.rs` unit tests,
+`ui/admin/src/claudeStatus.test.ts`.
+
+## Admin UI: a shorter sidebar, one Coding agent link
+
+- **No Home entry.** The logo at the top of the sidebar goes to Home, and says so. All entities
+  is now the first entry under Data, so the Overview heading is gone.
+- **One "Coding agent" link per application** replaces "Build with Claude" and "Coding agent".
+  It opens Claude Code in the IDE terminal, or a new chat with the application's built-in coding
+  agent. Application settings has a new **Coding agent** choice between Claude Code (only where
+  Claude Code can start) and the application's built-in coding agent, by name (only when it has
+  one). An application with no choice yet starts on Claude Code where it can start, else the
+  built-in agent; a chosen one that is no longer there falls back the same way. Stored as the application's `coding_agent` attribute, so
+  existing applications need no migration and keep a working link.
+
+Tests: `ui/admin/src/appNav.test.ts`, `nav.test.ts`.
+
+## Admin UI: a Home page and a clearer sidebar
+
+The admin UI now opens on **Home** instead of the entity index. Home shows:
+- what needs attention: enabled triggers that cannot run, scheduled backups whose last attempt
+  failed, checklists whose last run failed, a disk over 90% full; each item links to where it
+  is fixed. A check whose list could not be loaded is named, rather than reported as all clear
+- the applications, with an Open button
+- counts of tables, applications, triggers, agents, file stores and users
+- the five most recently edited entities, and the server's version, uptime, database, disk,
+  memory and last successful backup
+- a getting-started list (table, application, LLM provider, backup schedule), shown until every
+  step is done
+
+A "Create" menu in the header replaces the six create buttons. All entities is still there, as
+the second sidebar entry; `#/` and `#/entities` keep working.
+
+- **Sidebar groups**: "Data Layer" is split into Overview (Home, All entities), Data (Tables,
+  Files, Streams), Automation (Triggers, Agents), Insights (Analytics) and Administration
+  (Users, Settings). Screen pre-titles use the same group names. The sidebar's labels are now
+  translated.
+- **Names**: "Actions" in the sidebar is now "Triggers", as on the page it opens. An
+  application's own Settings link is now "Application settings", so it is no longer confused with
+  the installation's Settings.
+- **Folding the sidebar**: the fold/expand button is now beside the logo at the top. At the foot
+  of a long sidebar it could be off screen, leaving a folded sidebar with no visible way back.
+- The tables list shows a role by name ("Admin" rather than "Admin (1)"). The entities list shows
+  a file store with no floor as "Public", as the role is named, rather than "public".
+
+Tests: `ui/admin/src/home.test.ts`, `nav.test.ts`, `appNav.test.ts`, `roles.test.ts`;
+`crates/sc-server/tests/entities_api.rs`.
+
 ## Sign-in no longer hangs with the button disabled
 
 Sometimes the admin sign-in did nothing: "Signing in…" stayed on, disabled, until the page was

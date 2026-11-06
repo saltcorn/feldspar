@@ -557,5 +557,7 @@
   "your account may not use this application": "لا يُسمح لحسابك باستخدام هذا التطبيق",
   "Claude Code in the IDE": "Claude Code في بيئة التطوير",
   "Let an admin open Claude Code in a terminal tab of the file-store IDE. It runs on this server, in the store's directory, as the server's operating-system user, and can run any command that user can. Only stores on this machine's disk can have one.": "يسمح للمسؤول بفتح Claude Code في علامة تبويب طرفية في بيئة تطوير مخازن الملفات. يعمل على هذا الخادم، في مجلد المخزن، بصفته مستخدم نظام التشغيل الخاص بالخادم، ويمكنه تشغيل أي أمر يستطيع ذلك المستخدم تشغيله. فقط المخازن الموجودة على قرص هذا الجهاز يمكن أن يكون لها واحد.",
+  "Claude Code executable": "ملف Claude Code التنفيذي",
+  "The full path of the claude program, such as /home/me/.local/bin/claude. Leave empty to look for it on the server's PATH and in the usual install locations. The server's --claude-cli option, when given, comes first.": "المسار الكامل لبرنامج claude، مثل /home/me/.local/bin/claude. اتركه فارغًا للبحث عنه في PATH الخاص بالخادم وفي مواقع التثبيت المعتادة. خيار الخادم --claude-cli، عند تحديده، تكون له الأولوية.",
   "—": "—"
 }

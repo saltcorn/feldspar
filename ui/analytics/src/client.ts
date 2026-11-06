@@ -255,6 +255,7 @@ export type SendTestEmailRequest = { to?: string | null };
 export type SendTestEmailResponse = { sent_to: string };
 export type GetPythonStatusResponse = { state: string; version?: string | null; explanation: string; dir?: string | null; site_packages?: string | null; bin?: string | null; packages: Array<{ name: string; version?: string | null }>; max_inflight: number; resident: number; threads: number; stuck: number; max_stuck: number; env_error?: string | null };
 export type GetSystemInfoResponse = { version: string; version_line: string; build_time?: string | null; commit?: string | null; platform: string; pid: number; started_at: string; uptime_seconds: number; database: { product?: string | null; version?: string | null; error?: string | null }; memory?: { process_bytes?: number | null; total_bytes?: number | null; available_bytes?: number | null } | null; cpu?: { process_percent: number; system_percent: number; cores: number; load_average: Array<number> } | null; disk?: { path: string; total_bytes: number; available_bytes: number } | null };
+export type GetClaudeCodeStatusResponse = { enabled: boolean; path?: string | null; source?: string | null; version?: string | null; problem?: string | null };
 export type RestartServerResponse = { restarting: boolean };
 export type ListApplicationsResponse = Array<{ id: string; name: string; description: string; subdomain: string; framework: { name: string; config: unknown }; extra_frameworks: Array<{ name: string; config: unknown }>; tables: Array<string>; api_tables: Array<string>; file_stores: Array<string>; triggers: Array<string>; streams: Array<string>; apis: Array<{ provider: string; mount: string; config: unknown }>; static_dirs: Array<{ mount: string; store: string; path: string }>; uploads: Array<{ name: string; store: string; folder: string; min_role: number; max_bytes: number; mime_allow: Array<string>; hook?: string | null }>; agents: Array<{ name: string; chat: boolean; prompt: boolean; anonymous: boolean; tools: string; prompt_template?: string | null }>; csp: unknown; attributes: unknown; min_role: number; max_role: number; access_if: string; source?: { store: string; path: string } | null; builds: boolean; installs: boolean; has_views: boolean; targets: Array<{ name: string; label: string; readiness: { ready: boolean; missing: Array<string>; from_environment: Array<string>; build_host?: string | null } }>; claude: { available: boolean; reason?: string | null } }>;
 export type CreateApplicationRequest = { name: string; description: string; subdomain: string; framework: { name: string; config: unknown }; extra_frameworks: Array<{ name: string; config: unknown }>; tables: Array<string>; api_tables: Array<string>; file_stores: Array<string>; triggers: Array<string>; streams: Array<string>; apis: Array<{ provider: string; mount: string; config: unknown }>; static_dirs: Array<{ mount: string; store: string; path: string }>; uploads: Array<{ name: string; store: string; folder: string; min_role: number; max_bytes: number; mime_allow: Array<string>; hook?: string | null }>; agents: Array<{ name: string; chat: boolean; prompt: boolean; anonymous: boolean; tools: string; prompt_template?: string | null }>; csp: unknown; attributes: unknown; min_role: number; max_role: number; access_if: string };
@@ -703,6 +704,7 @@ export interface ApiClient {
   sendTestEmail(body: SendTestEmailRequest): Promise<SendTestEmailResponse>;
   getPythonStatus(): Promise<GetPythonStatusResponse>;
   getSystemInfo(): Promise<GetSystemInfoResponse>;
+  getClaudeCodeStatus(): Promise<GetClaudeCodeStatusResponse>;
   restartServer(): Promise<RestartServerResponse>;
   listApplications(): Promise<ListApplicationsResponse>;
   createApplication(body: CreateApplicationRequest): Promise<CreateApplicationResponse>;
@@ -2381,6 +2383,14 @@ export function createClient(options: ClientOptions = {}): ApiClient {
       });
       if (!res.ok) throw await clientError("getSystemInfo", res);
       return (await res.json()) as GetSystemInfoResponse;
+    },
+    async getClaudeCodeStatus() {
+      const res = await doFetch(`${baseUrl}/api/development/claude`, {
+        method: "GET",
+        headers: requestHeaders("GET", false),
+      });
+      if (!res.ok) throw await clientError("getClaudeCodeStatus", res);
+      return (await res.json()) as GetClaudeCodeStatusResponse;
     },
     async restartServer() {
       const res = await doFetch(`${baseUrl}/api/system/restart`, {

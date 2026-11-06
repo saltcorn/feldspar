@@ -39,6 +39,9 @@ pub const MCP_LOOPBACK_ONLY: &str = "mcp_loopback_only";
 /// Whether the file-store IDE may open a terminal running Claude Code on this
 /// server (§12.1, "Claude Code in a terminal tab").
 pub const IDE_TERMINAL_ENABLED: &str = "ide_terminal_enabled";
+/// Where the Claude Code executable that terminal runs is: an absolute path, or
+/// nothing to look for it (`PATH`, then the usual install locations).
+pub const CLAUDE_CODE_PATH: &str = "claude_code_path";
 /// Whether an IDE save that installs dependencies runs the packages' install
 /// scripts (TODO-type-hardening H4.4). Off: a save installs with
 /// `--ignore-scripts`, and the next Build runs them.
@@ -112,6 +115,17 @@ pub fn development_section() -> ConfigSection {
                  on this server, in the store's directory, as the server's operating-system \
                  user, and can run any command that user can. Only stores on this machine's \
                  disk can have one.",
+            ),
+            // Only a question while the terminal is on, and only for an install
+            // the lookup does not find: a server started by a service manager
+            // gets a short `PATH` that a `claude` in a home directory is not on.
+            ConfigDef::help(
+                FormField::new(CLAUDE_CODE_PATH, BasicType::Text)
+                    .label("Claude Code executable")
+                    .show_if(IDE_TERMINAL_ENABLED, vec![Json::Bool(true)]),
+                "The full path of the claude program, such as /home/me/.local/bin/claude. Leave \
+                 empty to look for it on the server's PATH and in the usual install locations. \
+                 The server's --claude-cli option, when given, comes first.",
             ),
             // Off by default (security review 2026-11, C3): every dependency's
             // `postinstall` is code from the registry, and saving a file is not
@@ -272,6 +286,24 @@ pub async fn ide_terminal_enabled(catalog: &Catalog) -> Result<bool> {
     ))
 }
 
+/// The Claude Code executable the settings name, out of a settings bag: `None`
+/// when they name none and it is looked for instead.
+pub fn claude_code_path_from(config: &Attrs) -> Option<std::path::PathBuf> {
+    match config.get(CLAUDE_CODE_PATH) {
+        Some(Json::String(raw)) if !raw.trim().is_empty() => {
+            Some(std::path::PathBuf::from(raw.trim()))
+        }
+        _ => None,
+    }
+}
+
+/// The Claude Code executable the settings name, out of `_fd_config`.
+pub async fn claude_code_path(catalog: &Catalog) -> Result<Option<std::path::PathBuf>> {
+    Ok(claude_code_path_from(
+        &crate::store::all_config(catalog).await?,
+    ))
+}
+
 /// Whether an IDE save's install runs the packages' install scripts, out of a
 /// settings bag. Anything but `true` reads as off.
 pub fn install_scripts_on_save_from(config: &Attrs) -> bool {
@@ -283,6 +315,48 @@ pub async fn install_scripts_on_save(catalog: &Catalog) -> Result<bool> {
     Ok(install_scripts_on_save_from(
         &crate::store::all_config(catalog).await?,
     ))
+}
+
+/// Check a typed Claude Code executable: empty is `None`; anything else must be
+/// an absolute path to an executable file on this server.
+///
+/// Absolute, because a bare name would be a `PATH` lookup, which is what an
+/// empty box already does; existing and executable, because this is checked
+/// where the admin can see which box they typed it into, rather than as a
+/// greyed-out link later.
+pub fn check_claude_code_path(raw: &str) -> Result<Option<String>> {
+    let path = raw.trim();
+    if path.is_empty() {
+        return Ok(None);
+    }
+    let invalid = |why: &str| {
+        Err(sc_error::Error::invalid(format!(
+            "`{CLAUDE_CODE_PATH}` `{path}` {why}"
+        )))
+    };
+    if !std::path::Path::new(path).is_absolute() {
+        return invalid("is not a full path; give one that starts with /");
+    }
+    match std::fs::metadata(path) {
+        Err(_) => invalid("does not exist on this server"),
+        Ok(meta) if !meta.is_file() => invalid("is not a file"),
+        Ok(meta) if !executable(&meta) => invalid("is not executable"),
+        Ok(_) => Ok(Some(path.to_owned())),
+    }
+}
+
+/// Whether a file may be run: any execute bit, on Unix.
+fn executable(meta: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        true
+    }
 }
 
 /// Read the admin subdomain out of a settings bag: `None` when the admin UI is
@@ -452,6 +526,7 @@ mod tests {
                 MCP_ENABLED,
                 MCP_LOOPBACK_ONLY,
                 IDE_TERMINAL_ENABLED,
+                CLAUDE_CODE_PATH,
                 INSTALL_SCRIPTS_ON_SAVE,
             ]
         );
@@ -524,6 +599,77 @@ mod tests {
 
     /// The IDE terminal is off until someone turns it on, and anything but
     /// `true` leaves it off.
+    #[test]
+    fn the_claude_code_path_is_read_trimmed_and_empty_is_none() {
+        assert_eq!(claude_code_path_from(&Attrs::new()), None);
+        assert_eq!(
+            claude_code_path_from(&attrs(&[(CLAUDE_CODE_PATH, json!("   "))])),
+            None
+        );
+        assert_eq!(
+            claude_code_path_from(&attrs(&[(CLAUDE_CODE_PATH, json!(" /opt/claude "))])),
+            Some(std::path::PathBuf::from("/opt/claude"))
+        );
+        // Not a string: nothing named, so it is looked for.
+        assert_eq!(
+            claude_code_path_from(&attrs(&[(CLAUDE_CODE_PATH, json!(true))])),
+            None
+        );
+    }
+
+    /// A path the server could not run is refused on save, where the admin
+    /// sees the box they typed it into, rather than as a greyed-out link later.
+    #[test]
+    fn a_claude_code_path_must_be_an_absolute_executable_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "sc-claude-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plain = dir.join("notes.txt");
+        std::fs::write(&plain, "not a program").unwrap();
+        let program = dir.join("claude");
+        std::fs::write(&program, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let text = |p: &std::path::Path| p.to_string_lossy().into_owned();
+
+        assert_eq!(check_claude_code_path("  ").unwrap(), None);
+        assert_eq!(
+            check_claude_code_path(&format!(" {} ", text(&program))).unwrap(),
+            Some(text(&program))
+        );
+        let refused = |raw: &str| check_claude_code_path(raw).unwrap_err().to_string();
+        assert!(refused("claude").contains("not a full path"));
+        assert!(refused(&text(&dir.join("missing"))).contains("does not exist"));
+        assert!(refused(&text(&dir)).contains("is not a file"));
+        #[cfg(unix)]
+        assert!(refused(&text(&plain)).contains("is not executable"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_claude_code_path_is_asked_only_while_the_terminal_is_on() {
+        let section = development_section();
+        let field = section
+            .fields
+            .iter()
+            .find(|def| def.field.name() == CLAUDE_CODE_PATH)
+            .expect("the field is declared");
+        let conditions = &field.field.show_if;
+        assert_eq!(conditions.len(), 1);
+        assert_eq!(conditions[0].setting, IDE_TERMINAL_ENABLED);
+        assert_eq!(conditions[0].allowed, vec![json!(true)]);
+    }
+
     #[test]
     fn the_ide_terminal_is_off_unless_it_is_exactly_on() {
         assert!(!ide_terminal_enabled_from(&Attrs::new()));

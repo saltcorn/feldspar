@@ -117,7 +117,7 @@ export function Applications() {
   return (
     <>
       <PageHeader
-        pretitle="Deploy"
+        pretitle={t("Applications")}
         title={t("Applications")}
         actions={
           <Button onClick={() => navigate("/applications/new")}>

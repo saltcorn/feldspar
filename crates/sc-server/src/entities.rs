@@ -190,7 +190,7 @@ async fn list_entities(
             kind: "file_store",
             id: def.id.0.to_string(),
             updated_at: edited.get(&def.id.0.to_string()).copied(),
-            access: roles.floor(def.min_role, "public"),
+            access: roles.floor(def.min_role, &roles.name(Role::PUBLIC)),
             name: def.name,
             description: def.description,
             details,
