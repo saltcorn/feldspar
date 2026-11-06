@@ -483,14 +483,13 @@ impl AppMounts {
         &self.oauth
     }
 
-    /// The Claude Code the IDE's terminal runs: `claude` on `PATH` until the
-    /// router sets the configured one.
-    pub(crate) fn claude_cli(&self) -> Arc<PathBuf> {
+    /// The Claude Code the server's `--claude-cli` names, if it was given.
+    /// Without it the executable is looked for (`crate::terminal::find_claude`).
+    pub(crate) fn claude_cli(&self) -> Option<Arc<PathBuf>> {
         self.claude_cli
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
-            .unwrap_or_else(|| Arc::new(PathBuf::from(crate::terminal::CLAUDE_BIN)))
     }
 
     /// Run `program` as the IDE terminal's Claude Code.

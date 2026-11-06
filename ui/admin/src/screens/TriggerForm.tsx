@@ -354,7 +354,7 @@ export function TriggerForm({ triggerId, table }: { triggerId?: string; table?: 
   return (
     <>
       <PageHeader
-        pretitle="Automation"
+        pretitle={t("Automation")}
         title={triggerId ? "Edit trigger" : "New trigger"}
         actions={
           <Button variant="outline-secondary" onClick={() => navigate("/triggers")}>

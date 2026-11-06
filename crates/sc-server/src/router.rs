@@ -285,7 +285,9 @@ pub fn build_router_with_apps(
 
     // The terminal route and the applications list's "Build with Claude" both
     // ask the registry, so there is one answer to "which Claude Code".
-    apps.set_claude_cli(config.claude_cli.clone());
+    if let Some(program) = &config.claude_cli {
+        apps.set_claude_cli(program.clone());
+    }
 
     let routes = Arc::new(build_matchit(endpoints)?);
     let mut handlers = handlers;

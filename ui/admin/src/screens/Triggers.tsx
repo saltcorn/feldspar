@@ -178,7 +178,7 @@ export function Triggers() {
   return (
     <>
       <PageHeader
-        pretitle="Automation"
+        pretitle={t("Automation")}
         title={t("Triggers")}
         actions={
           <Button onClick={() => navigate("/triggers/new")}>

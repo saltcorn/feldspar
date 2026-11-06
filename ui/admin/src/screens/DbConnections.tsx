@@ -111,7 +111,7 @@ export function DbConnections() {
   return (
     <>
       <PageHeader
-        pretitle="Data"
+        pretitle={t("Data")}
         title={t("Database connections")}
         actions={
           <Button onClick={() => setEditing({ ...EMPTY_DB_CONNECTION_FORM })}>

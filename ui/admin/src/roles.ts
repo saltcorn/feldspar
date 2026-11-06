@@ -40,6 +40,15 @@ export function roleLabel(role: number, roles: Roles): string {
 }
 
 /**
+ * A role's name alone, for a list where the number is noise ("Admin" rather
+ * than "Admin (1)"). A role with no row is still its number, as in
+ * {@link roleLabel}: there is no name to show instead.
+ */
+export function roleName(role: number, roles: Roles): string {
+  return roles?.find((r) => r.role === role)?.name ?? `Role ${role}`;
+}
+
+/**
  * The choices to offer for a role select, with `current` included even when the
  * server did not list it. A `null` current is a field with no role set, which
  * adds nothing: what the blank stands for is the caller's to name.

@@ -511,6 +511,19 @@ export function IconLayoutDashboard(props: IconProps) {
   );
 }
 
+export function IconList(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M9 6l11 0" />
+      <path d="M9 12l11 0" />
+      <path d="M9 18l11 0" />
+      <path d="M5 6l0 .01" />
+      <path d="M5 12l0 .01" />
+      <path d="M5 18l0 .01" />
+    </Svg>
+  );
+}
+
 /** The Saltcorn logo (`src/vendor/saltcorn-logo.svg`, the January 2023 mark).
  *
  * An `<img>` rather than inline SVG: it is brand art, not an icon — three fixed

@@ -557,5 +557,7 @@
   "your account may not use this application": "您的账户无权使用此应用",
   "Claude Code in the IDE": "IDE 中的 Claude Code",
   "Let an admin open Claude Code in a terminal tab of the file-store IDE. It runs on this server, in the store's directory, as the server's operating-system user, and can run any command that user can. Only stores on this machine's disk can have one.": "允许管理员在文件存储 IDE 的终端标签页中打开 Claude Code。它在此服务器上、在存储的目录中、以服务器的操作系统用户身份运行，并且可以运行该用户能运行的任何命令。只有位于本机磁盘上的存储才能使用。",
+  "Claude Code executable": "Claude Code 可执行文件",
+  "The full path of the claude program, such as /home/me/.local/bin/claude. Leave empty to look for it on the server's PATH and in the usual install locations. The server's --claude-cli option, when given, comes first.": "claude 程序的完整路径，例如 /home/me/.local/bin/claude。留空则在服务器的 PATH 和常用安装位置中查找。如果指定了服务器的 --claude-cli 选项，则优先使用该选项。",
   "—": "—"
 }

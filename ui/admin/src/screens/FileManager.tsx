@@ -341,7 +341,7 @@ export function FileManager({
   return (
     <>
       <PageHeader
-        pretitle="Storage"
+        pretitle={t("Data")}
         title={
           <>
             <T text="Files" /> <span className="text-muted">— {store}</span>

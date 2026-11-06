@@ -182,7 +182,7 @@ export function FileStoreForm({ storeId }: { storeId?: string }) {
   return (
     <>
       <PageHeader
-        pretitle="Storage"
+        pretitle={t("Data")}
         title={storeId ? "Edit file store" : "New file store"}
         actions={
           <Button variant="outline-secondary" onClick={() => navigate("/file-stores")}>

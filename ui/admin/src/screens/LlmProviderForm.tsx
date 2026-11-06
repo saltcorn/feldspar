@@ -145,7 +145,7 @@ export function LlmProviderForm({ providerId }: { providerId?: string }) {
   return (
     <>
       <PageHeader
-        pretitle="Agents"
+        pretitle={<T text="Automation" />}
         title={
           fromConfigFile
             ? "LLM provider"

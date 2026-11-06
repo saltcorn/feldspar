@@ -351,14 +351,12 @@ pub(crate) async fn terminal_dir(
 /// how many are open is a moment's state, not something about the application.
 pub(crate) async fn claude_unavailable(
     catalog: &Catalog,
-    program: &Path,
+    option: Option<&Path>,
     apps: &[Application],
 ) -> Vec<Option<String>> {
     let everywhere = match terminal_off(catalog).await {
         Some(off) => Some(off),
-        None => locate_program(program)
-            .is_none()
-            .then(|| not_installed(program)),
+        None => find_claude(Some(catalog), option).await.err(),
     };
     apps.iter()
         .map(|app| {
@@ -379,17 +377,6 @@ async fn terminal_off(catalog: &Catalog) -> Option<String> {
         Ok(false) => Some("the IDE terminal is turned off (Settings → Development)".to_owned()),
         Err(e) => Some(format!("could not read the settings: {e}")),
     }
-}
-
-/// The refusal for a `program` that is not installed.
-fn not_installed(program: &Path) -> String {
-    format!(
-        "{} is not installed on this server",
-        program.file_name().map_or_else(
-            || program.display().to_string(),
-            |name| name.to_string_lossy().into_owned()
-        )
-    )
 }
 
 /// The directory `dir` of `store` on this server's disk, or why there is none.
@@ -456,19 +443,232 @@ async fn app_source_dir(
     Ok((dir, found))
 }
 
-/// The executable `program` names, if it is installed.
+/// The executable `program` names, if it is installed, looked up on `path_env`
+/// when it is a bare name.
 ///
-/// A bare name is looked up on `PATH` here rather than by the spawn, so that
-/// "not installed" is a sentence before the socket opens rather than an
-/// `ENOENT` after it, and so the child is started by absolute path.
-pub(crate) fn locate_program(program: &Path) -> Option<PathBuf> {
+/// Looked up here rather than by the spawn, so that "not installed" is a
+/// sentence before the socket opens rather than an `ENOENT` after it, and so
+/// the child is started by absolute path.
+fn locate_on(program: &Path, path_env: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     if program.components().count() > 1 {
         return is_executable(program).then(|| program.to_path_buf());
     }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
+    std::env::split_paths(path_env?)
         .map(|dir| dir.join(program))
         .find(|candidate| is_executable(candidate))
+}
+
+/// Where [`find_claude`] found the executable, for the Development tab's line
+/// saying which `claude` runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClaudeSource {
+    /// The server's `--claude-cli`.
+    Option,
+    /// Settings → Development's "Claude Code executable".
+    Setting,
+    /// `claude` on the server's `PATH`.
+    Path,
+    /// One of [`USUAL_LOCATIONS`], or nvm's newest Node.
+    Usual,
+}
+
+impl ClaudeSource {
+    /// How the status endpoint names it.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            ClaudeSource::Option => "option",
+            ClaudeSource::Setting => "setting",
+            ClaudeSource::Path => "path",
+            ClaudeSource::Usual => "usual",
+        }
+    }
+}
+
+/// Where Claude Code's installers put `claude`, relative to the home directory,
+/// in the order they are tried after `PATH`: the native installer, the older
+/// local install, npm with a user prefix, bun, volta. A server started by a
+/// service manager has a short `PATH` that none of these is on.
+pub(crate) const USUAL_LOCATIONS: &[&str] = &[
+    ".local/bin/claude",
+    ".claude/local/claude",
+    ".npm-global/bin/claude",
+    ".bun/bin/claude",
+    ".volta/bin/claude",
+];
+
+/// The Claude Code to run, and where it was found, or why there is none.
+///
+/// In this order: the server's `--claude-cli`, Settings → Development's
+/// executable, `claude` on `PATH`, the [`USUAL_LOCATIONS`] under the home
+/// directory, then the newest Node under nvm. A path given explicitly — the
+/// option or the setting — is the answer or the refusal: it is never quietly
+/// replaced by another `claude`, which would be a different program from the
+/// one the admin named.
+pub(crate) fn find_claude_in(
+    option: Option<&Path>,
+    setting: Option<&Path>,
+    path_env: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+) -> Result<(PathBuf, ClaudeSource), String> {
+    let named = |program: &Path, by: &str, source: ClaudeSource| {
+        locate_on(program, path_env)
+            .map(|exe| (exe, source))
+            .ok_or_else(|| {
+                format!(
+                    "{CLAUDE_BIN} is not installed on this server: {by} names {}, which is not \
+                     an executable file",
+                    program.display()
+                )
+            })
+    };
+    if let Some(program) = option {
+        return named(program, "--claude-cli", ClaudeSource::Option);
+    }
+    if let Some(program) = setting {
+        return named(program, "Settings → Development", ClaudeSource::Setting);
+    }
+    if let Some(exe) = locate_on(Path::new(CLAUDE_BIN), path_env) {
+        return Ok((exe, ClaudeSource::Path));
+    }
+    if let Some(home) = home {
+        let usual = USUAL_LOCATIONS
+            .iter()
+            .map(|rel| home.join(rel))
+            .chain(newest_nvm_claude(home));
+        for candidate in usual {
+            if is_executable(&candidate) {
+                return Ok((candidate, ClaudeSource::Usual));
+            }
+        }
+    }
+    Err(format!(
+        "{CLAUDE_BIN} is not installed on this server (looked on PATH and in the usual install \
+         locations); give its full path under Settings → Development"
+    ))
+}
+
+/// [`find_claude_in`] with this server's option, settings, `PATH` and home.
+pub(crate) async fn find_claude(
+    catalog: Option<&Catalog>,
+    option: Option<&Path>,
+) -> Result<(PathBuf, ClaudeSource), String> {
+    let setting = match (option, catalog) {
+        // The option comes first, so the settings need not be read.
+        (Some(_), _) | (None, None) => None,
+        (None, Some(catalog)) => sc_config::claude_code_path(catalog)
+            .await
+            .map_err(|e| format!("could not read the settings: {e}"))?,
+    };
+    let path_env = std::env::var_os("PATH");
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    find_claude_in(
+        option,
+        setting.as_deref(),
+        path_env.as_deref(),
+        home.as_deref(),
+    )
+}
+
+/// How long `claude --version` may take before the status says it did not
+/// answer. A Node CLI starts in well under a second; a hung one must not hold
+/// the settings screen.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Which Claude Code this server would run, for the Development tab: where it
+/// is and how it was found, and what `--version` says, or why there is none.
+pub(crate) async fn claude_status(catalog: &Catalog, option: Option<&Path>) -> serde_json::Value {
+    let enabled = terminal_off(catalog).await.is_none();
+    match find_claude(Some(catalog), option).await {
+        Ok((path, source)) => {
+            let (version, problem) = match claude_version(&path).await {
+                Ok(version) => (Some(version), None),
+                Err(problem) => (None, Some(problem)),
+            };
+            json!({
+                "enabled": enabled,
+                "path": path.display().to_string(),
+                "source": source.as_str(),
+                "version": version,
+                "problem": problem,
+            })
+        }
+        Err(problem) => json!({
+            "enabled": enabled,
+            "path": null,
+            "source": null,
+            "version": null,
+            "problem": problem,
+        }),
+    }
+}
+
+/// The first line `program --version` prints, run with the environment a
+/// terminal's program gets.
+async fn claude_version(program: &Path) -> Result<String, String> {
+    let mut command = tokio::process::Command::new(program);
+    command
+        .arg("--version")
+        .env_clear()
+        .envs(program_env())
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    if let Some(path) = path_with_dir_of(program, std::env::var_os("PATH").as_deref()) {
+        command.env("PATH", path);
+    }
+    let output = tokio::time::timeout(VERSION_TIMEOUT, command.output())
+        .await
+        .map_err(|_| format!("{} --version did not answer", program.display()))?
+        .map_err(|e| format!("{} could not be run: {e}", program.display()))?;
+    let first = |bytes: &[u8]| {
+        String::from_utf8_lossy(bytes)
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_owned)
+    };
+    if !output.status.success() {
+        return Err(format!(
+            "{} --version failed: {}",
+            program.display(),
+            first(&output.stderr).unwrap_or_else(|| output.status.to_string())
+        ));
+    }
+    first(&output.stdout).ok_or_else(|| format!("{} --version printed nothing", program.display()))
+}
+
+/// `claude` in the newest Node version nvm has, if any has one. Newest by
+/// version number, not by name: `v9` sorts after `v22` as text.
+fn newest_nvm_claude(home: &Path) -> Option<PathBuf> {
+    let versions = std::fs::read_dir(home.join(".nvm/versions/node")).ok()?;
+    let number = |name: &str| -> Vec<u64> {
+        name.trim_start_matches('v')
+            .split('.')
+            .map(|part| part.parse().unwrap_or(0))
+            .collect()
+    };
+    versions
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let claude = entry.path().join("bin").join(CLAUDE_BIN);
+            is_executable(&claude).then(|| (number(&entry.file_name().to_string_lossy()), claude))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, claude)| claude)
+}
+
+/// The child's `PATH`: the executable's own directory first. A `claude`
+/// installed with npm is a Node script that starts with `#!/usr/bin/env node`,
+/// and under nvm that `node` sits beside it and nowhere on a service
+/// manager's `PATH`.
+fn path_with_dir_of(program: &Path, path_env: Option<&std::ffi::OsStr>) -> Option<String> {
+    let dir = program.parent().filter(|d| !d.as_os_str().is_empty())?;
+    let mut dirs = vec![dir.to_path_buf()];
+    if let Some(path) = path_env {
+        dirs.extend(std::env::split_paths(path).filter(|d| d != dir));
+    }
+    std::env::join_paths(dirs)
+        .ok()
+        .map(|joined| joined.to_string_lossy().into_owned())
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -494,7 +694,8 @@ pub(crate) struct TerminalHost<'a> {
     /// The loopback URL a terminal's Claude Code uses to reach this server
     /// (`http://127.0.0.1:<port>`), or the reason there is none.
     pub(crate) origin: &'a Result<String, String>,
-    pub(crate) program: Arc<PathBuf>,
+    /// The server's `--claude-cli`, when it was given ([`find_claude`]).
+    pub(crate) program: Option<Arc<PathBuf>>,
 }
 
 /// Serve one terminal socket for `store`, opened from the admin session
@@ -516,9 +717,14 @@ pub(crate) async fn terminal_upgrade(
     } = host;
     let refusal = match terminal_dir(catalog, &store, query.app.as_deref()).await {
         Err(reason) => reason,
-        Ok(place) => match locate_program(&program) {
-            None => not_installed(&program),
-            Some(exe) => match Arc::clone(slots).try_acquire_owned() {
+        Ok(place) => match find_claude(
+            catalog.map(Arc::as_ref),
+            program.as_deref().map(PathBuf::as_path),
+        )
+        .await
+        {
+            Err(reason) => reason,
+            Ok((exe, _)) => match Arc::clone(slots).try_acquire_owned() {
                 Ok(permit) => {
                     let token = tokens.issue(admin.session().clone());
                     let wiring = Wiring {
@@ -714,6 +920,10 @@ impl Launch {
         }
 
         let mut env = program_env();
+        if let Some(path) = path_with_dir_of(&program, std::env::var_os("PATH").as_deref()) {
+            env.retain(|(name, _)| name != "PATH");
+            env.push(("PATH".to_owned(), path));
+        }
         if let Some(dir) = wiring.config_dir {
             env.push(("CLAUDE_CONFIG_DIR".to_owned(), dir.display().to_string()));
         }
@@ -1181,11 +1391,127 @@ mod tests {
         assert_eq!(control_message(r#"{"other":1}"#), None);
     }
 
+    /// A fresh directory for one test's fake installs.
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sc-find-claude-{tag}-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// An executable file at `path`, with its directories.
+    fn install(path: &Path) -> PathBuf {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path.to_path_buf()
+    }
+
+    #[test]
+    fn claude_is_looked_for_on_path_then_in_the_usual_places() {
+        let root = scratch("order");
+        let home = root.join("home");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let path = std::env::join_paths([&bin]).unwrap();
+
+        // Nowhere: the refusal says where to give it.
+        let err = find_claude_in(None, None, Some(&path), Some(&home)).unwrap_err();
+        assert!(err.contains("claude is not installed"), "{err}");
+        assert!(err.contains("Settings → Development"), "{err}");
+
+        // A service manager's PATH misses ~/.local/bin; the usual places do not.
+        let local = install(&home.join(".local/bin/claude"));
+        assert_eq!(
+            find_claude_in(None, None, Some(&path), Some(&home)).unwrap(),
+            (local.clone(), ClaudeSource::Usual)
+        );
+        // On PATH comes first.
+        let on_path = install(&bin.join("claude"));
+        assert_eq!(
+            find_claude_in(None, None, Some(&path), Some(&home)).unwrap(),
+            (on_path, ClaudeSource::Path)
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A path the admin named is the answer or the refusal, never swapped for
+    /// another `claude` that happens to be installed.
+    #[test]
+    fn a_named_claude_comes_first_and_is_not_replaced() {
+        let root = scratch("named");
+        let bin = root.join("bin");
+        install(&bin.join("claude"));
+        let path = std::env::join_paths([&bin]).unwrap();
+        let chosen = install(&root.join("opt/claude"));
+        let option = install(&root.join("flag/claude"));
+
+        assert_eq!(
+            find_claude_in(None, Some(&chosen), Some(&path), None).unwrap(),
+            (chosen.clone(), ClaudeSource::Setting)
+        );
+        assert_eq!(
+            find_claude_in(Some(&option), Some(&chosen), Some(&path), None).unwrap(),
+            (option, ClaudeSource::Option)
+        );
+        let missing = root.join("gone/claude");
+        let err = find_claude_in(None, Some(&missing), Some(&path), None).unwrap_err();
+        assert!(err.contains("claude is not installed"), "{err}");
+        assert!(err.contains("Settings → Development names"), "{err}");
+        let err = find_claude_in(Some(&missing), None, Some(&path), None).unwrap_err();
+        assert!(err.contains("--claude-cli names"), "{err}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_newest_node_under_nvm_is_the_one_used() {
+        let root = scratch("nvm");
+        let node = root.join(".nvm/versions/node");
+        install(&node.join("v9.11.2/bin/claude"));
+        let newest = install(&node.join("v22.12.0/bin/claude"));
+        install(&node.join("v20.19.0/bin/claude"));
+        // A newer Node without claude is passed over.
+        std::fs::create_dir_all(node.join("v24.1.0/bin")).unwrap();
+        assert_eq!(newest_nvm_claude(&root), Some(newest.clone()));
+        assert_eq!(
+            find_claude_in(None, None, None, Some(&root)).unwrap(),
+            (newest, ClaudeSource::Usual)
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// An npm-installed `claude` is `#!/usr/bin/env node`, and under nvm its
+    /// `node` is beside it, not on a service manager's PATH.
+    #[test]
+    fn the_program_runs_with_its_own_directory_first_on_path() {
+        let path =
+            std::env::join_paths(["/usr/bin", "/home/me/.nvm/versions/node/v22/bin"]).unwrap();
+        let joined = path_with_dir_of(
+            Path::new("/home/me/.nvm/versions/node/v22/bin/claude"),
+            Some(&path),
+        )
+        .unwrap();
+        let dirs: Vec<PathBuf> = std::env::split_paths(&joined).collect();
+        assert_eq!(
+            dirs,
+            [
+                PathBuf::from("/home/me/.nvm/versions/node/v22/bin"),
+                PathBuf::from("/usr/bin"),
+            ]
+        );
+        assert_eq!(path_with_dir_of(Path::new("claude"), Some(&path)), None);
+    }
+
     #[test]
     fn a_bare_name_is_found_on_path_and_a_missing_one_is_not() {
-        assert!(locate_program(Path::new("sh")).is_some());
-        assert!(locate_program(Path::new("definitely-not-installed-feldspar-cli")).is_none());
-        assert!(locate_program(Path::new("/nonexistent/claude")).is_none());
+        let path = std::env::var_os("PATH");
+        let locate = |program: &str| locate_on(Path::new(program), path.as_deref());
+        assert!(locate("sh").is_some());
+        assert!(locate("definitely-not-installed-feldspar-cli").is_none());
+        assert!(locate("/nonexistent/claude").is_none());
     }
 
     #[test]
